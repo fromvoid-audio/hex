@@ -78,8 +78,7 @@ impl WorkerLoop {
                 native_automation_take: native_automation_recording::Lane::default(),
                 plugin_recording: plugin_recording::State::default(),
                 recording_barrier: recording_barrier::State::default(),
-                pending_recovery_outcome: None,
-                pending_preview_or_seek_outcome: None,
+                pending_recovery_notifications: Vec::new(),
                 pending_export_events: PendingExportEvents::default(),
             },
         }
@@ -320,36 +319,111 @@ impl WorkerLoop {
         events.send_pending_with_control_poll(outcome, |audio| core.poll_control_during_send(audio))
     }
 
-    /// Capture the preceding checkpoint’s result before a subsequent edit
-    /// starts its own checkpoint. Delivery still follows request order.
-    pub(super) fn take_preview_or_seek_outcome(&mut self) -> Option<audio_sink::PendingOutcome> {
-        let mut outcome = self.core.pending_preview_or_seek_outcome.take()?;
-        outcome.event.recovery_failure = self.core.recovery_tracker.failure();
-        Some(outcome)
-    }
-
-    pub(super) fn finish_pending_recovery(&mut self) -> bool {
-        if let Some((kind, mut outcome)) = self.core.pending_recovery_outcome.take() {
-            let (elapsed, result) = self
-                .core
-                .recovery_tracker
-                .finish_async(&mut self.core.journal);
-            outcome.finish_recovery(
-                kind.metric(),
-                elapsed,
-                result,
-                self.core.recovery_tracker.failure(),
-            );
-            if !self.deliver_outcome(outcome) {
-                return false;
+    fn emit_recovery_status(&mut self, completed: &[recovery::CompletedCheckpoint]) -> bool {
+        let mut status = None;
+        let mut error: Option<String> = None;
+        let mut failure_changed = false;
+        for done in completed {
+            failure_changed |= done.failure_changed;
+            match &done.result {
+                Ok(Some(_)) => {
+                    status =
+                        Some("previous recovery journal preserved beside its original slot".into());
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    let message = format!("automatic recovery: {reason}");
+                    error = Some(match error {
+                        Some(existing) => format!("{existing}; {message}"),
+                        None => message,
+                    });
+                }
             }
         }
-        if let Some(outcome) = self.take_preview_or_seek_outcome()
-            && !self.deliver_outcome(outcome)
-        {
-            return false;
+        if status.is_none() && error.is_none() && !failure_changed {
+            return true;
         }
-        true
+        let Self { events, core, .. } = self;
+        let event = Event {
+            state: Arc::clone(&core.state),
+            playback: None,
+            status,
+            error,
+            resident_edit_source_unavailable: None,
+            recovery_failure: core.recovery_tracker.failure(),
+            audio_batch_failure: None,
+            import_truncation: None,
+            request_complete: false,
+            sampler_load_complete: None,
+            sampler_edit_complete: None,
+            plugin_effect_complete: Vec::new(),
+            device_insert_proposal_complete: None,
+            device_insert_confirmation: None,
+            device_insert_complete: None,
+            plugin_parameter_observation: false,
+            plugin_parameters: None,
+            plugin_parameter_conversion: None,
+            computer_keyboard_complete: None,
+            midi_take_complete: None,
+            device_automation_take_complete: None,
+            tuning_audition_complete: None,
+            live_expression_complete: None,
+            bounce_complete: None,
+            audio_batch_complete: None,
+            save_complete: false,
+            save_correlation: None,
+            document_format_upgrade_required: core
+                .document
+                .as_ref()
+                .is_some_and(|handle| handle.token.requires_format_upgrade()),
+            save_confirmation_required: false,
+            open_complete: false,
+            project_replaced: false,
+            stopped_playback_restore_complete: false,
+            created: None,
+            duplicate_complete: false,
+            restore_complete: None,
+            device_preview: None,
+            gesture_ack: None,
+            gesture_protocol_ack: false,
+            gesture_request: false,
+            active_device_gesture: core.device_gesture.snapshot(),
+            tuning_preview: None,
+            tuning_gesture_ack: None,
+            tuning_gesture_request: false,
+            active_tuning_gesture: core.tuning_gesture.snapshot(),
+            tuning_library: None,
+        };
+        events.send_with_control_poll(event, |audio| core.poll_control_during_send(audio))
+    }
+
+    pub(super) fn harvest_ready_recovery(&mut self) -> bool {
+        let mut completed = std::mem::take(&mut self.core.pending_recovery_notifications);
+        completed.extend(
+            self.core
+                .recovery_tracker
+                .poll_complete(&mut self.core.journal),
+        );
+        self.emit_recovery_status(&completed)
+    }
+
+    pub(super) fn flush_pending_recovery(&mut self) -> bool {
+        let mut completed = std::mem::take(&mut self.core.pending_recovery_notifications);
+        let Self { events, core, .. } = self;
+        completed.extend(
+            core.recovery_tracker
+                .flush_blocking(&mut core.journal, || events.poll()),
+        );
+        self.emit_recovery_status(&completed)
+    }
+
+    pub(super) fn flush_recovery_on_exit(&mut self) {
+        if self.core.recovery_tracker.has_pending() {
+            let Self { events, core, .. } = self;
+            let _ = core
+                .recovery_tracker
+                .flush_blocking(&mut core.journal, || events.poll());
+        }
     }
 
     pub(super) fn next_queued_request(&mut self) -> Option<QueuedRequest> {
@@ -390,7 +464,7 @@ impl WorkerLoop {
             native_automation_take,
             plugin_recording,
             recording_barrier,
-            pending_recovery_outcome,
+            pending_recovery_notifications,
             pending_export_events,
             ..
         } = core;
@@ -401,7 +475,8 @@ impl WorkerLoop {
             document_intent,
             recording_barrier,
             session.native_reservation.is_some()
-                || pending_recovery_outcome.is_some()
+                || recovery_tracker.has_pending()
+                || !pending_recovery_notifications.is_empty()
                 || !pending_export_events.is_empty(),
             pending_plugin_effect.as_ref(),
             device_gesture.snapshot().is_some(),
@@ -613,11 +688,13 @@ impl WorkerLoop {
                 audio_sink::ControlPoll {
                     pending: control_lanes_pending(resident_seek.as_ref(), export_lane)
                         || plugin_recording.pending()
-                        || pending_recovery_outcome.is_some()
+                        || recovery_tracker.has_pending()
+                        || !pending_recovery_notifications.is_empty()
                         || !pending_export_events.is_empty(),
                     gesture: plugin_recording.ready(),
                     editor_take: plugin_recording.editor_ready(),
-                    recovery_ready: recovery_tracker.async_ready(),
+                    recovery_ready: recovery_tracker.async_ready()
+                        || !pending_recovery_notifications.is_empty(),
                     editor_replay_ready,
                 }
             },
@@ -693,6 +770,10 @@ impl WorkerLoopCore {
                 },
                 sink,
             );
+        }
+        if self.recovery_tracker.async_ready() {
+            self.pending_recovery_notifications
+                .extend(self.recovery_tracker.poll_complete(&mut self.journal));
         }
         audio_sink::native_sampler::drive(
             audio,

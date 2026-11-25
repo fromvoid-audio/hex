@@ -547,6 +547,13 @@ fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
             .unwrap();
         let inserted = next();
         assert!(inserted.error.is_none(), "{:?}", inserted.error);
+        let until = Instant::now() + crate::test_wait::HANG_BOUND;
+        while hex_storage::load_journal(&journal).ok().as_ref()
+            != Some(inserted.state.project.as_ref())
+        {
+            assert!(Instant::now() < until, "setup journal did not settle");
+            thread::yield_now();
+        }
         let device = inserted.state.project.track(track).unwrap().devices()[0].id();
         service
             .submit(Request::device_gesture(GestureRequest::Begin {
@@ -559,6 +566,12 @@ fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
             }))
             .unwrap();
         assert!(next().gesture_ack.unwrap().accepted);
+    } else {
+        let until = Instant::now() + crate::test_wait::HANG_BOUND;
+        while hex_storage::load_journal(&journal).is_err() {
+            assert!(Instant::now() < until, "setup journal did not settle");
+            thread::yield_now();
+        }
     }
     observed
         .render_for_switch_test
@@ -571,6 +584,14 @@ fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
     let first = service.try_track_switch_view().unwrap();
+    let first_terminal = next();
+    assert_eq!(first_terminal.state.revision, first.revision);
+    assert!(
+        first_terminal
+            .gesture_ack
+            .as_ref()
+            .is_none_or(|ack| ack.accepted && ack.sequence == 0)
+    );
     if conflict {
         std::fs::write(&journal, b"foreign journal").unwrap();
     }
@@ -585,25 +606,24 @@ fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
                 },
             }))
             .unwrap();
+        let change = next();
+        assert_eq!(change.state.revision, first.revision);
+        let ack = change.gesture_ack.unwrap();
+        assert!(ack.accepted && ack.key == key && ack.sequence == 1);
     }
     service
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
+    let second_terminal = next();
+    let second = service
+        .try_track_switch_view()
+        .expect("second mute must commit before checkpoint release");
     let until = Instant::now() + Duration::from_millis(300);
-    let second = loop {
-        if let Ok(view) = service.try_track_switch_view() {
-            break Some(view);
-        }
-        if Instant::now() >= until {
-            break None;
-        }
-        std::thread::yield_now();
-    };
     let peaks = loop {
         let peaks = observed.switch_peaks.lock().unwrap().clone();
-        if second
-            .as_ref()
-            .is_some_and(|view| peaks.iter().any(|(revision, _)| *revision == view.revision))
+        if peaks
+            .iter()
+            .any(|(revision, _)| *revision == second.revision)
             || Instant::now() >= until
         {
             break peaks;
@@ -622,14 +642,11 @@ fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
                     && preview.canonical_revision == first.revision
             })
         });
-    let terminal_pending = service.try_event().is_err();
     release.send(()).unwrap();
-    assert!(terminal_pending);
     assert!(
         !with_pair || preview_published,
         "paired preview must reach audio before checkpoint release"
     );
-    let second = second.expect("second mute must commit before checkpoint release");
     let muted = peaks
         .iter()
         .find(|(revision, _)| *revision == first.revision)
@@ -658,33 +675,20 @@ fn check_held_checkpoint_mute(with_pair: bool, conflict: bool) {
             .iter()
             .any(|row| row.track == track && !row.muted)
     );
-    let first_terminal = next();
-    assert_eq!(first_terminal.state.revision, first.revision);
-    assert!(
-        first_terminal
-            .gesture_ack
-            .as_ref()
-            .is_none_or(|ack| ack.accepted && ack.sequence == 0)
-    );
-    assert_eq!(first_terminal.recovery_failure.is_some(), conflict);
-    if with_pair {
-        let change = next();
-        assert_eq!(change.state.revision, first.revision);
-        let ack = change.gesture_ack.unwrap();
-        assert!(ack.accepted && ack.key == key && ack.sequence == 1);
-        assert_eq!(change.recovery_failure.is_some(), conflict);
-    }
-    let second_terminal = next();
     assert_eq!(second_terminal.state.revision, second.revision);
-    assert_eq!(second_terminal.recovery_failure.is_some(), conflict);
     if conflict {
+        let failure = next();
+        assert!(!failure.request_complete && failure.recovery_failure.is_some());
         assert_eq!(std::fs::read(&journal).unwrap(), b"foreign journal");
     } else {
         assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&journal).unwrap(),
-            *second_terminal.state.project
-        );
+        let until = Instant::now() + crate::test_wait::HANG_BOUND;
+        while hex_storage::load_journal(&journal).ok().as_ref()
+            != Some(second_terminal.state.project.as_ref())
+        {
+            assert!(Instant::now() < until, "coalesced journal did not finish");
+            thread::yield_now();
+        }
     }
 }
 
@@ -2337,7 +2341,16 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
             name: "source".into(),
         }))
         .unwrap();
-    assert!(next().error.is_none());
+    let added = next();
+    assert!(added.error.is_none());
+    let until = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+    while hex_storage::load_journal(&journal).ok().as_ref() != Some(added.state.project.as_ref()) {
+        assert!(
+            std::time::Instant::now() < until,
+            "setup journal did not settle"
+        );
+        thread::yield_now();
+    }
     let (entered_tx, entered) = mpsc::sync_channel(1);
     let (release, release_rx) = mpsc::sync_channel(1);
     super::super::recovery::install_checkpoint_gate(journal.clone(), entered_tx, release_rx);
@@ -2349,6 +2362,9 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
     let state = view.state.upgrade().unwrap();
     let locator = state.project.arrangement_locators().first().unwrap();
     assert_eq!(locator.frame(), 129);
+    let first = next();
+    assert!(matches!(first.created, Some(Created::ArrangementLocator(id)) if id == locator.id()));
+    assert_eq!(first.state.revision, state.revision);
     if conflict {
         std::fs::write(&journal, b"another writer's journal").unwrap();
     }
@@ -2376,6 +2392,10 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
             cancelled: Arc::new(AtomicBool::new(cancelled)),
         })
         .unwrap();
+    let second = next();
+    assert_eq!(second.state.revision, state.revision);
+    assert!(second.created.is_none());
+    assert_eq!(second.error.is_some(), stale || cancelled);
     let deadline = std::time::Instant::now() + Duration::from_millis(250);
     let result = loop {
         if let Some(result) = service.try_resident_arrangement_seek_result() {
@@ -2393,14 +2413,16 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
                 reservation: None,
             })
             .unwrap();
+        assert!(
+            service.try_event().is_err(),
+            "NewProject must fence held checkpoint"
+        );
     }
-    let early_terminal = service.try_event().ok();
     if shutdown {
         assert!(service.shutdown(Duration::from_millis(20)).is_err());
         release.send(()).unwrap();
         service.shutdown(crate::test_wait::HANG_BOUND).unwrap();
         assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
-        assert!(early_terminal.is_none());
         assert!(result.is_some(), "seek result must precede shutdown");
         return;
     }
@@ -2417,20 +2439,9 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
         assert!(error.contains("fixture has no fresh output"), "{error}");
         assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 1);
     }
-    assert!(
-        early_terminal.is_none(),
-        "the locator terminal must remain ordered"
-    );
-    let first = next();
-    let second = next();
-    assert!(matches!(first.created, Some(Created::ArrangementLocator(id)) if id == locator.id()));
-    assert_eq!(first.state.revision, state.revision);
-    assert_eq!(second.state.revision, state.revision);
-    assert!(second.created.is_none());
-    assert_eq!(second.error.is_some(), stale || cancelled);
     if conflict {
-        assert!(first.recovery_failure.is_some());
-        assert!(second.recovery_failure.is_some());
+        let failure = next();
+        assert!(!failure.request_complete && failure.recovery_failure.is_some());
         assert_eq!(
             std::fs::read(&journal).unwrap(),
             b"another writer's journal"
@@ -2439,6 +2450,7 @@ fn check_locator_checkpoint_seek(stale: bool, cancelled: bool, conflict: bool, s
         let replacement = next();
         assert!(replacement.project_replaced);
         assert!(replacement.state.project.arrangement_locators().is_empty());
+        assert_eq!(hex_storage::load_journal(&journal).unwrap(), *state.project);
     }
 }
 

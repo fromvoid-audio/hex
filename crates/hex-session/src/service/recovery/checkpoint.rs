@@ -67,6 +67,22 @@ pub(in crate::service) struct RecoveryContext<'a> {
     pub journal: &'a mut Option<hex_storage::Journal>,
     pub generation: u64,
 }
+pub(in crate::service) struct CompletedCheckpoint {
+    pub(in crate::service) result: Result<Option<PathBuf>, String>,
+    pub(in crate::service) failure_changed: bool,
+}
+
+struct InFlightCheckpoint {
+    path: PathBuf,
+    generation: u64,
+}
+
+struct CoalescedCheckpoint {
+    path: PathBuf,
+    generation: u64,
+    checkpoint: PreparedCheckpoint,
+}
+
 #[derive(Default)]
 pub(in crate::service) struct RecoveryTracker {
     failure: Option<Arc<RecoveryFailure>>,
@@ -75,79 +91,56 @@ pub(in crate::service) struct RecoveryTracker {
     restart: Option<hex_storage::JournalRestartToken>,
     sequence: u64,
     worker: Option<super::checkpoint_worker::CheckpointWorker>,
-    pending: Option<(PathBuf, u64, std::time::Instant)>,
+    in_flight: Option<InFlightCheckpoint>,
+    coalesced: Option<CoalescedCheckpoint>,
 }
 impl RecoveryTracker {
-    /// Start a changed, unsaved checkpoint. The caller must retain its exact
-    /// outcome and fence journal lifecycle operations until completion.
-    pub fn start_async(&mut self, context: RecoveryContext<'_>) -> Result<bool, String> {
-        if self.pending.is_some() {
-            return Err("recovery checkpoint is already pending".into());
+    /// Whether any background checkpoint is currently writing or coalesced to run next.
+    pub fn has_pending(&self) -> bool {
+        self.in_flight.is_some() || self.coalesced.is_some()
+    }
+
+    /// Whether an in-flight checkpoint has finished on the worker and can be collected now.
+    pub fn async_ready(&self) -> bool {
+        self.in_flight.is_some() && self.worker.as_ref().is_some_and(|worker| worker.ready())
+    }
+
+    fn start_in_flight(
+        &mut self,
+        path: PathBuf,
+        generation: u64,
+        checkpoint: PreparedCheckpoint,
+        journal: &mut Option<hex_storage::Journal>,
+    ) -> Result<(), String> {
+        if self.worker.is_none() {
+            self.worker = Some(super::checkpoint_worker::CheckpointWorker::new()?);
         }
-        let path = checkpoint_path(context.document, context.untitled)?;
-        if self.failure.as_ref().is_some_and(|failure| {
-            failure.path != path || failure.project_generation != context.generation
-        }) {
-            self.clear();
-        }
-        if self
-            .failure
-            .as_ref()
-            .is_some_and(|failure| failure.can_restart())
-        {
-            return Ok(false);
-        }
-        let started = std::time::Instant::now();
-        let result = PreparedCheckpoint::capture(&context).and_then(|checkpoint| {
-            if self.worker.is_none() {
-                self.worker = Some(super::checkpoint_worker::CheckpointWorker::new()?);
-            }
-            let worker = self
-                .worker
-                .as_mut()
-                .ok_or("recovery checkpoint worker is unavailable")?;
-            worker.start(checkpoint, context.journal)
-        });
-        match result {
+        let worker = self
+            .worker
+            .as_mut()
+            .ok_or("recovery checkpoint worker is unavailable")?;
+        match worker.start(checkpoint, journal) {
             Ok(()) => {
-                self.pending = Some((path, context.generation, started));
-                Ok(true)
+                self.in_flight = Some(InFlightCheckpoint { path, generation });
+                Ok(())
             }
             Err(reason) => {
                 self.worker.take();
-                self.failed(path, context.generation, reason.clone(), None);
+                self.failed(path, generation, reason.clone(), None);
                 Err(reason)
             }
         }
     }
 
-    pub fn async_ready(&self) -> bool {
-        self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| worker.ready())
-    }
-
-    /// Whether an admitted publication still needs its control owner to wait.
-    pub fn async_waiting(&self) -> bool {
-        self.pending.is_some() && self.worker.as_ref().is_some_and(|worker| !worker.ready())
-    }
-
-    /// Collect the sole pending publication on control and update the same
-    /// persistent failure state used by synchronous maintenance.
-    pub fn finish_async(
+    fn collect_in_flight(
         &mut self,
         journal: &mut Option<hex_storage::Journal>,
-    ) -> (std::time::Duration, Result<Option<PathBuf>, String>) {
-        let Some((path, generation, started)) = self.pending.take() else {
-            return (
-                std::time::Duration::ZERO,
-                Err("no recovery checkpoint is pending".into()),
-            );
-        };
-        let (completed, result) = match self.worker.as_mut() {
-            Some(worker) => worker.finish_timed(journal),
-            None => (
-                std::time::Instant::now(),
-                Err("recovery checkpoint worker is unavailable".into()),
-            ),
+    ) -> Option<CompletedCheckpoint> {
+        let InFlightCheckpoint { path, generation } = self.in_flight.take()?;
+        let had_failure = self.failure.is_some();
+        let result = match self.worker.as_mut() {
+            Some(worker) => worker.finish(journal),
+            None => Err("recovery checkpoint worker is unavailable".into()),
         };
         match &result {
             Ok(_) => self.clear(),
@@ -156,8 +149,156 @@ impl RecoveryTracker {
                 self.failed(path, generation, reason.clone(), None);
             }
         }
-        (completed.saturating_duration_since(started), result)
+        let failure_changed = had_failure != self.failure.is_some() || result.is_err();
+        Some(CompletedCheckpoint {
+            result,
+            failure_changed,
+        })
     }
+
+    fn start_coalesced_if_idle(
+        &mut self,
+        journal: &mut Option<hex_storage::Journal>,
+    ) -> Option<CompletedCheckpoint> {
+        if self.in_flight.is_some() {
+            return None;
+        }
+        let next = self.coalesced.take()?;
+        if self.failure.as_ref().is_some_and(|failure| {
+            failure.path != next.path || failure.project_generation != next.generation
+        }) {
+            self.clear();
+        }
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.can_restart())
+        {
+            return None;
+        }
+        match self.start_in_flight(next.path, next.generation, next.checkpoint, journal) {
+            Ok(()) => None,
+            Err(reason) => Some(CompletedCheckpoint {
+                result: Err(reason),
+                failure_changed: true,
+            }),
+        }
+    }
+
+    /// Capture an in-memory snapshot and either start it immediately on the
+    /// background checkpoint worker or coalesce it over any unstarted snapshot.
+    /// Never blocks on disk I/O or `fsync()`.
+    pub fn schedule_async(
+        &mut self,
+        context: RecoveryContext<'_>,
+    ) -> Result<Vec<CompletedCheckpoint>, String> {
+        let path = checkpoint_path(context.document, context.untitled)?;
+        if self.failure.as_ref().is_some_and(|failure| {
+            failure.path != path || failure.project_generation != context.generation
+        }) {
+            self.clear();
+        }
+        let mut completed = Vec::new();
+        if self.async_ready()
+            && let Some(done) = self.collect_in_flight(context.journal)
+        {
+            completed.push(done);
+        }
+        if self
+            .failure
+            .as_ref()
+            .is_some_and(|failure| failure.can_restart())
+        {
+            self.coalesced = None;
+            return Ok(completed);
+        }
+        let checkpoint = match PreparedCheckpoint::capture(&context) {
+            Ok(checkpoint) => checkpoint,
+            Err(reason) => {
+                self.failed(path, context.generation, reason.clone(), None);
+                return Err(reason);
+            }
+        };
+        if self.in_flight.is_none() {
+            self.coalesced = None;
+            self.start_in_flight(path, context.generation, checkpoint, context.journal)?;
+        } else {
+            self.coalesced = Some(CoalescedCheckpoint {
+                path,
+                generation: context.generation,
+                checkpoint,
+            });
+        }
+        Ok(completed)
+    }
+
+    /// Non-blockingly collect a finished in-flight checkpoint and start any
+    /// coalesced latest snapshot on the background worker.
+    pub fn poll_complete(
+        &mut self,
+        journal: &mut Option<hex_storage::Journal>,
+    ) -> Vec<CompletedCheckpoint> {
+        let mut completed = Vec::new();
+        if self.async_ready()
+            && let Some(done) = self.collect_in_flight(journal)
+        {
+            completed.push(done);
+        }
+        if let Some(done) = self.start_coalesced_if_idle(journal) {
+            completed.push(done);
+        }
+        completed
+    }
+
+    /// Block only at explicit durability/lifecycle fences (Save, Open, New,
+    /// RestartRecovery, sample-rate replacement, and shutdown/exit) until both
+    /// the in-flight checkpoint and any coalesced latest snapshot have finished
+    /// and returned journal custody.
+    pub fn flush_blocking(
+        &mut self,
+        journal: &mut Option<hex_storage::Journal>,
+        mut poll_audio: impl FnMut(),
+    ) -> Vec<CompletedCheckpoint> {
+        let mut completed = Vec::new();
+        loop {
+            while self.in_flight.is_some() {
+                while !self.async_ready() {
+                    poll_audio();
+                    std::thread::sleep(super::super::stopped_arrangement::FENCE_POLL);
+                }
+                if let Some(done) = self.collect_in_flight(journal) {
+                    completed.push(done);
+                }
+            }
+            if let Some(done) = self.start_coalesced_if_idle(journal) {
+                completed.push(done);
+            }
+            if self.in_flight.is_none() && self.coalesced.is_none() {
+                break;
+            }
+        }
+        completed
+    }
+
+    /// Clear recovery for a clean/saved state. Discards any unstarted coalesced
+    /// snapshot, reclaims journal custody from an in-flight checkpoint if needed,
+    /// and clears the on-disk journal synchronously.
+    pub fn clear_for_saved(
+        &mut self,
+        context: RecoveryContext<'_>,
+        mut poll_audio: impl FnMut(),
+    ) -> Result<Option<PathBuf>, String> {
+        self.coalesced = None;
+        while self.in_flight.is_some() {
+            while !self.async_ready() {
+                poll_audio();
+                std::thread::sleep(super::super::stopped_arrangement::FENCE_POLL);
+            }
+            let _ = self.collect_in_flight(context.journal);
+        }
+        self.maintain(context, false, false)
+    }
+
     fn clear(&mut self) {
         self.failure = None;
         self.restart = None;

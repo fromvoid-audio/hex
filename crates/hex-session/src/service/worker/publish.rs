@@ -3,27 +3,18 @@ use super::*;
 
 struct PendingDelivery {
     outcome: audio_sink::PendingOutcome,
-    defer_outcome_until_recovery: bool,
-    stage_recovery: Option<DeferredRecoveryKind>,
-    defer_recovery: Option<DeferredRecoveryKind>,
     export_job: Option<ExportJob>,
     export_completion: Option<ExportEvent>,
 }
 
 impl WorkerLoop {
     pub(super) fn publish_and_deliver(&mut self, exec: RequestExecution) -> bool {
-        let Some(pending) = self.finalize_request_and_build_outcome(exec) else {
-            return false;
-        };
+        let pending = self.finalize_request_and_build_outcome(exec);
         self.deliver_outcome_and_exports(pending)
     }
 
-    fn finalize_request_and_build_outcome(
-        &mut self,
-        exec: RequestExecution,
-    ) -> Option<PendingDelivery> {
+    fn finalize_request_and_build_outcome(&mut self, exec: RequestExecution) -> PendingDelivery {
         let RequestMeta {
-            defer_outcome_until_recovery,
             save_correlation,
             defaults_directory: _,
             recording_barrier_completion: _,
@@ -35,7 +26,6 @@ impl WorkerLoop {
             midi_note_update,
             locator_add,
             arrangement_paste,
-            section_copy,
             arrangement_duplicate,
             seek_intent,
             plugin_parameter_observation,
@@ -110,8 +100,6 @@ impl WorkerLoop {
             committed_arrangement_duplicate,
             committed_arrangement_paste,
             committed_track_switch,
-            eligible,
-            stage_recovery,
         ) = {
             let Self {
                 events,
@@ -147,7 +135,6 @@ impl WorkerLoop {
                 tuning_gesture,
                 native_automation_take,
                 plugin_recording,
-                pending_recovery_outcome,
                 ..
             } = core;
             let mut revision = *revision_ref;
@@ -532,30 +519,6 @@ impl WorkerLoop {
                     state: Arc::downgrade(state),
                 });
             }
-            let committed_recovery_kind = if committed_arrangement_paste {
-                Some(DeferredRecoveryKind::Paste)
-            } else if committed_track_switch {
-                Some(DeferredRecoveryKind::TrackSwitch)
-            } else if time_range_copy && canonical_changed && error.is_none() {
-                Some(DeferredRecoveryKind::TimeRangeCopy)
-            } else if section_copy && committed_arrangement_duplicate.is_some() {
-                Some(DeferredRecoveryKind::SectionCopy)
-            } else if locator_add
-                && canonical_changed
-                && error.is_none()
-                && matches!(created, Some(Created::ArrangementLocator(_)))
-            {
-                Some(DeferredRecoveryKind::LocatorAdd)
-            } else {
-                None
-            };
-            let eligible =
-                committed_recovery_kind.filter(|_| unsaved && revision != revision_before_request);
-            let stage_recovery = eligible.filter(|kind| {
-                pending_recovery_outcome
-                    .as_ref()
-                    .is_some_and(|(pending, _)| pending == kind)
-            });
             *revision_ref = revision;
             *project_generation_ref = project_generation;
             (
@@ -564,17 +527,8 @@ impl WorkerLoop {
                 committed_arrangement_duplicate,
                 committed_arrangement_paste,
                 committed_track_switch,
-                eligible,
-                stage_recovery,
             )
         };
-        if self.core.pending_recovery_outcome.is_some()
-            && stage_recovery.is_none()
-            && !defer_outcome_until_recovery
-            && !self.finish_pending_recovery()
-        {
-            return None;
-        }
         let Self { events, core, .. } = self;
         let WorkerLoopCore {
             session,
@@ -609,74 +563,83 @@ impl WorkerLoop {
         let revision = *revision;
         let unsaved = *unsaved;
         let project_generation = *project_generation;
-        let mut defer_recovery = None;
-        if stage_recovery.is_none()
-            && !defer_outcome_until_recovery
-            && let Some(untitled_path) = recovery.as_deref()
-        {
-            let journal_result = if let Some(kind) = eligible {
-                events.measure_recovery(kind.metric(), || {
-                    recovery_tracker
-                        .start_async(recovery::RecoveryContext {
-                            session,
-                            base: media_base.as_deref(),
-                            document: document.as_ref(),
-                            untitled: untitled_path,
-                            journal,
-                            generation: project_generation,
-                        })
-                        .map(|started| {
-                            if started {
-                                defer_recovery = Some(kind);
-                            }
-                            None
-                        })
-                })
-            } else {
-                let mut maintain_recovery = || {
-                    recovery_tracker.maintain(
-                        recovery::RecoveryContext {
-                            session,
-                            base: media_base.as_deref(),
-                            document: document.as_ref(),
-                            untitled: untitled_path,
-                            journal,
-                            generation: project_generation,
-                        },
-                        unsaved,
-                        revision != revision_before_request,
-                    )
-                };
-                if committed_arrangement_duplicate.is_some()
-                    || (time_range_copy && canonical_changed && error.is_none())
-                {
-                    events.measure_recovery("duplicate_recovery_us", maintain_recovery)
-                } else if committed_arrangement_paste {
-                    events.measure_recovery("paste_recovery_us", maintain_recovery)
-                } else if committed_track_switch {
-                    events.measure_recovery("track_switch_recovery_us", maintain_recovery)
-                } else if locator_add && canonical_changed && error.is_none() {
-                    events.measure_recovery("locator_recovery_us", maintain_recovery)
-                } else if midi_note_update && canonical_changed && error.is_none() {
-                    // Worker-side journal maintenance only; excludes audio publication
-                    // and client receipt. Refused or unchanged edits have no sample.
-                    events.measure_recovery("midi_note_recovery_us", maintain_recovery)
-                } else {
-                    maintain_recovery()
-                }
+        if let Some(untitled_path) = recovery.as_deref() {
+            let ctx = recovery::RecoveryContext {
+                session,
+                base: media_base.as_deref(),
+                document: document.as_ref(),
+                untitled: untitled_path,
+                journal,
+                generation: project_generation,
             };
-            match journal_result {
-                Ok(Some(_)) => {
-                    status =
-                        Some("previous recovery journal preserved beside its original slot".into());
+            let metric = if committed_arrangement_duplicate.is_some()
+                || (time_range_copy && canonical_changed && error.is_none())
+            {
+                Some("duplicate_recovery_us")
+            } else if committed_arrangement_paste {
+                Some("paste_recovery_us")
+            } else if committed_track_switch {
+                Some("track_switch_recovery_us")
+            } else if locator_add && canonical_changed && error.is_none() {
+                Some("locator_recovery_us")
+            } else if midi_note_update && canonical_changed && error.is_none() {
+                // Worker-side recovery scheduling only; excludes background fsync,
+                // audio publication and client receipt. Refused/unchanged edits have no sample.
+                Some("midi_note_recovery_us")
+            } else {
+                None
+            };
+            if !unsaved {
+                match recovery_tracker.clear_for_saved(ctx, || events.poll()) {
+                    Ok(Some(_)) => {
+                        status = Some(
+                            "previous recovery journal preserved beside its original slot".into(),
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(reason) => {
+                        let message = format!("automatic recovery: {reason}");
+                        error = Some(match error {
+                            Some(existing) => format!("{existing}; {message}"),
+                            None => message,
+                        });
+                    }
                 }
-                Ok(None) => {}
-                Err(reason) => {
-                    let message = format!("automatic recovery: {reason}");
-                    error = Some(match error {
-                        Some(existing) => format!("{existing}; {message}"),
-                        None => message,
-                    });
+            } else if revision != revision_before_request {
+                let scheduled = match metric {
+                    Some(field) => {
+                        events.measure_recovery(field, || recovery_tracker.schedule_async(ctx))
+                    }
+                    None => recovery_tracker.schedule_async(ctx),
+                };
+                match scheduled {
+                    Ok(completed) => {
+                        for done in completed {
+                            match done.result {
+                                Ok(Some(_)) => {
+                                    status = Some(
+                                        "previous recovery journal preserved beside its original slot"
+                                            .into(),
+                                    );
+                                }
+                                Ok(None) => {}
+                                Err(reason) => {
+                                    let message = format!("automatic recovery: {reason}");
+                                    error = Some(match error {
+                                        Some(existing) => format!("{existing}; {message}"),
+                                        None => message,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Err(reason) => {
+                        let message = format!("automatic recovery: {reason}");
+                        error = Some(match error {
+                            Some(existing) => format!("{existing}; {message}"),
+                            None => message,
+                        });
+                    }
                 }
             }
         }
@@ -1068,106 +1031,20 @@ impl WorkerLoop {
             active_tuning_gesture: tuning_gesture.snapshot(),
             tuning_library,
         });
-        Some(PendingDelivery {
+        PendingDelivery {
             outcome,
-            defer_outcome_until_recovery,
-            stage_recovery,
-            defer_recovery,
             export_job,
             export_completion,
-        })
+        }
     }
 
     fn deliver_outcome_and_exports(&mut self, pending: PendingDelivery) -> bool {
         let PendingDelivery {
-            mut outcome,
-            defer_outcome_until_recovery,
-            stage_recovery,
-            defer_recovery,
+            outcome,
             export_job,
             export_completion,
         } = pending;
-        if defer_outcome_until_recovery {
-            self.core.pending_preview_or_seek_outcome = Some(outcome);
-        } else if let Some(kind) = stage_recovery {
-            // Acknowledge this committed source before waiting for the older
-            // checkpoint, while retaining both ordered terminals on control.
-            let previous =
-                self.core
-                    .pending_recovery_outcome
-                    .take()
-                    .map(|(previous_kind, mut previous)| {
-                        // The callback may apply the successor while the older
-                        // checkpoint owns the journal. Keep its control-side
-                        // fence progressing without acknowledging either outcome.
-                        while self.core.recovery_tracker.async_waiting() {
-                            self.events.poll();
-                            std::thread::sleep(stopped_arrangement::FENCE_POLL);
-                        }
-                        let (elapsed, result) = self
-                            .core
-                            .recovery_tracker
-                            .finish_async(&mut self.core.journal);
-                        previous.finish_recovery(
-                            previous_kind.metric(),
-                            elapsed,
-                            result,
-                            self.core.recovery_tracker.failure(),
-                        );
-                        previous
-                    });
-            let preview = self.take_preview_or_seek_outcome();
-            let started = std::time::Instant::now();
-            let result = if let Some(untitled_path) = self.core.recovery.as_deref() {
-                self.core
-                    .recovery_tracker
-                    .start_async(recovery::RecoveryContext {
-                        session: &self.core.session,
-                        base: self.core.media_base.as_deref(),
-                        document: self.core.document.as_ref(),
-                        untitled: untitled_path,
-                        journal: &mut self.core.journal,
-                        generation: self.core.project_generation,
-                    })
-            } else {
-                Err("automatic recovery path is unavailable".into())
-            };
-            // Admit this already committed edit before delivering the older
-            // terminal. If its consumer has closed, dropping the tracker joins
-            // the admitted checkpoint instead of abandoning this edit.
-            for pending in previous.into_iter().chain(preview) {
-                if !self.deliver_outcome(pending) {
-                    return false;
-                }
-            }
-            match result {
-                Ok(true) => self.core.pending_recovery_outcome = Some((kind, outcome)),
-                Ok(false) => {
-                    outcome.finish_recovery(
-                        kind.metric(),
-                        started.elapsed(),
-                        Ok(None),
-                        self.core.recovery_tracker.failure(),
-                    );
-                    if !self.deliver_outcome(outcome) {
-                        return false;
-                    }
-                }
-                Err(reason) => {
-                    outcome.finish_recovery(
-                        kind.metric(),
-                        started.elapsed(),
-                        Err(reason),
-                        self.core.recovery_tracker.failure(),
-                    );
-                    if !self.deliver_outcome(outcome) {
-                        return false;
-                    }
-                }
-            }
-        } else if let Some(kind) = defer_recovery {
-            self.core.pending_recovery_outcome = Some((kind, outcome));
-        } else if !self.deliver_outcome(outcome) {
+        if !self.deliver_outcome(outcome) {
             return false;
         }
         if let Some(job) = export_job

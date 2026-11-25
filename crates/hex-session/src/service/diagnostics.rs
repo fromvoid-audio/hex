@@ -424,8 +424,10 @@ impl Hooks {
 pub(super) struct EventReceiver {
     receiver: std::sync::mpsc::Receiver<ObservedEvent>,
     diagnostics: Arc<Hooks>,
+    closed: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 impl EventReceiver {
+    #[cfg(test)]
     pub fn new(
         receiver: std::sync::mpsc::Receiver<ObservedEvent>,
         diagnostics: Arc<Hooks>,
@@ -433,6 +435,18 @@ impl EventReceiver {
         Self {
             receiver,
             diagnostics,
+            closed: None,
+        }
+    }
+    pub fn with_closed(
+        receiver: std::sync::mpsc::Receiver<ObservedEvent>,
+        diagnostics: Arc<Hooks>,
+        closed: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            receiver,
+            diagnostics,
+            closed: Some(closed),
         }
     }
     fn received(&self, observed: ObservedEvent) -> Event {
@@ -453,6 +467,13 @@ impl EventReceiver {
         self.receiver
             .recv_timeout(timeout)
             .map(|observed| self.received(observed))
+    }
+}
+impl Drop for EventReceiver {
+    fn drop(&mut self) {
+        if let Some(closed) = &self.closed {
+            closed.store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 }
 

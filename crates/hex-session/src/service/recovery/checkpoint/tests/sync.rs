@@ -29,6 +29,7 @@ fn staged_edit_keeps_audio_control_polling_during_checkpoint() {
         }))
         .unwrap();
     let before = next(&service);
+    wait_for_journal(&path, &before.state.project);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -38,7 +39,10 @@ fn staged_edit_keeps_audio_control_polling_during_checkpoint() {
     let locator = |frame| Request::Edit(Command::AddArrangementLocator { frame });
     service.submit(locator(24_000)).unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    assert_eq!(next(&service).state.revision, before.state.revision + 1);
     service.submit(locator(48_000)).unwrap();
+    let second = next(&service);
+    assert_eq!(second.state.revision, before.state.revision + 2);
     let deadline = Instant::now() + Duration::from_millis(180);
     loop {
         if revision.load(Ordering::Acquire) == before.state.revision + 2 {
@@ -49,24 +53,19 @@ fn staged_edit_keeps_audio_control_polling_during_checkpoint() {
     }
     requested.store(true, Ordering::Release);
     let result = polled.recv_timeout(Duration::from_millis(150));
-    assert!(
-        service.try_event().is_err(),
-        "terminal preceded checkpoint release"
-    );
     release.send(()).unwrap();
     assert!(
         result.is_ok(),
         "audio control was not polled while checkpoint was held"
     );
-    assert_eq!(next(&service).state.revision, before.state.revision + 1);
-    assert_eq!(next(&service).state.revision, before.state.revision + 2);
+    wait_for_journal(&path, &second.state.project);
     service.shutdown(Duration::from_secs(2)).unwrap();
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn locator_recovery_timing_covers_the_held_checkpoint() {
+fn locator_recovery_timing_records_scheduling_without_blocking_on_held_checkpoint() {
     use crate::service::diagnostics::{DiagnosticObserver, DiagnosticStage};
     use std::time::Duration;
 
@@ -105,13 +104,7 @@ fn locator_recovery_timing_covers_the_held_checkpoint() {
         }))
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
-    assert!(
-        service
-            .events
-            .recv_timeout(Duration::from_millis(20))
-            .is_err()
-    );
-    release.send(()).unwrap();
+    // Edit ACK must arrive immediately while the checkpoint gate is still held.
     let outcome = next(&service);
     assert!(matches!(
         outcome.created,
@@ -120,13 +113,11 @@ fn locator_recovery_timing_covers_the_held_checkpoint() {
     assert!(outcome.error.is_none());
     let duration = measured.load(Ordering::Relaxed);
     assert!(
-        duration != u64::MAX && duration >= 20_000,
-        "missing or incomplete locator recovery timing: {duration}"
+        duration != u64::MAX,
+        "missing locator recovery scheduling timing"
     );
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *outcome.state.project
-    );
+    release.send(()).unwrap();
+    wait_for_journal(&path, &outcome.state.project);
     service.shutdown(Duration::from_secs(2)).unwrap();
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
@@ -165,14 +156,14 @@ fn unread_track_switch_view_retains_latest_consecutive_commit() {
 }
 
 #[test]
-fn committed_time_range_view_precedes_recovery_terminal() {
+fn committed_time_range_view_and_ack_precede_checkpoint_completion() {
     use std::time::Duration;
     let directory =
         std::env::temp_dir().join(format!("hex-time-copy-display-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let before = hex_storage::load_journal(&path).unwrap();
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -188,21 +179,20 @@ fn committed_time_range_view_precedes_recovery_terminal() {
         }))
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
-    let observed = service.try_arrangement_edit_view().ok();
-    let terminal_early = service.try_event().is_ok();
+    let terminal = next(&service);
+    let view = service
+        .try_arrangement_edit_view()
+        .expect("committed range-copy view");
     let journal_before_release = hex_storage::load_journal(&path).unwrap();
     release.send(()).unwrap();
-    let view = observed.expect("committed range-copy view must precede checkpoint terminal");
     assert!(matches!(view.kind, ArrangementEditViewKind::TimeRangeCopy));
     let state = view.state.upgrade().unwrap();
-    assert!(!terminal_early);
     assert_eq!(journal_before_release, before);
     assert_eq!(state.project.track(track).unwrap().midi_clips().len(), 2);
-    let terminal = next(&service);
     assert!(terminal.error.is_none());
     assert_eq!(terminal.state.revision, view.previous_revision + 1);
     assert!(Arc::ptr_eq(&state, &terminal.state));
-    assert_eq!(hex_storage::load_journal(&path).unwrap(), *state.project);
+    wait_for_journal(&path, &state.project);
     service
         .submit(Request::Edit(Command::CopyTimeRangeTo {
             range: hex_project::TimeRange::new(vec![track], 0, 24_000).unwrap(),
@@ -223,26 +213,16 @@ fn committed_time_range_view_precedes_recovery_terminal() {
 }
 
 #[test]
-fn committed_locator_views_precede_ordered_recovery_terminals() {
-    use std::time::{Duration, Instant};
+fn committed_locator_views_and_acks_precede_checkpoint_completion() {
+    use std::time::Duration;
     let (service, directory, path, _, initial) = locator_worker_fixture("views");
     let (entered, release) = hold_locator_checkpoint(&path);
     submit_locator(&service, 24_000);
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
-    let until = Instant::now() + Duration::from_millis(180);
-    let first_view = loop {
-        if let Ok(view) = service.try_arrangement_edit_view() {
-            break Some(view);
-        }
-        if Instant::now() >= until {
-            break None;
-        }
-        std::thread::yield_now();
-    };
-    if first_view.is_none() {
-        release.send(()).unwrap();
-    }
-    let first_view = first_view.expect("first committed locator view before recovery terminal");
+    let first = next(&service);
+    let first_view = service
+        .try_arrangement_edit_view()
+        .expect("first committed locator view");
     let first_state = first_view.state.upgrade().unwrap();
     assert_eq!(first_state.revision, initial + 1);
     let first_id = first_state.project.arrangement_locators()[0].id();
@@ -256,22 +236,11 @@ fn committed_locator_views_precede_ordered_recovery_terminals() {
         24_000
     );
     submit_locator(&service, 48_000);
-    let until = Instant::now() + Duration::from_millis(180);
-    let second_view = loop {
-        if let Ok(view) = service.try_arrangement_edit_view() {
-            break Some(view);
-        }
-        if Instant::now() >= until {
-            break None;
-        }
-        std::thread::yield_now();
-    };
-    assert!(matches!(
-        service.try_event(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
+    let second = next(&service);
+    let second_view = service
+        .try_arrangement_edit_view()
+        .expect("second committed locator view");
     release.send(()).unwrap();
-    let second_view = second_view.expect("second committed locator view before recovery terminal");
     let second_state = second_view.state.upgrade().unwrap();
     assert_eq!(second_state.revision, initial + 2);
     let second_id = second_state.project.arrangement_locators()[1].id();
@@ -293,14 +262,9 @@ fn committed_locator_views_precede_ordered_recovery_terminals() {
         (first_view.previous_revision, second_view.previous_revision),
         (initial, initial + 1)
     );
-    let first = next(&service);
-    let second = next(&service);
     assert_eq!(first.created, Some(Created::ArrangementLocator(first_id)));
     assert_eq!(second.created, Some(Created::ArrangementLocator(second_id)));
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *second.state.project
-    );
+    wait_for_journal(&path, &second.state.project);
     submit_locator(&service, 48_000);
     next(&service);
     assert!(matches!(
@@ -349,7 +313,9 @@ fn check_consecutive_locator_adds(conflict: bool) {
             name: "source".into(),
         }))
         .unwrap();
-    let initial = next(&service).state.revision;
+    let initial_event = next(&service);
+    let initial = initial_event.state.revision;
+    wait_for_journal(&path, &initial_event.state.project);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -362,6 +328,7 @@ fn check_consecutive_locator_adds(conflict: bool) {
         }))
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first = next(&service);
     if conflict {
         std::fs::write(&path, b"another writer's journal").unwrap();
     }
@@ -370,6 +337,7 @@ fn check_consecutive_locator_adds(conflict: bool) {
             frame: 48_000,
         }))
         .unwrap();
+    let second = next(&service);
     let until = Instant::now() + Duration::from_millis(180);
     let second_applied = loop {
         if sources
@@ -390,8 +358,6 @@ fn check_consecutive_locator_adds(conflict: bool) {
         second_applied,
         "second locator must commit while first checkpoint is held"
     );
-    let first = next(&service);
-    let second = next(&service);
     assert_eq!(
         (first.state.revision, second.state.revision),
         (initial + 1, initial + 2)
@@ -421,14 +387,12 @@ fn check_consecutive_locator_adds(conflict: bool) {
         48_000
     );
     if conflict {
-        assert!(first.recovery_failure.is_some() && second.recovery_failure.is_some());
+        let failure = wait_for_recovery_failure(&service);
+        assert!(!failure.request_complete && failure.recovery_failure.is_some());
         assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
     } else {
         assert!(first.error.is_none() && second.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *second.state.project
-        );
+        wait_for_journal(&path, &second.state.project);
     }
     for (request, count) in [
         (Request::Undo, 1),
@@ -438,7 +402,11 @@ fn check_consecutive_locator_adds(conflict: bool) {
     ] {
         service.submit(request).unwrap();
         assert_eq!(
-            next(&service).state.project.arrangement_locators().len(),
+            next_complete(&service)
+                .state
+                .project
+                .arrangement_locators()
+                .len(),
             count
         );
     }
@@ -473,8 +441,9 @@ fn locator_worker_fixture(
             name: "source".into(),
         }))
         .unwrap();
-    let revision = next(&service).state.revision;
-    (service, directory, path, sources, revision)
+    let added = next(&service);
+    wait_for_journal(&path, &added.state.project);
+    (service, directory, path, sources, added.state.revision)
 }
 
 fn hold_locator_checkpoint(
@@ -518,40 +487,30 @@ fn wait_locator_revision(
 }
 
 #[test]
-fn locator_checkpoint_bounds_third_add_and_preserves_duplicate_noop() {
-    use std::time::{Duration, Instant};
+fn locator_checkpoint_coalesces_third_add_and_preserves_duplicate_noop() {
+    use std::time::Duration;
     let (service, directory, path, sources, initial) = locator_worker_fixture("bound");
     let (entered, release) = hold_locator_checkpoint(&path);
     submit_locator(&service, 24_000);
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first = next(&service);
+    assert_eq!(first.state.revision, initial + 1);
     submit_locator(&service, 48_000);
+    let second = next(&service);
+    assert_eq!(second.state.revision, initial + 2);
     wait_locator_revision(&sources, initial + 2);
+    // Third edit commits and ACKs immediately while the first checkpoint is still held.
     submit_locator(&service, 72_000);
-    let until = Instant::now() + Duration::from_millis(30);
-    while Instant::now() < until {
-        assert!(
-            !sources
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|source| source.editor_revision == initial + 3)
-        );
-        assert!(matches!(
-            service.try_event(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        std::thread::yield_now();
-    }
+    let third = next(&service);
+    assert_eq!(third.state.revision, initial + 3);
+    assert!(matches!(
+        third.created,
+        Some(Created::ArrangementLocator(_))
+    ));
+    assert!(third.error.is_none());
+    wait_locator_revision(&sources, initial + 3);
     release.send(()).unwrap();
-    for revision in initial + 1..=initial + 3 {
-        let event = next(&service);
-        assert_eq!(event.state.revision, revision);
-        assert!(matches!(
-            event.created,
-            Some(Created::ArrangementLocator(_))
-        ));
-        assert!(event.error.is_none());
-    }
+    wait_for_journal(&path, &third.state.project);
     submit_locator(&service, 72_000);
     let duplicate = next(&service);
     assert!(!matches!(
@@ -574,18 +533,11 @@ fn duplicate_locator_during_checkpoint_keeps_one_identity_and_undo() {
     let (entered, release) = hold_locator_checkpoint(&path);
     submit_locator(&service, 24_000);
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
-    submit_locator(&service, 24_000);
-    assert!(
-        service
-            .events
-            .recv_timeout(Duration::from_millis(30))
-            .is_err()
-    );
-    release.send(()).unwrap();
     let first = next(&service);
     let Some(Created::ArrangementLocator(id)) = first.created else {
         panic!("missing created locator")
     };
+    submit_locator(&service, 24_000);
     let duplicate = next(&service);
     assert!(!matches!(
         duplicate.created,
@@ -593,10 +545,8 @@ fn duplicate_locator_during_checkpoint_keeps_one_identity_and_undo() {
     ));
     assert_eq!(duplicate.state.project.arrangement_locators().len(), 1);
     assert!(duplicate.state.project.arrangement_locator(id).is_some());
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *duplicate.state.project
-    );
+    release.send(()).unwrap();
+    wait_for_journal(&path, &duplicate.state.project);
     service.submit(Request::Undo).unwrap();
     assert!(
         next(&service)
@@ -679,6 +629,11 @@ fn locator_checkpoint_fences_save_and_open() {
         let (entered, release) = hold_locator_checkpoint(&path);
         submit_locator(&service, 24_000);
         entered.recv_timeout(Duration::from_millis(500)).unwrap();
+        let added = next(&service);
+        assert!(matches!(
+            added.created,
+            Some(Created::ArrangementLocator(_))
+        ));
         service
             .submit(if open {
                 Request::Open(target.clone())
@@ -698,11 +653,6 @@ fn locator_checkpoint_fences_save_and_open() {
             std::thread::yield_now();
         }
         release.send(()).unwrap();
-        let added = next(&service);
-        assert!(matches!(
-            added.created,
-            Some(Created::ArrangementLocator(_))
-        ));
         let terminal = next(&service);
         assert!(terminal.error.is_none());
         if open {
@@ -722,43 +672,28 @@ fn locator_checkpoint_fences_save_and_open() {
 }
 
 #[test]
-fn locator_checkpoint_fences_mixed_edits() {
-    use std::time::{Duration, Instant};
+fn locator_checkpoint_does_not_block_mixed_edits_and_coalesces_journal() {
+    use std::time::Duration;
     let (service, directory, path, sources, initial) = locator_worker_fixture("mixed");
     let (entered, release) = hold_locator_checkpoint(&path);
     submit_locator(&service, 24_000);
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let locator = next(&service);
+    assert!(matches!(
+        locator.created,
+        Some(Created::ArrangementLocator(_))
+    ));
     service
         .submit(Request::Edit(Command::AddTrack {
             name: "later".into(),
         }))
         .unwrap();
-    let until = Instant::now() + Duration::from_millis(30);
-    while Instant::now() < until {
-        assert!(
-            !sources
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|source| source.editor_revision == initial + 2)
-        );
-        assert!(matches!(
-            service.try_event(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        std::thread::yield_now();
-    }
-    release.send(()).unwrap();
-    assert!(matches!(
-        next(&service).created,
-        Some(Created::ArrangementLocator(_))
-    ));
     let later = next(&service);
     assert!(matches!(later.created, Some(Created::Track(_))));
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *later.state.project
-    );
+    assert_eq!(later.state.revision, initial + 2);
+    wait_locator_revision(&sources, initial + 2);
+    release.send(()).unwrap();
+    wait_for_journal(&path, &later.state.project);
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -774,7 +709,7 @@ fn consecutive_time_range_copies_preserve_conflicting_recovery_bytes() {
 }
 
 fn check_consecutive_time_range_copies(conflict: bool) {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     let directory = std::env::temp_dir().join(format!(
         "hex-range-copy-queue-{}-{conflict}",
         std::process::id()
@@ -789,7 +724,7 @@ fn check_consecutive_time_range_copies(conflict: bool) {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let initial_revision = sources.lock().unwrap().last().unwrap().editor_revision;
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -797,6 +732,7 @@ fn check_consecutive_time_range_copies(conflict: bool) {
         .lock()
         .unwrap()
         .push((path.clone(), entered_tx, release_rx));
+    let mut terminals = Vec::new();
     for start in [0, 24_000] {
         let range = hex_project::TimeRange::new(vec![track], start, start + 24_000).unwrap();
         service
@@ -812,29 +748,11 @@ fn check_consecutive_time_range_copies(conflict: bool) {
                 std::fs::write(&path, b"another writer's journal").unwrap();
             }
         }
+        terminals.push(next(&service));
     }
-    let until = Instant::now() + Duration::from_millis(180);
-    let second_applied = loop {
-        if sources
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|source| source.editor_revision == initial_revision + 2)
-        {
-            break true;
-        }
-        if Instant::now() >= until {
-            break false;
-        }
-        std::thread::yield_now();
-    };
+    let second = terminals.pop().unwrap();
+    let first = terminals.pop().unwrap();
     release.send(()).unwrap();
-    assert!(
-        second_applied,
-        "second copy must commit while first checkpoint is held"
-    );
-    let first = next(&service);
-    let second = next(&service);
     assert_eq!(first.state.revision, initial_revision + 1);
     assert_eq!(second.state.revision, initial_revision + 2);
     let revisions: Vec<_> = sources
@@ -846,14 +764,12 @@ fn check_consecutive_time_range_copies(conflict: bool) {
         .collect();
     assert_eq!(revisions, [initial_revision + 1, initial_revision + 2]);
     if conflict {
-        assert!(first.recovery_failure.is_some() && second.recovery_failure.is_some());
+        let failure = wait_for_recovery_failure(&service);
+        assert!(!failure.request_complete && failure.recovery_failure.is_some());
         assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
     } else {
         assert!(first.error.is_none() && second.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *second.state.project
-        );
+        wait_for_journal(&path, &second.state.project);
     }
     assert_eq!(
         second
@@ -867,7 +783,7 @@ fn check_consecutive_time_range_copies(conflict: bool) {
     );
     service.submit(Request::Undo).unwrap();
     assert_eq!(
-        next(&service)
+        next_complete(&service)
             .state
             .project
             .track(track)
@@ -878,7 +794,7 @@ fn check_consecutive_time_range_copies(conflict: bool) {
     );
     service.submit(Request::Undo).unwrap();
     assert_eq!(
-        next(&service)
+        next_complete(&service)
             .state
             .project
             .track(track)
@@ -889,7 +805,7 @@ fn check_consecutive_time_range_copies(conflict: bool) {
     );
     service.submit(Request::Redo).unwrap();
     assert_eq!(
-        next(&service)
+        next_complete(&service)
             .state
             .project
             .track(track)
@@ -900,7 +816,7 @@ fn check_consecutive_time_range_copies(conflict: bool) {
     );
     service.submit(Request::Redo).unwrap();
     assert_eq!(
-        next(&service)
+        next_complete(&service)
             .state
             .project
             .track(track)
@@ -939,7 +855,7 @@ fn check_time_copy_custody_on_exit(close_consumer: bool) {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let initial_revision = sources.lock().unwrap().last().unwrap().editor_revision;
     let mut expected =
         hex_project::Editor::new(hex_storage::load_journal(&path).unwrap(), 16).unwrap();
@@ -1027,7 +943,7 @@ fn check_time_copy_document_fence(open: bool) {
         hex_storage::save_new(&target, &other).unwrap();
     }
     let service = Service::with_recovery(48_000, 16, 8_000_000, journal.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &journal);
     let mut expected =
         hex_project::Editor::new(hex_storage::load_journal(&journal).unwrap(), 16).unwrap();
     let command = || Command::CopyTimeRangeTo {
@@ -1044,6 +960,9 @@ fn check_time_copy_document_fence(open: bool) {
         .push((journal.clone(), entered_tx, release_rx));
     service.submit(Request::Edit(command())).unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let copied = next(&service);
+    assert!(copied.error.is_none());
+    assert_eq!(*copied.state.project, *expected.project());
     service
         .submit(if open {
             Request::Open(target.clone())
@@ -1063,9 +982,6 @@ fn check_time_copy_document_fence(open: bool) {
         std::thread::yield_now();
     }
     release.send(()).unwrap();
-    let copied = next(&service);
-    assert!(copied.error.is_none());
-    assert_eq!(*copied.state.project, *expected.project());
     let terminal = next(&service);
     assert!(terminal.error.is_none(), "{:?}", terminal.error);
     if open {
@@ -1084,8 +1000,8 @@ fn check_time_copy_document_fence(open: bool) {
 }
 
 #[test]
-fn third_time_copy_waits_for_the_single_checkpoint_slot() {
-    use std::time::{Duration, Instant};
+fn third_time_copy_coalesces_without_waiting_for_in_flight_checkpoint() {
+    use std::time::Duration;
     let directory = std::env::temp_dir().join(format!("hex-time-copy-full-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
@@ -1097,7 +1013,7 @@ fn third_time_copy_waits_for_the_single_checkpoint_slot() {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let initial = sources.lock().unwrap().last().unwrap().editor_revision;
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -1105,7 +1021,8 @@ fn third_time_copy_waits_for_the_single_checkpoint_slot() {
         .lock()
         .unwrap()
         .push((path.clone(), entered_tx, release_rx));
-    for start in [0, 24_000] {
+    let mut terminals = Vec::new();
+    for start in [0, 24_000, 48_000] {
         service
             .submit(Request::Edit(Command::CopyTimeRangeTo {
                 range: hex_project::TimeRange::new(vec![track], start, start + 24_000).unwrap(),
@@ -1116,36 +1033,11 @@ fn third_time_copy_waits_for_the_single_checkpoint_slot() {
         if start == 0 {
             entered.recv_timeout(Duration::from_millis(500)).unwrap();
         }
+        terminals.push(next(&service));
     }
-    let until = Instant::now() + Duration::from_millis(180);
-    while sources
-        .lock()
-        .unwrap()
-        .last()
-        .is_none_or(|context| context.editor_revision != initial + 2)
-    {
-        assert!(Instant::now() < until, "second copy did not commit");
-        std::thread::yield_now();
-    }
-    service
-        .submit(Request::Edit(Command::CopyTimeRangeTo {
-            range: hex_project::TimeRange::new(vec![track], 48_000, 72_000).unwrap(),
-            track,
-            frame: 72_000,
-        }))
-        .unwrap();
-    let until = Instant::now() + Duration::from_millis(60);
-    while Instant::now() < until {
-        assert_eq!(
-            sources.lock().unwrap().last().unwrap().editor_revision,
-            initial + 2
-        );
-        std::thread::yield_now();
-    }
-    release.send(()).unwrap();
-    let first = next(&service);
-    let second = next(&service);
-    let third = next(&service);
+    let third = terminals.pop().unwrap();
+    let second = terminals.pop().unwrap();
+    let first = terminals.pop().unwrap();
     assert!(first.error.is_none() && second.error.is_none() && third.error.is_none());
     assert_eq!(
         (
@@ -1159,23 +1051,21 @@ fn third_time_copy_waits_for_the_single_checkpoint_slot() {
         third.state.project.track(track).unwrap().midi_clips().len(),
         4
     );
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *third.state.project
-    );
+    release.send(()).unwrap();
+    wait_for_journal(&path, &third.state.project);
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn track_switch_waits_for_pending_time_copy_checkpoint() {
+fn track_switch_does_not_wait_for_pending_time_copy_checkpoint() {
     use std::time::Duration;
     let directory =
         std::env::temp_dir().join(format!("hex-time-copy-mute-fence-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -1190,19 +1080,10 @@ fn track_switch_waits_for_pending_time_copy_checkpoint() {
         }))
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first = next(&service);
     service
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
-    assert!(matches!(
-        service.events.recv_timeout(Duration::from_millis(50)),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-    ));
-    assert!(matches!(
-        service.try_track_switch_view(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
-    release.send(()).unwrap();
-    let first = next(&service);
     let second = next(&service);
     assert!(first.error.is_none() && second.error.is_none());
     assert_eq!(
@@ -1210,9 +1091,154 @@ fn track_switch_waits_for_pending_time_copy_checkpoint() {
         2
     );
     assert!(second.state.project.track(track).unwrap().muted());
+    release.send(()).unwrap();
+    wait_for_journal(&path, &second.state.project);
+    drop(service);
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn rapid_mixed_edits_coalesce_checkpoints_and_ack_without_fsync_delay() {
+    use hex_project::BeatTime;
+    use std::time::{Duration, Instant};
+
+    let directory =
+        std::env::temp_dir().join(format!("hex-coalesce-latency-{}", std::process::id()));
+    std::fs::create_dir(&directory).unwrap();
+    let path = directory.join("untitled.hex-journal");
+    let mut service = Service::with_recovery(48_000, 64, 8_000_000, path.clone()).unwrap();
+    next(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "piano".into(),
+        }))
+        .unwrap();
+    let track = next(&service).state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        }))
+        .unwrap();
+    let placed = next(&service);
+    let clip = placed.state.project.track(track).unwrap().midi_clips()[0].id();
+    service
+        .submit(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }))
+        .unwrap();
+    let with_note = next(&service);
+    let Some(Created::Note(note)) = with_note.created else {
+        panic!("expected note");
+    };
+    wait_for_journal(&path, &with_note.state.project);
+
+    // 1. Hold checkpoint #1 and fire 16 mixed edits (clip moves, note moves, mutes, undo).
+    // All 16 must ACK immediately without blocking on CHECKPOINT_GATE, and coalesce into
+    // at most ONE follow-up disk checkpoint after gate release.
+    let (entered_1_tx, entered_1) = std::sync::mpsc::sync_channel(1);
+    let (release_1, release_1_rx) = std::sync::mpsc::sync_channel(1);
+    let (entered_2_tx, entered_2) = std::sync::mpsc::sync_channel(1);
+    let (release_2, release_2_rx) = std::sync::mpsc::sync_channel(1);
+    let (entered_3_tx, entered_3) = std::sync::mpsc::sync_channel(1);
+    let (release_3, release_3_rx) = std::sync::mpsc::sync_channel(1);
+    {
+        let mut gates = CHECKPOINT_GATE.lock().unwrap();
+        gates.push((path.clone(), entered_1_tx, release_1_rx));
+        gates.push((path.clone(), entered_2_tx, release_2_rx));
+        gates.push((path.clone(), entered_3_tx, release_3_rx));
+    }
+
+    service
+        .submit(Request::Edit(Command::ToggleMute(track)))
+        .unwrap();
+    entered_1.recv_timeout(Duration::from_millis(500)).unwrap();
+    let mut latest = next(&service);
+    assert!(latest.error.is_none());
+
+    for step in 1_u64..=15 {
+        let request = match step % 4 {
+            0 => Request::Undo,
+            1 => Request::Edit(Command::MoveMidiClip {
+                clip,
+                track,
+                start: BeatTime::from_quarters(step).unwrap(),
+            }),
+            2 => Request::Edit(Command::UpdateMidiNote {
+                note,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60 + (step as u8 % 12),
+                channel: 0,
+                velocity: 100,
+            }),
+            _ => Request::Edit(Command::ToggleSolo {
+                track,
+                exclusive: true,
+            }),
+        };
+        service.submit(request).unwrap();
+        latest = next(&service);
+        assert!(latest.error.is_none(), "step {step}: {:?}", latest.error);
+    }
+
+    // Release gate #1 -> coalesced snapshot runs as checkpoint #2.
+    release_1.send(()).unwrap();
+    entered_2.recv_timeout(Duration::from_millis(500)).unwrap();
+    release_2.send(()).unwrap();
+    wait_for_journal(&path, &latest.state.project);
+    // Gate #3 must NOT be entered: all 15 rapid edits coalesced into checkpoint #2.
+    assert!(
+        entered_3.recv_timeout(Duration::from_millis(30)).is_err(),
+        "rapid edits should coalesce into a single follow-up checkpoint"
+    );
+    // Clean up unused gate #3 before real-fsync latency checks.
+    drop(release_3);
+    CHECKPOINT_GATE
+        .lock()
+        .unwrap()
+        .retain(|(target, _, _)| target != &path);
+
+    // 2. Measure real recovery-enabled worker edit-to-ACK latency for clip move,
+    // note move, mute toggle, and undo (each must stay well clear of 3x fsync latency).
+    for request in [
+        Request::Edit(Command::MoveMidiClip {
+            clip,
+            track,
+            start: BeatTime::from_quarters(2).unwrap(),
+        }),
+        Request::Edit(Command::UpdateMidiNote {
+            note,
+            start: BeatTime::ONE,
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 100,
+        }),
+        Request::Edit(Command::ToggleMute(track)),
+        Request::Undo,
+    ] {
+        let started = Instant::now();
+        service.submit(request).unwrap();
+        latest = next(&service);
+        let elapsed = started.elapsed();
+        assert!(latest.error.is_none());
+        assert!(
+            elapsed < Duration::from_millis(50),
+            "edit ACK should not wait on recovery fsync, took {elapsed:?}"
+        );
+    }
+
+    service.shutdown(Duration::from_secs(2)).unwrap();
     assert_eq!(
         hex_storage::load_journal(&path).unwrap(),
-        *second.state.project
+        *latest.state.project
     );
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();

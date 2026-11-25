@@ -7,38 +7,36 @@ pub(super) enum AdmissionStep {
     Shutdown,
 }
 
+fn requires_recovery_flush(request: &Request, session: &Session) -> bool {
+    match request {
+        Request::SaveNew(_)
+        | Request::SaveProjectAs { .. }
+        | Request::SaveCurrent
+        | Request::SaveCurrentWithFormatUpgrade { .. }
+        | Request::RestartRecovery(_)
+        | Request::ChangeProjectSampleRate { .. } => true,
+        Request::Undo => project_rate::history_needs_replacement(session, false),
+        Request::Redo => project_rate::history_needs_replacement(session, true),
+        other => other.is_project_open(),
+    }
+}
+
 impl WorkerLoop {
     pub(super) fn admit_and_fence_request(&mut self, queued: QueuedRequest) -> AdmissionStep {
-        let recovery_kind = self
-            .core
-            .pending_recovery_outcome
-            .as_ref()
-            .map(|(kind, _)| *kind);
-        let defer_outcome_until_recovery = self.core.pending_preview_or_seek_outcome.is_none()
-            && match (recovery_kind, &queued.request) {
-                (Some(DeferredRecoveryKind::LocatorAdd), Request::ResidentArrangementSeek(_)) => {
-                    true
-                }
-                (Some(DeferredRecoveryKind::TrackSwitch), Request::DeviceGesture(gesture)) => {
-                    matches!(gesture.as_ref(), GestureRequest::ChangePair { key, .. }
-                        if self.core.device_gesture.snapshot().is_some_and(|active| active.key == *key
-                            && matches!(active.target, crate::device_gesture::GestureTarget::DeviceParameterPair { .. })))
-                }
-                _ => false,
-            };
-        // A second switch can publish before disk completes even with one
-        // preview terminal between the switches. Other edits retain their fence.
-        if let Some(kind) = recovery_kind
-            && !defer_outcome_until_recovery
-            && (deferred_recovery_kind(&queued.request) != Some(kind)
-                || (self.core.pending_preview_or_seek_outcome.is_some()
-                    && kind != DeferredRecoveryKind::TrackSwitch))
-            && !self.finish_pending_recovery()
-        {
+        if matches!(&queued.request, Request::ContinueRecovery) {
+            if !self.harvest_ready_recovery() {
+                return AdmissionStep::Shutdown;
+            }
+            return AdmissionStep::Skip;
+        }
+        if self.core.recovery_tracker.async_ready() && !self.harvest_ready_recovery() {
             return AdmissionStep::Shutdown;
         }
-        if matches!(&queued.request, Request::ContinueRecovery) {
-            return AdmissionStep::Skip;
+        if requires_recovery_flush(&queued.request, &self.core.session)
+            && self.core.recovery_tracker.has_pending()
+            && !self.flush_pending_recovery()
+        {
+            return AdmissionStep::Shutdown;
         }
         let Self { events, core, .. } = self;
         let WorkerLoopCore {
@@ -210,8 +208,8 @@ impl WorkerLoop {
                 repeated_device_insert = true;
             }
         }
-        let request_recovery_kind = deferred_recovery_kind(&request);
-        let track_switch_request = request_recovery_kind == Some(DeferredRecoveryKind::TrackSwitch);
+        let track_switch_request =
+            matches!(&request, Request::Edit(command) if is_track_switch(command));
         let midi_note_update = matches!(
             &request,
             Request::Edit(
@@ -350,7 +348,6 @@ impl WorkerLoop {
             request,
             RequestExecution {
                 meta: RequestMeta {
-                    defer_outcome_until_recovery,
                     save_correlation,
                     defaults_directory,
                     recording_barrier_completion,
@@ -362,7 +359,6 @@ impl WorkerLoop {
                     midi_note_update,
                     locator_add,
                     arrangement_paste,
-                    section_copy,
                     arrangement_duplicate,
                     seek_intent,
                     plugin_parameter_observation,

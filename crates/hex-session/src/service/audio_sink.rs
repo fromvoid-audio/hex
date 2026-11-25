@@ -1772,6 +1772,7 @@ pub(super) struct WorkerEvents {
     )>,
     recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
+    events_closed: Arc<AtomicBool>,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
     // Last delivered actor observation, not another editable gesture model.
@@ -1798,34 +1799,6 @@ pub(super) struct PendingOutcome {
         super::diagnostics::SectionPhases,
     )>,
     recovery_timing: Option<(&'static str, Duration)>,
-}
-impl PendingOutcome {
-    pub(super) fn finish_recovery(
-        &mut self,
-        metric: &'static str,
-        elapsed: Duration,
-        result: Result<Option<PathBuf>, String>,
-        failure: Option<Arc<super::RecoveryFailure>>,
-    ) {
-        if self.diagnostic.is_some() {
-            self.recovery_timing = Some((metric, elapsed));
-        }
-        match result {
-            Ok(Some(_)) => {
-                self.event.status =
-                    Some("previous recovery journal preserved beside its original slot".into());
-            }
-            Ok(None) => {}
-            Err(reason) => {
-                let message = format!("automatic recovery: {reason}");
-                self.event.error = Some(match self.event.error.take() {
-                    Some(existing) => format!("{existing}; {message}"),
-                    None => message,
-                });
-            }
-        }
-        self.event.recovery_failure = failure;
-    }
 }
 /// One bounded control poll may make a previously admitted gesture ready.
 /// The queued user FIFO retains priority over this copied continuation.
@@ -1975,6 +1948,7 @@ impl WorkerEvents {
             edit_phases: None,
             recovery_timing: None,
             shutdown,
+            events_closed: Arc::new(AtomicBool::new(false)),
             audio,
             last_context: None,
             last_verified_gain: None,
@@ -1985,6 +1959,10 @@ impl WorkerEvents {
             device_insert_deferred: None,
             idle_polls: 0,
         }
+    }
+    pub(super) fn with_events_closed(mut self, events_closed: Arc<AtomicBool>) -> Self {
+        self.events_closed = events_closed;
+        self
     }
     pub(super) fn initialize(&mut self) -> Result<u32, String> {
         let rate = self
@@ -2462,7 +2440,7 @@ impl WorkerEvents {
             return result;
         }
         loop {
-            if self.shutdown.load(Ordering::Acquire) {
+            if self.shutdown.load(Ordering::Acquire) || self.events_closed.load(Ordering::Acquire) {
                 return None;
             }
             self.diagnostics.record_worker_wake();

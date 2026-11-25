@@ -172,10 +172,7 @@ pub(super) struct WorkerDispatch<'a> {
 }
 
 pub(in crate::service) use scheduling::defers_behind_resident_publication;
-use scheduling::{
-    DeferredRecoveryKind, PendingExportEvents, control_lanes_pending, deferred_recovery_kind,
-    is_section_copy,
-};
+use scheduling::{PendingExportEvents, control_lanes_pending, is_section_copy, is_track_switch};
 pub(crate) use view_state::preview_view_state;
 use view_state::{view_state, view_state_bound};
 
@@ -240,14 +237,12 @@ struct WorkerLoopCore {
     pub(super) native_automation_take: native_automation_recording::Lane,
     pub(super) plugin_recording: plugin_recording::State,
     pub(super) recording_barrier: recording_barrier::State,
-    pub(super) pending_recovery_outcome: Option<(DeferredRecoveryKind, audio_sink::PendingOutcome)>,
-    pub(super) pending_preview_or_seek_outcome: Option<audio_sink::PendingOutcome>,
+    pub(super) pending_recovery_notifications: Vec<recovery::CompletedCheckpoint>,
     pub(super) pending_export_events: PendingExportEvents,
 }
 
 /// Per-request metadata carried across admission, source resolution, barrier, dispatch, and publication.
 struct RequestMeta {
-    pub(super) defer_outcome_until_recovery: bool,
     pub(super) save_correlation: Option<SaveCorrelation>,
     pub(super) defaults_directory: Option<Arc<PathBuf>>,
     pub(super) recording_barrier_completion: Option<recording_barrier::Completion>,
@@ -259,7 +254,6 @@ struct RequestMeta {
     pub(super) midi_note_update: bool,
     pub(super) locator_add: bool,
     pub(super) arrangement_paste: bool,
-    pub(super) section_copy: bool,
     pub(super) arrangement_duplicate: bool,
     pub(super) seek_intent: Option<ResidentArrangementSeekIntent>,
     pub(super) plugin_parameter_observation: bool,
@@ -315,7 +309,7 @@ pub(super) fn run_worker(
         let (request, mut exec) = match worker.admit_and_fence_request(queued) {
             barrier::AdmissionStep::Admitted(admitted) => *admitted,
             barrier::AdmissionStep::Skip => continue,
-            barrier::AdmissionStep::Shutdown => return,
+            barrier::AdmissionStep::Shutdown => break,
         };
         let (request, resolution_failure) = worker.resolve_source_bound_edit(request, &mut exec);
         let barrier_failure =
@@ -327,10 +321,12 @@ pub(super) fn run_worker(
             continue;
         }
         if !next_worker.publish_and_deliver(exec) {
-            return;
+            worker = next_worker;
+            break;
         }
         worker = next_worker;
     }
+    worker.flush_recovery_on_exit();
     worker
         .core
         .pending_export_events
@@ -435,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn deferred_recovery_kind_classifies_track_switches_and_arrangement_ops() {
+    fn track_switch_classification_matches_mute_and_solo_commands() {
         let mut session = Session::new(48_000, 4, 0).expect("session");
         let (hex_project::Created::Track(track), _) = session
             .command_prepared_revision(
@@ -448,10 +444,9 @@ mod tests {
         else {
             panic!("expected track");
         };
-        assert_eq!(
-            deferred_recovery_kind(&Request::Edit(Command::ToggleMute(track))),
-            Some(DeferredRecoveryKind::TrackSwitch)
-        );
-        assert_eq!(deferred_recovery_kind(&Request::ContinueRecovery), None);
+        assert!(is_track_switch(&Command::ToggleMute(track)));
+        assert!(!is_track_switch(&Command::AddTrack {
+            name: "other".into()
+        }));
     }
 }
