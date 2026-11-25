@@ -66,6 +66,16 @@ impl ClaimedAudioCandidateRuntime {
     pub fn session_route_status(&self, index: usize) -> Option<crate::SessionRouteStatus> {
         self.current_playback()?.session_route_status(index)
     }
+    pub fn drain_applied_session_route_transitions(
+        &mut self,
+        visit: impl FnMut(crate::AppliedSessionRouteTransition),
+    ) -> bool {
+        self.current_runtime_mut().is_some_and(|runtime| {
+            runtime
+                .playback
+                .drain_applied_session_route_transitions(visit)
+        })
+    }
     /// Classify this insert under the same continuity law at preview and commit.
     pub fn require_continuous_device_insert(&mut self) -> bool {
         let Some(runtime) = self.device_insert_runtime() else {

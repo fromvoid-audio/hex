@@ -586,6 +586,7 @@ impl Callback {
             barrier.wait();
             barrier.wait();
         }
+        self.flush_session_route_transitions();
         self.publish_transport();
         self.publish_active_routes(false);
         let count = std::mem::take(&mut self.stream_outcome_count);
@@ -620,6 +621,7 @@ impl Callback {
                     None,
                     0,
                 );
+                self.flush_session_route_transitions();
                 self.finish_midi_before_stop();
                 self.revoke_output_transport();
                 self.revoke_current_sampler_keyboard();
@@ -834,6 +836,7 @@ impl Callback {
             barrier.wait();
             barrier.wait();
         }
+        self.flush_session_route_transitions();
         self.publish_transport();
         self.publish_active_routes(false);
         if let Some(ticket) = consumed {
@@ -912,6 +915,7 @@ impl Callback {
         }
         self.processor_audition.invalidate_current_immediately();
         self.invalidate_processor_audition_request();
+        self.flush_session_route_transitions();
         self.publish_transport();
         self.publish_active_routes(false);
         self.flush_stream_outcomes();

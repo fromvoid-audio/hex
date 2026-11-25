@@ -750,6 +750,10 @@ impl RuntimeStorage<'_> {
     pub(super) fn bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<SessionPlayback>();
         checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
+        checked_add(
+            &mut total,
+            std::mem::size_of::<super::route_transitions::RouteTransitionLog>(),
+        )?;
         if self.scalar_automation {
             checked_add(
                 &mut total,
@@ -903,6 +907,10 @@ fn runtime_storage_preflight_bytes(
         .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
     checked_add(&mut total, std::mem::size_of::<MidiSpanBuffer>())?;
+    checked_add(
+        &mut total,
+        std::mem::size_of::<super::route_transitions::RouteTransitionLog>(),
+    )?;
     if let Some(bindings) = revision.scalar_automation.as_deref() {
         checked_add(
             &mut total,

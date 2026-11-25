@@ -38,6 +38,9 @@ impl Callback {
         {
             self.record_audible_run(outcome.start, output.len());
         }
+        if result.is_ok() {
+            self.flush_session_route_transitions();
+        }
         self.publish_audible_position();
         self.flush_stream_outcomes();
         result.map(|_| ())

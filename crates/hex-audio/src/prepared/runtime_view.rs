@@ -327,6 +327,15 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.finish_midi_capture(take_id),
         }
     }
+    pub(super) fn drain_applied_session_route_transitions(
+        &mut self,
+        visit: impl FnMut(hex_engine::AppliedSessionRouteTransition),
+    ) -> bool {
+        match self {
+            Self::Legacy(p) => p.drain_applied_session_route_transitions(visit),
+            Self::Eligible(p) => p.drain_applied_session_route_transitions(visit),
+        }
+    }
     pub(super) fn sample_rate(&self) -> u32 {
         self.read().sample_rate()
     }

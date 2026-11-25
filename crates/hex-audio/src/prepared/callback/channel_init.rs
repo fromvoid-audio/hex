@@ -43,6 +43,7 @@ pub struct Callback {
     pub(in crate::prepared) foreign_editor_delivery:
         crate::foreign_parameter_delivery::editor::Callback,
     pub(in crate::prepared) midi_recording: crate::midi_recording::Callback,
+    pub(in crate::prepared) route_transitions: route_transitions::RouteTransitionCallback,
     pub(in crate::prepared) spectrum_capture: Option<SpectrumCapture>,
     pub(in crate::prepared) spectrum_stages: SpectrumStages,
     pub(in crate::prepared) wave_pool: Option<crate::worker_pool::AudioWorkerPool>,
@@ -172,6 +173,7 @@ pub(crate) fn channel_with_interface_and_buffer(
     let (foreign_editor_delivery, callback_foreign_editor_delivery) =
         crate::foreign_parameter_delivery::editor::channel();
     let (mut midi_recording, callback_midi_recording) = crate::midi_recording::channel();
+    let (route_transitions, callback_route_transitions) = route_transitions::channel();
     sample_preview.bind_status(status.clone());
     gain_recording.bind_status(status.clone());
     native_parameter_input.bind_status(status.clone());
@@ -197,6 +199,7 @@ pub(crate) fn channel_with_interface_and_buffer(
             gain_recording,
             native_parameter_input,
             midi_recording,
+            route_transitions,
             command_ticket: 0,
             publication: PublicationControl {
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -264,6 +267,7 @@ pub(crate) fn channel_with_interface_and_buffer(
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             foreign_editor_delivery: callback_foreign_editor_delivery,
             midi_recording: callback_midi_recording,
+            route_transitions: callback_route_transitions,
             spectrum_capture: capture,
             spectrum_stages: SpectrumStages::new()?,
             wave_pool: None,
@@ -504,6 +508,7 @@ impl Callback {
                     .constructor_channel_storage()?,
             )?
             .plus(self.midi_recording.constructor_channel_storage()?)?
+            .plus(self.route_transitions.constructor_channel_storage()?)?
             .plus(self.spectrum_target.constructor_channel_storage()?)?
             .plus(self.processor_audition.constructor_channel_storage()?)?
             .plus(outcome_storage)?

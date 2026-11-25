@@ -49,6 +49,7 @@ impl SessionPlayback {
             stream_miss_fades: _,
             routes,
             route_scratch,
+            route_transitions,
             track_faders: _,
             track_fader_scratch: _,
             source_effects,
@@ -173,6 +174,11 @@ impl SessionPlayback {
             Owner::exclusive(spans.as_ref()),
             Location("session-midi-span-buffer", 0),
             std::mem::size_of::<MidiSpanBuffer>(),
+        )?;
+        l.bytes(
+            Owner::exclusive(route_transitions.as_ref()),
+            Location("session-route-transition-log", 0),
+            std::mem::size_of::<route_transitions::RouteTransitionLog>(),
         )?;
         l.vec(routes)?;
         l.vec(route_scratch)?;

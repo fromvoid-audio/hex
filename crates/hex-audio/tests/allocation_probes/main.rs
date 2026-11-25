@@ -42,6 +42,7 @@ mod pitch_multiplier_allocations;
 mod rattle_modulation_allocations;
 mod retarget_release_deadline_allocations;
 mod return_feed_allocations;
+mod route_transition_allocations;
 mod routed_midi_allocations;
 mod serial_effect_units;
 mod session_audio_loop_allocations;

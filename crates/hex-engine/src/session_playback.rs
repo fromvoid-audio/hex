@@ -38,6 +38,7 @@ mod main_pass_delay;
 mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;
+pub mod route_transitions;
 mod track_fader;
 mod track_route;
 mod transport_loop_admission;
@@ -371,6 +372,7 @@ struct PendingRoute {
     frame: u64,
     beat: BeatTime,
     target: RouteTarget,
+    scene: Option<hex_project::SceneId>,
     current_reservation: Option<CurrentRouteReservation>,
 }
 
@@ -600,6 +602,7 @@ pub struct SessionPlayback {
     stream_miss_fades: crate::StreamMissFades,
     routes: Vec<TrackRoute>,
     route_scratch: Vec<TrackRoute>,
+    route_transitions: Box<route_transitions::RouteTransitionLog>,
     track_faders: [track_fader::TrackFader; MAX_TRACKS],
     track_fader_scratch: [track_fader::TrackFader; MAX_TRACKS],
     source_effects: crate::source_effect_stage::SourceEffectStages,
@@ -1056,6 +1059,7 @@ impl SessionPlayback {
             source_voice_envelopes: _,
             routes: _,
             route_scratch: _,
+            route_transitions: _,
             track_faders: _,
             track_fader_scratch: _,
             source_effects: _, // retained by the Session container, not separately transferred
@@ -2362,6 +2366,7 @@ impl SessionPlayback {
             stream_miss_fades,
             routes,
             route_scratch,
+            route_transitions: Box::default(),
             track_faders,
             track_fader_scratch: track_faders,
             source_effects,
@@ -2530,6 +2535,16 @@ impl SessionPlayback {
     /// Number of stable-track route entries in project order.
     pub fn route_count(&self) -> usize {
         self.routes.len()
+    }
+
+    /// Drain all committed applied Session route transitions in FIFO order
+    /// without allocating. Returns `true` if bounded capacity overflowed since
+    /// the prior drain.
+    pub fn drain_applied_route_transitions(
+        &mut self,
+        visit: impl FnMut(route_transitions::AppliedSessionRouteTransition),
+    ) -> bool {
+        self.route_transitions.drain(visit)
     }
 
     /// Read one route without allocation. `None` means the index is out of range.

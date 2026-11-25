@@ -3927,6 +3927,7 @@ fn failed_shared_unmute_render_retries_the_same_fade() {
             frame: 39,
             beat: BeatTime::ZERO,
             target: crate::session_playback::RouteTarget::Silence,
+            scene: None,
             current_reservation: None,
         });
         let mut rejected = [[1.0; 2]; 64];
@@ -4548,6 +4549,7 @@ fn resumed_live_key_rolls_back_when_later_route_fails() {
             frame: 39,
             beat: BeatTime::ZERO,
             target: crate::session_playback::RouteTarget::Silence,
+            scene: None,
             current_reservation: None,
         });
         assert!(failed.render(&mut [[0.0; 2]; 64]).is_err());
