@@ -1276,16 +1276,29 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                                 Some(crate::ContentWindow::new(window_start, window_end, false)?);
                             return crate::clip_reverse::split_midi(project, track, retained, beat);
                         }
+                        let lead_trim = kept_start - absolute_start;
+                        let new_duration = BeatTime::from_raw(kept_end - kept_start);
+                        let expression_points: Vec<NoteExpressionPoint> = note
+                            .expression_points
+                            .iter()
+                            .filter_map(|p| {
+                                let shifted = p.offset.raw().checked_sub(lead_trim)?;
+                                (shifted <= new_duration.raw()).then_some(NoteExpressionPoint {
+                                    offset: BeatTime::from_raw(shifted),
+                                    ..*p
+                                })
+                            })
+                            .collect();
                         notes.push(MidiNote {
                             id: NoteId(0),
                             active: note.active,
                             start: BeatTime::from_raw(kept_start - beat.raw()),
-                            duration: BeatTime::from_raw(kept_end - kept_start),
+                            duration: new_duration,
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
                             expression: note.expression,
-                            expression_points: Vec::new(),
+                            expression_points,
                         });
                     }
                 }
@@ -1323,6 +1336,12 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 left_length,
                 original.length,
             )?;
+            let right_lanes = materialize_expression_lanes(
+                original.expression_lanes(),
+                original.source_playback()?,
+                left_length,
+                original.length,
+            )?;
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
@@ -1339,7 +1358,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     content: std::sync::Arc::new(crate::MidiContent {
                         source_length: right_length,
                         notes,
-                        expression_lanes: Vec::new(),
+                        expression_lanes: right_lanes,
                     }),
                     one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                     source_start: BeatTime::ZERO,
@@ -1374,6 +1393,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 target.one_shot_boundary(),
             )?;
             target.volume.validate_source_length(source_length)?;
+            validate_expression_lanes(target.expression_lanes(), source_length)?;
             validate_clip(target.start, length)?;
             for note in &target.notes {
                 validate_note(
@@ -1384,6 +1404,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     note.channel,
                     note.velocity,
                 )?;
+                validate_note_expression_points(&note.expression_points, note.duration)?;
             }
             let mut target = target.clone();
             target.content_view = target
@@ -1762,12 +1783,73 @@ pub(crate) fn note_indices(
     Ok(indices)
 }
 
+fn materialize_expression_lanes(
+    lanes: &[MidiExpressionLane],
+    playback: MidiSourcePlayback,
+    start: BeatTime,
+    end: BeatTime,
+) -> Result<Vec<MidiExpressionLane>, Invalid> {
+    if lanes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let length = end
+        .raw()
+        .checked_sub(start.raw())
+        .filter(|&n| n > 0)
+        .ok_or(Invalid("midi split expression interval must be positive"))?;
+    let right_length = BeatTime::from_raw(length);
+    let Some(phase) = playback.source_phase_at_elapsed(start) else {
+        return Ok(Vec::new());
+    };
+    let projected = MidiSourcePlayback::new_with_initial_end(
+        playback.source_length(),
+        phase,
+        playback.loop_range(),
+        right_length,
+        playback.initial_end(),
+    )?;
+    let mut materialized = Vec::new();
+    let mut total_points = 0usize;
+    for lane in lanes {
+        let mut points = Vec::new();
+        for point in &lane.points {
+            let plan = projected.note_occurrences(point.beat, BeatTime::from_raw(1))?;
+            for occurrence in plan.iter() {
+                let beat = occurrence.timeline_start();
+                if beat < right_length {
+                    total_points = total_points
+                        .checked_add(1)
+                        .filter(|&count| count <= MAX_MIDI_EXPRESSION_POINTS)
+                        .ok_or(Invalid("midi split expression point limit reached"))?;
+                    points.push(MidiLanePoint {
+                        beat,
+                        channel: point.channel,
+                        value: point.value,
+                    });
+                }
+            }
+        }
+        if !points.is_empty() {
+            points.sort_by_key(|p| (p.beat.raw(), p.channel));
+            points.dedup_by_key(|p| (p.beat.raw(), p.channel));
+            materialized.push(MidiExpressionLane {
+                kind: lane.kind,
+                points,
+            });
+        }
+    }
+    validate_expression_lanes(&materialized, right_length)?;
+    Ok(materialized)
+}
+
 fn apply_note_update(note: &mut MidiNote, update: MidiNoteUpdate) {
     note.start = update.start;
     note.duration = update.duration;
     note.pitch = update.pitch;
     note.channel = update.channel;
     note.velocity = update.velocity;
+    note.expression_points
+        .retain(|p| p.offset <= update.duration);
 }
 
 pub(crate) fn clip_count(project: &Project) -> usize {
@@ -2208,6 +2290,266 @@ mod retained_metadata_tests {
         assert_eq!(
             editor.project().midi_source(clip).unwrap().notes()[0].expression(),
             expr
+        );
+    }
+
+    #[test]
+    fn midi_expression_invariants_survive_source_shrink_note_edit_overwrite_stretch_prefix_and_split()
+     {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 64).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "mpe-edits".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(8).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        let Created::Note(note_a) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_quarters(1).unwrap(),
+                duration: BeatTime::from_quarters(4).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("note a");
+        };
+        let curve = vec![
+            NoteExpressionPoint {
+                offset: BeatTime::from_quarters(1).unwrap(),
+                pitch_offset_cents: 50,
+                timbre: 40,
+                pressure: 30,
+            },
+            NoteExpressionPoint {
+                offset: BeatTime::from_quarters(3).unwrap(),
+                pitch_offset_cents: 100,
+                timbre: 80,
+                pressure: 60,
+            },
+        ];
+        editor
+            .execute(Command::SetMidiNoteExpression {
+                clip,
+                note: note_a,
+                expression: NoteExpression {
+                    pitch_offset_cents: 12,
+                    timbre: 20,
+                    pressure: 10,
+                },
+                points: curve,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMidiExpressionLane {
+                clip,
+                kind: MidiLaneKind::ControlChange(1),
+                points: vec![
+                    MidiLanePoint {
+                        beat: BeatTime::from_quarters(1).unwrap(),
+                        channel: 0,
+                        value: 32,
+                    },
+                    MidiLanePoint {
+                        beat: BeatTime::from_quarters(6).unwrap(),
+                        channel: 0,
+                        value: 96,
+                    },
+                ],
+            })
+            .unwrap();
+
+        // 1. SetMidiClipSource must refuse shrinking source_length below an expression lane point.
+        assert!(
+            editor
+                .execute(Command::SetMidiClipSource {
+                    clip,
+                    source_length: BeatTime::from_quarters(6).unwrap(),
+                    source_start: BeatTime::ZERO,
+                    loop_start: BeatTime::ZERO,
+                    loop_end: BeatTime::from_quarters(6).unwrap(),
+                    looping: false,
+                    length: BeatTime::from_quarters(6).unwrap(),
+                })
+                .is_err()
+        );
+        // Shrinking to 7 quarters keeps the beat-6 point valid and round-trips through snapshot.
+        editor
+            .execute(Command::SetMidiClipSource {
+                clip,
+                source_length: BeatTime::from_quarters(7).unwrap(),
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: BeatTime::from_quarters(7).unwrap(),
+                looping: false,
+                length: BeatTime::from_quarters(7).unwrap(),
+            })
+            .unwrap();
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
+        );
+
+        // 2. Shortening note_a via UpdateMidiNotes clips out-of-range expression points.
+        editor
+            .execute(Command::UpdateMidiNotes {
+                clip,
+                notes: vec![MidiNoteUpdate {
+                    note: note_a,
+                    start: BeatTime::from_quarters(1).unwrap(),
+                    duration: BeatTime::from_quarters(2).unwrap(),
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                }],
+            })
+            .unwrap();
+        let points_after_shorten = editor.project().midi_source(clip).unwrap().notes()[0]
+            .expression_points()
+            .to_vec();
+        assert_eq!(points_after_shorten.len(), 1);
+        assert_eq!(
+            points_after_shorten[0].offset,
+            BeatTime::from_quarters(1).unwrap()
+        );
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
+        );
+
+        // 3. Same-pitch overwrite (retain_gates) clips expression points on the trimmed earlier note.
+        editor
+            .execute(Command::SetMidiNoteExpression {
+                clip,
+                note: note_a,
+                expression: NoteExpression::default(),
+                points: vec![
+                    NoteExpressionPoint {
+                        offset: BeatTime::from_raw(BeatTime::from_quarters(1).unwrap().raw() / 2),
+                        pitch_offset_cents: 25,
+                        timbre: 10,
+                        pressure: 10,
+                    },
+                    NoteExpressionPoint {
+                        offset: BeatTime::from_quarters(2).unwrap(),
+                        pitch_offset_cents: 50,
+                        timbre: 20,
+                        pressure: 20,
+                    },
+                ],
+            })
+            .unwrap();
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_quarters(2).unwrap(),
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 0,
+                velocity: 90,
+            })
+            .unwrap();
+        let trimmed = editor
+            .project()
+            .midi_source(clip)
+            .unwrap()
+            .notes()
+            .iter()
+            .find(|n| n.id() == note_a)
+            .unwrap();
+        assert_eq!(trimmed.duration(), BeatTime::from_quarters(1).unwrap());
+        assert_eq!(trimmed.expression_points().len(), 1);
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
+        );
+
+        // 4. Stretching the clip scales expression lanes and note expression points.
+        editor
+            .execute(Command::StretchMidiClipEdge {
+                clip,
+                edge: crate::TrimEdge::Right,
+                beat: BeatTime::from_quarters(14).unwrap(),
+            })
+            .unwrap();
+        let stretched = editor.project().midi_source(clip).unwrap();
+        let cc1 = stretched
+            .expression_lane(MidiLaneKind::ControlChange(1))
+            .unwrap();
+        assert_eq!(cc1.points[0].beat, BeatTime::from_quarters(2).unwrap());
+        assert_eq!(cc1.points[1].beat, BeatTime::from_quarters(12).unwrap());
+        let stretched_note = stretched.notes().iter().find(|n| n.id() == note_a).unwrap();
+        assert_eq!(
+            stretched_note.expression_points()[0].offset,
+            BeatTime::from_quarters(1).unwrap()
+        );
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
+        );
+
+        // 5. Prefix-shifted negative authoring shifts expression lanes consistently.
+        editor
+            .execute(Command::UpdateMidiNotesWithSourcePrefix {
+                clip,
+                prefix: BeatTime::from_quarters(2).unwrap(),
+                notes: vec![MidiNoteUpdate {
+                    note: note_a,
+                    start: BeatTime::from_quarters(1).unwrap(),
+                    duration: BeatTime::from_quarters(2).unwrap(),
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 100,
+                }],
+            })
+            .unwrap();
+        let prefixed = editor.project().midi_source(clip).unwrap();
+        let cc1 = prefixed
+            .expression_lane(MidiLaneKind::ControlChange(1))
+            .unwrap();
+        assert_eq!(cc1.points[0].beat, BeatTime::from_quarters(4).unwrap());
+        assert_eq!(cc1.points[1].beat, BeatTime::from_quarters(14).unwrap());
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
+        );
+
+        // 6. Splitting the clip preserves in-range note expression points and lane points on right.
+        let Created::Clip(right_clip) = editor
+            .execute(Command::SplitMidiClip {
+                clip,
+                beat: BeatTime::from_quarters(3).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("right split clip");
+        };
+        let right = editor.project().midi_source(right_clip).unwrap();
+        let right_cc1 = right
+            .expression_lane(MidiLaneKind::ControlChange(1))
+            .expect("right split clip preserves in-range expression lane");
+        assert_eq!(right_cc1.points.len(), 1);
+        assert_eq!(
+            right_cc1.points[0].beat,
+            BeatTime::from_quarters(9).unwrap()
+        );
+        assert_eq!(
+            Project::from_snapshot(editor.project().snapshot()).unwrap(),
+            *editor.project()
         );
     }
 }

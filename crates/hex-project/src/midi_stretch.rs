@@ -79,6 +79,20 @@ impl MidiClipStretch {
         Ok((start, duration))
     }
 
+    fn scale_note_offset(
+        offset: BeatTime,
+        old_duration: BeatTime,
+        new_duration: BeatTime,
+    ) -> Result<BeatTime, Invalid> {
+        let raw = u128::from(offset.raw())
+            .checked_mul(u128::from(new_duration.raw()))
+            .ok_or(Invalid("midi stretch expression offset overflow"))?
+            / u128::from(old_duration.raw());
+        u64::try_from(raw)
+            .map(BeatTime::from_raw)
+            .map_err(|_| Invalid("midi stretch expression offset overflow"))
+    }
+
     fn validate_contents(self, clip: &MidiClip) -> Result<(), Invalid> {
         for note in clip.notes() {
             let (start, duration) = self.note_interval(note)?;
@@ -90,6 +104,14 @@ impl MidiClipStretch {
                 note.channel(),
                 note.velocity(),
             )?;
+            let mut prev_offset: Option<u64> = None;
+            for point in note.expression_points() {
+                let offset = Self::scale_note_offset(point.offset, note.duration(), duration)?;
+                if offset > duration || prev_offset.is_some_and(|old| old >= offset.raw()) {
+                    return Err(Invalid("midi stretch collapses note expression points"));
+                }
+                prev_offset = Some(offset.raw());
+            }
         }
         let mut previous = None;
         for point in clip.volume().points() {
@@ -98,6 +120,17 @@ impl MidiClipStretch {
                 return Err(Invalid("midi stretch collapses volume boundaries"));
             }
             previous = Some(beat);
+        }
+        for lane in clip.expression_lanes() {
+            let mut prev_key: Option<(u64, u8)> = None;
+            for point in &lane.points {
+                let beat = self.scale(point.beat)?;
+                let key = (beat.raw(), point.channel);
+                if beat >= self.source_length || prev_key.is_some_and(|old| old >= key) {
+                    return Err(Invalid("midi stretch collapses expression lane points"));
+                }
+                prev_key = Some(key);
+            }
         }
         Ok(())
     }
@@ -198,10 +231,22 @@ pub(crate) fn apply(
     source.loop_start = preview.loop_start;
     source.loop_end = preview.loop_end;
     for note in &mut source.notes {
+        let old_duration = note.duration();
         let (start, duration) = preview.note_interval(note)?;
         note.start = start;
         note.duration = duration;
+        for point in &mut note.expression_points {
+            point.offset =
+                MidiClipStretch::scale_note_offset(point.offset, old_duration, duration)?;
+        }
+        crate::midi::validate_note_expression_points(&note.expression_points, duration)?;
     }
+    for lane in &mut source.expression_lanes {
+        for point in &mut lane.points {
+            point.beat = preview.scale(point.beat)?;
+        }
+    }
+    crate::midi::validate_expression_lanes(&source.expression_lanes, preview.source_length)?;
     target.content_view = original
         .content_view()
         .map(|view| -> Result<_, Invalid> {

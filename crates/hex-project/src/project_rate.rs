@@ -74,6 +74,26 @@ impl Project {
                     rate.frame(range.end())?,
                 )?;
             }
+            if let Some(frozen) = &mut track.frozen {
+                let source_frames = candidate
+                    .assets
+                    .get(&frozen.asset)
+                    .ok_or(Invalid("frozen track asset is missing"))?
+                    .playback_frames();
+                let start = rate.frame(frozen.start)?;
+                let duration = rate
+                    .media_frame(frozen.asset, frozen.duration)?
+                    .min(source_frames);
+                if duration == 0 || start.checked_add(duration).is_none() {
+                    return Err(Invalid(
+                        "frozen track render interval is invalid at target sample rate",
+                    ));
+                }
+                frozen.start = start;
+                frozen.duration = duration;
+                frozen.source_frames = source_frames;
+                frozen.validate(&candidate.assets)?;
+            }
         }
         for cell in &mut candidate.session.cells {
             if let SessionCellContent::Audio(clip) = &mut cell.content {
@@ -337,5 +357,52 @@ mod silent_repeat_tests {
             assert_eq!(projection.root_position_for_frame(period).unwrap(), Some(0));
         }
         assert_eq!(editor.project().snapshot(), before);
+    }
+
+    #[test]
+    fn sample_rate_change_rescales_frozen_track_and_round_trips_snapshot() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "frozen".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Asset(frozen_asset) = editor
+            .execute(Command::FreezeTrack {
+                track,
+                path: "freeze/frozen.wav".into(),
+                start: 24_000,
+                duration: 48_000,
+                frames: 48_000,
+            })
+            .unwrap()
+        else {
+            panic!("frozen asset");
+        };
+
+        for (target_rate, expected_start, expected_frames) in [
+            (96_000_u32, 48_000_u64, 96_000_u64),
+            (24_000_u32, 12_000_u64, 24_000_u64),
+        ] {
+            let converted = editor.project().at_sample_rate(target_rate).unwrap();
+            let frozen = converted
+                .track(track)
+                .unwrap()
+                .frozen()
+                .expect("frozen state preserved");
+            assert_eq!(frozen.asset, frozen_asset);
+            assert_eq!(frozen.start, expected_start);
+            assert_eq!(frozen.duration, expected_frames);
+            assert_eq!(frozen.source_frames, expected_frames);
+            assert_eq!(
+                converted.asset(frozen_asset).unwrap().playback_frames(),
+                expected_frames
+            );
+            let reopened = Project::from_snapshot(converted.snapshot()).unwrap();
+            assert_eq!(reopened, converted);
+        }
     }
 }
