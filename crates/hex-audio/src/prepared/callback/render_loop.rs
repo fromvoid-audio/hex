@@ -169,6 +169,7 @@ impl Callback {
             self.reject_paused_monitors(input_monitor::MonitorStatus::OutputFault);
             self.sample_recording
                 .end(crate::sample_recording::End::OutputFailed);
+            self.rolling_recorder.discard_stage();
             if !output.is_empty() {
                 self.prepare_gain_recording_quantum();
                 self.prepare_native_parameter_quantum();
@@ -179,12 +180,20 @@ impl Callback {
                 start: initial,
             });
         }
+        let rolling_generation = self
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .map(|active| active.control_context_generation);
         if self.output_transport.is_some() {
             self.reject_paused_monitors(input_monitor::MonitorStatus::Unsupported);
             self.sample_recording
                 .end(crate::sample_recording::End::UnsupportedOutput);
+            self.rolling_recorder.discard_stage();
         } else {
             self.sample_recording.begin(output.len());
+            self.rolling_recorder
+                .begin(output.len(), rolling_generation, self.rate);
         }
         if !yield_successor {
             self.prewarm_cold_device_fade(output.len());
@@ -209,6 +218,11 @@ impl Callback {
         if matches!(scheduled, section_launch::ScheduledCutRender::NotHandled) {
             self.render_project(output, 0)?;
         }
+        if self.rolling_recorder.wants_main() {
+            self.rolling_recorder.observe_main(output);
+        }
+        self.rolling_recorder
+            .finish(!self.status.closing.load(Acquire) && !self.status.render_fault.load(Acquire));
         self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
@@ -421,7 +435,22 @@ impl Callback {
                 &mut input[..live_len],
             )
         });
-        if !node_observed && !project_observed && recording.is_none() && monitor.is_none() {
+        let mut rolling_track = self.rolling_recorder.track_target();
+        if let Some(track_id) = rolling_track
+            && active
+                .as_ref()
+                .is_none_or(|active| !active.playback.project_output_supported(&[track_id]))
+        {
+            self.rolling_recorder.discard_stage();
+            rolling_track = None;
+        }
+        let rolling_track_slice = rolling_track.map(|id| [id]);
+        if !node_observed
+            && !project_observed
+            && recording.is_none()
+            && monitor.is_none()
+            && rolling_track.is_none()
+        {
             return self.render_unobserved(output, capture_offset);
         }
         if self.status.closing.load(Acquire) {
@@ -450,9 +479,17 @@ impl Callback {
                 (layout.tracks.as_ref(), layout.returns.as_ref())
             });
         let spectrum_tracks = selection.as_ref().map_or(&[][..], |s| s.tracks());
+        let mut joined_base = [0; crate::sample_recording::TRACKS];
+        let base_tracks =
+            crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined_base);
         let mut joined = [0; crate::sample_recording::TRACKS];
-        let tracks =
-            crate::sample_recording::merge_tracks(spectrum_tracks, record_tracks, &mut joined);
+        let tracks = match (base_tracks, rolling_track_slice.as_ref()) {
+            (Some(base), Some(rolling)) => {
+                crate::sample_recording::merge_tracks(base, rolling, &mut joined)
+            }
+            (base, None) => base,
+            (None, Some(_)) => None,
+        };
         // A failed selection merge must invalidate recording even when its
         // timing-only layout no longer relies on a Main PCM observation.
         if project_observed
@@ -462,10 +499,12 @@ impl Callback {
             stage.observe(layout, hex_engine::ProjectSignal::Unavailable, 0, &[]);
         }
         let recording_observed = recording.is_some();
+        let rolling_observed = rolling_track.is_some();
         let timing_only_recording = recording
             .as_ref()
             .is_some_and(|(layout, _)| layout.timing_only);
         let recording = std::cell::RefCell::new(recording);
+        let rolling_recorder = &mut self.rolling_recorder;
         let mut observe_project = |signal, offset, frames: &[Frame]| {
             if let Some(project) = project_capture.as_mut()
                 && match signal {
@@ -484,6 +523,9 @@ impl Callback {
             {
                 stage.observe(layout, signal, capture_offset + offset, frames);
             }
+            if rolling_observed {
+                rolling_recorder.observe_track(signal, capture_offset + offset, frames);
+            }
         };
         let mut observe_timing = |offset, start, frames, map: &hex_engine::PreparedTempoMap| {
             if let Ok(mut recording) = recording.try_borrow_mut()
@@ -492,14 +534,14 @@ impl Callback {
                 stage.observe_timing(capture_offset + offset, start, frames, map);
             }
         };
-        let mut project = if timing_only_recording && !project_observed {
+        let mut project = if timing_only_recording && !project_observed && !rolling_observed {
             Some(hex_engine::ProjectOutputTap::timing_only(
                 &mut observe_timing,
                 &mut observe_project,
             ))
         } else {
             tracks
-                .filter(|_| project_observed || recording_observed)
+                .filter(|_| project_observed || recording_observed || rolling_observed)
                 .and_then(|tracks| {
                     let tap = hex_engine::ProjectOutputTap::with_returns(
                         tracks,

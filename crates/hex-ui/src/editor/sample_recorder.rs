@@ -5,11 +5,19 @@
 use super::{EditorView, waveform::toggle_button_with_style};
 use crate::theme;
 use gpui::{Context, Div, Stateful, div, prelude::*, px, rgb};
-use hex_audio::sample_recording::{self, End, OutputCaptureId, Phase, Source, Take};
+use hex_audio::{
+    rolling_recorder::{self, RollingHistory, RollingSource},
+    sample_recording::{self, End, OutputCaptureId, Phase, Source, Take},
+};
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{self, Receiver, TryRecvError},
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, TryRecvError},
+    },
+    thread::JoinHandle,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 mod beat_guides;
@@ -44,6 +52,29 @@ impl Arm {
     }
 }
 
+struct RollingCollector {
+    output: u64,
+    generation: u64,
+    source: RollingSource,
+    history: Arc<Mutex<RollingHistory>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for RollingCollector {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+struct KeepJob {
+    result: Receiver<Result<Take, String>>,
+    name: String,
+}
+
 #[derive(Default)]
 pub(super) struct Recorder {
     pub(super) visible: bool,
@@ -52,6 +83,9 @@ pub(super) struct Recorder {
     armed: Vec<Arm>,
     job: Option<Job>,
     phase: Option<Phase>,
+    rolling: Option<RollingCollector>,
+    rolling_source: Option<RollingSource>,
+    keep_job: Option<KeepJob>,
     recent: Vec<Row>,
     waveform: Option<waveform::Waveform>,
     audition_job: bool,
@@ -279,11 +313,281 @@ impl EditorView {
         }
     }
 
+    fn sync_rolling_recorder(&mut self) -> bool {
+        let generation = self.project_generation;
+        let current_output = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity());
+        let mut changed = false;
+
+        // Drop stale collector if audio output disappeared or changed identity.
+        if let Some(collector) = &self.device_panel.sample_recorder.rolling
+            && Some(collector.output) != current_output
+        {
+            self.device_panel.sample_recorder.rolling = None;
+            changed = true;
+        }
+
+        // Start always-on 60s rolling RAM recorder automatically whenever audio output is active.
+        if self.device_panel.sample_recorder.rolling.is_none()
+            && let Some(output) = current_output
+            && let Some(audio) = self.audio.as_mut()
+        {
+            let source = self
+                .device_panel
+                .sample_recorder
+                .rolling_source
+                .unwrap_or(RollingSource::Main);
+            if let Ok(mut reader) = audio.control.start_rolling_recording(generation, source) {
+                let rate = reader.sample_rate();
+                if let Ok(history) =
+                    RollingHistory::new(rate, rolling_recorder::ROLLING_WINDOW_SECONDS)
+                {
+                    let history = Arc::new(Mutex::new(history));
+                    let stop = Arc::new(AtomicBool::new(false));
+                    let thread_history = Arc::clone(&history);
+                    let thread_stop = Arc::clone(&stop);
+                    if let Ok(thread) = std::thread::Builder::new()
+                        .name("hex-rolling-audio".into())
+                        .spawn(move || {
+                            while !thread_stop.load(Ordering::Acquire) {
+                                if let Ok(mut guard) = thread_history.lock() {
+                                    guard.drain(&mut reader);
+                                }
+                                if reader.is_disconnected() {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(15));
+                            }
+                        })
+                    {
+                        self.device_panel.sample_recorder.rolling = Some(RollingCollector {
+                            output,
+                            generation,
+                            source,
+                            history,
+                            stop,
+                            thread: Some(thread),
+                        });
+                        self.device_panel.sample_recorder.rolling_source = Some(source);
+                        changed = true;
+                    } else {
+                        audio.control.stop_rolling_recording();
+                    }
+                } else {
+                    audio.control.stop_rolling_recording();
+                }
+            }
+        }
+
+        // Reset rolling source cleanly on project replacement or deleted isolated track.
+        let desired_source = match self.device_panel.sample_recorder.rolling_source {
+            Some(RollingSource::Track(track_id)) => {
+                let exists = self.state.as_ref().is_some_and(|state| {
+                    state
+                        .project
+                        .tracks()
+                        .iter()
+                        .any(|track| track.id().value() == track_id)
+                });
+                if exists {
+                    RollingSource::Track(track_id)
+                } else {
+                    RollingSource::Main
+                }
+            }
+            _ => RollingSource::Main,
+        };
+        if let Some(collector) = self.device_panel.sample_recorder.rolling.as_mut()
+            && (collector.generation != generation || collector.source != desired_source)
+        {
+            let next_source = if collector.generation != generation {
+                RollingSource::Main
+            } else {
+                desired_source
+            };
+            if let Some(audio) = self.audio.as_mut() {
+                let _ = audio.control.set_rolling_source(generation, next_source);
+            }
+            if let Ok(mut guard) = collector.history.lock() {
+                guard.clear();
+            }
+            collector.generation = generation;
+            collector.source = next_source;
+            self.device_panel.sample_recorder.rolling_source = Some(next_source);
+            changed = true;
+        }
+        changed
+    }
+
+    pub(super) fn toggle_rolling_isolation(&mut self) {
+        let Some(selected) = self.selected_track else {
+            self.device_panel.sample_recorder.error =
+                Some("select a track to isolate for rolling capture".into());
+            return;
+        };
+        let current = self
+            .device_panel
+            .sample_recorder
+            .rolling_source
+            .unwrap_or(RollingSource::Main);
+        let next = if current == RollingSource::Track(selected.value()) {
+            RollingSource::Main
+        } else {
+            RollingSource::Track(selected.value())
+        };
+        self.device_panel.sample_recorder.rolling_source = Some(next);
+        self.device_panel.sample_recorder.error = None;
+        if let Some(collector) = self.device_panel.sample_recorder.rolling.as_mut() {
+            if let Some(audio) = self.audio.as_mut() {
+                let _ = audio
+                    .control
+                    .set_rolling_source(self.project_generation, next);
+            }
+            if let Ok(mut guard) = collector.history.lock() {
+                guard.clear();
+            }
+            collector.source = next;
+            collector.generation = self.project_generation;
+        }
+    }
+
+    pub(super) fn keep_rolling_capture(&mut self) {
+        if self.persistence.opening_project {
+            self.device_panel.sample_recorder.error =
+                Some("wait for the project to finish opening".into());
+            return;
+        }
+        if self.device_panel.sample_recorder.keep_job.is_some() {
+            return;
+        }
+        let Some(collector) = &self.device_panel.sample_recorder.rolling else {
+            self.device_panel.sample_recorder.visible = true;
+            self.device_panel.sample_recorder.error =
+                Some("rolling audio recorder is waiting for active audio output".into());
+            return;
+        };
+        let snapshot = match collector.history.lock() {
+            Ok(guard) => guard.snapshot(),
+            Err(_) => {
+                self.device_panel.sample_recorder.error =
+                    Some("rolling audio buffer is unavailable".into());
+                return;
+            }
+        };
+        if snapshot.frames.is_empty() {
+            self.device_panel.sample_recorder.visible = true;
+            self.device_panel.sample_recorder.error = Some("rolling audio buffer is empty".into());
+            return;
+        }
+        let label = match snapshot.source {
+            RollingSource::Main => "rolling · main".to_owned(),
+            RollingSource::Track(id) => self.sample_source_name(Source::Track(id)).map_or_else(
+                || format!("rolling · track {id}"),
+                |name| format!("rolling · {name}"),
+            ),
+        };
+        let document = self
+            .state
+            .as_ref()
+            .and_then(|state| state.document_path.clone());
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let dir_name = format!("rolling-{stamp}-{}", std::process::id());
+        let (tx, rx) = mpsc::sync_channel(1);
+        match std::thread::Builder::new()
+            .name("hex-rolling-keep".into())
+            .spawn(move || {
+                let result = (|| {
+                    let root = hex_session::service::sample_take_root(document.as_deref())?;
+                    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+                    let dir = root.join(&dir_name);
+                    snapshot
+                        .write_wav(&dir)
+                        .map_err(|e| take_write_error(&dir, &e))
+                })();
+                let _ = tx.send(result);
+            }) {
+            Ok(_) => {
+                self.device_panel.sample_recorder.visible = true;
+                self.device_panel.sample_recorder.error = None;
+                self.device_panel.sample_recorder.keep_job = Some(KeepJob {
+                    result: rx,
+                    name: label,
+                });
+            }
+            Err(error) => {
+                self.device_panel.sample_recorder.error = Some(error.to_string());
+            }
+        }
+    }
+
+    fn tick_rolling_keep_job(&mut self) -> bool {
+        let Some(job) = &self.device_panel.sample_recorder.keep_job else {
+            return false;
+        };
+        let result = match job.result.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Disconnected) => Err("rolling audio writer exited".into()),
+            Err(TryRecvError::Empty) => return false,
+        };
+        let Some(job) = self.device_panel.sample_recorder.keep_job.take() else {
+            return true;
+        };
+        match result {
+            Ok(take) => {
+                self.device_panel.sample_recorder.recent.insert(
+                    0,
+                    Row {
+                        name: job.name,
+                        take,
+                    },
+                );
+                self.device_panel
+                    .sample_recorder
+                    .recent
+                    .truncate(RECENT_LIMIT);
+                self.device_panel.sample_recorder.error = None;
+            }
+            Err(error) => {
+                self.device_panel.sample_recorder.error =
+                    Some(format!("rolling keep failed · {error}"));
+            }
+        }
+        true
+    }
+
+    fn rolling_status_label(&self) -> String {
+        let source = self
+            .device_panel
+            .sample_recorder
+            .rolling_source
+            .unwrap_or(RollingSource::Main);
+        let source_text = match source {
+            RollingSource::Main => "main".to_owned(),
+            RollingSource::Track(id) => self
+                .sample_source_name(Source::Track(id))
+                .map_or_else(|| format!("track {id}"), str::to_owned),
+        };
+        let secs = self
+            .device_panel
+            .sample_recorder
+            .rolling
+            .as_ref()
+            .and_then(|c| c.history.lock().ok().map(|h| h.buffered_seconds()))
+            .unwrap_or(0.0);
+        format!("60s ram: {source_text} ({secs:.1}s)")
+    }
+
     pub(super) fn tick_sample_recorder(&mut self) -> bool {
         let arms_changed = self.sync_sample_arm_context();
+        let rolling_changed = self.sync_rolling_recorder();
+        let keep_changed = self.tick_rolling_keep_job();
         let preview_changed = self.tick_take_preview();
         let Some(job) = &self.device_panel.sample_recorder.job else {
-            return arms_changed || preview_changed;
+            return arms_changed || rolling_changed || keep_changed || preview_changed;
         };
         let phase = self
             .audio
@@ -295,7 +599,13 @@ impl EditorView {
         let result = match job.result.try_recv() {
             Ok(result) => result,
             Err(TryRecvError::Disconnected) => Err("sample take writer exited".into()),
-            Err(TryRecvError::Empty) => return arms_changed || phase_changed || preview_changed,
+            Err(TryRecvError::Empty) => {
+                return arms_changed
+                    || rolling_changed
+                    || keep_changed
+                    || phase_changed
+                    || preview_changed;
+            }
         };
         if let Some(audio) = self.audio.as_mut() {
             audio.control.reclaim_sample_recording();
@@ -390,9 +700,39 @@ impl EditorView {
                             cx.notify();
                         })),
                     )
+                    .child(
+                        button(
+                            if matches!(
+                                self.device_panel.sample_recorder.rolling_source,
+                                Some(RollingSource::Track(_))
+                            ) {
+                                "isolated"
+                            } else {
+                                "isolate"
+                            },
+                            "isolate selected track for 60s ram recorder (cmd-shift-i)",
+                            ("rolling-isolate", 0),
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.toggle_rolling_isolation();
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        button(
+                            "keep 60s",
+                            "keep latest 60s rolling ram audio capture (cmd-shift-k)",
+                            ("rolling-keep", 0),
+                        )
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.keep_rolling_capture();
+                            cx.notify();
+                        })),
+                    )
                     .child(div().min_w_0().truncate().child(theme::text(format!(
-                        "{label} · {} armed",
-                        self.device_panel.sample_recorder.armed.len()
+                        "{label} · {} armed · {}",
+                        self.device_panel.sample_recorder.armed.len(),
+                        self.rolling_status_label()
                     )))),
             )
             .child(
@@ -682,6 +1022,91 @@ mod tests {
                     .armed
                     .contains(&Arm::Output(OutputCaptureId::Track(track)))
             );
+        });
+    }
+
+    #[gpui::test]
+    fn rolling_recorder_hotkey_isolates_selected_track_without_solo_and_keeps_capture(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (mut visual, editor, _env, _) = crate::editor::midi_canvas::creation_tests::fixture(cx);
+        visual.run_until_parked();
+        let track = editor.read_with(&visual, |view, _| view.selected_track.unwrap());
+
+        // Press Cmd+Shift+I to isolate the selected track for the rolling recorder.
+        // Ordinary solo/mute and track selection must remain completely unchanged.
+        visual.simulate_keystrokes("cmd-shift-i");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.device_panel.sample_recorder.rolling_source,
+                Some(RollingSource::Track(track.value()))
+            );
+            assert_eq!(view.selected_track, Some(track));
+            let tr = view.state.as_ref().unwrap().project.track(track).unwrap();
+            assert!(!tr.soloed());
+            assert!(!tr.muted());
+        });
+
+        // Pressing Cmd+Shift+I again returns to Main mix.
+        visual.simulate_keystrokes("cmd-shift-i");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.device_panel.sample_recorder.rolling_source,
+                Some(RollingSource::Main)
+            );
+        });
+
+        // Install a synthetic populated RollingHistory collector and press Cmd+Shift+K to keep it.
+        let mut history = RollingHistory::new(48_000, 1).unwrap();
+        history.push_frames(&[[0.25, -0.25]; 128]);
+        let shared_history = Arc::new(Mutex::new(history));
+
+        editor.update(&mut visual, |view, cx| {
+            view.device_panel.sample_recorder.rolling = Some(RollingCollector {
+                output: 99,
+                generation: view.project_generation,
+                source: RollingSource::Main,
+                history: Arc::clone(&shared_history),
+                stop: Arc::new(AtomicBool::new(true)),
+                thread: None,
+            });
+            cx.notify();
+        });
+        visual.simulate_keystrokes("cmd-shift-k");
+        visual.run_until_parked();
+
+        // Wait for the background WAV keep writer to publish into sample_recorder.recent.
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(&mut visual, |view, _| {
+                view.tick_rolling_keep_job();
+                view.device_panel.sample_recorder.keep_job.is_none()
+            });
+            if done {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "rolling keep timeout");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        editor.read_with(&visual, |view, _| {
+            assert!(view.device_panel.sample_recorder.visible);
+            assert!(
+                view.device_panel.sample_recorder.error.is_none(),
+                "unexpected error: {:?}",
+                view.device_panel.sample_recorder.error
+            );
+            assert_eq!(view.device_panel.sample_recorder.recent.len(), 1);
+            assert_eq!(view.device_panel.sample_recorder.recent[0].take.frames, 128);
+            assert!(
+                view.device_panel.sample_recorder.recent[0]
+                    .take
+                    .path
+                    .exists()
+            );
+            // Rolling RAM buffer remains intact after keeping.
+            assert_eq!(shared_history.lock().unwrap().buffered_frames(), 128);
         });
     }
 }

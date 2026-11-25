@@ -764,6 +764,9 @@ impl OperatorSettings {
 
     /// Canonical fixed-layout base prefix (fields + waveforms + tuning + velocity +
     /// feedback + lfo + enabled) used for runtime retarget compatibility checks.
+    ///
+    /// Called during real-time analytic-to-mutable handoff, so this writes directly
+    /// into the stack buffer with zero heap allocation.
     pub(super) fn encode_base_prefix(&self) -> [u8; ENABLE_PAYLOAD_BYTES] {
         let mut bytes = [0_u8; ENABLE_PAYLOAD_BYTES];
         let mut cursor = 0;
@@ -775,9 +778,8 @@ impl OperatorSettings {
             bytes[cursor..cursor + 4].copy_from_slice(&waveform.choice().to_le_bytes());
             cursor += 4;
         }
-        let mut scratch = Vec::new();
-        self.tuning.append(&mut scratch);
-        bytes[cursor..cursor + tuning::BYTES].copy_from_slice(&scratch);
+        self.tuning
+            .write_into(&mut bytes[cursor..cursor + tuning::BYTES]);
         cursor += tuning::BYTES;
         for amount in self.amplitude_velocity {
             bytes[cursor..cursor + 4].copy_from_slice(&amount.to_le_bytes());
@@ -787,13 +789,10 @@ impl OperatorSettings {
             bytes[cursor..cursor + 4].copy_from_slice(&amount.to_le_bytes());
             cursor += 4;
         }
-        scratch.clear();
-        self.lfo.append(&mut scratch);
-        bytes[cursor..cursor + lfo::BYTES].copy_from_slice(&scratch);
+        self.lfo.write_into(&mut bytes[cursor..cursor + lfo::BYTES]);
         cursor += lfo::BYTES;
-        scratch.clear();
-        self.enabled.append(&mut scratch);
-        bytes[cursor..cursor + enable::BYTES].copy_from_slice(&scratch);
+        self.enabled
+            .write_into(&mut bytes[cursor..cursor + enable::BYTES]);
         cursor += enable::BYTES;
         debug_assert_eq!(cursor, ENABLE_PAYLOAD_BYTES);
         bytes

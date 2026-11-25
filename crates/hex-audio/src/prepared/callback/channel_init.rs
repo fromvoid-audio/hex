@@ -17,6 +17,7 @@ pub struct Callback {
     pub(in crate::prepared) transport_setup_open: bool,
     pub(in crate::prepared) sample_preview: crate::sample_preview::Callback,
     pub(in crate::prepared) sample_recording: crate::sample_recording::Callback,
+    pub(in crate::prepared) rolling_recorder: crate::rolling_recorder::Callback,
     pub(in crate::prepared) input_monitor: input_monitor::Callback,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(in crate::prepared) paused_notes: input_monitor::Callback,
@@ -154,6 +155,7 @@ pub(crate) fn channel_with_interface_and_buffer(
     let (paused_notes, callback_paused_notes) = input_monitor::channel(rate);
     let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
     let (sample_recording, callback_recording) = crate::sample_recording::channel(rate);
+    let (rolling_recorder, callback_rolling_recorder) = crate::rolling_recorder::channel(rate);
     let (publications, incoming) = RingBuffer::new(1);
     let (returning, retired) = RingBuffer::new(RETIRED);
     let (commands, events) = RingBuffer::new(COMMANDS);
@@ -192,6 +194,7 @@ pub(crate) fn channel_with_interface_and_buffer(
             action_admission: None,
             sample_preview,
             sample_recording,
+            rolling_recorder,
             input_monitor,
             commands,
             spectrum_target,
@@ -243,6 +246,7 @@ pub(crate) fn channel_with_interface_and_buffer(
             transport_setup_open: true,
             sample_preview: callback_preview,
             sample_recording: callback_recording,
+            rolling_recorder: callback_rolling_recorder,
             input_monitor: callback_input_monitor,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             paused_notes: callback_paused_notes,
@@ -499,6 +503,9 @@ impl Callback {
             .constructor_channel_storage()?
             .plus(crate::sample_recording::Control::callback_storage(
                 &self.sample_recording,
+            )?)?
+            .plus(crate::rolling_recorder::Control::callback_storage(
+                &self.rolling_recorder,
             )?)?
             .plus(self.input_monitor.constructor_channel_storage()?)?
             .plus(self.gain_recording.constructor_channel_storage()?)?
