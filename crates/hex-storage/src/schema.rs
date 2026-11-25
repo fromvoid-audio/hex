@@ -33,6 +33,7 @@ pub(crate) mod group_output_mute;
 pub(crate) mod grouped_audio;
 pub(crate) mod host_automation;
 mod host_gain;
+pub(crate) mod large_vst3_state;
 pub(crate) mod legacy;
 pub(crate) mod legacy_early;
 pub(crate) mod long_granular;

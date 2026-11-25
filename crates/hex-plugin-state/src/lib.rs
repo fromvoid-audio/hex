@@ -6,7 +6,7 @@
 //!
 //! # Dependencies
 //! Uses only std and hex-lattice-contract's bounded immutable NativeDeviceState.
-//! Storage integration tests consume the unchanged generic project envelope.
+//! Project storage uses the provider identity when persisting large envelopes.
 //!
 //! # Does not own
 //! No SDK ABI, foreign objects, discovery, filesystem, DSP, callback work, state
@@ -26,7 +26,10 @@
 //! caller buffers. Empty captured chunks differ from missing chunks. Unknown or
 //! malformed envelopes remain generic project state and must be retained intact;
 //! decoding/availability errors never reconstruct, normalize or overwrite them.
-use hex_lattice_contract::{DeviceTypeId, MAX_VST3_DEVICE_STATE_BYTES, NativeDeviceState};
+use hex_lattice_contract::{
+    DeviceTypeId, MAX_STORED_VST3_DEVICE_STATE_BYTES, MAX_VST3_DEVICE_STATE_BYTES,
+    NativeDeviceState,
+};
 use std::fmt;
 
 pub const TYPE_ID: DeviceTypeId = hex_lattice_contract::VST3_DEVICE_TYPE_ID;
@@ -134,6 +137,16 @@ pub fn encode(state: State<'_>) -> Result<NativeDeviceState, Error> {
 /// Inspect without mutating the retained generic envelope. Unknown versions and
 /// platforms remain recoverable project bytes, not defaults or automatic migrations.
 pub fn decode(state: &NativeDeviceState) -> Result<State<'_>, Error> {
+    decode_bounded(state, MAX_ENVELOPE_BYTES)
+}
+
+/// Inspect a saved envelope through the project limit, including identity and
+/// chunk boundaries for automation. Live admission uses the smaller worker limit.
+pub fn decode_stored(state: &NativeDeviceState) -> Result<State<'_>, Error> {
+    decode_bounded(state, MAX_STORED_VST3_DEVICE_STATE_BYTES)
+}
+
+fn decode_bounded(state: &NativeDeviceState, limit: usize) -> Result<State<'_>, Error> {
     if state.type_id() != TYPE_ID {
         return Err(Error::WrongType);
     }
@@ -141,7 +154,7 @@ pub fn decode(state: &NativeDeviceState) -> Result<State<'_>, Error> {
         return Err(Error::UnsupportedVersion(state.state_version()));
     }
     let bytes = state.payload();
-    if bytes.len() > MAX_ENVELOPE_BYTES {
+    if bytes.len() > limit {
         return Err(Error::TooLarge);
     }
     let header = bytes.get(..HEADER_BYTES).ok_or(Error::Malformed)?;
@@ -165,7 +178,7 @@ pub fn decode(state: &NativeDeviceState) -> Result<State<'_>, Error> {
     let controller =
         u32::from_le_bytes(array(92..96)?.try_into().map_err(|_| Error::Malformed)?) as usize;
     let count = component.checked_add(controller).ok_or(Error::TooLarge)?;
-    if count > MAX_OPAQUE_BYTES {
+    if count > limit - HEADER_BYTES {
         return Err(Error::TooLarge);
     }
     if bytes.len() != HEADER_BYTES + count

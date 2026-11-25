@@ -1,5 +1,6 @@
 // Original bounded SDK state stream exercised directly through IBStream / ISizeableStream.
 #include "macos_state_stream.hpp"
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -7,6 +8,24 @@
 int main() {
     using namespace hex_instance;
     using namespace Steinberg;
+
+    // An empty helper stream must not carry the maximum vendor payload.
+    {
+        auto* stream = new StateStream(StateStream::capacity);
+        assert(stream->payload().capacity() == 0);
+        assert(stream->seek(200, IBStream::kIBSeekSet, nullptr) == kResultOk);
+        assert(stream->payload().capacity() == 0);
+        unsigned char marker = 7;
+        assert(stream->write(&marker, 1, nullptr) == kResultOk);
+        const auto allocated = stream->payload().capacity();
+        assert(allocated >= 201 && allocated < 512);
+        assert(stream->reset_write_on_control(StateStream::capacity));
+        assert(stream->setStreamSize(201) == kResultOk);
+        assert(stream->payload().capacity() == allocated);
+        assert(std::all_of(stream->payload().begin(), stream->payload().end(),
+                           [](unsigned char b) { return b == 0; }));
+        assert(stream->dispose_on_control());
+    }
 
     // 1. Over-budget setStreamSize on a stream with an 8-byte remaining allowance
     //    records bounded overflow (including reserved prefix), keeps valid()==true,
@@ -69,7 +88,7 @@ int main() {
         int64 reported = -1;
         assert(stream->getStreamSize(reported) == kResultOk);
         assert(reported == static_cast<int64>(expected_len));
-        assert(std::memcmp(stream->bytes.data(), expected, expected_len) == 0);
+        assert(std::memcmp(stream->payload().data(), expected, expected_len) == 0);
 
         assert(stream->rewind_read_only_on_control());
         std::array<unsigned char, 32> readback{};

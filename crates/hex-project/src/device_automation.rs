@@ -180,7 +180,7 @@ pub(crate) fn automation_class(
     if !matches!(target, DeviceAutomationTarget::Vst3 { .. }) {
         return Ok(None);
     }
-    hex_plugin_state::decode(state)
+    hex_plugin_state::decode_stored(state)
         .map(|plugin| Some(plugin.identity.class.bytes()))
         .map_err(|_| Invalid("vst3 automation requires a valid vst3 device state"))
 }

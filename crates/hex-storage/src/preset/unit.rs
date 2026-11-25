@@ -104,6 +104,15 @@ fn invalid(error: crate::StorageError) -> Error {
 impl Node {
     fn from_model(node: &PortableDeviceNode) -> Result<Self, Error> {
         let state = &node.state;
+        if state.payload().len() > MAX_VST3_DEVICE_STATE_BYTES
+            || node.comparison.as_ref().is_some_and(|variant| {
+                variant.inactive().payload().len() > MAX_VST3_DEVICE_STATE_BYTES
+            })
+        {
+            return Err(Error::Invalid(
+                "device state exceeds the portable preset format limit",
+            ));
+        }
         Ok(Self {
             parent: node.parent,
             bypassed: node.bypassed,

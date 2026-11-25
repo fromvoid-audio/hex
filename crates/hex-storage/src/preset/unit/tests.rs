@@ -208,3 +208,29 @@ fn legacy_schemas_open_as_state_and_publication_never_overwrites() {
     assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 1);
     std::fs::remove_dir_all(directory).unwrap();
 }
+
+#[test]
+fn large_project_only_states_refuse_portable_export_in_either_variant() {
+    use hex_lattice_contract::{MAX_VST3_DEVICE_STATE_BYTES, VST3_DEVICE_TYPE_ID};
+    let state = |size| NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![2; size]).unwrap();
+    let large = MAX_VST3_DEVICE_STATE_BYTES + 1;
+    for (active, inactive) in [(large, 0), (0, large)] {
+        let node = PortableDeviceNode {
+            parent: None,
+            state: state(active),
+            bypassed: false,
+            comparison: Some(hex_project::DeviceComparison::new(
+                hex_project::DeviceVariant::A,
+                state(inactive),
+            )),
+            modulation: Default::default(),
+        };
+        let unit = PortableDeviceUnit::new(DeviceUnitClass::Effect, vec![node], vec![]).unwrap();
+        assert!(matches!(
+            encode_unit(&unit),
+            Err(Error::Invalid(
+                "device state exceeds the portable preset format limit"
+            ))
+        ));
+    }
+}

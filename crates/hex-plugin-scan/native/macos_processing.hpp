@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <new>
+#include <type_traits>
 
 namespace hex_instance {
 using namespace Steinberg;
@@ -68,12 +71,20 @@ inline bool audio_buses(IComponent* component,BusDirection direction,int32 count
     return true;
 }
 
+// Access only the SDK union member selected for this process call.
+template<class Sample> inline Sample** channel_buffers(const AudioBusBuffers& bus) {
+    if constexpr (std::is_same_v<Sample,Sample64>) return bus.channelBuffers64;
+    else return bus.channelBuffers32;
+}
+inline void set_channel_buffers(AudioBusBuffers& bus,Sample32** channels) { bus.channelBuffers32=channels; }
+inline void set_channel_buffers(AudioBusBuffers& bus,Sample64** channels) { bus.channelBuffers64=channels; }
+
 // Preserve the SDK slots of disabled instrument outputs. Only bus zero has
 // PCM custody. The remaining slots have stable arrays of null sample pointers.
-class InactiveInstrumentOutputs {
+template<class Sample> class InactiveInstrumentOutputs {
     int32 count=1;
     std::array<AudioBusBuffers,max_instrument_outputs> buses{};
-    std::array<std::array<float*,64>,max_instrument_outputs-1> pointers{};
+    std::array<std::array<Sample*,64>,max_instrument_outputs-1> pointers{};
     std::array<int32,max_instrument_outputs-1> channels{};
 public:
     void prepare(int32 output_count,const InstrumentOutputLayout& layout) {
@@ -81,7 +92,7 @@ public:
         for (int32 i=1;i<count;++i) {
             channels[i-1]=SpeakerArr::getChannelCount(layout[i]);
             buses[i].numChannels=channels[i-1];
-            buses[i].channelBuffers32=pointers[i-1].data();
+            set_channel_buffers(buses[i],pointers[i-1].data());
         }
     }
     void attach(ProcessData& data) {
@@ -94,9 +105,9 @@ public:
     bool unchanged() const {
         for (int32 i=1;i<count;++i) {
             if (buses[i].numChannels!=channels[i-1] ||
-                buses[i].channelBuffers32!=pointers[i-1].data() ||
+                channel_buffers<Sample>(buses[i])!=pointers[i-1].data() ||
                 std::any_of(pointers[i-1].begin(),pointers[i-1].begin()+channels[i-1],
-                    [](const float* sample) { return sample!=nullptr; })) return false;
+                    [](const Sample* sample) { return sample!=nullptr; })) return false;
         }
         return true;
     }
@@ -146,18 +157,18 @@ inline bool processing_data(const ProcessingConfiguration& c,const ProcessData& 
 // Foreign code may set output silence flags, but cannot replace the host-owned
 // block shape. Compare captured descriptors before following any returned pointer
 // or trusting a changed frame count during output validation.
-struct ProcessingShape {
+template<class Sample> struct ProcessingShape {
     ProcessData original;
     AudioBusBuffers input{},output{};
-    float* inputs[2]{};float* outputs[2]{};
+    Sample* inputs[2]{};Sample* outputs[2]{};
     explicit ProcessingShape(const ProcessData& data):original(data) {
         if (data.numInputs) {
             input=data.inputs[0];
-            std::copy_n(input.channelBuffers32,input.numChannels,inputs);
+            std::copy_n(channel_buffers<Sample>(input),input.numChannels,inputs);
         }
         if (data.numOutputs) {
             output=data.outputs[0];
-            std::copy_n(output.channelBuffers32,output.numChannels,outputs);
+            std::copy_n(channel_buffers<Sample>(output),output.numChannels,outputs);
         }
     }
     bool unchanged(const ProcessData& data) const {
@@ -168,9 +179,9 @@ struct ProcessingShape {
             data.inputEvents!=original.inputEvents || data.outputEvents!=original.outputEvents ||
             data.processContext!=original.processContext)
             return false;
-        const auto matches=[](const AudioBusBuffers& current,const AudioBusBuffers& before,float* const* samples) {
-            if (current.numChannels!=before.numChannels || current.channelBuffers32!=before.channelBuffers32) return false;
-            for (int32 n=0;n<before.numChannels;++n) if (current.channelBuffers32[n]!=samples[n]) return false;
+        const auto matches=[](const AudioBusBuffers& current,const AudioBusBuffers& before,Sample* const* samples) {
+            if (current.numChannels!=before.numChannels || channel_buffers<Sample>(current)!=channel_buffers<Sample>(before)) return false;
+            for (int32 n=0;n<before.numChannels;++n) if (channel_buffers<Sample>(current)[n]!=samples[n]) return false;
             return true;
         };
         return (!data.numInputs || matches(data.inputs[0],input,inputs)) &&
@@ -188,6 +199,64 @@ inline void clear_disjoint_outputs(const ProcessingConfiguration& c,ProcessData&
     }
     data.outputs[0].silenceFlags=0;
 }
+// The bridge always supplies validated float buffers. Reserve up to four
+// distinct channels on control. Exact aliases map to the same SDK buffer,
+// including crossed in-place stereo. Disabled channels stay null.
+class DoubleProcessing {
+    std::unique_ptr<Sample64[]> storage_;
+    int32 stride_=0;
+    AudioBusBuffers input_{},output_{};
+    std::array<Sample64*,2> inputs_{},outputs_{};
+public:
+    InactiveInstrumentOutputs<Sample64> inactive_outputs;
+    bool reserve(int32 maximum_frames) {
+        stride_=maximum_frames;
+        storage_.reset(new (std::nothrow) Sample64[4*static_cast<size_t>(maximum_frames)]);
+        return storage_!=nullptr;
+    }
+    void attach(const ProcessingConfiguration& config,ProcessData& sdk) {
+        std::array<const Sample32*,4> originals{};
+        size_t used=0;
+        const auto convert=[&](const Sample32* source,bool input) -> Sample64* {
+            if (!source) return nullptr;
+            for (size_t i=0;i<used;++i)
+                if (originals[i]==source) return storage_.get()+i*stride_;
+            auto* samples=storage_.get()+used*stride_;
+            originals[used++]=source;
+            if (input) std::copy_n(source,sdk.numSamples,samples);
+            else std::fill_n(samples,sdk.numSamples,0.0);
+            return samples;
+        };
+        sdk.symbolicSampleSize=kSample64;
+        if (sdk.numInputs) {
+            input_=sdk.inputs[0];
+            for (int32 c=0;c<input_.numChannels;++c)
+                inputs_[c]=config.input_enabled?convert(sdk.inputs[0].channelBuffers32[c],true):nullptr;
+            input_.channelBuffers64=inputs_.data();
+            sdk.inputs=&input_;
+        }
+        if (sdk.numOutputs) {
+            output_=sdk.outputs[0];
+            for (int32 c=0;c<output_.numChannels;++c)
+                outputs_[c]=config.output_enabled?convert(sdk.outputs[0].channelBuffers32[c],false):nullptr;
+            output_.channelBuffers64=outputs_.data();
+            sdk.outputs=&output_;
+        }
+    }
+    void copy_outputs(ProcessData& data) const {
+        if (!data.numOutputs) return;
+        for (int32 c=0;c<data.outputs[0].numChannels;++c) {
+            auto* output=data.outputs[0].channelBuffers32[c];
+            if (!output) continue;
+            for (int32 n=0;n<data.numSamples;++n) {
+                const auto value=outputs_[c][n];
+                output[n]=std::abs(value)<=std::numeric_limits<Sample32>::max()
+                    ? static_cast<Sample32>(value) : 0.0f;
+            }
+        }
+    }
+};
+
 inline bool finite_outputs(const ProcessingConfiguration& c,ProcessData& data) {
     if (c.output_enabled && data.numOutputs && data.outputs) {
         data.outputs[0].silenceFlags&=(uint64_t(1)<<c.output_channels)-1;
