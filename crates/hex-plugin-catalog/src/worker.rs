@@ -226,12 +226,30 @@ fn drain(input: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<b
     .map(|outcome| outcome.any_read)
 }
 
+/// Discard buffered bytes from an already-overflowed non-blocking stream so a
+/// flooded child cannot wedge on a full OS pipe before observing cancellation.
+fn discard_pending(input: &mut UnixStream) -> Result<bool, String> {
+    let mut scratch = [0_u8; 16 * 1024];
+    let mut any_read = false;
+    for _ in 0..16 {
+        match std::io::Read::read(input, &mut scratch) {
+            Ok(0) => return Ok(any_read),
+            Ok(_) => any_read = true,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(any_read),
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(format!("scanner output unavailable: {e}")),
+        }
+    }
+    Ok(any_read)
+}
+
 // Observe direct-child retirement before deciding that currently empty channels
 // are final. A child can publish its last report between two parent operations.
 fn poll_and_drain<T>(
     exit: &mut Option<T>,
     observe: impl FnOnce() -> std::io::Result<Option<T>>,
     streams: [(&mut UnixStream, &mut Vec<u8>, usize); 2],
+    overflowed: &mut [bool; 2],
 ) -> Result<(bool, Option<String>), String> {
     if exit.is_none() {
         match observe() {
@@ -246,11 +264,25 @@ fn poll_and_drain<T>(
     }
     let mut received = false;
     let mut error = None;
-    for (stream, bytes, maximum) in streams {
+    for ((stream, bytes, maximum), is_overflowed) in streams.into_iter().zip(overflowed.iter_mut())
+    {
+        if *is_overflowed {
+            match discard_pending(stream) {
+                Ok(value) => received |= value,
+                Err(value) => {
+                    error.get_or_insert(value);
+                }
+            }
+            continue;
+        }
         match drain(stream, bytes, maximum) {
             Ok(value) => received |= value,
             Err(value) => {
+                *is_overflowed = true;
                 error.get_or_insert(value);
+                if let Ok(drained) = discard_pending(stream) {
+                    received |= drained;
+                }
             }
         }
     }
@@ -274,7 +306,13 @@ impl DiscoveryOutcome {
             .filter(|_| self.diagnostics.scanner_started)
     }
 }
-fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> DiscoveryOutcome {
+fn discover(
+    app: &Path,
+    path: &Path,
+    preinspected: Option<&Package>,
+    token: &Token,
+    deadline: ScanDeadline,
+) -> DiscoveryOutcome {
     token.set_current_module(Some(path));
     let started = Instant::now();
     let mut chain_retired = true; // No child has been started yet.
@@ -286,6 +324,7 @@ fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> D
     let result = discover_inner(
         app,
         path,
+        preinspected,
         token,
         deadline,
         &mut chain_retired,
@@ -301,9 +340,11 @@ fn discover(app: &Path, path: &Path, token: &Token, deadline: ScanDeadline) -> D
         failed_scan,
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn discover_inner(
     app: &Path,
     path: &Path,
+    preinspected: Option<&Package>,
     token: &Token,
     deadline: ScanDeadline,
     chain_retired: &mut bool,
@@ -313,7 +354,14 @@ fn discover_inner(
     if token.cancelled() {
         return Err("scan cancelled".into());
     }
-    let package = Package::inspect(app)?;
+    let owned_package;
+    let package = match preinspected {
+        Some(existing) => existing,
+        None => {
+            owned_package = Package::inspect(app)?;
+            &owned_package
+        }
+    };
     let initial = Bundle::inspect(path)?;
     *failed_scan = Some(FailedScan {
         bundle: initial.clone(),
@@ -342,6 +390,7 @@ fn discover_inner(
     let started = Instant::now();
     let mut out = Vec::new();
     let mut err = Vec::new();
+    let mut overflowed = [false; 2];
     let mut cause = None;
     let mut cancel_sent = false;
     let mut exit = None;
@@ -355,6 +404,7 @@ fn discover_inner(
                 (&mut output, &mut out, OUTPUT_LIMIT),
                 (&mut diagnostic, &mut err, ERROR_LIMIT),
             ],
+            &mut overflowed,
         );
         diagnostics.scanner_exit = exit;
         let (received, error) = match polled {
@@ -390,7 +440,9 @@ fn discover_inner(
         if exit.is_some() && !received {
             break;
         }
-        std::thread::sleep(Duration::from_millis(10));
+        if !received {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
     let decoded = serde_json::from_slice::<Report>(&out);
     diagnostics.report = out;
@@ -434,7 +486,6 @@ fn discover_inner(
     {
         return Err("scanner result differs from its selected input/tool identity".into());
     }
-    package.build.unchanged()?;
     initial.unchanged()?;
     initial.executable_unchanged(
         report
@@ -442,11 +493,17 @@ fn discover_inner(
             .as_ref()
             .ok_or("scanner executable identity missing")?,
     )?;
+    // `Package::inspect` already verifies the sealed manifest, scanner binary,
+    // native receipt, and helper build identity in one pass.
     let fresh = Package::inspect(app)?;
-    if fresh.source != package.source || fresh.scan_sha256 != package.scan_sha256 {
+    if fresh.source != package.source
+        || fresh.scan_sha256 != package.scan_sha256
+        || fresh.build.receipt_sha256 != package.build.receipt_sha256
+        || fresh.build.helper_sha256 != package.build.helper_sha256
+    {
         return Err("discovery package changed during scan".into());
     }
-    Ok((report, package.source))
+    Ok((report, package.source.clone()))
 }
 
 /// One selected scan. Caller runs this on a background control executor and
@@ -472,7 +529,11 @@ pub fn scan_with_deadline(
     }
     match Catalog::load(catalog_path) {
         Ok(catalog)
-            if catalog.entries.len() == crate::MAX_MODULES
+            if catalog
+                .entries
+                .len()
+                .saturating_add(catalog.clap_entries.len())
+                >= crate::MAX_MODULES
                 && !catalog.entries.iter().any(|entry| entry.path == path) =>
         {
             return Update {
@@ -491,7 +552,7 @@ pub fn scan_with_deadline(
         }
     }
     // An explicit selection always runs, even for a remembered failure.
-    let outcome = discover(app, &path, &token, deadline);
+    let outcome = discover(app, &path, None, &token, deadline);
     let failure_identity = outcome.failure_identity();
     let DiscoveryOutcome {
         result,
@@ -601,7 +662,7 @@ pub fn scan_folders_with_mode(
             .map(|entry| entry.path.clone())
             .collect();
         paths.extend(enumeration.bundles.iter().cloned());
-        if paths.len() > crate::MAX_MODULES {
+        if paths.len().saturating_add(staged.clap_entries.len()) > crate::MAX_MODULES {
             return Err("plugin catalog module capacity reached before scanning".into());
         }
         let package = Package::inspect(app)?;
@@ -616,7 +677,7 @@ pub fn scan_folders_with_mode(
             &token,
             &mut diagnostics,
             |catalog, path| cached_result(mode, catalog, path, tools),
-            |path| discover(app, path, &token, deadline),
+            |path| discover(app, path, Some(&package), &token, deadline),
         )?;
         Ok((
             batch.results,
@@ -718,6 +779,19 @@ impl Recorded {
             }
         }
     }
+
+    fn apply_incremental(&self, catalog: &mut Catalog) -> Result<(usize, usize), String> {
+        match &self.result {
+            Ok(found) => {
+                catalog.record_outcome_incremental(self.path.clone(), Ok(found.clone()), None)
+            }
+            Err(error) => catalog.record_outcome_incremental(
+                self.path.clone(),
+                Err(error.clone()),
+                self.failed_scan.clone(),
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -792,6 +866,9 @@ fn scan_batch(
         stopped: None,
     };
     let total = bundles.len();
+    let mut estimated_bytes = serde_json::to_vec(staged)
+        .map_err(|e| format!("catalog staging failed: {e}"))?
+        .len();
     for (index, path) in bundles.into_iter().enumerate() {
         if token.cancelled() {
             return Err("folder scan cancelled · catalog unchanged".into());
@@ -820,16 +897,15 @@ fn scan_batch(
                     report.stderr.clear();
                     (report, source)
                 })
-                .map_err(|error| error.chars().take(128).collect::<String>())
+                .map_err(|error| crate::sanitize_failure(&error))
         } else {
             // Metadata from a chain that did not retire is never accepted.
-            Err(outcome
-                .result
-                .err()
-                .unwrap_or_else(|| "scanner retirement not established".into())
-                .chars()
-                .take(128)
-                .collect())
+            Err(crate::sanitize_failure(
+                &outcome
+                    .result
+                    .err()
+                    .unwrap_or_else(|| "scanner retirement not established".into()),
+            ))
         };
         let recorded = Recorded {
             path,
@@ -844,13 +920,18 @@ fn scan_batch(
         let stop_reason = (!retired)
             .then(|| recorded.result.as_ref().err().cloned())
             .flatten();
-        recorded.apply(staged)?;
-        if serde_json::to_vec(staged)
-            .map_err(|e| format!("catalog staging failed: {e}"))?
-            .len()
-            > crate::MAX_CATALOG_BYTES
-        {
-            return Err("folder scan catalog byte bound exceeded · catalog unchanged".into());
+        let (prev_bytes, new_bytes) = recorded.apply_incremental(staged)?;
+        estimated_bytes = estimated_bytes
+            .saturating_sub(prev_bytes)
+            .saturating_add(new_bytes);
+        if estimated_bytes > crate::MAX_CATALOG_BYTES {
+            let exact = serde_json::to_vec(staged)
+                .map_err(|e| format!("catalog staging failed: {e}"))?
+                .len();
+            estimated_bytes = exact;
+            if exact > crate::MAX_CATALOG_BYTES {
+                return Err("folder scan catalog byte bound exceeded · catalog unchanged".into());
+            }
         }
         batch.results.push(recorded);
         if let Some(error) = stop_reason {
@@ -859,6 +940,14 @@ fn scan_batch(
             batch.stopped = Some((total - index - 1, error));
             break;
         }
+    }
+    staged.validate()?;
+    if serde_json::to_vec(staged)
+        .map_err(|e| format!("catalog staging failed: {e}"))?
+        .len()
+        > crate::MAX_CATALOG_BYTES
+    {
+        return Err("folder scan catalog byte bound exceeded · catalog unchanged".into());
     }
     Ok(batch)
 }
@@ -1026,6 +1115,7 @@ mod tests {
         let outcome = discover(
             Path::new(""),
             module,
+            None,
             &owner.token(),
             ScanDeadline::default(),
         );
@@ -1051,6 +1141,7 @@ mod tests {
         // discarding the report published immediately before successful reap.
         assert!(!drain(&mut output, &mut out, OUTPUT_LIMIT).unwrap());
         let mut exit = None;
+        let mut overflowed = [false; 2];
         let (received, error) = poll_and_drain(
             &mut exit,
             || {
@@ -1062,6 +1153,7 @@ mod tests {
                 (&mut output, &mut out, OUTPUT_LIMIT),
                 (&mut diagnostic, &mut err, ERROR_LIMIT),
             ],
+            &mut overflowed,
         )
         .unwrap();
         assert!(received);
@@ -1075,6 +1167,7 @@ mod tests {
                     (&mut output, &mut out, OUTPUT_LIMIT),
                     (&mut diagnostic, &mut err, ERROR_LIMIT),
                 ],
+                &mut overflowed,
             )
             .unwrap();
             assert!(error.is_none());
@@ -1086,6 +1179,115 @@ mod tests {
             }
         }
         panic!("bounded final report did not finish draining");
+    }
+
+    #[test]
+    fn overflowed_stream_discards_flood_without_growing_buffer() {
+        let (mut output, mut writer) = UnixStream::pair().unwrap();
+        let (mut diagnostic, _diag_writer) = UnixStream::pair().unwrap();
+        output.set_nonblocking(true).unwrap();
+        diagnostic.set_nonblocking(true).unwrap();
+
+        let flood_thread = std::thread::spawn(move || {
+            let chunk = vec![b'A'; 32 * 1024];
+            for _ in 0..8 {
+                writer.write_all(&chunk).unwrap();
+            }
+        });
+
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut exit: Option<()> = None;
+        let mut overflowed = [false; 2];
+        let started = Instant::now();
+        let mut saw_error = false;
+        while started.elapsed() < Duration::from_secs(2) {
+            let (received, error) = poll_and_drain(
+                &mut exit,
+                || Ok(None),
+                [
+                    (&mut output, &mut out, 8 * 1024),
+                    (&mut diagnostic, &mut err, ERROR_LIMIT),
+                ],
+                &mut overflowed,
+            )
+            .unwrap();
+            if error.is_some() {
+                saw_error = true;
+            }
+            if !received && flood_thread.is_finished() {
+                break;
+            }
+            if !received {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert!(
+            flood_thread.is_finished(),
+            "overflow drain must unblock flooded writer promptly"
+        );
+        flood_thread.join().unwrap();
+        assert!(saw_error, "overflow must be reported");
+        assert!(overflowed[0], "overflowed stream flag latched");
+        assert!(
+            out.len() <= 8 * 1024,
+            "retained bytes must stay within limit: {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn vst3_capacity_check_counts_existing_clap_entries() {
+        let root = std::env::temp_dir().join(format!(
+            "hex-catalog-capacity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+        let catalog_path = root.join("catalog.json");
+        crate::storage::update(&catalog_path, |catalog| {
+            for i in 0..crate::MAX_MODULES {
+                catalog.record_clap(root.join(format!("P{i}.clap")), Err("x".into()))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        let cancel = Cancellation::default();
+        let update = scan_with_deadline(
+            &catalog_path,
+            &root.join("hex.app"),
+            root.join("OneMore.vst3"),
+            cancel.token(),
+            ScanDeadline::default(),
+        );
+        assert!(
+            update.status.contains("capacity reached"),
+            "unexpected status: {}",
+            update.status
+        );
+        assert!(update.catalog.is_none());
+
+        let folder = root.join("folder");
+        std::fs::create_dir_all(folder.join("OneMore.vst3")).unwrap();
+        let folder_update = scan_folders_with_mode(
+            &catalog_path,
+            &root.join("hex.app"),
+            &[folder],
+            cancel.token(),
+            ScanDeadline::default(),
+            ScanMode::Incremental,
+        );
+        assert!(
+            folder_update.status.contains("capacity reached"),
+            "unexpected folder status: {}",
+            folder_update.status
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
