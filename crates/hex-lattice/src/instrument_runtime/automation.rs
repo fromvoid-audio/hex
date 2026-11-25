@@ -170,24 +170,45 @@ fn validate_values(
     {
         return Err(invalid);
     }
-    let mut bindings = [0_usize; MAX_PARAMETERS_PER_DEVICE];
-    for (binding, id) in bindings.iter_mut().zip(ids) {
-        *binding = descriptors
-            .binary_search_by_key(id, |descriptor| descriptor.id)
-            .map_err(|_| invalid)?;
-        if values.has_sample_rate_modulation(*id)
-            && view.parameter_modulation_semantics(*id).is_none()
+    let mut desc_index = 0;
+    for &id in ids {
+        while desc_index < descriptors.len() && descriptors[desc_index].id < id {
+            desc_index += 1;
+        }
+        if desc_index >= descriptors.len() || descriptors[desc_index].id != id {
+            return Err(invalid);
+        }
+        if values.has_sample_rate_modulation(id)
+            && view.parameter_modulation_semantics(id).is_none()
         {
             return Err(NativeInstrumentRuntimeError::UnsupportedParameterModulation);
         }
     }
+    if ids.is_empty() || frames == 0 || values.guarantees_valid_values(descriptors, frames) {
+        return Ok(());
+    }
+    validate_untrusted_values(descriptors, ids, values, frames)
+}
+
+#[inline(never)]
+fn validate_untrusted_values(
+    descriptors: &[ParameterDescriptor],
+    ids: &[ParameterId],
+    values: &dyn NativeParameterAutomation,
+    frames: usize,
+) -> Result<(), NativeInstrumentRuntimeError> {
+    let invalid = NativeInstrumentRuntimeError::InvalidParameterAutomation;
     let mut readings = [None; MAX_PARAMETERS_PER_DEVICE];
     let readings = &mut readings[..ids.len()];
     for offset in 0..frames {
         values.values_at(offset, readings).map_err(|_| invalid)?;
-        for (index, reading) in readings.iter().enumerate() {
+        let mut desc_index = 0;
+        for (&id, reading) in ids.iter().zip(readings.iter()) {
+            while desc_index < descriptors.len() && descriptors[desc_index].id < id {
+                desc_index += 1;
+            }
             if let Some(value) = reading {
-                descriptors[bindings[index]]
+                descriptors[desc_index]
                     .validate(*value)
                     .map_err(|_| invalid)?;
             }

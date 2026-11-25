@@ -76,7 +76,8 @@ impl ParameterSemantics {
         if !normalized
             || !stepped
             || (self.access == ParameterAccess::ReadOnly
-                && self.automation == ParameterAutomation::DeviceArrangementEnvelope)
+                && (self.automation == ParameterAutomation::DeviceArrangementEnvelope
+                    || self.modulation == ParameterModulation::SampleRate))
         {
             return Err(DeviceContractError::InvalidDescriptor);
         }
@@ -185,6 +186,18 @@ impl ParameterNormalization {
         value: ParameterValue,
     ) -> Result<f32, DeviceContractError> {
         descriptor.validate_descriptor()?;
+        self.normalize_validated(descriptor, value)
+    }
+
+    /// Fast path for audio-thread callers whose `descriptor` was already
+    /// validated on control during preparation. Still validates `value`
+    /// against `descriptor.kind` without re-scanning descriptor UTF-8 labels
+    /// or choice lists.
+    pub fn normalize_validated(
+        self,
+        descriptor: ParameterDescriptor,
+        value: ParameterValue,
+    ) -> Result<f32, DeviceContractError> {
         descriptor.validate(value)?;
         match (self, descriptor.kind, value) {
             (Self::Linear, ParameterKind::Float { min, max, .. }, ParameterValue::Float(v)) => {

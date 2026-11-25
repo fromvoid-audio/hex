@@ -115,6 +115,13 @@ fn undeclared_membership_invalid_declarations_and_read_only_atomic_guard() {
         read_only.validate(DESCRIPTOR),
         Err(DeviceContractError::InvalidDescriptor)
     );
+    let mut read_only_mod = semantics();
+    read_only_mod.access = ParameterAccess::ReadOnly;
+    read_only_mod.modulation = ParameterModulation::SampleRate;
+    assert_eq!(
+        read_only_mod.validate(DESCRIPTOR),
+        Err(DeviceContractError::InvalidDescriptor)
+    );
     let malformed = NativeDeviceState::new(definition.type_id(), 1, vec![1]).unwrap();
     assert_eq!(
         validated_parameter_semantics(&definition, &malformed, ID),
@@ -133,6 +140,33 @@ fn normalized_numeric_edges_discrete_midpoints_and_singletons_are_explicit() {
         log.normalize(DESCRIPTOR, ParameterValue::Float(100.0))
             .unwrap(),
         1.0
+    );
+    assert_eq!(
+        log.normalize_validated(DESCRIPTOR, ParameterValue::Float(10.0))
+            .unwrap(),
+        log.normalize(DESCRIPTOR, ParameterValue::Float(10.0))
+            .unwrap()
+    );
+    assert_eq!(
+        log.normalize_validated(DESCRIPTOR, ParameterValue::Float(f32::NAN)),
+        Err(DeviceContractError::InvalidParameterValue)
+    );
+    for invalid_id in [
+        "",
+        "nodot",
+        ".lead",
+        "trail.",
+        "a..b",
+        "Hex.Filter",
+        "a.b/c",
+    ] {
+        let id = DeviceTypeId::from_static(invalid_id);
+        assert_eq!(id.as_str(), Err(DeviceContractError::InvalidId));
+        assert_eq!(id.validate(), Err(DeviceContractError::InvalidId));
+    }
+    assert_eq!(
+        DeviceTypeId::from_static("hex.filter-1_2").as_str(),
+        Ok("hex.filter-1_2")
     );
     assert_eq!(
         log.denormalize(DESCRIPTOR, 0.5).unwrap(),

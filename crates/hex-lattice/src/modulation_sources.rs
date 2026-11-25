@@ -886,26 +886,46 @@ impl ModulationSourceBank {
             .sources
             .iter()
             .any(|source| source.scratch.tempo_timing().is_some());
-        if follows_tempo {
-            let cache = self
-                .tempo_cache
-                .get_mut(..frames)
-                .ok_or(Error::RuntimeBudgetExceeded)?;
-            for (offset, cached) in cache.iter_mut().enumerate() {
-                *cached = match clock.and_then(|clock| clock.tempo_micro_bpm_at_offset(offset)) {
+        let constant_tempo = if follows_tempo {
+            if let Some(clock) = clock {
+                match clock.constant_tempo_micro_bpm(0, frames) {
                     Some(0) => return Err(Error::InvalidParameterValue),
-                    Some(tempo) => tempo,
-                    None => 0,
-                };
-            }
-            for source in &self.sources {
-                if let Some(timing) = source.scratch.tempo_timing() {
-                    for &tempo in cache.iter() {
-                        timing.rate(source.sample_rate, tempo)?;
+                    Some(tempo) => {
+                        for source in &self.sources {
+                            if let Some(timing) = source.scratch.tempo_timing() {
+                                timing.rate(source.sample_rate, tempo)?;
+                            }
+                        }
+                        Some(tempo)
+                    }
+                    None => {
+                        let cache = self
+                            .tempo_cache
+                            .get_mut(..frames)
+                            .ok_or(Error::RuntimeBudgetExceeded)?;
+                        for (offset, cached) in cache.iter_mut().enumerate() {
+                            *cached = match clock.tempo_micro_bpm_at_offset(offset) {
+                                Some(0) => return Err(Error::InvalidParameterValue),
+                                Some(tempo) => tempo,
+                                None => 0,
+                            };
+                        }
+                        for source in &self.sources {
+                            if let Some(timing) = source.scratch.tempo_timing() {
+                                for &tempo in cache.iter() {
+                                    timing.rate(source.sample_rate, tempo)?;
+                                }
+                            }
+                        }
+                        None
                     }
                 }
+            } else {
+                Some(0)
             }
-        }
+        } else {
+            None
+        };
         let gate = self
             .note_gate
             .as_mut()
@@ -928,13 +948,18 @@ impl ModulationSourceBank {
                     oscillator.render(output);
                 }
                 SourceState::Lfo { oscillator, timing } => {
-                    let tempos = self
-                        .tempo_cache
-                        .get(..frames)
-                        .ok_or(Error::RuntimeBudgetExceeded)?;
-                    for (sample, &tempo) in output.iter_mut().zip(tempos) {
+                    if let Some(tempo) = constant_tempo {
                         oscillator.set_rate(timing.rate(source.sample_rate, tempo)?);
-                        *sample = oscillator.next_sample();
+                        oscillator.render(output);
+                    } else {
+                        let tempos = self
+                            .tempo_cache
+                            .get(..frames)
+                            .ok_or(Error::RuntimeBudgetExceeded)?;
+                        for (sample, &tempo) in output.iter_mut().zip(tempos) {
+                            oscillator.set_rate(timing.rate(source.sample_rate, tempo)?);
+                            *sample = oscillator.next_sample();
+                        }
                     }
                 }
                 SourceState::Follower(follower) => follower
@@ -967,7 +992,7 @@ impl ModulationSourceBank {
                 SourceState::TransportSteps(steps) => steps.render(clock, output),
             }
         }
-        if let Err(error) = self.render_routed_sources(frames, routes) {
+        if let Err(error) = self.render_routed_sources(frames, routes, constant_tempo) {
             self.rollback();
             return Err(error);
         }
@@ -981,6 +1006,7 @@ impl ModulationSourceBank {
         &mut self,
         frames: usize,
         routes: &[PreparedSourceRoute],
+        constant_tempo: Option<u32>,
     ) -> Result<(), Error> {
         for incoming in routes.chunk_by(|a, b| a.target == b.target) {
             let Some(route) = incoming.first() else {
@@ -1073,16 +1099,21 @@ impl ModulationSourceBank {
                         timing: timing @ Timing::Tempo { .. },
                     },
                 ) => {
-                    let tempos = self
-                        .tempo_cache
-                        .get(..frames)
-                        .ok_or(Error::RuntimeBudgetExceeded)?;
-                    render_rate_route(
-                        oscillator,
-                        output,
-                        |frame| timing.rate(target.sample_rate, tempos[frame]),
-                        sum_at,
-                    )?;
+                    if let Some(tempo) = constant_tempo {
+                        let base_rate = timing.rate(target.sample_rate, tempo)?;
+                        render_rate_route(oscillator, output, |_| Ok(base_rate), sum_at)?;
+                    } else {
+                        let tempos = self
+                            .tempo_cache
+                            .get(..frames)
+                            .ok_or(Error::RuntimeBudgetExceeded)?;
+                        render_rate_route(
+                            oscillator,
+                            output,
+                            |frame| timing.rate(target.sample_rate, tempos[frame]),
+                            sum_at,
+                        )?;
+                    }
                 }
                 _ => return Err(Error::UnsupportedProcessingClass),
             }
@@ -1915,5 +1946,59 @@ mod tests {
         oracle.render_chunk(4).unwrap();
         assert_eq!(bank.samples(first.id), oracle.samples(first.id));
         assert_eq!(bank.samples(second.id), oracle.samples(second.id));
+    }
+
+    #[test]
+    fn constant_tempo_fast_path_skips_per_sample_clock_queries_and_matches_oracle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct CountingConstantClock {
+            tempo: u32,
+            per_sample_calls: AtomicUsize,
+            fast_path: bool,
+        }
+        impl NativeInstrumentClock for CountingConstantClock {
+            fn beat_at_offset(&self, _: usize) -> Option<u64> {
+                None
+            }
+            fn tempo_micro_bpm_at_offset(&self, _: usize) -> Option<u32> {
+                self.per_sample_calls.fetch_add(1, Ordering::Relaxed);
+                Some(self.tempo)
+            }
+            fn constant_tempo_micro_bpm(&self, _: usize, _: usize) -> Option<u32> {
+                self.fast_path.then_some(self.tempo)
+            }
+        }
+
+        let id = ModulationSourceId::new(1).unwrap();
+        let src = PreparedModulationSource::tempo(id, 48_000.0, 120.0, 1.0, 0.0).unwrap();
+        let fast_clock = CountingConstantClock {
+            tempo: 138_000_000,
+            per_sample_calls: AtomicUsize::new(0),
+            fast_path: true,
+        };
+        let slow_clock = CountingConstantClock {
+            tempo: 138_000_000,
+            per_sample_calls: AtomicUsize::new(0),
+            fast_path: false,
+        };
+
+        let mut fast_bank = ModulationSourceBank::new(&[src], 64).unwrap();
+        let mut slow_bank = ModulationSourceBank::new(&[src], 64).unwrap();
+        fast_bank.begin();
+        slow_bank.begin();
+        fast_bank
+            .render_chunk_with_clock(64, Some(&fast_clock))
+            .unwrap();
+        slow_bank
+            .render_chunk_with_clock(64, Some(&slow_clock))
+            .unwrap();
+
+        assert_eq!(
+            fast_clock.per_sample_calls.load(Ordering::Relaxed),
+            0,
+            "constant_tempo_micro_bpm fast path must not query tempo_micro_bpm_at_offset per sample"
+        );
+        assert_eq!(slow_clock.per_sample_calls.load(Ordering::Relaxed), 64);
+        assert_eq!(fast_bank.samples(id), slow_bank.samples(id));
     }
 }

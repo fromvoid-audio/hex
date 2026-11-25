@@ -91,6 +91,15 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
     fn parameter_ids(&self) -> &[hex_lattice_contract::ParameterId] {
         self.values.parameter_ids()
     }
+    fn guarantees_valid_values(
+        &self,
+        descriptors: &[hex_lattice_contract::ParameterDescriptor],
+        frames: usize,
+    ) -> bool {
+        self.offset
+            .checked_add(frames)
+            .is_some_and(|total| self.values.guarantees_valid_values(descriptors, total))
+    }
     fn value_at(
         &self,
         id: hex_lattice_contract::ParameterId,
@@ -235,6 +244,15 @@ pub(crate) struct OffsetAutomation<'a> {
 impl NativeParameterAutomation for OffsetAutomation<'_> {
     fn parameter_ids(&self) -> &[hex_lattice_contract::ParameterId] {
         self.values.parameter_ids()
+    }
+    fn guarantees_valid_values(
+        &self,
+        descriptors: &[hex_lattice_contract::ParameterDescriptor],
+        frames: usize,
+    ) -> bool {
+        self.offset
+            .checked_add(frames)
+            .is_some_and(|total| self.values.guarantees_valid_values(descriptors, total))
     }
     fn value_at(
         &self,
