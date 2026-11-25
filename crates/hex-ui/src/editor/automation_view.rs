@@ -2,7 +2,6 @@
 //! switching views never changes authored automation, clip activation or history.
 use super::{EditorMode, EditorView};
 use gpui::{Context, Window};
-use hex_session::service::GainLaneEdit;
 
 #[derive(Default)]
 pub(super) struct AutomationView {
@@ -78,9 +77,7 @@ impl EditorView {
             return true;
         }
         // Consume an empty automation selection too: retained clips are background.
-        if let Some(beat) = self.gain_lane.selected {
-            self.gain_edit(GainLaneEdit::Remove(beat), cx);
-        }
+        self.delete_selected_gain_points(cx);
         cx.notify();
         true
     }

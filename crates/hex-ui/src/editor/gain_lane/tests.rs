@@ -1159,4 +1159,264 @@ pub(in crate::editor) mod native {
             "dotted line must remain seamless when terminal ACK installs canonical gain"
         );
     }
+
+    #[gpui::test]
+    fn marquee_select_shift_add_cmd_toggle_and_group_move_commit_in_one_undo(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_project::{Command, Created, Editor, GainInterpolation, GainPoint, Project};
+        use hex_session::service::GainLaneEdit;
+        use std::sync::Arc;
+
+        let p0 = GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(1).unwrap(),
+            gain: 0.5,
+            outgoing: GainInterpolation::Linear,
+        };
+        let p1 = GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(2).unwrap(),
+            gain: 1.0,
+            outgoing: GainInterpolation::Linear,
+        };
+        let p2 = GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(4).unwrap(),
+            gain: 1.5,
+            outgoing: GainInterpolation::Linear,
+        };
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = model
+            .execute(Command::AddTrack { name: "g".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        model
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![p0, p1, p2],
+            })
+            .unwrap();
+        let initial_envelope = model
+            .project()
+            .track(track)
+            .unwrap()
+            .gain_envelope()
+            .to_vec();
+
+        let (handle, entity) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+        entity.update(&mut visual, |view, cx| {
+            view.audio_detail.clip_view_open = false;
+            view.gain_lane.track = Some(track);
+            view.viewport = Some(Viewport {
+                start: 0,
+                length: 144_000, // 6 quarter notes at 120 bpm, 48 kHz
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let bounds = visual.debug_bounds("gain-lane-plot").unwrap();
+        let pt_pos = |beat_q: u64, gain: f32| {
+            let x = bounds.origin.x + bounds.size.width * (beat_q as f32 / 6.0);
+            let y = bounds.origin.y + bounds.size.height * (1.0 - gain_display_position(gain));
+            gpui_point(x, y)
+        };
+
+        // Blank drag across p0 (beat 1) and p1 (beat 2) marquees both without adding a point.
+        let m_start = gpui_point(bounds.origin.x + px(4.0), bounds.origin.y + px(2.0));
+        let m_end = gpui_point(
+            bounds.origin.x + bounds.size.width * (2.6 / 6.0),
+            bounds.origin.y + bounds.size.height - px(2.0),
+        );
+        visual.simulate_mouse_down(m_start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(m_end, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(m_end, MouseButton::Left, Modifiers::default());
+        entity.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "marquee must not add a point"
+            );
+            assert_eq!(view.gain_lane.effective_selected(), vec![p0.beat, p1.beat]);
+        });
+
+        // Shift+click on p2 adds p2 to the group.
+        let p2_pos = pt_pos(4, 1.5);
+        let shift = Modifiers {
+            shift: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(p2_pos, MouseButton::Left, shift);
+        visual.simulate_mouse_up(p2_pos, MouseButton::Left, shift);
+        entity.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.gain_lane.effective_selected(),
+                vec![p0.beat, p1.beat, p2.beat]
+            );
+        });
+
+        // Cmd+click on p2 toggles p2 back out of the group.
+        let cmd = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(p2_pos, MouseButton::Left, cmd);
+        visual.simulate_mouse_up(p2_pos, MouseButton::Left, cmd);
+        entity.read_with(&visual, |view, _| {
+            assert_eq!(view.gain_lane.effective_selected(), vec![p0.beat, p1.beat]);
+        });
+
+        // Group drag p0 rightward by 1 beat -> moves both p0 and p1 together in ONE Replace edit.
+        let p0_pos = pt_pos(1, 0.5);
+        let drag_to = pt_pos(2, 0.5);
+        visual.simulate_mouse_down(p0_pos, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(drag_to, Some(MouseButton::Left), Modifiers::default());
+        entity.read_with(&visual, |view, _| {
+            assert!(view.gain_lane.group_draft.is_some());
+            assert_eq!(view.worker_requests_pending, 0);
+        });
+        visual.simulate_mouse_up(drag_to, MouseButton::Left, Modifiers::default());
+        let replaced_points = entity.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.worker_requests_pending, 1,
+                "group move emits one request"
+            );
+            let pending = view.gain_lane.pending.as_ref().expect("pending group move");
+            match &pending.edit {
+                GainLaneEdit::Replace(points) => points.clone(),
+                other => panic!("expected GainLaneEdit::Replace, got {other:?}"),
+            }
+        });
+        assert_eq!(replaced_points.len(), 3);
+        assert!(replaced_points[0].beat > p0.beat);
+        assert!(replaced_points[1].beat > p1.beat);
+        assert_eq!(
+            replaced_points[2].beat, p2.beat,
+            "unselected p2 stays fixed"
+        );
+
+        // Executing that single GainLaneEdit::Replace command reverts cleanly in ONE Undo step.
+        model
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: replaced_points,
+            })
+            .unwrap();
+        assert_ne!(
+            model.project().track(track).unwrap().gain_envelope(),
+            initial_envelope.as_slice()
+        );
+        assert!(model.undo());
+        assert_eq!(
+            model.project().track(track).unwrap().gain_envelope(),
+            initial_envelope.as_slice()
+        );
+    }
+
+    #[gpui::test]
+    fn inline_gain_lane_marquee_and_group_delete_commit_in_one_undo(cx: &mut TestAppContext) {
+        use hex_project::{Command, Created, Editor, GainInterpolation, GainPoint, Project};
+        use std::sync::Arc;
+
+        let p0 = GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(1).unwrap(),
+            gain: 0.5,
+            outgoing: GainInterpolation::Linear,
+        };
+        let p1 = GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(2).unwrap(),
+            gain: 1.0,
+            outgoing: GainInterpolation::Linear,
+        };
+        let p2 = GainPoint {
+            incoming_gain: None,
+            beat: BeatTime::from_quarters(4).unwrap(),
+            gain: 1.5,
+            outgoing: GainInterpolation::Linear,
+        };
+        let mut model = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = model
+            .execute(Command::AddTrack { name: "g".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        model
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![p0, p1, p2],
+            })
+            .unwrap();
+        let initial_envelope = model
+            .project()
+            .track(track)
+            .unwrap()
+            .gain_envelope()
+            .to_vec();
+
+        let (handle, entity) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+        entity.update(&mut visual, |view, cx| {
+            view.gain_lane.track = Some(track);
+            view.toggle_automation_view(cx);
+            assert!(view.automation_view.enabled);
+            view.viewport = Some(Viewport {
+                start: 0,
+                length: 144_000,
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let selector =
+            Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("inline gain lane plot");
+        let m_start = gpui_point(bounds.origin.x + px(4.0), bounds.origin.y + px(2.0));
+        let m_end = gpui_point(
+            bounds.origin.x + bounds.size.width * (2.6 / 6.0),
+            bounds.origin.y + bounds.size.height - px(2.0),
+        );
+        visual.simulate_mouse_down(m_start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(m_end, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(m_end, MouseButton::Left, Modifiers::default());
+        entity.read_with(&visual, |view, _| {
+            assert_eq!(view.gain_lane.effective_selected(), vec![p0.beat, p1.beat]);
+        });
+
+        // Delete selected group -> single GainLaneEdit::Replace keeping only p2, reverted in ONE Undo.
+        entity.update(&mut visual, |view, cx| {
+            assert!(view.delete_selected_gain_points(cx));
+            assert_eq!(view.worker_requests_pending, 1);
+            assert!(view.gain_lane.effective_selected().is_empty());
+        });
+        model
+            .execute(Command::ReplaceTrackGainEnvelope {
+                track,
+                points: vec![p2],
+            })
+            .unwrap();
+        assert_eq!(model.project().track(track).unwrap().gain_envelope(), &[p2]);
+        assert!(model.undo());
+        assert_eq!(
+            model.project().track(track).unwrap().gain_envelope(),
+            initial_envelope.as_slice()
+        );
+    }
 }
