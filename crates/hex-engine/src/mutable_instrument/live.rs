@@ -14,9 +14,40 @@ pub(super) struct LiveOccurrence {
     pub(super) input: LiveInputId,
     pub(super) token: u64,
     pub(super) id: u64,
+    pub(super) release_origin: Option<ReleaseOrigin>,
     pub(super) quiet_age: Option<u64>,
     pub(super) release_requested: bool,
     pub(super) contributor_fade: Option<ContributorFade>,
+}
+
+/// Reconcile one committed live occurrence's source-age release deadline from
+/// `previous_tail` to `target_tail`. Returns `None` on invalid invariants or
+/// `u64` overflow so retarget preflight refuses atomically before mutating.
+pub(super) fn reconcile_live_deadline(
+    voice: LiveOccurrence,
+    previous_tail: u64,
+    target_tail: u64,
+) -> Option<LiveOccurrence> {
+    if let Some(old_quiet) = voice.quiet_age {
+        if voice.release_requested {
+            return None;
+        }
+        let quiet_age = if let Some(origin) = voice.release_origin {
+            origin.quiet_age(target_tail)?
+        } else if target_tail >= previous_tail {
+            old_quiet.checked_add(target_tail - previous_tail)?
+        } else {
+            old_quiet.saturating_sub(previous_tail - target_tail)
+        };
+        Some(LiveOccurrence {
+            quiet_age: Some(quiet_age),
+            ..voice
+        })
+    } else if voice.release_origin.is_some() {
+        None
+    } else {
+        Some(voice)
+    }
 }
 
 pub(super) struct LiveLedger {
@@ -69,9 +100,9 @@ impl LiveLedger {
         &mut self,
         tail: u64,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        let quiet = self
-            .scratch_age
-            .checked_add(tail)
+        let origin = ReleaseOrigin::AtAge(self.scratch_age);
+        let quiet = origin
+            .quiet_age(tail)
             .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
         for index in 0..self.scratch.len() {
             if let Some(voice) = self.scratch[index]
@@ -79,6 +110,7 @@ impl LiveLedger {
                 .filter(|voice| voice.release_requested && voice.quiet_age.is_none())
             {
                 voice.release_requested = false;
+                voice.release_origin = Some(origin);
                 voice.quiet_age = Some(quiet);
                 let id = voice.id;
                 self.push(NativeInstrumentEvent::NoteOff {
@@ -399,12 +431,16 @@ impl MutableInstrumentTrackRuntime {
                         voice.input == input && voice.token == token && voice.quiet_age.is_none()
                     }) {
                         let id = voice.id;
-                        voice.quiet_age = Some(
-                            live.scratch_age
-                                .checked_add(frame_offset as u64)
-                                .and_then(|age| age.checked_add(tail))
-                                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
-                        );
+                        let release_at = live
+                            .scratch_age
+                            .checked_add(frame_offset as u64)
+                            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                        let origin = ReleaseOrigin::AtAge(release_at);
+                        let quiet = origin
+                            .quiet_age(tail)
+                            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                        voice.release_origin = Some(origin);
+                        voice.quiet_age = Some(quiet);
                         live.push(NativeInstrumentEvent::NoteOff {
                             frame_offset,
                             occurrence_id: id,
@@ -442,6 +478,7 @@ impl MutableInstrumentTrackRuntime {
                         input,
                         token,
                         id,
+                        release_origin: None,
                         quiet_age: None,
                         release_requested: false,
                         contributor_fade: fade_frames.filter(|_| fade_in_token == Some(token)).map(
@@ -491,9 +528,9 @@ impl MutableInstrumentTrackRuntime {
         let Some(live) = &mut self.live else {
             return Ok(());
         };
-        let quiet = live
-            .scratch_age
-            .checked_add(tail)
+        let origin = ReleaseOrigin::AtAge(live.scratch_age);
+        let quiet = origin
+            .quiet_age(tail)
             .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
         for index in 0..live.scratch.len() {
             if let Some(voice) = live.scratch[index]
@@ -501,6 +538,7 @@ impl MutableInstrumentTrackRuntime {
                 .filter(|voice| voice.input == input && voice.quiet_age.is_none())
             {
                 let id = voice.id;
+                voice.release_origin = Some(origin);
                 voice.quiet_age = Some(quiet);
                 live.push(NativeInstrumentEvent::NoteOff {
                     frame_offset: 0,
@@ -568,6 +606,15 @@ impl MutableInstrumentTrackRuntime {
         self.primary.extend(authored.iter().flatten().copied());
         for proof in &mut self.primary {
             if proof.note_off_sent {
+                proof.release_origin = history
+                    .voices
+                    .iter()
+                    .find(|voice| voice.occurrence_id == proof.id)
+                    .and_then(|voice| {
+                        voice.gate_frame.map(|gate| {
+                            ReleaseOrigin::BeforeAgeZero(voice.age_frames.saturating_sub(gate))
+                        })
+                    });
                 proof.quiet_deadline_age = Some(
                     proof
                         .quiet_deadline_frame
@@ -584,13 +631,15 @@ impl MutableInstrumentTrackRuntime {
             ledger.monitor_anchor = None;
             for (index, (origin, voice)) in live.iter().zip(history.voices).enumerate() {
                 if let Some(origin) = origin {
+                    let release_origin = voice.gate_frame.map(|gate| {
+                        ReleaseOrigin::BeforeAgeZero(voice.age_frames.saturating_sub(gate))
+                    });
                     ledger.primary[index] = Some(LiveOccurrence {
                         input: origin.input,
                         token: origin.token,
                         id: origin.id,
-                        quiet_age: voice
-                            .gate_frame
-                            .map(|gate| tail.saturating_sub(voice.age_frames.saturating_sub(gate))),
+                        release_origin,
+                        quiet_age: release_origin.and_then(|origin| origin.quiet_age(tail)),
                         release_requested: false,
                         contributor_fade: None,
                     });
@@ -633,6 +682,7 @@ mod tests {
             },
             token: 1,
             id: 7,
+            release_origin: None,
             quiet_age: None,
             release_requested: true,
             contributor_fade: None,

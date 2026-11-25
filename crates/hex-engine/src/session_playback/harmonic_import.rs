@@ -147,6 +147,7 @@ impl Import {
             onset_frame: previous.performance_frame.saturating_sub(age),
             gate_end_frame,
             quiet_deadline_frame,
+            release_origin: None,
             quiet_deadline_age: None,
             note_off_sent: gate <= cut,
             gain_at_end_bits: gain.to_bits(),
