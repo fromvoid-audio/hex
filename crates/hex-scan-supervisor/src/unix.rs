@@ -78,13 +78,25 @@ pub fn fd_cancelled<Fd: AsFd + Read>(
         tv_sec: 0,
         tv_nsec: 0,
     };
-    rustix::event::poll(&mut descriptors, Some(&zero)).map_err(|_| "cancel poll failed")?;
+    loop {
+        match rustix::event::poll(&mut descriptors, Some(&zero)) {
+            Ok(_) => break,
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return Err("cancel poll failed".into()),
+        }
+    }
     let ready = descriptors[0].revents();
     if !ready.contains(rustix::event::PollFlags::IN) {
         return Ok(cancel_on_disconnect && ready.contains(rustix::event::PollFlags::HUP));
     }
     let mut buffer = [0_u8; 64];
-    let count = reader.read(&mut buffer).map_err(|_| "cancel read failed")?;
+    let count = loop {
+        match reader.read(&mut buffer) {
+            Ok(n) => break n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err("cancel read failed".into()),
+        }
+    };
     // Any byte cancels (single-byte or split multi-byte writes); 0 bytes means
     // EOF/disconnect.
     Ok(count != 0 || cancel_on_disconnect)
@@ -251,10 +263,16 @@ pub(crate) fn run_supervised<S: SupervisionStrategy>(
         if cause.is_some() {
             break;
         }
-        match process::waitid(
-            WaitId::Pid(pid),
-            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-        ) {
+        let waited = loop {
+            match process::waitid(
+                WaitId::Pid(pid),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+            ) {
+                Err(rustix::io::Errno::INTR) => continue,
+                other => break other,
+            }
+        };
+        match waited {
             Ok(Some(status)) => {
                 exited = true;
                 if sent != input.len() {
@@ -271,7 +289,25 @@ pub(crate) fn run_supervised<S: SupervisionStrategy>(
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(2));
+        // Wait via `poll(2)` up to 2 ms so helper output, stdin cancel, or
+        // SIGCHLD (`EINTR`) wakes the loop immediately without fixed sleep lag.
+        let stdin = std::io::stdin();
+        let proto_flags = if sent < input.len() {
+            rustix::event::PollFlags::IN | rustix::event::PollFlags::OUT
+        } else {
+            rustix::event::PollFlags::IN
+        };
+        let mut wait_fds = [
+            rustix::event::PollFd::new(&protocol, proto_flags),
+            rustix::event::PollFd::new(&stdout, rustix::event::PollFlags::IN),
+            rustix::event::PollFd::new(&stderr, rustix::event::PollFlags::IN),
+            rustix::event::PollFd::new(&stdin, rustix::event::PollFlags::IN),
+        ];
+        let timeout = rustix::event::Timespec {
+            tv_sec: 0,
+            tv_nsec: 2_000_000,
+        };
+        let _ = rustix::event::poll(&mut wait_fds, Some(&timeout));
     }
     let mut pending = strategy.terminate_and_pending(child, pid, exited, &mut cause);
     let cleanup_start = Instant::now();
@@ -353,23 +389,36 @@ impl DirectPending {
             return Ok(true);
         }
         if let Some(pid) = self.pid {
-            let state = process::waitid(
-                WaitId::Pid(pid),
-                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-            )
-            .map_err(|_| "direct child observation failed")?;
+            let state = loop {
+                match process::waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                ) {
+                    Ok(value) => break value,
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(_) => return Err("direct child observation failed".into()),
+                }
+            };
             if state.is_none() {
                 return Ok(false);
             }
-            self.child.wait().map_err(|_| "direct child wait failed")?;
+            loop {
+                match self.child.wait() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err("direct child wait failed".into()),
+                }
+            }
         } else {
             // An unsupported PID never authorizes a group signal or result.
-            if self
-                .child
-                .try_wait()
-                .map_err(|_| "unidentified child wait failed")?
-                .is_none()
-            {
+            let status = loop {
+                match self.child.try_wait() {
+                    Ok(status) => break status,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err("unidentified child wait failed".into()),
+                }
+            };
+            if status.is_none() {
                 return Ok(false);
             }
         }
@@ -540,5 +589,41 @@ mod tests {
         drop(writer);
         assert!(!fd_cancelled(&mut reader, false).unwrap());
         assert!(fd_cancelled(&mut reader, true).unwrap());
+    }
+
+    #[test]
+    fn fd_cancelled_retries_interrupted_read_without_failing_scan() {
+        struct InterruptedOnce {
+            inner: UnixStream,
+            remaining_interrupts: usize,
+        }
+
+        impl AsFd for InterruptedOnce {
+            fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+                self.inner.as_fd()
+            }
+        }
+
+        impl Read for InterruptedOnce {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.remaining_interrupts > 0 {
+                    self.remaining_interrupts -= 1;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "simulated SIGCHLD EINTR",
+                    ));
+                }
+                self.inner.read(buf)
+            }
+        }
+
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(&[1]).unwrap();
+        let mut flaky = InterruptedOnce {
+            inner: reader,
+            remaining_interrupts: 2,
+        };
+        assert!(fd_cancelled(&mut flaky, true).unwrap());
+        assert_eq!(flaky.remaining_interrupts, 0);
     }
 }

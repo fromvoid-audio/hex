@@ -140,7 +140,12 @@ pub fn controlled_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-pub fn binary_identity(path: &Path, expected: &str) -> Result<String, String> {
+/// Verify a controlled Linux x86_64 ELF64 little-endian `ET_DYN` fixture binary
+/// against its expected SHA-256 digest.
+///
+/// This helper is intentionally scoped to Linux x86_64 ELF64 test/scan fixtures
+/// and never loads native host binaries or parses macOS Mach-O executables.
+pub fn linux_elf64_binary_identity(path: &Path, expected: &str) -> Result<String, String> {
     let bytes = file_bytes(path, MAX_BINARY)?;
     // Deliberately no native loader. Only the claimed Linux x86_64 ELF64 LE
     // fixture architecture/ET_DYN helper or shared-module ABI is accepted.
@@ -162,6 +167,10 @@ pub fn binary_identity(path: &Path, expected: &str) -> Result<String, String> {
     }
     Ok(digest)
 }
+
+/// Compatibility alias for [`linux_elf64_binary_identity`] used by offline
+/// protocol fixture harnesses that run on both Linux and macOS.
+pub use linux_elf64_binary_identity as binary_identity;
 
 #[cfg(test)]
 mod tests {

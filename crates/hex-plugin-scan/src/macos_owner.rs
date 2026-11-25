@@ -8,10 +8,13 @@ use hex_plugin_scan::{
         protocol::{self, Attempt},
     },
 };
-use hex_scan_supervisor::{io::drain_bounded, signal::SignalGuard};
+use hex_scan_supervisor::{
+    io::{drain_bounded, final_drain_passes},
+    signal::SignalGuard,
+};
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions};
 use std::{
-    io::{Read, Write},
+    io::Write,
     os::{
         fd::OwnedFd,
         unix::{
@@ -67,9 +70,13 @@ impl ChildOperations for NativeChild {
         }
     }
     fn reap(&mut self) -> Result<std::process::ExitStatus, String> {
-        self.child
-            .wait()
-            .map_err(|e| format!("direct reap failed; custody unknown: {e}"))
+        loop {
+            match self.child.wait() {
+                Ok(status) => return Ok(status),
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(format!("direct reap failed; custody unknown: {e}")),
+            }
+        }
     }
 }
 fn lose_custody(cleanup: &mut Cleanup) {
@@ -118,7 +125,9 @@ fn retire_child(process: &mut impl ChildOperations, cleanup: &mut Cleanup) -> Re
         }
     };
     cleanup.original_group_term = Some(process.group_signal(Signal::TERM));
-    std::thread::sleep(Duration::from_millis(5));
+    if !cleanup.exit_observed_before_signals {
+        std::thread::sleep(Duration::from_millis(5));
+    }
     cleanup.original_group_kill = Some(process.group_signal(Signal::KILL));
     if !cleanup.exit_observed_before_signals {
         cleanup.direct_kill = Some(process.direct_kill());
@@ -181,15 +190,19 @@ fn publish_candidate(
 }
 
 fn observe(pid: Pid) -> Result<bool, String> {
-    match process::waitid(
-        WaitId::Pid(pid),
-        WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-    ) {
-        Ok(value) => Ok(value.is_some()),
-        Err(rustix::io::Errno::INTR) => Ok(false),
-        Err(error) => Err(format!(
-            "child observation failed; custody unknown: {error}"
-        )),
+    loop {
+        match process::waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        ) {
+            Ok(value) => return Ok(value.is_some()),
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(error) => {
+                return Err(format!(
+                    "child observation failed; custody unknown: {error}"
+                ));
+            }
+        }
     }
 }
 
@@ -220,30 +233,7 @@ fn drain(reader: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<
     .map(|outcome| outcome.eof)
 }
 
-pub fn stdin_cancelled(cancel_on_disconnect: bool) -> Result<bool, String> {
-    let mut input = std::io::stdin();
-    let mut descriptors = [rustix::event::PollFd::new(
-        &input,
-        rustix::event::PollFlags::IN,
-    )];
-    let zero = rustix::event::Timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    rustix::event::poll(&mut descriptors, Some(&zero))
-        .map_err(|e| format!("cancel poll failed: {e}"))?;
-    let ready = descriptors[0].revents();
-    if !ready.contains(rustix::event::PollFlags::IN) {
-        return Ok(cancel_on_disconnect && ready.contains(rustix::event::PollFlags::HUP));
-    }
-    let mut bytes = [0_u8; 64];
-    let count = input
-        .read(&mut bytes)
-        .map_err(|e| format!("cancel read failed: {e}"))?;
-    // Any stdin byte cancels. A split word cannot lose cancellation, and no
-    // line-buffered read or competing stdin reader is introduced.
-    Ok(count != 0 || cancel_on_disconnect)
-}
+pub use hex_scan_supervisor::unix::stdin_cancelled;
 
 pub fn run(
     build: Build,
@@ -409,8 +399,9 @@ pub fn run(
         }
         std::thread::sleep(Duration::from_millis(2));
     }
-    // Bounded final drains; EOF is not a prerequisite or descendant proof.
-    for _ in 0..70 {
+    // Bounded final drains with early exit; EOF is not a prerequisite or descendant proof.
+    for _ in 0..final_drain_passes(protocol::FRAME_LIMIT) {
+        let before = (incoming.len(), out.len(), err.len());
         for result in [
             drain(&mut channel, &mut incoming, protocol::FRAME_LIMIT),
             drain(&mut stdout, &mut out, DIAGNOSTIC_LIMIT),
@@ -419,6 +410,9 @@ pub fn run(
             if let Err(error) = result {
                 cause.get_or_insert(error);
             }
+        }
+        if (incoming.len(), out.len(), err.len()) == before {
+            break;
         }
     }
     if owner.cleanup.custody_lost {
@@ -639,6 +633,31 @@ mod tests {
         assert!(
             may_publish(&cleanup),
             "the cancellation gate, not a failed reap, refused the record"
+        );
+    }
+
+    #[test]
+    fn retire_child_skips_exit_sleep_when_exit_was_already_observed() {
+        let started = Instant::now();
+        for _ in 0..8 {
+            let mut kernel = Kernel {
+                events: Vec::new(),
+                lost: false,
+                running: false,
+                denied: false,
+            };
+            let mut cleanup = Cleanup {
+                pending: true,
+                descendants: "unknown".into(),
+                ..Cleanup::default()
+            };
+            retire_child(&mut kernel, &mut cleanup).expect("already exited retire");
+            assert!(cleanup.exit_observed_before_signals);
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(25),
+            "8 already-exited retirements should skip the 5 ms sleep (took {:?})",
+            started.elapsed()
         );
     }
 }
