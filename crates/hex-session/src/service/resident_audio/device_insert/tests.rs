@@ -66,6 +66,7 @@ struct Fixture {
     provide_stopped_power_fence: bool,
     observed_power_on: Vec<Option<ResidentPowerOn>>,
     pending_publication: bool,
+    pending_observed: Option<std::sync::mpsc::SyncSender<()>>,
     no_output: bool,
 }
 
@@ -167,6 +168,9 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
             .active
             .map_or(ResidentPublicationReadiness::NoOutput, |submission| {
                 if fixture.pending_publication {
+                    if let Some(observed) = &fixture.pending_observed {
+                        let _ = observed.try_send(());
+                    }
                     ResidentPublicationReadiness::Pending {
                         submission,
                         applied_revision: submission.audio_revision.saturating_sub(1),
@@ -2358,6 +2362,60 @@ fn verified_streaming_with_vst3_supports_edit_compare_gesture_and_replacement_un
             .state()
             .type_id(),
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+    );
+}
+
+#[test]
+fn resident_track_switches_wait_for_the_prior_audio_publication_in_fifo_order() {
+    let (service, fixture, _) = service();
+    service
+        .submit(Request::Edit(Command::AddTrack { name: "mix".into() }))
+        .unwrap();
+    let added = receive(&service);
+    let track = added.state.project.tracks()[0].id();
+    let (observed, polls) = std::sync::mpsc::sync_channel(1);
+    let previous = {
+        let mut audio = fixture.lock().unwrap();
+        audio.pending_publication = true;
+        audio.pending_observed = Some(observed);
+        audio.active.unwrap()
+    };
+    service
+        .submit(Request::Edit(Command::ToggleSolo {
+            track,
+            exclusive: true,
+        }))
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::ToggleMute(track)))
+        .unwrap();
+    // The audio owner keeps the predecessor pending through admission and a
+    // subsequent poll. Only the test releases it, independent of callback cadence.
+    let waiting = (0..2).all(|_| polls.recv_timeout(Duration::from_millis(200)).is_ok());
+    let early_terminal = service.try_event();
+    let early_display = service.try_track_switch_view();
+    let mut audio = fixture.lock().unwrap();
+    let before_release = audio.active;
+    audio.pending_publication = false;
+    drop(audio);
+    assert!(
+        waiting && early_terminal.is_err() && early_display.is_err(),
+        "switches must stay queued until the pending audio publication is installed"
+    );
+    assert_eq!(before_release, Some(previous));
+    let solo = receive(&service);
+    let mute = receive(&service);
+    assert_eq!(solo.state.revision, added.state.revision + 1);
+    assert_eq!(mute.state.revision, solo.state.revision + 1);
+    let first = solo.state.project.track(track).unwrap();
+    let second = mute.state.project.track(track).unwrap();
+    assert!(first.soloed() && !first.muted());
+    assert!(second.soloed() && second.muted());
+    let applied = fixture.lock().unwrap().active.unwrap();
+    assert_eq!(applied.audio_revision, previous.audio_revision + 2);
+    assert_eq!(
+        applied.source_context.unwrap().editor_revision,
+        mute.state.revision
     );
 }
 
