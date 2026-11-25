@@ -3,6 +3,9 @@ use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::sync::{Arc, atomic::AtomicBool};
 fn fixture() -> (Project, hex_project::AssetId) {
+    fixture_with_length(BeatTime::ONE)
+}
+fn fixture_with_length(clip_length: BeatTime) -> (Project, hex_project::AssetId) {
     let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
     let Created::Asset(asset) = editor
         .execute(Command::ImportDeviceAsset {
@@ -26,7 +29,7 @@ fn fixture() -> (Project, hex_project::AssetId) {
         .execute(Command::PlaceMidiClip {
             track,
             start: BeatTime::ZERO,
-            length: BeatTime::ONE,
+            length: clip_length,
         })
         .unwrap()
     else {
@@ -36,7 +39,7 @@ fn fixture() -> (Project, hex_project::AssetId) {
         .execute(Command::AddMidiNote {
             clip,
             start: BeatTime::ZERO,
-            duration: BeatTime::ONE,
+            duration: clip_length,
             pitch: 60,
             channel: 0,
             velocity: 127,
@@ -78,7 +81,11 @@ fn grouped_sampler_constructor_routes_live_monitor_and_authored_playback() {
 }
 fn sampler_constructor_case(grouped: bool) {
     assert!(crate::audio_storage_constructor_layout_supported());
-    let (project, asset) = fixture();
+    // Keep the authored MIDI clip shorter than the 12-frame playback prefix so
+    // the subsequent `render_with_live_track_audio` call runs outside the clip
+    // under default `InputMonitoring::Auto` (OneShot trigger still renders the
+    // full 8-frame sample).
+    let (project, asset) = fixture_with_length(BeatTime::from_raw(1 << 22));
     let project = if grouped {
         let mut editor = Editor::new(project, 8).unwrap();
         let track = editor.project().tracks()[0].id();

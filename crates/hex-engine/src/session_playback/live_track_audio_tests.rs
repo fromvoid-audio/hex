@@ -242,6 +242,12 @@ fn live_track_audio_matches_arrangement_through_effects_fader_and_send() {
             let mut reference = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
             *f.media.values_mut().next().unwrap() =
                 crate::Audio::new(48000, vec![[0.0; 2]; 512]).unwrap();
+            f.editor
+                .execute(Command::SetTrackInputMonitoring {
+                    track,
+                    mode: hex_project::InputMonitoring::In,
+                })
+                .unwrap();
             let mut live = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
             reference.apply(SessionPlaybackCommand::Play).unwrap();
             live.apply(SessionPlaybackCommand::Play).unwrap();
@@ -372,6 +378,12 @@ fn live_input_offsets_survive_an_arrangement_loop_inside_a_block() {
     let track = f.tracks[0];
     let mut reference = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
     *f.media.values_mut().next().unwrap() = crate::Audio::new(48_000, vec![[0.0; 2]; 512]).unwrap();
+    f.editor
+        .execute(Command::SetTrackInputMonitoring {
+            track,
+            mode: hex_project::InputMonitoring::In,
+        })
+        .unwrap();
     let mut live = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
     reference.apply(SessionPlaybackCommand::Play).unwrap();
     live.apply(SessionPlaybackCommand::Play).unwrap();
@@ -424,6 +436,12 @@ fn live_audio_follows_target_track_through_its_group() {
     let revision = prepare(&f).unwrap();
     let mut reference = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     *f.media.values_mut().next().unwrap() = crate::Audio::new(48_000, vec![[0.0; 2]; 512]).unwrap();
+    f.editor
+        .execute(Command::SetTrackInputMonitoring {
+            track,
+            mode: hex_project::InputMonitoring::In,
+        })
+        .unwrap();
     let mut live = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
     reference.apply(SessionPlaybackCommand::Play).unwrap();
     live.apply(SessionPlaybackCommand::Play).unwrap();

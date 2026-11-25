@@ -3474,12 +3474,58 @@ fn foreign_continuation_preserves_native_eq_history_in_the_same_chain() {
     );
 }
 
+fn prepared_live_monitor() -> (Arc<PreparedRevision>, Borrowed, Vec<Frame>) {
+    let mut f = fixture(&[&[]], 64);
+    let track = f.tracks[0];
+    f.editor
+        .execute(Command::SetTrackInputMonitoring {
+            track,
+            mode: hex_project::InputMonitoring::In,
+        })
+        .unwrap();
+    let owner = ProcessorChainOwner::Track(track.value());
+    let Created::Device(device) = f
+        .editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: state(19).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let definition = BorrowedDefinition {
+        binding_epoch: None,
+        unbounded_tail: false,
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 2] =
+        [&definition, &hex_devices::limiter::DEFINITION];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_effect_registry(
+            f.editor.project(),
+            &f.media,
+            Arc::new(SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    (revision, Borrowed::new(owner, device.value()), f.samples)
+}
+
 #[test]
 fn live_track_audio_reaches_borrowed_foreign_effect() {
-    let (revision, mut effect, samples) = prepared(0, false);
+    let (revision, mut effect, samples) = prepared_live_monitor();
     let track = revision.arrangement().tracks()[0]
         .canonical_track_id()
         .unwrap();
+    let live_samples: Vec<_> = samples.iter().map(|f| [f[0] * 2.0, f[1] * 2.0]).collect();
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut output = [[0.0; 2]; 64];
@@ -3488,7 +3534,7 @@ fn live_track_audio_reaches_borrowed_foreign_effect() {
             &mut output,
             LiveTrackAudio {
                 track,
-                frames: &samples,
+                frames: &live_samples,
             },
             None,
             None,
@@ -3502,15 +3548,24 @@ fn live_track_audio_reaches_borrowed_foreign_effect() {
 
 #[test]
 fn playback_wrapper_delivers_live_audio_to_borrowed_foreign_effect() {
-    let (revision, mut effect, samples) = prepared(0, false);
+    let (revision, mut effect, samples) = prepared_live_monitor();
     let track = revision.arrangement().tracks()[0]
         .canonical_track_id()
         .unwrap();
+    let live_samples: Vec<_> = samples.iter().map(|f| [f[0] * 2.0, f[1] * 2.0]).collect();
     let mut playback = crate::playback::Playback::try_from_prepared_with_session(revision).unwrap();
     playback.apply(crate::PlaybackCommand::Play);
     let mut output = [[0.0; 2]; 64];
     playback
-        .render_with_live_track_audio(&mut output, track, &samples, None, None, None, &mut effect)
+        .render_with_live_track_audio(
+            &mut output,
+            track,
+            &live_samples,
+            None,
+            None,
+            None,
+            &mut effect,
+        )
         .unwrap();
     assert_eq!(effect.processed, 64);
     assert_eq!(output[19], [samples[0][0] * 0.5, samples[0][1] * 0.5]);
@@ -3612,10 +3667,15 @@ fn delayed_hosted_output_keeps_native_eq_history_across_arrangement_wraps() {
         )
         .unwrap()
         .unwrap();
-    let mut oracle = factory.legacy().unwrap().create_runtime();
+    let hex_lattice::PreparedProcessorFactory::Owned(owned) = factory else {
+        panic!("expected owned EQ factory");
+    };
+    let mut oracle = owned.create_runtime().unwrap();
     let mut expected = vec![DC; CYCLE * 2 + DELAY + 128];
     expected[..DELAY].fill([0.0; 2]);
+    oracle.begin_block();
     oracle.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    oracle.commit_block();
     for block in [1, 127, 257, 512] {
         let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
         runtime.apply(SessionPlaybackCommand::Play).unwrap();

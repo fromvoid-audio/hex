@@ -656,14 +656,25 @@ fn operator_feedback_class_changes_keep_old_audio_while_canonical_state_changes(
     assert_eq!(session_prefix, reference_prefix);
     assert!(session_prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
 
-    let feedback = feedback_state(&session_fixture, 0.45);
+    // Session route: since #13261 unified Operator's mutable execution on
+    // `harmonic_runtime`, enabling feedback alone smoothly imports active
+    // analytic voices, while enabling feedback alongside an incompatible law
+    // change (oscillator ratio) is refused with MutableInstrumentChase without
+    // advancing or mutating the active audio graph.
+    let incompatible_feedback = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        &feedback_state(&session_fixture, 0.45),
+        ParameterId::from_static(1),
+        ParameterValue::Float(2.0),
+    )
+    .expect("incompatible oscillator ratio patch");
     session_fixture
         .editor
         .execute(Command::ReplaceDeviceState {
             device: session_fixture.instrument,
-            state: feedback,
+            state: incompatible_feedback,
         })
-        .expect("enable feedback on same Session instrument");
+        .expect("enable incompatible feedback on same Session instrument");
     let canonical_state = session_fixture
         .editor
         .project()
@@ -721,6 +732,32 @@ fn operator_feedback_class_change_refusal_covers_other_route_directions() {
         assert!(prefix.iter().any(|frame| frame[0].abs() > 1.0e-6));
 
         edit_feedback(&mut fixture, if old_feedback { 0.0 } else { 0.45 });
+        if !old_feedback {
+            // Compatible feedback-only analytic->mutable edits are now imported
+            // by unified `harmonic_runtime`; pair with an incompatible ratio
+            // change to exercise the analytic->mutable refusal path.
+            let current = fixture
+                .editor
+                .project()
+                .track(fixture.track)
+                .and_then(|track| track.instrument())
+                .expect("Operator slot")
+                .state();
+            let incompatible = hex_engine::patch_native_device_parameter_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                current,
+                ParameterId::from_static(1),
+                ParameterValue::Float(2.0),
+            )
+            .expect("incompatible oscillator ratio patch");
+            fixture
+                .editor
+                .execute(Command::ReplaceDeviceState {
+                    device: fixture.instrument,
+                    state: incompatible,
+                })
+                .expect("apply incompatible analytic->mutable edit");
+        }
         let next_revision = prepared(&fixture, Some(old_revision.session()));
         let mut candidate = SessionPlayback::new(next_revision).expect("candidate");
         let frame_before = active.performance_frame();

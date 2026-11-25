@@ -122,11 +122,22 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
     );
-    // Fine-Hz and pitch-keytracking each add four f32 values after the
-    // historical 1,728-byte payload; the proposal below is not a codec.
-    assert_eq!(original.payload().len(), 1760);
+    // Version 18 frames the 14 positional sections (1,760 bytes) with an 8-byte
+    // HXOP header and 14 * 6-byte section headers (1,852 bytes total).
+    assert_eq!(original.payload().len(), 1852);
+    assert_eq!(&original.payload()[..4], b"HXOP");
     let original_bytes = original.payload().to_vec();
-    assert_eq!(&original.payload()[288..292], &(-0.0f32).to_le_bytes());
+    // TAG_AMPLITUDE_VELOCITY payload begins at byte 320 in canonical v18 TLV.
+    assert_eq!(&original.payload()[320..324], &(-0.0f32).to_le_bytes());
+    assert_eq!(
+        crate::native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &original,
+            hex_devices::operator_state::parameter::amplitude_velocity(1),
+        )
+        .unwrap(),
+        hex_lattice_contract::ParameterValue::Float(-0.0)
+    );
     let mut proposal = payload::Payload {
         prefix: original.payload()[..380].try_into().unwrap(),
         authored: [[0.0; 64]; 4],
