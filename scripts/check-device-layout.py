@@ -227,7 +227,10 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
         # Gallery navigation may style its own host buttons, but production
         # previews must still use product-resolved styles and the shared frame.
         errors.extend(chrome_errors(host_stream, str(host), paint=False))
-        errors.extend(require_calls(host_stream + stream, ("device_frame", "theme::device_frame_style", "theme::device_style"), "sandbox production preview"))
+        sandbox_code = "".join(token.text for token in host_stream + stream)
+        if "device_frame(" not in sandbox_code and "device_frame_with_panels(" not in sandbox_code:
+            errors.append("sandbox production preview: missing shared call device_frame")
+        errors.extend(require_calls(host_stream + stream, ("theme::device_frame_style", "theme::device_style"), "sandbox production preview"))
     return errors
 
 

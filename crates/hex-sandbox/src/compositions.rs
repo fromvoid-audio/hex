@@ -12,7 +12,12 @@ impl Gallery {
                 self.error.as_deref().unwrap_or("fixture unavailable"),
             ))
         };
-        let body = body.debug_selector(|| "fixture-body".into());
+        let body = body
+            .w(px(
+                self.entry.width() - 2.0 * hex_widgets::DEVICE_FRAME_BORDER_WIDTH
+            ))
+            .flex_shrink_0()
+            .debug_selector(|| "fixture-body".into());
         let (on_color, off_color) = theme::device_enable_colors();
         let actions = hex_widgets::device_state_indicator(
             "fixture-header-bypass".into(),
@@ -26,19 +31,61 @@ impl Gallery {
                 cx.notify();
             }
         }));
-        hex_widgets::device_frame(
+        let mut macro_panel = hex_widgets::HostSlotPanelConfig::new(
+            "sandbox-macros",
+            "macros",
+            "no macros",
+            theme::device_style(theme::DeviceStyleRole::Control),
+        );
+        macro_panel.slots.push(hex_widgets::HostSlotItem {
+            id: "sandbox-m1".into(),
+            label: "macro 1".into(),
+            value: "50%".into(),
+            accent_color: theme::color(theme::PaletteRole::Primary),
+            enabled: !self.disabled,
+            preview: hex_widgets::HostSlotPreview::MacroDial(0.5),
+            modulation_ring: Some(hex_widgets::HostSlotModulationRing {
+                base: 0.5,
+                delta: 0.25,
+                color: theme::color(theme::PaletteRole::Primary),
+            }),
+            interactive: None,
+        });
+        let mut modulator_panel = hex_widgets::HostSlotPanelConfig::new(
+            "sandbox-modulators",
+            "modulators",
+            "no modulators",
+            theme::device_style(theme::DeviceStyleRole::Control),
+        );
+        modulator_panel.slots.push(hex_widgets::HostSlotItem {
+            id: "sandbox-lfo1".into(),
+            label: "lfo 1".into(),
+            value: "1.0 hz".into(),
+            accent_color: theme::color(theme::PaletteRole::Primary),
+            enabled: !self.disabled,
+            preview: hex_widgets::HostSlotPreview::Waveform(hex_widgets::HostSlotWaveform::Sine),
+            modulation_ring: Some(hex_widgets::HostSlotModulationRing {
+                base: 0.5,
+                delta: -0.3,
+                color: theme::color(theme::PaletteRole::Primary),
+            }),
+            interactive: None,
+        });
+        hex_widgets::device_frame_with_panels(
             hex_widgets::vertical_device_name(theme::text(self.entry.label())),
             theme::device_frame_style(self.selected),
             actions,
             div(),
             body,
+            Some(hex_widgets::host_slot_panel(macro_panel).into_any_element()),
+            Some(hex_widgets::host_slot_panel(modulator_panel).into_any_element()),
         )
         .id(gpui::ElementId::Name(
             format!("catalog-card-{}", self.entry.key()).into(),
         ))
         .debug_selector(|| "catalog-card".into())
         .track_focus(&self.header_focus)
-        .w(px(
+        .min_w(px(
             self.entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
         ))
         .h(px(device_composition::FRAME_HEIGHT))

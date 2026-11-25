@@ -219,12 +219,36 @@ pub fn device_frame_with_modulators(
     body: impl IntoElement,
     modulator_panel: Option<AnyElement>,
 ) -> Div {
+    device_frame_with_panels(
+        title,
+        style,
+        leading_control,
+        header_actions,
+        body,
+        None,
+        modulator_panel,
+    )
+}
+
+/// Shared housing with independent horizontal macro and modulator slot panels
+/// (`sidebar → macros → modulators → device controls`). The caller owns every
+/// canonical edit and binding; the housing manages disclosure and focus.
+pub fn device_frame_with_panels(
+    title: impl IntoElement,
+    style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
+    header_actions: impl IntoElement,
+    body: impl IntoElement,
+    macro_panel: Option<AnyElement>,
+    modulator_panel: Option<AnyElement>,
+) -> Div {
     device_frame_inner(
         title,
         style.into(),
         leading_control,
         header_actions,
         Some(body.into_any_element()),
+        macro_panel,
         modulator_panel,
     )
 }
@@ -243,6 +267,7 @@ pub fn device_frame_header_only(
         header_actions,
         None,
         None,
+        None,
     )
 }
 
@@ -252,6 +277,7 @@ fn device_frame_inner(
     leading_control: impl IntoElement,
     header_actions: impl IntoElement,
     body: Option<AnyElement>,
+    macro_panel: Option<AnyElement>,
     modulator_panel: Option<AnyElement>,
 ) -> Div {
     let radius = DEVICE_CORNER_RADIUS;
@@ -267,6 +293,7 @@ fn device_frame_inner(
         .overflow_hidden()
         .child(crate::device_housing::Housing {
             body,
+            macro_panel,
             modulator_panel,
             title: title.into_any_element(),
             leading: leading_control.into_any_element(),

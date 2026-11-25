@@ -7163,7 +7163,7 @@ fn modulation_panel_maps_delay_feedback_mix_and_oscillator_without_changing_auth
     );
     let strip = visual.debug_bounds("device-modulator-panel").unwrap();
     visual.simulate_event(gpui::ScrollWheelEvent {
-        position: point(strip.center().x, strip.bottom() + px(5.0)),
+        position: point(strip.right() + px(5.0), strip.center().y),
         delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-100.0))),
         ..Default::default()
     });

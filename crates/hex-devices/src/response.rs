@@ -51,7 +51,7 @@ pub fn native_effect_frequency_response(
     }
     let registry = crate::native_registry().map_err(|_| NativeResponseError::InvalidRegistry)?;
     let Some(processor) = registry
-        .prepare_processor(
+        .prepare_runtime_device(
             state,
             &hex_lattice::DevicePreparationContext {
                 sample_rate,
@@ -60,6 +60,7 @@ pub fn native_effect_frequency_response(
             },
         )
         .map_err(|_| NativeResponseError::Unavailable)?
+        .processor
     else {
         return Ok(None);
     };

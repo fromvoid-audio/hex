@@ -135,17 +135,28 @@ fn render_stems_with_resources_and_hook(
     start
         .checked_add(frames)
         .ok_or(ExportError::Invalid("frame range overflows"))?;
-    let frame_bytes = format.frame_bytes();
-    let bytes = frames
-        .checked_mul(u64::from(frame_bytes))
-        .and_then(|bytes| u32::try_from(bytes).ok())
-        .filter(|bytes| *bytes <= u32::MAX - format.riff_overhead())
-        .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
     let rate = revision.arrangement().sample_rate();
-    let byte_rate = rate
-        .checked_mul(frame_bytes)
-        .filter(|_| rate > 0)
-        .ok_or(ExportError::Invalid("invalid sample rate"))?;
+    let frame_bytes = format.frame_bytes();
+    let (bytes, byte_rate) = if format.is_flac() {
+        if !(8_000..=192_000).contains(&rate) {
+            return Err(ExportError::Invalid("invalid sample rate"));
+        }
+        if frames >= (1_u64 << 36) {
+            return Err(ExportError::Invalid("flac exceeds the 36-bit sample limit"));
+        }
+        (0_u32, 0_u32)
+    } else {
+        let bytes = frames
+            .checked_mul(u64::from(frame_bytes))
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .filter(|bytes| *bytes <= u32::MAX - format.riff_overhead())
+            .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
+        let byte_rate = rate
+            .checked_mul(frame_bytes)
+            .filter(|_| rate > 0)
+            .ok_or(ExportError::Invalid("invalid sample rate"))?;
+        (bytes, byte_rate)
+    };
     if path.file_name().is_none() {
         return Err(ExportError::Invalid(
             "batch destination has no directory name",
@@ -183,10 +194,14 @@ fn render_stems_with_resources_and_hook(
         .output_capture_plan(&ids, FRAMES_PER_BLOCK)
         .map_err(|_| ExportError::Invalid("invalid stem owner selection"))?;
     let mut staging = Staging::new(path)?;
+    enum StemWriter {
+        Wav(BufWriter<File>),
+        Flac(hex_media::FlacStreamWriter<BufWriter<File>>),
+    }
     let mut writers = Vec::with_capacity(ordered.len());
     for stem in &ordered {
         control.check()?;
-        let filename = filename(stem);
+        let filename = filename(stem, format);
         let target = staging.path.join(filename);
         let file = OpenOptions::new()
             .write(true)
@@ -198,8 +213,15 @@ fn render_stems_with_resources_and_hook(
             })?;
         staging.files.push(target);
         let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
-        write_header_encoded(&mut writer, rate, bytes, byte_rate, format)?;
-        writers.push(writer);
+        if format.is_flac() {
+            let flac =
+                hex_media::FlacStreamWriter::new(writer, rate, 2, format.bits_per_sample(), frames)
+                    .map_err(map_flac_encode_error)?;
+            writers.push(StemWriter::Flac(flac));
+        } else {
+            write_header_encoded(&mut writer, rate, bytes, byte_rate, format)?;
+            writers.push(StemWriter::Wav(writer));
+        }
     }
     let mut buffers = vec![[[0.0; 2]; FRAMES_PER_BLOCK]; ordered.len()];
     let mut main = [[0.0; 2]; FRAMES_PER_BLOCK];
@@ -239,45 +261,85 @@ fn render_stems_with_resources_and_hook(
             let output = capture
                 .output(index)
                 .ok_or(ExportError::Invalid("stem capture was not committed"))?;
-            let mut encoded = [0_u8; FRAMES_PER_BLOCK * crate::format::MAX_FRAME_BYTES];
-            let frames = output.iter().zip(position..);
-            for ((frame, at), bytes) in
-                frames.zip(encoded[..count * frame_bytes].chunks_exact_mut(frame_bytes))
-            {
-                for ((channel, sample), out) in frame
-                    .iter()
-                    .enumerate()
-                    .zip(bytes.chunks_exact_mut(sample_bytes))
-                {
-                    if !sample.is_finite() {
-                        return Err(ExportError::Invalid("render produced a non-finite sample"));
+            match writer {
+                StemWriter::Wav(wav_writer) => {
+                    let mut encoded = [0_u8; FRAMES_PER_BLOCK * crate::format::MAX_FRAME_BYTES];
+                    let frames = output.iter().zip(position..);
+                    for ((frame, at), bytes) in
+                        frames.zip(encoded[..count * frame_bytes].chunks_exact_mut(frame_bytes))
+                    {
+                        for ((channel, sample), out) in frame
+                            .iter()
+                            .enumerate()
+                            .zip(bytes.chunks_exact_mut(sample_bytes))
+                        {
+                            if !sample.is_finite() {
+                                return Err(ExportError::Invalid(
+                                    "render produced a non-finite sample",
+                                ));
+                            }
+                            let over = crate::format::encode_sample(
+                                format, *quantiser, *sample, at, channel, out,
+                            );
+                            clipped_samples += u64::from(over);
+                        }
                     }
-                    let over =
-                        crate::format::encode_sample(format, *quantiser, *sample, at, channel, out);
-                    clipped_samples += u64::from(over);
+                    write_all(
+                        wav_writer,
+                        &encoded[..count * frame_bytes],
+                        "write staged stem samples",
+                    )?;
+                }
+                StemWriter::Flac(flac_writer) => {
+                    let mut pcm = [[0_i32; 2]; FRAMES_PER_BLOCK];
+                    for ((frame, dst), at) in output.iter().zip(&mut pcm[..count]).zip(position..) {
+                        for (channel, &sample) in frame.iter().enumerate() {
+                            if !sample.is_finite() {
+                                return Err(ExportError::Invalid(
+                                    "render produced a non-finite sample",
+                                ));
+                            }
+                            let (value, over) = crate::format::quantise_integer_sample(
+                                format, *quantiser, sample, at, channel,
+                            );
+                            dst[channel] = value;
+                            clipped_samples += u64::from(over);
+                        }
+                    }
+                    flac_writer
+                        .write_stereo_frames(&pcm[..count])
+                        .map_err(map_flac_encode_error)?;
                 }
             }
-            write_all(
-                writer,
-                &encoded[..count * frame_bytes],
-                "write staged stem samples",
-            )?;
         }
         control.advance(count);
         remaining -= count as u64;
         position = position.wrapping_add(count as u64);
     }
-    for writer in &mut writers {
+    let mut max_flac_bytes = 0_u64;
+    for writer in writers {
         control.check()?;
-        writer
+        let mut buf_writer = match writer {
+            StemWriter::Wav(w) => w,
+            StemWriter::Flac(f) => {
+                let (w, bytes_written) = f.finish().map_err(map_flac_encode_error)?;
+                max_flac_bytes = max_flac_bytes.max(bytes_written);
+                w
+            }
+        };
+        buf_writer
             .flush()
-            .and_then(|()| writer.get_ref().sync_all())
+            .and_then(|()| buf_writer.get_ref().sync_all())
             .map_err(|source| ExportError::Io {
                 operation: "synchronize a staged stem",
                 source,
             })?;
     }
-    drop(writers);
+    let report_bytes = if format.is_flac() {
+        u32::try_from(max_flac_bytes).unwrap_or(u32::MAX)
+    } else {
+        bytes
+    };
     #[cfg(unix)]
     File::open(&staging.path)
         .and_then(|file| file.sync_all())
@@ -308,14 +370,16 @@ fn render_stems_with_resources_and_hook(
         path: path.to_owned(),
         sample_rate: rate,
         frames,
-        data_bytes: bytes,
+        data_bytes: report_bytes,
         // Summed across every stem file in the batch.
         clipped_samples,
         recovery_path: None,
+        applied_gain_linear: AppliedGain::UNITY.linear,
+        applied_gain_db: AppliedGain::UNITY.db,
     })
 }
 
-fn filename(stem: &Stem) -> String {
+fn filename(stem: &Stem, format: ExportFormat) -> String {
     let (kind, id) = match stem.id {
         OutputCaptureId::Track(id) => ("track", id.value()),
         OutputCaptureId::Return(id) => ("return", id.value()),
@@ -332,7 +396,7 @@ fn filename(stem: &Stem) -> String {
         }
         label.push(character);
     }
-    format!("{kind}-{id}-{label}.wav")
+    format!("{kind}-{id}-{label}.{}", format.extension())
 }
 
 struct Staging {
@@ -454,7 +518,7 @@ mod tests {
             assert_eq!(report.data_bytes, 257 * format.frame_bytes());
             assert_eq!(report.clipped_samples, 0);
             for stem in &stems {
-                let bytes = fs::read(path.join(filename(stem))).unwrap();
+                let bytes = fs::read(path.join(filename(stem, format))).unwrap();
                 let header = format.header_bytes() as usize;
                 assert_eq!(bytes.len(), header + 257 * format.frame_bytes() as usize);
                 let word = |at: usize| u16::from_le_bytes([bytes[at], bytes[at + 1]]);
@@ -506,7 +570,7 @@ mod tests {
                     .collect();
                 assert_eq!(files.len(), 2);
                 for stem in &stems {
-                    let staged = stages[0].join(filename(stem));
+                    let staged = stages[0].join(filename(stem, ExportFormat::Pcm16));
                     assert!(files.contains(&staged));
                     let bytes = fs::read(staged).unwrap();
                     assert_eq!(bytes.len(), 44 + 257 * 4);

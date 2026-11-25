@@ -203,7 +203,7 @@ impl PreparedEq {
         })
     }
 }
-impl PreparedNativeProcessor for PreparedEq {
+impl hex_lattice::PreparedOwnedProcessorRuntime for PreparedEq {
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         self.configuration
             .parameters
@@ -233,23 +233,31 @@ impl PreparedNativeProcessor for PreparedEq {
     fn runtime_version(&self) -> u32 {
         4
     }
-    fn declared_runtime_bytes(&self) -> usize {
+    fn declared_pair_bytes(&self) -> usize {
         EQ_RUNTIME_BYTES
-            + self.configuration.nodes.len() * std::mem::size_of::<RuntimeBand>()
-            + MAX_NODES * std::mem::size_of::<OutgoingBand>()
-            + std::mem::size_of::<Configuration>()
-            + 2 * std::mem::size_of::<usize>()
-            + self.configuration.heap_bytes()
+            + 2 * self.configuration.nodes.len() * std::mem::size_of::<RuntimeBand>()
+            + 2 * MAX_NODES * std::mem::size_of::<OutgoingBand>()
     }
-    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        let bands = self
+    fn create_runtime(
+        &self,
+    ) -> Result<Box<dyn hex_lattice::OwnedProcessorRuntime>, DeviceContractError> {
+        let bands: Box<[RuntimeBand]> = self
             .configuration
             .authored_stages
             .iter()
             .zip(&self.configuration.nodes)
             .map(|(&stages, node)| RuntimeBand::new(stages, node.kind))
             .collect();
-        Box::new(EqRuntime {
+        let rollback_bands = bands.clone();
+        let effective_enabled = std::array::from_fn(|i| {
+            self.configuration
+                .nodes
+                .get(i)
+                .is_some_and(|node| node.enabled)
+        });
+        let effective_banks =
+            std::array::from_fn(|i| self.configuration.nodes.get(i).map_or(0, |n| n.bank));
+        let runtime = EqRuntime {
             sample_rate: self.sample_rate,
             configuration: Arc::clone(&self.configuration),
             bands,
@@ -262,18 +270,35 @@ impl PreparedNativeProcessor for PreparedEq {
             audition_history: [[[0.0; 2]; 4]; 2],
             gain: self.configuration.gain,
             mode: self.configuration.mode,
-            effective_enabled: std::array::from_fn(|i| {
-                self.configuration
-                    .nodes
-                    .get(i)
-                    .is_some_and(|node| node.enabled)
-            }),
+            effective_enabled,
             pristine: true,
-            effective_banks: std::array::from_fn(|i| {
-                self.configuration.nodes.get(i).map_or(0, |n| n.bank)
-            }),
+            effective_banks,
             mode_fade: ModeFade::new(),
-        })
+            rollback: EqRollback {
+                open: false,
+                committed_quiescent: true,
+                dirty_bands: 0,
+                dirty_flags: 0,
+                bands: rollback_bands,
+                last_frame: None,
+                fallback_frame: 0,
+                refresh_target: false,
+                audition: None,
+                audition_request: None,
+                audition_mix: 0.0,
+                audition_history: [[[0.0; 2]; 4]; 2],
+                gain: self.configuration.gain,
+                mode: self.configuration.mode,
+                effective_enabled,
+                pristine: true,
+                effective_banks,
+                mode_fade: ModeFade::new(),
+            },
+        };
+        if runtime.fixed_storage_pair_bytes() != Some(self.declared_pair_bytes()) {
+            return Err(DeviceContractError::RuntimeBudgetExceeded);
+        }
+        Ok(Box::new(runtime))
     }
     fn frequency_response_at_hz(&self, frequency: f32) -> Option<[f32; 2]> {
         if !frequency.is_finite() || frequency <= 0.0 || frequency >= self.sample_rate as f32 * 0.5
@@ -576,6 +601,32 @@ impl ModeFade {
         })
     }
 }
+const EQ_DIRTY_SCALARS: u8 = 1 << 0;
+const EQ_DIRTY_AUDITION: u8 = 1 << 1;
+const EQ_DIRTY_MODE_FADE: u8 = 1 << 2;
+
+/// Preallocated bounded dirty-range rollback journal for `EqRuntime`.
+struct EqRollback {
+    open: bool,
+    committed_quiescent: bool,
+    dirty_bands: u64,
+    dirty_flags: u8,
+    bands: Box<[RuntimeBand]>,
+    last_frame: Option<(u64, u64)>,
+    fallback_frame: u64,
+    refresh_target: bool,
+    audition: Option<ProcessorAuditionSelection>,
+    audition_request: Option<ProcessorAuditionSelection>,
+    audition_mix: f64,
+    audition_history: [[[f64; 2]; 4]; 2],
+    gain: f64,
+    mode: u8,
+    effective_enabled: [bool; MAX_NODES],
+    pristine: bool,
+    effective_banks: [u8; MAX_NODES],
+    mode_fade: ModeFade,
+}
+
 pub const EQ_RUNTIME_BYTES: usize = std::mem::size_of::<EqRuntime>();
 /// Bounded sparse EQ histories, initialized on control and reused in playback.
 pub struct EqRuntime {
@@ -597,15 +648,86 @@ pub struct EqRuntime {
     pristine: bool,
     effective_banks: [u8; MAX_NODES],
     mode_fade: ModeFade,
+    rollback: EqRollback,
 }
 impl EqRuntime {
-    /// Runtime-private bytes. The original factory accounts for the immutable
-    /// configuration retained by both runtimes, including after chain transfer.
-    pub fn private_storage_bytes(&self) -> usize {
-        EQ_RUNTIME_BYTES
-            + std::mem::size_of_val(self.bands.as_ref())
-            + std::mem::size_of_val(self.mode_fade.bands.as_ref())
+    /// Control-side storage observation: inline runtime bytes plus committed
+    /// and preallocated rollback heap slices.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        let committed = std::mem::size_of_val(self.bands.as_ref())
+            .checked_add(std::mem::size_of_val(self.mode_fade.bands.as_ref()))?;
+        let scratch = std::mem::size_of_val(self.rollback.bands.as_ref()).checked_add(
+            std::mem::size_of_val(self.rollback.mode_fade.bands.as_ref()),
+        )?;
+        Some((EQ_RUNTIME_BYTES, [committed, scratch]))
     }
+
+    fn snapshot_scalars(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & EQ_DIRTY_SCALARS) == 0 {
+            self.rollback.last_frame = self.last_frame;
+            self.rollback.fallback_frame = self.fallback_frame;
+            self.rollback.refresh_target = self.refresh_target;
+            self.rollback.gain = self.gain;
+            self.rollback.mode = self.mode;
+            self.rollback.effective_enabled = self.effective_enabled;
+            self.rollback.effective_banks = self.effective_banks;
+            self.rollback.pristine = self.pristine;
+            self.rollback.dirty_flags |= EQ_DIRTY_SCALARS;
+        }
+    }
+
+    fn snapshot_band(&mut self, index: usize) {
+        let bit = 1_u64 << index;
+        if self.rollback.open && (self.rollback.dirty_bands & bit) == 0 {
+            self.rollback.bands[index] = self.bands[index];
+            self.rollback.dirty_bands |= bit;
+        }
+    }
+
+    fn snapshot_all_bands(&mut self) {
+        if !self.rollback.open {
+            return;
+        }
+        let count = self.bands.len();
+        for index in 0..count {
+            self.snapshot_band(index);
+        }
+    }
+
+    fn snapshot_audition(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & EQ_DIRTY_AUDITION) == 0 {
+            self.rollback.audition = self.audition;
+            self.rollback.audition_request = self.audition_request;
+            self.rollback.audition_mix = self.audition_mix;
+            self.rollback.audition_history = self.audition_history;
+            self.rollback.dirty_flags |= EQ_DIRTY_AUDITION;
+        }
+    }
+
+    fn snapshot_mode_fade(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & EQ_DIRTY_MODE_FADE) == 0 {
+            self.rollback.mode_fade.copy_from(&self.mode_fade);
+            self.rollback.dirty_flags |= EQ_DIRTY_MODE_FADE;
+        }
+    }
+
+    fn is_quiescent_live(&self) -> bool {
+        !self.mode_fade.is_active()
+            && self.audition.is_none()
+            && self.audition_request.is_none()
+            && self.audition_mix == 0.0
+            && self
+                .bands
+                .iter()
+                .all(|b| b.history.iter().flatten().flatten().all(|v| *v == 0.0))
+            && self
+                .audition_history
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|v| *v == 0.0)
+    }
+
     fn mode_is_automated(&self) -> bool {
         self.configuration
             .parameters
@@ -615,11 +737,20 @@ impl EqRuntime {
     fn select_routing(&mut self, target: u8, discontinuity: bool) {
         if discontinuity || (self.pristine && self.mode_is_automated()) {
             if self.mode != target {
-                self.cancel_immediately();
+                self.snapshot_scalars();
+                self.snapshot_audition();
+                self.audition = None;
+                self.audition_request = None;
+                self.audition_mix = 0.0;
+                self.audition_history = [[[0.0; 2]; 4]; 2];
                 self.refresh_target = true;
             }
-            self.mode = target;
-            if self.pristine && self.mode_is_automated() {
+            if self.mode != target {
+                self.snapshot_scalars();
+                self.mode = target;
+            }
+            if self.pristine && self.mode_is_automated() && self.mode_fade.is_active() {
+                self.snapshot_mode_fade();
                 self.mode_fade.clear();
             }
             return;
@@ -629,6 +760,10 @@ impl EqRuntime {
         if self.mode == target || self.mode_fade.is_active() {
             return;
         }
+        self.snapshot_mode_fade();
+        self.snapshot_scalars();
+        self.snapshot_all_bands();
+        self.snapshot_audition();
         self.mode_fade.capture(
             Routing {
                 mode: self.mode,
@@ -646,7 +781,10 @@ impl EqRuntime {
         for band in &mut self.bands {
             band.history = [[[0.0; 2]; 4]; 2];
         }
-        self.cancel_immediately();
+        self.audition = None;
+        self.audition_request = None;
+        self.audition_mix = 0.0;
+        self.audition_history = [[[0.0; 2]; 4]; 2];
         // Routing is independent of node coefficients. Keep their existing
         // target cadence and in-flight trajectories through a mode switch.
     }
@@ -695,6 +833,9 @@ impl EqRuntime {
         {
             return;
         }
+        if !frames.is_empty() {
+            self.snapshot_scalars();
+        }
         for (offset, frame) in frames.iter_mut().enumerate() {
             let offset = first_offset + offset;
             let running = clock.is_some_and(|c| c.transport_is_running() == Some(true));
@@ -724,11 +865,16 @@ impl EqRuntime {
             });
             self.select_routing(targets.mode, discontinuity);
             if discontinuity {
+                self.snapshot_all_bands();
                 for band in &mut self.bands {
                     band.history = [[[0.0; 2]; 4]; 2];
                 }
+                self.snapshot_audition();
                 self.audition_history = [[[0.0; 2]; 4]; 2];
-                self.mode_fade.clear();
+                if self.mode_fade.is_active() {
+                    self.snapshot_mode_fade();
+                    self.mode_fade.clear();
+                }
             }
             let refresh_all = self.refresh_target || discontinuity;
             if refresh_all || arrangement_changed || (automated && position % CADENCE == 0) {
@@ -761,6 +907,7 @@ impl EqRuntime {
                     } else {
                         [Coefficients::IDENTITY; 4]
                     };
+                    self.snapshot_band(index);
                     let band = &mut self.bands[index];
                     if bank_changed || band.shape != node.kind as u8 {
                         band.history = [[[0.0; 2]; 4]; 2];
@@ -791,12 +938,17 @@ impl EqRuntime {
                 ];
             }
             let audition_input = working;
-            for (index, band) in self
-                .bands
-                .iter_mut()
-                .take(self.configuration.nodes.len())
-                .enumerate()
-            {
+            let node_count = self.configuration.nodes.len();
+            let bank_l = bank(self.mode, 0);
+            let bank_r = bank(self.mode, 1);
+            for index in 0..node_count {
+                let run_l = self.effective_banks[index] == bank_l;
+                let run_r = self.effective_banks[index] == bank_r;
+                if self.bands[index].remaining == 0 && !run_l && !run_r {
+                    continue;
+                }
+                self.snapshot_band(index);
+                let band = &mut self.bands[index];
                 if band.remaining > 0 {
                     let t = 1.0 / f64::from(band.remaining);
                     for (current, target) in band.current.iter_mut().zip(&band.target) {
@@ -811,11 +963,15 @@ impl EqRuntime {
                         band.current = band.target;
                     }
                 }
-                for (channel, value) in working.iter_mut().enumerate() {
-                    if self.effective_banks[index] == bank(self.mode, channel) {
-                        *value = band.filter_channel(channel, *value);
-                    }
+                if run_l {
+                    working[0] = band.filter_channel(0, working[0]);
                 }
+                if run_r {
+                    working[1] = band.filter_channel(1, working[1]);
+                }
+            }
+            if self.audition != self.audition_request || self.audition.is_some() {
+                self.snapshot_audition();
             }
             if self.audition != self.audition_request {
                 self.audition_mix = (self.audition_mix - 1.0 / 256.0).max(0.0);
@@ -852,6 +1008,9 @@ impl EqRuntime {
             }
             if self.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];
+            }
+            if self.mode_fade.is_active() {
+                self.snapshot_mode_fade();
             }
             let output = self.mode_fade.blend(
                 input,
@@ -921,6 +1080,7 @@ impl EqRuntime {
                 all_zero = false;
             }
         }
+        self.snapshot_scalars();
         if targets.mapped_gain {
             self.gain = targets.gain;
         }
@@ -956,15 +1116,26 @@ impl EqRuntime {
         let bank_l = bank(self.mode, 0);
         let bank_r = bank(self.mode, 1);
         let mut quieted = [false; 2];
-        for (index, band) in self.bands[..node_count].iter_mut().enumerate() {
+        for index in 0..node_count {
             let target_bank = self.effective_banks[index];
             let run_l = target_bank == bank_l;
             let run_r = target_bank == bank_r;
             if !run_l && !run_r {
                 continue;
             }
-            let used = usize::from(band.stages_used);
-            if used == 1 && band.current[0] == Coefficients::IDENTITY {
+            let used = usize::from(self.bands[index].stages_used);
+            if used == 1 && self.bands[index].current[0] == Coefficients::IDENTITY {
+                let mut touched = false;
+                if run_l && self.bands[index].history[0][0] != [0.0; 2] {
+                    touched = true;
+                }
+                if run_r && self.bands[index].history[1][0] != [0.0; 2] {
+                    touched = true;
+                }
+                if touched {
+                    self.snapshot_band(index);
+                }
+                let band = &mut self.bands[index];
                 if run_l && band.history[0][0] == [0.0; 2] && !quieted[0] {
                     for frame in working.iter_mut() {
                         frame[0] = quiet(frame[0]);
@@ -997,6 +1168,8 @@ impl EqRuntime {
                 }
                 continue;
             }
+            self.snapshot_band(index);
+            let band = &mut self.bands[index];
             if run_l && run_r {
                 for stage in 0..used {
                     let c = band.current[stage];
@@ -1080,7 +1253,59 @@ fn bank(mode: u8, channel: usize) -> u8 {
         _ => 0,
     }
 }
-impl NativeProcessorRuntime for EqRuntime {
+impl hex_lattice::OwnedProcessorRuntime for EqRuntime {
+    fn fixed_storage_pair_bytes(&self) -> Option<usize> {
+        let (inline, [committed, scratch]) = self.control_storage()?;
+        inline.checked_add(committed)?.checked_add(scratch)
+    }
+    fn begin_block(&mut self) {
+        if self.rollback.open {
+            self.rollback_block();
+        }
+        self.rollback.committed_quiescent = self.is_quiescent_live();
+        self.rollback.dirty_bands = 0;
+        self.rollback.dirty_flags = 0;
+        self.rollback.open = true;
+    }
+    fn commit_block(&mut self) {
+        self.rollback.open = false;
+        self.rollback.dirty_bands = 0;
+        self.rollback.dirty_flags = 0;
+    }
+    fn rollback_block(&mut self) {
+        if !self.rollback.open {
+            return;
+        }
+        let mut bits = self.rollback.dirty_bands;
+        while bits != 0 {
+            let index = bits.trailing_zeros() as usize;
+            self.bands[index] = self.rollback.bands[index];
+            bits &= bits - 1;
+        }
+        let flags = self.rollback.dirty_flags;
+        if (flags & EQ_DIRTY_SCALARS) != 0 {
+            self.last_frame = self.rollback.last_frame;
+            self.fallback_frame = self.rollback.fallback_frame;
+            self.refresh_target = self.rollback.refresh_target;
+            self.gain = self.rollback.gain;
+            self.mode = self.rollback.mode;
+            self.effective_enabled = self.rollback.effective_enabled;
+            self.effective_banks = self.rollback.effective_banks;
+            self.pristine = self.rollback.pristine;
+        }
+        if (flags & EQ_DIRTY_AUDITION) != 0 {
+            self.audition = self.rollback.audition;
+            self.audition_request = self.rollback.audition_request;
+            self.audition_mix = self.rollback.audition_mix;
+            self.audition_history = self.rollback.audition_history;
+        }
+        if (flags & EQ_DIRTY_MODE_FADE) != 0 {
+            self.mode_fade.copy_from(&self.rollback.mode_fade);
+        }
+        self.rollback.open = false;
+        self.rollback.dirty_bands = 0;
+        self.rollback.dirty_flags = 0;
+    }
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         self.configuration
             .parameters
@@ -1128,13 +1353,6 @@ impl NativeProcessorRuntime for EqRuntime {
     ) {
         self.process(frames, clock, true)
     }
-    fn process_bypassed_block(
-        &mut self,
-        frames: &mut [StereoFrame],
-        _resources: &dyn hex_lattice::DeviceResources,
-    ) {
-        self.process(frames, None, true)
-    }
     fn reset(&mut self) {
         // Reset starts from the authored response, even when the previous
         // block left an automated target and the first new block has no clock.
@@ -1169,41 +1387,43 @@ impl NativeProcessorRuntime for EqRuntime {
         self.audition_mix = 0.0;
         self.audition_history = [[[0.0; 2]; 4]; 2];
         self.mode_fade.clear();
+        self.rollback.open = false;
+        self.rollback.committed_quiescent = true;
+        self.rollback.dirty_bands = 0;
+        self.rollback.dirty_flags = 0;
     }
-    fn is_quiescent(&self) -> bool {
-        !self.mode_fade.is_active()
-            && self.audition.is_none()
-            && self.audition_request.is_none()
-            && self.audition_mix == 0.0
-            && self
-                .bands
-                .iter()
-                .all(|b| b.history.iter().flatten().flatten().all(|v| *v == 0.0))
-            && self
-                .audition_history
-                .iter()
-                .flatten()
-                .flatten()
-                .all(|v| *v == 0.0)
+    fn committed_is_quiescent(&self) -> bool {
+        if self.rollback.open {
+            self.rollback.committed_quiescent
+        } else {
+            self.is_quiescent_live()
+        }
+    }
+    fn speculative_is_quiescent(&self) -> bool {
+        self.is_quiescent_live()
     }
     /// A channel-mode change still inherits and retargets without a reset:
     /// the previous routing crossfades out (see `ModeFade`). Retargeting keeps
     /// session playback from detaching the old suffix as a ringing tail beside
     /// a fresh chain.
-    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|old| old.sample_rate == self.sample_rate)
+    fn can_inherit_from(&self, previous: &dyn hex_lattice::OwnedProcessorRuntime) -> bool {
+        !self.rollback.open
+            && previous
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|old| !old.rollback.open && old.sample_rate == self.sample_rate)
     }
-    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        self.can_copy_history_from(previous)
+    fn can_retarget_parameters_from(
+        &self,
+        previous: &dyn hex_lattice::OwnedProcessorRuntime,
+    ) -> bool {
+        self.can_inherit_from(previous)
     }
-    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+    fn inherit_from(&mut self, previous: &dyn hex_lattice::OwnedProcessorRuntime) {
         let Some(old) = previous
             .as_any()
             .downcast_ref::<Self>()
-            .filter(|old| old.sample_rate == self.sample_rate)
+            .filter(|old| !old.rollback.open && old.sample_rate == self.sample_rate)
         else {
             return;
         };
@@ -1265,7 +1485,7 @@ impl NativeProcessorRuntime for EqRuntime {
     }
     /// The single `ModeFade` branch is full: a further channel-mode change
     /// waits until the previous switch has finished fading (Pulse #4122).
-    fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+    fn transition_busy_from(&self, previous: &dyn hex_lattice::OwnedProcessorRuntime) -> bool {
         previous.as_any().downcast_ref::<Self>().is_some_and(|old| {
             old.sample_rate == self.sample_rate
                 && !self.mode_is_automated()
@@ -1302,12 +1522,21 @@ impl NativeProcessorAudition for EqRuntime {
     }
     fn select(&mut self, s: Option<ProcessorAuditionSelection>) {
         self.audition_request = s;
+        if self.rollback.open && (self.rollback.dirty_flags & EQ_DIRTY_AUDITION) != 0 {
+            self.rollback.audition_request = s;
+        }
     }
     fn cancel_immediately(&mut self) {
         self.audition = None;
         self.audition_request = None;
         self.audition_mix = 0.0;
         self.audition_history = [[[0.0; 2]; 4]; 2];
+        if self.rollback.open && (self.rollback.dirty_flags & EQ_DIRTY_AUDITION) != 0 {
+            self.rollback.audition = None;
+            self.rollback.audition_request = None;
+            self.rollback.audition_mix = 0.0;
+            self.rollback.audition_history = [[[0.0; 2]; 4]; 2];
+        }
     }
 }
 
@@ -1431,21 +1660,24 @@ mod smoothing_tests {
         );
     }
 
-    fn runtime(rate: u32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
+    fn runtime(rate: u32, gain: f32) -> Box<dyn OwnedProcessorRuntime> {
         let mut state = EqState::default();
         let mut node = Node::new(NodeId::new(1).unwrap(), 750.0, gain, 0).unwrap();
         node.kind = NodeKind::LowShelf;
         state.add(node).unwrap();
-        PreparedEq::new(state, rate).unwrap().create_runtime()
+        PreparedEq::new(state, rate)
+            .unwrap()
+            .create_runtime()
+            .unwrap()
     }
 
-    fn process(runtime: &mut dyn NativeProcessorRuntime, count: usize) -> Vec<StereoFrame> {
+    fn process(runtime: &mut dyn OwnedProcessorRuntime, count: usize) -> Vec<StereoFrame> {
         let mut frames = vec![[0.25; 2]; count];
         runtime.process_block(&mut frames, &EMPTY_DEVICE_RESOURCES);
         frames
     }
 
-    fn remaining(runtime: &dyn NativeProcessorRuntime) -> u32 {
+    fn remaining(runtime: &dyn OwnedProcessorRuntime) -> u32 {
         u32::from(runtime.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].remaining)
     }
 
@@ -1458,7 +1690,7 @@ mod smoothing_tests {
             let initial = old.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current[0].b0;
             let target =
                 changed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].target[0].b0;
-            changed.copy_history_from(old.as_ref());
+            changed.inherit_from(old.as_ref());
             let duration = rate.div_ceil(200);
             for elapsed in 1..=duration {
                 process(changed.as_mut(), 1);
@@ -1486,13 +1718,13 @@ mod smoothing_tests {
         let mut old = runtime(48_000, 0.0);
         process(old.as_mut(), 17);
         let mut reference = runtime(48_000, 12.0);
-        reference.copy_history_from(old.as_ref());
+        reference.inherit_from(old.as_ref());
         process(reference.as_mut(), 23);
         let mut republished: Vec<_> = [1, 17, 64]
             .into_iter()
             .map(|block| {
                 let mut next = runtime(48_000, 12.0);
-                next.copy_history_from(reference.as_ref());
+                next.inherit_from(reference.as_ref());
                 (next, block)
             })
             .collect();
@@ -1516,11 +1748,11 @@ mod smoothing_tests {
         let mut old = runtime(48_000, 0.0);
         process(old.as_mut(), 17);
         let mut first = runtime(48_000, 12.0);
-        first.copy_history_from(old.as_ref());
+        first.inherit_from(old.as_ref());
         process(first.as_mut(), 23);
         let effective = first.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current;
         let mut reversed = runtime(48_000, -12.0);
-        reversed.copy_history_from(first.as_ref());
+        reversed.inherit_from(first.as_ref());
         assert_eq!(
             reversed.as_any().downcast_ref::<EqRuntime>().unwrap().bands[0].current,
             effective
@@ -1531,18 +1763,21 @@ mod smoothing_tests {
 
     #[test]
     fn extreme_frequency_and_q_retargets_remain_finite() {
-        fn extreme(rate: u32, frequency: f32, gain: f32) -> Box<dyn NativeProcessorRuntime> {
+        fn extreme(rate: u32, frequency: f32, gain: f32) -> Box<dyn OwnedProcessorRuntime> {
             let mut state = EqState::default();
             let mut node = Node::new(NodeId::new(1).unwrap(), frequency, gain, 0).unwrap();
             node.q = 18.0;
             state.add(node).unwrap();
-            PreparedEq::new(state, rate).unwrap().create_runtime()
+            PreparedEq::new(state, rate)
+                .unwrap()
+                .create_runtime()
+                .unwrap()
         }
         for rate in [48_000, 192_000] {
             let mut old = extreme(rate, 20.0, 24.0);
             process(old.as_mut(), 128);
             let mut next = extreme(rate, 20_000.0, -24.0);
-            next.copy_history_from(old.as_ref());
+            next.inherit_from(old.as_ref());
             let frames = process(next.as_mut(), 4096);
             assert!(
                 frames
@@ -1686,7 +1921,10 @@ mod smoothing_tests {
                 ],
             })
             .unwrap();
-        let mut actual = PreparedEq::new(settings, 48_000).unwrap().create_runtime();
+        let mut actual = PreparedEq::new(settings, 48_000)
+            .unwrap()
+            .create_runtime()
+            .unwrap();
         actual.process_block_with_clock(
             &mut [[0.25, -0.125]; 37],
             Some(&Clock {
@@ -1698,8 +1936,11 @@ mod smoothing_tests {
         );
         // Independent existing owner operation: retarget the running filter to
         // the authored loop-start state, retaining its warmed histories.
-        let mut expected = PreparedEq::new(disabled, 48_000).unwrap().create_runtime();
-        expected.copy_history_from(actual.as_ref());
+        let mut expected = PreparedEq::new(disabled, 48_000)
+            .unwrap()
+            .create_runtime()
+            .unwrap();
+        expected.inherit_from(actual.as_ref());
         let mut a = [[0.25, -0.125]; 64];
         let mut b = a;
         actual.process_block_with_clock(
@@ -1760,7 +2001,10 @@ mod smoothing_tests {
                     ],
                 })
                 .unwrap();
-            let mut runtime = PreparedEq::new(state, 48_000).unwrap().create_runtime();
+            let mut runtime = PreparedEq::new(state, 48_000)
+                .unwrap()
+                .create_runtime()
+                .unwrap();
             let mut frames = vec![[0.25; 2]; 1024];
             for (index, chunk) in frames.chunks_mut(block).enumerate() {
                 runtime.process_block_with_clock(

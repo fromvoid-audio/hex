@@ -45,11 +45,15 @@ fn cold_held_modes_match_canonical_at_rate_endpoints_without_consuming_empty_blo
         for mode in 0..3 {
             let mut actual = PreparedEq::automated(state(0), rate, &[MODE])
                 .unwrap()
-                .create_runtime();
+                .create_runtime()
+                .unwrap();
             actual
                 .process_block_with_automation(&mut [], None, &Held(Some(2)), &R)
                 .unwrap();
-            let mut canonical = PreparedEq::new(state(mode), rate).unwrap().create_runtime();
+            let mut canonical = PreparedEq::new(state(mode), rate)
+                .unwrap()
+                .create_runtime()
+                .unwrap();
             let mut expected = input(257);
             let mut output = expected.clone();
             canonical.process_block(&mut expected, &R);
@@ -63,7 +67,7 @@ fn cold_held_modes_match_canonical_at_rate_endpoints_without_consuming_empty_blo
     }
 }
 fn render(
-    runtime: &mut dyn NativeProcessorRuntime,
+    runtime: &mut dyn OwnedProcessorRuntime,
     frames: &mut [StereoFrame],
     value: Option<u32>,
     width: usize,
@@ -87,10 +91,12 @@ fn every_live_mode_direction_matches_existing_manual_routing_fade() {
                 let tone = input(warm + fade + 129);
                 let mut actual = PreparedEq::automated(state(before), rate, &[MODE])
                     .unwrap()
-                    .create_runtime();
+                    .create_runtime()
+                    .unwrap();
                 let mut old = PreparedEq::new(state(before), rate)
                     .unwrap()
-                    .create_runtime();
+                    .create_runtime()
+                    .unwrap();
                 let mut prefix = tone[..warm].to_vec();
                 let mut expected_prefix = prefix.clone();
                 render(actual.as_mut(), &mut prefix, Some(before as u32), 17);
@@ -98,8 +104,9 @@ fn every_live_mode_direction_matches_existing_manual_routing_fade() {
                 assert_eq!(prefix, expected_prefix);
                 let mut expected = PreparedEq::new(state(after), rate)
                     .unwrap()
-                    .create_runtime();
-                expected.copy_history_from(old.as_ref());
+                    .create_runtime()
+                    .unwrap();
+                expected.inherit_from(old.as_ref());
                 let mut out = tone[warm..].to_vec();
                 let mut reference = out.clone();
                 expected.process_block(&mut reference, &R);
@@ -131,19 +138,29 @@ fn rapid_changes_take_latest_target_after_the_single_outgoing_fade() {
     let tone = input(32 + fade * 2 + 73);
     let mut actual = PreparedEq::automated(state(0), rate, &[MODE])
         .unwrap()
-        .create_runtime();
-    let mut initial = PreparedEq::new(state(0), rate).unwrap().create_runtime();
+        .create_runtime()
+        .unwrap();
+    let mut initial = PreparedEq::new(state(0), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
     let mut a = tone[..32].to_vec();
     let mut b = a.clone();
     render(actual.as_mut(), &mut a, Some(0), 32);
     initial.process_block(&mut b, &R);
-    let mut first = PreparedEq::new(state(1), rate).unwrap().create_runtime();
-    first.copy_history_from(initial.as_ref());
+    let mut first = PreparedEq::new(state(1), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
+    first.inherit_from(initial.as_ref());
     let mut expected = tone[32..].to_vec();
     first.process_block(&mut expected[..fade], &R);
-    let mut second = PreparedEq::new(state(2), rate).unwrap().create_runtime();
+    let mut second = PreparedEq::new(state(2), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
     assert!(!second.transition_busy_from(first.as_ref()));
-    second.copy_history_from(first.as_ref());
+    second.inherit_from(first.as_ref());
     second.process_block(&mut expected[fade..], &R);
     let mut out = tone[32..].to_vec();
     for (i, block) in out.chunks_mut(17).enumerate() {
@@ -157,39 +174,46 @@ fn rapid_changes_take_latest_target_after_the_single_outgoing_fade() {
 fn mode_base_handoff_shadowed_base_and_row_removal_keep_effective_routing() {
     let rate = 48000;
     let factory = PreparedEq::automated(state(0), rate, &[MODE]).unwrap();
-    let mut source = factory.create_runtime();
+    let mut source = factory.create_runtime().unwrap();
     let mut warm = input(127);
     render(source.as_mut(), &mut warm, Some(2), 17);
     for base in [0, 1] {
         let mut candidate = PreparedEq::automated(state(base), rate, &[MODE])
             .unwrap()
-            .create_runtime();
-        candidate.copy_history_from(source.as_ref());
-        let mut reference = factory.create_runtime();
-        reference.copy_history_from(source.as_ref());
+            .create_runtime()
+            .unwrap();
+        candidate.inherit_from(source.as_ref());
+        let mut reference = factory.create_runtime().unwrap();
+        reference.inherit_from(source.as_ref());
         let mut a = input(79);
         let mut b = a.clone();
         render(candidate.as_mut(), &mut a, Some(2), 17);
         render(reference.as_mut(), &mut b, Some(2), 17);
         assert_eq!(a, b);
     }
-    let mut actual = factory.create_runtime();
-    actual.copy_history_from(source.as_ref());
-    let mut reference = PreparedEq::new(state(0), rate).unwrap().create_runtime();
-    reference.copy_history_from(source.as_ref());
+    let mut actual = factory.create_runtime().unwrap();
+    actual.inherit_from(source.as_ref());
+    let mut reference = PreparedEq::new(state(0), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
+    reference.inherit_from(source.as_ref());
     let mut a = input(513);
     let mut b = a.clone();
     render(actual.as_mut(), &mut a, None, 17);
     reference.process_block(&mut b, &R);
     assert_eq!(a, b);
-    let mut removed = PreparedEq::new(state(0), rate).unwrap().create_runtime();
+    let mut removed = PreparedEq::new(state(0), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
     assert!(!removed.transition_busy_from(source.as_ref()));
-    removed.copy_history_from(source.as_ref());
+    removed.inherit_from(source.as_ref());
     let mut a = input(513);
     let mut b = a.clone();
     removed.process_block(&mut a, &R);
-    let mut base = factory.create_runtime();
-    base.copy_history_from(source.as_ref());
+    let mut base = factory.create_runtime().unwrap();
+    base.inherit_from(source.as_ref());
     render(base.as_mut(), &mut b, None, 17);
     assert_eq!(a, b);
 }
@@ -224,7 +248,7 @@ impl NativeParameterAutomation for Bad {
 fn seek_retry_bypass_reset_and_effective_audition_are_defined() {
     use hex_lattice::ProcessorAuditionSelection;
     let factory = PreparedEq::automated(state(0), 48000, &[MODE]).unwrap();
-    let mut primary = factory.create_runtime();
+    let mut primary = factory.create_runtime().unwrap();
     let mut warm = input(32);
     render(primary.as_mut(), &mut warm, Some(2), 17);
     assert!(
@@ -244,23 +268,23 @@ fn seek_retry_bypass_reset_and_effective_audition_are_defined() {
         ParameterValue::Float(f32::NAN),
         ParameterValue::Bool(true),
     ] {
-        let mut scratch = factory.create_runtime();
-        scratch.copy_history_from(primary.as_ref());
+        let mut scratch = factory.create_runtime().unwrap();
+        scratch.inherit_from(primary.as_ref());
         let mut rejected = input(32);
         assert!(
             scratch
                 .process_block_with_automation(&mut rejected, None, &Bad { wrong }, &R)
                 .is_err()
         );
-        scratch.copy_history_from(primary.as_ref());
+        scratch.inherit_from(primary.as_ref());
         let mut a = input(64);
         let mut b = a.clone();
         render(scratch.as_mut(), &mut a, Some(1), 17);
         render(primary.as_mut(), &mut b, Some(1), 17);
         assert_eq!(a, b);
     }
-    let mut actual = factory.create_runtime();
-    actual.copy_history_from(primary.as_ref());
+    let mut actual = factory.create_runtime().unwrap();
+    actual.inherit_from(primary.as_ref());
     let mut dry = input(37);
     let original = dry.clone();
     let mut ignored = dry.clone();
@@ -278,7 +302,10 @@ fn seek_retry_bypass_reset_and_effective_audition_are_defined() {
     actual
         .process_block_with_automation(&mut a, Some(&Clock(1000)), &Held(Some(1)), &R)
         .unwrap();
-    let mut expected = PreparedEq::new(state(1), 48000).unwrap().create_runtime();
+    let mut expected = PreparedEq::new(state(1), 48000)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
     let mut b = input(64);
     expected.process_block_with_clock(&mut b, Some(&Clock(1000)), &R);
     assert_eq!(a, b);
@@ -286,7 +313,10 @@ fn seek_retry_bypass_reset_and_effective_audition_are_defined() {
     let mut a = input(64);
     let mut b = a.clone();
     render(actual.as_mut(), &mut a, Some(2), 17);
-    let mut fresh = PreparedEq::new(state(2), 48000).unwrap().create_runtime();
+    let mut fresh = PreparedEq::new(state(2), 48000)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
     fresh.process_block(&mut b, &R);
     assert_eq!(a, b);
 }
@@ -295,25 +325,31 @@ fn seek_retry_bypass_reset_and_effective_audition_are_defined() {
 fn plain_handoff_freezes_active_audition_and_carries_an_inflight_mode_fade() {
     use hex_lattice::ProcessorAuditionSelection;
     let rate = 48000;
-    let mut old = PreparedEq::new(state(0), rate).unwrap().create_runtime();
+    let mut old = PreparedEq::new(state(0), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
     old.transient_audition()
         .unwrap()
         .select(Some(ProcessorAuditionSelection { lane: 0, index: 1 }));
     let mut warm = input(319);
     old.process_block(&mut warm, &R);
     let factory = PreparedEq::automated(state(0), rate, &[MODE]).unwrap();
-    let mut actual = factory.create_runtime();
-    actual.copy_history_from(old.as_ref());
-    let mut reference = PreparedEq::new(state(2), rate).unwrap().create_runtime();
-    reference.copy_history_from(old.as_ref());
+    let mut actual = factory.create_runtime().unwrap();
+    actual.inherit_from(old.as_ref());
+    let mut reference = PreparedEq::new(state(2), rate)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
+    reference.inherit_from(old.as_ref());
     let mut first = input(17);
     let mut expected = first.clone();
     render(actual.as_mut(), &mut first, Some(2), 17);
     reference.process_block(&mut expected, &R);
     assert_eq!(first, expected);
     assert_eq!(actual.transient_audition_requested_selection(), None);
-    let mut checkpoint = factory.create_runtime();
-    checkpoint.copy_history_from(actual.as_ref());
+    let mut checkpoint = factory.create_runtime().unwrap();
+    checkpoint.inherit_from(actual.as_ref());
     let mut out = input(513);
     let mut expected = out.clone();
     render(checkpoint.as_mut(), &mut out, Some(2), 17);
@@ -352,7 +388,8 @@ fn audition_queries_follow_effective_node_fields_and_reset_restores_base_routing
     };
     let mut runtime = PreparedEq::automated(state(0), 48000, &values.ids)
         .unwrap()
-        .create_runtime();
+        .create_runtime()
+        .unwrap();
     let selection = ProcessorAuditionSelection { lane: 0, index: 1 };
     runtime
         .process_block_with_automation(&mut input(1), None, &values, &R)
@@ -402,8 +439,8 @@ fn routing_changes_preserve_the_existing_node_target_cadence() {
         gain_frame: 32,
     };
     let factory = PreparedEq::automated(settings, 48000, &values.ids).unwrap();
-    let mut first = factory.create_runtime();
-    let mut second = factory.create_runtime();
+    let mut first = factory.create_runtime().unwrap();
+    let mut second = factory.create_runtime().unwrap();
     let mut actual = input(257);
     let mut expected = actual.clone();
     for (index, (a, b)) in actual

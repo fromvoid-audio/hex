@@ -13,7 +13,7 @@ use super::*;
 type Target = CoefficientTarget;
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct PendingRouting {
+pub(in crate::eq8) struct PendingRouting {
     mode: ChannelMode,
     target: Target,
     enabled: [[bool; BAND_COUNT]; 2],
@@ -82,7 +82,10 @@ impl RoutingAutomation {
         };
         Ok(Some(PendingRouting::new(values, target)))
     }
-    pub(super) fn install(&mut self, pending: Option<PendingRouting>) {
+    pub(in crate::eq8) fn pending(&self) -> Option<PendingRouting> {
+        self.pending
+    }
+    pub(in crate::eq8) fn install(&mut self, pending: Option<PendingRouting>) {
         self.pending = pending;
     }
     pub(super) fn restore_canonical(
@@ -122,11 +125,22 @@ impl Eq8Runtime {
         let Some(pending) = self
             .routing
             .pending
-            .take()
             .filter(|pending| pending.mode != self.mode)
         else {
+            if self.routing.pending.is_some() {
+                self.snapshot_pending_routing();
+                self.routing.pending = None;
+            }
             return;
         };
+        self.snapshot_pending_routing();
+        self.snapshot_scalars();
+        self.snapshot_coeffs();
+        self.snapshot_automated_target();
+        self.snapshot_all_history();
+        self.snapshot_audition();
+        self.snapshot_mode_fade();
+        self.routing.pending = None;
         let canonical = self
             .routing
             .canonical_target(pending.mode)

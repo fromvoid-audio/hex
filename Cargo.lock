@@ -2670,6 +2670,7 @@ dependencies = [
  "hex-engine",
  "hex-lattice",
  "hex-lattice-contract",
+ "hex-media",
  "hex-project",
  "hex-tuning",
  "rustix 1.1.5",

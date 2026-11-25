@@ -85,8 +85,8 @@ fn dense_scope(mode_grant: bool) {
         &ids,
     )
     .unwrap();
-    let mut actual = factory.create_runtime();
-    let mut reference = factory.create_runtime();
+    let mut actual = factory.create_runtime().unwrap();
+    let mut reference = factory.create_runtime().unwrap();
     let mut values = Values {
         ids,
         start: 0,
@@ -96,17 +96,26 @@ fn dense_scope(mode_grant: bool) {
     let mut expected = output;
     for (i, block) in expected.chunks_mut(32).enumerate() {
         values.start = i * 32;
+        reference.begin_block();
         reference
             .process_block_with_automation(block, None, &values, &R)
             .unwrap();
+        reference.commit_block();
     }
     let mut failed = false;
     zero(allocation_counter::measure(|| {
         for (i, block) in output.chunks_mut(32).enumerate() {
             values.start = i * 32;
-            failed |= actual
+            actual.begin_block();
+            if actual
                 .process_block_with_automation(block, None, &values, &R)
-                .is_err();
+                .is_err()
+            {
+                actual.rollback_block();
+                failed = true;
+            } else {
+                actual.commit_block();
+            }
         }
     }));
     assert!(!failed);
@@ -116,22 +125,27 @@ fn dense_scope(mode_grant: bool) {
     let mut rejected = [[0.001, -0.0005]; 32];
     let mut refused = false;
     zero(allocation_counter::measure(|| {
+        actual.begin_block();
         refused = actual
             .process_block_with_automation(&mut rejected, None, &values, &R)
             .is_err();
-        actual.copy_history_from(reference.as_ref());
+        actual.rollback_block();
     }));
     assert!(refused);
     values.bad = false;
     let mut a = [[0.001, -0.0005]; 32];
     let mut b = a;
+    reference.begin_block();
     reference
         .process_block_with_automation(&mut b, None, &values, &R)
         .unwrap();
+    reference.commit_block();
     zero(allocation_counter::measure(|| {
+        actual.begin_block();
         failed = actual
             .process_block_with_automation(&mut a, None, &values, &R)
             .is_err();
+        actual.commit_block();
     }));
     assert!(!failed);
     assert_eq!(a, b);
@@ -142,25 +156,33 @@ fn dense_scope(mode_grant: bool) {
     };
     let mut dry = [[0.001, -0.0005]; 37];
     let mut discarded = dry;
+    reference.begin_block();
     reference
         .process_block_with_automation(&mut discarded, None, &base, &R)
         .unwrap();
+    reference.commit_block();
     zero(allocation_counter::measure(|| {
+        actual.begin_block();
         failed = actual
             .process_bypassed_block_with_automation(&mut dry, None, &base, &R)
             .is_err();
+        actual.commit_block();
     }));
     assert!(!failed);
     assert_eq!(dry, [[0.001, -0.0005]; 37]);
     let mut a = [[0.001, -0.0005]; 64];
     let mut b = a;
+    reference.begin_block();
     reference
         .process_block_with_automation(&mut b, None, &base, &R)
         .unwrap();
+    reference.commit_block();
     zero(allocation_counter::measure(|| {
+        actual.begin_block();
         failed = actual
             .process_block_with_automation(&mut a, None, &base, &R)
             .is_err();
+        actual.commit_block();
         actual.reset();
         reference.reset();
     }));

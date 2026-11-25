@@ -1,0 +1,491 @@
+//! Explicit opt-in export post-processing: deterministic target sample-rate
+//! conversion (reusing `hex-media`'s windowed-sinc V2 resampler) and peak or
+//! ITU-R BS.1770-4 K-weighted integrated loudness normalization.
+//!
+//! Normalization is strictly opt-in (`ExportNormalization::Off` by default)
+//! and always reports the exact linear and dB gain applied to the exported
+//! signal. Digital silence never divides by zero and always applies unity gain
+//! (`1.0` linear, `0.0 dB`).
+
+use crate::ExportError;
+use hex_engine::{Audio, Frame};
+use hex_media::{ResampleLimits, ResampleVersion, resample_cancellable};
+use std::f64::consts::PI;
+use std::sync::atomic::AtomicBool;
+
+/// Supported target sample-rate bounds matching `hex-media`.
+const MIN_TARGET_SAMPLE_RATE: u32 = 8_000;
+const MAX_TARGET_SAMPLE_RATE: u32 = 192_000;
+/// Bounded maximum frame count for post-processed (SRC / normalized) exports.
+/// Covers > 2 hours at 48 kHz while preventing runaway allocations.
+pub(crate) const MAX_POST_PROCESSED_FRAMES: usize = 360_000_000;
+
+/// Explicit opt-in normalization mode for an export job.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum ExportNormalization {
+    /// No gain adjustment (default). Reports unity gain (`1.0`, `0.0 dB`).
+    #[default]
+    Off,
+    /// Normalize sample peak to `target_dbfs` (finite, `<= 0.0`).
+    Peak { target_dbfs: f64 },
+    /// Normalize ITU-R BS.1770-4 K-weighted integrated loudness to `target_lufs`
+    /// (finite, `-70.0..=0.0`), optionally clamping linear gain so sample peak
+    /// does not exceed `true_peak_ceiling_dbfs` (finite, `<= 0.0`).
+    Loudness {
+        target_lufs: f64,
+        true_peak_ceiling_dbfs: Option<f64>,
+    },
+}
+
+impl ExportNormalization {
+    pub fn validate(self) -> Result<(), ExportError> {
+        match self {
+            Self::Off => Ok(()),
+            Self::Peak { target_dbfs } => {
+                if !target_dbfs.is_finite() || !(-144.0..=0.0).contains(&target_dbfs) {
+                    return Err(ExportError::Invalid(
+                        "peak normalization target must be finite and within [-144, 0] dBFS",
+                    ));
+                }
+                Ok(())
+            }
+            Self::Loudness {
+                target_lufs,
+                true_peak_ceiling_dbfs,
+            } => {
+                if !target_lufs.is_finite() || !(-70.0..=0.0).contains(&target_lufs) {
+                    return Err(ExportError::Invalid(
+                        "loudness normalization target must be finite and within [-70, 0] LUFS",
+                    ));
+                }
+                if let Some(ceiling) = true_peak_ceiling_dbfs
+                    && (!ceiling.is_finite() || !(-144.0..=0.0).contains(&ceiling))
+                {
+                    return Err(ExportError::Invalid(
+                        "loudness peak ceiling must be finite and within [-144, 0] dBFS",
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Optional target sample-rate conversion and normalization applied after
+/// causal Arrangement rendering and PDC preroll discard.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ExportOptions {
+    /// Optional output sample rate in Hz (`8_000..=192_000`). `None` keeps the
+    /// project's native sample rate without resampling.
+    pub target_sample_rate: Option<u32>,
+    /// Explicit opt-in normalization policy. Defaults to [`ExportNormalization::Off`].
+    pub normalization: ExportNormalization,
+}
+
+impl ExportOptions {
+    pub fn validate(self) -> Result<(), ExportError> {
+        if let Some(rate) = self.target_sample_rate
+            && !(MIN_TARGET_SAMPLE_RATE..=MAX_TARGET_SAMPLE_RATE).contains(&rate)
+        {
+            return Err(ExportError::Invalid(
+                "target sample rate must be within 8000..=192000 Hz",
+            ));
+        }
+        self.normalization.validate()
+    }
+
+    pub fn is_identity(self, source_sample_rate: u32) -> bool {
+        self.target_sample_rate
+            .is_none_or(|rate| rate == source_sample_rate)
+            && matches!(self.normalization, ExportNormalization::Off)
+    }
+}
+
+/// Exact linear and dB gain applied by export normalization.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AppliedGain {
+    pub linear: f64,
+    pub db: f64,
+}
+
+impl Default for AppliedGain {
+    fn default() -> Self {
+        Self::UNITY
+    }
+}
+
+impl AppliedGain {
+    pub const UNITY: Self = Self {
+        linear: 1.0,
+        db: 0.0,
+    };
+
+    fn from_linear(linear: f64) -> Self {
+        if !linear.is_finite() || linear <= 0.0 {
+            Self::UNITY
+        } else {
+            Self {
+                linear,
+                db: 20.0 * linear.log10(),
+            }
+        }
+    }
+}
+
+/// Resample rendered stereo PCM to `target_rate` using `hex-media`'s
+/// deterministic windowed-sinc V2 kernel, honoring cooperative cancellation.
+pub(crate) fn resample_export_frames(
+    source_rate: u32,
+    target_rate: u32,
+    frames: Vec<Frame>,
+    cancel: &AtomicBool,
+) -> Result<Vec<Frame>, ExportError> {
+    if source_rate == target_rate || frames.is_empty() {
+        return Ok(frames);
+    }
+    let audio = Audio::new(source_rate, frames)
+        .map_err(|_| ExportError::Invalid("rendered export audio is invalid for resampling"))?;
+    let limits = ResampleLimits {
+        max_source_frames: MAX_POST_PROCESSED_FRAMES,
+        max_output_frames: MAX_POST_PROCESSED_FRAMES,
+    };
+    let converted = resample_cancellable(&audio, target_rate, limits, ResampleVersion::V2, cancel)
+        .map_err(|err| match err {
+            hex_media::ImportError::Cancelled => ExportError::Cancelled,
+            other => ExportError::Media(format!("target sample-rate conversion failed: {other}")),
+        })?;
+    Ok(converted.frames().to_vec())
+}
+
+/// Compute and apply explicit opt-in normalization in-place, returning the
+/// exact applied gain. Digital silence is left untouched with unity gain.
+pub(crate) fn apply_normalization(
+    frames: &mut [Frame],
+    sample_rate: u32,
+    mode: ExportNormalization,
+) -> Result<AppliedGain, ExportError> {
+    mode.validate()?;
+    if frames.is_empty() || matches!(mode, ExportNormalization::Off) {
+        return Ok(AppliedGain::UNITY);
+    }
+
+    let mut peak = 0.0_f64;
+    for &[left, right] in frames.iter() {
+        if !left.is_finite() || !right.is_finite() {
+            return Err(ExportError::Invalid("render produced a non-finite sample"));
+        }
+        peak = peak.max(f64::from(left).abs()).max(f64::from(right).abs());
+    }
+    if peak == 0.0 {
+        return Ok(AppliedGain::UNITY);
+    }
+
+    let gain = match mode {
+        ExportNormalization::Off => 1.0,
+        ExportNormalization::Peak { target_dbfs } => {
+            let target_linear = db_to_linear(target_dbfs);
+            target_linear / peak
+        }
+        ExportNormalization::Loudness {
+            target_lufs,
+            true_peak_ceiling_dbfs,
+        } => {
+            let Some(measured_lufs) = measure_integrated_lufs(frames, sample_rate) else {
+                return Ok(AppliedGain::UNITY);
+            };
+            let mut linear = db_to_linear(target_lufs - measured_lufs);
+            if let Some(ceiling_dbfs) = true_peak_ceiling_dbfs {
+                let ceiling_linear = db_to_linear(ceiling_dbfs);
+                linear = linear.min(ceiling_linear / peak);
+            }
+            linear
+        }
+    };
+
+    if !gain.is_finite() || gain <= 0.0 {
+        return Ok(AppliedGain::UNITY);
+    }
+    let applied = AppliedGain::from_linear(gain);
+    for frame in frames.iter_mut() {
+        frame[0] = (f64::from(frame[0]) * applied.linear) as f32;
+        frame[1] = (f64::from(frame[1]) * applied.linear) as f32;
+    }
+    Ok(applied)
+}
+
+fn db_to_linear(db: f64) -> f64 {
+    10.0_f64.powf(db / 20.0)
+}
+
+/// Direct Form II transposed biquad filter in `f64` for K-weighting.
+#[derive(Clone, Copy)]
+struct Biquad {
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a1: f64,
+    a2: f64,
+    z1: f64,
+    z2: f64,
+}
+
+impl Biquad {
+    fn new(b0: f64, b1: f64, b2: f64, a1: f64, a2: f64) -> Self {
+        Self {
+            b0,
+            b1,
+            b2,
+            a1,
+            a2,
+            z1: 0.0,
+            z2: 0.0,
+        }
+    }
+
+    #[inline]
+    fn process(&mut self, x: f64) -> f64 {
+        let y = self.b0 * x + self.z1;
+        self.z1 = self.b1 * x - self.a1 * y + self.z2;
+        self.z2 = self.b2 * x - self.a2 * y;
+        y
+    }
+}
+
+/// ITU-R BS.1770-4 Stage 1 (pre-filter high-shelf) and Stage 2 (RLB high-pass)
+/// computed via exact bilinear transform for any sample rate.
+fn k_weighting_filters(sample_rate: u32) -> (Biquad, Biquad) {
+    let fs = f64::from(sample_rate);
+    // Stage 1: +3.999843853973347 dB high-shelf at 1681.974450955533 Hz, Q = 0.7071752369554196
+    let f0_shelf = 1_681.974_450_955_533_f64;
+    let db_shelf = 3.999_843_853_973_347_f64;
+    let q_shelf = 0.707_175_236_955_419_6_f64;
+    let k = (PI * f0_shelf / fs).tan();
+    let vh = 10.0_f64.powf(db_shelf / 20.0);
+    let vb = vh.powf(0.499_666_774_154_541_6);
+    let a0 = 1.0 + k / q_shelf + k * k;
+    let shelf = Biquad::new(
+        (vh + vb * k / q_shelf + k * k) / a0,
+        2.0 * (k * k - vh) / a0,
+        (vh - vb * k / q_shelf + k * k) / a0,
+        2.0 * (k * k - 1.0) / a0,
+        (1.0 - k / q_shelf + k * k) / a0,
+    );
+
+    // Stage 2: RLB high-pass at 38.13547087602444 Hz, Q = 0.5003270373238773
+    let f0_hp = 38.135_470_876_024_44_f64;
+    let q_hp = 0.500_327_037_323_877_3_f64;
+    let k_hp = (PI * f0_hp / fs).tan();
+    let a0_hp = 1.0 + k_hp / q_hp + k_hp * k_hp;
+    let highpass = Biquad::new(
+        1.0 / a0_hp,
+        -2.0 / a0_hp,
+        1.0 / a0_hp,
+        2.0 * (k_hp * k_hp - 1.0) / a0_hp,
+        (1.0 - k_hp / q_hp + k_hp * k_hp) / a0_hp,
+    );
+    (shelf, highpass)
+}
+
+/// Measure ITU-R BS.1770-4 K-weighted integrated loudness in LUFS.
+/// Returns `None` for digital silence or below-gate signals.
+pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64> {
+    if frames.is_empty() || sample_rate == 0 {
+        return None;
+    }
+    let (mut shelf_l, mut hp_l) = k_weighting_filters(sample_rate);
+    let (mut shelf_r, mut hp_r) = k_weighting_filters(sample_rate);
+
+    let block_frames = ((u64::from(sample_rate) * 400) / 1000).max(1) as usize;
+    let hop_frames = ((u64::from(sample_rate) * 100) / 1000).max(1) as usize;
+
+    // Short-clip fallback when clip duration < 400 ms: measure K-weighted mean
+    // power over the entire clip so short cues still normalize deterministically.
+    if frames.len() < block_frames {
+        let mut sum_sq = 0.0_f64;
+        for &[l, r] in frames {
+            let kl = hp_l.process(shelf_l.process(f64::from(l)));
+            let kr = hp_r.process(shelf_r.process(f64::from(r)));
+            sum_sq += kl * kl + kr * kr;
+        }
+        let mean_power = sum_sq / (frames.len() as f64);
+        if mean_power <= 0.0 {
+            return None;
+        }
+        let lufs = -0.691 + 10.0 * mean_power.log10();
+        return (lufs > -70.0 && lufs.is_finite()).then_some(lufs);
+    }
+
+    // Stream K-weighted squared power in 100 ms sub-blocks so memory stays
+    // bounded to O(duration / 100ms) instead of storing full-length f64 copies.
+    let mut hop_sums: Vec<f64> = Vec::new();
+    let mut current_sum = 0.0_f64;
+    let mut in_hop = 0_usize;
+    for &[l, r] in frames {
+        let kl = hp_l.process(shelf_l.process(f64::from(l)));
+        let kr = hp_r.process(shelf_r.process(f64::from(r)));
+        current_sum += kl * kl + kr * kr;
+        in_hop += 1;
+        if in_hop == hop_frames {
+            hop_sums.push(current_sum);
+            current_sum = 0.0;
+            in_hop = 0;
+        }
+    }
+
+    if hop_sums.len() < 4 {
+        return None;
+    }
+    let inv_block = 1.0 / (4 * hop_frames) as f64;
+    let mut block_powers: Vec<f64> = Vec::with_capacity(hop_sums.len() - 3);
+    for window in hop_sums.windows(4) {
+        let power = (window[0] + window[1] + window[2] + window[3]) * inv_block;
+        block_powers.push(power);
+    }
+
+    // Step 1: Absolute gate at -70 LUFS.
+    let abs_threshold = 10.0_f64.powf((-70.0 + 0.691) / 10.0);
+    let mut abs_sum = 0.0_f64;
+    let mut abs_count = 0_usize;
+    for &p in &block_powers {
+        if p > abs_threshold {
+            abs_sum += p;
+            abs_count += 1;
+        }
+    }
+    if abs_count == 0 {
+        return None;
+    }
+    let ungated_lufs = -0.691 + 10.0 * (abs_sum / abs_count as f64).log10();
+
+    // Step 2: Relative gate at ungated_lufs - 10 LU.
+    let rel_threshold = 10.0_f64.powf((ungated_lufs - 10.0 + 0.691) / 10.0);
+    let mut rel_sum = 0.0_f64;
+    let mut rel_count = 0_usize;
+    for &p in &block_powers {
+        if p > abs_threshold && p > rel_threshold {
+            rel_sum += p;
+            rel_count += 1;
+        }
+    }
+    if rel_count == 0 {
+        return None;
+    }
+    let integrated = -0.691 + 10.0 * (rel_sum / rel_count as f64).log10();
+    integrated.is_finite().then_some(integrated)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sine_stereo(sample_rate: u32, frames: usize, hz: f64, amplitude: f32) -> Vec<Frame> {
+        (0..frames)
+            .map(|i| {
+                let s =
+                    ((2.0 * PI * hz * i as f64) / f64::from(sample_rate)).sin() as f32 * amplitude;
+                [s, s]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn peak_normalization_hits_target_and_reports_exact_gain() {
+        let mut frames = sine_stereo(48_000, 4800, 1000.0, 0.25);
+        let gain = apply_normalization(
+            &mut frames,
+            48_000,
+            ExportNormalization::Peak { target_dbfs: -6.0 },
+        )
+        .unwrap();
+        let expected_peak = db_to_linear(-6.0);
+        let actual_peak = frames
+            .iter()
+            .flat_map(|f| [f[0].abs(), f[1].abs()])
+            .fold(0.0_f32, f32::max);
+        assert!((f64::from(actual_peak) - expected_peak).abs() < 1e-4);
+        assert!((gain.db - (20.0 * gain.linear.log10())).abs() < 1e-12);
+        assert!((gain.linear - expected_peak / 0.25).abs() < 1e-3);
+    }
+
+    #[test]
+    fn loudness_normalization_hits_lufs_target_and_respects_peak_ceiling() {
+        // ITU-R BS.1770-4 calibrates a stereo 1 kHz 0 dBFS sine to ~0.0 LUFS
+        // (+0.65 dB K-weighting boost at 1 kHz cancels the -0.691 dB offset), so
+        // amplitude 0.1 (-20 dBFS) measures ~ -20.04 LUFS.
+        let mut frames = sine_stereo(48_000, 48_000, 1000.0, 0.1);
+        let initial_lufs = measure_integrated_lufs(&frames, 48_000).unwrap();
+        assert!((initial_lufs - (-20.0)).abs() < 0.15, "got {initial_lufs}");
+
+        let gain = apply_normalization(
+            &mut frames,
+            48_000,
+            ExportNormalization::Loudness {
+                target_lufs: -14.0,
+                true_peak_ceiling_dbfs: Some(-1.0),
+            },
+        )
+        .unwrap();
+        let after_lufs = measure_integrated_lufs(&frames, 48_000).unwrap();
+        assert!((after_lufs - (-14.0)).abs() < 0.05, "got {after_lufs}");
+        assert!((gain.db - (-14.0 - initial_lufs)).abs() < 1e-6);
+
+        // Now push target to -1 LUFS with a -6 dBFS ceiling -> ceiling clamps gain.
+        let mut clamped = sine_stereo(48_000, 48_000, 1000.0, 0.1);
+        let clamped_gain = apply_normalization(
+            &mut clamped,
+            48_000,
+            ExportNormalization::Loudness {
+                target_lufs: -1.0,
+                true_peak_ceiling_dbfs: Some(-6.0),
+            },
+        )
+        .unwrap();
+        let peak = clamped
+            .iter()
+            .flat_map(|f| [f[0].abs(), f[1].abs()])
+            .fold(0.0_f32, f32::max);
+        assert!((f64::from(peak) - db_to_linear(-6.0)).abs() < 1e-4);
+        assert!(clamped_gain.db < 19.0);
+    }
+
+    #[test]
+    fn silence_never_modifies_samples_and_reports_unity_gain() {
+        let mut silent = vec![[0.0, 0.0]; 48_000];
+        for mode in [
+            ExportNormalization::Peak { target_dbfs: -1.0 },
+            ExportNormalization::Loudness {
+                target_lufs: -14.0,
+                true_peak_ceiling_dbfs: Some(-1.0),
+            },
+        ] {
+            let gain = apply_normalization(&mut silent, 48_000, mode).unwrap();
+            assert_eq!(gain, AppliedGain::UNITY);
+            assert!(silent.iter().all(|&f| f == [0.0, 0.0]));
+        }
+    }
+
+    #[test]
+    fn invalid_options_are_refused() {
+        assert!(
+            ExportOptions {
+                target_sample_rate: Some(1_000),
+                normalization: ExportNormalization::Off,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            ExportNormalization::Peak { target_dbfs: 1.0 }
+                .validate()
+                .is_err()
+        );
+        assert!(
+            ExportNormalization::Loudness {
+                target_lufs: f64::NAN,
+                true_peak_ceiling_dbfs: None,
+            }
+            .validate()
+            .is_err()
+        );
+    }
+}

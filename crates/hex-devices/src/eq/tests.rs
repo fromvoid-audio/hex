@@ -96,8 +96,8 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
         assert_eq!(upgraded.nodes[39].kind, NodeKind::Notch);
         assert!(!upgraded.nodes[39].enabled);
         assert_eq!(upgraded.nodes[39].q, 0.7);
-        let mut legacy = definition
-            .prepare_processor(
+        let hex_lattice::PreparedProcessorFactory::Owned(legacy_factory) = definition
+            .prepare_runtime_factory(
                 &old,
                 &hex_lattice::DevicePreparationContext {
                     sample_rate: 48000,
@@ -107,9 +107,12 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
             )
             .unwrap()
             .unwrap()
-            .create_runtime();
-        let mut new = EQ_DEFINITION
-            .prepare_processor(
+        else {
+            panic!("eq8 should prepare as OwnedProcessorRuntime");
+        };
+        let mut legacy = legacy_factory.create_runtime().unwrap();
+        let hex_lattice::PreparedProcessorFactory::Owned(new_factory) = EQ_DEFINITION
+            .prepare_runtime_factory(
                 &upgraded.encode().unwrap(),
                 &hex_lattice::DevicePreparationContext {
                     sample_rate: 48000,
@@ -119,7 +122,10 @@ fn legacy_conversion_preserves_five_banks_and_valid_pcm() {
             )
             .unwrap()
             .unwrap()
-            .create_runtime();
+        else {
+            panic!("eq should prepare as OwnedProcessorRuntime");
+        };
+        let mut new = new_factory.create_runtime().unwrap();
         let mut a = vec![[0.0; 2]; 4096];
         a[0] = [1.0, -0.25];
         a[99] = [0.5, 0.75];
@@ -230,10 +236,10 @@ fn full_density_accounting_is_bounded() {
             .unwrap();
     }
     let prepared = runtime::PreparedEq::new(settings, 48000).unwrap();
-    assert!(prepared.declared_runtime_bytes() <= 65536);
+    assert!(prepared.declared_pair_bytes() <= 131_072);
     eprintln!(
         "eq runtime inclusive bytes: {}",
-        prepared.declared_runtime_bytes()
+        prepared.declared_pair_bytes()
     );
 }
 
@@ -256,20 +262,20 @@ fn audition_targets_stable_node_ids_and_survives_parameter_retarget() {
     state.add(node(100)).unwrap();
     state.add(node(200)).unwrap();
     let prepared = runtime::PreparedEq::new(state.clone(), 48000).unwrap();
-    let mut old = prepared.create_runtime();
+    let mut old = prepared.create_runtime().unwrap();
     let selection = ProcessorAuditionSelection {
         index: 200,
         lane: 0,
     };
     assert!(old.transient_audition().unwrap().can_select(selection));
     old.transient_audition().unwrap().select(Some(selection));
-    assert!(!old.is_quiescent());
+    assert!(!old.committed_is_quiescent());
     old.process_block(&mut [[0.0; 2]; 300], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     state.remove(NodeId::new(100).unwrap()).unwrap();
     state.node_mut(NodeId::new(200).unwrap()).unwrap().gain_db = 3.0;
     let updated = runtime::PreparedEq::new(state, 48000).unwrap();
-    let mut new = updated.create_runtime();
-    new.copy_history_from(old.as_ref());
+    let mut new = updated.create_runtime().unwrap();
+    new.inherit_from(old.as_ref());
     assert_eq!(
         new.transient_audition_requested_selection(),
         Some(selection)
@@ -284,10 +290,10 @@ fn audition_targets_stable_node_ids_and_survives_parameter_retarget() {
     );
     new.transient_audition().unwrap().select(None);
     new.process_block(&mut [[0.0; 2]; 300], &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    assert!(new.is_quiescent());
+    assert!(new.committed_is_quiescent());
     new.transient_audition().unwrap().select(Some(selection));
     new.transient_audition().unwrap().cancel_immediately();
-    assert!(new.is_quiescent());
+    assert!(new.committed_is_quiescent());
 }
 #[test]
 fn invalid_enabled_legacy_shelf_refuses_upgrade_preparation_without_changing_payload() {
@@ -377,7 +383,7 @@ fn profile_max_density_eq() {
         }
     }
     let prepared = runtime::PreparedEq::new(state, 48000).unwrap();
-    let mut rt = prepared.create_runtime();
+    let mut rt = prepared.create_runtime().unwrap();
     let mut frames = [[0.01, -0.01]; 256];
     for b in 0..100 {
         rt.process_block_with_clock(
@@ -399,23 +405,82 @@ fn profile_max_density_eq() {
     eprintln!(
         "64nodes+64frequencylanes,48khz,256frames,100warmup/1000measuredblocks: {}us/block, declared {}bytes",
         elapsed.as_secs_f64() * 1e6 / 1000.0,
-        prepared.declared_runtime_bytes()
+        prepared.declared_pair_bytes()
     );
     assert!(frames.iter().flatten().all(|v| v.is_finite()));
 }
+#[test]
+fn eq_owned_runtime_dirty_range_rollback_restores_exact_committed_pcm() {
+    use hex_lattice::{EMPTY_DEVICE_RESOURCES as R, PreparedOwnedProcessorRuntime};
+
+    let mut settings = EqState::default();
+    let mut n1 = node(1);
+    n1.gain_db = 8.0;
+    let mut n2 = node(2);
+    n2.frequency_hz = 250.0;
+    n2.gain_db = -6.0;
+    settings.add(n1).unwrap();
+    settings.add(n2).unwrap();
+    let prepared = runtime::PreparedEq::new(settings, 48_000).unwrap();
+    let mut actual = prepared.create_runtime().unwrap();
+    let mut reference = prepared.create_runtime().unwrap();
+
+    let warm: Vec<StereoFrame> = (0..64)
+        .map(|i| {
+            [
+                (i as f32 * 0.11).sin() * 0.35,
+                (i as f32 * 0.05).cos() * 0.25,
+            ]
+        })
+        .collect();
+    let mut w1 = warm.clone();
+    let mut w2 = warm;
+    actual.begin_block();
+    actual.process_block(&mut w1, &R);
+    actual.commit_block();
+    reference.begin_block();
+    reference.process_block(&mut w2, &R);
+    reference.commit_block();
+    assert_eq!(w1, w2);
+
+    // Speculative block followed by rollback must leave committed state bit-identical.
+    let mut speculative = vec![[-0.75, 0.65]; 37];
+    actual.begin_block();
+    actual.process_block(&mut speculative, &R);
+    actual.rollback_block();
+
+    let next: Vec<StereoFrame> = (64..160)
+        .map(|i| {
+            [
+                (i as f32 * 0.11).sin() * 0.35,
+                (i as f32 * 0.05).cos() * 0.25,
+            ]
+        })
+        .collect();
+    let mut n1 = next.clone();
+    let mut n2 = next;
+    actual.begin_block();
+    actual.process_block(&mut n1, &R);
+    actual.commit_block();
+    reference.begin_block();
+    reference.process_block(&mut n2, &R);
+    reference.commit_block();
+    assert_eq!(n1, n2);
+}
+
 #[test]
 fn ordinary_eq_density_scales_storage_to_authored_node_count() {
     let empty = runtime::PreparedEq::new(EqState::default(), 48000).unwrap();
     let mut settings = EqState::default();
     settings.add(node(1)).unwrap();
     let one = runtime::PreparedEq::new(settings, 48000).unwrap();
-    assert!(empty.declared_runtime_bytes() < one.declared_runtime_bytes());
-    assert!(one.declared_runtime_bytes() * 100 < hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES);
+    assert!(empty.declared_pair_bytes() < one.declared_pair_bytes());
+    assert!(one.declared_pair_bytes() * 100 < hex_lattice::MAX_PROCESSOR_BANK_RUNTIME_BYTES);
     // Authored nodes still cost under 2 KiB each. Pulse #4122 adds one fixed
     // outgoing-routing reserve of `MAX_NODES` bands (about 19 KiB) so a mode
     // switch that also removes nodes still crossfades; it is not per node.
-    assert!(one.declared_runtime_bytes() - empty.declared_runtime_bytes() < 2048);
-    assert!(empty.declared_runtime_bytes() < 24 * 1024);
+    assert!(one.declared_pair_bytes() - empty.declared_pair_bytes() < 2048);
+    assert!(empty.declared_pair_bytes() < 48 * 1024);
 }
 
 struct TestClock {
@@ -456,8 +521,8 @@ fn stopped_frozen_clock_preserves_authored_filter_history_like_unclocked_monitor
         })
         .unwrap();
     let prepared = runtime::PreparedEq::new(settings, 48000).unwrap();
-    let mut reference = prepared.create_runtime();
-    let mut clocked = prepared.create_runtime();
+    let mut reference = prepared.create_runtime().unwrap();
+    let mut clocked = prepared.create_runtime().unwrap();
     let mut a = [[0.0; 2]; 257];
     a[0] = [1.0, -0.3];
     let mut b = a;
@@ -491,7 +556,7 @@ fn actual_parameter_retarget_refreshes_automated_target_between_cadence_points()
         })
         .unwrap();
     let prepared = runtime::PreparedEq::new(settings.clone(), 48000).unwrap();
-    let mut reference = prepared.create_runtime();
+    let mut reference = prepared.create_runtime().unwrap();
     reference.process_block_with_clock(
         &mut [[0.01, -0.01]; 17],
         Some(&TestClock {
@@ -508,8 +573,8 @@ fn actual_parameter_retarget_refreshes_automated_target_between_cadence_points()
         .add(Node::new(NodeId::new(2).unwrap(), 900.0, -12.0, 1).unwrap())
         .unwrap();
     let updated = runtime::PreparedEq::new(settings, 48000).unwrap();
-    let mut retargeted = updated.create_runtime();
-    retargeted.copy_history_from(reference.as_ref());
+    let mut retargeted = updated.create_runtime().unwrap();
+    retargeted.inherit_from(reference.as_ref());
     let mut a = [[0.01, -0.01]; 47];
     let mut b = a;
     let clock = TestClock {
@@ -530,7 +595,7 @@ fn plotted_response_matches_actual_cut_impulse_transform() {
     band.gain_db = 0.0;
     settings.add(band).unwrap();
     let prepared = runtime::PreparedEq::new(settings, 48000).unwrap();
-    let mut rt = prepared.create_runtime();
+    let mut rt = prepared.create_runtime().unwrap();
     let mut frames = vec![[0.0; 2]; 16384];
     frames[0] = [1.0; 2];
     rt.process_block(&mut frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -573,7 +638,7 @@ fn assert_plotted_matches_impulse(
     band.gain_db = gain;
     settings.add(band).unwrap();
     let prepared = runtime::PreparedEq::new(settings, rate).unwrap();
-    let mut rt = prepared.create_runtime();
+    let mut rt = prepared.create_runtime().unwrap();
     const BLOCK: usize = 4096;
     let mut frames: Vec<StereoFrame> = Vec::with_capacity(BLOCK);
     loop {
@@ -718,7 +783,7 @@ fn plotted_response_matches_actual_impulse_transform_across_shapes_rates_and_ext
                     band.gain_db = gain;
                     settings.add(band).unwrap();
                     let prepared = runtime::PreparedEq::new(settings, rate).unwrap();
-                    let mut rt = prepared.create_runtime();
+                    let mut rt = prepared.create_runtime().unwrap();
                     // The original 131072-frame audit was inconclusive for the
                     // overdamped 20hz/high-rate bell. Extend its measurement
                     // window, preserving both original evidence and tolerances.

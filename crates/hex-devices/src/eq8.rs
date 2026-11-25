@@ -10,8 +10,9 @@
 //! controls, and detached tails freeze their targets.
 mod automation;
 use hex_lattice::{
-    NativeDeviceDefinition, NativeProcessorAudition, NativeProcessorRuntime, OutputTail,
-    PreparedNativeProcessor, ProcessorAuditionSelection, StereoFrame, StereoMatrix,
+    NativeDeviceDefinition, NativeProcessorAudition, OutputTail, OwnedProcessorRuntime,
+    PreparedOwnedProcessorRuntime, PreparedProcessorFactory, ProcessorAuditionSelection,
+    StereoFrame, StereoMatrix,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -368,9 +369,12 @@ impl NativeDeviceDefinition for Eq8Definition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         ids: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
-            automation::prepare(state, context.sample_rate, ids)?,
-        ))
+        Ok(hex_lattice::PreparedRuntimeDevice {
+            matrix: StereoMatrix::identity(),
+            processor: Some(PreparedProcessorFactory::Owned(Arc::new(
+                automation::prepare(state, context.sample_rate, ids)?,
+            ))),
+        })
     }
     fn prepare_matrix(
         &self,
@@ -390,12 +394,20 @@ impl NativeDeviceDefinition for Eq8Definition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedNativeProcessor>>, DeviceContractError> {
+        let _ = decode(state)?;
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
-    ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        let settings = decode(state)?;
-        let prepared = PreparedEq8::new(settings, sample_rate)?;
-        Ok(Some(Box::new(prepared)))
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(PreparedProcessorFactory::Owned(Arc::new(
+            Self::prepare_owned(state, context.sample_rate, &[])?,
+        ))))
     }
 }
 
@@ -456,13 +468,16 @@ impl PreparedEq8 {
 
     fn runtime(&self) -> Eq8Runtime {
         let coefficients = automation::selected(self.mode).map(|bank| self.canonical_banks[bank]);
+        let controls = crate::parameter_binding::Controls::new(self.control_values, self.admitted);
+        let active_bands = active_band_flags(&coefficients);
+        let band_automation_admitted = self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v);
         Eq8Runtime {
-            controls: crate::parameter_binding::Controls::new(self.control_values, self.admitted),
+            controls,
             tail_controls_frozen: false,
             routing: automation::routing::RoutingAutomation::new(self.canonical_banks),
             automated_target: None,
-            band_automation_admitted: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
-            band_targets_pending: self.admitted[..automation::GAIN_SLOT].iter().any(|&v| v),
+            band_automation_admitted,
+            band_targets_pending: band_automation_admitted,
             sample_rate: self.sample_rate,
             mode: self.mode,
             canonical_mode: self.mode,
@@ -470,7 +485,7 @@ impl PreparedEq8 {
             target_gain: self.output_gain,
             coefficients,
             smooth_remaining: 0,
-            active_bands: active_band_flags(&coefficients),
+            active_bands,
             history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
             enabled_bands: self.enabled_bands,
             audition_selection: None,
@@ -478,11 +493,20 @@ impl PreparedEq8 {
             audition_mix: 0.0,
             audition_history: [[[0.0; 2]; 4]; 2],
             mode_fade: ModeFade::INACTIVE,
+            rollback: Box::new(Eq8Rollback::new(
+                controls,
+                self.mode,
+                self.output_gain,
+                coefficients,
+                active_bands,
+                self.enabled_bands,
+                band_automation_admitted,
+            )),
         }
     }
 }
 
-impl PreparedNativeProcessor for PreparedEq8 {
+impl PreparedOwnedProcessorRuntime for PreparedEq8 {
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         automation::slot(id).is_some_and(|i| self.admitted[i])
     }
@@ -511,11 +535,11 @@ impl PreparedNativeProcessor for PreparedEq8 {
     fn runtime_version(&self) -> u32 {
         1
     }
-    fn declared_runtime_bytes(&self) -> usize {
-        std::mem::size_of::<Eq8Runtime>()
+    fn declared_pair_bytes(&self) -> usize {
+        std::mem::size_of::<Eq8Runtime>() + std::mem::size_of::<Eq8Rollback>()
     }
-    fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(self.runtime())
+    fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
+        Ok(Box::new(self.runtime()))
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
@@ -548,12 +572,89 @@ impl PreparedNativeProcessor for PreparedEq8 {
     }
 }
 
+const DIRTY_SCALARS: u8 = 1 << 0;
+const DIRTY_COEFFS: u8 = 1 << 1;
+const DIRTY_AUDITION: u8 = 1 << 2;
+const DIRTY_MODE_FADE: u8 = 1 << 3;
+const DIRTY_CONTROLS: u8 = 1 << 4;
+const DIRTY_AUTOMATED_TARGET: u8 = 1 << 5;
+const DIRTY_PENDING_ROUTING: u8 = 1 << 6;
+
+/// Preallocated bounded dirty-range rollback journal for `Eq8Runtime`.
+/// Immutable canonical coefficient banks live once on `Eq8Runtime` and are never
+/// duplicated or copied across speculative block boundaries.
+#[derive(Clone, Debug)]
+struct Eq8Rollback {
+    open: bool,
+    committed_quiescent: bool,
+    dirty_flags: u8,
+    dirty_history: u16,
+    mode: ChannelMode,
+    current_gain: f64,
+    target_gain: f64,
+    smooth_remaining: u16,
+    active_bands: [[bool; BAND_COUNT]; 2],
+    enabled_bands: [[bool; BAND_COUNT]; 2],
+    band_targets_pending: bool,
+    tail_controls_frozen: bool,
+    history: [[[[f64; 2]; 4]; BAND_COUNT]; 2],
+    coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
+    audition_selection: Option<Eq8AuditionSelection>,
+    audition_request: Option<Eq8AuditionSelection>,
+    audition_mix: f64,
+    audition_history: [[[f64; 2]; 4]; 2],
+    mode_fade: ModeFade,
+    controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
+    automated_target: Option<CoefficientTarget>,
+    pending_routing: Option<automation::routing::PendingRouting>,
+}
+
+impl Eq8Rollback {
+    fn new(
+        controls: crate::parameter_binding::Controls<
+            automation::ControlValues,
+            { automation::COUNT },
+        >,
+        mode: ChannelMode,
+        gain: f64,
+        coefficients: [[[Coefficients; 4]; BAND_COUNT]; 2],
+        active_bands: [[bool; BAND_COUNT]; 2],
+        enabled_bands: [[bool; BAND_COUNT]; 2],
+        band_targets_pending: bool,
+    ) -> Self {
+        Self {
+            open: false,
+            committed_quiescent: true,
+            dirty_flags: 0,
+            dirty_history: 0,
+            mode,
+            current_gain: gain,
+            target_gain: gain,
+            smooth_remaining: 0,
+            active_bands,
+            enabled_bands,
+            band_targets_pending,
+            tail_controls_frozen: false,
+            history: [[[[0.0; 2]; 4]; BAND_COUNT]; 2],
+            coefficients,
+            audition_selection: None,
+            audition_request: None,
+            audition_mix: 0.0,
+            audition_history: [[[0.0; 2]; 4]; 2],
+            mode_fade: ModeFade::INACTIVE,
+            controls,
+            automated_target: None,
+            pending_routing: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Eq8Runtime {
     controls: crate::parameter_binding::Controls<automation::ControlValues, { automation::COUNT }>,
     tail_controls_frozen: bool,
     // One fixed canonical bank inventory serves both normal playback and
-    // mode changes. The primary and scratch runtime boxes own their storage.
+    // mode changes; never duplicated in rollback storage.
     routing: automation::routing::RoutingAutomation,
     automated_target: Option<CoefficientTarget>,
     band_automation_admitted: bool,
@@ -573,6 +674,7 @@ pub struct Eq8Runtime {
     audition_mix: f64,
     audition_history: [[[f64; 2]; 4]; 2],
     mode_fade: ModeFade,
+    rollback: Box<Eq8Rollback>,
 }
 
 /// Coefficient and output-gain smoothing lasts 256 frames at the 48 kHz
@@ -762,6 +864,93 @@ fn route_output(mode: ChannelMode, filtered: [f64; 2]) -> [f64; 2] {
 }
 
 impl Eq8Runtime {
+    /// Control-side storage observation: inline runtime bytes plus preallocated
+    /// rollback buffer bytes.
+    pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
+        Some((
+            std::mem::size_of::<Self>(),
+            [std::mem::size_of::<Eq8Rollback>(), 0],
+        ))
+    }
+
+    pub(super) fn snapshot_scalars(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_SCALARS) == 0 {
+            self.rollback.mode = self.mode;
+            self.rollback.current_gain = self.current_gain;
+            self.rollback.target_gain = self.target_gain;
+            self.rollback.smooth_remaining = self.smooth_remaining;
+            self.rollback.active_bands = self.active_bands;
+            self.rollback.enabled_bands = self.enabled_bands;
+            self.rollback.band_targets_pending = self.band_targets_pending;
+            self.rollback.tail_controls_frozen = self.tail_controls_frozen;
+            self.rollback.dirty_flags |= DIRTY_SCALARS;
+        }
+    }
+
+    pub(super) fn snapshot_band_history(&mut self, channel: usize, band: usize) {
+        let bit = 1_u16 << (channel * BAND_COUNT + band);
+        if self.rollback.open && (self.rollback.dirty_history & bit) == 0 {
+            self.rollback.history[channel][band] = self.history[channel][band];
+            self.rollback.dirty_history |= bit;
+        }
+    }
+
+    pub(super) fn snapshot_all_history(&mut self) {
+        if !self.rollback.open || self.rollback.dirty_history == u16::MAX {
+            return;
+        }
+        for channel in 0..2 {
+            for band in 0..BAND_COUNT {
+                self.snapshot_band_history(channel, band);
+            }
+        }
+    }
+
+    pub(super) fn snapshot_coeffs(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_COEFFS) == 0 {
+            self.rollback.coefficients = self.coefficients;
+            self.rollback.dirty_flags |= DIRTY_COEFFS;
+        }
+    }
+
+    pub(super) fn snapshot_audition(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_AUDITION) == 0 {
+            self.rollback.audition_selection = self.audition_selection;
+            self.rollback.audition_request = self.audition_request;
+            self.rollback.audition_mix = self.audition_mix;
+            self.rollback.audition_history = self.audition_history;
+            self.rollback.dirty_flags |= DIRTY_AUDITION;
+        }
+    }
+
+    pub(super) fn snapshot_mode_fade(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_MODE_FADE) == 0 {
+            self.rollback.mode_fade = self.mode_fade;
+            self.rollback.dirty_flags |= DIRTY_MODE_FADE;
+        }
+    }
+
+    pub(super) fn snapshot_controls(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_CONTROLS) == 0 {
+            self.rollback.controls = self.controls;
+            self.rollback.dirty_flags |= DIRTY_CONTROLS;
+        }
+    }
+
+    pub(super) fn snapshot_automated_target(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_AUTOMATED_TARGET) == 0 {
+            self.rollback.automated_target = self.automated_target;
+            self.rollback.dirty_flags |= DIRTY_AUTOMATED_TARGET;
+        }
+    }
+
+    pub(super) fn snapshot_pending_routing(&mut self) {
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_PENDING_ROUTING) == 0 {
+            self.rollback.pending_routing = self.routing.pending();
+            self.rollback.dirty_flags |= DIRTY_PENDING_ROUTING;
+        }
+    }
+
     /// Request a transient band audition. Invalid or disabled bands leave the
     /// current audition request untouched. Mode- or lane changes crossfade
     /// through the normal cascade and clear the parallel history at the switch.
@@ -779,34 +968,50 @@ impl Eq8Runtime {
     pub fn process_frame(&mut self, input: StereoFrame) -> StereoFrame {
         self.advance_routing();
         let current = self.process_current_routing(input);
+        if self.mode_fade.is_active() {
+            self.snapshot_mode_fade();
+        }
         self.mode_fade.blend(input, current)
     }
 
     fn process_current_routing(&mut self, input: StereoFrame) -> StereoFrame {
-        self.advance_coefficients();
-        self.advance_audition();
+        if self.smooth_remaining > 0 {
+            self.snapshot_scalars();
+            self.snapshot_coeffs();
+            self.advance_coefficients();
+        }
+        if self.audition_selection != self.audition_request || self.audition_selection.is_some() {
+            self.snapshot_audition();
+            self.advance_audition();
+        }
         let source = route_input(self.mode, input);
         let mut filtered = source;
-        let targets = self
-            .routing
-            .effective_target(self.automated_target.as_ref(), self.canonical_mode);
-        for (channel, (filtered_channel, target)) in filtered.iter_mut().zip(targets).enumerate() {
-            for (band, target) in target.iter().enumerate() {
+        for (channel, filtered_channel) in filtered.iter_mut().enumerate() {
+            for band in 0..BAND_COUNT {
                 if !self.active_bands[channel][band] {
                     continue;
                 }
+                self.snapshot_band_history(channel, band);
                 *filtered_channel = process_band(
                     *filtered_channel,
                     &self.coefficients[channel][band],
                     &mut self.history[channel][band],
                 );
-                self.active_bands[channel][band] = (0..4).any(|stage| {
+                let target = self
+                    .routing
+                    .effective_target(self.automated_target.as_ref(), self.canonical_mode)[channel]
+                    [band];
+                let still_active = (0..4).any(|stage| {
                     self.coefficients[channel][band][stage] != Coefficients::IDENTITY
                         || target[stage] != Coefficients::IDENTITY
                         || self.history[channel][band][stage]
                             .iter()
                             .any(|value| *value != 0.0)
                 });
+                if !still_active {
+                    self.snapshot_scalars();
+                    self.active_bands[channel][band] = false;
+                }
             }
         }
         let output = route_output(self.mode, filtered);
@@ -852,6 +1057,10 @@ impl Eq8Runtime {
         self.audition_mix = 0.0;
         self.mode_fade = ModeFade::INACTIVE;
         self.install_enabled_bands(&self.controls.base().banks);
+        self.rollback.open = false;
+        self.rollback.committed_quiescent = true;
+        self.rollback.dirty_flags = 0;
+        self.rollback.dirty_history = 0;
     }
 
     pub fn inherit_history_from(&mut self, previous: &Self) -> bool {
@@ -1048,7 +1257,72 @@ fn active_band_flags(
     active
 }
 
-impl NativeProcessorRuntime for Eq8Runtime {
+impl OwnedProcessorRuntime for Eq8Runtime {
+    fn fixed_storage_pair_bytes(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>() + std::mem::size_of::<Eq8Rollback>())
+    }
+    fn begin_block(&mut self) {
+        if self.rollback.open {
+            self.rollback_block();
+        }
+        self.rollback.committed_quiescent = self.is_quiescent();
+        self.rollback.dirty_flags = 0;
+        self.rollback.dirty_history = 0;
+        self.rollback.open = true;
+    }
+    fn commit_block(&mut self) {
+        self.rollback.open = false;
+        self.rollback.dirty_flags = 0;
+        self.rollback.dirty_history = 0;
+    }
+    fn rollback_block(&mut self) {
+        if !self.rollback.open {
+            return;
+        }
+        let flags = self.rollback.dirty_flags;
+        let mut bits = self.rollback.dirty_history;
+        while bits != 0 {
+            let slot = bits.trailing_zeros() as usize;
+            let channel = slot / BAND_COUNT;
+            let band = slot % BAND_COUNT;
+            self.history[channel][band] = self.rollback.history[channel][band];
+            bits &= bits - 1;
+        }
+        if (flags & DIRTY_SCALARS) != 0 {
+            self.mode = self.rollback.mode;
+            self.current_gain = self.rollback.current_gain;
+            self.target_gain = self.rollback.target_gain;
+            self.smooth_remaining = self.rollback.smooth_remaining;
+            self.active_bands = self.rollback.active_bands;
+            self.enabled_bands = self.rollback.enabled_bands;
+            self.band_targets_pending = self.rollback.band_targets_pending;
+            self.tail_controls_frozen = self.rollback.tail_controls_frozen;
+        }
+        if (flags & DIRTY_COEFFS) != 0 {
+            self.coefficients = self.rollback.coefficients;
+        }
+        if (flags & DIRTY_AUDITION) != 0 {
+            self.audition_selection = self.rollback.audition_selection;
+            self.audition_request = self.rollback.audition_request;
+            self.audition_mix = self.rollback.audition_mix;
+            self.audition_history = self.rollback.audition_history;
+        }
+        if (flags & DIRTY_MODE_FADE) != 0 {
+            self.mode_fade = self.rollback.mode_fade;
+        }
+        if (flags & DIRTY_CONTROLS) != 0 {
+            self.controls = self.rollback.controls;
+        }
+        if (flags & DIRTY_AUTOMATED_TARGET) != 0 {
+            self.automated_target = self.rollback.automated_target;
+        }
+        if (flags & DIRTY_PENDING_ROUTING) != 0 {
+            self.routing.install(self.rollback.pending_routing);
+        }
+        self.rollback.open = false;
+        self.rollback.dirty_flags = 0;
+        self.rollback.dirty_history = 0;
+    }
     fn process_block(
         &mut self,
         frames: &mut [StereoFrame],
@@ -1061,6 +1335,9 @@ impl NativeProcessorRuntime for Eq8Runtime {
     }
     fn begin_output_tail(&mut self) {
         self.tail_controls_frozen = true;
+        if self.rollback.open {
+            self.rollback.tail_controls_frozen = true;
+        }
     }
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
         automation::slot(id).is_some_and(|i| self.controls.admitted(i))
@@ -1069,14 +1346,24 @@ impl NativeProcessorRuntime for Eq8Runtime {
     fn reset(&mut self) {
         Eq8Runtime::reset(self);
     }
-    fn is_quiescent(&self) -> bool {
+    fn committed_is_quiescent(&self) -> bool {
+        if self.rollback.open {
+            self.rollback.committed_quiescent
+        } else {
+            Eq8Runtime::is_quiescent(self)
+        }
+    }
+    fn speculative_is_quiescent(&self) -> bool {
         Eq8Runtime::is_quiescent(self)
     }
-    fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+    fn can_inherit_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
+        !self.rollback.open
+            && previous
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|previous| {
+                    !previous.rollback.open && self.sample_rate == previous.sample_rate
+                })
     }
     /// A channel-mode change retargets through `ModeFade` instead of a reset,
     /// so session playback keeps one chain rather than detaching the old
@@ -1084,21 +1371,23 @@ impl NativeProcessorRuntime for Eq8Runtime {
     /// canonical enabled-band set must match except where either runtime has
     /// admitted that exact enable control. Its fixed-stage smoother owns the
     /// transition, including lane removal and canonical fallback.
-    fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
-        previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .is_some_and(|previous| {
-                self.sample_rate == previous.sample_rate
-                    && if self.preserves_routing(previous) {
-                        self.enabled_layout_compatible(previous, previous.mode)
-                    } else {
-                        self.mode != previous.mode
-                            || self.enabled_layout_compatible(previous, self.mode)
-                    }
-            })
+    fn can_retarget_parameters_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
+        !self.rollback.open
+            && previous
+                .as_any()
+                .downcast_ref::<Self>()
+                .is_some_and(|previous| {
+                    !previous.rollback.open
+                        && self.sample_rate == previous.sample_rate
+                        && if self.preserves_routing(previous) {
+                            self.enabled_layout_compatible(previous, previous.mode)
+                        } else {
+                            self.mode != previous.mode
+                                || self.enabled_layout_compatible(previous, self.mode)
+                        }
+                })
     }
-    fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
+    fn inherit_from(&mut self, previous: &dyn OwnedProcessorRuntime) {
         if let Some(previous) = previous.as_any().downcast_ref::<Self>() {
             let _ = self.inherit_history_from(previous);
         }
@@ -1106,7 +1395,7 @@ impl NativeProcessorRuntime for Eq8Runtime {
     /// Ordinary canonical mode changes wait for the occupied fade (Pulse #4106).
     /// Two admitted routing runtimes preserve that branch instead; their own
     /// latest validated target waits in fixed storage beside it.
-    fn transition_busy_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
+    fn transition_busy_from(&self, previous: &dyn OwnedProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
@@ -1143,17 +1432,26 @@ impl NativeProcessorAudition for Eq8Runtime {
     }
 
     fn select(&mut self, selection: Option<ProcessorAuditionSelection>) {
-        // `can_select` preflights this exact stable mapping on both twins;
-        // the host then dispatches infallibly before either twin is rendered.
+        // `can_select` preflights this exact stable mapping; update both live
+        // and any open rollback snapshot atomically.
         let selection = selection.map(|selection| Eq8AuditionSelection {
             band: selection.index as u8,
             edit_lane: selection.lane,
         });
         self.audition_request = selection;
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_AUDITION) != 0 {
+            self.rollback.audition_request = selection;
+        }
     }
 
     fn cancel_immediately(&mut self) {
         self.clear_audition();
+        if self.rollback.open && (self.rollback.dirty_flags & DIRTY_AUDITION) != 0 {
+            self.rollback.audition_selection = None;
+            self.rollback.audition_request = None;
+            self.rollback.audition_mix = 0.0;
+            self.rollback.audition_history = [[[0.0; 2]; 4]; 2];
+        }
     }
 }
 
