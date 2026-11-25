@@ -293,9 +293,11 @@ pub fn project_device_host_gain_modulation_supported(project: &Project, device: 
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
     registry
-        .prepare_processor(state, &context)
-        .is_ok_and(|factory| {
-            factory.is_none_or(|factory| factory.algorithmic_latency_frames() == Some(0))
+        .prepare_runtime_device(state, &context)
+        .is_ok_and(|device| {
+            device
+                .processor
+                .is_none_or(|factory| factory.algorithmic_latency_frames() == Some(0))
         })
 }
 

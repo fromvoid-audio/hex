@@ -14,6 +14,12 @@ fn live_audio_matches_arrangement_across_large_blocks_and_transport_splits() {
         let mut reference = Playback::try_from_prepared_with_session(prepare(&f).unwrap()).unwrap();
         *f.media.values_mut().next().unwrap() =
             crate::Audio::new(48_000, vec![[0.0; 2]; 1024]).unwrap();
+        f.editor
+            .execute(hex_project::Command::SetTrackInputMonitoring {
+                track,
+                mode: hex_project::InputMonitoring::In,
+            })
+            .unwrap();
         let mut live = Playback::try_from_prepared_with_session(prepare(&f).unwrap()).unwrap();
         for playback in [&mut reference, &mut live] {
             playback
@@ -88,6 +94,12 @@ fn live_audio_still_plays_across_a_declicked_seek() {
     }
     *f.media.values_mut().next().unwrap() =
         crate::Audio::new(48_000, vec![[0.0; 2]; 1024]).unwrap();
+    f.editor
+        .execute(hex_project::Command::SetTrackInputMonitoring {
+            track,
+            mode: hex_project::InputMonitoring::In,
+        })
+        .unwrap();
     let revision = prepare(&f).unwrap();
     let mut whole = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
     let mut partitioned = Playback::try_from_prepared_with_session(revision).unwrap();

@@ -1649,7 +1649,7 @@ fn ordinary_sampler_gain_on_control(host_output: bool) {
             .execute_prepared(
                 edit(
                     DeviceAutomationTarget::Parameter(
-                        hex_lattice_contract::ParameterId::from_static(2)
+                        hex_lattice_contract::ParameterId::from_static(13)
                     ),
                     0.25,
                 ),

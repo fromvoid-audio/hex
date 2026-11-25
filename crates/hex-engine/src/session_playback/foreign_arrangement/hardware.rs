@@ -471,9 +471,19 @@ mod tests {
         }
         batch.commit(Some(&input));
 
-        // Only the two NoteOns should have fired; NoteOff for 60 is held by CC64.
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|e| e.kind == ForeignNoteKind::On));
+        // The two NoteOns and non-sustain CC11 should have fired; NoteOff for 60 is held by CC64.
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].kind, ForeignNoteKind::On);
+        assert_eq!(events[1].kind, ForeignNoteKind::On);
+        assert_eq!(
+            (
+                events[2].kind,
+                events[2].channel,
+                events[2].pitch,
+                events[2].value
+            ),
+            (ForeignNoteKind::ControlChange, 0, 11, 80)
+        );
         let id_60 = events[0].note_id;
         let id_64 = events[1].note_id;
         assert!(gates.held());

@@ -375,6 +375,43 @@ fn operator_filter_does_not_import_an_active_analytic_enable_continuation() {
             .flatten()
             .any(|r| r.elapsed_at(active.performance_frame()).unwrap() < r.duration())
     );
+    // Since #13261 unified Operator's mutable execution on `harmonic_runtime`,
+    // enabling the filter imports an active analytic enable continuation
+    // smoothly, while an incompatible law change (e.g., oscillator ratio)
+    // still refuses without advancing the active runtime.
+    let incompatible = {
+        let mut bad_editor = Editor::new(enable(editor.project()), 16).unwrap();
+        let inst = bad_editor.project().tracks()[0].instrument().unwrap();
+        let bad_device = inst.id();
+        let bad_state = OPERATOR_METADATA
+            .patch_parameter(
+                inst.state(),
+                hex_devices::operator_state::parameter::oscillator_ratio(1),
+                ParameterValue::Float(2.0),
+            )
+            .unwrap();
+        bad_editor
+            .execute(Command::ReplaceDeviceState {
+                device: bad_device,
+                state: bad_state,
+            })
+            .unwrap();
+        Arc::new(
+            PreparedRevision::prepare(
+                bad_editor.project(),
+                &BTreeMap::new(),
+                Arc::clone(&table),
+                Some(changed.session()),
+            )
+            .unwrap(),
+        )
+    };
+    let mut refused = SessionPlayback::new(incompatible).unwrap();
+    let before = active.performance_frame();
+    assert!(refused.try_inherit_state_from(&mut active).is_err());
+    assert_eq!(active.performance_frame(), before);
+    assert!(active.mutable_instruments[0].is_none());
+
     let filtered = Arc::new(
         PreparedRevision::prepare(
             &enable(editor.project()),
@@ -385,10 +422,11 @@ fn operator_filter_does_not_import_an_active_analytic_enable_continuation() {
         .unwrap(),
     );
     let mut next = SessionPlayback::new(filtered).unwrap();
-    let before = active.performance_frame();
-    assert!(next.try_inherit_state_from(&mut active).is_err());
-    assert_eq!(active.performance_frame(), before);
-    assert!(active.mutable_instruments[0].is_none());
+    next.try_inherit_state_from(&mut active).unwrap();
+    assert!(next.mutable_instruments[0].is_some());
+    let suffix = render_checkpoint_prefix(&mut next, 64);
+    assert!(suffix.iter().flatten().all(|sample| sample.is_finite()));
+    assert!(suffix.iter().any(|frame| frame[0].abs() > 1.0e-6));
 }
 
 #[test]

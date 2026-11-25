@@ -463,18 +463,42 @@ fn routed_midi_source_edit_reconciles_each_destination_voice_against_local_sourc
 
 #[test]
 fn routed_session_operator_import_and_feedback_refusal_match_local_root_lifecycle() {
-    for (parameter, value, supports_import) in [
+    let cases: [(
+        &[(
+            hex_lattice_contract::ParameterId,
+            hex_lattice_contract::ParameterValue,
+        )],
+        bool,
+    ); 3] = [
         (
-            hex_devices::operator_state::parameter::feedback(1),
-            hex_lattice_contract::ParameterValue::Float(0.4),
+            &[(
+                hex_devices::operator_state::parameter::feedback(1),
+                hex_lattice_contract::ParameterValue::Float(0.4),
+            )],
+            true,
+        ),
+        (
+            &[
+                (
+                    hex_devices::operator_state::parameter::feedback(1),
+                    hex_lattice_contract::ParameterValue::Float(0.4),
+                ),
+                (
+                    hex_devices::operator_state::parameter::oscillator_ratio(1),
+                    hex_lattice_contract::ParameterValue::Float(2.0),
+                ),
+            ],
             false,
         ),
         (
-            hex_lattice_contract::ParameterId::from_static(20_001),
-            hex_lattice_contract::ParameterValue::Bool(true),
+            &[(
+                hex_lattice_contract::ParameterId::from_static(20_001),
+                hex_lattice_contract::ParameterValue::Bool(true),
+            )],
             true,
         ),
-    ] {
+    ];
+    for (patches, supports_import) in cases {
         let mut f = fixture(true);
         let mut local = fixture(false);
         let operator = crate::operator_legacy_test::legacy_operator_state();
@@ -500,13 +524,16 @@ fn routed_session_operator_import_and_feedback_refusal_match_local_root_lifecycl
         let mut old = start(Arc::clone(&revision), &f.clips[..1]);
         let mut oracle = start(Arc::clone(&reference), &local.clips[1..]);
         assert_pcm(&render(&mut old, 32, 1), &render(&mut oracle, 32, 1), 1e-7);
-        let state = crate::patch_native_device_parameter_for_class(
-            crate::NativeDeviceClass::Instrument,
-            &operator,
-            parameter,
-            value,
-        )
-        .unwrap();
+        let mut state = operator.clone();
+        for &(parameter, value) in patches {
+            state = crate::patch_native_device_parameter_for_class(
+                crate::NativeDeviceClass::Instrument,
+                &state,
+                parameter,
+                value,
+            )
+            .unwrap();
+        }
         for fixture in [&mut f, &mut local] {
             let device = fixture
                 .editor

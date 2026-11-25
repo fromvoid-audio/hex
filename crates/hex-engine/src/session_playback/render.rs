@@ -313,7 +313,7 @@ impl SessionPlayback {
                     });
                     let has_midi = track.instrument.as_ref().is_some_and(|inst| {
                         inst.spans.iter().any(|span| {
-                            span.start <= arrangement_frame && arrangement_frame < span.end
+                            span.start <= arrangement_frame && arrangement_frame < span.gate_end
                         })
                     });
                     has_audio || has_midi

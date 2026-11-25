@@ -2276,7 +2276,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
     let mut old = SessionPlayback::new(revision(&old_project, Arc::clone(&table))).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     let old_prepared = hex_devices::eq8::EQ8_DEFINITION
-        .prepare_processor(
+        .prepare_runtime_factory(
             &old_state,
             &hex_lattice::DevicePreparationContext {
                 sample_rate: 48_000,
@@ -2286,13 +2286,18 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         )
         .unwrap()
         .unwrap();
-    let mut reference_runtime = old_prepared.create_runtime();
+    let hex_lattice::PreparedProcessorFactory::Owned(old_owned) = old_prepared else {
+        panic!("expected owned EQ8 factory");
+    };
+    let mut reference_runtime = old_owned.create_runtime().unwrap();
     let mut input = [[0.0; 2]; 128];
     let mut expected = input;
     let mut output = input;
     source.render(&mut input).unwrap();
     expected.copy_from_slice(&input);
+    reference_runtime.begin_block();
     reference_runtime.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    reference_runtime.commit_block();
     old.render(&mut output).unwrap();
     assert_eq!(output, expected, "initial registered EQ8 PCM oracle");
     assert!(!old.device_chains[0].committed_range_is_quiescent(0..1));
@@ -2305,7 +2310,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
         assert_eq!(candidate.tail_groups.iter().flatten().count(), 0);
         assert!(!candidate.device_chains[0].committed_range_is_quiescent(0..1));
         let prepared = hex_devices::eq8::EQ8_DEFINITION
-            .prepare_processor(
+            .prepare_runtime_factory(
                 &candidate_state,
                 &hex_lattice::DevicePreparationContext {
                     sample_rate: 48_000,
@@ -2315,15 +2320,20 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
             )
             .unwrap()
             .unwrap();
-        let mut next_reference = prepared.create_runtime();
-        assert!(next_reference.can_retarget_parameters_from(reference_runtime.as_ref()));
-        next_reference.copy_history_from(reference_runtime.as_ref());
+        let hex_lattice::PreparedProcessorFactory::Owned(owned) = prepared else {
+            panic!("expected owned EQ8 factory");
+        };
+        let mut next_reference = owned.create_runtime().unwrap();
+        assert!(next_reference.can_inherit_from(reference_runtime.as_ref()));
+        next_reference.inherit_from(reference_runtime.as_ref());
         input.fill([0.0; 2]);
         expected.fill([0.0; 2]);
         output.fill([0.0; 2]);
         source.render(&mut input).unwrap();
         expected.copy_from_slice(&input);
+        next_reference.begin_block();
         next_reference.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        next_reference.commit_block();
         candidate.render(&mut output).unwrap();
         assert_eq!(output, expected, "retargeted EQ8 parameter PCM oracle");
         assert!(
@@ -12062,7 +12072,7 @@ fn operator_supported_state_edit_retargets_live_history_and_joins_later_notes() 
             candidate_revision
                 .session()
                 .mutable_history_retarget_storage_bytes(),
-            112,
+            std::mem::size_of::<u64>(),
             "the inventory separately accounts the exact candidate proof"
         );
 
@@ -12184,7 +12194,11 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
     ) -> Arc<PreparedRevision> {
         let mut state = source.tracks()[0].instrument().unwrap().state().clone();
         state = OPERATOR_METADATA
-            .patch_parameter(&state, parameter::waveform(1), ParameterValue::Choice(1))
+            .patch_parameter(
+                &state,
+                parameter::oscillator_ratio(1),
+                ParameterValue::Float(2.0),
+            )
             .unwrap();
         let mut editor = Editor::new(source.clone(), 4).unwrap();
         editor
@@ -12357,8 +12371,8 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
     let unsupported_state = OPERATOR_METADATA
         .patch_parameter(
             &source.tracks()[0].instrument().unwrap().state().clone(),
-            parameter::waveform(1),
-            ParameterValue::Choice(1),
+            parameter::oscillator_ratio(1),
+            ParameterValue::Float(2.0),
         )
         .unwrap();
     let skipped_project = edit(&source, unsupported_state);
