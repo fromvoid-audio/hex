@@ -269,6 +269,9 @@ impl Project {
             | Command::SetAudioFeed { .. }
             | Command::SetSidechain { .. }
             | Command::SetMidiSource { .. }
+            | Command::AssignTrackAudioInput { .. }
+            | Command::SetTrackOutput { .. }
+            | Command::SetTrackInputMonitoring { .. }
             | Command::SetReturnFeed { .. }
             | Command::ManualDeviceEdit { .. }
             | Command::SetDeviceAutomationReadSelection { .. }

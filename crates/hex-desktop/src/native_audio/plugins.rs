@@ -1021,6 +1021,10 @@ impl Plugins {
         self.poll_restore(control, context);
         if let Some(output) = control.output_identity()
             && let Some(context) = context
+            && !self
+                .restore
+                .as_ref()
+                .is_some_and(restore::Restore::is_returning_epoch)
         {
             let generation = context.project_generation;
             let active_devices: Option<Vec<u64>> = desired

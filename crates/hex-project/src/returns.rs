@@ -66,6 +66,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             for track in &mut project.tracks {
                 track.sends.retain(|send| send.return_track != id);
                 track.send_lanes.retain(|(return_id, _)| *return_id != id);
+                if track.output_destination == crate::TrackOutputDestination::Return(id) {
+                    track.output_destination = crate::TrackOutputDestination::Default;
+                }
             }
             Ok(crate::Created::None)
         }

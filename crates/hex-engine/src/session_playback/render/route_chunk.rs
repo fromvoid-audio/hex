@@ -1276,12 +1276,19 @@ impl SessionPlayback {
                         if let Some(input) =
                             live_audio.filter(|input| input.track == self.route_scratch[index].id)
                         {
-                            for (frame, source) in render_output
+                            for (i, (frame, source)) in render_output
                                 .iter_mut()
                                 .zip(&input.frames[frame_offset..frame_offset + output.len()])
+                                .enumerate()
                             {
-                                frame[0] += source[0];
-                                frame[1] += source[1];
+                                if self.track_monitors_live_audio(
+                                    index,
+                                    arrangement_frame + i as u64,
+                                    true,
+                                ) {
+                                    frame[0] += source[0];
+                                    frame[1] += source[1];
+                                }
                             }
                         }
                         if stateful_effects {

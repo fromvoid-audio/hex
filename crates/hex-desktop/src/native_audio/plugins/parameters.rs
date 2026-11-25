@@ -34,6 +34,9 @@ impl Inventory {
     pub(super) fn binding(&self) -> Binding {
         self.binding
     }
+    pub(super) fn has_pending_token(&self) -> bool {
+        self.token.is_some()
+    }
     pub(super) fn request_yield(&mut self) {
         self.yield_to_control = true;
     }
@@ -268,6 +271,10 @@ impl Plugins {
                 source.binding == inventory.binding && source.accepted && !source.retiring
             });
         if inventory.yield_between_pages() {
+            return;
+        }
+        if self.restore.is_some() && inventory.token.is_none() {
+            inventory.terminal = Some(Err("vst3 parameter refresh yielded to control".into()));
             return;
         }
         if inventory.class.is_none() && current {

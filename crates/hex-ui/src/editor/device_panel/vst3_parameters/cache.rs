@@ -14,8 +14,8 @@ use std::{
 };
 
 const VERSION: u64 = 2;
-const MAX_BYTES: usize = 1024 * 1024;
-const MAX_ROWS: usize = 2_624;
+const MAX_BYTES: usize = 4 * 1024 * 1024;
+const MAX_ROWS: usize = 8_192;
 const NAME_UTF16_UNITS: usize = 127;
 const PAGE_SIZE: usize = 4;
 const MAX_KEY_BYTES: usize = 256;
@@ -346,6 +346,35 @@ mod tests {
         assert!(!cached.rows[0].editable);
         assert_eq!(cached.rows[0].automation_class, None);
         assert_eq!(cached.rows[0].metadata_revision, 0);
+    }
+
+    #[test]
+    fn large_plugin_inventory_above_legacy_row_cap_round_trips_and_over_limit_fails_closed() {
+        let directory = TestDir::new();
+        let rows: Vec<_> = (0..3_000_u32)
+            .map(|index| {
+                row(
+                    index,
+                    &format!("param {index}"),
+                    ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                )
+            })
+            .collect();
+        save(&directory.file(), "large-synth-v1", &[7; 32], &rows).unwrap();
+        let cached = load(&directory.file(), "large-synth-v1").unwrap().unwrap();
+        assert_eq!(cached.rows.len(), 3_000);
+        assert_eq!(cached.rows[2_999].id, 2_999);
+
+        let oversized: Vec<_> = (0..(MAX_ROWS as u32 + 1))
+            .map(|index| {
+                row(
+                    index,
+                    "p",
+                    ((index as usize / PAGE_SIZE) * PAGE_SIZE) as u16,
+                )
+            })
+            .collect();
+        assert!(save(&directory.file(), "oversized", &[7; 32], &oversized).is_err());
     }
 
     #[test]

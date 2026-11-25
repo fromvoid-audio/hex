@@ -550,6 +550,14 @@ impl Project {
             })
             .collect::<Vec<_>>();
         self.tracks.retain(|track| !ids.contains(&track.id()));
+        for track in &mut self.tracks {
+            if matches!(
+                track.output_destination,
+                crate::TrackOutputDestination::Track(target) if ids.contains(&target)
+            ) {
+                track.output_destination = crate::TrackOutputDestination::Default;
+            }
+        }
         for source in receivers {
             self.set_native_source_receiver(source, None)?;
         }

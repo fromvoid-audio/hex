@@ -833,6 +833,62 @@ fn schema128_round_trip_and_older_schema_refusal() {
 }
 
 #[test]
+fn schema129_track_io_routing_round_trips_and_rejects_downgrade() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack { name: "src".into() })
+        .unwrap()
+    else {
+        panic!("source track");
+    };
+    let Created::Track(bus) = editor
+        .execute(Command::AddTrack { name: "bus".into() })
+        .unwrap()
+    else {
+        panic!("bus track");
+    };
+    editor
+        .execute(Command::SetTrackOutput {
+            track: source,
+            destination: hex_project::TrackOutputDestination::Track(bus),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTrackInputMonitoring {
+            track: bus,
+            mode: hex_project::InputMonitoring::In,
+        })
+        .unwrap();
+
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::TRACK_IO_ROUTING_SCHEMA_VERSION
+    );
+    let encoded = crate::encode(project).unwrap();
+    let mut json: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(json["version"], crate::TRACK_IO_ROUTING_SCHEMA_VERSION);
+    let caps = json["capabilities"].as_array().unwrap();
+    assert!(caps.iter().any(|c| c == "track_io_routing"));
+
+    let decoded = crate::decode(&encoded).unwrap();
+    assert_eq!(&decoded, project);
+    assert_eq!(
+        decoded.track(source).unwrap().output_destination(),
+        hex_project::TrackOutputDestination::Track(bus)
+    );
+    assert_eq!(
+        decoded.track(bus).unwrap().input_monitoring(),
+        hex_project::InputMonitoring::In
+    );
+
+    // Schema 128 must refuse schema 129 capability / track_io payloads cleanly.
+    json["version"] = serde_json::json!(crate::AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION);
+    let downgraded = serde_json::to_vec(&json).unwrap();
+    assert!(crate::decode(&downgraded).is_err());
+}
+
+#[test]
 #[ignore = "memory footprint probe for unified schema 126"]
 fn bench_memory_unified_schema126() {
     let project = build_rich_multi_feature_project();

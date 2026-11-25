@@ -576,7 +576,17 @@ impl EditorView {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let input = self.audio_recorder.input.as_ref().map(|(id, _)| id.clone());
-        let software_monitor = self.audio_recorder.software_monitor;
+        let track_monitoring = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.track(binding.track))
+            .map(hex_project::Track::input_monitoring)
+            .unwrap_or_default();
+        let software_monitor = match track_monitoring {
+            hex_project::InputMonitoring::In => true,
+            hex_project::InputMonitoring::Auto => self.audio_recorder.software_monitor,
+            hex_project::InputMonitoring::Off => false,
+        };
         let (sender, result) = mpsc::sync_channel(1);
         if let Err(error) = std::thread::Builder::new()
             .name("hex-record-input-setup".into())

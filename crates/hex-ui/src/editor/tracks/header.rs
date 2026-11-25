@@ -1307,6 +1307,9 @@ impl EditorView {
             .h_full()
             .min_w_0()
             .flex_1()
+            .flex()
+            .flex_col()
+            .justify_start()
             .relative()
             .px(px(2.0))
             .when(is_group, |plate| plate.ml(px(hierarchy_indent)))
@@ -1314,7 +1317,11 @@ impl EditorView {
                 format!("track-name-plate-{}", track_id.value()),
                 name_fill,
             )])
-            .child(track_name_view);
+            .child(track_name_view)
+            .children(
+                (header_height >= TRACK_ROW_HEIGHT)
+                    .then(|| self.build_track_io_row(&state.project, state.revision, track, cx)),
+            );
         let sample_source = crate::editor::sample_recorder::Arm::Output(
             hex_engine::OutputCaptureId::Track(track_id),
         );

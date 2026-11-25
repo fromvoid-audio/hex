@@ -187,11 +187,10 @@ impl NativeEndpointBank {
         &self,
         playback: &hex_engine::playback::Playback,
     ) -> bool {
-        if self.cycle.revoked() {
-            return false;
-        }
+        let mut has_foreign = false;
         let mut live = true;
         playback.visit_foreign_runtime_bindings(&mut |binding| {
+            has_foreign = true;
             let Some(binding) = binding else {
                 live = false;
                 return;
@@ -208,7 +207,24 @@ impl NativeEndpointBank {
                 Err(_) => live = false,
             }
         });
+        if self.cycle.revoked() {
+            // If every old revoked endpoint has returned and the successor
+            // graph needs no foreign bindings (for example, all plugins were
+            // isolated as degraded during stopped restore), allow installing
+            // that empty-native replacement rather than stranding playback.
+            return !has_foreign && self.routing_len == 0 && self.epoch_returned;
+        }
         live
+    }
+    pub(crate) fn clear_returned_empty_epoch(&mut self) {
+        if self.cycle.revoked()
+            && self.epoch_returned
+            && self.routing_len == 0
+            && !self.cycle.active()
+        {
+            self.cycle = NativeEffectCycle::default();
+            self.epoch_returned = false;
+        }
     }
     pub(crate) fn ordinary_runtime_requires_sources(&self) -> bool {
         self.ordinary_requirements

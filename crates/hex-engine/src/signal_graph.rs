@@ -107,6 +107,9 @@ pub(crate) struct Send {
 pub(crate) enum TrackOutput {
     Main { edge: usize },
     Group { target: usize, edge: usize },
+    Track { target: usize, edge: usize },
+    Return { target: usize, edge: usize },
+    SendsOnly,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -166,6 +169,7 @@ pub(crate) struct SignalGraph {
     pub owner_waves: Vec<OwnerWave>,
     track_indices: Vec<(TrackId, usize)>,
     has_group_outputs: bool,
+    has_custom_outputs: bool,
     pub main: usize,
     pub main_devices: Vec<usize>,
     pre_main_edges: Vec<usize>,
@@ -292,6 +296,7 @@ impl SignalGraph {
             owner_waves: self.owner_waves.clone(),
             track_indices: self.track_indices.clone(),
             has_group_outputs: self.has_group_outputs,
+            has_custom_outputs: self.has_custom_outputs,
             main: self.main,
             main_devices: self.main_devices.clone(),
             pre_main_edges: self.pre_main_edges.clone(),
@@ -544,35 +549,69 @@ impl SignalGraph {
             });
         }
         let main = builder.node(NodeId::Main, Some(0));
-        // Resolve canonical parent IDs once during preparation. Each track owns
-        // exactly one default output; authored feeds remain separate edges.
+        // Resolve canonical parent IDs and explicit output destinations once during
+        // preparation. Each track owns at most one exclusive dry output; authored
+        // additive feeds remain separate edges.
         for index in 0..tracks.len() {
-            let parent = match tracks[index].id {
-                Some(id) => canonical
-                    .track(id)
-                    .ok_or(Invalid("canonical track is missing"))?
-                    .parent_group(),
-                None => None,
+            let (parent, explicit_output) = match tracks[index].id {
+                Some(id) => {
+                    let canonical_track = canonical
+                        .track(id)
+                        .ok_or(Invalid("canonical track is missing"))?;
+                    (
+                        canonical_track.parent_group(),
+                        canonical_track.output_destination(),
+                    )
+                }
+                None => (None, hex_project::TrackOutputDestination::Default),
             };
-            let target = parent
-                .map(|id| {
-                    tracks
+            let from = tracks[index].fader;
+            let output = match explicit_output {
+                hex_project::TrackOutputDestination::Default => {
+                    if let Some(id) = parent {
+                        let target = tracks
+                            .iter()
+                            .position(|candidate| candidate.id == Some(id))
+                            .ok_or(Invalid("group output target is missing"))?;
+                        let input = builder.edges[tracks[target].source_input].1;
+                        TrackOutput::Group {
+                            target,
+                            edge: builder.edge(from, input),
+                        }
+                    } else {
+                        TrackOutput::Main {
+                            edge: builder.edge(from, main),
+                        }
+                    }
+                }
+                hex_project::TrackOutputDestination::Main => TrackOutput::Main {
+                    edge: builder.edge(from, main),
+                },
+                hex_project::TrackOutputDestination::Track(id) => {
+                    let target = tracks
                         .iter()
                         .position(|candidate| candidate.id == Some(id))
-                        .ok_or(Invalid("group output target is missing"))
-                })
-                .transpose()?;
-            let from = tracks[index].fader;
-            let output = if let Some(target) = target {
-                let input = builder.edges[tracks[target].source_input].1;
-                TrackOutput::Group {
-                    target,
-                    edge: builder.edge(from, input),
+                        .ok_or(Invalid("track output destination is missing"))?;
+                    let input = builder.edges[tracks[target].source_input].1;
+                    TrackOutput::Track {
+                        target,
+                        edge: builder.edge(from, input),
+                    }
                 }
-            } else {
-                TrackOutput::Main {
-                    edge: builder.edge(from, main),
+                hex_project::TrackOutputDestination::Return(id) => {
+                    let target = returns
+                        .iter()
+                        .position(|bus| bus.id == id)
+                        .ok_or(Invalid("return output destination is missing"))?;
+                    let input = *inputs
+                        .get(target)
+                        .ok_or(Invalid("return output input node is missing"))?;
+                    TrackOutput::Return {
+                        target,
+                        edge: builder.edge(from, input),
+                    }
                 }
+                hex_project::TrackOutputDestination::SendsOnly => TrackOutput::SendsOnly,
             };
             let track = &mut tracks[index];
             track.output = output;
@@ -782,9 +821,13 @@ impl SignalGraph {
                 track.printed_merge = Some((edge_index(processed)?, edge_index(printed)?));
             }
             match &mut track.output {
-                TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => {
+                TrackOutput::Main { edge }
+                | TrackOutput::Group { edge, .. }
+                | TrackOutput::Track { edge, .. }
+                | TrackOutput::Return { edge, .. } => {
                     *edge = edge_index(*edge)?;
                 }
+                TrackOutput::SendsOnly => {}
             }
             for send in track.sends.iter_mut().chain(&mut track.audio_feeds) {
                 send.edge = edge_index(send.edge)?;
@@ -837,8 +880,15 @@ impl SignalGraph {
             match owner {
                 Owner::Track(index) => {
                     let track = &tracks[index];
-                    if let TrackOutput::Group { target, .. } = track.output {
-                        wave_depth[target] = wave_depth[target].max(next_depth);
+                    match track.output {
+                        TrackOutput::Group { target, .. } | TrackOutput::Track { target, .. } => {
+                            wave_depth[target] = wave_depth[target].max(next_depth);
+                        }
+                        TrackOutput::Return { target, .. } => {
+                            let dst = track_count + target;
+                            wave_depth[dst] = wave_depth[dst].max(next_depth);
+                        }
+                        TrackOutput::Main { .. } | TrackOutput::SendsOnly => {}
                     }
                     for send in &track.sends {
                         let dst = track_count + send.target;
@@ -908,6 +958,12 @@ impl SignalGraph {
         let has_group_outputs = tracks
             .iter()
             .any(|track| matches!(track.output, TrackOutput::Group { .. }));
+        let has_custom_outputs = tracks.iter().any(|track| {
+            matches!(
+                track.output,
+                TrackOutput::Track { .. } | TrackOutput::Return { .. } | TrackOutput::SendsOnly
+            )
+        });
         let mut track_indices = Vec::new();
         track_indices
             .try_reserve_exact(tracks.len())
@@ -922,6 +978,7 @@ impl SignalGraph {
         let graph = Self {
             track_indices,
             has_group_outputs,
+            has_custom_outputs,
             main: node_index(main)?,
             main_devices,
             pre_main_edges,
@@ -959,6 +1016,7 @@ impl SignalGraph {
             owner_waves,
             track_indices,
             has_group_outputs: _,
+            has_custom_outputs: _,
             main: _,
             main_devices,
             pre_main_edges,
@@ -1016,6 +1074,7 @@ impl SignalGraph {
         self.plan.max_latency_frames() != 0
             || !self.key_stages.is_empty()
             || self.has_group_outputs
+            || self.has_custom_outputs
             || self.tracks.iter().any(|track| {
                 !track.audio_feeds.is_empty()
                     || track.printed_merge.is_some()
@@ -1128,11 +1187,12 @@ impl SignalGraph {
             };
             let parent = |graph: &Self, output: TrackOutput| match output {
                 TrackOutput::Main { .. } => Some(None),
-                TrackOutput::Group { target, .. } => graph
+                TrackOutput::Group { target, .. } | TrackOutput::Track { target, .. } => graph
                     .tracks
                     .get(target)
                     .and_then(|track| track.id)
                     .map(Some),
+                TrackOutput::Return { .. } | TrackOutput::SendsOnly => None,
             };
             let Some(next) = parent(self, a.output) else {
                 return false;
@@ -1271,6 +1331,7 @@ impl SignalGraph {
         self.main_latency() != 0
             || !self.key_stages.is_empty()
             || self.has_group_outputs
+            || self.has_custom_outputs
             || self
                 .tracks
                 .iter()
@@ -1282,6 +1343,7 @@ impl SignalGraph {
     /// order as long as each edge preserves its own frame order.
     pub(crate) fn independent_main_routes(&self) -> bool {
         !self.has_group_outputs
+            && !self.has_custom_outputs
             && self.key_stages.is_empty()
             && self.returns.is_empty()
             && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
@@ -1291,9 +1353,11 @@ impl SignalGraph {
     /// once the stamp ring covers `plan.max_latency_frames()` consecutive
     /// running frames.
     pub(crate) fn supports_block_compensated_routing(&self) -> bool {
-        self.tracks
-            .iter()
-            .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
+        !self.has_custom_outputs
+            && self
+                .tracks
+                .iter()
+                .all(|track| track.audio_feeds.is_empty() && track.printed_merge.is_none())
             && self.returns.iter().all(|bus| bus.audio_feeds.is_empty())
     }
     /// Reserve a default-output plane and a separately authorized send plane
@@ -1468,6 +1532,14 @@ impl SignalGraph {
                         (
                             TrackOutput::Group { target: a, .. },
                             TrackOutput::Group { target: b, .. },
+                        )
+                        | (
+                            TrackOutput::Track { target: a, .. },
+                            TrackOutput::Track { target: b, .. },
+                        )
+                        | (
+                            TrackOutput::Return { target: a, .. },
+                            TrackOutput::Return { target: b, .. },
                         ) => a == b,
                         _ => true,
                     }
@@ -1666,7 +1738,10 @@ impl SignalGraph {
             match track.output {
                 TrackOutput::Main { .. } => None,
                 TrackOutput::Group { edge, .. } if cold => Some(edge),
-                TrackOutput::Group { .. } => return false,
+                TrackOutput::Group { .. }
+                | TrackOutput::Track { .. }
+                | TrackOutput::Return { .. }
+                | TrackOutput::SendsOnly => return false,
             }
         } else {
             None
@@ -1700,6 +1775,9 @@ impl SignalGraph {
         };
         let output_edge = match track.output {
             TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+            TrackOutput::Track { .. } | TrackOutput::Return { .. } | TrackOutput::SendsOnly => {
+                return false;
+            }
         };
         self.pre_main_edges.iter().enumerate().all(|(index, _)| {
             let Some((from, to)) = self.pre_main_endpoints(index) else {
@@ -1925,6 +2003,27 @@ impl SignalGraph {
                 // matched edge still has to name the same canonical group.
                 (ta == tb || track_indices_can_shift) && same_edge(a, b)
             }
+            (
+                TrackOutput::Track {
+                    target: ta,
+                    edge: a,
+                },
+                TrackOutput::Track {
+                    target: tb,
+                    edge: b,
+                },
+            ) => (ta == tb || track_indices_can_shift) && same_edge(a, b),
+            (
+                TrackOutput::Return {
+                    target: ta,
+                    edge: a,
+                },
+                TrackOutput::Return {
+                    target: tb,
+                    edge: b,
+                },
+            ) => (ta == tb || return_indices_can_shift) && same_edge(a, b),
+            (TrackOutput::SendsOnly, TrackOutput::SendsOnly) => true,
             _ => false,
         };
         // The existing edited track keeps its typed output and sends even though
@@ -2158,7 +2257,16 @@ impl SignalGraph {
                             .find(|track| track.id == Some(id))
                             .ok_or(Invalid("capture track is missing"))?;
                         match plan.output {
-                            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+                            TrackOutput::Main { edge }
+                            | TrackOutput::Group { edge, .. }
+                            | TrackOutput::Track { edge, .. }
+                            | TrackOutput::Return { edge, .. } => edge,
+                            TrackOutput::SendsOnly => {
+                                maximum = maximum.max(tails[plan.fader].ok_or(Invalid(
+                                    "automatic output tail is unbounded or overflows",
+                                ))?);
+                                continue;
+                            }
                         }
                     }
                     crate::OutputCaptureId::Return(id) => {
@@ -2207,6 +2315,7 @@ impl SignalRuntime {
     pub(crate) fn resident_return_graph_is_passthrough(&self) -> bool {
         !(self.graph.returns.is_empty()
             || self.graph.has_group_outputs
+            || self.graph.has_custom_outputs
             || !self.graph.key_stages.is_empty()
             || self
                 .graph
@@ -2556,16 +2665,20 @@ impl SignalRuntime {
             *tap = frame;
         }
         let output = self.graph.tracks[index].output;
-        let edge = match output {
-            TrackOutput::Main { edge } | TrackOutput::Group { edge, .. } => edge,
+        let routed = match output {
+            TrackOutput::Main { edge }
+            | TrackOutput::Group { edge, .. }
+            | TrackOutput::Track { edge, .. }
+            | TrackOutput::Return { edge, .. } => self.edge(edge, frame)?,
+            TrackOutput::SendsOnly => frame,
         };
-        let routed = self.edge(edge, frame)?;
         match output {
             TrackOutput::Main { .. } => self.main[index] = routed,
-            TrackOutput::Group { target, .. } => {
+            TrackOutput::Group { target, .. } | TrackOutput::Track { target, .. } => {
                 self.inputs[target][0] += routed[0];
                 self.inputs[target][1] += routed[1];
             }
+            TrackOutput::Return { .. } | TrackOutput::SendsOnly => {}
         }
         Ok(routed)
     }

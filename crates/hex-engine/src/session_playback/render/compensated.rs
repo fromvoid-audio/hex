@@ -1490,7 +1490,15 @@ impl SessionPlayback {
                                 )
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                         }
-                        if let Some(input) = live_audio.filter(|input| input.track == route.id) {
+                        if let Some(input) = live_audio.filter(|input| {
+                            input.track == route.id
+                                && Self::track_monitors_live_audio_for(
+                                    track,
+                                    route.owner,
+                                    arrangement_frame,
+                                    self.playing,
+                                )
+                        }) {
                             let source = input.frames[frame_offset];
                             audio[0][0] += source[0];
                             audio[0][1] += source[1];
@@ -1564,6 +1572,12 @@ impl SessionPlayback {
                     let main = compensation
                         .route_track_output(index, routed)
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    if let crate::signal_graph::TrackOutput::Return { target, .. } =
+                        compensation.graph.tracks[index].output
+                    {
+                        self.return_scratch[target][return_offset][0] += main[0];
+                        self.return_scratch[target][return_offset][1] += main[1];
+                    }
                     if let Some(capture) = capture.as_mut() {
                         capture.add_prepared_frame(
                             owner,
@@ -2080,10 +2094,20 @@ impl SessionPlayback {
                                     if let Some(input) =
                                         inputs.live_audio.filter(|input| input.track == route.id)
                                     {
-                                        add_main_track(
-                                            audio,
-                                            &input.frames[frame_offset..frame_offset + count],
-                                        );
+                                        for (i, (dst, src)) in audio
+                                            .iter_mut()
+                                            .zip(&input.frames[frame_offset..frame_offset + count])
+                                            .enumerate()
+                                        {
+                                            if self.track_monitors_live_audio(
+                                                index,
+                                                arrangement_frame + i as u64,
+                                                true,
+                                            ) {
+                                                dst[0] += src[0];
+                                                dst[1] += src[1];
+                                            }
+                                        }
                                     }
                                     if has_generator {
                                         generator.fill([0.0; 2]);
@@ -2710,10 +2734,20 @@ impl SessionPlayback {
                             if let Some(input) =
                                 inputs.live_audio.filter(|input| input.track == route.id)
                             {
-                                add_main_track(
-                                    audio,
-                                    &input.frames[frame_offset..frame_offset + count],
-                                );
+                                for (i, (dst, src)) in audio
+                                    .iter_mut()
+                                    .zip(&input.frames[frame_offset..frame_offset + count])
+                                    .enumerate()
+                                {
+                                    if self.track_monitors_live_audio(
+                                        index,
+                                        arrangement_frame + i as u64,
+                                        true,
+                                    ) {
+                                        dst[0] += src[0];
+                                        dst[1] += src[1];
+                                    }
+                                }
                             }
 
                             if has_generator {

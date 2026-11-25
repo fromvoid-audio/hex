@@ -26,6 +26,9 @@ impl Conversion {
     pub(super) fn binding(&self) -> Binding {
         self.query.source
     }
+    pub(super) fn has_pending_token(&self) -> bool {
+        self.token.is_some()
+    }
     pub(super) fn output_closed(&mut self) {
         self.output_closed = true;
         self.failure
@@ -159,6 +162,8 @@ impl Plugins {
             && current_source(&self.sources, &item.query);
         let progress = if let Some(token) = &item.token {
             control.poll_native_source_controller_query_on_control(item.query.source, token)
+        } else if self.restore.is_some() {
+            return;
         } else if !current {
             Err("vst3 parameter target changed")
         } else {

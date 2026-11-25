@@ -125,7 +125,18 @@ fn open_input(target: &Target) -> Result<Receiver<Result<PreparedInput, String>>
 impl EditorView {
     fn paused_input_configuration_matches(&self, target: &Target) -> bool {
         let recorder = &self.audio_recorder;
-        recorder.software_monitor
+        let track_monitoring = self
+            .state
+            .as_ref()
+            .and_then(|state| state.project.track(target.request.track))
+            .map(hex_project::Track::input_monitoring)
+            .unwrap_or_default();
+        let monitoring_enabled = match track_monitoring {
+            hex_project::InputMonitoring::In => true,
+            hex_project::InputMonitoring::Auto => recorder.software_monitor,
+            hex_project::InputMonitoring::Off => false,
+        };
+        monitoring_enabled
             && !recorder.blocks_edits()
             && recorder.armed_track == Some((self.project_generation, target.request.track))
             && self.project_generation == target.source().context.project_generation
@@ -140,8 +151,20 @@ impl EditorView {
 
     fn paused_input_target(&self) -> Option<Target> {
         let recorder = &self.audio_recorder;
+        let (generation, track) = recorder.armed_track?;
+        let state = self.state.as_ref()?;
+        let track_monitoring = state
+            .project
+            .track(track)
+            .map(hex_project::Track::input_monitoring)
+            .unwrap_or_default();
+        let monitoring_enabled = match track_monitoring {
+            hex_project::InputMonitoring::In => true,
+            hex_project::InputMonitoring::Auto => recorder.software_monitor,
+            hex_project::InputMonitoring::Off => false,
+        };
         if !cfg!(all(target_os = "macos", target_arch = "aarch64"))
-            || !recorder.software_monitor
+            || !monitoring_enabled
             || recorder.blocks_edits()
             || recorder.retiring_monitor_output.is_some()
             || self.mode != EditorMode::Arrangement
@@ -150,8 +173,6 @@ impl EditorView {
         {
             return None;
         }
-        let (generation, track) = recorder.armed_track?;
-        let state = self.state.as_ref()?;
         let audio = self.audio.as_ref()?;
         let (source, transport_epoch) = audio.control.status()?.paused_input_source()?;
         if generation != self.project_generation

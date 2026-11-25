@@ -756,6 +756,17 @@ impl EditorView {
         let Some(g) = self.track_reorder.gesture.take() else {
             return captured;
         };
+        if g.moved
+            && super::track_io::drop_track_header_on_input(
+                self,
+                g.track,
+                g.generation,
+                position,
+                cx,
+            )
+        {
+            return true;
+        }
         if g.moved && super::device_panel::drop_track_key(self, g.track, position, cx) {
             return true;
         }
@@ -899,6 +910,9 @@ impl EditorView {
     }
 
     pub(super) fn track_reorder_line(&self) -> Option<Div> {
+        if self.track_io_drag_hovering_input() {
+            return None;
+        }
         let destination = self
             .track_reorder
             .pending

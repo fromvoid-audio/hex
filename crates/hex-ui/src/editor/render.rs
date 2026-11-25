@@ -1306,6 +1306,7 @@ impl Render for EditorView {
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                     | view.cancel_track_reorder()
+                    | view.track_io.menu.take().is_some()
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
@@ -1973,6 +1974,7 @@ impl Render for EditorView {
             .child(workspace)
             .child(self.status_bar(cx))
             .children(self.return_send_menu_overlay(window, cx))
+            .children(self.track_io_menu_overlay(window, cx))
             .children(self.floating_browser_audio_drag_ghost(window.scale_factor()))
             .children(self.floating_clip_drag_ghost(window.scale_factor()))
             .children(self.context_menu_overlay(window, cx))

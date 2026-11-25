@@ -425,6 +425,21 @@ pub enum Command {
         destination: TrackId,
         source: Option<TrackId>,
     },
+    /// Assign or clear a track's single selected stereo audio input in one atomic edit.
+    AssignTrackAudioInput {
+        destination: TrackId,
+        source: Option<crate::RoutingOwner>,
+    },
+    /// Set a track's exclusive post-fader dry output destination.
+    SetTrackOutput {
+        track: TrackId,
+        destination: crate::TrackOutputDestination,
+    },
+    /// Set a track's canonical input monitoring mode (In / Auto / Off).
+    SetTrackInputMonitoring {
+        track: TrackId,
+        mode: crate::InputMonitoring,
+    },
     /// Adopt or change a bounded additive stereo Return feed; zero removes it.
     SetReturnFeed {
         source: ReturnId,

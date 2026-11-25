@@ -73,7 +73,32 @@ impl Project {
         nodes.insert(RoutingOwner::Main, nodes.len());
         let mut edges = BTreeSet::new();
         for track in self.tracks() {
-            edges.insert((RoutingOwner::Track(track.id()), RoutingOwner::Main));
+            match track.output_destination() {
+                crate::TrackOutputDestination::Default => {
+                    if let Some(parent) = track.parent_group() {
+                        edges
+                            .insert((RoutingOwner::Track(track.id()), RoutingOwner::Track(parent)));
+                    } else {
+                        edges.insert((RoutingOwner::Track(track.id()), RoutingOwner::Main));
+                    }
+                }
+                crate::TrackOutputDestination::Track(target) => {
+                    if !nodes.contains_key(&RoutingOwner::Track(target)) {
+                        return Err(Invalid("output destination track no longer exists"));
+                    }
+                    edges.insert((RoutingOwner::Track(track.id()), RoutingOwner::Track(target)));
+                }
+                crate::TrackOutputDestination::Return(bus) => {
+                    if !nodes.contains_key(&RoutingOwner::Return(bus)) {
+                        return Err(Invalid("output destination return no longer exists"));
+                    }
+                    edges.insert((RoutingOwner::Track(track.id()), RoutingOwner::Return(bus)));
+                }
+                crate::TrackOutputDestination::Main => {
+                    edges.insert((RoutingOwner::Track(track.id()), RoutingOwner::Main));
+                }
+                crate::TrackOutputDestination::SendsOnly => {}
+            }
             for send in track.sends() {
                 edges.insert((
                     RoutingOwner::Track(track.id()),

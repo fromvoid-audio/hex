@@ -276,6 +276,7 @@ mod track_creation_ui_tests;
 mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_group_delete_ui_test;
+mod track_io;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
 mod track_layout;
@@ -987,6 +988,7 @@ pub(super) struct EditorView {
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
     track_header_cache: track_header_cache::TrackHeaderCache,
+    track_io: track_io::TrackIoUiState,
     waveform_overrange_epoch: u64,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
     track_drop_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
@@ -1785,6 +1787,7 @@ impl EditorView {
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
             track_header_cache: track_header_cache::TrackHeaderCache::default(),
+            track_io: track_io::TrackIoUiState::default(),
             waveform_overrange_epoch: 0,
             drag_lanes: std::collections::HashMap::new(),
             track_drop_lanes: std::collections::HashMap::new(),
