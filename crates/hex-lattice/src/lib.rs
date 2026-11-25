@@ -47,7 +47,7 @@ mod tail_split;
 pub use bypass_ramp::MainPassDelay;
 pub use foreign_processor::{
     ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
-    ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors,
+    ForeignNoteKind, ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors,
     MAX_RETAINED_FOREIGN_PROGRAMS, PreparedForeignAutomation, PreparedForeignProcessor,
     RefuseForeign,
 };

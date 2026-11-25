@@ -4,7 +4,7 @@
 use super::{Input, next_note_id};
 use crate::computer_keyboard::{LiveNoteActivation, LiveNoteBatch, LiveNoteEvent};
 use crate::mutable_instrument::MutableInstrumentRuntimeError;
-use hex_lattice::ForeignNote;
+use hex_lattice::{ForeignNote, ForeignNoteKind};
 use std::num::NonZeroU32;
 
 pub(super) const NOTE_BUDGET: usize = 32;
@@ -49,13 +49,13 @@ struct Gate {
 }
 
 impl Gate {
-    fn event(self, on: bool, velocity: u8) -> ForeignNote {
+    fn event(self, kind: ForeignNoteKind, value: u8) -> ForeignNote {
         ForeignNote {
             frame: 0,
             channel: self.channel,
             pitch: self.pitch,
-            velocity,
-            on,
+            value,
+            kind,
             note_id: Some(self.id),
             is_live: true,
         }
@@ -106,7 +106,7 @@ impl Gates {
         self.held = 0;
         for gate in &mut self.notes {
             if let Some(gate) = gate.take() {
-                events.push(gate.event(false, 0));
+                events.push(gate.event(ForeignNoteKind::Off, 0));
             }
         }
         true
@@ -137,22 +137,22 @@ impl Gates {
             return Ok(());
         };
 
-        let (channel, pitch, velocity, on) = match event {
+        let (channel, pitch, value, kind) = match event {
             LiveNoteEvent::NoteOn {
                 channel,
                 pitch,
                 velocity,
-            } => (channel, pitch, velocity, true),
+            } => (channel, pitch, velocity, ForeignNoteKind::On),
             LiveNoteEvent::NoteOff {
                 channel,
                 pitch,
                 velocity,
-            } => (channel, pitch, velocity, false),
-            LiveNoteEvent::PolyPressure { .. } => {
-                // This foreign note-only port has no per-occurrence pressure grant.
-                batch.consumed += 1;
-                return Ok(());
-            }
+            } => (channel, pitch, velocity, ForeignNoteKind::Off),
+            LiveNoteEvent::PolyPressure {
+                channel,
+                pitch,
+                value,
+            } => (channel, pitch, value, ForeignNoteKind::PolyPressure),
             LiveNoteEvent::AllNotesOff => {
                 if self.release_all(events) {
                     batch.consumed += 1;
@@ -163,12 +163,24 @@ impl Gates {
         let previous = self.notes.iter().position(|gate| {
             gate.is_some_and(|gate| gate.channel == channel && gate.pitch == pitch)
         });
+        if kind == ForeignNoteKind::PolyPressure {
+            if let Some(gate) = previous.and_then(|index| self.notes[index]) {
+                if self.remaining == 0 {
+                    return Ok(());
+                }
+                events.push(gate.event(kind, value));
+                self.remaining -= 1;
+            }
+            batch.consumed += 1;
+            return Ok(());
+        }
+        let on = kind == ForeignNoteKind::On;
         let cost = usize::from(previous.is_some()) + usize::from(on);
         if cost > self.remaining {
             return Ok(());
         }
         if let Some(gate) = previous.and_then(|index| self.notes[index].take()) {
-            events.push(gate.event(false, if on { 0 } else { velocity }));
+            events.push(gate.event(ForeignNoteKind::Off, if on { 0 } else { value }));
             self.held -= 1;
         }
         if on {
@@ -186,7 +198,7 @@ impl Gates {
             };
             *slot = Some(gate);
             self.held += 1;
-            events.push(gate.event(true, velocity));
+            events.push(gate.event(ForeignNoteKind::On, value));
         }
         self.remaining -= cost;
         batch.consumed += 1;
@@ -201,7 +213,7 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn a_full_quantum_defers_releases_without_acknowledging_them() {
+    fn a_full_quantum_defers_pressure_and_releases_without_acknowledging_them() {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
         let hex_project::Created::Track(track) = editor
@@ -236,6 +248,12 @@ mod tests {
             pitch: 0,
             velocity: 11,
         };
+        let pressure = LiveNoteEvent::PolyPressure {
+            channel: 0,
+            pitch: 0,
+            value: 37,
+        };
+        queue.publish(activation, pressure).unwrap();
         queue.publish(activation, off).unwrap();
         queue
             .publish(activation, LiveNoteEvent::AllNotesOff)
@@ -252,29 +270,60 @@ mod tests {
         }
         batch.commit(Some(&input));
         assert_eq!(events.len(), NOTE_BUDGET);
-        assert!(events.iter().all(|event| event.on && event.is_live));
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind == ForeignNoteKind::On && event.is_live)
+        );
         assert_eq!(
             queue.snapshot().unwrap().events(),
-            &[off, LiveNoteEvent::AllNotesOff]
+            &[pressure, off, LiveNoteEvent::AllNotesOff]
         );
 
         let expected = events.iter().map(|event| event.note_id).collect::<Vec<_>>();
         events.clear();
         gates.reset_budget();
         batch.begin(Some(&input));
-        for _ in 0..2 {
+        for _ in 0..3 {
             gates
                 .stage(Some(&input), &mut batch, &mut id, &mut events)
                 .unwrap();
         }
         batch.commit(Some(&input));
+        assert_eq!(
+            queue.snapshot().unwrap().events(),
+            &[LiveNoteEvent::AllNotesOff]
+        );
+        let [pressed, released] = events.as_slice() else {
+            panic!("expected pressure and release");
+        };
+        assert_eq!(
+            (pressed.kind, pressed.value, pressed.note_id),
+            (ForeignNoteKind::PolyPressure, 37, expected[0])
+        );
+        assert!(pressed.is_live);
+        assert_eq!(
+            (released.kind, released.value, released.note_id),
+            (ForeignNoteKind::Off, 11, expected[0])
+        );
+        assert!(released.is_live);
+        events.clear();
+        gates.reset_budget();
+        batch.begin(Some(&input));
+        gates
+            .stage(Some(&input), &mut batch, &mut id, &mut events)
+            .unwrap();
+        batch.commit(Some(&input));
         assert!(queue.snapshot().unwrap().is_empty());
         assert!(!gates.held());
-        assert!(events.iter().all(|event| !event.on && event.is_live));
-        assert_eq!(events[0].velocity, 11);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind == ForeignNoteKind::Off && event.is_live)
+        );
         assert_eq!(
             events.iter().map(|event| event.note_id).collect::<Vec<_>>(),
-            expected
+            expected[1..]
         );
     }
 }

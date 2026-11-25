@@ -51,8 +51,8 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         frame: 1,
         channel: 2,
         pitch: 60,
-        velocity: 127,
-        on: true,
+        value: 127,
+        kind: ForeignNoteKind::On,
         note_id: std::num::NonZeroU32::new(70_001),
         is_live: false,
     };
@@ -62,14 +62,14 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         ..on
     };
     let first_off = ForeignNote {
-        velocity: 0,
-        on: false,
+        value: 0,
+        kind: ForeignNoteKind::Off,
         ..on
     };
     let second_off = ForeignNote {
         frame: 2,
-        velocity: 0,
-        on: false,
+        value: 0,
+        kind: ForeignNoteKind::Off,
         ..second_on
     };
     struct Clock(u64, bool);
@@ -94,8 +94,8 @@ fn actual_foreign_instrument_notes_follow_accepted_callback_segments() {
         };
         dense.push(note);
         dense.push(ForeignNote {
-            on: false,
-            velocity: 0,
+            kind: ForeignNoteKind::Off,
+            value: 0,
             ..note
         });
     }
@@ -499,8 +499,8 @@ fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
                 frame: 1,
                 channel: 2,
                 pitch: 60,
-                velocity: 127,
-                on: true,
+                value: 127,
+                kind: ForeignNoteKind::On,
                 note_id: std::num::NonZeroU32::new(41),
                 is_live: false,
             };
@@ -508,21 +508,21 @@ fn actual_unautomated_instrument_and_effect_receive_sdk_loop_wrap_origins() {
                 frame: 0,
                 channel: 2,
                 pitch: 60,
-                velocity: 127,
-                on: true,
+                value: 127,
+                kind: ForeignNoteKind::On,
                 note_id: std::num::NonZeroU32::new(42),
                 is_live: false,
             };
             let note_off_pre = ForeignNote {
                 frame: 2,
-                velocity: 0,
-                on: false,
+                value: 0,
+                kind: ForeignNoteKind::Off,
                 ..note_on_pre
             };
             let note_off_cut = ForeignNote {
                 frame: 3,
-                velocity: 0,
-                on: false,
+                value: 0,
+                kind: ForeignNoteKind::Off,
                 ..note_on_cut
             };
 
@@ -788,8 +788,8 @@ fn actual_vst3_note_events_carry_sample_accurate_ppq_position() {
                 frame,
                 channel: 2,
                 pitch: 60,
-                velocity: if on { 127 } else { 0 },
-                on,
+                value: if on { 127 } else { 0 },
+                kind: ForeignNoteKind::gate(on),
                 note_id: std::num::NonZeroU32::new(id),
                 is_live: false,
             };
@@ -917,6 +917,7 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
     const CHILD: &str = "HEX_NOTE_LIVE_SDK_TEST_CHILD";
     const K_NOTE_ON: i64 = 0;
     const K_NOTE_OFF: i64 = 1;
+    const K_POLY_PRESSURE: i64 = 3;
     const K_IS_LIVE: i64 = 1;
 
     if std::env::var_os(CHILD).is_none() {
@@ -943,23 +944,24 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
             .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
             .collect();
         let count = words[0] as usize;
-        assert_eq!(count, 8, "expected 8 recorded SDK note events: {words:?}");
+        assert_eq!(count, 9, "expected 9 recorded SDK note events: {words:?}");
         let ev = |idx: usize| -> (i64, i64, i64, i64, i64) {
             let b = 1 + idx * 6;
             (words[b], words[b + 1], words[b + 2], words[b + 3], words[b + 4])
         };
-        // Quantum 0: monitored live press + release (kIsLive) interleaved with sequenced press.
+        // Quantum 0: the monitored onset, pressure and release share identity and live flags.
         assert_eq!(ev(0), (K_NOTE_ON, 0, 60, 201, K_IS_LIVE));
-        assert_eq!(ev(1), (K_NOTE_OFF, 3, 60, 201, K_IS_LIVE));
+        assert_eq!(ev(1), (K_POLY_PRESSURE, 2, 60, 201, K_IS_LIVE));
+        assert_eq!(ev(2), (K_NOTE_OFF, 3, 60, 201, K_IS_LIVE));
         // Quantum 1: computer-keyboard live press + release (kIsLive).
-        assert_eq!(ev(2), (K_NOTE_ON, 1, 60, 202, K_IS_LIVE));
-        assert_eq!(ev(3), (K_NOTE_OFF, 5, 60, 202, K_IS_LIVE));
+        assert_eq!(ev(3), (K_NOTE_ON, 1, 60, 202, K_IS_LIVE));
+        assert_eq!(ev(4), (K_NOTE_OFF, 5, 60, 202, K_IS_LIVE));
         // Quantum 2: overlapping sequenced clip notes sharing pitch 60 leave kIsLive clear
         // and retain matching note IDs and exact sample offsets.
-        assert_eq!(ev(4), (K_NOTE_ON, 1, 60, 301, 0));
-        assert_eq!(ev(5), (K_NOTE_ON, 3, 60, 302, 0));
-        assert_eq!(ev(6), (K_NOTE_OFF, 5, 60, 301, 0));
-        assert_eq!(ev(7), (K_NOTE_OFF, 7, 60, 302, 0));
+        assert_eq!(ev(5), (K_NOTE_ON, 1, 60, 301, 0));
+        assert_eq!(ev(6), (K_NOTE_ON, 3, 60, 302, 0));
+        assert_eq!(ev(7), (K_NOTE_OFF, 5, 60, 301, 0));
+        assert_eq!(ev(8), (K_NOTE_OFF, 7, 60, 302, 0));
         return;
     }
 
@@ -988,8 +990,8 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
                 frame,
                 channel: 2,
                 pitch: 60,
-                velocity: if on { 127 } else { 0 },
-                on,
+                value: if on { 127 } else { 0 },
+                kind: ForeignNoteKind::gate(on),
                 note_id: std::num::NonZeroU32::new(id),
                 is_live,
             };
@@ -1002,7 +1004,11 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
             };
 
             let batches: [&[ForeignNote]; 3] = [
-                &[note(0, true, 201, true), note(3, false, 201, true)],
+                &[
+                    note(0, true, 201, true),
+                    ForeignNote { frame: 2, kind: ForeignNoteKind::PolyPressure, value: 64, ..note(0, true, 201, true) },
+                    note(3, false, 201, true),
+                ],
                 &[note(1, true, 202, true), note(5, false, 202, true)],
                 &[
                     note(1, true, 301, false),

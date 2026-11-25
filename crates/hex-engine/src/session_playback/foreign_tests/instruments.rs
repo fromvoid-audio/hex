@@ -1,6 +1,7 @@
 //! Control-side preparation of an Arrangement VST3 instrument source.
 use super::*;
 use crate::Invalid;
+use hex_lattice::ForeignNoteKind::{Off, On, PolyPressure};
 use hex_project::{BeatTime, Editor, Project};
 mod held_move_clock;
 
@@ -486,7 +487,7 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
             .iter()
             .all(|(device, note)| *device == second.device_id() && note.pitch == 67)
     );
-    assert!(sources.0[0].1.on && !sources.0[1].1.on);
+    assert!(sources.0[0].1.kind == On && sources.0[1].1.kind == Off);
     let mut rest = vec![[0.0; 2]; 24_001 - 320];
     sources.0.clear();
     candidate
@@ -497,8 +498,8 @@ fn live_new_track_and_second_instrument_keep_the_first_gate_and_clock() {
         [(
             first.device_id(),
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..first_note
             }
         )]
@@ -541,7 +542,7 @@ fn silent_group_child_edit_keeps_a_hosted_instrument_gate_and_compensated_pcm() 
         let [(_, onset)] = endpoint.notes.as_slice() else {
             panic!("one original note-on");
         };
-        assert!(onset.on && warm[31] == [0.25; 2]);
+        assert!(onset.kind == On && warm[31] == [0.25; 2]);
         let onset = *onset;
         let Created::Track(empty) = editor
             .execute(Command::InsertTrack {
@@ -575,7 +576,7 @@ fn silent_group_child_edit_keeps_a_hosted_instrument_gate_and_compensated_pcm() 
                 assert_eq!(actual, expected, "partition {partition}, removed {removed}");
                 assert_eq!(endpoint.notes, reference_endpoint.notes);
                 for &(_, note) in &endpoint.notes {
-                    assert!(removed && !note.on && note.note_id == onset.note_id);
+                    assert!(removed && note.kind == Off && note.note_id == onset.note_id);
                     released += 1;
                 }
             }
@@ -754,7 +755,7 @@ fn paused_vst3_instrument_preserves_downstream_arrangement_pcm() {
         let [(0, original)] = endpoint.notes[..] else {
             panic!("authored onset")
         };
-        assert!(original.on && original.pitch == 60);
+        assert!(original.kind == On && original.pitch == 60);
         keys.set_key(0, Some((67, 100, 1))).unwrap();
         let mut pcm = [[0.0; 2]; 257];
         let mut events = Vec::new();
@@ -770,8 +771,8 @@ fn paused_vst3_instrument_preserves_downstream_arrangement_pcm() {
         let [(0, off), (7, on)] = events[..] else {
             panic!("one authored release and the next native-quantum live onset: {events:?}");
         };
-        assert!(!off.on && off.note_id == original.note_id);
-        assert!(on.on && on.pitch == 67 && on.note_id != original.note_id);
+        assert!(off.kind == Off && off.note_id == original.note_id);
+        assert!(on.kind == On && on.pitch == 67 && on.note_id != original.note_id);
         assert_eq!(paused.position(), 257);
         assert!(pcm.iter().any(|frame| *frame != [0.0; 2]));
         let mut resumed = [[0.0; 2]; 19];
@@ -806,7 +807,7 @@ fn finite_bounce_requires_an_explicit_foreign_instrument_renderer() {
     let [(offset, note)] = endpoint.notes.as_slice() else {
         panic!("expected one authored MIDI note");
     };
-    assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+    assert_eq!((*offset, note.frame, note.pitch, note.kind), (0, 0, 60, On));
 }
 
 #[test]
@@ -855,7 +856,7 @@ fn linear_foreign_export_requires_a_renderer_and_delivers_authored_notes() {
     let [(offset, note)] = endpoint.notes.as_slice() else {
         panic!("expected one authored MIDI note");
     };
-    assert_eq!((*offset, note.frame, note.pitch, note.on), (0, 0, 60, true));
+    assert_eq!((*offset, note.frame, note.pitch, note.kind), (0, 0, 60, On));
     playback.apply(SessionPlaybackCommand::Seek(1023)).unwrap();
     endpoint.render(&mut playback, &mut [[0.0; 2]; 8]).unwrap();
     assert_eq!(playback.arrangement_frame(), 1031);
@@ -903,12 +904,12 @@ fn vst_note_audition_sends_a_finite_exact_velocity_chord_once() {
     let onsets = endpoint.notes.clone();
     assert_eq!(onsets.len(), 2);
     assert_eq!(
-        (onsets[0].1.pitch, onsets[0].1.velocity, onsets[0].1.on),
-        (60, 37, true)
+        (onsets[0].1.pitch, onsets[0].1.value, onsets[0].1.kind),
+        (60, 37, On)
     );
     assert_eq!(
-        (onsets[1].1.pitch, onsets[1].1.velocity, onsets[1].1.on),
-        (64, 93, true)
+        (onsets[1].1.pitch, onsets[1].1.value, onsets[1].1.kind),
+        (64, 93, On)
     );
     assert!(input.note_audition_finished());
     endpoint.next_offset = 0;
@@ -918,7 +919,7 @@ fn vst_note_audition_sends_a_finite_exact_velocity_chord_once() {
         .unwrap();
     assert_eq!(endpoint.notes.len(), 2);
     for (release, onset) in endpoint.notes.iter().zip(&onsets) {
-        assert!(!release.1.on);
+        assert!(release.1.kind == Off);
         assert_eq!(release.1.note_id, onset.1.note_id);
     }
     let mut replacement = Playback::from_prepared(revision);
@@ -978,7 +979,7 @@ fn vst_audition_rolls_back_failed_audio_and_keeps_gate_across_handoff() {
         panic!("retry must admit the onset once")
     };
     let onset = *onset;
-    assert!(onset.on && onset.pitch == 60 && onset.velocity == 37);
+    assert!(onset.kind == On && onset.pitch == 60 && onset.value == 37);
     assert!(!input.note_audition_finished());
     let mut replacement = Playback::from_prepared(revision);
     replacement
@@ -1018,7 +1019,7 @@ fn vst_audition_rolls_back_failed_audio_and_keeps_gate_across_handoff() {
     let [(0, release)] = endpoint.notes.as_slice() else {
         panic!("bounded gate must release")
     };
-    assert!(!release.on && release.note_id == onset.note_id);
+    assert!(release.kind == Off && release.note_id == onset.note_id);
 }
 
 #[test]
@@ -1055,7 +1056,7 @@ fn vst_audition_cancel_releases_the_original_note() {
     let [(0, release)] = endpoint.notes.as_slice() else {
         panic!("cancellation release")
     };
-    assert!(!release.on && release.note_id == onset.note_id);
+    assert!(release.kind == Off && release.note_id == onset.note_id);
 }
 
 #[test]
@@ -1094,12 +1095,12 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
     let [(0, first)] = render(&mut playback, 2)[..] else {
         panic!("stopped note-on")
     };
-    assert!(first.on && first.pitch == 67 && first.channel == 0);
+    assert!(first.kind == On && first.pitch == 67 && first.channel == 0);
     playback.apply(PlaybackCommand::Play);
     let [(0, authored)] = render(&mut playback, 6)[..] else {
         panic!("authored note-on")
     };
-    assert!(authored.on && authored.pitch == 60 && authored.note_id != first.note_id);
+    assert!(authored.kind == On && authored.pitch == 60 && authored.note_id != first.note_id);
 
     let mut next = Playback::from_prepared(revision);
     next.prepare_computer_keyboard_for_controller_activation(project, track, Arc::clone(&keys))
@@ -1111,7 +1112,7 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
     let [(0, release)] = render(&mut next, 8)[..] else {
         panic!("key release")
     };
-    assert!(!release.on && release.note_id == first.note_id);
+    assert!(release.kind == Off && release.note_id == first.note_id);
 
     keys.set_key(0, Some((68, 100, 2))).unwrap();
     let [(0, held)] = render(&mut next, 8)[..] else {
@@ -1124,14 +1125,14 @@ fn computer_keyboard_uses_the_same_worker_while_stopped_playing_and_rearmed_afte
     let [(0, authored_off), (0, held_off), (0, fresh)] = render(&mut next, 8)[..] else {
         panic!("stop and fresh epoch")
     };
-    assert!(!authored_off.on && authored_off.note_id == authored.note_id);
-    assert!(!held_off.on && held_off.note_id == held.note_id);
-    assert!(fresh.on && fresh.pitch == 69 && fresh.note_id != held.note_id);
+    assert!(authored_off.kind == Off && authored_off.note_id == authored.note_id);
+    assert!(held_off.kind == Off && held_off.note_id == held.note_id);
+    assert!(fresh.kind == On && fresh.pitch == 69 && fresh.note_id != held.note_id);
     keys.cancel();
     let [(0, release)] = render(&mut next, 8)[..] else {
         panic!("cancel release")
     };
-    assert!(!release.on && release.note_id == fresh.note_id);
+    assert!(release.kind == Off && release.note_id == fresh.note_id);
 }
 
 #[test]
@@ -1177,12 +1178,12 @@ fn live_audition_releases_only_its_own_vst_occurrence() {
     let [(_, preview), (_, hardware)] = render()[..] else {
         panic!("preview and live onsets");
     };
-    assert!(preview.on && preview.velocity == 37);
-    assert!(hardware.on && hardware.velocity == 93 && hardware.note_id != preview.note_id);
+    assert!(preview.kind == On && preview.value == 37);
+    assert!(hardware.kind == On && hardware.value == 93 && hardware.note_id != preview.note_id);
     let [(_, released)] = render()[..] else {
         panic!("only the preview expires");
     };
-    assert!(!released.on && released.note_id == preview.note_id);
+    assert!(released.kind == Off && released.note_id == preview.note_id);
 
     input
         .trigger_live_note_audition_on_control(&[(60, 37)], 32)
@@ -1190,7 +1191,7 @@ fn live_audition_releases_only_its_own_vst_occurrence() {
     let [(_, replacement)] = render()[..] else {
         panic!("fresh preview");
     };
-    assert!(replacement.on && replacement.note_id != preview.note_id);
+    assert!(replacement.kind == On && replacement.note_id != preview.note_id);
     input.cancel_live_note_audition_on_control();
     queue
         .publish(
@@ -1205,8 +1206,8 @@ fn live_audition_releases_only_its_own_vst_occurrence() {
     let [(_, cancelled), (_, off)] = render()[..] else {
         panic!("each input releases its own occurrence");
     };
-    assert!(!cancelled.on && cancelled.note_id == replacement.note_id);
-    assert!(!off.on && off.note_id == hardware.note_id && off.velocity == 41);
+    assert!(cancelled.kind == Off && cancelled.note_id == replacement.note_id);
+    assert!(off.kind == Off && off.note_id == hardware.note_id && off.value == 41);
     assert!(queue.same_current_activation(activation));
 }
 
@@ -1251,7 +1252,7 @@ fn vst_live_audition_input_retriggers_across_dragged_pitches_without_repreparing
     let [(_, first)] = render()[..] else {
         panic!("expected initial click onset");
     };
-    assert!(first.on && first.pitch == 60 && first.velocity == 80);
+    assert!(first.kind == On && first.pitch == 60 && first.value == 80);
 
     // Dragging to a new pitch releases the prior note and sounds the new pitch on the same root.
     input
@@ -1260,15 +1261,15 @@ fn vst_live_audition_input_retriggers_across_dragged_pitches_without_repreparing
     let [(_, released_first), (_, second)] = render()[..] else {
         panic!("expected release of prior pitch and onset of new pitch");
     };
-    assert!(!released_first.on && released_first.note_id == first.note_id);
-    assert!(second.on && second.pitch == 64 && second.velocity == 80);
+    assert!(released_first.kind == Off && released_first.note_id == first.note_id);
+    assert!(second.kind == On && second.pitch == 64 && second.value == 80);
 
     // Explicit cancellation releases the active pitch cleanly.
     input.cancel_live_note_audition_on_control();
     let [(_, released_second)] = render()[..] else {
         panic!("expected cancel release");
     };
-    assert!(!released_second.on && released_second.note_id == second.note_id);
+    assert!(released_second.kind == Off && released_second.note_id == second.note_id);
     assert!(render().is_empty());
 }
 
@@ -1320,17 +1321,30 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
         (result, endpoint.notes.clone())
     };
 
+    let pressure = |channel| LiveNoteEvent::PolyPressure {
+        channel,
+        pitch: 60,
+        value: 64,
+    };
     keys.set_key(0, Some((60, 100, 1))).unwrap();
-    queue.publish(activation, on).unwrap();
-    queue.publish(activation, off).unwrap();
+    for event in [on, pressure(0), pressure(2), off, pressure(2)] {
+        queue.publish(activation, event).unwrap();
+    }
     let (result, notes) = render(&mut playback, None);
     result.unwrap();
-    let [(0, key), (0, onset), (1, release)] = notes.as_slice() else {
-        panic!("expected the computer key and an ordered hardware tap");
+    let [(0, key), (0, onset), (2, aftertouch), (3, release)] = notes.as_slice() else {
+        panic!("expected key, hardware onset, pressure and release, got {notes:?}");
     };
-    assert!(key.on && key.channel == 0 && key.note_id != onset.note_id);
-    assert!(onset.on && onset.channel == 2 && onset.pitch == 60 && onset.velocity == 93);
-    assert!(!release.on && release.note_id == onset.note_id && release.velocity == 41);
+    assert!(key.kind == On && key.channel == 0 && key.note_id != onset.note_id);
+    assert!(onset.kind == On && onset.channel == 2 && onset.pitch == 60 && onset.value == 93);
+    assert_eq!(aftertouch.kind, PolyPressure);
+    assert_eq!(aftertouch.note_id, onset.note_id);
+    assert_eq!(
+        (aftertouch.channel, aftertouch.pitch, aftertouch.value),
+        (2, 60, 64)
+    );
+    assert!(aftertouch.is_live);
+    assert!(release.kind == Off && release.note_id == onset.note_id && release.value == 41);
     assert!(queue.snapshot().unwrap().is_empty());
 
     queue.publish(activation, on).unwrap();
@@ -1341,14 +1355,15 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     };
     queue.cancel_activation(activation).unwrap();
     activation = keys.begin_live_notes_activation_on_control().unwrap();
+    queue.publish(activation, pressure(2)).unwrap();
     queue.publish(activation, on).unwrap();
     let (result, notes) = render(&mut playback, None);
     result.unwrap();
-    let [(0, old), (0, fresh)] = notes.as_slice() else {
+    let [(0, old), (1, fresh)] = notes.as_slice() else {
         panic!("expected scoped reconnect")
     };
-    assert!(!old.on && old.note_id == held.note_id);
-    assert!(fresh.on && fresh.note_id != held.note_id);
+    assert!(old.kind == Off && old.note_id == held.note_id);
+    assert!(fresh.kind == On && fresh.note_id != held.note_id);
 
     playback.apply(PlaybackCommand::Play);
     let (result, notes) = render(&mut playback, None);
@@ -1356,7 +1371,9 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     let [(0, authored)] = notes.as_slice() else {
         panic!("expected one authored note alongside the held inputs");
     };
-    assert!(authored.on && authored.note_id != fresh.note_id && authored.note_id != key.note_id);
+    assert!(
+        authored.kind == On && authored.note_id != fresh.note_id && authored.note_id != key.note_id
+    );
     clock.revoke_reserved_prefix();
     playback.apply_priority_stop(&clock);
     let (result, notes) = render(&mut playback, None);
@@ -1365,17 +1382,17 @@ fn hardware_midi_keeps_ordered_taps_exact_release_and_activation_scope() {
     assert!(
         notes
             .iter()
-            .any(|(_, note)| !note.on && note.note_id == key.note_id)
+            .any(|(_, note)| note.kind == Off && note.note_id == key.note_id)
     );
     assert!(
         notes
             .iter()
-            .any(|(_, note)| !note.on && note.note_id == fresh.note_id)
+            .any(|(_, note)| note.kind == Off && note.note_id == fresh.note_id)
     );
     assert!(
         notes
             .iter()
-            .any(|(_, note)| !note.on && note.note_id == authored.note_id)
+            .any(|(_, note)| note.kind == Off && note.note_id == authored.note_id)
     );
     keys.ensure_output_activation_on_control().unwrap();
     queue.publish(activation, on).unwrap(); // The old input epoch stays fenced.
@@ -1455,7 +1472,7 @@ fn guarded_handoff_keeps_the_session_gate_deadline_only_for_the_same_midi_source
         panic!("one Session note-on");
     };
     let onset = *onset;
-    assert!(onset.on);
+    assert!(onset.kind == On);
 
     let mut ordinary = SessionPlayback::new(Arc::clone(&revision)).unwrap();
     assert!(matches!(
@@ -1493,8 +1510,8 @@ fn guarded_handoff_keeps_the_session_gate_deadline_only_for_the_same_midi_source
         [(
             remaining,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..onset
             }
         )]
@@ -1520,7 +1537,7 @@ fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
             panic!("expected the original Session onset: {:?}", endpoint.notes)
         };
         let original = *original;
-        assert!(original.on && original.pitch == 64 && original.channel == 3);
+        assert!(original.kind == On && original.pitch == 64 && original.channel == 3);
 
         playback.play_from(12_000).unwrap();
         let mut events = Vec::new();
@@ -1540,19 +1557,19 @@ fn session_play_from_releases_and_restarts_foreign_note_across_partitions() {
             panic!("block {block}: unexpected events {events:?}")
         };
         assert!(
-            !released.on && released.note_id == original.note_id,
+            released.kind == Off && released.note_id == original.note_id,
             "block {block}"
         );
         assert!(
-            restarted.on && restarted.note_id != original.note_id,
+            restarted.kind == On && restarted.note_id != original.note_id,
             "block {block}"
         );
         assert_eq!(
-            (restarted.pitch, restarted.channel, restarted.velocity),
+            (restarted.pitch, restarted.channel, restarted.value),
             (64, 3, 98)
         );
         assert!(
-            !ended.on && ended.note_id == restarted.note_id,
+            ended.kind == Off && ended.note_id == restarted.note_id,
             "block {block}"
         );
     }
@@ -1606,14 +1623,14 @@ fn timed_play_from_releases_and_restarts_a_held_session_note() {
         else {
             panic!("block {block}: unexpected events {events:?}")
         };
-        assert!(original.on && original.pitch == 64 && original.channel == 3);
-        assert!(!released.on && released.note_id == original.note_id);
-        assert!(restarted.on && restarted.note_id != original.note_id);
+        assert!(original.kind == On && original.pitch == 64 && original.channel == 3);
+        assert!(released.kind == Off && released.note_id == original.note_id);
+        assert!(restarted.kind == On && restarted.note_id != original.note_id);
         assert_eq!(
-            (restarted.pitch, restarted.channel, restarted.velocity),
+            (restarted.pitch, restarted.channel, restarted.value),
             (64, 3, 98)
         );
-        assert!(!ended.on && ended.note_id == restarted.note_id);
+        assert!(ended.kind == Off && ended.note_id == restarted.note_id);
     }
 }
 
@@ -1656,7 +1673,7 @@ fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
     let original = endpoint.notes[0].1;
-    assert!(original.on && original.pitch == 60);
+    assert!(original.kind == On && original.pitch == 60);
     playback
         .apply(SessionPlaybackCommand::LaunchClip {
             clip,
@@ -1670,9 +1687,9 @@ fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
             endpoint.notes
         );
     };
-    assert!(!release.on && release.note_id == original.note_id);
+    assert!(release.kind == Off && release.note_id == original.note_id);
     assert!(
-        console.on
+        console.kind == On
             && console.pitch == 64
             && console.channel == 3
             && console.note_id != original.note_id
@@ -1688,7 +1705,7 @@ fn console_clip_replaces_arrangement_gates_and_stop_releases_its_note() {
     let [(0, release)] = endpoint.notes.as_slice() else {
         panic!("expected console release")
     };
-    assert!(!release.on && release.note_id == console_id);
+    assert!(release.kind == Off && release.note_id == console_id);
     playback
         .apply(SessionPlaybackCommand::BackToArrangement {
             quantization: Immediate,
@@ -1730,13 +1747,13 @@ fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
         panic!("one onset");
     };
     let initial = *initial;
-    assert!(initial.on && initial.channel == 2 && initial.pitch == 60);
+    assert!(initial.kind == On && initial.channel == 2 && initial.pitch == 60);
     playback.apply(SessionPlaybackCommand::Seek(9)).unwrap();
     endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
     let [(0, release)] = endpoint.notes.as_slice() else {
         panic!("seek releases without chasing");
     };
-    assert!(!release.on);
+    assert!(release.kind == Off);
     assert_eq!(
         (release.note_id, release.channel, release.pitch),
         (initial.note_id, 2, 60)
@@ -1744,7 +1761,7 @@ fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
     playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
     endpoint.render(&mut playback, &mut [[0.0; 2]; 1]).unwrap();
     let restarted = endpoint.notes[0].1;
-    assert!(restarted.on && restarted.note_id != initial.note_id);
+    assert!(restarted.kind == On && restarted.note_id != initial.note_id);
     playback.apply(SessionPlaybackCommand::Stop).unwrap();
     endpoint.render(&mut playback, &mut [[0.0; 2]; 2]).unwrap();
     assert_eq!(
@@ -1752,8 +1769,8 @@ fn seek_and_stop_release_original_notes_and_a_late_fault_refuses_the_block() {
         [(
             0,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..restarted
             }
         )]
@@ -1820,8 +1837,8 @@ fn range_deactivation_waits_for_the_hosted_gate_then_allows_mute_and_unmute() {
         [(
             gate,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..onset
             }
         )]
@@ -1872,8 +1889,8 @@ fn compatible_gain_edit_keeps_the_accepted_instrument_note_until_release() {
         [(
             frames_until_release,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..onset
             }
         )]
@@ -1920,7 +1937,7 @@ fn running_tempo_edit_keeps_the_foreign_gate_and_moves_its_deadline() {
         let [(0, onset)] = endpoint.notes.as_slice() else {
             panic!("one held note at the start of this pass");
         };
-        assert!(onset.on);
+        assert!(onset.kind == On);
         let onset = *onset;
         let cut = playing.performance_frame();
 
@@ -1953,8 +1970,8 @@ fn running_tempo_edit_keeps_the_foreign_gate_and_moves_its_deadline() {
             [(
                 release,
                 hex_lattice::ForeignNote {
-                    on: false,
-                    velocity: 0,
+                    kind: Off,
+                    value: 0,
                     ..onset
                 }
             )]
@@ -1977,7 +1994,7 @@ fn confirmed_main_limiter_keeps_the_foreign_gate_on_the_original_worker() {
     let [(0, onset)] = endpoint.notes.as_slice() else {
         panic!("one original note-on");
     };
-    assert!(onset.on);
+    assert!(onset.kind == On);
     let onset = *onset;
 
     editor
@@ -2012,8 +2029,8 @@ fn confirmed_main_limiter_keeps_the_foreign_gate_on_the_original_worker() {
         [(
             release,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..onset
             }
         )]
@@ -2035,7 +2052,7 @@ fn confirmed_hosted_main_append_keeps_the_original_instrument_gate() {
     let [(0, onset)] = endpoint.notes.as_slice() else {
         panic!("one original note-on");
     };
-    assert!(onset.on);
+    assert!(onset.kind == On);
     let onset = *onset;
 
     let Created::Device(device) = editor
@@ -2092,8 +2109,8 @@ fn confirmed_hosted_main_append_keeps_the_original_instrument_gate() {
         [(
             release,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..onset
             }
         )]
@@ -2131,7 +2148,7 @@ fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
     let [(0, onset)] = endpoint.notes.as_slice() else {
         panic!("one onset after the wrap");
     };
-    assert!(onset.on);
+    assert!(onset.kind == On);
     let onset = *onset;
 
     editor
@@ -2161,8 +2178,8 @@ fn adding_delay_during_a_loop_keeps_the_foreign_instrument_gate_and_clock() {
         [(
             release,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..onset
             }
         )]
@@ -2218,7 +2235,7 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
             panic!("one onset on the wrapped pass");
         };
         let onset = *onset;
-        assert_eq!((onset.on, onset.pitch), (true, 67));
+        assert_eq!((onset.kind, onset.pitch), (On, 67));
         let cut = playing.arrangement_frame();
         let performance = playing.performance_frame();
         assert_eq!(cut, onset_frame + 8);
@@ -2351,8 +2368,8 @@ fn moving_a_wrapped_loop_keeps_foreign_gates_through_live_effect_edits() {
             [(
                 release,
                 hex_lattice::ForeignNote {
-                    on: false,
-                    velocity: 0,
+                    kind: Off,
+                    value: 0,
                     ..onset
                 }
             )]
@@ -2397,7 +2414,7 @@ fn incompatible_edits_wait_for_the_original_note_off() {
     assert!(removed.inherit_state(&mut playing).is_err());
     endpoint.render(&mut playing, &mut [[0.0; 2]; 2]).unwrap();
     assert_eq!(endpoint.notes.len(), 1);
-    assert!(!endpoint.notes[0].1.on);
+    assert!(endpoint.notes[0].1.kind == Off);
     assert_eq!(endpoint.notes[0].1.note_id, onset.note_id);
     removed.inherit_state(&mut playing).unwrap();
 }
@@ -2433,7 +2450,9 @@ fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
             }
             let (frame, first) = events.first().copied().expect("initial onset");
             assert_eq!(frame, 0);
-            assert!(first.on && first.pitch == 60 && first.channel == 2 && first.velocity == 101);
+            assert!(
+                first.kind == On && first.pitch == 60 && first.channel == 2 && first.value == 101
+            );
             let wraps = (frames.len() - 1) / 11;
             assert_eq!(
                 events.len(),
@@ -2447,12 +2466,12 @@ fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
                 let (on_frame, on) = events[2 * wrap];
                 assert_eq!((off_frame, on_frame), (11 * wrap, 11 * wrap));
                 assert!(
-                    !off.on
+                    off.kind == Off
                         && off.note_id == current.note_id
                         && off.pitch == 60
                         && off.channel == 2
                 );
-                assert!(on.on && on.pitch == 60 && on.channel == 2 && on.velocity == 101);
+                assert!(on.kind == On && on.pitch == 60 && on.channel == 2 && on.value == 101);
                 assert!(ids.insert(on.note_id), "reused note ID at wrap {wrap}");
                 current = on;
             }
@@ -2469,8 +2488,8 @@ fn loop_and_transport_release_notes_with_the_identity_of_the_current_pass() {
                 [(
                     0,
                     hex_lattice::ForeignNote {
-                        on: false,
-                        velocity: 0,
+                        kind: Off,
+                        value: 0,
                         ..current
                     }
                 )],
@@ -2516,10 +2535,10 @@ fn timed_transport_preserves_foreign_note_offsets_and_rejects_the_staged_callbac
     assert!(!endpoint.rejected);
     let events = &endpoint.notes;
     assert_eq!(events.len(), 4, "{events:?}");
-    assert_eq!((events[0].0, events[0].1.on), (0, true));
-    assert_eq!((events[1].0, events[1].1.on), (5, false));
-    assert_eq!((events[2].0, events[2].1.on), (5, true));
-    assert_eq!((events[3].0, events[3].1.on), (10, false));
+    assert_eq!((events[0].0, events[0].1.kind), (0, On));
+    assert_eq!((events[1].0, events[1].1.kind), (5, Off));
+    assert_eq!((events[2].0, events[2].1.kind), (5, On));
+    assert_eq!((events[3].0, events[3].1.kind), (10, Off));
     assert_eq!(events[0].1.note_id, events[1].1.note_id);
     assert_eq!(events[2].1.note_id, events[3].1.note_id);
     assert_ne!(events[0].1.note_id, events[2].1.note_id);
@@ -2764,10 +2783,10 @@ fn timed_mixed_pages_and_foreign_instrument_keep_offsets_and_refusal() {
     assert_eq!(clock[64], None);
     let events = &endpoint.notes;
     assert_eq!(events.len(), 4, "{events:?}");
-    assert_eq!((events[0].0, events[0].1.on), (0, true));
-    assert_eq!((events[1].0, events[1].1.on), (32, false));
-    assert_eq!((events[2].0, events[2].1.on), (32, true));
-    assert_eq!((events[3].0, events[3].1.on), (64, false));
+    assert_eq!((events[0].0, events[0].1.kind), (0, On));
+    assert_eq!((events[1].0, events[1].1.kind), (32, Off));
+    assert_eq!((events[2].0, events[2].1.kind), (32, On));
+    assert_eq!((events[3].0, events[3].1.kind), (64, Off));
     assert_eq!(events[0].1.note_id, events[1].1.note_id);
     assert_eq!(events[2].1.note_id, events[3].1.note_id);
     assert_ne!(events[0].1.note_id, events[2].1.note_id);
@@ -2882,17 +2901,24 @@ mod note_chase {
                 .unwrap();
             let mut endpoint = NoteEndpoint::default();
             endpoint.render(&mut playback, &mut [[0.0; 2]; 32]).unwrap();
-            assert_eq!(endpoint.notes.iter().any(|(_, note)| note.on), expected_on);
+            assert_eq!(
+                endpoint.notes.iter().any(|(_, note)| note.kind == On),
+                expected_on
+            );
             let onset = endpoint
                 .notes
                 .iter()
-                .find(|(_, note)| note.on)
+                .find(|(_, note)| note.kind == On)
                 .map(|(_, note)| *note);
             endpoint
                 .render(&mut playback, &mut [[0.0; 2]; 750])
                 .unwrap();
             if let Some(onset) = onset {
-                let release = endpoint.notes.iter().find(|(_, note)| !note.on).unwrap();
+                let release = endpoint
+                    .notes
+                    .iter()
+                    .find(|(_, note)| note.kind == Off)
+                    .unwrap();
                 assert_eq!(release.1.note_id, onset.note_id);
                 assert_eq!(release.0 as u64 + destination + 32, 750);
             } else {
@@ -2990,7 +3016,7 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
                 endpoint
                     .notes
                     .iter()
-                    .map(|(offset, note)| (elapsed + offset, note.on, note.pitch, note.note_id)),
+                    .map(|(offset, note)| (elapsed + offset, note.kind, note.pitch, note.note_id)),
             );
             elapsed += frames.len();
         }
@@ -2999,7 +3025,7 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
     let expected = run(true, crate::NoteChase::Off, false);
     assert_eq!(
         expected.iter().map(|e| (e.0, e.1, e.2)).collect::<Vec<_>>(),
-        vec![(0, true, 64), (375, false, 64), (3_000, true, 60)]
+        vec![(0, On, 64), (375, Off, 64), (3_000, On, 60)]
     );
     assert_eq!(
         expected[0].3, expected[1].3,
@@ -3017,11 +3043,11 @@ fn selected_session_off_hosted_events_match_source_start_oracle_without_orphan_o
     );
     let on = run(false, crate::NoteChase::On, false);
     assert!(
-        on.iter().any(|e| e.0 == 0 && e.1 && e.2 == 60),
+        on.iter().any(|e| e.0 == 0 && e.1 == On && e.2 == 60),
         "raw On admits the clipped intro"
     );
     assert!(
-        on.iter().any(|e| e.0 == 1_500 && !e.1 && e.2 == 60),
+        on.iter().any(|e| e.0 == 1_500 && e.1 == Off && e.2 == 60),
         "raw On retains its authored remaining gate"
     );
 }
@@ -3446,7 +3472,7 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
         panic!("expected one held vst3 onset");
     };
     let vst_onset = *vst_onset;
-    assert!(vst_onset.on);
+    assert!(vst_onset.kind == On);
     assert!(
         playing.mutable_instruments[1]
             .as_ref()
@@ -3507,8 +3533,8 @@ fn live_loop_edit_succeeds_with_both_vst3_and_native_mutable_instrument() {
         [(
             500,
             hex_lattice::ForeignNote {
-                on: false,
-                velocity: 0,
+                kind: Off,
+                value: 0,
                 ..vst_onset
             }
         )]
@@ -3707,7 +3733,7 @@ fn confirmed_track_and_return_latency_inserts_keep_playing_vst3_instrument_gates
         playing.apply(SessionPlaybackCommand::Play).unwrap();
         endpoint.render(&mut playing, &mut [[0.0; 2]; 32]).unwrap();
         assert_eq!(endpoint.notes.len(), 1);
-        assert!(endpoint.notes[0].1.on);
+        assert!(endpoint.notes[0].1.kind == On);
 
         let mut unapproved = SessionPlayback::new(Arc::clone(&after)).unwrap();
         unapproved.require_continuous_insert = true;
@@ -3731,7 +3757,7 @@ fn confirmed_track_and_return_latency_inserts_keep_playing_vst3_instrument_gates
             .render(&mut confirmed, &mut vec![[0.0; 2]; 24_000])
             .unwrap();
         assert!(
-            endpoint.notes.iter().any(|note| !note.1.on),
+            endpoint.notes.iter().any(|note| note.1.kind == Off),
             "preserved VST3 instrument gate must still emit its note-off"
         );
     }
