@@ -43,7 +43,7 @@ pub fn same_existing_file(left: &Path, right: &Path) -> bool {
 /// Opaque exact-byte content snapshot, shared cheaply between owners.
 /// This is a content check, not a filesystem lock, identity or overwrite permit.
 #[derive(Clone)]
-pub struct FileToken(pub(super) Arc<[u8]>, Option<u32>);
+pub struct FileToken(pub(super) Arc<[u8]>, Option<u32>, Option<Vec<String>>);
 
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -64,14 +64,31 @@ impl FileToken {
         })
     }
 
-    /// True when saving `project` writes a newer schema than this file's, for
-    /// example adding sinc v2 media to a schema63 file. Compares the actual
-    /// saved formats, not application versions.
+    /// True when saving `project` writes a newer schema or requires capabilities
+    /// absent from this file's saved format, for example adding sinc v2 media to
+    /// a schema63 file or adding a new capability to a schema126 manifest.
+    /// Compares the actual saved formats, not application versions.
     pub fn requires_schema_upgrade_for(&self, project: &Project) -> bool {
-        self.requires_format_upgrade()
-            || self
-                .1
-                .is_none_or(|version| version < crate::schema_version_for(project))
+        if self.requires_format_upgrade() {
+            return true;
+        }
+        let Some(version) = self.1 else {
+            return true;
+        };
+        if version < crate::schema_version_for(project) {
+            return true;
+        }
+        if version == crate::CAPABILITY_MANIFEST_SCHEMA_VERSION {
+            let Some(existing) = self.2.as_deref() else {
+                return true;
+            };
+            return crate::capabilities_for(project).into_iter().any(|cap| {
+                existing
+                    .binary_search_by(|item| item.as_str().cmp(cap))
+                    .is_err()
+            });
+        }
+        false
     }
 
     /// Control-side preflight for replacing a file an older reader could open.
@@ -98,11 +115,13 @@ impl FileToken {
         #[derive(serde::Deserialize)]
         struct Header {
             version: u32,
+            #[serde(default)]
+            capabilities: Option<Vec<String>>,
         }
-        let version = serde_json::from_slice::<Header>(&bytes)
-            .ok()
-            .map(|header| header.version);
-        Self(bytes, version)
+        let parsed = serde_json::from_slice::<Header>(&bytes).ok();
+        let version = parsed.as_ref().map(|header| header.version);
+        let capabilities = parsed.and_then(|header| header.capabilities);
+        Self(bytes, version, capabilities)
     }
 
     /// Compare the current document with the captured bytes without modifying it.
