@@ -50,15 +50,6 @@ pub(crate) fn contains(project: &Project) -> bool {
     project.devices().any(|device| device.parent().is_some())
 }
 
-pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
-    if contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save serial device units",
-        ));
-    }
-    Ok(())
-}
-
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
     let mut snapshot = project.snapshot();
     let rows = super::device_automation::devices(&mut snapshot)

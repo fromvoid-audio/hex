@@ -300,143 +300,7 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// Schema115 wraps the appropriate prior document only when an authored device
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
-    use schema::long_granular::{self, LongWarpSchema};
-    if schema::manifest::contains_track_io_routing(project) {
-        return TRACK_IO_ROUTING_SCHEMA_VERSION;
-    }
-    if schema::manifest::contains_automation_curves_and_freeze(project) {
-        return AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION;
-    }
-    if schema::manifest::contains_midi_expression(project) {
-        return MIDI_EXPRESSION_SCHEMA_VERSION;
-    }
-    if schema::manifest::requires_manifest_schema(project) {
-        return CAPABILITY_MANIFEST_SCHEMA_VERSION;
-    }
-    if schema::large_vst3_state::contains(project) {
-        return LARGE_VST3_STATE_SCHEMA_VERSION;
-    }
-    if schema::event_warp_sources::contains(project) {
-        return EVENT_WARP_SOURCE_SCHEMA_VERSION;
-    }
-    if schema::musical_event_source::contains_scoped(project) {
-        return SCOPED_MUSICAL_EVENTS_SCHEMA_VERSION;
-    }
-    if schema::outer_clip_fades::contains(project) {
-        return OUTER_CLIP_FADE_SCHEMA_VERSION;
-    }
-    if long_granular::contains(project, LongWarpSchema::Inactive) {
-        return LONG_INACTIVE_WARP_SCHEMA_VERSION;
-    }
-    if long_granular::contains(project, LongWarpSchema::Granular) {
-        return LONG_GRANULAR_SCHEMA_VERSION;
-    }
-    if schema::long_pitch_fade::contains(project) {
-        return LONG_PITCH_FADE_SCHEMA_VERSION;
-    }
-    if schema::silent_repeat::contains(project) {
-        return SILENT_REPEAT_SCHEMA_VERSION;
-    }
-    if schema::long_pitch::contains(project) {
-        return LONG_PITCH_SCHEMA_VERSION;
-    }
-    if schema::long_reverse::contains(project) {
-        return LONG_REVERSE_SCHEMA_VERSION;
-    }
-    if schema::coincident_automation::contains(project) {
-        return COINCIDENT_AUTOMATION_SCHEMA_VERSION;
-    }
-    if !project.arrangement_locators().is_empty() {
-        return ARRANGEMENT_LOCATOR_SCHEMA_VERSION;
-    }
-    if schema::s_curve_fades::contains(project) {
-        return S_CURVE_FADE_SCHEMA_VERSION;
-    }
-    if schema::device_automation_touch::contains_native_source_effect(project) {
-        schema::device_automation_touch::source_effect_schema_version(project)
-    } else if schema::device_modulation::contains_operator_modulation(project) {
-        OPERATOR_MODULATION_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_arrangement_steps(project) {
-        ARRANGEMENT_STEPS_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_steps(project) {
-        STEPS_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_adsr(project) {
-        ADSR_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_ahd_release(project) {
-        AHD_RELEASE_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_ramp(project) {
-        RAMP_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_note_counter(project) {
-        NOTE_COUNTER_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_mix(project) {
-        MIX_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_buttons(project) {
-        BUTTONS_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_math(project) {
-        MATH_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_sampler_modulation(project) {
-        SAMPLER_MODULATION_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_macro_four(project) {
-        MACRO_FOUR_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_button(project) {
-        BUTTON_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_note_pressure(project) {
-        NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_instrument_modulation(project) {
-        INSTRUMENT_MODULATION_SCHEMA_VERSION
-    } else if schema::device_automation_touch::contains_extended(project) {
-        EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION
-    } else if schema::device_automation_touch::contains_native_instrument(project) {
-        NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_audio_rate(project) {
-        AUDIO_RATE_MODULATOR_SCHEMA_VERSION
-    } else if let Some(version) = schema::device_modulation::lfo_rate_route_schema(project) {
-        version
-    } else if schema::device_modulation::contains_newer_lfo(project) {
-        LFO_SHAPE_SCHEMA_VERSION
-    } else if schema::bound_source_effects::contains(project) {
-        BOUND_SOURCE_EFFECT_SCHEMA_VERSION
-    } else if schema::device_modulation::contains_colors(project) {
-        MODULATION_SLOT_COLOR_SCHEMA_VERSION
-    } else if schema::device_modulation::contains(project) {
-        DEVICE_MODULATION_SCHEMA_VERSION
-    } else if schema::serial_units::contains(project) {
-        SERIAL_DEVICE_SCHEMA_VERSION
-    } else if schema::device_automation_touch::contains_vst3(project) {
-        VST3_AUTOMATION_TOUCH_SCHEMA_VERSION
-    } else if schema::device_automation_touch::contains(project) {
-        DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION
-    } else if schema::vst3_automation::contains(project) {
-        VST3_AUTOMATION_SCHEMA_VERSION
-    } else if schema::sample_rate_mode::contains(project) {
-        SAMPLE_RATE_MODE_SCHEMA_VERSION
-    } else if contains_larger_device_state(project) {
-        VST3_STATE_SIZE_SCHEMA_VERSION
-    } else if schema::group_output_mute::contains(project) {
-        GROUP_OUTPUT_MUTE_SCHEMA_VERSION
-    } else if contains_leading_audio_once(project) {
-        LEADING_AUDIO_ONCE_SCHEMA_VERSION
-    } else if schema::track_tags::contains(project) {
-        TRACK_TAGS_SCHEMA_VERSION
-    } else if contains_extended_frame_events(project) {
-        EXTENDED_FRAME_EVENTS_SCHEMA_VERSION
-    } else if schema::musical_event_source::contains(project) {
-        MUSICAL_EVENT_SOURCE_SCHEMA_VERSION
-    } else if !project.sidechains().is_empty() {
-        SIDECHAIN_SCHEMA_VERSION
-    } else if schema::retained_receiver::contains(project) {
-        RETAINED_RECEIVER_SCHEMA_VERSION
-    } else if schema::sampler_crossfade::contains_newer_states(project) {
-        DEVICE_STATE_SCHEMA_VERSION
-    } else if schema::content_view_resampler::contains_explicit(project) {
-        CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION
-    } else if schema::warp_resampler::contains_explicit(project) {
-        WARP_RESAMPLER_SCHEMA_VERSION
-    } else if schema::conversion_v2::contains_v2(project) {
-        SINC_V2_SCHEMA_VERSION
-    } else {
-        CURRENT_SCHEMA_VERSION
-    }
+    schema::manifest::schema_version_for(project)
 }
 
 /// Older readers rejected documents above this size. This is compatibility
@@ -810,60 +674,10 @@ fn refuse_unsupported_fade_clocks(project: &Project) -> Result<(), StorageError>
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
     refuse_unsupported_fade_clocks(project)?;
-    if !project.arrangement_locators().is_empty() {
-        return Err(StorageError::Invalid(
-            "older schema cannot save arrangement locators",
-        ));
-    }
-    if schema::s_curve_fades::contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save s-curve fades",
-        ));
-    }
-    if schema::bound_source_effects::contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save bound source effects",
-        ));
-    }
-    schema::device_modulation::refuse_legacy(project)?;
-    schema::serial_units::refuse_legacy(project)?;
-    if schema::sample_rate_mode::contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save the project sample rate mode",
-        ));
-    }
-    if contains_larger_device_state(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save a larger vst3 device state; save with the current format",
-        ));
-    }
-    if schema::track_tags::contains(project) {
-        return Err(StorageError::Invalid("older schema cannot save track tags"));
-    }
-    if contains_extended_frame_events(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save an extended frame event root",
-        ));
-    }
-    if schema::musical_event_source::contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save a retained musical event source",
-        ));
-    }
-    if !project.sidechains().is_empty() {
-        return Err(StorageError::Invalid(
-            "older schema cannot save a compressor sidechain",
-        ));
-    }
-    if schema::retained_receiver::contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save a retained source path",
-        ));
-    }
-    schema::sampler_crossfade::require_older_states(project)?;
-    schema::content_view_resampler::require_implied(project)?;
-    schema::warp_resampler::require_implied(project)?;
-    schema::conversion_v2::require_v1_conversions(project)?;
+    // Refuse every post-schema-63 capability from the unified schema feature table
+    // (covers schemas 64..=129 including M9 MIDI expression, automation curves/freeze,
+    // track I/O routing, and all post-112 features).
+    schema::manifest::refuse_post_63_features(project)?;
     schema::track_name_origin::require_user_names(project)?;
     schema::midi_clip_gain::require_unity(project)?;
     schema::event_gain::require_unity(project)?;
@@ -1035,7 +849,20 @@ fn decode_base(bytes: &[u8]) -> Result<Project, StorageError> {
 }
 
 fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageError> {
+    decode_impl_within(bytes, inside_envelope, MAX_PROJECT_DOCUMENT_BYTES)
+}
+
+fn decode_impl_within(
+    bytes: &[u8],
+    inside_envelope: bool,
+    max_document_bytes: usize,
+) -> Result<Project, StorageError> {
     use schema::long_granular::{self, LongWarpSchema};
+    if bytes.len() > max_document_bytes {
+        return Err(StorageError::Invalid(
+            "project exceeds the document size limit",
+        ));
+    }
     #[derive(serde::Deserialize)]
     struct CurrentHeader<'a> {
         format: &'a str,
