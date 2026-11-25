@@ -49,10 +49,17 @@ impl TuningState {
     }
 
     pub fn append(self, payload: &mut Vec<u8>) {
+        let mut buf = [0_u8; BYTES];
+        self.write_into(&mut buf);
+        payload.extend_from_slice(&buf);
+    }
+
+    pub fn write_into(self, dst: &mut [u8]) {
         for index in 0..OPERATORS {
-            payload.extend_from_slice(&u32::from(self.fixed[index]).to_le_bytes());
-            payload.extend_from_slice(&self.frequency[index].to_le_bytes());
-            payload.extend_from_slice(&self.multiplier[index].to_le_bytes());
+            let offset = index * 12;
+            dst[offset..offset + 4].copy_from_slice(&u32::from(self.fixed[index]).to_le_bytes());
+            dst[offset + 4..offset + 8].copy_from_slice(&self.frequency[index].to_le_bytes());
+            dst[offset + 8..offset + 12].copy_from_slice(&self.multiplier[index].to_le_bytes());
         }
     }
 

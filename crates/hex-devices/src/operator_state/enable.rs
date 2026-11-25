@@ -69,8 +69,15 @@ impl EnableSettings {
     }
 
     pub(super) fn append(&self, payload: &mut Vec<u8>) {
-        for flag in self.0 {
-            payload.extend_from_slice(&u32::from(flag).to_le_bytes());
+        let mut buf = [0_u8; BYTES];
+        self.write_into(&mut buf);
+        payload.extend_from_slice(&buf);
+    }
+
+    pub(super) fn write_into(&self, dst: &mut [u8]) {
+        for (index, flag) in self.0.into_iter().enumerate() {
+            let offset = index * 4;
+            dst[offset..offset + 4].copy_from_slice(&u32::from(flag).to_le_bytes());
         }
     }
 

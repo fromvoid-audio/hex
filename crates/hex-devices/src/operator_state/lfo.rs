@@ -93,8 +93,14 @@ impl LfoSettings {
         Ok(result)
     }
     pub(super) fn append(self, bytes: &mut Vec<u8>) {
-        for word in self.0 {
-            bytes.extend_from_slice(&word.to_le_bytes());
+        let mut buf = [0_u8; BYTES];
+        self.write_into(&mut buf);
+        bytes.extend_from_slice(&buf);
+    }
+    pub(super) fn write_into(self, dst: &mut [u8]) {
+        for (index, word) in self.0.into_iter().enumerate() {
+            let offset = index * 4;
+            dst[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
         }
     }
     pub(super) fn read(self, parameter: ParameterId) -> Option<ParameterValue> {
