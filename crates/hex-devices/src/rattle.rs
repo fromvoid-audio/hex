@@ -237,7 +237,7 @@ impl RattleDefinition {
             automated,
             drive_smoother,
             coefficients: Coefficients {
-                halfband: halfband(),
+                halfband: hex_dsp::Halfband2xKernel::blackman(),
                 dc_pole,
                 svf_g: g,
                 svf_damping: damping,
@@ -302,30 +302,10 @@ impl NativeDeviceDefinition for RattleDefinition {
     }
 }
 
-/// Blackman-windowed sinc halfband at a quarter of the oversampled rate, unit DC gain.
-fn halfband() -> [f64; TAPS] {
-    let centre = (TAPS - 1) as f64 / 2.0;
-    let mut taps = std::array::from_fn(|n| {
-        let offset = n as f64 - centre;
-        let sinc = if offset == 0.0 {
-            0.5
-        } else {
-            (std::f64::consts::FRAC_PI_2 * offset).sin() / (std::f64::consts::PI * offset)
-        };
-        let phase = std::f64::consts::TAU * n as f64 / (TAPS - 1) as f64;
-        sinc * (0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos())
-    });
-    let sum: f64 = taps.iter().sum();
-    for tap in &mut taps {
-        *tap /= sum;
-    }
-    taps
-}
-
 /// Control-prepared rate-dependent constants; fixed inline, no transcendental work per sample.
 #[derive(Clone, Copy, Debug)]
 struct Coefficients {
-    halfband: [f64; TAPS],
+    halfband: hex_dsp::Halfband2xKernel<TAPS, HISTORY>,
     dc_pole: f64,
     svf_g: f64,
     svf_damping: f64,
@@ -462,10 +442,7 @@ fn quiet(value: f64) -> f64 {
 /// Per-channel oversampling, filter, envelope, noise and slew history.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Channel {
-    /// Newest-first base-rate input; `input[HISTORY - 1]` is the latency-aligned dry sample.
-    input: [f64; HISTORY],
-    /// Newest-first shaped oversampled samples feeding the decimator.
-    shaped: [f64; TAPS],
+    halfband: hex_dsp::Halfband2x<TAPS, HISTORY>,
     dc_input: f64,
     dc_output: f64,
     out_dc: [f64; 2],
@@ -480,8 +457,7 @@ struct Channel {
 impl Channel {
     const fn new(seed: u32) -> Self {
         Self {
-            input: [0.0; HISTORY],
-            shaped: [0.0; TAPS],
+            halfband: hex_dsp::Halfband2x::new(),
             dc_input: 0.0,
             dc_output: 0.0,
             out_dc: [0.0; 2],
@@ -552,31 +528,11 @@ impl Channel {
 
     /// Process one base-rate sample, returning `(delayed dry, wet)`.
     fn frame(&mut self, input: f64, shape: &Shape, c: &Coefficients) -> (f64, f64) {
-        self.input.copy_within(0..HISTORY - 1, 1);
-        self.input[0] = input;
-        // Polyphase zero-stuffing interpolation: even taps then odd taps, gain 2.
-        let mut even = 0.0;
-        let mut odd = 0.0;
-        for (k, sample) in self.input.iter().enumerate() {
-            even += c.halfband[2 * k] * sample;
-            if let Some(tap) = c.halfband.get(2 * k + 1) {
-                odd += tap * sample;
-            }
-        }
-        let first = self.shape(2.0 * even, shape, c);
-        self.shaped.copy_within(0..TAPS - 1, 1);
-        self.shaped[0] = first;
-        // Decimate on the even phase so the total delay is a whole base frame count.
-        let wet = c
-            .halfband
-            .iter()
-            .zip(&self.shaped)
-            .map(|(tap, sample)| tap * sample)
-            .sum();
-        let second = self.shape(2.0 * odd, shape, c);
-        self.shaped.copy_within(0..TAPS - 1, 1);
-        self.shaped[0] = second;
-        (self.input[HISTORY - 1], wet)
+        let (dry, first_in, second_in) = self.halfband.upsample_sample(input, &c.halfband);
+        let first = self.shape(first_in, shape, c);
+        let second = self.shape(second_in, shape, c);
+        let wet = self.halfband.downsample_sample(first, second, &c.halfband);
+        (dry, wet)
     }
 }
 

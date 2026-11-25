@@ -27,9 +27,9 @@ use hex_lattice_contract::{
 };
 use std::any::Any;
 
-use crate::oversampling::{Kernel, LATENCY_FRAMES, Oversampler, Shaper};
+use crate::oversampling::{BLOCK_CHUNK, Kernel, LATENCY_FRAMES, Oversampler, Shaper};
 
-/// Overdrive's transfer: tanh, with the overflow-free ln(cosh) antiderivative.
+/// Overdrive's transfer: tanh, with `hex-dsp`'s fast C1 `ln(cosh)` antiderivative.
 struct Tanh;
 impl Shaper for Tanh {
     fn tag(&self) -> u8 {
@@ -39,8 +39,7 @@ impl Shaper for Tanh {
         x.tanh()
     }
     fn antiderivative(&self, x: f64) -> f64 {
-        let a = x.abs();
-        a + (-2.0 * a).exp().ln_1p() - std::f64::consts::LN_2
+        hex_dsp::fast_ln_cosh_f64(x)
     }
 }
 
@@ -368,7 +367,7 @@ pub struct PreparedOverdrive {
     admitted: [bool; 6],
     targets: [f64; 6],
     rate: u32,
-    kernel: Kernel,
+    kernel: &'static Kernel,
 }
 impl PreparedNativeProcessor for PreparedOverdrive {
     fn supports_parameter_automation(&self, id: ParameterId) -> bool {
@@ -459,7 +458,7 @@ impl Channel {
         sample
     }
     fn distort(&mut self, input: f64, drive: f64, kernel: &Kernel, tone: f64) -> f64 {
-        let sample = self.oversampler.process(input, drive, kernel, &Tanh);
+        let sample = self.oversampler.process_sample(input, drive, kernel, &Tanh);
         lowpass(sample, &mut self.tone, tone)
     }
 }
@@ -474,7 +473,7 @@ pub struct OverdriveRuntime {
     envelope: [f64; 2],
     attack: f64,
     release: f64,
-    kernel: Kernel,
+    kernel: &'static Kernel,
     /// Dry left/right and input band peak, delayed by the oversampler latency.
     delay: [[f64; 3]; LATENCY_FRAMES],
     delay_index: usize,
@@ -518,7 +517,7 @@ impl OverdriveRuntime {
         for (i, channel) in self.channels.iter_mut().enumerate() {
             let band = channel.band(input[i], hp, lp);
             input_peak = input_peak.max(band.abs());
-            wet[i] = channel.distort(band, drive, &self.kernel, tone);
+            wet[i] = channel.distort(band, drive, self.kernel, tone);
         }
         // Align the dry path and the envelope's input peak with the wet path.
         let [dry_left, dry_right, band_peak] = std::mem::replace(
@@ -559,8 +558,83 @@ impl NativeProcessorRuntime for OverdriveRuntime {
     }
     crate::parameter_binding::delegate_automated_block_processing!(process_automated);
     fn process_block(&mut self, frames: &mut [StereoFrame], _: &dyn hex_lattice::DeviceResources) {
-        for frame in frames {
-            self.frame(frame);
+        if !self.ramps.iter().all(|r| r.is_settled()) {
+            for frame in frames {
+                self.frame(frame);
+            }
+            return;
+        }
+        let [hp, lp, drive, tone, dynamics, mix] = self.ramps.map(hex_dsp::LinearRamp::target);
+        let dry_mix = 1.0 - mix;
+        let kernel = self.kernel;
+        for chunk in frames.chunks_mut(BLOCK_CHUNK) {
+            let n = chunk.len();
+            let all_valid_and_active = chunk
+                .iter()
+                .all(|f| f[0].is_finite() && f[1].is_finite() && *f != [0.0; 2]);
+            if !all_valid_and_active {
+                for frame in chunk {
+                    self.frame(frame);
+                }
+                continue;
+            }
+            self.silent_frames = 0;
+            let mut band_l = [0.0_f32; BLOCK_CHUNK];
+            let mut band_r = [0.0_f32; BLOCK_CHUNK];
+            let mut dry_l = [0.0_f64; BLOCK_CHUNK];
+            let mut dry_r = [0.0_f64; BLOCK_CHUNK];
+            let mut delayed_peak = [0.0_f64; BLOCK_CHUNK];
+            let [left_ch, right_ch] = &mut self.channels;
+            for i in 0..n {
+                let in_l = f64::from(chunk[i][0]);
+                let in_r = f64::from(chunk[i][1]);
+                let bl = left_ch.band(in_l, hp, lp);
+                let br = right_ch.band(in_r, hp, lp);
+                band_l[i] = bl as f32;
+                band_r[i] = br as f32;
+                let input_peak = bl.abs().max(br.abs());
+                let [dl, dr, bp] =
+                    std::mem::replace(&mut self.delay[self.delay_index], [in_l, in_r, input_peak]);
+                self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
+                dry_l[i] = dl;
+                dry_r[i] = dr;
+                delayed_peak[i] = bp;
+            }
+            Oversampler::process_stereo_block(
+                &mut left_ch.oversampler,
+                &mut right_ch.oversampler,
+                &mut band_l[..n],
+                &mut band_r[..n],
+                drive,
+                kernel,
+                &Tanh,
+            );
+            for i in 0..n {
+                let wl = lowpass(f64::from(band_l[i]), &mut left_ch.tone, tone);
+                let wr = lowpass(f64::from(band_r[i]), &mut right_ch.tone, tone);
+                let wet_peak = wl.abs().max(wr.abs());
+                for (envelope, peak) in self.envelope.iter_mut().zip([delayed_peak[i], wet_peak]) {
+                    let p = if peak > *envelope {
+                        self.attack
+                    } else {
+                        self.release
+                    };
+                    *envelope = quiet(peak + p * (*envelope - peak));
+                }
+                let restore = if self.envelope[1] > hex_dsp::QUIET_FLOOR {
+                    (self.envelope[0] / self.envelope[1]).clamp(0.0, 4.0)
+                } else {
+                    1.0
+                };
+                let gain = 1.0 + dynamics * (restore - 1.0);
+                if mix == 0.0 {
+                    chunk[i][0] = dry_l[i] as f32;
+                    chunk[i][1] = dry_r[i] as f32;
+                } else {
+                    chunk[i][0] = (dry_l[i] * dry_mix + wl * gain * mix) as f32;
+                    chunk[i][1] = (dry_r[i] * dry_mix + wr * gain * mix) as f32;
+                }
+            }
         }
     }
     fn reset(&mut self) {

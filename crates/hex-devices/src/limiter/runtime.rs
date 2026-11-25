@@ -52,11 +52,12 @@
 //! refuse; the host retains its existing PDC, publication and retirement rules.
 use super::automation;
 use super::state::{Settings, parameter::*};
+use hex_dsp::BlackmanSincBank;
 use hex_lattice::{
     DynamicsMeter, OutputTail, OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, StereoFrame,
 };
 use hex_lattice_contract::DeviceContractError;
-use std::{any::Any, sync::OnceLock};
+use std::any::Any;
 
 const TAPS: usize = 32;
 const PHASES: usize = 32;
@@ -166,84 +167,6 @@ fn copy_cyclic<T: Copy>(
     if rest > 0 {
         target[..rest].copy_from_slice(&source[..rest]);
     }
-}
-#[inline(always)]
-fn dot32(x: &[f64], h: &[f64; TAPS]) -> f64 {
-    let mut a0 = 0.0;
-    let mut a1 = 0.0;
-    let mut a2 = 0.0;
-    let mut a3 = 0.0;
-    let mut i = 0;
-    while i < TAPS {
-        a0 += x[i] * h[i];
-        a1 += x[i + 1] * h[i + 1];
-        a2 += x[i + 2] * h[i + 2];
-        a3 += x[i + 3] * h[i + 3];
-        i += 4;
-    }
-    (a0 + a1) + (a2 + a3)
-}
-/// Coarse-to-fine peak search over the exact 32-phase, 32-tap Blackman-windowed
-/// sinc reconstruction for one lane. Evaluates phase 0/32 directly from the
-/// sample buffer, probes 4x phases (8, 16, 24), checks 8x midpoints only on
-/// brackets that can beat the coarse peak, then refines at stride 2 and 1.
-#[inline]
-fn true_peak_lane(x: &[f64], phases: &[[f64; TAPS]; PHASES]) -> f64 {
-    let v0 = x[15].abs();
-    let v8 = dot32(x, &phases[8]).abs();
-    let v16 = dot32(x, &phases[16]).abs();
-    let v24 = dot32(x, &phases[24]).abs();
-    let v32 = x[16].abs();
-    let mut best = v0.max(v8).max(v16).max(v24).max(v32);
-    if best == 0.0 {
-        return 0.0;
-    }
-    let mut grid = [v0, 0.0, v8, 0.0, v16, 0.0, v24, 0.0, v32];
-    // For any bandlimited signal (<= Nyquist), a 1/4-sample bracket's higher
-    // endpoint is at least cos(pi/8) ~= 0.9239 of an interior peak; 0.85 adds
-    // margin for sharp envelopes while rejecting non-peak brackets.
-    let coarse_threshold = best * 0.85;
-    for (idx, phase) in [(1usize, 4usize), (3, 12), (5, 20), (7, 28)] {
-        if grid[idx - 1].max(grid[idx + 1]) >= coarse_threshold {
-            let v = dot32(x, &phases[phase]).abs();
-            grid[idx] = v;
-            if v > best {
-                best = v;
-            }
-        }
-    }
-    // At 8x spacing (1/8 sample), cos(pi/16) ~= 0.9808; 0.95 ensures every
-    // candidate 8x neighborhood that could exceed `best` is refined to 32x.
-    let fine_threshold = best * 0.95;
-    for (idx, &val) in grid.iter().enumerate() {
-        if val < fine_threshold {
-            continue;
-        }
-        let mut center = idx * 4;
-        for stride in [2usize, 1] {
-            let mut next_center = center;
-            if center >= stride {
-                let p = center - stride;
-                if p > 0 && p < PHASES {
-                    let v = dot32(x, &phases[p]).abs();
-                    if v > best {
-                        best = v;
-                        next_center = p;
-                    }
-                }
-            }
-            let p = center + stride;
-            if p > 0 && p < PHASES {
-                let v = dot32(x, &phases[p]).abs();
-                if v > best {
-                    best = v;
-                    next_center = p;
-                }
-            }
-            center = next_center;
-        }
-    }
-    best
 }
 struct Stage {
     signal: Vec<Sample>,
@@ -426,8 +349,12 @@ impl Stage {
         let mut detector = sample.signal.map(f64::abs);
         if config.true_peak {
             let start = s.input_next;
-            let p0 = true_peak_lane(&s.input[0][start..start + TAPS], config.reconstruction);
-            let p1 = true_peak_lane(&s.input[1][start..start + TAPS], config.reconstruction);
+            let p0 = config
+                .reconstruction
+                .true_peak_lane_f64(&s.input[0][start..start + TAPS]);
+            let p1 = config
+                .reconstruction
+                .true_peak_lane_f64(&s.input[1][start..start + TAPS]);
             detector[0] = detector[0].max(p0);
             detector[1] = detector[1].max(p1);
         }
@@ -610,32 +537,10 @@ impl Parameters {
     }
 }
 /// Fixed program data, independent of rate, state and layout. Config preparation
-/// initializes this on control; callback processing reads only its stored static
-/// reference, without touching OnceLock. No host resource custody is transferred.
-fn reconstruction_coefficients() -> &'static [[f64; TAPS]; PHASES] {
-    static COEFFICIENTS: OnceLock<[[f64; TAPS]; PHASES]> = OnceLock::new();
-    COEFFICIENTS.get_or_init(|| {
-        std::array::from_fn(|phase| {
-            let position = (TAPS / 2 - 1) as f64 + phase as f64 / PHASES as f64;
-            let mut coefficients = std::array::from_fn(|tap| {
-                let distance = position - tap as f64;
-                let sinc = if distance.abs() < 1e-12 {
-                    1.0
-                } else {
-                    (std::f64::consts::PI * distance).sin() / (std::f64::consts::PI * distance)
-                };
-                let window = 0.42
-                    + 0.5 * (std::f64::consts::PI * distance / (TAPS / 2) as f64).cos()
-                    + 0.08 * (2.0 * std::f64::consts::PI * distance / (TAPS / 2) as f64).cos();
-                sinc * window
-            });
-            let sum: f64 = coefficients.iter().sum();
-            for c in &mut coefficients {
-                *c /= sum;
-            }
-            coefficients
-        })
-    })
+/// initializes this on control via `hex-dsp`; callback processing reads only its
+/// stored static reference, without touching OnceLock. No host resource custody is transferred.
+fn reconstruction_bank() -> &'static BlackmanSincBank<TAPS, PHASES> {
+    BlackmanSincBank::shared_32x32()
 }
 
 #[derive(Clone, Copy)]
@@ -654,7 +559,7 @@ struct Config {
     soft_clip: bool,
     mid_side: bool,
     delay: usize,
-    reconstruction: &'static [[f64; TAPS]; PHASES],
+    reconstruction: &'static BlackmanSincBank<TAPS, PHASES>,
 }
 impl Config {
     fn new(settings: Settings, rate: u32) -> Self {
@@ -662,7 +567,7 @@ impl Config {
         let lookahead = [1.5, 3.0, 6.0][settings.choice(LOOKAHEAD) as usize];
         let delay = (lookahead * f64::from(rate) / 1000.0).ceil() as usize
             + if true_peak { TAPS - 1 } else { 0 };
-        let reconstruction = reconstruction_coefficients();
+        let reconstruction = reconstruction_bank();
         let inv_rate = 1.0 / f64::from(rate);
         Self {
             rate,
@@ -1270,7 +1175,8 @@ mod detector_oracle_tests {
 
     #[test]
     fn coarse_to_fine_true_peak_matches_exhaustive_32_phase_oracle() {
-        let phases = reconstruction_coefficients();
+        let bank = reconstruction_bank();
+        let phases = bank.phases_f64();
         let mut x = [0.0_f64; TAPS];
         let mut max_under_read = 0.0_f64;
         let mut state = 0x1234_5678_9abc_def0_u64;
@@ -1307,7 +1213,7 @@ mod detector_oracle_tests {
             x.rotate_left(1);
             x[TAPS - 1] = sample;
             let exact = exhaustive_32_phase(&x, phases);
-            let fast = true_peak_lane(&x, phases);
+            let fast = bank.true_peak_lane_f64(&x);
             // `true_peak_lane` also inspects `x[16]` (phase 32 = next sample's phase 0),
             // so it is always >= exact (within floating-point rounding) and never under-reads.
             let under_read = (exact - fast).max(0.0);

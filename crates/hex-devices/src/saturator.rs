@@ -9,7 +9,7 @@
 //! zero latency). Non-finite input samples pass through to the host's audio
 //! fault boundary without entering the histories.
 
-use crate::oversampling::{Kernel, LATENCY_FRAMES, Oversampler, Shaper};
+use crate::oversampling::{BLOCK_CHUNK, Kernel, LATENCY_FRAMES, Oversampler, Shaper};
 use hex_lattice::{
     NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
     StereoFrame, StereoMatrix,
@@ -403,7 +403,7 @@ impl PreparedNativeProcessor for PreparedSaturator {
             sample_rate: self.sample_rate,
             drive_gain: self.drive_gain,
             output_gain: self.output_gain,
-            kernel: Kernel::new(),
+            kernel: Kernel::shared(),
             channels: [Oversampler::default(); 2],
             delay: [[0.0; 2]; LATENCY_FRAMES],
             delay_index: 0,
@@ -447,7 +447,7 @@ pub struct SaturatorRuntime {
     sample_rate: u32,
     drive_gain: f64,
     output_gain: f64,
-    kernel: Kernel,
+    kernel: &'static Kernel,
     channels: [Oversampler; 2],
     /// Dry input, delayed by the oversampler latency.
     delay: [[f64; 2]; LATENCY_FRAMES],
@@ -476,10 +476,10 @@ impl SaturatorRuntime {
             let value = if finite[channel] { value } else { 0.0 };
             let shaped = match settings.curve {
                 SaturationCurve::SoftClip => {
-                    stage.process(value, self.drive_gain, &self.kernel, &SoftClip)
+                    stage.process_sample(value, self.drive_gain, self.kernel, &SoftClip)
                 }
                 SaturationCurve::DigitalClip => {
-                    stage.process(value, self.drive_gain, &self.kernel, &DigitalClip)
+                    stage.process_sample(value, self.drive_gain, self.kernel, &DigitalClip)
                 }
             };
             processed[channel] = shaped * self.output_gain;
@@ -608,8 +608,82 @@ impl NativeProcessorRuntime for SaturatorRuntime {
             self.delay_index = (self.delay_index + frames.len()) % LATENCY_FRAMES;
             return;
         }
-        for frame in frames {
-            self.render_frame(frame, false);
+        if self.gain_ramp_remaining != [0; 2] {
+            for frame in frames {
+                self.render_frame(frame, false);
+            }
+            return;
+        }
+        let settings = self.settings;
+        let wet = f64::from(settings.dry_wet);
+        let dry_mix = 1.0 - wet;
+        let drive = self.drive_gain;
+        let output_gain = self.output_gain;
+        let kernel = self.kernel;
+        for chunk in frames.chunks_mut(BLOCK_CHUNK) {
+            let n = chunk.len();
+            if !chunk.iter().all(|f| f[0].is_finite() && f[1].is_finite()) {
+                for frame in chunk {
+                    self.render_frame(frame, false);
+                }
+                continue;
+            }
+            let mut left = [0.0_f32; BLOCK_CHUNK];
+            let mut right = [0.0_f32; BLOCK_CHUNK];
+            let mut dry_l = [0.0_f64; BLOCK_CHUNK];
+            let mut dry_r = [0.0_f64; BLOCK_CHUNK];
+            for i in 0..n {
+                let in_l = chunk[i][0];
+                let in_r = chunk[i][1];
+                left[i] = in_l;
+                right[i] = in_r;
+                let dry = std::mem::replace(
+                    &mut self.delay[self.delay_index],
+                    [f64::from(in_l), f64::from(in_r)],
+                );
+                self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
+                dry_l[i] = dry[0];
+                dry_r[i] = dry[1];
+            }
+            let [left_stage, right_stage] = &mut self.channels;
+            match settings.curve {
+                SaturationCurve::SoftClip => Oversampler::process_stereo_block(
+                    left_stage,
+                    right_stage,
+                    &mut left[..n],
+                    &mut right[..n],
+                    drive,
+                    kernel,
+                    &SoftClip,
+                ),
+                SaturationCurve::DigitalClip => Oversampler::process_stereo_block(
+                    left_stage,
+                    right_stage,
+                    &mut left[..n],
+                    &mut right[..n],
+                    drive,
+                    kernel,
+                    &DigitalClip,
+                ),
+            }
+            if wet == 0.0 {
+                for i in 0..n {
+                    chunk[i][0] = dry_l[i] as f32;
+                    chunk[i][1] = dry_r[i] as f32;
+                }
+            } else if wet == 1.0 {
+                for i in 0..n {
+                    chunk[i][0] = (f64::from(left[i]) * output_gain) as f32;
+                    chunk[i][1] = (f64::from(right[i]) * output_gain) as f32;
+                }
+            } else {
+                for i in 0..n {
+                    chunk[i][0] =
+                        (dry_l[i] * dry_mix + f64::from(left[i]) * output_gain * wet) as f32;
+                    chunk[i][1] =
+                        (dry_r[i] * dry_mix + f64::from(right[i]) * output_gain * wet) as f32;
+                }
+            }
         }
     }
 
@@ -719,7 +793,10 @@ impl Shaper for SoftClip {
         if magnitude <= 0.5 {
             0.5 * x * x
         } else {
-            magnitude - 0.25 * magnitude.ln() - 0.375 - 0.25 * std::f64::consts::LN_2
+            magnitude
+                - 0.25 * hex_dsp::fast_ln_f64(magnitude)
+                - 0.375
+                - 0.25 * std::f64::consts::LN_2
         }
     }
 }

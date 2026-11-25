@@ -30,6 +30,7 @@ impl SaturatorDefinition {
                 .checked_shl(shift)
                 .ok_or(DeviceContractError::UnknownParameter)?;
         }
+        let _ = Kernel::shared();
         let settings = decode(state)?;
         let prepared = PreparedSaturator {
             automation_mask,
@@ -86,7 +87,7 @@ impl SaturatorRuntime {
         let _: (&u32, &f64, &f64, &[u32; 2]) =
             (sample_rate, drive_gain, output_gain, gain_ramp_remaining);
         let _: (
-            &Kernel,
+            &&'static Kernel,
             &[Oversampler; 2],
             &[[f64; 2]; LATENCY_FRAMES],
             &usize,
