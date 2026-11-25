@@ -66,6 +66,15 @@ impl RuntimeOwner {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), crate::Invalid> {
+        self.render_with_signal_observers_and_wave(output, observer, project, None)
+    }
+    pub(super) fn render_with_signal_observers_and_wave(
+        &mut self,
+        output: &mut [crate::Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), crate::Invalid> {
         if let Some((sources, _)) = self.sampler_sources.as_ref() {
             self.playback
                 .render_current_sampler::<dyn crate::MediaPages>(
@@ -73,7 +82,7 @@ impl RuntimeOwner {
                 )
         } else {
             self.playback
-                .render_with_signal_observers(output, observer, project)
+                .render_with_signal_observers_and_wave(output, observer, project, wave)
         }
     }
     #[allow(clippy::too_many_arguments)]
@@ -95,6 +104,7 @@ impl RuntimeOwner {
             output, track, input, pages, observer, project, sources, foreign,
         )
     }
+    #[cfg(test)]
     pub(super) fn render_with_foreign_processors(
         &mut self,
         output: &mut [crate::Frame],
@@ -103,13 +113,28 @@ impl RuntimeOwner {
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), crate::Invalid> {
+        self.render_with_foreign_processors_and_wave(
+            output, pages, observer, project, foreign, None,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn render_with_foreign_processors_and_wave(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: Option<&mut dyn crate::MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), crate::Invalid> {
         let result = if let Some((sources, _)) = self.sampler_sources.as_ref() {
             self.playback.render_current_sampler_with_foreign(
                 output, pages, observer, project, sources, foreign,
             )
         } else {
-            self.playback
-                .render_with_foreign_processors(output, pages, observer, project, foreign)
+            self.playback.render_with_foreign_processors_and_wave(
+                output, pages, observer, project, foreign, wave,
+            )
         };
         if result.is_err() {
             foreign.reject_callback();

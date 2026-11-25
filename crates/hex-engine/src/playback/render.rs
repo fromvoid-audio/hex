@@ -6,6 +6,16 @@ impl Playback {
         self.render_with_post_node_observer(output, None)
     }
 
+    /// Render one block using `wave` to execute eligible independent native
+    /// processor chains across topological waves in parallel.
+    pub fn render_with_wave_executor(
+        &mut self,
+        output: &mut [Frame],
+        wave: &mut dyn crate::wave_executor::WaveExecutor,
+    ) -> Result<(), Invalid> {
+        self.render_with_signal_observers_and_wave(output, None, None, Some(wave))
+    }
+
     /// Render a separately prepared paused monitor without mutating the
     /// installed Arrangement or terminating an in-flight transport fade.
     pub fn render_with_paused_track_monitor(
@@ -263,9 +273,27 @@ impl Playback {
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), Invalid> {
+        self.render_with_foreign_processors_and_wave(
+            output, pages, observer, project, foreign, None,
+        )
+    }
+
+    /// Foreign-processor render entry that also executes eligible independent
+    /// native waves through `wave`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_foreign_processors_and_wave(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), Invalid> {
         let mut pages = pages;
         let mut observer = observer;
         let mut project = project;
+        let mut wave = wave;
         self.render_declicked(output, |playback, output, offset| {
             let mut shifted = ShiftedForeign {
                 inner: &mut *foreign,
@@ -281,7 +309,7 @@ impl Playback {
                     with_part_offset(project.as_deref_mut(), offset, |project| {
                         with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
                             runtime
-                                .render_with_foreign_processors(
+                                .render_with_foreign_processors_and_wave(
                                     output,
                                     pages
                                         .as_mut()
@@ -289,6 +317,9 @@ impl Playback {
                                     observer,
                                     project,
                                     &mut shifted,
+                                    wave.as_mut().map(|exec| {
+                                        &mut **exec as &mut dyn crate::wave_executor::WaveExecutor
+                                    }),
                                 )
                                 .map_err(|error| Invalid(error.diagnostic_message()))
                         })
@@ -344,14 +375,29 @@ impl Playback {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_signal_observers_and_wave(output, observer, project, None)
+    }
+
+    /// Signal-observer render entry that also executes eligible independent
+    /// native waves through `wave`.
+    pub fn render_with_signal_observers_and_wave(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), Invalid> {
         let mut observer = observer;
         let mut project = project;
+        let mut wave = wave;
         self.render_declicked(output, |playback, output, offset| {
             playback.render_signal_part(
                 output,
                 offset,
                 observer.as_deref_mut(),
                 project.as_deref_mut(),
+                wave.as_mut()
+                    .map(|exec| &mut **exec as &mut dyn crate::wave_executor::WaveExecutor),
             )
         })
     }
@@ -362,12 +408,13 @@ impl Playback {
         offset: usize,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), Invalid> {
         if let Some(runtime) = self.session_runtime.as_mut() {
             return with_part_offset(project, offset, |project| {
                 with_shifted_observer(observer, offset, |observer| {
                     runtime
-                        .render_with_signal_observers(output, observer, project)
+                        .render_with_signal_observers_and_wave(output, observer, project, wave)
                         .map_err(|error| Invalid(error.diagnostic_message()))
                 })
             });

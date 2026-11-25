@@ -150,6 +150,7 @@ pub mod processor_audition;
 pub mod spectrum;
 pub mod spectrum_target;
 pub mod spectrum_worker;
+pub mod worker_pool;
 use cpal::{
     FromSample, SizedSample,
     traits::{DeviceTrait, HostTrait, StreamTrait},
@@ -163,6 +164,7 @@ use std::{
     },
     time::Instant,
 };
+pub use worker_pool::AudioWorkerPool;
 
 pub struct AudioOutput {
     _stream: lifecycle::StreamOwner,

@@ -142,7 +142,7 @@ mod policy;
 mod route_snapshot;
 mod status;
 
-pub use callback::{Callback, channel, channel_with_spectrum};
+pub use callback::{Callback, channel, channel_with_spectrum, channel_with_worker_pool};
 pub(crate) use callback::{channel_with_interface, native_endpoint_bank_storage_quote};
 pub use control::{
     AdmittedPublishError, Control, PublicationControl, PublishError, PublishErrorKind,

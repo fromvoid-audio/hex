@@ -45,6 +45,7 @@ pub struct Callback {
     pub(in crate::prepared) midi_recording: crate::midi_recording::Callback,
     pub(in crate::prepared) spectrum_capture: Option<SpectrumCapture>,
     pub(in crate::prepared) spectrum_stages: SpectrumStages,
+    pub(in crate::prepared) wave_pool: Option<crate::worker_pool::AudioWorkerPool>,
     pub(in crate::prepared) active: Option<ActivePublication>,
     #[cfg(test)]
     pub(in crate::prepared) test_admit_candidate: bool,
@@ -116,6 +117,17 @@ pub fn channel_with_spectrum(
     capture: Option<SpectrumCapture>,
 ) -> Result<(Control, Callback), Invalid> {
     channel_with_interface(rate, capture, None)
+}
+
+/// Construct the prepared callback with a preallocated lock-free DSP wave worker pool.
+pub fn channel_with_worker_pool(
+    rate: u32,
+    worker_count: usize,
+) -> Result<(Control, Callback), Invalid> {
+    let (control, mut callback) = channel(rate)?;
+    let pool = crate::worker_pool::AudioWorkerPool::new(worker_count, rate)?;
+    callback.attach_worker_pool_on_control(pool);
+    Ok((control, callback))
 }
 
 pub(crate) fn channel_with_interface(
@@ -243,6 +255,7 @@ pub(crate) fn channel_with_interface(
             midi_recording: callback_midi_recording,
             spectrum_capture: capture,
             spectrum_stages: SpectrumStages::new()?,
+            wave_pool: None,
             active: None,
             #[cfg(test)]
             test_admit_candidate: false,
@@ -282,6 +295,11 @@ pub(crate) fn channel_with_interface(
 }
 
 impl Callback {
+    /// Attach a control-created lock-free DSP wave worker pool before callback exposure.
+    pub fn attach_worker_pool_on_control(&mut self, pool: crate::worker_pool::AudioWorkerPool) {
+        self.wave_pool = Some(pool);
+    }
+
     pub(in crate::prepared) fn reject_paused_monitors(
         &mut self,
         reason: input_monitor::MonitorStatus,

@@ -81,6 +81,82 @@ fn return_cut_proof_rejects_delayed_sends_and_delayed_stages() {
     assert!(!graph.return_chain_has_unbuffered_input(2));
 }
 
+#[test]
+fn owner_waves_group_independent_tracks_and_order_groups_and_returns_strictly() {
+    // 1. Flat 8-track graph -> single wave covering all 8 tracks in order.
+    let flat = fixture(&[&[0], &[0], &[0], &[0], &[0], &[0], &[0], &[0]], 32);
+    let rev = prepare(&flat).unwrap();
+    let graph = rev.arrangement().signal_graph.as_ref().unwrap();
+    assert_eq!(graph.owner_waves(), &[OwnerWave { start: 0, end: 8 }]);
+    assert_eq!(graph.owner_order.len(), 8);
+
+    // 2. Leaf tracks -> group bus -> return A -> return B -> 4 waves.
+    let mut routed = fixture(&[&[0], &[0]], 32);
+    let Created::Track(group) = routed
+        .editor
+        .execute(Command::GroupTracks {
+            tracks: hex_project::TrackSelectionIds::new(&routed.tracks).unwrap(),
+            name: "group".into(),
+        })
+        .unwrap()
+    else {
+        panic!("group");
+    };
+    let Created::ReturnTrack(ret_a) = routed
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "ret-a".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return a");
+    };
+    let Created::ReturnTrack(ret_b) = routed
+        .editor
+        .execute(Command::AddReturnTrack {
+            name: "ret-b".into(),
+        })
+        .unwrap()
+    else {
+        panic!("return b");
+    };
+    routed
+        .editor
+        .execute(Command::SetReturnSend {
+            track: group,
+            return_track: ret_a,
+            gain: 0.5,
+        })
+        .unwrap();
+    routed
+        .editor
+        .execute(Command::SetReturnFeed {
+            source: ret_a,
+            destination: ret_b,
+            gain: 0.5,
+        })
+        .unwrap();
+    let rev = prepare(&routed).unwrap();
+    let graph = rev.arrangement().signal_graph.as_ref().unwrap();
+    // Wave 0: leaf_a, leaf_b; Wave 1: group; Wave 2: ret_a; Wave 3: ret_b.
+    assert_eq!(
+        graph.owner_waves(),
+        &[
+            OwnerWave { start: 0, end: 2 },
+            OwnerWave { start: 2, end: 3 },
+            OwnerWave { start: 3, end: 4 },
+            OwnerWave { start: 4, end: 5 },
+        ]
+    );
+    assert_eq!(
+        &graph.owner_order[0..2],
+        &[Owner::Track(1), Owner::Track(2)]
+    );
+    assert_eq!(graph.owner_order[2], Owner::Track(0));
+    assert_eq!(graph.owner_order[3], Owner::Return(0));
+    assert_eq!(graph.owner_order[4], Owner::Return(1));
+}
+
 pub(crate) struct Definition;
 impl NativeDeviceMetadata for Definition {
     fn type_id(&self) -> DeviceTypeId {
