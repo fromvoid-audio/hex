@@ -54,6 +54,11 @@ pub(super) enum Frozen {
     Creation(MidiNoteInsert),
     Velocity(super::midi_velocity::Gesture),
     Stroke(Arc<super::midi_stroke::StrokePreview>),
+    NoteExpression {
+        note: NoteId,
+        expression: hex_project::NoteExpression,
+        points: Vec<hex_project::NoteExpressionPoint>,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -197,6 +202,20 @@ impl Pending {
                     insert: i,
                 }),
             ) => (clip, remove, insert) == (c, r, i),
+            (
+                Command::SetMidiNoteExpression {
+                    clip,
+                    note,
+                    expression,
+                    points,
+                },
+                Request::Edit(Command::SetMidiNoteExpression {
+                    clip: c,
+                    note: n,
+                    expression: e,
+                    points: p,
+                }),
+            ) => (clip, note, expression, points) == (c, n, e, p),
             _ => false,
         }
     }
@@ -338,6 +357,34 @@ impl EditorView {
                     }
                 }
                 _ => {}
+            }
+        }
+        None
+    }
+
+    /// Latest displayed per-note expression preview for `(clip, note_id)` while
+    /// a `SetMidiNoteExpression` edit is in flight, retiring atomically with
+    /// its exact worker terminal or source replacement.
+    pub(super) fn displayed_note_expression(
+        &self,
+        clip: ClipId,
+        note_id: NoteId,
+    ) -> Option<(
+        hex_project::NoteExpression,
+        &[hex_project::NoteExpressionPoint],
+    )> {
+        for pending in self.midi_editor.pending_drag.entries.iter().rev() {
+            if pending.clip != clip || !pending.displayed(self) {
+                continue;
+            }
+            if let Frozen::NoteExpression {
+                note,
+                expression,
+                points,
+            } = &pending.preview
+                && *note == note_id
+            {
+                return Some((*expression, points.as_slice()));
             }
         }
         None

@@ -10,8 +10,9 @@ use gpui::{
     div, fill, point, prelude::*, px, rgb, size,
 };
 use hex_project::{
-    BeatTime, ClipId, Command, MAX_MIDI_EXPRESSION_POINTS, MAX_NOTE_PITCH_OFFSET_CENTS,
-    MIN_NOTE_PITCH_OFFSET_CENTS, MidiLaneKind, MidiLanePoint, NoteExpression, NoteId,
+    BeatTime, ClipId, Command, MAX_MIDI_EXPRESSION_POINTS, MAX_NOTE_EXPRESSION_POINTS,
+    MAX_NOTE_PITCH_OFFSET_CENTS, MIN_NOTE_PITCH_OFFSET_CENTS, MidiLaneKind, MidiLanePoint,
+    NoteExpression, NoteExpressionPoint,
 };
 use hex_session::service::Request;
 
@@ -220,10 +221,208 @@ pub(super) fn remove_nearest_lane_point(
     Some(points)
 }
 
+/// Finite piecewise-linear interpolation law for a note's continuous
+/// per-note expression curve over `[0, duration]`.
+///
+/// - Empty curves hold `initial`.
+/// - Offsets at or before the first point hold the first point's values.
+/// - Offsets at or after the last point hold the last point's values.
+/// - Interior offsets interpolate linearly between the bracketing ascending
+///   points with clamped rounding into canonical bounds.
+pub(super) fn evaluate_note_expression_curve(
+    initial: NoteExpression,
+    points: &[NoteExpressionPoint],
+    offset: BeatTime,
+) -> NoteExpression {
+    let Some(first) = points.first() else {
+        return initial;
+    };
+    if offset.raw() <= first.offset.raw() {
+        return NoteExpression {
+            pitch_offset_cents: first.pitch_offset_cents,
+            timbre: first.timbre,
+            pressure: first.pressure,
+        };
+    }
+    let Some(last) = points.last() else {
+        return initial;
+    };
+    if offset.raw() >= last.offset.raw() {
+        return NoteExpression {
+            pitch_offset_cents: last.pitch_offset_cents,
+            timbre: last.timbre,
+            pressure: last.pressure,
+        };
+    }
+    let idx = points.partition_point(|p| p.offset.raw() < offset.raw());
+    let right = points[idx];
+    if right.offset.raw() == offset.raw() {
+        return NoteExpression {
+            pitch_offset_cents: right.pitch_offset_cents,
+            timbre: right.timbre,
+            pressure: right.pressure,
+        };
+    }
+    let left = points[idx.saturating_sub(1)];
+    let span = right.offset.raw().saturating_sub(left.offset.raw()).max(1);
+    let t = (offset.raw().saturating_sub(left.offset.raw()) as f64) / (span as f64);
+    let lerp_i16 = |a: i16, b: i16| -> i16 {
+        let v = (f64::from(a) + (f64::from(b) - f64::from(a)) * t).round() as i32;
+        v.clamp(
+            i32::from(MIN_NOTE_PITCH_OFFSET_CENTS),
+            i32::from(MAX_NOTE_PITCH_OFFSET_CENTS),
+        ) as i16
+    };
+    let lerp_u8 = |a: u8, b: u8| -> u8 {
+        (f64::from(a) + (f64::from(b) - f64::from(a)) * t)
+            .round()
+            .clamp(0.0, 127.0) as u8
+    };
+    NoteExpression {
+        pitch_offset_cents: lerp_i16(left.pitch_offset_cents, right.pitch_offset_cents),
+        timbre: lerp_u8(left.timbre, right.timbre),
+        pressure: lerp_u8(left.pressure, right.pressure),
+    }
+}
+
+/// Insert or update one bounded per-note expression curve point at `offset`
+/// (`0..=duration`) on the active MPE dimension (`NotePitch`, `NoteTimbre`, or
+/// `NotePressure`), preserving other dimensions via finite linear interpolation.
+/// Refuses out-of-range offsets, invalid values, or exceeding
+/// `MAX_NOTE_EXPRESSION_POINTS` rather than silently discarding points.
+pub(super) fn upsert_note_expression_point(
+    initial: NoteExpression,
+    existing: &[NoteExpressionPoint],
+    offset: BeatTime,
+    duration: BeatTime,
+    mode: ExpressionLaneMode,
+    edited: NoteExpression,
+    merge_radius_raw: u64,
+) -> Result<(NoteExpression, Vec<NoteExpressionPoint>), &'static str> {
+    if !mode.is_mpe_note_mode() {
+        return Err("unsupported per-note expression lane");
+    }
+    if offset > duration {
+        return Err("note expression point offset exceeds note duration");
+    }
+    edited
+        .validate()
+        .map_err(|_| "note expression value is out of range")?;
+    let mut points = existing.to_vec();
+    let merge_idx = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.offset.raw().abs_diff(offset.raw()) <= merge_radius_raw)
+        .min_by_key(|(_, p)| p.offset.raw().abs_diff(offset.raw()))
+        .map(|(i, _)| i);
+    let apply_dim = |base: NoteExpression| -> NoteExpression {
+        let mut out = base;
+        match mode {
+            ExpressionLaneMode::NotePitch => out.pitch_offset_cents = edited.pitch_offset_cents,
+            ExpressionLaneMode::NoteTimbre => out.timbre = edited.timbre,
+            ExpressionLaneMode::NotePressure => out.pressure = edited.pressure,
+            _ => {}
+        }
+        out
+    };
+    if let Some(index) = merge_idx {
+        let existing_expr = NoteExpression {
+            pitch_offset_cents: points[index].pitch_offset_cents,
+            timbre: points[index].timbre,
+            pressure: points[index].pressure,
+        };
+        let next = apply_dim(existing_expr);
+        points[index] = NoteExpressionPoint {
+            offset: points[index].offset.min(duration),
+            pitch_offset_cents: next.pitch_offset_cents,
+            timbre: next.timbre,
+            pressure: next.pressure,
+        };
+    } else {
+        if points.len() >= MAX_NOTE_EXPRESSION_POINTS {
+            return Err("note expression curve reached point limit");
+        }
+        let interp = evaluate_note_expression_curve(initial, &points, offset);
+        let next = apply_dim(interp);
+        points.push(NoteExpressionPoint {
+            offset,
+            pitch_offset_cents: next.pitch_offset_cents,
+            timbre: next.timbre,
+            pressure: next.pressure,
+        });
+    }
+    points.sort_by_key(|p| p.offset.raw());
+    points.dedup_by(|later, earlier| {
+        if later.offset == earlier.offset {
+            *earlier = *later;
+            true
+        } else {
+            false
+        }
+    });
+    let next_initial = if points.len() == 1 || offset.raw() <= points[0].offset.raw() {
+        apply_dim(initial)
+    } else {
+        initial
+    };
+    Ok((next_initial, points))
+}
+
+/// Remove the nearest per-note expression curve point within `hit_radius_raw`,
+/// or reset the active MPE dimension to default if no curve points remain.
+pub(super) fn remove_note_expression_point(
+    initial: NoteExpression,
+    existing: &[NoteExpressionPoint],
+    offset: BeatTime,
+    mode: ExpressionLaneMode,
+    hit_radius_raw: u64,
+) -> (NoteExpression, Vec<NoteExpressionPoint>) {
+    let mut points = existing.to_vec();
+    if let Some(index) = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.offset.raw().abs_diff(offset.raw()) <= hit_radius_raw)
+        .min_by_key(|(_, p)| p.offset.raw().abs_diff(offset.raw()))
+        .map(|(i, _)| i)
+    {
+        points.remove(index);
+        let next_initial = points
+            .first()
+            .map(|p| NoteExpression {
+                pitch_offset_cents: p.pitch_offset_cents,
+                timbre: p.timbre,
+                pressure: p.pressure,
+            })
+            .unwrap_or_else(|| {
+                let mut reset = initial;
+                match mode {
+                    ExpressionLaneMode::NotePitch => reset.pitch_offset_cents = 0,
+                    ExpressionLaneMode::NoteTimbre => reset.timbre = 0,
+                    ExpressionLaneMode::NotePressure => reset.pressure = 0,
+                    _ => {}
+                }
+                reset
+            });
+        return (next_initial, points);
+    }
+    let mut reset = initial;
+    match mode {
+        ExpressionLaneMode::NotePitch => reset.pitch_offset_cents = 0,
+        ExpressionLaneMode::NoteTimbre => reset.timbre = 0,
+        ExpressionLaneMode::NotePressure => reset.pressure = 0,
+        _ => {}
+    }
+    (reset, points)
+}
+
 #[derive(Clone)]
 struct NoteExprVisual {
     x_ratio: f32,
+    end_x_ratio: f32,
+    start_raw: u64,
+    duration_raw: u64,
     expression: NoteExpression,
+    points: Vec<NoteExpressionPoint>,
     selected: bool,
 }
 
@@ -406,15 +605,25 @@ impl EditorView {
                 .notes()
                 .iter()
                 .filter_map(|note| {
-                    let raw = i128::from(note.start().raw());
-                    let end = beat_start.saturating_add(i128::from(beat_span));
-                    if raw < beat_start || raw > end {
+                    let start_raw = i128::from(note.start().raw());
+                    let end_raw = start_raw.saturating_add(i128::from(note.duration().raw()));
+                    let view_end = beat_start.saturating_add(i128::from(beat_span));
+                    if end_raw < beat_start || start_raw > view_end {
                         return None;
                     }
-                    let x_ratio = ((raw - beat_start) as f64 / beat_span as f64) as f32;
+                    let x_ratio = ((start_raw - beat_start) as f64 / beat_span as f64) as f32;
+                    let end_x_ratio = ((end_raw - beat_start) as f64 / beat_span as f64) as f32;
+                    let (expression, points) = self
+                        .displayed_note_expression(clip, note.id())
+                        .map(|(expr, pts)| (expr, pts.to_vec()))
+                        .unwrap_or_else(|| (note.expression(), note.expression_points().to_vec()));
                     Some(NoteExprVisual {
                         x_ratio,
-                        expression: note.expression(),
+                        end_x_ratio,
+                        start_raw: note.start().raw(),
+                        duration_raw: note.duration().raw(),
+                        expression,
+                        points,
                         selected: selection.binary_search(&note.id()).is_ok(),
                     })
                 })
@@ -531,6 +740,7 @@ impl EditorView {
                                         continue;
                                     };
                                     let x = (note.x_ratio * width).clamp(0.0, width);
+                                    let end_x = (note.end_x_ratio * width).clamp(0.0, width);
                                     let color = if note.selected { primary } else { muted };
                                     let stem_top = if mode.is_bipolar() { y.min(mid_y) } else { y };
                                     let stem_bottom = if mode.is_bipolar() {
@@ -552,6 +762,66 @@ impl EditorView {
                                         4.0,
                                         color,
                                     );
+                                    // Paint continuous per-note expression curve across [start, end].
+                                    if note.points.is_empty() {
+                                        let span_w = (end_x - x).max(0.0);
+                                        if span_w > 0.0 {
+                                            quad(x, y, span_w, 1.5, color);
+                                        }
+                                    } else {
+                                        let mut prev: Option<(f32, f32)> = None;
+                                        for pt in &note.points {
+                                            let pt_raw = i128::from(note.start_raw.saturating_add(
+                                                pt.offset.raw().min(note.duration_raw),
+                                            ));
+                                            let px_x = ((pt_raw - beat_start) as f64
+                                                / beat_span.max(1) as f64)
+                                                as f32
+                                                * width;
+                                            let pt_expr = NoteExpression {
+                                                pitch_offset_cents: pt.pitch_offset_cents,
+                                                timbre: pt.timbre,
+                                                pressure: pt.pressure,
+                                            };
+                                            let Some(py_y) = y_for_note_expr(mode, pt_expr, height)
+                                            else {
+                                                continue;
+                                            };
+                                            if let Some((lx, ly)) = prev {
+                                                let steps = ((px_x - lx).abs() / 4.0)
+                                                    .ceil()
+                                                    .clamp(1.0, 32.0)
+                                                    as usize;
+                                                for s in 0..steps {
+                                                    let t0 = s as f32 / steps as f32;
+                                                    let t1 = (s + 1) as f32 / steps as f32;
+                                                    let sx =
+                                                        (lx + (px_x - lx) * t0).clamp(0.0, width);
+                                                    let ex =
+                                                        (lx + (px_x - lx) * t1).clamp(0.0, width);
+                                                    let sy = ly + (py_y - ly) * ((t0 + t1) * 0.5);
+                                                    quad(sx, sy, (ex - sx).max(1.0), 1.5, color);
+                                                }
+                                            }
+                                            if px_x >= -4.0 && px_x <= width + 4.0 {
+                                                quad(
+                                                    (px_x - 2.5).clamp(0.0, width),
+                                                    (py_y - 2.5).clamp(0.0, height),
+                                                    5.0,
+                                                    5.0,
+                                                    color,
+                                                );
+                                            }
+                                            prev = Some((px_x, py_y));
+                                        }
+                                        if let Some((lx, ly)) = prev {
+                                            let tail_x = lx.clamp(0.0, width);
+                                            let tail_w = (end_x - tail_x).max(0.0);
+                                            if tail_w > 0.0 {
+                                                quad(tail_x, ly, tail_w, 1.5, color);
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
@@ -684,54 +954,106 @@ impl EditorView {
                 points,
             }));
         } else if mode.is_mpe_note_mode() && beat_span > 0 {
-            let mut best: Option<(
-                f32,
-                NoteId,
-                NoteExpression,
-                Vec<hex_project::NoteExpressionPoint>,
-            )> = None;
-            for note in source.notes() {
-                let raw = i128::from(note.start().raw());
-                let x = ((raw - beat_start) as f64 / beat_span as f64) as f32 * width;
-                let dist = (x - local_x).abs();
-                if dist <= POINT_HIT_RADIUS_PX * 2.0
-                    && best
-                        .as_ref()
-                        .is_none_or(|(best_dist, ..)| dist < *best_dist)
-                {
-                    best = Some((
-                        dist,
-                        note.id(),
-                        note.expression(),
-                        note.expression_points().to_vec(),
-                    ));
-                }
-            }
-            let Some((_, note_id, current, points)) = best else {
+            let Some(clicked_beat) =
+                beat_for_x(local_x, width, beat_start, beat_span, source_length)
+            else {
                 return;
             };
-            let updated = if is_remove {
-                let mut reset = current;
-                match mode {
-                    ExpressionLaneMode::NotePitch => reset.pitch_offset_cents = 0,
-                    ExpressionLaneMode::NoteTimbre => reset.timbre = 0,
-                    ExpressionLaneMode::NotePressure => reset.pressure = 0,
-                    _ => {}
-                }
-                reset
-            } else {
-                let Some(next) = note_expr_for_y(mode, current, local_y, height) else {
+            let hit_beats = ((f64::from(POINT_HIT_RADIUS_PX) / f64::from(width.max(1.0)))
+                * beat_span as f64)
+                .round()
+                .max(1.0) as u64;
+            let selection = self.midi_editor.selection.shared_ids();
+            let target_note = if selection.len() > 1 {
+                self.status = "select a single note to edit per-note expression".into();
+                return;
+            } else if let Some(&selected_id) = selection.first() {
+                let Some(note) = source.notes().iter().find(|n| n.id() == selected_id) else {
+                    self.status = "selected note no longer exists in this clip".into();
                     return;
                 };
-                next
+                let note_start = note.start().raw();
+                let note_end = note_start.saturating_add(note.duration().raw());
+                if clicked_beat.raw().saturating_add(hit_beats) < note_start
+                    || clicked_beat.raw() > note_end.saturating_add(hit_beats)
+                {
+                    self.status = "click within the selected note to edit its expression".into();
+                    return;
+                }
+                note
+            } else {
+                let mut matches: Vec<&hex_project::MidiNote> = source
+                    .notes()
+                    .iter()
+                    .filter(|note| {
+                        let start = note.start().raw();
+                        let end = start.saturating_add(note.duration().raw());
+                        clicked_beat.raw().saturating_add(hit_beats) >= start
+                            && clicked_beat.raw() <= end.saturating_add(hit_beats)
+                    })
+                    .collect();
+                if matches.len() > 1 {
+                    self.status =
+                        "overlapping notes · select one note to edit per-note expression".into();
+                    return;
+                }
+                let Some(note) = matches.pop() else {
+                    return;
+                };
+                note
             };
-            if updated != current {
-                self.enqueue(Request::Edit(Command::SetMidiNoteExpression {
+            let note_id = target_note.id();
+            let note_duration = target_note.duration();
+            let offset = BeatTime::from_raw(
+                clicked_beat
+                    .raw()
+                    .saturating_sub(target_note.start().raw())
+                    .min(note_duration.raw()),
+            );
+            let (current_expr, current_points) = self
+                .displayed_note_expression(clip, note_id)
+                .map(|(expr, pts)| (expr, pts.to_vec()))
+                .unwrap_or_else(|| {
+                    (
+                        target_note.expression(),
+                        target_note.expression_points().to_vec(),
+                    )
+                });
+            let (updated_expr, updated_points) = if is_remove {
+                remove_note_expression_point(current_expr, &current_points, offset, mode, hit_beats)
+            } else {
+                let Some(next) = note_expr_for_y(mode, current_expr, local_y, height) else {
+                    return;
+                };
+                match upsert_note_expression_point(
+                    current_expr,
+                    &current_points,
+                    offset,
+                    note_duration,
+                    mode,
+                    next,
+                    hit_beats,
+                ) {
+                    Ok(result) => result,
+                    Err(reason) => {
+                        self.error = Some(reason.into());
+                        return;
+                    }
+                }
+            };
+            if updated_expr != current_expr || updated_points != current_points {
+                let preview = super::midi_pending_drag::Frozen::NoteExpression {
+                    note: note_id,
+                    expression: updated_expr,
+                    points: updated_points.clone(),
+                };
+                let command = Command::SetMidiNoteExpression {
                     clip,
                     note: note_id,
-                    expression: updated,
-                    points,
-                }));
+                    expression: updated_expr,
+                    points: updated_points,
+                };
+                self.submit_midi_drag_preview(clip, preview, command);
             }
         }
     }
@@ -797,4 +1119,99 @@ mod tests {
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0].value, 32);
     }
+
+    #[test]
+    fn finite_note_expression_curve_interpolation_and_bounded_edits() {
+        let dur = BeatTime::from_quarters(2).unwrap();
+        let initial = NoteExpression {
+            pitch_offset_cents: 100,
+            timbre: 20,
+            pressure: 10,
+        };
+        // Empty curve holds initial expression.
+        assert_eq!(
+            evaluate_note_expression_curve(initial, &[], BeatTime::ONE),
+            initial
+        );
+
+        let (init1, pts1) = upsert_note_expression_point(
+            initial,
+            &[],
+            BeatTime::ZERO,
+            dur,
+            ExpressionLaneMode::NotePitch,
+            NoteExpression {
+                pitch_offset_cents: 200,
+                ..initial
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(init1.pitch_offset_cents, 200);
+        assert_eq!(pts1.len(), 1);
+
+        let (init2, pts2) = upsert_note_expression_point(
+            init1,
+            &pts1,
+            dur,
+            dur,
+            ExpressionLaneMode::NotePitch,
+            NoteExpression {
+                pitch_offset_cents: 600,
+                ..init1
+            },
+            10,
+        )
+        .unwrap();
+        assert_eq!(init2.pitch_offset_cents, 200);
+        assert_eq!(pts2.len(), 2);
+        // Linear midpoint at offset = 1.0 beat -> (200 + 600) / 2 = 400 cents!
+        assert_eq!(
+            evaluate_note_expression_curve(init2, &pts2, BeatTime::ONE).pitch_offset_cents,
+            400
+        );
+
+        // Out-of-range offset (> duration) and invalid pitch bend (> 4800) must refuse explicitly.
+        assert!(
+            upsert_note_expression_point(
+                init2,
+                &pts2,
+                BeatTime::from_quarters(3).unwrap(),
+                dur,
+                ExpressionLaneMode::NotePitch,
+                init2,
+                10,
+            )
+            .is_err()
+        );
+        assert!(
+            upsert_note_expression_point(
+                init2,
+                &pts2,
+                BeatTime::ONE,
+                dur,
+                ExpressionLaneMode::NotePitch,
+                NoteExpression {
+                    pitch_offset_cents: 5_000,
+                    ..init2
+                },
+                10,
+            )
+            .is_err()
+        );
+        // Removing point at offset 0 promotes second point to initial.
+        let (init3, pts3) = remove_note_expression_point(
+            init2,
+            &pts2,
+            BeatTime::ZERO,
+            ExpressionLaneMode::NotePitch,
+            10,
+        );
+        assert_eq!(pts3.len(), 1);
+        assert_eq!(init3.pitch_offset_cents, 600);
+    }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_expression_ui_tests.rs"]
+mod ui_tests;
