@@ -1219,6 +1219,7 @@ fn midi_recording_worker_closure_distinguishes_unsubmitted_from_unknown_commit(
             revision: state.revision,
             binding,
             notes: Arc::clone(&notes),
+            expressions: Arc::from([]),
             stop_frame: 11,
         };
         view.midi_service_disconnected();
