@@ -207,12 +207,13 @@ impl EditorView {
             self.persistence.audio_batch_progress = None;
         }
         self.reconcile_group_selection(&event);
-        let bounce_drop_cursor = if event.bounce_complete.as_ref().is_some_and(|completed| {
+        let bounce_completed = event.bounce_complete.as_ref().is_some_and(|completed| {
             self.persistence
                 .bounce_control
                 .as_ref()
                 .is_some_and(|active| active.same_job(completed))
-        }) {
+        });
+        let bounce_drop_cursor = if bounce_completed {
             self.persistence.bounce_control = None;
             self.persistence
                 .pending_bounce_drop
@@ -1113,6 +1114,8 @@ impl EditorView {
             self.error = None;
         } else if event.save_complete && event.error.is_some() && !save_confirmation_required {
             self.status = "project was not saved".into();
+        } else if bounce_completed && event.error.is_some() {
+            self.status = "arrangement was not bounced".into();
         }
         if recovering_refused_resize {
             self.status = "restarting audio · clip edit will apply when ready".into();

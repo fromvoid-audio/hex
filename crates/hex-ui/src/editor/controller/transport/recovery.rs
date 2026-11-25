@@ -580,18 +580,19 @@ impl EditorView {
                     return false;
                 }
                 // A fresh runtime cuts mutable voices. Until their live-input
-                // custody can be restored explicitly, MIDI projects wait for
-                // Pause (republish above) or Stop (`stop` restores the current
-                // revision) instead of dropping notes. Say so: the committed
-                // edit is not audible yet (Pulse #3793).
-                if self.state.as_ref().is_some_and(|state| {
-                    state
-                        .project
-                        .tracks()
-                        .iter()
-                        .any(|track| track.instrument().is_some() || !track.midi_clips().is_empty())
-                }) {
-                    return replace_error(&mut self.error, LATENCY_EDIT_WAITING);
+                // custody can be restored explicitly, playing MIDI projects
+                // wait for Pause (republish/restore) or Stop (`stop` restores
+                // the current revision) instead of dropping notes. Say so once
+                // without hiding a newer action error (Pulse #3793).
+                if playing
+                    && self.state.as_ref().is_some_and(|state| {
+                        state.project.tracks().iter().any(|track| {
+                            track.instrument().is_some() || !track.midi_clips().is_empty()
+                        })
+                    })
+                {
+                    return self.error.is_none()
+                        && replace_error(&mut self.error, LATENCY_EDIT_WAITING);
                 }
                 let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status())
                 else {

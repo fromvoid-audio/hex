@@ -84,6 +84,11 @@ impl Status {
                 .filter(|source| source.audio_revision == revision)
         })
     }
+    /// Expose a synthetic ordinary native revision on the headless test fixture.
+    #[cfg(feature = "worker-test-support")]
+    pub fn set_ordinary_native_revision_for_test(&self, revision: u64) {
+        self.ordinary_native_revision.store(revision, Release);
+    }
     /// The ordinary source and epoch eligible for new live parameter input.
     /// Priority Stop invalidates admission before the callback consumes it.
     pub fn live_native_parameter_source(&self) -> Option<(AppliedAudioSource, u64)> {
