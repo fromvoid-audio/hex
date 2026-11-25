@@ -4,6 +4,11 @@ use hex_lattice::{NativeInstrumentClock, NativeProcessorAudition};
 mod automation;
 
 const CADENCE: u64 = 64;
+
+fn scaled_cadence(sample_rate: u32) -> u64 {
+    ((u64::from(sample_rate) * CADENCE) / 48_000).clamp(16, 256)
+}
+
 #[derive(Clone, Copy)]
 struct CompiledLane {
     node: usize,
@@ -22,6 +27,9 @@ struct Configuration {
     granted_nodes: u64,
     mode: u8,
     gain: f64,
+    gain_alpha: f64,
+    audition_step: f64,
+    cadence: u64,
     parameters: Vec<automation::Grant>,
 }
 impl Configuration {
@@ -186,6 +194,11 @@ impl PreparedEq {
                 granted_nodes |= 1_u64 << index;
             }
         }
+        // Rate-scaled exponential gain smoothing matching the 48 kHz 1/64 pole
+        // bit-exact at 48 kHz and keeping constant time (~1.32 ms) across rates.
+        let gain_alpha = 1.0 - (1.0 - 0.015625_f64).powf(48_000.0 / f64::from(sample_rate));
+        let audition_step = 1.0 / f64::from(mode_fade_frames(sample_rate));
+        let cadence = scaled_cadence(sample_rate);
         Ok(Self {
             sample_rate,
             configuration: Arc::new(Configuration {
@@ -198,6 +211,9 @@ impl PreparedEq {
                 granted_nodes,
                 mode: settings.mode,
                 gain: f64::from(settings.output_gain),
+                gain_alpha,
+                audition_step,
+                cadence,
                 parameters,
             }),
         })
@@ -877,7 +893,10 @@ impl EqRuntime {
                 }
             }
             let refresh_all = self.refresh_target || discontinuity;
-            if refresh_all || arrangement_changed || (automated && position % CADENCE == 0) {
+            if refresh_all
+                || arrangement_changed
+                || (automated && position % self.configuration.cadence == 0)
+            {
                 self.refresh_target = false;
                 let beat = if origin.is_some() && automated {
                     clock.and_then(|clock| clock.arrangement_beat_at_offset(offset))
@@ -974,13 +993,15 @@ impl EqRuntime {
                 self.snapshot_audition();
             }
             if self.audition != self.audition_request {
-                self.audition_mix = (self.audition_mix - 1.0 / 256.0).max(0.0);
+                self.audition_mix = hex_dsp::flush_subnormal(
+                    (self.audition_mix - self.configuration.audition_step).max(0.0),
+                );
                 if self.audition_mix == 0.0 {
                     self.audition = self.audition_request;
                     self.audition_history = [[[0.0; 2]; 4]; 2];
                 }
             } else if self.audition.is_some() {
-                self.audition_mix = (self.audition_mix + 1.0 / 256.0).min(1.0);
+                self.audition_mix = (self.audition_mix + self.configuration.audition_step).min(1.0);
             }
             if let Some(index) = self.audition.and_then(|selection| {
                 self.configuration
@@ -1004,7 +1025,13 @@ impl EqRuntime {
             if targets.mapped_gain {
                 self.gain = targets.gain;
             } else {
-                self.gain += (targets.gain - self.gain) * 0.015625;
+                let delta = targets.gain - self.gain;
+                if delta.abs() <= hex_dsp::QUIET_FLOOR {
+                    self.gain = targets.gain;
+                } else {
+                    self.gain =
+                        hex_dsp::flush_subnormal(self.gain + delta * self.configuration.gain_alpha);
+                }
             }
             if self.mode == 2 {
                 working = [working[0] + working[1], working[0] - working[1]];

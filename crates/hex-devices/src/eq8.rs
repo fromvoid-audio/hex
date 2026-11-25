@@ -28,6 +28,12 @@ pub const EQ8_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq8");
 pub const BAND_COUNT: usize = 8;
 pub const EQ8_RUNTIME_BYTES: usize = std::mem::size_of::<Eq8Runtime>();
 pub const EQ8_AUDITION_CROSSFADE_FRAMES: u16 = 256;
+
+/// Sample-rate-scaled audition crossfade length (~5.33 ms, 256 frames at 48 kHz).
+pub const fn eq8_audition_crossfade_frames(sample_rate: u32) -> u32 {
+    let frames = (sample_rate as u64 * EQ8_AUDITION_CROSSFADE_FRAMES as u64).div_ceil(48_000);
+    if frames == 0 { 1 } else { frames as u32 }
+}
 const STATE_VERSION: u32 = 1;
 const STATE_BYTES: usize = 1 + 4 + 5 * BAND_COUNT * 14;
 const MIN_HZ: f32 = 20.0;
@@ -1144,10 +1150,10 @@ impl Eq8Runtime {
     }
 
     fn advance_audition(&mut self) {
+        let step = 1.0 / f64::from(eq8_audition_crossfade_frames(self.sample_rate));
         if self.audition_selection != self.audition_request {
             if self.audition_mix > 0.0 {
-                self.audition_mix =
-                    (self.audition_mix - 1.0 / f64::from(EQ8_AUDITION_CROSSFADE_FRAMES)).max(0.0);
+                self.audition_mix = hex_dsp::flush_subnormal((self.audition_mix - step).max(0.0));
                 if self.audition_mix == 0.0 {
                     self.audition_selection = self.audition_request;
                     self.audition_history = [[[0.0; 2]; 4]; 2];
@@ -1158,8 +1164,7 @@ impl Eq8Runtime {
             self.audition_history = [[[0.0; 2]; 4]; 2];
         }
         if self.audition_selection.is_some() {
-            self.audition_mix =
-                (self.audition_mix + 1.0 / f64::from(EQ8_AUDITION_CROSSFADE_FRAMES)).min(1.0);
+            self.audition_mix = (self.audition_mix + step).min(1.0);
         } else {
             self.audition_mix = 0.0;
         }
@@ -1191,7 +1196,9 @@ impl Eq8Runtime {
             self.current_gain = self.target_gain;
             self.refresh_active_bands();
         } else {
-            self.current_gain += (self.target_gain - self.current_gain) / divisor;
+            self.current_gain = hex_dsp::flush_subnormal(
+                self.current_gain + (self.target_gain - self.current_gain) / divisor,
+            );
         }
     }
 

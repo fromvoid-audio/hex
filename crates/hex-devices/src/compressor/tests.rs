@@ -356,21 +356,48 @@ fn compatible_retarget_copies_only_history_and_rejects_a_different_rate() {
 }
 
 #[test]
-fn invalid_frames_are_visible_and_do_not_poison_valid_following_history() {
+fn invalid_frames_are_sanitized_and_do_not_poison_valid_following_history() {
     let state = registry()
         .default_state(COMPRESSOR_TYPE_ID)
         .expect("defaults");
     let mut invalid_then_valid = runtime(&state, 48_000);
     let mut valid_only = runtime(&state, 48_000);
     let mut invalid = [[f32::NAN, f32::INFINITY]];
+    let mut silence = [[0.0, 0.0]];
     invalid_then_valid.process_block(&mut invalid, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    assert!(invalid[0][0].is_nan());
-    assert_eq!(invalid[0][1], f32::INFINITY);
+    valid_only.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(invalid, [[0.0, 0.0]]);
     let mut a = [[0.5, -0.25]];
     let mut b = a;
     invalid_then_valid.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     valid_only.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(a, b);
+}
+
+#[test]
+fn silence_decay_flushes_envelope_and_gain_histories_without_subnormals() {
+    let state = patch(
+        &registry()
+            .default_state(COMPRESSOR_TYPE_ID)
+            .expect("defaults"),
+        parameter::RELEASE,
+        10.0,
+    );
+    let mut rt = runtime(&state, 48_000);
+    let mut burst = [[0.9, -0.9]; 64];
+    rt.process_block(&mut burst, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let mut silence = [[0.0_f32; 2]; 256];
+    for _ in 0..120 {
+        silence.fill([0.0; 2]);
+        rt.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        let state = rt.as_any().downcast_ref::<CompressorRuntime>().unwrap();
+        assert!(!state.envelope.is_subnormal());
+        assert!(!state.gain_db.is_subnormal());
+        assert!(!state.reduction_db.is_subnormal());
+    }
+    let state = rt.as_any().downcast_ref::<CompressorRuntime>().unwrap();
+    assert_eq!(state.envelope, 0.0);
+    assert_eq!(state.reduction_db, 0.0);
 }
 
 #[test]
@@ -970,18 +997,20 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
         transfer_curve(&NativeDeviceState::new(COMPRESSOR_TYPE_ID, 3, corrupt).unwrap()).is_err()
     );
     let mut pan = runtime(&patch(&rms, parameter::DRY_WET, 0.0), 48000);
+    let mut oracle = runtime(&patch(&rms, parameter::DRY_WET, 0.0), 48000);
     pan.process_block(&mut [[0.8, -0.2]; 9], &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    let before = history(pan.as_ref());
-    let saved = (
-        before.energy,
-        before.envelope,
-        before.gain_db,
-        before.detector_ramp.value(),
-        before.detector_ramp.remaining(),
-    );
-    for frame in [[f32::NAN, 1.0], [1.0, f32::INFINITY]] {
-        pan.process_block(&mut [frame], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    oracle.process_block(&mut [[0.8, -0.2]; 9], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    for (faulted, clean) in [
+        ([f32::NAN, 1.0], [0.0, 1.0]),
+        ([1.0, f32::INFINITY], [1.0, 0.0]),
+    ] {
+        let mut a = [faulted];
+        let mut b = [clean];
+        pan.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        oracle.process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(a, b);
         let h = history(pan.as_ref());
+        let expected = history(oracle.as_ref());
         assert_eq!(
             (
                 h.energy,
@@ -990,7 +1019,13 @@ fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful(
                 h.detector_ramp.value(),
                 h.detector_ramp.remaining()
             ),
-            saved
+            (
+                expected.energy,
+                expected.envelope,
+                expected.gain_db,
+                expected.detector_ramp.value(),
+                expected.detector_ramp.remaining()
+            )
         );
     }
     for frame in [[f32::MAX, -f32::MAX], [f32::from_bits(1), 0.0], [0.0, 0.0]] {
@@ -1297,10 +1332,9 @@ fn rms_floor_partition_history_retarget_invalid_frames_and_reset_remain_coherent
             [0.0; 2],
             "retarget/bypass cannot resurrect a retired tail"
         );
-        peak.process_block(
-            &mut [[f32::NAN, 1.0], [1.0, f32::INFINITY]],
-            &hex_lattice::EMPTY_DEVICE_RESOURCES,
-        );
+        let mut faulted = [[f32::NAN, f32::INFINITY], [f32::NEG_INFINITY, f32::NAN]];
+        peak.process_block(&mut faulted, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        assert_eq!(faulted, [[0.0, 0.0]; 2]);
         assert_eq!(history(peak.as_ref()).energy, [0.0; 2]);
         peak.process_block(
             &mut [[f32::from_bits(1), -f32::from_bits(1)]],

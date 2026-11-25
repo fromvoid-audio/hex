@@ -105,36 +105,8 @@ impl LfoControls {
 pub(super) struct ImmediateControls {
     pub(super) feedback: bool,
     pub(super) mix: bool,
-    pub(super) lfo_delay: bool,
-    pub(super) lfo_rate: bool,
 }
 impl ControlValues {
-    // Timing is compared after linkage projection: an inactive raw lane must
-    // not restart the shared scalar ramp. Exhaustive fields keep this audited.
-    pub(super) fn other_targets_changed(&self, other: &Self, immediate: ImmediateControls) -> bool {
-        let Self {
-            feedback,
-            mix,
-            frequency,
-            width,
-            lfo,
-            timing: _,
-            flags,
-        } = self;
-        let mut lfo = *lfo;
-        if immediate.lfo_delay {
-            lfo.delay = other.lfo.delay;
-        }
-        if immediate.lfo_rate {
-            lfo.rate = other.lfo.rate;
-        }
-        (!immediate.feedback && *feedback != other.feedback)
-            || (!immediate.mix && *mix != other.mix)
-            || *frequency != other.frequency
-            || *width != other.width
-            || lfo != other.lfo
-            || flags != &other.flags
-    }
     pub(super) fn new(settings: Settings) -> Self {
         Self {
             feedback: settings.value(FEEDBACK),

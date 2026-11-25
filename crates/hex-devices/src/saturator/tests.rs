@@ -226,7 +226,7 @@ fn digital_clip_drive_output_and_wet_have_their_declared_audible_effects() {
     let dry = patch(&dry, parameter::DRIVE, ParameterValue::Float(36.0));
     let dry = patch(&dry, parameter::OUTPUT, ParameterValue::Float(6.0));
     // Zero wet is the exact dry signal, delayed by the declared latency;
-    // the non-finite channel stays visible immediately.
+    // non-finite input sanitizes to 0.0 without slipping latency alignment.
     let input = [0.25, f32::from_bits(0x7f80_0000)];
     let mut dry_frames = [input; LATENCY_FRAMES + 1];
     render(&dry, &mut dry_frames);
@@ -237,7 +237,7 @@ fn digital_clip_drive_output_and_wet_have_their_declared_audible_effects() {
             input[0]
         };
         assert_eq!(frame[0].to_bits(), expected.to_bits());
-        assert_eq!(frame[1].to_bits(), input[1].to_bits());
+        assert_eq!(frame[1].to_bits(), 0.0_f32.to_bits());
     }
 }
 
@@ -393,28 +393,20 @@ fn nonlinear_processor_refuses_matrix_compilation_and_reports_oversampling_delay
 }
 
 #[test]
-fn non_finite_inputs_remain_visible_to_the_audio_fault_boundary() {
+fn non_finite_inputs_are_sanitized_to_silence_without_slipping_delay_alignment() {
     let state = registry()
         .default_state(SATURATOR_TYPE_ID)
         .expect("default state");
     let mut faulted = [[0.25, -0.5]; 2 * SETTLE_FRAMES];
     faulted[3] = [f32::NAN, f32::INFINITY];
     faulted[4] = [f32::NEG_INFINITY, -0.5];
+    let mut oracle = [[0.25, -0.5]; 2 * SETTLE_FRAMES];
+    oracle[3] = [0.0, 0.0];
+    oracle[4] = [0.0, -0.5];
     render(&state, &mut faulted);
-    assert!(faulted[3][0].is_nan());
-    assert_eq!(faulted[3][1], f32::INFINITY);
-    assert_eq!(faulted[4][0], f32::NEG_INFINITY);
-    assert!(faulted[4][1].is_finite());
-    // Faults never enter the histories: once the faulted frames leave the
-    // oversampler, output matches an unfaulted run of the same signal.
-    let mut clean = [[0.25, -0.5]; 2 * SETTLE_FRAMES];
-    render(&state, &mut clean);
-    assert_eq!(
-        faulted[SETTLE_FRAMES + 5..],
-        clean[SETTLE_FRAMES + 5..],
-        "faulted samples leaked into history"
-    );
-    assert!(faulted.iter().flatten().filter(|v| !v.is_finite()).count() == 3);
+    render(&state, &mut oracle);
+    assert!(faulted.iter().flatten().all(|v| v.is_finite()));
+    assert_eq!(faulted, oracle);
 }
 
 #[test]

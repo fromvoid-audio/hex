@@ -276,7 +276,7 @@ fn extreme_settings_stereo_isolation_nonfinite_recovery_reset_and_finite_tail() 
             runtime.process_block(&mut impulse, &EMPTY_DEVICE_RESOURCES);
             let mut poisoned = [[f32::NAN, f32::INFINITY]];
             runtime.process_block(&mut poisoned, &EMPTY_DEVICE_RESOURCES);
-            assert_eq!(poisoned, [[0.0; 2]]);
+            assert!(poisoned[0][0].is_finite() && poisoned[0][1] == 0.0);
             let mut tail = vec![[0.0; 2]; rate as usize * 4];
             runtime.process_block(&mut tail, &EMPTY_DEVICE_RESOURCES);
             assert!(tail.iter().all(|f| f[0].is_finite() && f[1] == 0.0));
@@ -334,4 +334,23 @@ fn full_drive_7khz_sine_aliasing_stays_below_minus_60_db() {
             "tone {tone}: inharmonic energy {energy:.1} db"
         );
     }
+}
+
+#[test]
+fn non_finite_input_sanitizes_without_slipping_dry_delay_alignment() {
+    let s = patch(&state(), parameter::DRY_WET, 0.0);
+    let mut faulted = vec![[0.0_f32; 2]; 32];
+    faulted[0] = [0.75, -0.5];
+    faulted[3] = [f32::NAN, f32::INFINITY];
+    faulted[10] = [0.25, -0.25];
+    let mut oracle = faulted.clone();
+    oracle[3] = [0.0, 0.0];
+
+    let actual = render(&s, 48_000, &faulted);
+    let expected = render(&s, 48_000, &oracle);
+    assert!(actual.iter().flatten().all(|v| v.is_finite()));
+    assert_eq!(actual, expected);
+    // Dry impulse at frame 0 must emerge at exact LATENCY_FRAMES (11) despite the NaN at frame 3.
+    assert_eq!(actual[LATENCY_FRAMES], [0.75, -0.5]);
+    assert_eq!(actual[10 + LATENCY_FRAMES], [0.25, -0.25]);
 }

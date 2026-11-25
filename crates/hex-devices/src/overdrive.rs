@@ -491,27 +491,27 @@ impl OverdriveRuntime {
         for (slot, ramp) in current.iter_mut().zip(&mut self.ramps) {
             *slot = ramp.advance();
         }
-        // Reject poisoned input before it can enter recursive histories.
-        if !frame.iter().all(|s| s.is_finite()) {
-            *frame = [0.0; 2];
-            return;
-        }
-        if *frame == [0.0; 2] {
+        // Sanitize non-finite input to 0.0 before it enters recursive histories,
+        // while still advancing the 11-frame dry delay so latency alignment never slips.
+        let sanitized = frame.map(|s| if s.is_finite() { s } else { 0.0 });
+        if sanitized == [0.0; 2] {
             let limit = self.rate * 4;
             if self.silent_frames >= limit {
+                *frame = [0.0; 2];
                 return;
             }
             self.silent_frames = self.silent_frames.saturating_add(1).min(limit);
             // Explicit finite-tail guarantee, including all envelope/interpolator history.
             if self.silent_frames == limit {
                 self.clear_history();
+                *frame = [0.0; 2];
                 return;
             }
         } else {
             self.silent_frames = 0;
         }
         let [hp, lp, drive, tone, dynamics, mix] = current;
-        let input = frame.map(f64::from);
+        let input = sanitized.map(f64::from);
         let mut wet = [0.0; 2];
         let mut input_peak = 0.0_f64;
         for (i, channel) in self.channels.iter_mut().enumerate() {

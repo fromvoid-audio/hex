@@ -115,7 +115,7 @@ struct Scalar {
     filter_mix: f64,
     frequency: f64,
     width: f64,
-    ramp_left: u32,
+    ramps_left: [u32; 5],
     tempo: u32,
     filters: [BandPass; 2],
     tuned_frequency: f64,
@@ -155,7 +155,7 @@ impl Scalar {
             filter_mix: f64::from(s.flag(FILTER)),
             frequency,
             width,
-            ramp_left: 0,
+            ramps_left: [0; 5],
             tempo: 120_000_000,
             filters,
             tuned_frequency: frequency,
@@ -167,6 +167,47 @@ impl Scalar {
     }
     fn quiet(self, freeze: bool) -> bool {
         self.nonzero == 0 && (freeze || self.filters.iter().all(|f| f.quiet()))
+    }
+    fn retime_changed(
+        &mut self,
+        old: &automation::ControlValues,
+        new: &automation::ControlValues,
+        immediate: automation::ImmediateControls,
+        ramp_frames: u32,
+    ) {
+        if !immediate.feedback && old.feedback != new.feedback {
+            self.ramps_left[0] = ramp_frames;
+        }
+        if !immediate.mix && old.mix != new.mix {
+            self.ramps_left[1] = ramp_frames;
+        }
+        if old.flags.filter != new.flags.filter {
+            self.ramps_left[2] = ramp_frames;
+        }
+        if old.frequency != new.frequency {
+            self.ramps_left[3] = ramp_frames;
+        }
+        if old.width != new.width {
+            self.ramps_left[4] = ramp_frames;
+        }
+    }
+    fn retime_all_mismatched(&mut self, ramp_frames: u32) {
+        let targets = *self.controls.effective_ref();
+        if self.feedback != f64::from(targets.feedback) {
+            self.ramps_left[0] = ramp_frames;
+        }
+        if self.mix != f64::from(targets.mix) {
+            self.ramps_left[1] = ramp_frames;
+        }
+        if self.filter_mix != f64::from(targets.flags.filter) {
+            self.ramps_left[2] = ramp_frames;
+        }
+        if self.frequency != f64::from(targets.frequency) {
+            self.ramps_left[3] = ramp_frames;
+        }
+        if self.width != f64::from(targets.width) {
+            self.ramps_left[4] = ramp_frames;
+        }
     }
 }
 fn mix_gains(mix: f64, equal_loudness: bool) -> (f64, f64) {
@@ -260,6 +301,10 @@ fn tap(ring: &[StereoFrame], s: &Scalar, time: f64, lane: usize, hq: bool, freez
                 + f * (3.0 * (a - b) + next - previous)))
 }
 impl Runtime {
+    #[cfg(test)]
+    pub(super) fn committed_frequency_and_feedback(&self) -> (f64, f64) {
+        (self.primary.frequency, self.primary.feedback)
+    }
     fn copy_interval(
         source: &[StereoFrame],
         destination: &mut [StereoFrame],
@@ -288,7 +333,8 @@ impl Runtime {
             unbound.set(id, self.settings.value(id));
         }
         if self.settings != unbound {
-            self.primary.ramp_left = self.rate.div_ceil(100);
+            let ramp_frames = self.rate.div_ceil(100);
+            self.primary.retime_all_mismatched(ramp_frames);
         }
         self.speculative = self.primary;
         self.dirty_start = self.primary.next;
@@ -308,15 +354,19 @@ impl Runtime {
     }
     fn restore_controls(&mut self) {
         let old = self.speculative.controls.effective();
-        let old_timing = self.speculative.timing;
         self.speculative.controls.reset();
         self.speculative.timing = automation::timing(&self.speculative.controls);
-        if old.other_targets_changed(
-            self.speculative.controls.effective_ref(),
+        let new = *self.speculative.controls.effective_ref();
+        let ramp_frames = self.rate.div_ceil(100);
+        self.speculative.retime_changed(
+            &old,
+            &new,
             automation::ImmediateControls::default(),
-        ) || old_timing != self.speculative.timing
-        {
-            self.speculative.ramp_left = self.rate.div_ceil(100);
+            ramp_frames,
+        );
+        if old.flags.equal_loudness != new.flags.equal_loudness {
+            (self.speculative.dry_gain, self.speculative.wet_gain) =
+                mix_gains(self.speculative.mix, new.flags.equal_loudness);
         }
     }
     fn process(
@@ -358,7 +408,7 @@ impl Runtime {
             if !block.freeze
                 && s.nonzero == 0
                 && !s.stale_slots
-                && s.ramp_left == 0
+                && s.ramps_left == [0; 5]
                 && s.fade_left == 0
                 && s.filters[0].quiet()
                 && s.filters[1].quiet()
@@ -428,8 +478,6 @@ impl Runtime {
         block.immediate = automation::ImmediateControls {
             feedback: values.has_sample_rate_modulation(FEEDBACK),
             mix: values.has_sample_rate_modulation(DRY_WET),
-            lfo_delay: values.has_sample_rate_modulation(LFO_DELAY),
-            lfo_rate: values.has_sample_rate_modulation(LFO_RATE),
         };
         let flags_admitted = [11, 12, 13, 14, 25, 26]
             .iter()
@@ -449,23 +497,23 @@ impl Runtime {
                 values,
                 offset,
             )? {
-                let changed = next.effective_ref().other_targets_changed(
-                    self.speculative.controls.effective_ref(),
-                    block.immediate,
-                );
+                let old = *self.speculative.controls.effective_ref();
+                let new = *next.effective_ref();
                 self.speculative.controls.install(next);
-                let mut retime = changed;
+                let ramp_frames = self.rate.div_ceil(100);
+                self.speculative
+                    .retime_changed(&old, &new, block.immediate, ramp_frames);
                 if refresh_timing {
                     let timing = automation::timing(&self.speculative.controls);
-                    retime |= timing != self.speculative.timing;
                     self.speculative.timing = timing;
                     refresh_timing = timing_admitted;
                 }
-                if retime {
-                    self.speculative.ramp_left = self.rate.div_ceil(100);
-                }
                 if refresh_flags {
                     let flags = self.speculative.controls.effective_ref().flags;
+                    if old.flags.equal_loudness != flags.equal_loudness {
+                        (self.speculative.dry_gain, self.speculative.wet_gain) =
+                            mix_gains(self.speculative.mix, flags.equal_loudness);
+                    }
                     block.freeze = flags.freeze && !self.releasing;
                     if block.hq != flags.high_quality {
                         block.hq = flags.high_quality;
@@ -572,24 +620,47 @@ impl Runtime {
                 s.fade_left = 0;
             }
         }
-        let mut update_mix = s.ramp_left > 0;
-        if s.ramp_left > 0 {
+        let mut update_mix = false;
+        if s.ramps_left[0] > 0 {
             if !feedback_routed {
-                s.feedback += (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramp_left);
+                s.feedback +=
+                    (f64::from(targets.feedback) - s.feedback) / f64::from(s.ramps_left[0]);
             }
-            if !mix_routed {
-                s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramp_left);
-            }
-            s.filter_mix +=
-                (f64::from(targets.flags.filter) - s.filter_mix) / f64::from(s.ramp_left);
-            s.frequency += (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramp_left);
-            s.width += (f64::from(targets.width) - s.width) / f64::from(s.ramp_left);
-            s.ramp_left -= 1;
-            if s.ramp_left == 0 {
+            s.ramps_left[0] -= 1;
+            if s.ramps_left[0] == 0 {
                 s.feedback = f64::from(targets.feedback);
+            }
+        }
+        if s.ramps_left[1] > 0 {
+            update_mix = true;
+            if !mix_routed {
+                s.mix += (f64::from(targets.mix) - s.mix) / f64::from(s.ramps_left[1]);
+            }
+            s.ramps_left[1] -= 1;
+            if s.ramps_left[1] == 0 {
                 s.mix = f64::from(targets.mix);
+            }
+        }
+        if s.ramps_left[2] > 0 {
+            s.filter_mix +=
+                (f64::from(targets.flags.filter) - s.filter_mix) / f64::from(s.ramps_left[2]);
+            s.ramps_left[2] -= 1;
+            if s.ramps_left[2] == 0 {
                 s.filter_mix = f64::from(targets.flags.filter);
+            }
+        }
+        if s.ramps_left[3] > 0 {
+            s.frequency +=
+                (f64::from(targets.frequency) - s.frequency) / f64::from(s.ramps_left[3]);
+            s.ramps_left[3] -= 1;
+            if s.ramps_left[3] == 0 {
                 s.frequency = f64::from(targets.frequency);
+            }
+        }
+        if s.ramps_left[4] > 0 {
+            s.width += (f64::from(targets.width) - s.width) / f64::from(s.ramps_left[4]);
+            s.ramps_left[4] -= 1;
+            if s.ramps_left[4] == 0 {
                 s.width = f64::from(targets.width);
             }
         }

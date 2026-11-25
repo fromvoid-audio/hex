@@ -469,11 +469,15 @@ impl SaturatorRuntime {
         }
         let settings = self.settings;
         let wet = f64::from(settings.dry_wet);
-        let input = frame.map(f64::from);
-        let finite = input.map(f64::is_finite);
+        let input = frame.map(|sample| {
+            if sample.is_finite() {
+                f64::from(sample)
+            } else {
+                0.0
+            }
+        });
         let mut processed = [0.0; 2];
         for (channel, (stage, value)) in self.channels.iter_mut().zip(input).enumerate() {
-            let value = if finite[channel] { value } else { 0.0 };
             let shaped = match settings.curve {
                 SaturationCurve::SoftClip => {
                     stage.process_sample(value, self.drive_gain, self.kernel, &SoftClip)
@@ -484,17 +488,12 @@ impl SaturatorRuntime {
             };
             processed[channel] = shaped * self.output_gain;
         }
-        let stored = [0, 1].map(|channel| if finite[channel] { input[channel] } else { 0.0 });
-        let dry = std::mem::replace(&mut self.delay[self.delay_index], stored);
+        let dry = std::mem::replace(&mut self.delay[self.delay_index], input);
         self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
         if bypassed {
             return;
         }
         for channel in 0..2 {
-            if !finite[channel] {
-                // Leave the fault visible to the host's audio boundary.
-                continue;
-            }
             frame[channel] = if wet == 0.0 {
                 dry[channel]
             } else if wet == 1.0 {

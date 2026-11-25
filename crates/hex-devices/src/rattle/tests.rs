@@ -300,3 +300,17 @@ fn parameter_edit_inherits_history_and_glides_to_the_new_drive() {
         .create_runtime();
     assert!(!other_rate.can_copy_history_from(old.as_ref()));
 }
+
+#[test]
+fn pink_noise_poles_scale_with_oversampled_rate_and_preserve_dc_gain() {
+    let lo = RattleDefinition::prepare_owned(&state(1.0), 8_000, &[]).unwrap();
+    let mid = RattleDefinition::prepare_owned(&state(1.0), 48_000, &[]).unwrap();
+    let hi = RattleDefinition::prepare_owned(&state(1.0), 192_000, &[]).unwrap();
+    for i in 0..3 {
+        assert!(lo.coefficients.pink_poles[i] < mid.coefficients.pink_poles[i]);
+        assert!(mid.coefficients.pink_poles[i] < hi.coefficients.pink_poles[i]);
+        let dc_lo = lo.coefficients.pink_gains[i] / (1.0 - lo.coefficients.pink_poles[i]);
+        let dc_hi = hi.coefficients.pink_gains[i] / (1.0 - hi.coefficients.pink_poles[i]);
+        assert!((dc_lo - dc_hi).abs() < 1e-12);
+    }
+}
