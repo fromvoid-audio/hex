@@ -2,9 +2,9 @@
 //!
 //! Preferences are read and written on the control side through the shared
 //! bounded document reader and atomic publisher. Missing files select no port
-//! and channel zero. Existing v1 single-port/single-channel documents load
-//! losslessly; Omni and multi-port selections persist as v2 documents.
-//! Malformed, unknown, or future documents remain untouched.
+//! and channel zero. Existing v1 single-port/single-channel and v2
+//! Omni/multi-port documents load losslessly; configured MPE zones persist as
+//! v3 documents. Malformed, unknown, or future documents remain untouched.
 
 use super::{PreferencesError, atomic_save, read_document};
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,23 @@ const MAX_PORT_NAME_BYTES: usize = 1024;
 pub const MAX_MIDI_INPUT_PORTS: usize = 16;
 const MIDI_INPUT_DOCUMENT_VERSION_V1: u32 = 1;
 const MIDI_INPUT_DOCUMENT_VERSION_V2: u32 = 2;
+const MIDI_INPUT_DOCUMENT_VERSION_V3: u32 = 3;
+
+/// Persisted MPE zone side (`lower` master ch 1, `upper` master ch 16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MidiInputMpeZoneKind {
+    Lower,
+    Upper,
+}
+
+/// Persisted bounded MPE zone selection (`member_channels` in `1..=15`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MidiInputMpeZone {
+    pub kind: MidiInputMpeZoneKind,
+    pub member_channels: u8,
+}
 
 /// A native MIDI input port selection. The operating system's exact port name
 /// is retained without normalization; `id` remains opaque to preferences.
@@ -30,6 +47,8 @@ pub struct MidiInputPort {
 /// `omni` is `false`; when `omni` is `true` all 16 MIDI channels are accepted.
 /// Single-port callers may populate `port`; multi-port selections populate
 /// `ports` (up to [`MAX_MIDI_INPUT_PORTS`]) or set `all_ports = true`.
+/// When `mpe_zone` is `Some`, input uses the configured bounded MPE zone instead
+/// of ordinary single-channel or Omni mode.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MidiInputPreferences {
     pub port: Option<MidiInputPort>,
@@ -37,6 +56,7 @@ pub struct MidiInputPreferences {
     pub all_ports: bool,
     pub channel: u8,
     pub omni: bool,
+    pub mpe_zone: Option<MidiInputMpeZone>,
 }
 
 impl MidiInputPreferences {
@@ -55,8 +75,15 @@ impl MidiInputPreferences {
     pub fn is_v1_compatible(&self) -> bool {
         !self.omni
             && !self.all_ports
+            && self.mpe_zone.is_none()
             && (self.ports.is_empty()
                 || (self.ports.len() == 1 && self.ports.first() == self.port.as_ref()))
+    }
+
+    /// True when this configuration can be represented without loss in the v2
+    /// Omni/multi-port schema without MPE zone settings.
+    pub fn is_v2_compatible(&self) -> bool {
+        self.mpe_zone.is_none()
     }
 }
 
@@ -96,6 +123,24 @@ struct DocumentV2 {
     preferences: PreferencesV2,
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PreferencesV3 {
+    port: Option<MidiInputPort>,
+    ports: Vec<MidiInputPort>,
+    all_ports: bool,
+    channel: u8,
+    omni: bool,
+    mpe_zone: Option<MidiInputMpeZone>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DocumentV3 {
+    version: u32,
+    preferences: PreferencesV3,
+}
+
 /// Stable app-support path for selected MIDI input preferences.
 pub fn midi_input_preferences_path(home: &Path) -> PathBuf {
     crate::app_support_dir_from(home).join("midi-input.json")
@@ -119,6 +164,7 @@ pub fn load_midi_input_preferences(path: &Path) -> Result<MidiInputPreferences, 
                 all_ports: false,
                 channel: document.preferences.channel,
                 omni: false,
+                mpe_zone: None,
             }
         }
         MIDI_INPUT_DOCUMENT_VERSION_V2 => {
@@ -137,6 +183,26 @@ pub fn load_midi_input_preferences(path: &Path) -> Result<MidiInputPreferences, 
                 all_ports: p.all_ports,
                 channel: p.channel,
                 omni: p.omni,
+                mpe_zone: None,
+            }
+        }
+        MIDI_INPUT_DOCUMENT_VERSION_V3 => {
+            let document: DocumentV3 = serde_json::from_slice(&bytes)
+                .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
+            let p = document.preferences;
+            let ports = if p.ports.is_empty() {
+                p.port.iter().cloned().collect()
+            } else {
+                p.ports
+            };
+            let port = p.port.or_else(|| ports.first().cloned());
+            MidiInputPreferences {
+                port,
+                ports,
+                all_ports: p.all_ports,
+                channel: p.channel,
+                omni: p.omni,
+                mpe_zone: p.mpe_zone,
             }
         }
         other => {
@@ -165,7 +231,7 @@ pub fn save_midi_input_preferences(
                 channel: preferences.channel,
             },
         })
-    } else {
+    } else if preferences.is_v2_compatible() {
         let ports = preferences.selected_ports();
         let port = preferences.port.clone().or_else(|| ports.first().cloned());
         serde_json::to_vec(&DocumentV2 {
@@ -176,6 +242,20 @@ pub fn save_midi_input_preferences(
                 all_ports: preferences.all_ports,
                 channel: preferences.channel,
                 omni: preferences.omni,
+            },
+        })
+    } else {
+        let ports = preferences.selected_ports();
+        let port = preferences.port.clone().or_else(|| ports.first().cloned());
+        serde_json::to_vec(&DocumentV3 {
+            version: MIDI_INPUT_DOCUMENT_VERSION_V3,
+            preferences: PreferencesV3 {
+                port,
+                ports,
+                all_ports: preferences.all_ports,
+                channel: preferences.channel,
+                omni: preferences.omni,
+                mpe_zone: preferences.mpe_zone,
             },
         })
     }
@@ -192,6 +272,13 @@ fn validate(preferences: &MidiInputPreferences) -> Result<(), PreferencesError> 
     if preferences.channel > 15 {
         return Err(PreferencesError::InvalidDocument(
             "midi channel must be between 0 and 15".into(),
+        ));
+    }
+    if let Some(zone) = preferences.mpe_zone
+        && !(1..=15).contains(&zone.member_channels)
+    {
+        return Err(PreferencesError::InvalidDocument(
+            "mpe member channels must be between 1 and 15".into(),
         ));
     }
     if preferences.ports.len() > MAX_MIDI_INPUT_PORTS {
@@ -262,6 +349,7 @@ mod tests {
                 all_ports: false,
                 channel: 0,
                 omni: false,
+                mpe_zone: None,
             }
         );
         assert!(!path.exists());
@@ -281,6 +369,7 @@ mod tests {
             all_ports: false,
             channel: 15,
             omni: false,
+            mpe_zone: None,
         };
         save_midi_input_preferences(&path, &preferences).unwrap();
         // Single-port/single-channel saves stay v1-compatible.
@@ -311,6 +400,7 @@ mod tests {
                 all_ports: false,
                 channel: 7,
                 omni: false,
+                mpe_zone: None,
             }
         );
         // Opening never rewrites existing v1 bytes on disk.
@@ -335,6 +425,7 @@ mod tests {
             all_ports: false,
             channel: 2,
             omni: true,
+            mpe_zone: None,
         };
         save_midi_input_preferences(&path, &multi).unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
@@ -347,9 +438,79 @@ mod tests {
             all_ports: true,
             channel: 0,
             omni: true,
+            mpe_zone: None,
         };
         save_midi_input_preferences(&path, &all).unwrap();
         assert_eq!(load_midi_input_preferences(&path).unwrap(), all);
+    }
+
+    #[test]
+    fn v3_round_trip_persists_bounded_mpe_lower_and_upper_zones_and_rejects_invalid_member_counts()
+    {
+        let dir = Directory::new();
+        let path = dir.0.join("midi-input.json");
+        let port = MidiInputPort {
+            id: 77,
+            name: "LinnStrument".into(),
+        };
+        for zone in [
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 15,
+            },
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Upper,
+                member_channels: 7,
+            },
+        ] {
+            let prefs = MidiInputPreferences {
+                port: Some(port.clone()),
+                ports: vec![port.clone()],
+                all_ports: false,
+                channel: 0,
+                omni: false,
+                mpe_zone: Some(zone),
+            };
+            save_midi_input_preferences(&path, &prefs).unwrap();
+            let raw = std::fs::read_to_string(&path).unwrap();
+            assert!(raw.contains(r#""version":3"#));
+            assert_eq!(load_midi_input_preferences(&path).unwrap(), prefs);
+        }
+
+        // Turning MPE back off stays v1-compatible for single-port/single-channel.
+        let ordinary = MidiInputPreferences {
+            port: Some(port.clone()),
+            ports: vec![port],
+            all_ports: false,
+            channel: 3,
+            omni: false,
+            mpe_zone: None,
+        };
+        save_midi_input_preferences(&path, &ordinary).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(r#""version":1"#));
+        assert_eq!(load_midi_input_preferences(&path).unwrap(), ordinary);
+
+        // Invalid member counts (0 and 16) are rejected on save and load without clobbering disk.
+        let invalid_path = dir.0.join("invalid-mpe.json");
+        for bad_count in [0_u8, 16, 255] {
+            let bad = MidiInputPreferences {
+                mpe_zone: Some(MidiInputMpeZone {
+                    kind: MidiInputMpeZoneKind::Lower,
+                    member_channels: bad_count,
+                }),
+                ..MidiInputPreferences::default()
+            };
+            assert!(save_midi_input_preferences(&invalid_path, &bad).is_err());
+            assert!(!invalid_path.exists());
+        }
+        let malformed_v3 = br#"{"version":3,"preferences":{"port":null,"ports":[],"all_ports":false,"channel":0,"omni":false,"mpe_zone":{"kind":"upper","member_channels":0}}}"#;
+        std::fs::write(&invalid_path, malformed_v3).unwrap();
+        assert!(load_midi_input_preferences(&invalid_path).is_err());
+        assert!(
+            save_midi_input_preferences(&invalid_path, &MidiInputPreferences::default()).is_err()
+        );
+        assert_eq!(std::fs::read(&invalid_path).unwrap(), malformed_v3);
     }
 
     #[test]

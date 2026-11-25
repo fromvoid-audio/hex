@@ -54,6 +54,10 @@ impl EditorView {
                         view.controller_input.channel = value.channel;
                         view.controller_input.omni = value.omni;
                         view.controller_input.all_ports = value.all_ports;
+                        view.controller_input.mpe_zone = value.mpe_zone;
+                        if let Some(zone) = value.mpe_zone {
+                            view.controller_input.mpe_member_channels = zone.member_channels;
+                        }
                         let restore = value.all_ports || !value.selected_ports().is_empty();
                         view.controller_input.preferences.value = value;
                         if restore {

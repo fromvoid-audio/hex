@@ -51,6 +51,24 @@ pub(super) fn sink(
                     pitch,
                     value,
                 },
+                hex_midi::NoteEvent::NotePitchBend {
+                    channel,
+                    pitch,
+                    cents,
+                } => LiveNoteEvent::NotePitchBend {
+                    channel,
+                    pitch,
+                    cents,
+                },
+                hex_midi::NoteEvent::NoteTimbre {
+                    channel,
+                    pitch,
+                    value,
+                } => LiveNoteEvent::NoteTimbre {
+                    channel,
+                    pitch,
+                    value,
+                },
                 hex_midi::NoteEvent::ControlChange { channel, cc, value } => {
                     LiveNoteEvent::ControlChange { channel, cc, value }
                 }
@@ -205,6 +223,130 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn mpe_wire_ingress_routes_per_note_expression_to_host_pcm_and_retires_held_notes_on_cancel() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let fm4_state = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.fm4"),
+        )
+        .unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "mpe".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: fm4_state,
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let project = editor.project();
+        let device = project.track(track).unwrap().instrument().unwrap().id();
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                project,
+                &Default::default(),
+                Arc::new(SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let mut playback_mpe =
+            Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        playback_mpe
+            .prepare_computer_keyboard(project, track, Arc::clone(&input))
+            .unwrap();
+        let activation = input.begin_live_notes_activation_on_control().unwrap();
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        let sink = sink(
+            Some(Arc::new(LiveExpressionInput::new(1, track, device))),
+            Arc::clone(&held),
+            Arc::clone(&input),
+            activation,
+        );
+        let config =
+            hex_midi::MpeConfig::new(hex_midi::MpeZone::Lower { member_channels: 7 }, 48).unwrap();
+        let agg = hex_midi::MultiPortAggregator::new_mpe(
+            1,
+            config,
+            hex_midi::MachTimebase::NANOSECONDS,
+            Arc::clone(&held),
+            sink.publish,
+            sink.note,
+        )
+        .unwrap();
+        // Lower zone members ch 1 and ch 2 press the same pitch (60) independently;
+        // only ch 2 bends +1200 cents and slides timbre to 120. Out-of-zone ch 9 is ignored.
+        agg.deliver_timed_packets(
+            0,
+            [hex_midi::TimedPacket {
+                timestamp_ticks: 1_000,
+                data: &[
+                    0x91, 60, 100, // member ch 1 NoteOn
+                    0x92, 60, 100, // member ch 2 NoteOn
+                    0xe2, 0x00, 0x50, // member ch 2 pitch bend up (+1200c)
+                    0xb2, 74, 120, // member ch 2 CC74 timbre
+                    0xd2, 110, // member ch 2 channel pressure
+                    0x99, 72, 120, // out-of-zone ch 9 -> ignored
+                ],
+            }],
+        );
+        let mut mpe_frames = [[0.0; 2]; 128];
+        playback_mpe.render(&mut mpe_frames).unwrap();
+        assert!(mpe_frames.iter().flatten().any(|s| *s != 0.0));
+
+        // Compare against unbent two-voice baseline to prove per-note MPE expression modulated PCM.
+        let baseline_input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        let mut playback_plain = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback_plain
+            .prepare_computer_keyboard(project, track, Arc::clone(&baseline_input))
+            .unwrap();
+        let plain_act = baseline_input
+            .begin_live_notes_activation_on_control()
+            .unwrap();
+        for ch in [1_u8, 2] {
+            baseline_input
+                .live_notes()
+                .unwrap()
+                .publish(
+                    plain_act,
+                    hex_engine::computer_keyboard::LiveNoteEvent::NoteOn {
+                        channel: ch,
+                        pitch: 60,
+                        velocity: 100,
+                    },
+                )
+                .unwrap();
+        }
+        let mut plain_frames = [[0.0; 2]; 128];
+        playback_plain.render(&mut plain_frames).unwrap();
+        assert_ne!(
+            mpe_frames, plain_frames,
+            "MPE member bend/timbre/pressure must alter synthesized host PCM"
+        );
+
+        // Cancelling the sink retires held notes safely and ends the activation.
+        (sink.cancel)();
+        assert!(held.is_cancelled());
+        assert!(
+            !input
+                .live_notes()
+                .unwrap()
+                .same_current_activation(activation)
+        );
     }
 }
 

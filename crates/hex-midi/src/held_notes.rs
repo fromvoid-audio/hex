@@ -161,6 +161,50 @@ impl HeldNotes {
             _ => Ok(false),
         }
     }
+    pub(crate) fn observe_mpe_event(
+        &mut self,
+        held_channels: &mut [u16; HELD_NOTE_COUNT],
+        event: crate::MpeExpressionEvent,
+    ) -> Result<bool, HeldNoteFault> {
+        match event {
+            crate::MpeExpressionEvent::NoteOn {
+                channel,
+                pitch,
+                velocity,
+            } if channel < 16 && pitch <= 127 && velocity > 0 && velocity <= 127 => {
+                let next = self
+                    .through
+                    .checked_add(1)
+                    .filter(|value| *value <= MAX_TOKEN)
+                    .ok_or(HeldNoteFault::TokenLimit)?;
+                self.through = next;
+                held_channels[usize::from(pitch)] |= 1_u16 << channel;
+                self.words[usize::from(pitch)] = (next << 8) | u64::from(velocity);
+                Ok(true)
+            }
+            crate::MpeExpressionEvent::NoteOff { channel, pitch, .. }
+                if channel < 16 && pitch <= 127 =>
+            {
+                let mask = &mut held_channels[usize::from(pitch)];
+                *mask &= !(1_u16 << channel);
+                if *mask == 0 {
+                    let word = &mut self.words[usize::from(pitch)];
+                    let changed = *word != 0;
+                    *word = 0;
+                    Ok(changed)
+                } else {
+                    Ok(false)
+                }
+            }
+            crate::MpeExpressionEvent::AllNotesOff => {
+                let changed = self.words.iter().any(|word| *word != 0);
+                self.clear();
+                held_channels.fill(0);
+                Ok(changed)
+            }
+            _ => Ok(false),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

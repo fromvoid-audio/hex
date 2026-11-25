@@ -52,6 +52,20 @@ pub enum NoteEvent {
         pitch: u8,
         value: u8,
     },
+    /// Per-note pitch bend offset in cents (`-4800..=4800`) attributed to one
+    /// active note on an MPE member channel.
+    NotePitchBend {
+        channel: u8,
+        pitch: u8,
+        cents: i16,
+    },
+    /// Per-note slide / timbre (`0..=127`, CC74) attributed to one active note
+    /// on an MPE member channel.
+    NoteTimbre {
+        channel: u8,
+        pitch: u8,
+        value: u8,
+    },
     /// Channel Control Change (including CC64 Sustain, CC11 Expression, and general CCs).
     ControlChange {
         channel: u8,
