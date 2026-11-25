@@ -32,6 +32,13 @@ pub(crate) fn latest_timeline_content_end(project: &Project) -> u64 {
         .filter_map(|clip| clip.start().checked_add(clip.duration()))
         .max()
         .unwrap_or(0);
+    let frozen_end = project
+        .tracks()
+        .iter()
+        .filter_map(|track| track.frozen())
+        .filter_map(|frozen| frozen.start.checked_add(frozen.duration))
+        .max()
+        .unwrap_or(0);
     let midi_end = project
         .tracks()
         .iter()
@@ -55,7 +62,11 @@ pub(crate) fn latest_timeline_content_end(project: &Project) -> u64 {
         .arrangement_locators()
         .last()
         .map_or(0, |locator| locator.frame());
-    audio_end.max(midi_end).max(section_end).max(locator_end)
+    audio_end
+        .max(frozen_end)
+        .max(midi_end)
+        .max(section_end)
+        .max(locator_end)
 }
 
 pub(crate) fn run_export_worker(
@@ -239,5 +250,28 @@ mod tests {
     fn latest_timeline_content_end_is_zero_for_empty_project() {
         let project = Project::new(48_000).expect("project");
         assert_eq!(latest_timeline_content_end(&project), 0);
+    }
+
+    #[test]
+    fn latest_timeline_content_end_includes_frozen_track_tail() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddTrack {
+                name: "frozen".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track fixture");
+        };
+        editor
+            .execute(hex_project::Command::FreezeTrack {
+                track,
+                path: PathBuf::from("frozen.wav"),
+                start: 1_000,
+                duration: 4_500,
+                frames: 4_500,
+            })
+            .unwrap();
+        assert_eq!(latest_timeline_content_end(editor.project()), 5_500);
     }
 }

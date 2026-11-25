@@ -548,13 +548,7 @@ pub(super) fn prepare_project(
             return Err("verified recovery does not support resident clip processing".into());
         }
         if mode == DocumentAudioMode::VerifiedStreaming
-            && (project.tracks().iter().any(|track| {
-                track.clips().iter().any(|clip| {
-                    clip.referenced_assets().any(|referenced| referenced == asset.id())
-                })
-            }) || project.session_cells().iter().any(|cell| {
-                matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == asset.id())
-            }))
+            && asset_used_as_clip_or_freeze(&project, asset.id())
         {
             return Err("verified recovery cannot use device originals as clip sources".into());
         }
@@ -943,10 +937,22 @@ fn absolute_document_base(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+fn asset_used_as_clip_or_freeze(project: &Project, asset: hex_project::AssetId) -> bool {
+    project.tracks().iter().any(|track| {
+        track.frozen().is_some_and(|frozen| frozen.asset == asset)
+            || track.clips().iter().any(|clip| {
+                clip.referenced_assets()
+                    .any(|referenced| referenced == asset)
+            })
+    }) || project.session_cells().iter().any(|cell| {
+        matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.asset() == asset)
+    })
+}
+
 pub(super) fn project_for_save(
     session: &Session,
     document_base: Option<&Path>,
-) -> Result<hex_project::Project, String> {
+) -> Result<Arc<hex_project::Project>, String> {
     SaveImage::capture(session, document_base)?.materialize()
 }
 
@@ -1023,7 +1029,10 @@ impl SaveImage {
         })
     }
 
-    pub(super) fn materialize(self) -> Result<hex_project::Project, String> {
+    pub(super) fn materialize(self) -> Result<Arc<hex_project::Project>, String> {
+        if self.asset_overrides.is_empty() {
+            return Ok(self.project);
+        }
         let mut snapshot = self.project.snapshot();
         for item in self.asset_overrides {
             let Some(asset) = snapshot.assets.iter_mut().find(|asset| asset.id == item.id) else {
@@ -1037,6 +1046,7 @@ impl SaveImage {
             }
         }
         hex_project::Project::from_snapshot(snapshot)
+            .map(Arc::new)
             .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     }
 }
@@ -1220,7 +1230,7 @@ mod tests {
         })
         .join()
         .unwrap();
-        assert_eq!(hex_storage::load_journal(&path).unwrap(), expected);
+        assert_eq!(hex_storage::load_journal(&path).unwrap(), *expected);
         let checkpoint = PreparedCheckpoint::capture(&RecoveryContext {
             session: &session,
             base: None,
@@ -1250,7 +1260,9 @@ mod tests {
                 name: "first".into(),
             })
             .unwrap();
+        let original_arc = session.project_arc();
         let expected = project_for_save(&session, None).unwrap();
+        assert!(Arc::ptr_eq(&original_arc, &expected));
         let image = SaveImage::capture(&session, None).unwrap();
         session
             .command(Command::AddTrack {
@@ -1261,12 +1273,43 @@ mod tests {
             .join()
             .unwrap()
             .unwrap();
-        assert_eq!(materialized, expected);
+        assert!(Arc::ptr_eq(&materialized, &original_arc));
+        assert_eq!(*materialized, *expected);
         assert_eq!(
             hex_storage::encode(&materialized).unwrap(),
             hex_storage::encode(&expected).unwrap()
         );
-        assert_ne!(materialized, *session.project());
+        assert_ne!(*materialized, *session.project());
+    }
+
+    #[test]
+    fn verified_streaming_device_original_guard_includes_frozen_tracks() {
+        let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "synth".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track fixture");
+        };
+        editor
+            .execute(Command::FreezeTrack {
+                track,
+                path: PathBuf::from("frozen.wav"),
+                start: 64,
+                duration: 256,
+                frames: 256,
+            })
+            .unwrap();
+        let asset = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .frozen()
+            .unwrap()
+            .asset;
+        assert!(asset_used_as_clip_or_freeze(editor.project(), asset));
     }
 
     #[test]
@@ -1299,7 +1342,7 @@ mod tests {
             .join()
             .unwrap()
             .unwrap();
-        assert_eq!(materialized, expected);
+        assert_eq!(*materialized, expected);
         assert_eq!(
             hex_storage::encode(&materialized).unwrap(),
             hex_storage::encode(&expected).unwrap()

@@ -290,6 +290,7 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
             | Command::ImportPreparedSessionAudioClip { .. }
             | Command::CommitArrangementBounce { .. }
             | Command::ConvertMidiClipToAudio { .. }
+            | Command::FreezeTrack { .. }
     ) {
         return Err(SessionError::Invalid(
             "audio media must be committed through a prepared import",
@@ -953,10 +954,23 @@ impl Session {
 
     fn validate_prepared_command(&self, command: &Command) -> Result<(), SessionError> {
         validate_command_media(command)?;
-        if let Command::PlaceClip { asset, .. } = command
-            && self.native_assets.contains(*asset)
-        {
-            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+        match command {
+            Command::PlaceClip { asset, .. } => {
+                if self.native_assets.contains(*asset) {
+                    return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+                }
+            }
+            Command::FreezeTrackWithAsset { asset, .. } => {
+                if self.native_assets.contains(*asset) {
+                    return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+                }
+                if !self.media.contains_key(asset) && !self.verified_sources.contains_key(asset) {
+                    return Err(SessionError::Invalid(
+                        "frozen track asset requires resident or verified prepared media",
+                    ));
+                }
+            }
+            _ => {}
         }
         Ok(())
     }
@@ -2443,5 +2457,68 @@ fn tuning_prepared_transition(
         prepared.with_tuning_continuation_from(candidate, source, previous)
     } else {
         Ok(prepared)
+    }
+}
+
+#[cfg(test)]
+mod validate_command_media_tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project};
+
+    #[test]
+    fn validate_command_media_rejects_freeze_track_and_unbacked_freeze_asset() {
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        let Created::Track(track) = session
+            .command(Command::AddTrack {
+                name: "synth".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track fixture");
+        };
+        let freeze_cmd = Command::FreezeTrack {
+            track,
+            path: PathBuf::from("frozen.wav"),
+            start: 0,
+            duration: 128,
+            frames: 128,
+        };
+        assert!(validate_command_media(&freeze_cmd).is_err());
+        assert!(session.command(freeze_cmd).is_err());
+
+        // Offline asset in project has no resident/verified media backing in Session.
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Imported {
+            track: offline_track,
+            asset,
+            ..
+        } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "clip".into(),
+                path: "clip.wav".into(),
+                sample_rate: 48_000,
+                frames: 64,
+            })
+            .unwrap()
+        else {
+            panic!("import fixture");
+        };
+        let offline_project = editor
+            .project()
+            .clone()
+            .with_offline_assets([asset])
+            .unwrap();
+        let mut offline_session =
+            Session::from_loaded(offline_project, 8, 1024, Vec::new()).unwrap();
+        assert!(
+            offline_session
+                .command(Command::FreezeTrackWithAsset {
+                    track: offline_track,
+                    asset,
+                    start: 0,
+                    duration: 64,
+                })
+                .is_err()
+        );
     }
 }
