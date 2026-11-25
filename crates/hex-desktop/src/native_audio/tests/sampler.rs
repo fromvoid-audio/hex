@@ -816,6 +816,16 @@ enum ControlsFixture {
     Composition,
 }
 #[cfg(feature = "ui-test-support")]
+fn new_from_clean_saved_project(cx: &gpui::TestAppContext, visual: &mut gpui::VisualTestContext) {
+    visual.simulate_keystrokes("cmd-n");
+    visual.run_until_parked();
+    assert!(
+        !cx.has_pending_prompt(),
+        "clean saved sampler prompted on New"
+    );
+}
+
+#[cfg(feature = "ui-test-support")]
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
     stereo: bool,
@@ -1239,12 +1249,7 @@ fn rendered_sampler_save_open(
     } else {
         saved.clone()
     };
-    visual.simulate_keystrokes("cmd-n");
-    visual.run_until_parked();
-    assert!(
-        !cx.has_pending_prompt(),
-        "clean saved sampler prompted on New"
-    );
+    new_from_clean_saved_project(cx, &mut visual);
     while visual.debug_bounds(target_selector).is_some() {
         pulse(&mut visual);
         assert!(

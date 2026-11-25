@@ -282,9 +282,7 @@ pub(super) fn exercise(
         );
     }
     let before_open = applied().unwrap();
-    visual.simulate_keystrokes("cmd-n");
-    visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-n");
+    new_from_clean_saved_project(cx, visual);
     while visual.debug_bounds(target_selector).is_some() {
         pulse(visual);
         assert!(Instant::now() < end);
