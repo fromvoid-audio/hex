@@ -66,6 +66,11 @@ impl PreparedEnvelope {
         self.release
     }
 
+    pub(super) fn clamp_release_frames(mut self, max_frames: u64) -> Self {
+        self.release = self.release.min(max_frames.max(1));
+        self
+    }
+
     pub(super) fn held(self, age: u64) -> f64 {
         if age < self.attack {
             return age as f64 / self.attack as f64;
