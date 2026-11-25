@@ -1430,7 +1430,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             .unwrap();
         let event = terminal(&view.service);
         assert!(event.playback.is_none());
-        if let Some(gate) = checkpoint.as_mut() {
+        if let Some(mut gate) = checkpoint.take() {
             // The edit completed while recovery was held. Let the genuine
             // filesystem failure arrive while the audio candidate is pending.
             let deadline = crate::test_wait::hang_deadline();
