@@ -5,13 +5,25 @@ use gpui::{
     StatefulInteractiveElement, Styled, Subscription, UniformListScrollHandle, Window,
     WindowBounds, WindowOptions, div, prelude::*, px, rgb, size, uniform_list,
 };
-use hex_diagnostics::reader::{LogLine, LogSnapshot, read_session_page};
+use hex_diagnostics::{
+    Level,
+    reader::{LogLine, LogSnapshot, read_session_page},
+};
 use hex_widgets::{TextInput, TextInputChanged, TextInputConfig, TextInputKind};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
+
+const LEVELS: &[(&str, Option<Level>)] = &[
+    ("all", None),
+    ("error", Some(Level::Error)),
+    ("warn+", Some(Level::Warn)),
+    ("info+", Some(Level::Info)),
+    ("debug+", Some(Level::Debug)),
+    ("trace", Some(Level::Trace)),
+];
 
 const CATEGORIES: &[&str] = &[
     "all",
@@ -86,6 +98,7 @@ struct Viewer {
     rows: Arc<Vec<usize>>,
     query: Entity<TextInput>,
     _query_subscription: Subscription,
+    level: usize,
     category: usize,
     window: usize,
     generation: u64,
@@ -131,6 +144,7 @@ impl Viewer {
             rows: Arc::new(Vec::new()),
             query,
             _query_subscription: subscription,
+            level: 0,
             category: 0,
             window: 0,
             generation: 0,
@@ -218,6 +232,7 @@ impl Viewer {
             })?
             .as_nanos();
         Ok(ViewerFilter::new(
+            LEVELS[self.level].1,
             CATEGORIES[self.category],
             self.query.read(cx).text().to_owned(),
             WINDOWS[self.window],
@@ -684,6 +699,14 @@ impl Render for Viewer {
                     .flex()
                     .items_center()
                     .gap(px(6.0))
+                    .child(
+                        control(&format!("level: {}", LEVELS[self.level].0))
+                            .debug_selector(|| "log-level-filter".into())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                view.level = (view.level + 1) % LEVELS.len();
+                                view.filter(cx);
+                            })),
+                    )
                     .child(
                         control(&format!("category: {}", CATEGORIES[self.category])).on_click(
                             cx.listener(|view, _, _, cx| {

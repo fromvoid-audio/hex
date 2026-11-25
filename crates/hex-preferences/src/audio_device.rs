@@ -67,7 +67,7 @@ struct Document {
 
 /// Stable app-support location shared by development and review bundles.
 pub fn audio_device_preferences_path(home: &Path) -> PathBuf {
-    home.join("Library/Application Support/hex/audio-device.json")
+    crate::app_support_dir_from(home).join("audio-device.json")
 }
 
 /// Missing files and omitted fields fall back to Follow System Default without writing.
