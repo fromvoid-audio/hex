@@ -434,7 +434,9 @@ impl Plugins {
                 EditorLane::Explicit => &mut self.editor_ops[index],
                 EditorLane::Visibility => &mut self.editor_visibility[index],
             };
-            if op.request.is_none() && op.retry_after.is_some_and(|at| Instant::now() < at) {
+            if op.request.is_none()
+                && (self.restore.is_some() || op.retry_after.is_some_and(|at| Instant::now() < at))
+            {
                 index += 1;
                 continue;
             }

@@ -1091,6 +1091,9 @@ impl Callback {
                         return;
                     }
                     let diagnostic_context = next.source_context;
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let clear_empty_native_epoch =
+                        matches!(next.policy, PublicationPolicy::InstallUnderNativeEpoch(_));
                     let reset_audible = matches!(
                         next.policy,
                         PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
@@ -1112,12 +1115,17 @@ impl Callback {
                     // old graph can be destroyed on control and release its
                     // native references. No lock/allocation/owner drop occurs.
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                    self.native_sources.refresh_runtime_requirements(
-                        self.active
-                            .as_ref()
-                            .and_then(ActivePublication::legacy)
-                            .map(|active| active.playback.as_ref()),
-                    );
+                    {
+                        if clear_empty_native_epoch {
+                            self.native_sources.clear_returned_empty_epoch();
+                        }
+                        self.native_sources.refresh_runtime_requirements(
+                            self.active
+                                .as_ref()
+                                .and_then(ActivePublication::legacy)
+                                .map(|active| active.playback.as_ref()),
+                        );
+                    }
                     if let Some(ActivePublication::Legacy(previous)) = previous {
                         self.return_graph(previous);
                     }
@@ -1166,6 +1174,40 @@ mod tests {
         let mut block = [[1.0; 2]; 16];
         callback.render(&mut block).unwrap();
         assert_eq!(block, [[0.0; 2]; 16]);
+        assert_eq!(control.status.applied_revision.load(Acquire), 0);
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn returned_empty_native_epoch_admits_fallback_graph_without_foreign_bindings() {
+        let (control, mut callback) = channel(48_000).unwrap();
+        let project = hex_project::Project::new(48_000).unwrap();
+        let prepared = hex_engine::PreparedRevision::prepare(
+            &project,
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        let playback = hex_engine::playback::Playback::from_prepared(Arc::new(prepared));
+        // Before any epoch return, a revoked cycle with no epoch_returned flag
+        // still refuses installation.
+        callback.native_sources.reject_rendering();
+        assert!(
+            !callback
+                .native_sources
+                .runtime_transports_are_live(&playback)
+        );
+        // Once request_epoch_return empties the bank, a 0-foreign-binding
+        // fallback graph is admitted and clears the returned empty epoch.
+        callback.native_sources.request_epoch_return();
+        assert!(
+            callback
+                .native_sources
+                .runtime_transports_are_live(&playback)
+        );
+        callback.native_sources.clear_returned_empty_epoch();
+        assert!(callback.native_sources.transports_are_live());
         assert_eq!(control.status.applied_revision.load(Acquire), 0);
     }
 }

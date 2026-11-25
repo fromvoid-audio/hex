@@ -622,10 +622,18 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
             project_generation,
             output_identity,
             devices,
-            ..
-        } => format!(
-            "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?}"
-        ),
+            reasons,
+        } => {
+            if reasons.is_empty() {
+                format!(
+                    "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?}"
+                )
+            } else {
+                format!(
+                    "stage=degraded_plugins generation={project_generation} output={output_identity} devices={devices:?} reasons={reasons:?}"
+                )
+            }
+        }
         E::Publication {
             context,
             output_identity,
@@ -1056,9 +1064,11 @@ mod tests {
         assert!(
             contents.lines().any(|line| {
                 line.contains("level=warn category=audio")
-                    && line.contains("stage=degraded_plugins generation=0 output=1 devices=[42]")
+                    && line.contains(
+                        r#"stage=degraded_plugins generation=0 output=1 devices=[42] reasons=[(42, \"vst3 helper exited\")]"#,
+                    )
             }),
-            "non-empty degraded set should warn:\n{contents}"
+            "non-empty degraded set should warn with reasons:\n{contents}"
         );
         std::fs::remove_dir_all(directory).unwrap();
     }
