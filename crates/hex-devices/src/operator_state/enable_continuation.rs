@@ -77,15 +77,18 @@ impl PreparedAnalyticContinuation for PreparedOperatorContext {
             .as_any()
             .downcast_ref::<Self>()
             .ok_or(AnalyticContinuationError::IncompatibleSource)?;
-        // Compare complete authored state, including future append-only laws.
+        // Compare complete authored settings except operator enable switches.
         // Effective endpoints alone cannot distinguish a toggle from a level edit.
-        let current = self.authored_state.payload();
-        let previous = source.authored_state.payload();
+        let Ok(mut current) = OperatorSettings::from_state(&self.authored_state) else {
+            return Err(AnalyticContinuationError::IncompatibleSource);
+        };
+        let Ok(mut previous) = OperatorSettings::from_state(&source.authored_state) else {
+            return Err(AnalyticContinuationError::IncompatibleSource);
+        };
+        current.enabled = enable::EnableSettings::default();
+        previous.enabled = enable::EnableSettings::default();
         if self.authored_state.state_version() != source.authored_state.state_version()
-            || current.len() != previous.len()
-            || current.get(..LFO_PAYLOAD_BYTES) != previous.get(..LFO_PAYLOAD_BYTES)
-            || current.get(LFO_PAYLOAD_BYTES + enable::BYTES..)
-                != previous.get(LFO_PAYLOAD_BYTES + enable::BYTES..)
+            || current != previous
             || !self
                 .configuration
                 .retarget_compatible_with(&source.configuration)

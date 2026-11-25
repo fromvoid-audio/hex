@@ -10,15 +10,23 @@ fn patch(state: &NativeDeviceState, id: ParameterId, value: ParameterValue) -> N
 fn version_two_migration_preserves_waveform_prefix_and_legacy_pcm() {
     let mut current = tests::legacy_state();
     current = patch(&current, parameter::waveform(2), ParameterValue::Choice(2));
+    let v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     let legacy = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
         2,
-        current.payload()[..WAVEFORM_PAYLOAD_BYTES].to_vec(),
+        v17.payload()[..WAVEFORM_PAYLOAD_BYTES].to_vec(),
     )
     .expect("version two");
     let migrated = OPERATOR_METADATA.migrate_state(&legacy).expect("migration");
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     assert_eq!(
-        &migrated.payload()[..WAVEFORM_PAYLOAD_BYTES],
+        &migrated_v17.payload()[..WAVEFORM_PAYLOAD_BYTES],
         legacy.payload()
     );
     assert_eq!(migrated, current);
@@ -53,17 +61,25 @@ fn version_three_migration_preserves_fixed_tuning_and_defaults_velocity_neutral(
         ParameterValue::Float(2.25),
     );
     current = patch(&current, parameter::fixed(3), ParameterValue::Bool(true));
+    let v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     let legacy = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
         TUNING_STATE_VERSION,
-        current.payload()[..TUNING_PAYLOAD_BYTES].to_vec(),
+        v17.payload()[..TUNING_PAYLOAD_BYTES].to_vec(),
     )
     .expect("version three state");
     let migrated = OPERATOR_METADATA.migrate_state(&legacy).expect("migration");
     assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
-    assert_eq!(migrated.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(migrated.payload().len(), tlv_codec::CANONICAL_BYTES);
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     assert_eq!(
-        &migrated.payload()[..TUNING_PAYLOAD_BYTES],
+        &migrated_v17.payload()[..TUNING_PAYLOAD_BYTES],
         legacy.payload()
     );
     for operator in 1..=4 {
@@ -100,16 +116,24 @@ fn version_four_migration_preserves_exact_prefix_and_defaults_feedback_neutral()
         parameter::amplitude_velocity(4),
         ParameterValue::Float(0.625),
     );
+    let v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     let v4 = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
         4,
-        current.payload()[..VELOCITY_PAYLOAD_BYTES].to_vec(),
+        v17.payload()[..VELOCITY_PAYLOAD_BYTES].to_vec(),
     )
     .expect("version four state");
     let migrated = OPERATOR_METADATA.migrate_state(&v4).expect("migration");
     assert_eq!(v4.payload().len(), 304);
-    assert_eq!(migrated.payload().len(), PAYLOAD_BYTES);
-    assert_eq!(&migrated.payload()[..304], v4.payload());
+    assert_eq!(migrated.payload().len(), tlv_codec::CANONICAL_BYTES);
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    assert_eq!(&migrated_v17.payload()[..304], v4.payload());
     assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
     for operator in 1..=4 {
         assert_eq!(

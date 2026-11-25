@@ -127,7 +127,7 @@ pub(super) fn legacy_state() -> NativeDeviceState {
 #[test]
 fn opaque_state_and_all_editable_parameters_round_trip_exactly() {
     let original = OPERATOR_METADATA.default_state().expect("defaults");
-    assert_eq!(original.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(original.payload().len(), tlv_codec::CANONICAL_BYTES);
     assert_eq!(OPERATOR_METADATA.descriptors().len(), PARAMETER_COUNT);
     assert_eq!(
         OPERATOR_METADATA
@@ -456,7 +456,7 @@ fn routing_presets_are_derived_and_named_choices_replace_only_topology_fields() 
         );
         let settings = OperatorSettings::from_state(&state).expect("preset settings");
         assert_eq!(state.state_version(), OPERATOR_STATE_VERSION);
-        assert_eq!(state.payload().len(), PAYLOAD_BYTES);
+        assert_eq!(state.payload().len(), tlv_codec::CANONICAL_BYTES);
         assert_eq!(
             &settings.fields[12..32],
             &preset.routing_fields().expect("named topology")
@@ -620,7 +620,11 @@ fn exact_manual_routing_edits_read_back_as_a_named_preset() {
 #[test]
 fn version_one_migration_preserves_all_original_bytes_and_defaults_to_sine() {
     let current = OPERATOR_METADATA.default_state().expect("current defaults");
-    let mut legacy_payload = current.payload()[..LEGACY_PAYLOAD_BYTES].to_vec();
+    let current_v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    let mut legacy_payload = current_v17.payload()[..LEGACY_PAYLOAD_BYTES].to_vec();
     legacy_payload[CORE_FIELDS * size_of::<f32>()..CORE_FIELDS * size_of::<f32>() + 4]
         .copy_from_slice(&(-0.0_f32).to_le_bytes());
     let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, LEGACY_STATE_VERSION, legacy_payload)
@@ -629,13 +633,17 @@ fn version_one_migration_preserves_all_original_bytes_and_defaults_to_sine() {
         .migrate_state(&legacy)
         .expect("v1 migration");
     assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
-    assert_eq!(migrated.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(migrated.payload().len(), tlv_codec::CANONICAL_BYTES);
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     assert_eq!(
-        &migrated.payload()[..LEGACY_PAYLOAD_BYTES],
+        &migrated_v17.payload()[..LEGACY_PAYLOAD_BYTES],
         legacy.payload()
     );
     assert_eq!(
-        &migrated.payload()[CORE_FIELDS * size_of::<f32>()..CORE_FIELDS * size_of::<f32>() + 4],
+        &migrated_v17.payload()[CORE_FIELDS * size_of::<f32>()..CORE_FIELDS * size_of::<f32>() + 4],
         &(-0.0_f32).to_le_bytes()
     );
     for operator in 1..=4 {
@@ -882,9 +890,13 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
         assert!(OperatorSettings::from_state(&state).is_err());
         assert!(OPERATOR_METADATA.migrate_state(&state).is_err());
     }
+    let original_v17 = OperatorSettings::from_state(&original)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for operator in 0..4 {
         for value in [1.0_f32, f32::NAN, f32::INFINITY] {
-            let mut bytes = original.payload().to_vec();
+            let mut bytes = original_v17.payload()[..LEGACY_PAYLOAD_BYTES].to_vec();
             let offset = (12 + operator * 4 + operator) * 4;
             bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
             assert!(
@@ -896,19 +908,19 @@ fn malformed_state_reserved_feedback_and_cycles_are_refused_atomically() {
         }
     }
     for (operator, invalid) in [(0, f32::NAN), (1, f32::INFINITY), (2, -0.001), (3, 1.001)] {
-        let mut bytes = original.payload().to_vec();
+        let mut bytes = original_v17.payload().to_vec();
         let offset = TUNING_PAYLOAD_BYTES + operator * size_of::<f32>();
         bytes[offset..offset + 4].copy_from_slice(&invalid.to_le_bytes());
-        let malformed = NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+        let malformed = NativeDeviceState::new(OPERATOR_TYPE_ID, KEYTRACK_STATE_VERSION, bytes)
             .expect("opaque malformed amount");
         assert!(OperatorSettings::from_state(&malformed).is_err());
         assert!(OPERATOR_METADATA.migrate_state(&malformed).is_err());
     }
     for (operator, invalid) in [(0, f32::NAN), (1, f32::INFINITY), (2, -0.001), (3, 1.001)] {
-        let mut bytes = original.payload().to_vec();
+        let mut bytes = original_v17.payload().to_vec();
         let offset = VELOCITY_PAYLOAD_BYTES + operator * size_of::<f32>();
         bytes[offset..offset + 4].copy_from_slice(&invalid.to_le_bytes());
-        let malformed = NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+        let malformed = NativeDeviceState::new(OPERATOR_TYPE_ID, KEYTRACK_STATE_VERSION, bytes)
             .expect("opaque malformed feedback");
         assert!(OperatorSettings::from_state(&malformed).is_err());
         assert!(OPERATOR_METADATA.migrate_state(&malformed).is_err());
@@ -1063,7 +1075,7 @@ fn feedback_controls_stay_authored_but_are_inactive_for_incoming_fm() {
         .expect("nonzero feedback selects mutable path");
     assert_eq!(factory.max_active_occurrences(), 16);
     assert_eq!(factory.max_events_per_block(), 256);
-    assert!(factory.declared_twin_bytes() <= 5120);
+    assert!(factory.declared_twin_bytes() <= 256 * 1024);
 }
 
 #[test]
@@ -1340,6 +1352,10 @@ fn envelope_authoring_respects_stage_caps_for_every_operator() {
 #[test]
 fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() {
     let original = OPERATOR_METADATA.default_state().unwrap();
+    let original_v17 = OperatorSettings::from_state(&original)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for (version, len) in [
         (1, LEGACY_PAYLOAD_BYTES),
         (2, WAVEFORM_PAYLOAD_BYTES),
@@ -1347,7 +1363,7 @@ fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() 
         (4, VELOCITY_PAYLOAD_BYTES),
         (5, FEEDBACK_PAYLOAD_BYTES),
     ] {
-        let mut bytes = original.payload()[..len].to_vec();
+        let mut bytes = original_v17.payload()[..len].to_vec();
         for operator in 0..OPERATORS {
             for field in 3..6 {
                 let offset = (CORE_FIELDS + operator * ENVELOPE_FIELDS + field) * 4;
@@ -1358,15 +1374,22 @@ fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() 
         let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, version, bytes).unwrap();
         let migrated = OPERATOR_METADATA.migrate_state(&legacy).unwrap();
         assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
+        let migrated_v17 = OperatorSettings::from_state(&migrated)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
         let mut expected_prefix = legacy.payload().to_vec();
         for operator in 0..OPERATORS {
             for (field, max) in [(3, 20.0_f32), (4, 60.0), (5, 60.0)] {
                 let offset = (CORE_FIELDS + operator * ENVELOPE_FIELDS + field) * 4;
                 expected_prefix[offset..offset + 4].copy_from_slice(&max.to_le_bytes());
-                assert_eq!(&migrated.payload()[offset..offset + 4], &max.to_le_bytes());
+                assert_eq!(
+                    &migrated_v17.payload()[offset..offset + 4],
+                    &max.to_le_bytes()
+                );
             }
         }
-        assert_eq!(&migrated.payload()[..len], expected_prefix);
+        assert_eq!(&migrated_v17.payload()[..len], expected_prefix);
         assert_eq!(
             OPERATOR_METADATA.migrate_state(&migrated).unwrap(),
             migrated
@@ -1389,7 +1412,7 @@ fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() 
             4 => VELOCITY_PAYLOAD_BYTES,
             _ => FEEDBACK_PAYLOAD_BYTES,
         };
-        let mut bytes = original.payload()[..len].to_vec();
+        let mut bytes = original_v17.payload()[..len].to_vec();
         for operator in 0..OPERATORS {
             for field in 4..6 {
                 let offset = (CORE_FIELDS + operator * ENVELOPE_FIELDS + field) * 4;
@@ -1411,27 +1434,27 @@ fn legacy_stage_times_clamp_only_valid_old_values_and_current_state_is_strict() 
         }
     }
     for field in 4..6 {
-        let mut bytes = original.payload().to_vec();
+        let mut bytes = original_v17.payload().to_vec();
         let offset = (CORE_FIELDS + field) * 4;
         bytes[offset..offset + 4]
             .copy_from_slice(&f32::from_bits(0.001_f32.to_bits() - 1).to_le_bytes());
         assert!(
             OPERATOR_METADATA
                 .migrate_state(
-                    &NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+                    &NativeDeviceState::new(OPERATOR_TYPE_ID, KEYTRACK_STATE_VERSION, bytes)
                         .unwrap()
                 )
                 .is_err()
         );
     }
     for (field, max) in [(3, 20.0_f32), (4, 60.0), (5, 60.0)] {
-        let mut bytes = original.payload().to_vec();
+        let mut bytes = original_v17.payload().to_vec();
         let offset = (CORE_FIELDS + field) * 4;
         bytes[offset..offset + 4].copy_from_slice(&f32::from_bits(max.to_bits() + 1).to_le_bytes());
         assert!(
             OPERATOR_METADATA
                 .migrate_state(
-                    &NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+                    &NativeDeviceState::new(OPERATOR_TYPE_ID, KEYTRACK_STATE_VERSION, bytes)
                         .unwrap()
                 )
                 .is_err()

@@ -3,8 +3,12 @@ use crate::fm4::PreparedOperatorNote;
 #[test]
 fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
     let current = crate::operator_state::tests::legacy_state();
-    assert_eq!(current.payload().len(), 1760);
+    assert_eq!(current.payload().len(), tlv_codec::CANONICAL_BYTES);
     assert_eq!(OPERATOR_METADATA.descriptors().len(), 432);
+    let current_v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -22,18 +26,26 @@ fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
         let old = NativeDeviceState::new(
             OPERATOR_TYPE_ID,
             version,
-            current.payload()[..length].to_vec(),
+            current_v17.payload()[..length].to_vec(),
         )
         .unwrap();
         let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-        assert_eq!(&migrated.payload()[..length], old.payload());
+        let migrated_v17 = OperatorSettings::from_state(&migrated)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
+        assert_eq!(&migrated_v17.payload()[..length], old.payload());
         assert_eq!(migrated, current);
     }
     let catalog = OPERATOR_METADATA
         .patch_parameter(&current, parameter::waveform(1), ParameterValue::Choice(22))
         .unwrap();
-    let v13 =
-        NativeDeviceState::new(OPERATOR_TYPE_ID, 13, catalog.payload()[..1488].to_vec()).unwrap();
+    let catalog_v17 = OperatorSettings::from_state(&catalog)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    let v13 = NativeDeviceState::new(OPERATOR_TYPE_ID, 13, catalog_v17.payload()[..1488].to_vec())
+        .unwrap();
     assert_eq!(
         OPERATOR_METADATA
             .read_parameter(
@@ -46,7 +58,7 @@ fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
     let v12 = NativeDeviceState::new(OPERATOR_TYPE_ID, 12, v13.payload().to_vec()).unwrap();
     assert!(OPERATOR_METADATA.migrate_state(&v12).is_err());
     for length in [1615, 1617] {
-        let mut bytes = current.payload().to_vec();
+        let mut bytes = current_v17.payload().to_vec();
         bytes.resize(length, 0);
         assert!(
             OPERATOR_METADATA
@@ -64,7 +76,7 @@ fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
         (6, 0),
         (7, 11),
     ] {
-        let mut bytes = current.payload()[..1616].to_vec();
+        let mut bytes = current_v17.payload()[..1616].to_vec();
         let offset = 1488 + field * 4;
         bytes[offset..offset + 4].copy_from_slice(&word.to_le_bytes());
         assert!(

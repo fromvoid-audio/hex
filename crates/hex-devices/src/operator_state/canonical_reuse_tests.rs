@@ -87,9 +87,12 @@ fn canonical_v12_reuses_the_actual_input_payload_owner_and_keeps_it_alive() {
     let prepared = context(&input);
     let authored = &operator(prepared.as_ref()).authored_state;
     assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
-    assert_eq!(authored.payload().len(), PAYLOAD_BYTES); // Arc slice, no retained Vec slack.
+    assert_eq!(authored.payload().len(), tlv_codec::CANONICAL_BYTES); // Arc slice, no retained Vec slack.
     assert!(std::ptr::eq(authored.payload(), input.payload()));
-    assert_eq!(prepared.declared_context_bytes(), 3056); // Includes host gains and asset-list metadata.
+    assert_eq!(
+        prepared.declared_context_bytes(),
+        3056 + (tlv_codec::CANONICAL_BYTES - PAYLOAD_BYTES)
+    ); // Includes host gains and asset-list metadata.
     drop(input);
     assert_eq!(
         operator(prepared.as_ref())
@@ -126,7 +129,8 @@ fn exact_bytes_retain_signed_zero_disabled_oscillator_and_inactive_lfo_history()
     let authored = &operator(prepared.as_ref()).authored_state;
     assert!(std::ptr::eq(authored.payload(), input.payload()));
     assert_eq!(authored.payload(), input.payload());
-    assert_eq!(&authored.payload()[288..292], &(-0.0f32).to_le_bytes());
+    let decoded = OperatorSettings::from_state(authored).unwrap();
+    assert_eq!(decoded.amplitude_velocity[0].to_bits(), (-0.0f32).to_bits());
     assert_eq!(
         OPERATOR_METADATA.read_parameter(authored, parameter::enabled(3)),
         Ok(ParameterValue::Bool(false))
@@ -176,7 +180,10 @@ fn equal_content_on_unrelated_input_owners_does_not_intern_contexts_or_payloads(
 
 #[test]
 fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
-    let current = tests::legacy_state();
+    let current_v17 = OperatorSettings::from_state(&tests::legacy_state())
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for (version, len) in [
         (1, 224),
         (2, 240),
@@ -188,9 +195,12 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
         (8, 380),
         (11, 416),
     ] {
-        let input =
-            NativeDeviceState::new(OPERATOR_TYPE_ID, version, current.payload()[..len].to_vec())
-                .unwrap();
+        let input = NativeDeviceState::new(
+            OPERATOR_TYPE_ID,
+            version,
+            current_v17.payload()[..len].to_vec(),
+        )
+        .unwrap();
         let canonical = OperatorSettings::from_state(&input)
             .unwrap()
             .to_state()
@@ -199,7 +209,7 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
         let authored = &operator(prepared.as_ref()).authored_state;
         assert_eq!(authored, &canonical);
         assert_eq!(authored.state_version(), OPERATOR_STATE_VERSION);
-        assert_eq!(authored.payload().len(), PAYLOAD_BYTES);
+        assert_eq!(authored.payload().len(), tlv_codec::CANONICAL_BYTES);
         assert!(!std::ptr::eq(authored.payload(), input.payload()));
         exact_pcm_and_provider(prepared.as_ref(), context(&canonical).as_ref());
     }
@@ -207,16 +217,20 @@ fn every_legacy_version_keeps_required_canonical_allocation_and_exact_pcm() {
 
 #[test]
 fn legacy_duration_normalization_keeps_new_bytes_and_input_unchanged() {
-    let current = tests::legacy_state();
+    let current_v17 = OperatorSettings::from_state(&tests::legacy_state())
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for (version, len) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320)] {
-        let mut bytes = current.payload()[..len].to_vec();
+        let mut bytes = current_v17.payload()[..len].to_vec();
         bytes[35 * 4..36 * 4].copy_from_slice(&120.0f32.to_le_bytes());
         let input = NativeDeviceState::new(OPERATOR_TYPE_ID, version, bytes.clone()).unwrap();
         let canonical = OperatorSettings::from_state(&input)
             .unwrap()
             .to_state()
             .unwrap();
-        assert_ne!(&canonical.payload()[35 * 4..36 * 4], &bytes[35 * 4..36 * 4]);
+        let canonical_settings = OperatorSettings::from_state(&canonical).unwrap();
+        assert_ne!(canonical_settings.fields[35], 120.0);
         let prepared = context(&input);
         let authored = &operator(prepared.as_ref()).authored_state;
         assert_eq!(authored, &canonical);

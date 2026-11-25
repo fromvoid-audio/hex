@@ -196,19 +196,30 @@ mod tests {
     #[test]
     fn legacy_prefixes_migrate_neutral_and_all_inactive_lfo_words_are_strict() {
         let current = crate::operator_state::tests::legacy_state();
+        let current_v17 = crate::operator_state::OperatorSettings::from_state(&current)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
         for (version, length) in [(1, 224), (2, 240), (3, 288), (4, 304), (5, 320), (6, 320)] {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,
                 version,
-                current.payload()[..length].to_vec(),
+                current_v17.payload()[..length].to_vec(),
             )
             .unwrap();
             let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-            assert_eq!(&migrated.payload()[..length], old.payload());
-            assert_eq!(&migrated.payload()[320..], &current.payload()[320..]);
+            let migrated_v17 = crate::operator_state::OperatorSettings::from_state(&migrated)
+                .unwrap()
+                .to_v17_state()
+                .unwrap();
+            assert_eq!(&migrated_v17.payload()[..length], old.payload());
+            assert_eq!(
+                &migrated_v17.payload()[320..],
+                &current_v17.payload()[320..]
+            );
             assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
         }
-        let mut invalid_v6 = current.payload()[..320].to_vec();
+        let mut invalid_v6 = current_v17.payload()[..320].to_vec();
         invalid_v6[36 * 4..37 * 4].copy_from_slice(&0.0_f32.to_le_bytes());
         assert!(
             OPERATOR_METADATA
@@ -231,7 +242,7 @@ mod tests {
             (9, 2),
             (10, 2),
         ] {
-            let mut bytes = current.payload()[..364].to_vec();
+            let mut bytes = current_v17.payload()[..364].to_vec();
             bytes[320 + word * 4..324 + word * 4].copy_from_slice(&invalid.to_le_bytes());
             let bad = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, bytes).unwrap();
             assert!(OPERATOR_METADATA.migrate_state(&bad).is_err());

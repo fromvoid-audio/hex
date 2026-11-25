@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = KEYTRACK_STATE_VERSION;
+pub const OPERATOR_STATE_VERSION: u32 = TLV_STATE_VERSION;
+const TLV_STATE_VERSION: u32 = 18;
 const KEYTRACK_STATE_VERSION: u32 = 17;
 const FINE_STATE_VERSION: u32 = 16;
 const GLOBAL_STATE_VERSION: u32 = 15;
@@ -35,6 +36,7 @@ const FEEDBACK_STATE_VERSION: u32 = 5;
 const TUNING_STATE_VERSION: u32 = 3;
 const WAVEFORM_STATE_VERSION: u32 = 2;
 pub mod algorithms;
+mod automation;
 mod companion;
 mod enable;
 mod filter_response;
@@ -45,13 +47,16 @@ mod harmonic_runtime;
 mod harmonics;
 mod keytrack;
 mod modulation;
+mod tlv_codec;
 pub use harmonics::{
     partial as harmonic_parameter, range as harmonic_range_parameter,
     repeat as harmonic_repeat_parameter,
 };
 mod enable_continuation;
+#[cfg(test)]
 mod feedback_runtime;
 mod lfo;
+#[cfg(test)]
 mod lfo_runtime;
 mod occurrence_gain;
 mod tuning;
@@ -94,6 +99,7 @@ const PAYLOAD_BYTES: usize = FINE_PAYLOAD_BYTES + keytrack::BYTES;
 const ENVELOPE_DEFAULTS: [f32; ENVELOPE_FIELDS] = [0.0, 1.0, 0.7, 0.005, 0.1, 0.1];
 
 pub mod parameter {
+    pub use super::automation::{FILTER_FREQUENCY, FILTER_MORPH, FILTER_RESONANCE};
     pub use crate::fm4::device::parameter::{
         carrier, modulation, oscillator_level, oscillator_phase, oscillator_ratio,
     };
@@ -536,6 +542,9 @@ impl OperatorSettings {
         if state.type_id() != OPERATOR_TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
         }
+        if state.state_version() == TLV_STATE_VERSION {
+            return tlv_codec::decode(state.payload());
+        }
         let expected_len = match state.state_version() {
             LEGACY_STATE_VERSION => LEGACY_PAYLOAD_BYTES,
             WAVEFORM_STATE_VERSION => WAVEFORM_PAYLOAD_BYTES,
@@ -549,7 +558,7 @@ impl OperatorSettings {
             COMPANION_STATE_VERSION => COMPANION_PAYLOAD_BYTES,
             GLOBAL_STATE_VERSION => MODULATION_PAYLOAD_BYTES,
             FINE_STATE_VERSION => FINE_PAYLOAD_BYTES,
-            OPERATOR_STATE_VERSION => PAYLOAD_BYTES,
+            KEYTRACK_STATE_VERSION => PAYLOAD_BYTES,
             _ => return Err(DeviceContractError::UnsupportedStateVersion),
         };
         if state.payload().len() != expected_len {
@@ -715,6 +724,15 @@ impl OperatorSettings {
 
     pub fn to_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         self.kernel_parts()?;
+        let payload = tlv_codec::encode(self)?;
+        NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
+    }
+
+    /// Encode the historical v17 flat positional layout (used for lossless
+    /// migration fixtures and compatibility checks).
+    #[cfg(test)]
+    pub(crate) fn to_v17_state(self) -> Result<NativeDeviceState, DeviceContractError> {
+        self.kernel_parts()?;
         let mut payload = Vec::new();
         payload
             .try_reserve_exact(PAYLOAD_BYTES)
@@ -741,7 +759,44 @@ impl OperatorSettings {
         self.modulation.append(&mut payload);
         self.fine.append(&mut payload);
         self.pitch_keytrack.append(&mut payload);
-        NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
+        NativeDeviceState::new(OPERATOR_TYPE_ID, KEYTRACK_STATE_VERSION, payload)
+    }
+
+    /// Canonical fixed-layout base prefix (fields + waveforms + tuning + velocity +
+    /// feedback + lfo + enabled) used for runtime retarget compatibility checks.
+    pub(super) fn encode_base_prefix(&self) -> [u8; ENABLE_PAYLOAD_BYTES] {
+        let mut bytes = [0_u8; ENABLE_PAYLOAD_BYTES];
+        let mut cursor = 0;
+        for field in self.fields {
+            bytes[cursor..cursor + 4].copy_from_slice(&field.to_le_bytes());
+            cursor += 4;
+        }
+        for waveform in self.waveforms {
+            bytes[cursor..cursor + 4].copy_from_slice(&waveform.choice().to_le_bytes());
+            cursor += 4;
+        }
+        let mut scratch = Vec::new();
+        self.tuning.append(&mut scratch);
+        bytes[cursor..cursor + tuning::BYTES].copy_from_slice(&scratch);
+        cursor += tuning::BYTES;
+        for amount in self.amplitude_velocity {
+            bytes[cursor..cursor + 4].copy_from_slice(&amount.to_le_bytes());
+            cursor += 4;
+        }
+        for amount in self.feedback {
+            bytes[cursor..cursor + 4].copy_from_slice(&amount.to_le_bytes());
+            cursor += 4;
+        }
+        scratch.clear();
+        self.lfo.append(&mut scratch);
+        bytes[cursor..cursor + lfo::BYTES].copy_from_slice(&scratch);
+        cursor += lfo::BYTES;
+        scratch.clear();
+        self.enabled.append(&mut scratch);
+        bytes[cursor..cursor + enable::BYTES].copy_from_slice(&scratch);
+        cursor += enable::BYTES;
+        debug_assert_eq!(cursor, ENABLE_PAYLOAD_BYTES);
+        bytes
     }
 
     // Control preparation still runs the canonical encoder and preserves its
@@ -936,6 +991,7 @@ impl OperatorSettings {
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 pub(super) struct FilterVoiceSeed {
     note: PreparedOperatorNote,
@@ -962,6 +1018,14 @@ impl NativeDeviceMetadata for OperatorMetadata {
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &PARAMETERS
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        OperatorSettings::from_state(state)?;
+        Ok(automation::parameter_semantics(parameter))
     }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         OperatorSettings::defaults().to_state()
@@ -1224,26 +1288,12 @@ impl NativeInstrumentDefinition for OperatorMetadata {
         // The shared table is initialized on the control side before any
         // callback can borrow it for note sampling.
         let sine_table = crate::shared_sine_table();
-        let lfo_runtime = lfo_runtime::prepare_factory(
-            &settings,
-            configuration.clone(),
-            sample_rate,
-            sine_table,
-        )?;
-        let feedback_runtime = feedback_runtime::prepare_factory(
-            &settings,
-            configuration.clone(),
-            sample_rate,
-            sine_table,
-        )?;
         Ok(Box::new(PreparedOperatorInstrument {
             configuration: configuration.clone(),
             authored_state,
             effective_levels,
             continuation_format,
             sine_table,
-            feedback_runtime,
-            lfo_runtime,
             harmonic_runtime: harmonic_runtime::Factory::new_with_tuning(
                 settings,
                 configuration.clone(),
@@ -1261,8 +1311,6 @@ struct PreparedOperatorInstrument {
     effective_levels: [f64; OPERATORS],
     continuation_format: hex_lattice::AnalyticContinuationFormat,
     sine_table: &'static SineTable,
-    feedback_runtime: Option<feedback_runtime::OperatorFeedbackFactory>,
-    lfo_runtime: Option<lfo_runtime::OperatorLfoFactory>,
     harmonic_runtime: harmonic_runtime::Factory,
 }
 
@@ -1298,31 +1346,15 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     }
 
     fn validate_event_note(&self, pitch: u8, velocity: u8) -> Result<(), DeviceContractError> {
-        if self.harmonic_runtime.tuning.is_some() {
-            // Custom tuning selects the harmonic runtime even for plain/LFO
-            // voices. Admit exactly its tuned oscillator/excursion domain.
-            let tuning = self.harmonic_runtime.tuning.as_ref();
-            if self.harmonic_runtime.settings.lfo.active() {
-                self.configuration
-                    .prepare_lfo_note_with_tuning(pitch, velocity, tuning)
-            } else {
-                self.configuration
-                    .prepare_note_with_tuning(pitch, velocity, tuning)
-            }
-            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
-        } else if let Some(factory) = self.lfo_runtime.as_ref() {
-            factory
-                .prepare_note_for_runtime(pitch, velocity)
-                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
-        } else if self.harmonic_runtime.settings.lfo.active() {
+        let tuning = self.harmonic_runtime.tuning.as_ref();
+        if self.harmonic_runtime.settings.lfo.active() {
             self.configuration
-                .prepare_lfo_note(pitch, velocity)
-                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+                .prepare_lfo_note_with_tuning(pitch, velocity, tuning)
         } else {
             self.configuration
-                .prepare_note(pitch, velocity)
-                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+                .prepare_note_with_tuning(pitch, velocity, tuning)
         }
+        .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         Ok(())
     }
 
@@ -1334,21 +1366,22 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         &self,
     ) -> Result<Option<Box<dyn PreparedSharedAnalyticContext>>, DeviceContractError> {
         if self.prefers_mutable_continuation()
-            || self.feedback_runtime.is_some()
-            || self.lfo_runtime.is_some()
+            || self.harmonic_runtime.settings.lfo.active()
+            || self.harmonic_runtime.settings.effective_feedback() != [0.0; OPERATORS]
+            || self.harmonic_runtime.settings.filter.armed
         {
-            // Mutable feedback must never be silently rendered through the
-            // legacy analytic sampler. Event-source compilation owns this
-            // instrument through `prepare_mutable_runtime` instead.
+            // Mutable execution (feedback, LFO, filter, harmonics, global,
+            // companion, tuning, or parameter automation/modulation) routes
+            // through the single unified `harmonic_runtime::Factory`.
             return Ok(None);
         }
         Ok(Some(Box::new(PreparedOperatorContext {
+            companion: self.harmonic_runtime.settings.companion,
             configuration: self.configuration.clone(),
             authored_state: self.authored_state.clone(),
             effective_levels: self.effective_levels,
             continuation_format: self.continuation_format,
             sine_table: self.sine_table,
-            companion: self.harmonic_runtime.settings.companion,
         })))
     }
 
@@ -1356,17 +1389,14 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
         &self,
     ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, DeviceContractError>
     {
-        if self.prefers_mutable_continuation() {
+        if self.prefers_mutable_continuation()
+            || self.harmonic_runtime.settings.lfo.active()
+            || self.harmonic_runtime.settings.effective_feedback() != [0.0; OPERATORS]
+            || self.harmonic_runtime.settings.filter.armed
+        {
             return self.prepare_mutable_continuation_runtime();
         }
-        if let Some(factory) = self.lfo_runtime.as_ref() {
-            return Ok(Some(
-                Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>
-            ));
-        }
-        Ok(self.feedback_runtime.as_ref().map(|factory| {
-            Box::new(factory.clone()) as Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>
-        }))
+        Ok(None)
     }
 }
 

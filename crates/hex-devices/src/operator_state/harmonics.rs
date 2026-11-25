@@ -271,7 +271,11 @@ mod tests {
     #[test]
     fn version_twelve_preserves_all_legacy_prefixes_and_strictly_validates_banks() {
         let current = crate::operator_state::tests::legacy_state();
-        assert_eq!(current.payload().len(), PAYLOAD_BYTES);
+        assert_eq!(current.payload().len(), tlv_codec::CANONICAL_BYTES);
+        let current_v17 = OperatorSettings::from_state(&current)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
         for (version, len) in [
             (1, 224),
             (2, 240),
@@ -288,11 +292,15 @@ mod tests {
             let old = NativeDeviceState::new(
                 OPERATOR_TYPE_ID,
                 version,
-                current.payload()[..len].to_vec(),
+                current_v17.payload()[..len].to_vec(),
             )
             .unwrap();
             let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-            assert_eq!(&migrated.payload()[..len], old.payload());
+            let migrated_v17 = OperatorSettings::from_state(&migrated)
+                .unwrap()
+                .to_v17_state()
+                .unwrap();
+            assert_eq!(&migrated_v17.payload()[..len], old.payload());
             assert_eq!(migrated, current);
         }
         for operator in 0..4 {
@@ -304,11 +312,11 @@ mod tests {
                 (260, 4),
                 (264, 3),
             ] {
-                let mut bytes = current.payload().to_vec();
+                let mut bytes = current_v17.payload().to_vec();
                 let start = FILTER_PAYLOAD_BYTES + operator * 268 + offset;
                 bytes[start..start + 4].copy_from_slice(&bits.to_le_bytes());
                 let invalid =
-                    NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, bytes)
+                    NativeDeviceState::new(OPERATOR_TYPE_ID, KEYTRACK_STATE_VERSION, bytes)
                         .unwrap();
                 assert!(OPERATOR_METADATA.migrate_state(&invalid).is_err());
             }
@@ -411,9 +419,13 @@ fn expanded_catalog_round_trips_preserves_user_cache_and_rejects_legacy_reinterp
                 .is_err()
         );
     }
+    let original_v17 = OperatorSettings::from_state(&original)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for version in [2, 12, 13] {
         for choice in [4_u32, 5, 22, 23] {
-            let mut bytes = original.payload().to_vec();
+            let mut bytes = original_v17.payload().to_vec();
             if version == 2 {
                 bytes.truncate(WAVEFORM_PAYLOAD_BYTES);
             } else {

@@ -139,11 +139,12 @@ fn prepared_sampler_gain_tracks_samples_and_committed_tail_at_zero_authored_gain
     let mut runtime = pair(&prepared);
     let mut next = pair(&prepared);
     let read_target = |runtime: &NativeInstrumentRuntimePair| {
-        let mut target = [None];
+        let ids = super::super::catalog::DESCRIPTORS.map(|d| d.id);
+        let mut targets = [None; super::super::catalog::PARAMETER_COUNT];
         runtime
-            .copy_committed_parameter_targets(&[GAIN], &mut target)
+            .copy_committed_parameter_targets(&ids, &mut targets)
             .unwrap();
-        target[0].unwrap()
+        targets[0].unwrap()
     };
     let events = [on(0, 1, 60), off(2, 1)];
     let mut output = [[0.0; 2]; 4];
@@ -1557,7 +1558,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
     let age = u64::MAX - 2;
     let position = u128::from(age) * u128::from(prepared.notes[60].unwrap().step);
     let mut runtime = SamplerRuntime {
-        last_gain: prepared.base_gain as f32,
+        last_targets: prepared.base_targets(),
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
         fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
@@ -1658,13 +1659,13 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
         };
         let prepared = prepare(views[0], mode, 2);
         let mut actual = SamplerRuntime {
-            last_gain: prepared.base_gain as f32,
+            last_targets: prepared.base_targets(),
             prepared: prepared.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
         };
         let mut expected = SamplerRuntime {
-            last_gain: prepared.base_gain as f32,
+            last_targets: prepared.base_targets(),
             prepared,
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
@@ -1707,7 +1708,7 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
             actual.preflight_occurrence_gains(events, &gains).unwrap();
             let mut out = vec![[-0.0, 0.125]; length];
             let mut oracle = out.clone();
-            actual.process_with_gains::<false>(events, &mut out, &gains, &resources, &[]);
+            actual.process_with_gains::<false>(events, &mut out, &gains, &resources, None, 0);
             frame_major_oracle(&mut expected, events, &mut oracle, &gains, &resources);
             assert_eq!(
                 out.iter().map(|f| f.map(f32::to_bits)).collect::<Vec<_>>(),

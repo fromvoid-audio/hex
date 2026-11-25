@@ -81,16 +81,20 @@ impl Root {
     pub fn compatible(&self, target: &Self) -> bool {
         let a = self.operator();
         let b = target.operator();
-        let x = a.authored_state.payload();
-        let y = b.authored_state.payload();
+        let (Ok(mut sa), Ok(mut sb)) = (
+            OperatorSettings::from_state(&a.authored_state),
+            OperatorSettings::from_state(&b.authored_state),
+        ) else {
+            return false;
+        };
+        sa.waveforms = [OperatorWaveform::Sine; OPERATORS];
+        sb.waveforms = [OperatorWaveform::Sine; OPERATORS];
+        sa.enabled = enable::EnableSettings::default();
+        sb.enabled = enable::EnableSettings::default();
         self.rate == target.rate
             && a.authored_state.state_version() == OPERATOR_STATE_VERSION
             && b.authored_state.state_version() == OPERATOR_STATE_VERSION
-            && x.len() == PAYLOAD_BYTES
-            && y.len() == PAYLOAD_BYTES
-            && x[..224] == y[..224]
-            && x[240..364] == y[240..364]
-            && x[380..] == y[380..]
+            && sa == sb
             && a.continuation_format == b.continuation_format
     }
 }

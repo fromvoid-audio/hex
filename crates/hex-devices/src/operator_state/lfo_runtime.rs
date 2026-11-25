@@ -51,7 +51,8 @@ pub(super) fn prepare_factory(
     if !settings.lfo.active() && !settings.filter.armed {
         return Ok(None);
     }
-    let state = settings.to_state()?;
+    let _state = settings.to_state()?;
+    let base_prefix = settings.encode_base_prefix();
     let feedback = settings.effective_feedback().map(f64::from);
     configuration
         .feedback_parameters(feedback)
@@ -60,7 +61,7 @@ pub(super) fn prepare_factory(
         release: configuration.release_frames(),
         configuration,
         table,
-        base: state.payload()[..FEEDBACK_PAYLOAD_BYTES]
+        base: base_prefix[..FEEDBACK_PAYLOAD_BYTES]
             .try_into()
             .map_err(|_| DeviceContractError::MalformedState)?,
         lfo: settings.lfo,

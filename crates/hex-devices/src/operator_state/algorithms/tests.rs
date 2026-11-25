@@ -36,8 +36,16 @@ fn every_algorithm_is_distinct_acyclic_and_round_trips_without_a_payload_suffix(
             .unwrap();
         assert_eq!(changed.state_version(), original.state_version());
         assert_eq!(changed.payload().len(), original.payload().len());
-        assert_eq!(&changed.payload()[..48], &original.payload()[..48]);
-        assert_eq!(&changed.payload()[128..], &original.payload()[128..]);
+        let orig_v17 = OperatorSettings::from_state(&original)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
+        let changed_v17 = OperatorSettings::from_state(&changed)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
+        assert_eq!(&changed_v17.payload()[..48], &orig_v17.payload()[..48]);
+        assert_eq!(&changed_v17.payload()[128..], &orig_v17.payload()[128..]);
         assert_eq!(
             OPERATOR_METADATA
                 .read_parameter(&changed, parameter::ALGORITHM)

@@ -3,10 +3,12 @@
 use super::*;
 use crate::operator_waveform::{OperatorWaveformBank, harmonic_cap_index, prepared_bank};
 use hex_lattice::{
-    InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime, NativeInstrumentClock,
-    NativeInstrumentEvent, NativeInstrumentRuntimeError as Error,
-    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
+    DeviceResources, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
+    MAX_INSTRUMENT_AUTOMATION_FRAMES, MutableInstrumentRuntime, NativeInstrumentClock,
+    NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
+    NativeParameterAutomation, PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
+use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterSemantics, ParameterValue};
 use std::any::Any;
 
 mod filter;
@@ -64,7 +66,8 @@ impl Factory {
         rate: u32,
         tuning: Option<hex_lattice::TuningTable>,
     ) -> Result<Self, DeviceContractError> {
-        let state = settings.to_state()?;
+        let _state = settings.to_state()?;
+        let base = settings.encode_base_prefix();
         let parameters = parameter_words(
             configuration
                 .feedback_parameters(settings.effective_feedback().map(f64::from))
@@ -106,9 +109,7 @@ impl Factory {
             uniform_envelopes: configuration.has_uniform_envelopes(),
             configuration,
             tuning,
-            base: state.payload()[..ENABLE_PAYLOAD_BYTES]
-                .try_into()
-                .map_err(|_| DeviceContractError::MalformedState)?,
+            base,
             target: Spectrum::prepare(&settings),
             filter: if settings.global.active {
                 FilterTrajectory::oversampled(settings.filter, rate)?
@@ -329,6 +330,7 @@ pub(super) struct Runtime {
     local_frame: u64,
     ledger: Ledger,
     expression: [f32; 3],
+    last_targets: [f32; automation::TARGET_COUNT],
 }
 // Admission needs identity, age and completion bounds, not oscillator/filter history.
 // Keeping the proof separate prevents full 64-voice machine banks on callback stacks.
@@ -515,8 +517,30 @@ impl PreparedInstrumentHistoryRetarget for Target {
     }
 }
 impl PreparedMutableInstrumentRuntime for Factory {
+    fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
+        &automation::TARGETS
+    }
+    fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
+        automation::parameter_semantics(parameter)
+    }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
+    }
+    fn can_import_analytic_context(
+        &self,
+        source: &dyn hex_lattice::PreparedSharedAnalyticContext,
+    ) -> bool {
+        self.capacity() == VOICES
+            && self.filter.armed
+            && !self.settings.lfo.active()
+            && self.settings.effective_feedback() == [0.0; OPERATORS]
+            && source
+                .import_identity()
+                .and_then(|p| p.downcast_ref::<PreparedOperatorContext>())
+                .is_some_and(|p| {
+                    self.configuration.identical_to(&p.configuration)
+                        && std::ptr::eq(self.table, p.sine_table)
+                })
     }
     fn runtime_version(&self) -> u32 {
         3
@@ -572,6 +596,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
             local_frame: 0,
             ledger: Ledger::default(),
             expression: [0.0; 3],
+            last_targets: automation::base_target_values(&self.settings),
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -680,6 +705,12 @@ impl Runtime {
     }
 }
 impl MutableInstrumentRuntime for Runtime {
+    fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
+        Some(self)
+    }
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        Some(self)
+    }
     fn supports_active_occurrence_ids(&self) -> bool {
         true
     }
@@ -713,6 +744,63 @@ impl MutableInstrumentRuntime for Runtime {
         )
     }
 
+    fn can_import_analytic(&self, notes: &[hex_lattice::NativeInstrumentAnalyticSeed]) -> bool {
+        let release = self.factory.configuration.release_frames();
+        self.factory.capacity() == VOICES
+            && self.filter.armed
+            && !self.factory.settings.lfo.active()
+            && self.factory.settings.effective_feedback() == [0.0; OPERATORS]
+            && notes.len() <= VOICES
+            && self.is_quiescent()
+            && notes.iter().enumerate().all(|(i, seed)| {
+                seed.occurrence_id != 0
+                    && !notes[..i]
+                        .iter()
+                        .any(|other| other.occurrence_id == seed.occurrence_id)
+                    && seed.note.release_frames() == release
+                    && seed.age_frames < u64::MAX
+                    && seed.gate_frame.is_none_or(|gate| {
+                        gate <= seed.age_frames
+                            && gate
+                                .checked_add(release)
+                                .is_some_and(|end| seed.age_frames < end)
+                    })
+                    && PreparedOperatorNote::from_shared_payload(seed.note.payload()).is_some_and(
+                        |note| self.factory.configuration.note_matches_configuration(&note),
+                    )
+            })
+    }
+
+    fn import_analytic(&mut self, notes: &[hex_lattice::NativeInstrumentAnalyticSeed]) {
+        if !self.can_import_analytic(notes) {
+            return;
+        }
+        for (voice, seed) in self.voices.iter_mut().zip(notes) {
+            if let Some(note) = PreparedOperatorNote::from_shared_payload(seed.note.payload()) {
+                *voice = Voice {
+                    note,
+                    phases: PreparedOperatorConfiguration::harmonic_initial_phases(
+                        &note,
+                        seed.age_frames,
+                    ),
+                    age: seed.age_frames,
+                    envelope_age: seed.age_frames as f64,
+                    envelope_gate: seed.gate_frame,
+                    gate: seed.gate_frame,
+                    id: seed.occurrence_id,
+                    ..Voice::default()
+                };
+            }
+        }
+        if self.factory.settings.global.active {
+            self.seed_ledger();
+            self.enforce_polyphony();
+        }
+        self.filter.from = self.filter.target;
+        self.filter.from.wet = 0.0;
+        self.filter.elapsed = 0;
+    }
+
     fn can_import_analytic_history(
         &self,
         history: &hex_lattice::AnalyticInstrumentHistory<'_>,
@@ -723,20 +811,15 @@ impl MutableInstrumentRuntime for Runtime {
         let Some(source) = provider.as_any().downcast_ref::<PreparedOperatorContext>() else {
             return false;
         };
-        let Ok(base) = <&[u8; ENABLE_PAYLOAD_BYTES]>::try_from(
-            source
-                .authored_state
-                .payload()
-                .get(..ENABLE_PAYLOAD_BYTES)
-                .unwrap_or(&[]),
-        ) else {
+        let Ok(source_settings) = OperatorSettings::from_state(&source.authored_state) else {
             return false;
         };
+        let base = source_settings.encode_base_prefix();
         if self.factory.rate != source.configuration.sample_rate()
             || (!history.voices.is_empty() && self.factory.settings.companion != source.companion)
             || !compatible_base(
                 &self.factory.base,
-                base,
+                &base,
                 self.factory.settings.global.active,
             )
             || !std::ptr::eq(self.factory.table, source.sine_table)
@@ -786,16 +869,11 @@ impl MutableInstrumentRuntime for Runtime {
         let Some(source) = provider.as_any().downcast_ref::<PreparedOperatorContext>() else {
             return;
         };
-        let Ok(base) = <&[u8; ENABLE_PAYLOAD_BYTES]>::try_from(
-            source
-                .authored_state
-                .payload()
-                .get(..ENABLE_PAYLOAD_BYTES)
-                .unwrap_or(&[]),
-        ) else {
+        let Ok(source_settings) = OperatorSettings::from_state(&source.authored_state) else {
             return;
         };
-        let Some(spectrum) = builtin_spectrum(base) else {
+        let base = source_settings.encode_base_prefix();
+        let Some(spectrum) = builtin_spectrum(&base) else {
             return;
         };
         self.voices.fill(Voice::default());
@@ -1004,313 +1082,7 @@ impl MutableInstrumentRuntime for Runtime {
         gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
-        let mut cursor = 0;
-        // Events can populate later slots; retirement only removes voices.
-        let mut voice_end = self
-            .voices
-            .iter()
-            .rposition(|voice| voice.id != 0)
-            .map_or(0, |i| i + 1);
-        // Events can create released voices during this block. Once an event
-        // occurs, keep checking until the next block rather than maintaining
-        // another copy of voice ownership state.
-        let mut may_expire = self
-            .voices
-            .iter()
-            .any(|voice| voice.id != 0 && voice.gate.is_some());
-        let companion = self.factory.settings.companion;
-        let needs_companion_beat = companion.needs_clock();
-        let has_modulation = self.factory.configuration.has_modulation();
-        let needs_companion_transport = companion.needs_running();
-        for (offset, frame) in frames.iter_mut().enumerate() {
-            let beat = if needs_companion_beat {
-                clock.and_then(|clock| clock.beat_at_offset(offset))
-            } else {
-                None
-            };
-            let running = if needs_companion_transport {
-                clock.and_then(|clock| clock.transport_is_running())
-            } else {
-                None
-            };
-            if self.factory.companion_active {
-                for voice in &mut self.voices {
-                    if voice.id != 0 {
-                        for machine in voice.machines.iter_mut().flatten() {
-                            let _ = machine.observe(
-                                if self.factory.settings.global.active {
-                                    voice.envelope_age as u64
-                                } else {
-                                    voice.age
-                                },
-                                beat,
-                                running,
-                            );
-                        }
-                    }
-                }
-            }
-            let mut voices_changed = false;
-            while let Some(event) = events.get(cursor) {
-                let at = event.frame_offset();
-                if at != offset {
-                    break;
-                }
-                let origin = clock
-                    .and_then(|clock| clock.performance_frame_at_offset(offset))
-                    .unwrap_or(self.local_frame);
-                let _ = self.apply(*event, origin, beat, running);
-                voices_changed = true;
-                may_expire = true;
-                cursor += 1;
-            }
-            if voices_changed {
-                voice_end = self
-                    .voices
-                    .iter()
-                    .rposition(|voice| voice.id != 0)
-                    .map_or(0, |i| i + 1);
-            }
-            let transition = (self.elapsed < self.frames).then(|| self.spectrum());
-            let spectrum = transition.as_ref().unwrap_or(&self.factory.target);
-            let parameters = self.current_parameters();
-            let filter_frame = self.filter.armed.then(|| self.filter.frame());
-            let law = self.factory.settings.lfo;
-            let delta = if !law.active() {
-                0.0
-            } else if law.sync() {
-                clock
-                    .and_then(|c| c.beat_at_offset(offset).zip(c.beat_at_offset(offset + 1)))
-                    .map_or(0.0, |(a, b)| {
-                        b.saturating_sub(a) as f64 / 4_294_967_296.0 / law.beats()
-                    })
-            } else {
-                law.rate() / f64::from(self.factory.rate)
-            };
-            for voice in self.voices.iter_mut().take(voice_end) {
-                if voice.id == 0 {
-                    continue;
-                }
-                let phase = if law.retrigger() || self.factory.settings.global.active {
-                    (voice.lfo_fraction, voice.lfo_cycle)
-                } else {
-                    self.phase
-                };
-                let multiplier = if law.active() {
-                    ((if self.factory.settings.global.active {
-                        self.factory.lfo_table.sample(
-                            law.0[1],
-                            phase.0,
-                            phase.1,
-                            self.factory.settings.global.interpolation,
-                        )
-                    } else {
-                        lfo::waveform(law.0[1], phase.0, phase.1)
-                    }) * (law.amount()
-                        + if self.factory.settings.global.active {
-                            voice.effective.lfo_amount_delta / 100.0
-                        } else {
-                            0.0
-                        })
-                    .clamp(-1.0, 1.0))
-                    .exp2()
-                } else {
-                    1.0
-                };
-                let quality = self.factory.settings.global.active;
-                let steps = if quality {
-                    voice.pitch_steps
-                } else {
-                    PreparedOperatorConfiguration::lfo_steps(&voice.note)
-                };
-                // Envelope age and machines advance only after both quality
-                // subframes, so one evaluation serves the whole output frame.
-                let age = if quality {
-                    voice.envelope_frame()
-                } else {
-                    voice.age
-                };
-                let gate = if quality {
-                    voice.envelope_gate.unwrap_or(u64::MAX)
-                } else {
-                    voice.gate.unwrap_or(u64::MAX)
-                };
-                let amplitudes = if self.factory.companion_active {
-                    if self.factory.uniform_companion {
-                        [voice.machines[0]
-                            .as_ref()
-                            .map_or(0.0, |machine| machine.level(age)); 4]
-                    } else if self.factory.partial_companion {
-                        partial_levels(&voice.machines, self.factory.companion_sources, age)
-                    } else {
-                        let independent = || {
-                            std::array::from_fn(|i| {
-                                voice.machines[i]
-                                    .as_ref()
-                                    .map_or(0.0, |machine| machine.level(age))
-                            })
-                        };
-                        if self.factory.shared_loop_timing {
-                            companion::Machine::shared_loop_levels(&voice.machines, age)
-                                .unwrap_or_else(independent)
-                        } else {
-                            independent()
-                        }
-                    }
-                } else if self.factory.uniform_envelopes {
-                    self.factory
-                        .configuration
-                        .uniform_envelope_levels(age, gate)
-                } else {
-                    self.factory.configuration.envelope_levels(age, gate)
-                };
-                let mut rendered = 0.0;
-                for subframe in 0..if quality { 2 } else { 1 } {
-                    let (sample, previous) =
-                        self.factory.configuration.sample_with_waveform_sampler(
-                            &voice.note,
-                            amplitudes,
-                            &voice.phases,
-                            voice.previous,
-                            std::array::from_fn(|i| {
-                                (parameters[i]
-                                    * if quality {
-                                        voice.effective.level_gain[i]
-                                    } else {
-                                        1.0
-                                    })
-                                .clamp(0.0, 8.0)
-                            }),
-                            std::array::from_fn(|i| parameters[4 + i]),
-                            std::array::from_fn(|i| parameters[8 + i]),
-                            has_modulation,
-                            (if quality {
-                                voice
-                                    .modulated_filter
-                                    .filter(|f| f.armed)
-                                    .map(|f| f.frame())
-                            } else {
-                                filter_frame
-                            })
-                            .map(|frame| (&mut voice.filters, frame)),
-                            |operator, phase, base_step| {
-                                spectrum.sample_policy(
-                                    operator,
-                                    phase,
-                                    voice.age,
-                                    || {
-                                        let step = steps[operator];
-                                        let render_step = match (law.active(), quality) {
-                                            (true, false) => step.saturating_mul(2),
-                                            (false, true) => step / 2,
-                                            _ => step,
-                                        };
-                                        (render_step, base_step)
-                                    },
-                                    self.factory.table,
-                                    self.factory.bank,
-                                    self.factory.phase_table,
-                                    !quality || self.factory.settings.global.interpolation,
-                                )
-                            },
-                        );
-                    let filtered = if quality {
-                        voice.decimator.sample(sample)
-                    } else {
-                        sample
-                    };
-                    rendered = if quality && self.factory.settings.global.antialias {
-                        filtered
-                    } else {
-                        sample
-                    };
-                    voice.previous = previous;
-                    if quality && !law.active() {
-                        // Both subframes must sum to the original step, including odd steps.
-                        for (phase, step) in voice.phases.iter_mut().zip(steps) {
-                            let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
-                            *phase = phase.wrapping_add(step);
-                        }
-                    } else {
-                        for (i, step) in steps.iter().enumerate() {
-                            let step = if law.active() && law.selected(i) {
-                                (*step as f64 * multiplier).round() as u64
-                            } else {
-                                *step
-                            };
-                            let step = if quality {
-                                step / 2 + if subframe == 1 { step % 2 } else { 0 }
-                            } else {
-                                step
-                            };
-                            voice.phases[i] = voice.phases[i].wrapping_add(step);
-                        }
-                    }
-                }
-                let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
-                let left = rendered
-                    * pan_gains[0]
-                    * if quality {
-                        voice.effective.gain as f32
-                    } else {
-                        1.0
-                    };
-                let right = rendered
-                    * pan_gains[1]
-                    * if quality {
-                        voice.effective.gain as f32
-                    } else {
-                        1.0
-                    };
-                frame[0] += super::occurrence_gain::sample(left, voice.id, offset, gains);
-                frame[1] += super::occurrence_gain::sample(right, voice.id, offset, gains);
-                if law.active() {
-                    let next = voice.lfo_fraction
-                        + delta
-                            * if quality {
-                                voice.lfo_rate_multiplier
-                            } else {
-                                1.0
-                            };
-                    voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
-                    voice.lfo_fraction = next.fract();
-                }
-                if quality {
-                    voice.envelope_age =
-                        (voice.envelope_age + voice.effective.time_rate).min(u64::MAX as f64);
-                    if let Some(filter) = &mut voice.modulated_filter {
-                        filter.advance();
-                    }
-                }
-                voice.age = voice.age.saturating_add(1);
-                if quality {
-                    if voice.envelope_gate.is_some()
-                        && EventVoice::read(voice, &self.factory).envelope_finished()
-                    {
-                        voice.drain = voice.drain.saturating_add(1);
-                    } else {
-                        voice.drain = 0;
-                    }
-                }
-            }
-            if law.active() {
-                let next = self.phase.0 + delta;
-                self.phase.1 = self.phase.1.wrapping_add(next.floor() as u64);
-                self.phase.0 = next.fract();
-            }
-            self.elapsed = self.elapsed.saturating_add(1).min(self.frames);
-            if let Some(r) = &mut self.parameters {
-                r.elapsed += 1;
-                if r.elapsed >= r.frames {
-                    self.parameters = None;
-                }
-            }
-            self.filter.advance();
-            self.local_frame = self.local_frame.saturating_add(1);
-            if may_expire {
-                self.expire();
-            }
-        }
+        self.process_inner(events, frames, clock, gains, None, 0);
     }
     fn reset(&mut self) {
         self.voices.fill(Voice::default());
@@ -1323,6 +1095,7 @@ impl MutableInstrumentRuntime for Runtime {
         self.local_frame = 0;
         self.ledger = Ledger::default();
         self.expression = [0.0; 3];
+        self.last_targets = automation::base_target_values(&self.factory.settings);
     }
     fn is_quiescent(&self) -> bool {
         self.voices.iter().all(|v| v.id == 0)
@@ -1360,6 +1133,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.local_frame = p.local_frame;
             self.ledger = p.ledger;
             self.expression = p.expression;
+            self.last_targets = p.last_targets;
         }
     }
     fn can_retarget_history_from(
@@ -1504,6 +1278,507 @@ impl MutableInstrumentRuntime for Runtime {
     }
 }
 
+impl InstrumentParameterRuntime for Runtime {
+    fn descriptors(&self) -> &[ParameterDescriptor] {
+        &automation::TARGETS
+    }
+    fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
+        automation::parameter_semantics(parameter)
+    }
+    fn copy_targets(&self, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
+        if output.len() != automation::TARGET_COUNT {
+            return Err(Error::InvalidParameterAutomation);
+        }
+        for (slot, value) in output.iter_mut().zip(self.last_targets) {
+            *slot = Some(ParameterValue::Float(value));
+        }
+        Ok(())
+    }
+    fn preflight(
+        &self,
+        _: &[NativeInstrumentEvent],
+        _: usize,
+        _: Option<&dyn NativeInstrumentClock>,
+        _: &[NativeInstrumentOccurrenceGain],
+        _: &dyn NativeParameterAutomation,
+        _: &dyn DeviceResources,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+    fn process(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[NativeInstrumentOccurrenceGain],
+        values: &dyn NativeParameterAutomation,
+        _: &dyn DeviceResources,
+    ) {
+        if frames.len() > MAX_INSTRUMENT_AUTOMATION_FRAMES {
+            return;
+        }
+        let mut present_mask: u32 = 0;
+        for &id in values.parameter_ids() {
+            if let Some(index) = automation::target_index(id) {
+                present_mask |= 1_u32 << index;
+            }
+        }
+        self.process_inner(events, frames, clock, gains, Some(values), present_mask);
+    }
+}
+
+impl Runtime {
+    fn read_target(
+        values: Option<&dyn NativeParameterAutomation>,
+        mask: u32,
+        index: usize,
+        offset: usize,
+    ) -> Option<f32> {
+        if (mask & (1_u32 << index)) == 0 {
+            return None;
+        }
+        match values?.value_at(automation::TARGET_IDS[index], offset) {
+            Some(ParameterValue::Float(v)) if v.is_finite() => Some(v),
+            _ => None,
+        }
+    }
+
+    fn process_inner(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
+        values: Option<&dyn NativeParameterAutomation>,
+        mask: u32,
+    ) {
+        const LEVEL_MASK: u32 = (1 << 1) | (1 << 3) | (1 << 5) | (1 << 7);
+        const FEEDBACK_MASK: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
+        const PITCH_MASK: u32 = (1 << 0)
+            | (1 << 2)
+            | (1 << 4)
+            | (1 << 6)
+            | (1 << 14)
+            | (1 << 15)
+            | (1 << 16)
+            | (1 << 17);
+        const FILTER_MASK: u32 = (1 << 18) | (1 << 19) | (1 << 20);
+
+        let mut cursor = 0;
+        let mut voice_end = self
+            .voices
+            .iter()
+            .rposition(|voice| voice.id != 0)
+            .map_or(0, |i| i + 1);
+        let mut may_expire = self
+            .voices
+            .iter()
+            .any(|voice| voice.id != 0 && voice.gate.is_some());
+        let companion = self.factory.settings.companion;
+        let needs_companion_beat = companion.needs_clock();
+        let has_modulation = self.factory.configuration.has_modulation();
+        let needs_companion_transport = companion.needs_running();
+        let base_targets = automation::base_target_values(&self.factory.settings);
+        let rate_f64 = f64::from(self.factory.rate);
+        let step_per_hz = (u64::MAX as f64 + 1.0) / rate_f64;
+        let mut cached_filter: Option<([f32; 3], crate::operator_filter::Frame)> = None;
+
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            let beat = if needs_companion_beat {
+                clock.and_then(|clock| clock.beat_at_offset(offset))
+            } else {
+                None
+            };
+            let running = if needs_companion_transport {
+                clock.and_then(|clock| clock.transport_is_running())
+            } else {
+                None
+            };
+            if self.factory.companion_active {
+                for voice in &mut self.voices {
+                    if voice.id != 0 {
+                        for machine in voice.machines.iter_mut().flatten() {
+                            let _ = machine.observe(
+                                if self.factory.settings.global.active {
+                                    voice.envelope_age as u64
+                                } else {
+                                    voice.age
+                                },
+                                beat,
+                                running,
+                            );
+                        }
+                    }
+                }
+            }
+            let mut voices_changed = false;
+            while let Some(event) = events.get(cursor) {
+                let at = event.frame_offset();
+                if at != offset {
+                    break;
+                }
+                let origin = clock
+                    .and_then(|clock| clock.performance_frame_at_offset(offset))
+                    .unwrap_or(self.local_frame);
+                let _ = self.apply(*event, origin, beat, running);
+                voices_changed = true;
+                may_expire = true;
+                cursor += 1;
+            }
+            if voices_changed {
+                voice_end = self
+                    .voices
+                    .iter()
+                    .rposition(|voice| voice.id != 0)
+                    .map_or(0, |i| i + 1);
+            }
+            let transition = (self.elapsed < self.frames).then(|| self.spectrum());
+            let spectrum = transition.as_ref().unwrap_or(&self.factory.target);
+            let mut parameters = self.current_parameters();
+            if (mask & LEVEL_MASK) != 0 {
+                for (op, parameter) in parameters.iter_mut().enumerate().take(OPERATORS) {
+                    if let Some(level) = Self::read_target(values, mask, op * 2 + 1, offset) {
+                        *parameter = if self.factory.settings.enabled.flags()[op] {
+                            f64::from(level).clamp(0.0, 8.0)
+                        } else {
+                            0.0
+                        };
+                    }
+                }
+            }
+            if (mask & FEEDBACK_MASK) != 0 {
+                for op in 0..OPERATORS {
+                    if let Some(fb) = Self::read_target(values, mask, 8 + op, offset) {
+                        parameters[8 + op] = if self.factory.settings.feedback_enabled(op) {
+                            f64::from(fb).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                    }
+                }
+            }
+            let pitch_mod = if (mask & PITCH_MASK) != 0 {
+                let mut scales = [1.0_f64; OPERATORS];
+                let mut fine_deltas = [0.0_f64; OPERATORS];
+                for op in 0..OPERATORS {
+                    if let Some(ratio) = Self::read_target(values, mask, op * 2, offset) {
+                        let base_ratio = f64::from(base_targets[op * 2]).max(0.5);
+                        scales[op] = f64::from(ratio).clamp(0.5, 32.0) / base_ratio;
+                    }
+                    if let Some(fine_hz) = Self::read_target(values, mask, 14 + op, offset) {
+                        let base_fine = f64::from(base_targets[14 + op]);
+                        fine_deltas[op] =
+                            (f64::from(fine_hz).clamp(-1000.0, 1000.0) - base_fine) * step_per_hz;
+                    }
+                }
+                Some((scales, fine_deltas))
+            } else {
+                None
+            };
+            let automated_filter_frame = if (mask & FILTER_MASK) != 0 && self.filter.armed {
+                let freq = Self::read_target(values, mask, 18, offset)
+                    .unwrap_or(base_targets[18])
+                    .clamp(20.0, 20_000.0);
+                let res = Self::read_target(values, mask, 19, offset)
+                    .unwrap_or(base_targets[19])
+                    .clamp(0.0, 100.0);
+                let morph = Self::read_target(values, mask, 20, offset)
+                    .unwrap_or(base_targets[20])
+                    .clamp(0.0, 100.0);
+                let triplet = [freq, res, morph];
+                if let Some((prev, frame)) = cached_filter
+                    && prev == triplet
+                {
+                    Some(frame)
+                } else {
+                    let mut filter_settings = self.factory.settings.filter;
+                    let _ = filter_settings
+                        .patch(automation::FILTER_FREQUENCY, ParameterValue::Float(freq));
+                    let _ = filter_settings
+                        .patch(automation::FILTER_RESONANCE, ParameterValue::Float(res));
+                    let _ = filter_settings
+                        .patch(automation::FILTER_MORPH, ParameterValue::Float(morph));
+                    let prepared = if self.factory.settings.global.active {
+                        filter_settings.prepare_oversampled(self.factory.rate)
+                    } else {
+                        filter_settings.prepare(self.factory.rate)
+                    };
+                    prepared.ok().map(|p| {
+                        cached_filter = Some((triplet, p.frame));
+                        p.frame
+                    })
+                }
+            } else {
+                None
+            };
+            let filter_frame =
+                automated_filter_frame.or_else(|| self.filter.armed.then(|| self.filter.frame()));
+            let law = self.factory.settings.lfo;
+            let lfo_rate_hz = Self::read_target(values, mask, 12, offset)
+                .map_or_else(|| law.rate(), |v| f64::from(v).clamp(0.01, 100.0));
+            let lfo_amount = Self::read_target(values, mask, 13, offset)
+                .map_or_else(|| law.amount(), |v| f64::from(v).clamp(0.0, 100.0) / 100.0);
+            let delta = if !law.active() {
+                0.0
+            } else if law.sync() {
+                clock
+                    .and_then(|c| c.beat_at_offset(offset).zip(c.beat_at_offset(offset + 1)))
+                    .map_or(0.0, |(a, b)| {
+                        b.saturating_sub(a) as f64 / 4_294_967_296.0 / law.beats()
+                    })
+            } else {
+                lfo_rate_hz / rate_f64
+            };
+            for voice in self.voices.iter_mut().take(voice_end) {
+                if voice.id == 0 {
+                    continue;
+                }
+                let phase = if law.retrigger() || self.factory.settings.global.active {
+                    (voice.lfo_fraction, voice.lfo_cycle)
+                } else {
+                    self.phase
+                };
+                let multiplier = if law.active() {
+                    ((if self.factory.settings.global.active {
+                        self.factory.lfo_table.sample(
+                            law.0[1],
+                            phase.0,
+                            phase.1,
+                            self.factory.settings.global.interpolation,
+                        )
+                    } else {
+                        lfo::waveform(law.0[1], phase.0, phase.1)
+                    }) * (lfo_amount
+                        + if self.factory.settings.global.active {
+                            voice.effective.lfo_amount_delta / 100.0
+                        } else {
+                            0.0
+                        })
+                    .clamp(-1.0, 1.0))
+                    .exp2()
+                } else {
+                    1.0
+                };
+                let quality = self.factory.settings.global.active;
+                let base_steps = if quality {
+                    voice.pitch_steps
+                } else {
+                    PreparedOperatorConfiguration::lfo_steps(&voice.note)
+                };
+                let steps = if let Some((scales, fine_deltas)) = pitch_mod {
+                    std::array::from_fn(|op| {
+                        let s = (base_steps[op] as f64) * scales[op] + fine_deltas[op];
+                        (s.round() as u64).clamp(1, (1_u64 << 63) - 1)
+                    })
+                } else {
+                    base_steps
+                };
+                let age = if quality {
+                    voice.envelope_frame()
+                } else {
+                    voice.age
+                };
+                let gate = if quality {
+                    voice.envelope_gate.unwrap_or(u64::MAX)
+                } else {
+                    voice.gate.unwrap_or(u64::MAX)
+                };
+                let amplitudes = if self.factory.companion_active {
+                    if self.factory.uniform_companion {
+                        [voice.machines[0]
+                            .as_ref()
+                            .map_or(0.0, |machine| machine.level(age)); 4]
+                    } else if self.factory.partial_companion {
+                        partial_levels(&voice.machines, self.factory.companion_sources, age)
+                    } else {
+                        let independent = || {
+                            std::array::from_fn(|i| {
+                                voice.machines[i]
+                                    .as_ref()
+                                    .map_or(0.0, |machine| machine.level(age))
+                            })
+                        };
+                        if self.factory.shared_loop_timing {
+                            companion::Machine::shared_loop_levels(&voice.machines, age)
+                                .unwrap_or_else(independent)
+                        } else {
+                            independent()
+                        }
+                    }
+                } else if self.factory.uniform_envelopes {
+                    self.factory
+                        .configuration
+                        .uniform_envelope_levels(age, gate)
+                } else {
+                    self.factory.configuration.envelope_levels(age, gate)
+                };
+                let voice_filter_frame = if let Some(auto_frame) = automated_filter_frame {
+                    Some(auto_frame)
+                } else if quality {
+                    voice
+                        .modulated_filter
+                        .filter(|f| f.armed)
+                        .map(|f| f.frame())
+                } else {
+                    filter_frame
+                };
+                let mut rendered = 0.0;
+                for subframe in 0..if quality { 2 } else { 1 } {
+                    let (sample, previous) =
+                        self.factory.configuration.sample_with_waveform_sampler(
+                            &voice.note,
+                            amplitudes,
+                            &voice.phases,
+                            voice.previous,
+                            std::array::from_fn(|i| {
+                                (parameters[i]
+                                    * if quality {
+                                        voice.effective.level_gain[i]
+                                    } else {
+                                        1.0
+                                    })
+                                .clamp(0.0, 8.0)
+                            }),
+                            std::array::from_fn(|i| parameters[4 + i]),
+                            std::array::from_fn(|i| parameters[8 + i]),
+                            has_modulation,
+                            voice_filter_frame.map(|frame| (&mut voice.filters, frame)),
+                            |operator, phase, base_step| {
+                                spectrum.sample_policy(
+                                    operator,
+                                    phase,
+                                    voice.age,
+                                    || {
+                                        let step = steps[operator];
+                                        let render_step = match (law.active(), quality) {
+                                            (true, false) => step.saturating_mul(2),
+                                            (false, true) => step / 2,
+                                            _ => step,
+                                        };
+                                        (render_step, base_step)
+                                    },
+                                    self.factory.table,
+                                    self.factory.bank,
+                                    self.factory.phase_table,
+                                    !quality || self.factory.settings.global.interpolation,
+                                )
+                            },
+                        );
+                    let filtered = if quality {
+                        voice.decimator.sample(sample)
+                    } else {
+                        sample
+                    };
+                    rendered = if quality && self.factory.settings.global.antialias {
+                        filtered
+                    } else {
+                        sample
+                    };
+                    voice.previous = previous;
+                    if quality && !law.active() {
+                        for (phase, step) in voice.phases.iter_mut().zip(steps) {
+                            let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
+                            *phase = phase.wrapping_add(step);
+                        }
+                    } else {
+                        for (i, step) in steps.iter().enumerate() {
+                            let step = if law.active() && law.selected(i) {
+                                (*step as f64 * multiplier).round() as u64
+                            } else {
+                                *step
+                            };
+                            let step = if quality {
+                                step / 2 + if subframe == 1 { step % 2 } else { 0 }
+                            } else {
+                                step
+                            };
+                            voice.phases[i] = voice.phases[i].wrapping_add(step);
+                        }
+                    }
+                }
+                let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
+                let left = rendered
+                    * pan_gains[0]
+                    * if quality {
+                        voice.effective.gain as f32
+                    } else {
+                        1.0
+                    };
+                let right = rendered
+                    * pan_gains[1]
+                    * if quality {
+                        voice.effective.gain as f32
+                    } else {
+                        1.0
+                    };
+                frame[0] += super::occurrence_gain::sample(left, voice.id, offset, gains);
+                frame[1] += super::occurrence_gain::sample(right, voice.id, offset, gains);
+                if law.active() {
+                    let next = voice.lfo_fraction
+                        + delta
+                            * if quality {
+                                voice.lfo_rate_multiplier
+                            } else {
+                                1.0
+                            };
+                    voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
+                    voice.lfo_fraction = next.fract();
+                }
+                if quality {
+                    voice.envelope_age =
+                        (voice.envelope_age + voice.effective.time_rate).min(u64::MAX as f64);
+                    if let Some(filter) = &mut voice.modulated_filter {
+                        filter.advance();
+                    }
+                }
+                voice.age = voice.age.saturating_add(1);
+                if quality {
+                    if voice.envelope_gate.is_some()
+                        && EventVoice::read(voice, &self.factory).envelope_finished()
+                    {
+                        voice.drain = voice.drain.saturating_add(1);
+                    } else {
+                        voice.drain = 0;
+                    }
+                }
+            }
+            if law.active() {
+                let next = self.phase.0 + delta;
+                self.phase.1 = self.phase.1.wrapping_add(next.floor() as u64);
+                self.phase.0 = next.fract();
+            }
+            self.elapsed = self.elapsed.saturating_add(1).min(self.frames);
+            if let Some(r) = &mut self.parameters {
+                r.elapsed += 1;
+                if r.elapsed >= r.frames {
+                    self.parameters = None;
+                }
+            }
+            self.filter.advance();
+            self.local_frame = self.local_frame.saturating_add(1);
+            if may_expire {
+                self.expire();
+            }
+        }
+        if !frames.is_empty() {
+            if mask != 0 {
+                let last = frames.len() - 1;
+                for (index, (last_target, &base_target)) in self
+                    .last_targets
+                    .iter_mut()
+                    .zip(base_targets.iter())
+                    .enumerate()
+                {
+                    *last_target =
+                        Self::read_target(values, mask, index, last).unwrap_or(base_target);
+                }
+            } else {
+                self.last_targets = base_targets;
+            }
+        }
+    }
+}
+
 // Borrow the source bank through validation/retargeting. Legacy runtimes convert
 // one voice at a time, so no adapter materializes a 64-machine-bank temporary.
 pub(super) trait VoiceHistory {
@@ -1628,8 +1903,15 @@ impl<'a> Legacy<'a> {
                 local_frame: p.local_frame,
             });
         }
-        super::lfo_runtime::export_harmonic_history(previous)
-            .or_else(|| super::feedback_runtime::export_harmonic_history(previous))
+        #[cfg(test)]
+        {
+            super::lfo_runtime::export_harmonic_history(previous)
+                .or_else(|| super::feedback_runtime::export_harmonic_history(previous))
+        }
+        #[cfg(not(test))]
+        {
+            None
+        }
     }
 }
 

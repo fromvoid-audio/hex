@@ -1033,3 +1033,249 @@ fn saved_fm4_note_pressure_keeps_its_unclamped_source_value_during_detachment() 
     }
     assert!(control.status.rejected_revision().is_none());
 }
+
+#[test]
+fn vector_operator_modulation_renders_with_zero_callback_allocations() {
+    use hex_devices::operator_state::{OPERATOR_METADATA, parameter as op_param};
+
+    let context = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &TuningTable::default(),
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let mut state = OPERATOR_METADATA.default_state().unwrap();
+    state = OPERATOR_METADATA
+        .patch_parameter(
+            &state,
+            hex_lattice_contract::ParameterId::from_static(20_001),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    state = OPERATOR_METADATA
+        .patch_parameter(&state, op_param::ALGORITHM, ParameterValue::Choice(11))
+        .unwrap();
+    let prepared = OPERATOR_METADATA
+        .prepare_instrument(&state, &context)
+        .unwrap();
+    let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+
+    let ids = [
+        op_param::oscillator_level(1),
+        op_param::fine_offset(1),
+        op_param::FILTER_FREQUENCY,
+    ];
+    let declared = ids.map(|id| ModulationTarget {
+        descriptor: *factory
+            .parameter_automation_descriptors()
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
+        base: OPERATOR_METADATA.read_parameter(&state, id).unwrap(),
+    });
+    let routes = [
+        ModulationRoute {
+            source: 0,
+            target: ids[0],
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        },
+        ModulationRoute {
+            source: 0,
+            target: ids[1],
+            amount: 0.1,
+            range: [-1.0, 1.0],
+        },
+        ModulationRoute {
+            source: 0,
+            target: ids[2],
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        },
+    ];
+    let source = PreparedModulationSource::free_with_waveform(
+        ModulationSourceId::new(1).unwrap(),
+        48_000.0,
+        5.0,
+        0.0,
+        LfoWaveform::Sine,
+    )
+    .unwrap();
+    let program = PreparedModulation::new(&declared, &routes, 1).unwrap();
+    let mut modulation = PreparedModulationState::new(vec![source], program, 64)
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let mut pair = NativeInstrumentRuntimePair::new(
+        factory.as_ref(),
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 259,
+            max_active_occurrences: 64,
+            max_tail_frames: 48_000 * 600,
+        },
+    )
+    .unwrap();
+    let events = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 110,
+    }];
+    let mut out = [[0.0_f32; 2]; 64];
+
+    let counts = allocation_counter::measure(|| {
+        pair.begin_block();
+        modulation.begin();
+        modulation
+            .render_chunk(64, None, |view| {
+                pair.process_block_with_clock_and_automation(
+                    &events,
+                    &mut out,
+                    None,
+                    &[],
+                    view,
+                    &EMPTY_DEVICE_RESOURCES,
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        pair.commit_block();
+        modulation.commit().unwrap();
+    });
+    black_box(&out);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(out.iter().flatten().any(|s| s.abs() > 0.001));
+}
+
+#[test]
+fn sampler_core_parameter_modulation_renders_with_zero_callback_allocations() {
+    use hex_devices::sampler::{
+        catalog::{DEFINITION as SAMPLER_DEF, DETUNE, GAIN, PAN, SUSTAIN, TRANSPOSE},
+        state::SamplerState,
+    };
+    use hex_lattice::{
+        BorrowedDeviceResources, DeviceResourceIdentity, DeviceResourcePcm, DeviceResourceView,
+    };
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+
+    let slot = DeviceAssetSlot::new(1).unwrap();
+    let asset = DeviceAssetKey::new(42).unwrap();
+    let pcm: Vec<f32> = (0..128)
+        .map(|i| ((i as f32) * 0.15).sin() * 0.5 + 0.1)
+        .collect();
+    let state = SamplerState::for_source_frames(pcm.len())
+        .unwrap()
+        .to_native()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference { slot, asset }])
+        .unwrap();
+    let view = DeviceResourceView {
+        slot,
+        identity: DeviceResourceIdentity {
+            asset,
+            content: [9; 32],
+            derivation_version: 1,
+            derivation: [8; 32],
+        },
+        sample_rate: 48_000,
+        pcm: DeviceResourcePcm::Mono(&pcm),
+    };
+    let views = [view];
+    let resources = BorrowedDeviceResources(&views);
+    let context = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &TuningTable::default(),
+        resources: &resources,
+    };
+    let prepared = SAMPLER_DEF.prepare_instrument(&state, &context).unwrap();
+    let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+
+    let ids = [GAIN, PAN, TRANSPOSE, DETUNE, SUSTAIN];
+    let declared = ids.map(|id| ModulationTarget {
+        descriptor: *factory
+            .parameter_automation_descriptors()
+            .iter()
+            .find(|d| d.id == id)
+            .unwrap(),
+        semantics: factory.parameter_modulation_semantics(id).unwrap(),
+        base: SAMPLER_DEF.read_parameter(&state, id).unwrap(),
+    });
+    let routes = ids.map(|target| ModulationRoute {
+        source: 0,
+        target,
+        amount: 0.15,
+        range: [-1.0, 1.0],
+    });
+    let source = PreparedModulationSource::free_with_waveform(
+        ModulationSourceId::new(1).unwrap(),
+        48_000.0,
+        8.0,
+        0.0,
+        LfoWaveform::Sine,
+    )
+    .unwrap();
+    let program = PreparedModulation::new(&declared, &routes, 1).unwrap();
+    let mut modulation = PreparedModulationState::new(vec![source], program, 64)
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let mut pair = NativeInstrumentRuntimePair::new(
+        factory.as_ref(),
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 1024,
+            max_active_occurrences: 32,
+            max_tail_frames: 48_000 * 600,
+        },
+    )
+    .unwrap();
+    let events = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 120,
+    }];
+    let mut out = [[0.0_f32; 2]; 64];
+
+    let counts = allocation_counter::measure(|| {
+        pair.begin_block();
+        modulation.begin();
+        modulation
+            .render_chunk(64, None, |auto| {
+                pair.process_block_with_clock_and_automation(
+                    &events,
+                    &mut out,
+                    None,
+                    &[],
+                    auto,
+                    &resources,
+                )
+                .unwrap();
+                Ok(())
+            })
+            .unwrap();
+        pair.commit_block();
+        modulation.commit().unwrap();
+    });
+    black_box(&out);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(out.iter().flatten().any(|s| s.abs() > 0.001));
+}

@@ -1,7 +1,9 @@
 //! Filtered carrier output is separate from the shaped FM/feedback signals.
 use super::*;
+#[cfg(test)]
 use crate::operator_filter::{Carrier, Frame};
 impl PreparedOperatorConfiguration {
+    #[cfg(test)]
     pub(crate) fn with_runtime_parameters(
         &self,
         p: super::super::OperatorFeedbackParameters,
@@ -12,6 +14,7 @@ impl PreparedOperatorConfiguration {
         result
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn sample_filtered_carriers(
         &self,

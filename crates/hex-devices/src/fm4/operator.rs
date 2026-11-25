@@ -11,6 +11,7 @@ mod retarget;
 mod tuning;
 pub use context::{PreparedOperatorConfiguration, PreparedOperatorNote};
 pub use feedback::PreparedOperatorFeedbackVoice;
+#[cfg(test)]
 pub(crate) use retarget::OperatorFeedbackRetargetFrame;
 pub use retarget::{OperatorFeedbackParameters, PreparedOperatorFeedbackRetarget};
 pub(crate) use tuning::FINE_LIMIT_HZ;

@@ -14,11 +14,13 @@ pub struct OperatorFeedbackParameters {
 }
 
 impl OperatorFeedbackParameters {
+    #[cfg(test)]
     pub(crate) fn with_oscillator_levels(mut self, levels: [f64; OPERATORS]) -> Self {
         self.oscillator_levels = levels;
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn interpolate(self, target: Self, elapsed: u32, frames: u32) -> Self {
         if elapsed == 0 {
             return self;
@@ -109,6 +111,7 @@ impl PreparedOperatorFeedbackRetarget {
     /// from the committed runtime (authored values when idle, or the current
     /// ramp value). This control/graph-boundary helper preserves the source and
     /// target configuration identities while allocating no per-voice state.
+    #[cfg(test)]
     pub(crate) fn prepare_from_shared_parameters(
         current: &PreparedOperatorConfiguration,
         target: &PreparedOperatorConfiguration,
@@ -342,6 +345,7 @@ impl PreparedOperatorFeedbackVoice {
 
     /// Validate one shared-ramp frame without sampling or mutating voice state.
     /// This is the same compatibility preflight used by the renderer.
+    #[cfg(test)]
     #[inline]
     pub(crate) fn validate_retarget_frame(
         &self,
@@ -353,6 +357,7 @@ impl PreparedOperatorFeedbackVoice {
             .map(|_| ())
     }
 
+    #[cfg(test)]
     #[inline]
     fn preflight_retarget_frame(
         &self,

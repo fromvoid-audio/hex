@@ -81,6 +81,7 @@ fn runtime(settings: OperatorSettings) -> Runtime {
     Runtime {
         source: factory.target,
         filter: factory.filter,
+        last_targets: automation::base_target_values(&factory.settings),
         factory,
         voices: [Voice::default(); VOICES],
         elapsed: 1,

@@ -94,11 +94,11 @@ mod tests {
             "rate-specific ceiling must follow the actual factory"
         );
         // Version11's codec ends at the filter block and predates Operator mode.
-        let current = settings.to_state().unwrap();
+        let v17 = settings.to_v17_state().unwrap();
         let legacy = NativeDeviceState::new(
-            current.type_id(),
+            v17.type_id(),
             11,
-            current.payload()[..super::super::FILTER_PAYLOAD_BYTES].to_vec(),
+            v17.payload()[..super::super::FILTER_PAYLOAD_BYTES].to_vec(),
         )
         .unwrap();
         assert_eq!(
