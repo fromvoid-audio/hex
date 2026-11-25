@@ -55,6 +55,31 @@ pub(super) struct GraphControl {
     _subscription: Subscription,
     _marquee_subscription: Subscription,
     group_drag: Option<group::Drag>,
+    owner: hex_engine::ProcessorChainOwner,
+    type_id: hex_lattice_contract::DeviceTypeId,
+}
+
+pub(super) fn push_live_spectrum(
+    view: &EditorView,
+    device: DeviceId,
+    control: &GraphControl,
+    cx: &mut Context<EditorView>,
+) -> bool {
+    let target_identity =
+        hex_engine::PostNodeIdentity::new(control.owner, device.value(), control.type_id);
+    let output = super::eq_panel::spectrum_result(view, target_identity).map(|result| {
+        let frame = &result.output.frame;
+        let upper = MAX_HZ.min(frame.sample_rate_hz as f32 * 0.49);
+        super::spectrum_display::curves(frame, |hz| graph::log_position(hz, MIN_HZ, upper))
+    });
+    let (analyzer, analyzer_peak) = output.map_or((None, None), |curves| {
+        (Some(curves.level), Some(curves.peak))
+    });
+    control.entity.update(cx, |graph, cx| {
+        graph
+            .set_analyzers(analyzer, None, analyzer_peak, cx)
+            .unwrap_or(false)
+    })
 }
 
 impl GraphControl {
@@ -293,7 +318,7 @@ fn audition_toggle(
     {
         let Ok(config) = ToggleConfig::new(
             format!("eq8-audition-arm-{}", device.value()),
-            "",
+            "eq8 band audition",
             armed,
             super::control_style(),
         ) else {
@@ -466,13 +491,17 @@ fn compact_control(
     let Some(parameter) = parameter(device_view.parameters.as_slice(), parameter_id) else {
         return unavailable(label);
     };
+    let presentation = match parameter.descriptor.kind {
+        hex_lattice_contract::ParameterKind::Bool => ControlPresentation::CompactButton,
+        _ => ControlPresentation::MicroDial,
+    };
     parameter_control_with_presentation(
         view,
         cx,
         device,
         identity,
         parameter,
-        ControlPresentation::MicroDial,
+        presentation,
         ControlText {
             label: Some(label),
             codec: None,

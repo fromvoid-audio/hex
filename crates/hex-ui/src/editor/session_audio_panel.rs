@@ -234,7 +234,29 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
                 ),
             );
         }
-        if let Some(fraction) = playhead {
+        if view.uses_sibling_playback_overlay() {
+            let slots = std::rc::Rc::clone(&view.playback_subviews.slots);
+            let color = theme::color(theme::PaletteRole::Secondary);
+            bars = bars.child(
+                gpui::canvas(
+                    move |bounds, window, _| {
+                        if let Ok(mut slots) = slots.try_borrow_mut() {
+                            slots.audio_detail_playhead =
+                                Some(super::playback_subviews::AudioDetailPlayheadSlot {
+                                    selector: "session-audio-playback-position",
+                                    bounds,
+                                    clip_mask: window.content_mask().bounds,
+                                    color,
+                                    clamp_right_edge: false,
+                                });
+                        }
+                    },
+                    |_, _, _, _| (),
+                )
+                .absolute()
+                .inset_0(),
+            );
+        } else if let Some(fraction) = playhead {
             bars = bars.child(
                 div()
                     .debug_selector(|| "session-audio-playback-position".into())
@@ -255,7 +277,11 @@ impl EditorView {
     /// Accepted Session playback of this cell only: the same revision, fault
     /// and route-owner guards as the piano roll's Session cursor, reading the
     /// launch published with the route snapshot. Never an optimistic launch.
-    fn session_audio_playhead(&self, track: TrackId, clip: &SessionAudioClip) -> Option<f32> {
+    pub(super) fn session_audio_playhead(
+        &self,
+        track: TrackId,
+        clip: &SessionAudioClip,
+    ) -> Option<f32> {
         use std::sync::atomic::Ordering::Acquire;
         if !clip.active() {
             return None;

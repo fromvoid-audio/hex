@@ -282,6 +282,7 @@ fn device_frame_inner(
 ) -> Div {
     let radius = DEVICE_CORNER_RADIUS;
     div()
+        .w_full()
         .flex()
         .flex_col()
         .min_w_0()

@@ -88,4 +88,70 @@ impl EditorView {
         };
         domain.source_offset.checked_add(read)
     }
+
+    /// Normalized `[0, 1]` playhead position for whichever audio clip detail
+    /// editor is currently mounted (Arrangement Events, Arrangement Source, or
+    /// Session Audio). Used by the isolated `AudioDetailPlayheadView` subview.
+    pub(in crate::editor) fn audio_detail_playhead_fraction(&self) -> Option<f32> {
+        if !self.audio_detail.clip_view_open || self.device_panel.active {
+            return None;
+        }
+        match self.mode {
+            super::super::EditorMode::Session => {
+                let (track, scene) = self.session_grid.selected_cell?;
+                let state = self.state.as_ref()?;
+                let hex_project::SessionCellContent::Audio(clip) =
+                    state.project.session_cell(track, scene)?
+                else {
+                    return None;
+                };
+                self.session_audio_playhead(track, clip)
+            }
+            super::super::EditorMode::Arrangement => {
+                let state = self.state.as_ref()?;
+                if self.audio_detail.event.source_view {
+                    let (_, clip_id, ..) = self.detail_audio_clip_data()?;
+                    let clip = state.project.clip(clip_id)?;
+                    let asset_frames = state.project.asset(clip.asset())?.playback_frames();
+                    let frame = self
+                        .audio_playhead_media_frame()
+                        .filter(|frame| *frame < asset_frames)?;
+                    let viewport = self.audio_source_viewport();
+                    if !viewport.contains(i128::from(frame)) {
+                        return None;
+                    }
+                    return viewport.fraction(i128::from(frame)).map(|f| f as f32);
+                }
+                let (clip_id, canonical_root, _) = self.event_context()?;
+                let owner = (clip_id, self.project_generation);
+                let pending = self
+                    .audio_detail
+                    .event
+                    .pending
+                    .as_ref()
+                    .filter(|p| p.owner == owner);
+                let placement = pending.and_then(|p| p.placement.as_ref()).or_else(|| {
+                    self.audio_detail
+                        .event
+                        .gesture
+                        .as_ref()
+                        .and_then(|g| g.placement.as_ref())
+                });
+                let root = placement
+                    .map_or_else(|| canonical_root.clone(), |p| p.clip().audio_event_root());
+                let root_window = self
+                    .event_root_window(&canonical_root)?
+                    .shifted(placement.map_or(0, |p| p.frame_shift()))?;
+                let position = self.audio_playhead_root_position()?;
+                let display_pos = placement.map_or(Some(position), |p| p.position(position))?;
+                let frame = root
+                    .root_frame_at(display_pos, state.project.tempo_map())
+                    .ok()?;
+                if !root_window.contains(i128::from(frame)) {
+                    return None;
+                }
+                root_window.fraction(i128::from(frame)).map(|f| f as f32)
+            }
+        }
+    }
 }

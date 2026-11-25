@@ -95,6 +95,8 @@ pub(super) struct Panel {
     creation: Option<Creation>,
     cancel_creation_capture: bool,
     response: Option<(NativeDeviceState, u32, response::Curves)>,
+    owner: hex_engine::ProcessorChainOwner,
+    sample_rate: u32,
 }
 
 impl Panel {
@@ -230,6 +232,8 @@ pub(super) fn render_body(
                 creation: None,
                 cancel_creation_capture: false,
                 response: None,
+                owner,
+                sample_rate,
             },
         );
     }
@@ -244,6 +248,8 @@ pub(super) fn render_body(
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return div().id("eq-unavailable");
     };
+    panel.owner = owner;
+    panel.sample_rate = sample_rate;
     if panel.cancel_creation_capture {
         panel.cancel_creation_capture = false;
         if panel
@@ -477,7 +483,8 @@ pub(super) fn render_body(
         actions,
     )
     .debug_selector(move || format!("eq-sidebar-{}", device.value()));
-    crate::device_composition::eq_graph_body(entity, sidebar)
+    let graph = view.device_overlay_slot_or_inline(entity);
+    crate::device_composition::eq_graph_body(graph, sidebar)
         .on_children_prepainted(spectrum::focus_listener(view, cx, device))
         .id(ElementId::Name(
             format!("eq-body-{}", device.value()).into(),
@@ -827,6 +834,24 @@ fn response_model(
     })
 }
 type SpectrumCurve = Vec<[f32; 2]>;
+
+pub(super) fn push_live_spectrum(
+    view: &EditorView,
+    device: DeviceId,
+    panel: &Panel,
+    cx: &mut Context<EditorView>,
+) -> bool {
+    let upper = (panel.sample_rate as f32 * 0.49).min(20_000.0);
+    let identity = hex_engine::PostNodeIdentity::new(panel.owner, device.value(), eq::EQ_TYPE_ID);
+    let spectra = spectrum::result(view, identity);
+    let (analyzer, input_analyzer, analyzer_peak) =
+        spectrum_layers(spectra, panel.show_input, upper);
+    panel.entity.update(cx, |graph, cx| {
+        graph
+            .set_analyzers(analyzer, input_analyzer, analyzer_peak, cx)
+            .unwrap_or(false)
+    })
+}
 
 /// Output level, optional input level and output held-peak curves.
 fn spectrum_layers(

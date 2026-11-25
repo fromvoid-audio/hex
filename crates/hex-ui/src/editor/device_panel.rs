@@ -70,7 +70,30 @@ pub(super) use source_picker::Choice as SourcePickerChoice;
 pub(super) use source_picker::bind_keys as bind_source_picker_keys;
 pub(super) use source_picker::focus_from_workspace as focus_source_picker_from_workspace;
 mod device_meter;
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(super) use device_meter::tick_hovered as tick_hovered_meter;
+pub(in crate::editor) use device_meter::tick_hovered_isolated as tick_hovered_meter_isolated;
+
+/// Push live EQ / EQ8 analyzer traces directly into mounted `ResponseGraph`
+/// entities without forcing a root `EditorView::render`. Returns
+/// `(any_graph_updated, needs_root_redraw)`.
+pub(in crate::editor) fn push_live_spectra(
+    view: &EditorView,
+    cx: &mut Context<EditorView>,
+) -> (bool, bool) {
+    let mut updated = false;
+    for (&device, panel) in &view.device_panel.eq_panels {
+        updated |= eq_panel::push_live_spectrum(view, device, panel, cx);
+    }
+    for (&device, control) in &view.device_panel.eq8_graphs {
+        updated |= eq8_panel::push_live_spectrum(view, device, control, cx);
+    }
+    let needs_root = view.audio_detail.clip_view_open
+        && view.device_panel.active
+        && view.device_panel.eq_panels.is_empty()
+        && view.device_panel.eq8_graphs.is_empty();
+    (updated, needs_root)
+}
 mod filter_panel;
 mod fold;
 mod gate_panel;
@@ -288,6 +311,49 @@ mod header_style_unit_tests {
         assert!(!panel.views[&devices[0].id()].2.as_ref().unwrap().parameters[0].enabled);
         assert!(panel.controls.is_empty());
     }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) fn set_hovered_meter_for_test(
+    view: &mut EditorView,
+    device: Option<DeviceId>,
+) {
+    view.device_panel.hovered_meter = device;
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) fn has_mounted_eq8_and_meter_for_test(
+    view: &EditorView,
+    device: DeviceId,
+) -> bool {
+    view.device_panel.eq8_graphs.contains_key(&device)
+        && view.device_panel.meter_views.contains_key(&device)
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) fn install_spectrum_test_channel(
+    view: &mut EditorView,
+) -> hex_audio::spectrum_target::SpectrumTargetCallback {
+    let (control, callback) = hex_audio::spectrum_target::channel();
+    view.device_panel.eq_spectrum.test_channel = Some(control);
+    callback
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor) fn desired_spectrum_target_for_test(
+    view: &EditorView,
+    identity: hex_engine::PostNodeIdentity,
+) -> Option<hex_audio::spectrum_target::SpectrumTarget> {
+    view.device_panel
+        .eq_spectrum
+        .test_channel
+        .as_ref()
+        .and_then(|channel| {
+            channel
+                .desired_targets()
+                .find(identity)
+                .map(|(_, target)| target)
+        })
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

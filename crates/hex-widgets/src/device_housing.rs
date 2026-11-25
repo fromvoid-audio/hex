@@ -535,7 +535,7 @@ impl RenderOnce for Housing {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = state(window, cx);
         let header = crate::device_header(self.title, self.style, self.leading, self.actions);
-        let row = div().flex().flex_1().min_w_0().min_h_0().h_full();
+        let row = div().w_full().flex().flex_1().min_w_0().min_h_0().h_full();
         let Some(body) = self.body else {
             return row.child(header);
         };
@@ -701,6 +701,7 @@ impl RenderOnce for Housing {
                 .overflow_y_scroll()
                 .child(
                     div()
+                        .w_full()
                         .flex()
                         .flex_col()
                         .flex_shrink_0()

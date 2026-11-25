@@ -48,15 +48,18 @@ pub(super) fn graph_entity(
                 _subscription: subscription,
                 _marquee_subscription: marquee,
                 group_drag: None,
+                owner,
+                type_id: hex_lattice_contract::DeviceTypeId::from_static("hex.eq8"),
             }
         });
-    let Some(graph) = view.device_panel.eq8_graphs.get(&device) else {
+    let Some(graph) = view.device_panel.eq8_graphs.get_mut(&device) else {
         return div()
             .id(ElementId::Name(
                 format!("eq8-response-unavailable-{}", device.value()).into(),
             ))
             .child(unavailable("response graph"));
     };
+    graph.owner = owner;
     let graph_entity = graph.entity.clone();
     graph_entity.update(cx, |graph, cx| {
         let _ = graph.set_model(
@@ -73,7 +76,7 @@ pub(super) fn graph_entity(
         .w_full()
         .h_full()
         .min_h_0()
-        .child(graph_entity)
+        .child(view.device_overlay_slot_or_inline(graph_entity))
 }
 
 fn handle_graph_event(

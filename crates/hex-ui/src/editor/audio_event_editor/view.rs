@@ -902,7 +902,29 @@ pub(in crate::editor) fn view(
         render_window,
         cx,
     ));
-    if let Some(position) = view
+    if view.uses_sibling_playback_overlay() {
+        let slots = Rc::clone(&view.playback_subviews.slots);
+        let color = theme::color(theme::PaletteRole::Secondary);
+        body = body.child(
+            canvas(
+                move |bounds, window, _| {
+                    if let Ok(mut slots) = slots.try_borrow_mut() {
+                        slots.audio_detail_playhead =
+                            Some(super::super::playback_subviews::AudioDetailPlayheadSlot {
+                                selector: "audio-playback-position",
+                                bounds,
+                                clip_mask: window.content_mask().bounds,
+                                color,
+                                clamp_right_edge: false,
+                            });
+                    }
+                },
+                |_, _, _, _| (),
+            )
+            .absolute()
+            .inset_0(),
+        );
+    } else if let Some(position) = view
         .audio_playhead_root_position()
         .and_then(display_position)
         .and_then(frame_at)

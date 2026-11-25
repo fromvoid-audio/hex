@@ -144,10 +144,26 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
     let observation =
         Arc::new(hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap());
     let _output_serial = hex_audio::worker_fixture::serial_output();
-    let (mut output, mut backend) =
+    let (mut output, backend) =
         hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    struct CloseBackendOnDrop {
+        backend: Option<hex_audio::worker_fixture::HeadlessBackend>,
+        output: Option<hex_audio::WorkerPreparedOutput>,
+    }
+    impl Drop for CloseBackendOnDrop {
+        fn drop(&mut self) {
+            if let Some(mut backend) = self.backend.take() {
+                backend.close();
+            }
+            drop(self.output.take());
+        }
+    }
     let client = output.take_client().unwrap();
     let applied = client.status().unwrap().applied_revision.load(Acquire);
+    let _audio_guard = CloseBackendOnDrop {
+        backend: Some(backend),
+        output: Some(output),
+    };
 
     let (handle, editor) = open_hosted_editor_window(cx, project);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -316,8 +332,7 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
             audio.control.close();
         }
     });
-    backend.close();
-    drop(output);
+    drop(_audio_guard);
 
     assert!(
         baseline_editor_renders >= 1,
@@ -741,5 +756,288 @@ fn pulsing_edit_cursor_and_locked_play_start_do_not_rerender_editor_view_or_pin_
         editor.read_with(&visual, |view, _| view.render_count),
         baseline_editor_renders,
         "idle poll_tick loop with active edit_cursor must not re-render root EditorView"
+    );
+}
+
+#[gpui::test]
+fn audio_detail_playhead_isolates_from_editor_view_during_playback(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, tracks, audio_clip) = three_track_audio_project();
+    let _output_serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    struct CloseBackendOnDrop {
+        backend: Option<hex_audio::worker_fixture::HeadlessBackend>,
+        output: Option<hex_audio::WorkerPreparedOutput>,
+    }
+    impl Drop for CloseBackendOnDrop {
+        fn drop(&mut self) {
+            if let Some(mut backend) = self.backend.take() {
+                backend.close();
+            }
+            drop(self.output.take());
+        }
+    }
+    let client = output.take_client().unwrap();
+    let applied = client.status().unwrap().applied_revision.load(Acquire);
+    let _audio_guard = CloseBackendOnDrop {
+        backend: Some(backend),
+        output: Some(output),
+    };
+
+    let (handle, editor) = open_hosted_editor_window(cx, project);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(720.0)));
+    visual.run_until_parked();
+
+    let start = Instant::now();
+    editor.update(&mut visual, |view, cx| {
+        view.audio_detail.clip_view_open = true;
+        view.audio_detail.event.source_view = false;
+        view.device_panel.active = false;
+        view.selected_track = Some(tracks[0]);
+        view.selected_clip = Some(audio_clip);
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "audio detail isolation fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audible_playback = Some(crate::editor::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: None,
+            observation: None,
+            audio_revision: applied,
+            project_generation: view.project_generation,
+            state: Arc::clone(view.state.as_ref().unwrap()),
+            prepared_revision: None,
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        let status = view.audio_status().unwrap();
+        status.playing.store(true, Relaxed);
+        status.position.store(4_800, Relaxed);
+        let source = view
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+            .unwrap_or(1);
+        let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+        frame.source = source;
+        let _ = view.observe_audio_frame_for_tick(Some(frame), false, false, start, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    // Flush any one-shot bounds-measurement refresh emitted by audio_event_editor on first mount.
+    visual.update(|window, cx| {
+        window.draw(cx).clear();
+    });
+    visual.run_until_parked();
+
+    let output_source = editor.read_with(&visual, |view, _| {
+        assert!(
+            !view.has_inline_playhead_panel(),
+            "hosted audio detail panel must use sibling AudioDetailPlayheadView"
+        );
+        view.audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+            .unwrap_or(1)
+    });
+
+    let baseline_editor_renders = editor.read_with(&visual, |view, _| view.render_count);
+    let baseline_detail_renders = editor.read_with(&visual, |view, cx| {
+        view.playback_subviews
+            .subview_render_counts(cx)
+            .audio_detail_playhead
+    });
+
+    for tick in 1_u64..=10 {
+        let at = start + Duration::from_millis(16 * tick);
+        let root_redraw = editor.update(&mut visual, |view, cx| {
+            let status = view.audio_status().unwrap();
+            status.position.store(4_800 + tick * 1_200, Relaxed);
+            let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+            frame.source = output_source;
+            view.observe_audio_frame_for_tick(Some(frame), false, false, at, cx)
+        });
+        assert!(
+            !root_redraw,
+            "audio detail playhead tick must not trigger root EditorView redraw"
+        );
+        visual.run_until_parked();
+    }
+
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.render_count),
+        baseline_editor_renders,
+        "EditorView render count must stay constant while audio detail playhead advances"
+    );
+    let after_detail_renders = editor.read_with(&visual, |view, cx| {
+        view.playback_subviews
+            .subview_render_counts(cx)
+            .audio_detail_playhead
+    });
+    assert!(
+        after_detail_renders >= baseline_detail_renders,
+        "AudioDetailPlayheadView should stay mounted in sibling overlay"
+    );
+
+    drop(editor);
+    drop(visual);
+    drop(_audio_guard);
+}
+
+#[gpui::test]
+fn hovered_device_meter_and_eq8_spectrum_do_not_rerender_editor_view(cx: &mut TestAppContext) {
+    cx.update(crate::editor::bind_editor_keys);
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::AddTrack {
+            name: "eq track".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track created");
+    };
+    let eq8_state = hex_engine::default_native_device_state(hex_devices::eq8::EQ8_TYPE_ID).unwrap();
+    let Created::Device(device_id) = model
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: eq8_state,
+        })
+        .unwrap()
+    else {
+        panic!("eq8 device created");
+    };
+    let project = model.project().clone();
+
+    let (handle, editor) = open_hosted_editor_window(cx, project);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(720.0)));
+    visual.run_until_parked();
+
+    let _callback = editor.update(&mut visual, |view, cx| {
+        let callback = crate::editor::device_panel::install_spectrum_test_channel(view);
+        view.selected_track = Some(track);
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
+        crate::editor::device_panel::set_hovered_meter_for_test(view, Some(device_id));
+        cx.notify();
+        callback
+    });
+    visual.run_until_parked();
+    // Flush any one-shot layout measurement refresh (e.g. chain_window bounds defer)
+    // before capturing the steady-state render baseline.
+    for _ in 0..2 {
+        visual.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        visual.run_until_parked();
+    }
+
+    assert!(
+        editor.read_with(&visual, |view, _| {
+            crate::editor::device_panel::has_mounted_eq8_and_meter_for_test(view, device_id)
+        }),
+        "EQ8 graph and isolated DeviceMeterView must be mounted after initial render"
+    );
+
+    let target = editor
+        .read_with(&visual, |view, _| {
+            let identity = hex_engine::PostNodeIdentity::new(
+                hex_engine::ProcessorChainOwner::Track(track.value()),
+                device_id.value(),
+                hex_devices::eq8::EQ8_TYPE_ID,
+            );
+            crate::editor::device_panel::desired_spectrum_target_for_test(view, identity)
+        })
+        .expect("mounted EQ8 should publish a spectrum target");
+
+    // Generate 5 distinct real FFT output frames through the spectrum worker so
+    // every iteration below triggers a genuine `ResponseGraph::set_analyzers`
+    // update and `cx.notify()`.
+    let mut frames_published = Vec::with_capacity(5);
+    for step in 0..5_u32 {
+        let captured_at = Instant::now();
+        let stamp = hex_audio::spectrum_worker::SpectrumStamp {
+            target: target.token,
+            generation: target.project_generation,
+            sample_rate_hz: target.sample_rate_hz,
+            applied_revision: target.activation_floor,
+        };
+        let (mut capture, mut reader, reaper) =
+            hex_audio::spectrum_worker::spawn_spectrum_worker(stamp).unwrap();
+        let freq = 400.0 + step as f32 * 300.0;
+        for chunk in 0..16 {
+            let frames: [[f32; 2]; 256] = std::array::from_fn(|i| {
+                let phase = std::f32::consts::TAU * freq * (chunk * 256 + i) as f32
+                    / target.sample_rate_hz as f32;
+                [phase.sin() * 0.5; 2]
+            });
+            let _ = capture.submit_pair_at(stamp, &frames, &frames, captured_at);
+        }
+        let deadline = captured_at + Duration::from_secs(2);
+        let published = loop {
+            if let Some(pair) = reader.try_latest_pair_at(captured_at) {
+                break pair;
+            }
+            assert!(Instant::now() < deadline, "real FFT result missing");
+            std::thread::yield_now();
+        };
+        drop(capture);
+        drop(reader);
+        drop(reaper);
+        frames_published.push(published);
+    }
+
+    let baseline_editor_renders = editor.read_with(&visual, |view, _| view.render_count);
+    let sibling_on = editor.read_with(&visual, |view, _| view.uses_sibling_playback_overlay());
+    assert!(sibling_on, "sibling overlay must be active");
+
+    // Push 5 distinct live EQ8 spectrum frames and tick the hovered device meter.
+    // Neither should require root EditorView::render().
+    for (idx, published_step) in frames_published.into_iter().enumerate() {
+        let before = editor.read_with(&visual, |view, _| view.render_count);
+        editor.update(&mut visual, |view, cx| {
+            view.device_panel
+                .spectrum_results
+                .insert(target.token, published_step);
+
+            let (updated, needs_root) = crate::editor::device_panel::push_live_spectra(view, cx);
+            assert!(updated, "EQ8 live spectrum should push into mounted graph");
+            assert!(
+                !needs_root,
+                "mounted EQ8 graph must not require root EditorView re-render"
+            );
+
+            let _ = crate::editor::device_panel::tick_hovered_meter_isolated(view, cx);
+        });
+        let after_update = editor.read_with(&visual, |view, _| view.render_count);
+        visual.run_until_parked();
+        let after_parked = editor.read_with(&visual, |view, _| view.render_count);
+        let a11y_nodes = visual.update(|window, _| window.accessibility_nodes().count());
+        assert!(
+            a11y_nodes > 0,
+            "EQ8 panel must maintain a valid accessibility tree so AnyView::cached stays active"
+        );
+        visual.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+        let after_draw = editor.read_with(&visual, |view, _| view.render_count);
+        assert_eq!(
+            (after_update, after_parked, after_draw),
+            (before, before, before),
+            "step {idx}: a11y_nodes={a11y_nodes}, before={before}, after_update={after_update}, after_parked={after_parked}, after_draw={after_draw}"
+        );
+    }
+
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.render_count),
+        baseline_editor_renders,
+        "EQ8 live spectrum and hovered device meter updates must not re-render root EditorView"
     );
 }
