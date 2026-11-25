@@ -13,6 +13,8 @@ pub(crate) mod frozen_parameters;
 mod live;
 pub(crate) mod output_trim;
 #[cfg(test)]
+mod retarget_deadline_tests;
+#[cfg(test)]
 mod steal_tests;
 mod volume;
 pub(crate) use live::{ImportedLiveOccurrence, LiveInputId};
@@ -166,6 +168,31 @@ impl MutableOccurrenceSignature {
     }
 }
 
+/// Exact source-DSP release instant for a released occurrence or live voice.
+///
+/// Retaining the release origin instead of only `origin + old_tail` lets
+/// `MutableInstrumentTrackRuntime::retarget_from` recompute exact quiet
+/// deadlines across lengthening, shortening, zero-release, and repeated edits
+/// without cumulative clamping drift or callback allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReleaseOrigin {
+    /// NoteOff was emitted at this exact advancing source DSP age.
+    AtAge(u64),
+    /// NoteOff occurred this many frames before source DSP age 0 (analytic import).
+    BeforeAgeZero(u64),
+}
+
+impl ReleaseOrigin {
+    /// Compute the exact source-age quiet deadline for `tail_frames`, returning
+    /// `None` on `u64` overflow.
+    pub(crate) fn quiet_age(self, tail_frames: u64) -> Option<u64> {
+        match self {
+            Self::AtAge(age) => age.checked_add(tail_frames),
+            Self::BeforeAgeZero(elapsed) => Some(tail_frames.saturating_sub(elapsed)),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct MutableOccurrence {
     pub(crate) signature: MutableOccurrenceSignature,
@@ -173,6 +200,8 @@ pub(crate) struct MutableOccurrence {
     pub(crate) onset_frame: u64,
     pub(crate) gate_end_frame: u64,
     pub(crate) quiet_deadline_frame: u64,
+    /// Exact source-age release origin for shared-source deadline reconciliation.
+    pub(crate) release_origin: Option<ReleaseOrigin>,
     /// Shared sources expire released proofs on their advancing DSP clock.
     pub(crate) quiet_deadline_age: Option<u64>,
     pub(crate) note_off_sent: bool,
@@ -180,6 +209,43 @@ pub(crate) struct MutableOccurrence {
     pub(crate) gain_at_end_bits: u64,
     pub(crate) gain_frozen: bool,
     pub(crate) contributor_fade: Option<ContributorFade>,
+}
+
+/// Reconcile one committed authored occurrence's quiet deadlines from
+/// `previous_tail` to `target_tail` without changing identity, gate timing, or
+/// gain custody. Returns `None` on invalid invariants or `u64` overflow so
+/// `can_retarget_from` / `retarget_from` can refuse atomically before mutating.
+fn reconcile_occurrence_deadline(
+    occurrence: MutableOccurrence,
+    previous_tail: u64,
+    target_tail: u64,
+) -> Option<MutableOccurrence> {
+    if !occurrence.note_off_sent
+        && (occurrence.quiet_deadline_age.is_some() || occurrence.release_origin.is_some())
+    {
+        return None;
+    }
+    let quiet_deadline_frame = occurrence.gate_end_frame.checked_add(target_tail)?;
+    let quiet_deadline_age = if occurrence.note_off_sent {
+        if let Some(origin) = occurrence.release_origin {
+            Some(origin.quiet_age(target_tail)?)
+        } else if let Some(old_quiet_age) = occurrence.quiet_deadline_age {
+            if target_tail >= previous_tail {
+                Some(old_quiet_age.checked_add(target_tail - previous_tail)?)
+            } else {
+                Some(old_quiet_age.saturating_sub(previous_tail - target_tail))
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    Some(MutableOccurrence {
+        quiet_deadline_frame,
+        quiet_deadline_age,
+        ..occurrence
+    })
 }
 
 /// Source-age attenuation for an already sounding authored contributor.
@@ -906,20 +972,102 @@ impl MutableInstrumentTrackRuntime {
     }
     /// Read-only preflight for a prepared instrument-state retarget. The
     /// candidate inventory owns `proof` until control retires this graph.
+    ///
+    /// # Retained note deadline reconciliation contract
+    ///
+    /// When a prepared target runtime changes `max_release_tail_frames()`,
+    /// retargeting reconciles every carried authored proof and live occurrence
+    /// deadline against the target's validated tail bound without changing
+    /// occurrence IDs, gate/note-off timing, gain custody, or source-owner age:
+    /// - Authored proofs (`primary`): `quiet_deadline_frame = gate_end_frame + target_tail`
+    ///   and, for released shared-source proofs, `quiet_deadline_age = release_origin.quiet_age(target_tail)`.
+    /// - Live voices (`live.primary`): held voices keep `quiet_age = None` and
+    ///   take `target_tail` on future release; released voices recompute
+    ///   `quiet_age = release_origin.quiet_age(target_tail)`.
+    /// - Capacity, voice/event density (`max_active_occurrences`,
+    ///   `steals_releasing_voices`, `max_events_per_block`, `MAX_MUTABLE_OCCURRENCE_PROOFS`),
+    ///   matching `sample_rate`, target tail bound (`<= max_mutable_tail_frames(sample_rate)`),
+    ///   and checked `u64` deadline arithmetic are all verified before any
+    ///   mutation so invalid, overflowing, or over-capacity retargets refuse
+    ///   atomically with zero callback allocation or free.
+    ///
+    /// # Provider prerequisites before exposing Release automation
+    ///
+    /// Reconciling engine ledgers is necessary but not sufficient for a
+    /// provider to expose live Release automation:
+    /// 1. The provider must declare an honest finite `max_release_tail_frames()`
+    ///    within `max_mutable_tail_frames(sample_rate)` that upper-bounds every
+    ///    carried and newly released voice tail.
+    /// 2. Its `PreparedInstrumentHistoryRetarget` / `can_retarget_from` /
+    ///    `retarget_from` implementation must continue held and released voices
+    ///    through the new terminal without stuck notes, voice leaks, or clicks,
+    ///    and refuse incompatible rate/tuning/state/capacity atomically.
+    /// 3. Control admission must re-validate compiled MIDI source density
+    ///    against the candidate's new `max_release_tail_frames()`.
+    /// 4. Unsupported combinations remain explicitly refused or quiescence-gated:
+    ///    simultaneous tempo-map remaps + retarget, standalone non-source
+    ///    keyboard release-length changes, and providers that have not opted in
+    ///    (for example FM4 `#6829`, which retains its safe monotonic release
+    ///    ceiling until provider integration is separately qualified).
     pub(crate) fn can_retarget_from(
         &self,
         previous: &Self,
         proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
     ) -> bool {
-        self.resource_history_matches(previous)
-            && self.primary.capacity() >= previous.primary.len()
-            && self.scratch.capacity() >= previous.primary.len()
-            && (previous.live.is_none() || self.live.is_some())
-            && self.pair.can_retarget_from(&previous.pair, proof)
+        let target_tail = self.max_release_tail_frames();
+        let previous_tail = previous.max_release_tail_frames();
+        if self.sample_rate != previous.sample_rate
+            || max_mutable_tail_frames(self.sample_rate).is_none_or(|limit| target_tail > limit)
+            || !self.resource_history_matches(previous)
+            || self.primary.capacity() < previous.primary.len()
+            || self.scratch.capacity() < previous.primary.len()
+            || (previous.live.is_some() && self.live.is_none())
+        {
+            return false;
+        }
+        let total_authored = previous.primary.len();
+        let held_authored = previous.primary.iter().filter(|p| !p.note_off_sent).count();
+        let live_total = previous.transition_live_count(false);
+        let live_held = previous.live.as_ref().map_or(0, |live| {
+            live.primary
+                .iter()
+                .flatten()
+                .filter(|voice| voice.quiet_age.is_none())
+                .count()
+        });
+        let max_active = self
+            .max_active_occurrences()
+            .min(MAX_MUTABLE_OCCURRENCE_PROOFS);
+        let occupied = if self.steals_releasing_voices() {
+            held_authored.checked_add(live_held)
+        } else {
+            total_authored.checked_add(live_total)
+        };
+        let total_proofs = total_authored.checked_add(live_total);
+        let held_total = held_authored.checked_add(live_held);
+        if total_proofs.is_none_or(|n| n > MAX_MUTABLE_OCCURRENCE_PROOFS)
+            || occupied.is_none_or(|n| n > max_active)
+            || held_total.is_none_or(|n| n > self.max_events_per_block())
+        {
+            return false;
+        }
+        if !previous.primary.iter().all(|&occurrence| {
+            reconcile_occurrence_deadline(occurrence, previous_tail, target_tail).is_some()
+        }) {
+            return false;
+        }
+        if previous.live.as_ref().is_some_and(|live| {
+            !live.primary.iter().flatten().all(|&voice| {
+                live::reconcile_live_deadline(voice, previous_tail, target_tail).is_some()
+            })
+        }) {
+            return false;
+        }
+        self.pair.can_retarget_from(&previous.pair, proof)
     }
 
-    /// Apply a retarget only after every affected runtime and both of its
-    /// lattice twins have passed preflight.
+    /// Apply a retarget only after every affected runtime, deadline
+    /// reconciliation, and both lattice twins have passed preflight.
     pub(crate) fn retarget_from(
         &mut self,
         previous: &Self,
@@ -930,22 +1078,36 @@ impl MutableInstrumentTrackRuntime {
                 NativeInstrumentRuntimeError::IncompatibleHistory,
             ));
         }
+        let previous_tail = previous.max_release_tail_frames();
+        let target_tail = self.max_release_tail_frames();
         self.pair
             .retarget_from(&previous.pair, proof)
             .map_err(map_runtime_error)?;
         self.inherit_modulation(previous);
         self.primary.clear();
-        self.primary.extend_from_slice(&previous.primary);
+        for &occurrence in &previous.primary {
+            let reconciled = reconcile_occurrence_deadline(occurrence, previous_tail, target_tail)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+            self.primary.push(reconciled);
+        }
         self.scratch.clear();
-        self.scratch.extend_from_slice(&previous.primary);
+        self.scratch.extend_from_slice(&self.primary);
         self.expression = previous
             .expression
             .filter(|_| self.supports_live_expression());
         self.next_id = previous.next_id;
         self.next_id_scratch = previous.next_id;
         if let Some((next, old)) = self.live.as_mut().zip(previous.live.as_ref()) {
-            next.primary = old.primary;
-            next.scratch = old.primary;
+            for (dst, src) in next.primary.iter_mut().zip(old.primary.iter()) {
+                *dst = match *src {
+                    Some(voice) => Some(
+                        live::reconcile_live_deadline(voice, previous_tail, target_tail)
+                            .ok_or(MutableInstrumentRuntimeError::Arithmetic)?,
+                    ),
+                    None => None,
+                };
+            }
+            next.scratch = next.primary;
             next.age = old.age;
             next.scratch_age = old.age;
             next.monitor_anchor = old.monitor_anchor;

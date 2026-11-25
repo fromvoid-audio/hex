@@ -1,6 +1,12 @@
 //! Authored gate scheduling in the engine's occurrence ledger. Rendering and
 //! worker custody belong to its callers, including rollback for built-in DSP
 //! and acceptance of foreign worker input at the physical callback boundary.
+//!
+//! Released proofs record `ReleaseOrigin` whenever a shared-source DSP age is
+//! present and compute both `quiet_deadline_frame` and `quiet_deadline_age`
+//! with checked arithmetic from the active runtime's `tail_frames`, so a later
+//! `MutableInstrumentTrackRuntime::retarget_from` can reconcile carried note
+//! deadlines exactly without truncating extended releases.
 use super::*;
 
 /// The copied worker input reserves 64 combined events per quantum.
@@ -171,10 +177,23 @@ pub(crate) fn stage_authored_gates(
                 expression: hex_project::NoteExpression::default(),
             })?;
             occurrence.note_off_sent = true;
-            occurrence.quiet_deadline_age = source_age.map(|age| {
-                age.saturating_add(offset as u64)
-                    .saturating_add(tail_frames)
-            });
+            occurrence.quiet_deadline_frame = occurrence
+                .gate_end_frame
+                .checked_add(tail_frames)
+                .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+            if let Some(age) = source_age {
+                let offset_u64 =
+                    u64::try_from(offset).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
+                let release_at = age
+                    .checked_add(offset_u64)
+                    .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                let origin = ReleaseOrigin::AtAge(release_at);
+                let quiet_age = origin
+                    .quiet_age(tail_frames)
+                    .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                occurrence.release_origin = Some(origin);
+                occurrence.quiet_deadline_age = Some(quiet_age);
+            }
         }
     }
 
@@ -292,17 +311,30 @@ pub(crate) fn stage_authored_gates(
         let quiet_deadline_frame = gate_end_frame
             .checked_add(tail_frames)
             .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+        let (release_origin, quiet_deadline_age) = if note_off_sent {
+            if let Some(age) = source_age {
+                let release_at = age
+                    .checked_add(gate_delta)
+                    .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                let origin = ReleaseOrigin::AtAge(release_at);
+                let quiet_age = origin
+                    .quiet_age(tail_frames)
+                    .ok_or(MutableInstrumentRuntimeError::Arithmetic)?;
+                (Some(origin), Some(quiet_age))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
         scratch.push(MutableOccurrence {
             signature,
             id,
             onset_frame,
             gate_end_frame,
             quiet_deadline_frame,
-            quiet_deadline_age: if note_off_sent {
-                source_age.map(|age| age.saturating_add(gate_delta).saturating_add(tail_frames))
-            } else {
-                None
-            },
+            release_origin,
+            quiet_deadline_age,
             note_off_sent,
             gain_at_end_bits: 1.0_f64.to_bits(),
             gain_frozen: false,

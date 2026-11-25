@@ -338,12 +338,23 @@ impl PreparedSessionMidiClip {
             && self.mutable_limits == other.mutable_limits
     }
 
-    /// Preserve clip/source identity and mutable admission limits while
-    /// allowing only the prepared native instrument's authored state to vary.
+    /// Preserve clip/source identity and non-tail mutable admission limits while
+    /// allowing the prepared native instrument's authored state and validated
+    /// release tail bound to vary (`routed_midi` recompiles and density-checks
+    /// any clip whose `max_release_tail_frames` changed).
     pub(crate) fn instrument_retarget_compatible(&self, other: &Self) -> bool {
         self.instrument_identity_matches(other)
             && self.instrument_enabled == other.instrument_enabled
-            && self.mutable_limits == other.mutable_limits
+            && match (self.mutable_limits, other.mutable_limits) {
+                (Some(old), Some(new)) => {
+                    old.max_events_per_query == new.max_events_per_query
+                        && old.max_active_occurrences == new.max_active_occurrences
+                        && old.supports_clip_volume == new.supports_clip_volume
+                        && old.steals_releasing_voices == new.steals_releasing_voices
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     pub(crate) fn instrument_identity_matches(&self, other: &Self) -> bool {
