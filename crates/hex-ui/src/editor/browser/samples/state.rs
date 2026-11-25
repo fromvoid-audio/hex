@@ -1,5 +1,8 @@
 //! In-memory sample browsing and catalog publication state.
-use hex_library::{DirectoryListing, EntryKind, LibraryEntry, catalog::SampleCatalog};
+use hex_library::{
+    DirectoryListing, EntryKind, LibraryEntry,
+    catalog::{CatalogQuery, CatalogSort, SampleCatalog},
+};
 use std::{
     cell::RefCell,
     collections::BTreeSet,
@@ -39,6 +42,9 @@ struct VisibleCache {
     query: String,
     source: Option<PathBuf>,
     directory: Option<PathBuf>,
+    tag: Option<String>,
+    collection: Option<String>,
+    sort: CatalogSort,
     entries: Arc<Vec<LibraryEntry>>,
 }
 
@@ -64,6 +70,10 @@ pub(in crate::editor::browser) struct SampleBrowser {
     /// Periodic rescan cadence; scans run on control workers, never the UI.
     pub(super) rescan: RescanBackoff,
     pub(in crate::editor::browser) status: Option<String>,
+    /// Active browser tag/collection filters and sort order (evaluated purely in memory).
+    pub(in crate::editor::browser) tag_filter: Option<String>,
+    pub(in crate::editor::browser) collection_filter: Option<String>,
+    pub(in crate::editor::browser) sort: CatalogSort,
     visible: RefCell<Option<VisibleCache>>,
     folder_visible: RefCell<Option<FolderCache>>,
 }
@@ -124,18 +134,34 @@ impl SampleBrowser {
             && previous.query == query
             && previous.source.as_deref() == source
             && previous.directory.as_deref() == directory
+            && previous.tag == self.tag_filter
+            && previous.collection == self.collection_filter
+            && previous.sort == self.sort
         {
             return previous.entries.clone();
         }
-        let entries = Arc::new(if listing.is_some() {
+        let has_metadata_filters = self.tag_filter.is_some()
+            || self.collection_filter.is_some()
+            || self.sort != CatalogSort::NameAsc;
+        let entries = Arc::new(if listing.is_some() && !has_metadata_filters {
             self.catalog.search_with_listing_in(query, source, listing)
         } else {
-            self.catalog.filtered(query, source)
+            self.catalog.query(&CatalogQuery {
+                text: query,
+                source,
+                tag: self.tag_filter.as_deref(),
+                collection: self.collection_filter.as_deref(),
+                sort: self.sort,
+                ..CatalogQuery::default()
+            })
         });
         *cache = Some(VisibleCache {
             query: query.to_owned(),
             source: source.map(PathBuf::from),
             directory: directory.map(PathBuf::from),
+            tag: self.tag_filter.clone(),
+            collection: self.collection_filter.clone(),
+            sort: self.sort,
             entries: entries.clone(),
         });
         entries
