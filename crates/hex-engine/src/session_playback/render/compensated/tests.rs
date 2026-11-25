@@ -942,7 +942,7 @@ fn block_compensated_route_matches_scalar_with_sidechain_group_return_and_main_l
                         frames: &input,
                     },
                     None,
-                    Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+                    Some(&mut |_, _, _, frames: &[Frame]| max_slice = max_slice.max(frames.len())),
                     None,
                     &mut hex_lattice::RefuseForeign,
                 )
@@ -1007,7 +1007,9 @@ fn monitored_keyboard_blocks_match_scalar_press_and_release() {
                     playback
                         .render_with_node_signal_observer(
                             chunk,
-                            Some(&mut |_, _, _, slice| max_slice = max_slice.max(slice.len())),
+                            Some(&mut |_, _, _, slice: &[Frame]| {
+                                max_slice = max_slice.max(slice.len())
+                            }),
                         )
                         .unwrap();
                 }
@@ -1082,7 +1084,9 @@ fn compensated_parameter_gestures_match_scalar_pcm_and_receipts() {
                     playback
                         .render_with_node_signal_observer(
                             &mut pcm,
-                            Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+                            Some(&mut |_, _, _, frames: &[Frame]| {
+                                max_slice = max_slice.max(frames.len())
+                            }),
                         )
                         .unwrap();
                     let receipt = playback.take_native_parameter_application().unwrap();

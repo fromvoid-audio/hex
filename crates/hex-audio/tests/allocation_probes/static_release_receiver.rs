@@ -550,7 +550,10 @@ fn stateful_receiver_reference(
         playback
             .render_with_node_signal_observer(
                 &mut mixed,
-                Some(&mut |node, phase, offset, frames| {
+                Some(&mut |node: hex_engine::PostNodeIdentity,
+                           phase: NodeSignalPhase,
+                           offset: usize,
+                           frames: &[hex_engine::Frame]| {
                     if node.device_id == effect.value() {
                         let (target, seen) = match phase {
                             NodeSignalPhase::Input => (&mut input, &mut seen_input),

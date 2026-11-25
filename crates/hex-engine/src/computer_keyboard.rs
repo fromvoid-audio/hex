@@ -1781,7 +1781,10 @@ mod tests {
         tested
             .render_with_node_signal_observer(
                 &mut actual,
-                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                Some(&mut |identity: crate::PostNodeIdentity,
+                           phase: crate::NodeSignalPhase,
+                           offset: usize,
+                           frames: &[Frame]| {
                     assert_eq!(
                         identity.owner,
                         hex_lattice::ProcessorChainOwner::Track(track.value())

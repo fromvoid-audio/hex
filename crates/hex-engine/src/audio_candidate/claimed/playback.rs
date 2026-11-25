@@ -175,14 +175,8 @@ impl ClaimedAudioCandidateRuntime {
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), crate::Invalid> {
         if let Some(observer) = observer {
-            self.render_with_node_signal_observer(
-                output,
-                Some(&mut |id, phase, offset, frames| {
-                    if phase == crate::NodeSignalPhase::Output {
-                        observer(id, offset, frames);
-                    }
-                }),
-            )
+            let mut adapter = crate::PostNodeSignalAdapter(observer);
+            self.render_with_node_signal_observer(output, Some(&mut adapter))
         } else {
             self.render_with_node_signal_observer(output, None)
         }
@@ -286,15 +280,8 @@ impl ClaimedAudioCandidateRuntime {
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), crate::Invalid> {
         if let Some(observer) = observer {
-            self.render_with_pages_and_node_signal_observer(
-                output,
-                pages,
-                Some(&mut |id, phase, offset, frames| {
-                    if phase == crate::NodeSignalPhase::Output {
-                        observer(id, offset, frames);
-                    }
-                }),
-            )
+            let mut adapter = crate::PostNodeSignalAdapter(observer);
+            self.render_with_pages_and_node_signal_observer(output, pages, Some(&mut adapter))
         } else {
             self.render_with_pages_and_node_signal_observer(output, pages, None)
         }

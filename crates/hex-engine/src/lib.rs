@@ -246,8 +246,164 @@ pub use hex_lattice::NodeSignalPhase;
 /// trim and after the entire effect/output trim. Both borrows are speculative
 /// until the full render and caller's final output validation succeed.
 /// Real-time observers must not allocate, block or retain either sample borrow.
-pub type NodeSignalObserver<'observer> =
-    dyn for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]) + 'observer;
+pub trait NodeSignalSink {
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: NodeSignalPhase,
+        offset: usize,
+        frames: &[Frame],
+    );
+
+    /// Reports whether this observer needs synchronous samples from `owner`.
+    /// Returning `false` allows `owner` to remain eligible for parallel wave
+    /// dispatch even while another owner is observed.
+    fn observes_owner(&self, _owner: ProcessorChainOwner) -> bool {
+        true
+    }
+}
+
+impl<F> NodeSignalSink for F
+where
+    F: for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]),
+{
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: NodeSignalPhase,
+        offset: usize,
+        frames: &[Frame],
+    ) {
+        self(identity, phase, offset, frames);
+    }
+}
+
+/// Predicate deciding which processor chain owners a [`FilteredNodeSignalObserver`]
+/// observes synchronously.
+pub trait NodeSignalOwnerFilter {
+    fn observes_owner(&self, owner: ProcessorChainOwner) -> bool;
+}
+
+impl<P> NodeSignalOwnerFilter for P
+where
+    P: Fn(ProcessorChainOwner) -> bool,
+{
+    fn observes_owner(&self, owner: ProcessorChainOwner) -> bool {
+        self(owner)
+    }
+}
+
+impl NodeSignalOwnerFilter for ProcessorChainOwner {
+    fn observes_owner(&self, owner: ProcessorChainOwner) -> bool {
+        *self == owner
+    }
+}
+
+impl NodeSignalOwnerFilter for Option<ProcessorChainOwner> {
+    fn observes_owner(&self, owner: ProcessorChainOwner) -> bool {
+        *self == Some(owner)
+    }
+}
+
+/// Zero-allocation [`NodeSignalSink`] wrapper that marks only matching owners
+/// ineligible for parallel wave dispatch.
+pub struct FilteredNodeSignalObserver<F, P> {
+    filter: P,
+    observe: F,
+}
+
+impl<F, P> FilteredNodeSignalObserver<F, P>
+where
+    F: for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]),
+    P: NodeSignalOwnerFilter,
+{
+    pub const fn new(filter: P, observe: F) -> Self {
+        Self { filter, observe }
+    }
+}
+
+impl<F> FilteredNodeSignalObserver<F, ProcessorChainOwner>
+where
+    F: for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]),
+{
+    pub const fn for_owner(owner: ProcessorChainOwner, observe: F) -> Self {
+        Self::new(owner, observe)
+    }
+}
+
+impl<F, P> NodeSignalSink for FilteredNodeSignalObserver<F, P>
+where
+    F: for<'frames> FnMut(PostNodeIdentity, NodeSignalPhase, usize, &'frames [Frame]),
+    P: NodeSignalOwnerFilter,
+{
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: NodeSignalPhase,
+        offset: usize,
+        frames: &[Frame],
+    ) {
+        (self.observe)(identity, phase, offset, frames);
+    }
+
+    fn observes_owner(&self, owner: ProcessorChainOwner) -> bool {
+        self.filter.observes_owner(owner)
+    }
+}
+
+/// Shifts observed frame offsets by `offset` while forwarding `observes_owner`
+/// from the wrapped [`NodeSignalObserver`].
+pub struct ShiftedNodeSignalObserver<'a, 'observer> {
+    inner: &'a mut NodeSignalObserver<'observer>,
+    offset: usize,
+}
+
+impl<'a, 'observer> ShiftedNodeSignalObserver<'a, 'observer> {
+    pub fn new(inner: &'a mut NodeSignalObserver<'observer>, offset: usize) -> Self {
+        Self { inner, offset }
+    }
+}
+
+impl NodeSignalSink for ShiftedNodeSignalObserver<'_, '_> {
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: NodeSignalPhase,
+        at: usize,
+        frames: &[Frame],
+    ) {
+        self.inner
+            .observe_signal(identity, phase, self.offset.saturating_add(at), frames);
+    }
+
+    fn observes_owner(&self, owner: ProcessorChainOwner) -> bool {
+        self.inner.observes_owner(owner)
+    }
+}
+
+pub(crate) struct PostNodeSignalAdapter<'a, 'observer>(
+    pub(crate) &'a mut PostNodeObserver<'observer>,
+);
+
+impl NodeSignalSink for PostNodeSignalAdapter<'_, '_> {
+    fn observe_signal(
+        &mut self,
+        identity: PostNodeIdentity,
+        phase: NodeSignalPhase,
+        offset: usize,
+        frames: &[Frame],
+    ) {
+        if phase == NodeSignalPhase::Output {
+            (self.0)(identity, offset, frames);
+        }
+    }
+}
+
+/// Synchronous input/output signals around one native entry, before host input
+/// trim and after the entire effect/output trim. Both borrows are speculative
+/// until the full render and caller's final output validation succeed.
+/// Real-time observers must not allocate, block or retain either sample borrow.
+pub type NodeSignalObserver<'observer> = dyn NodeSignalSink + 'observer;
 
 /// Maximum stable track routes exposed to native callback telemetry.
 pub const MAX_SESSION_ROUTE_TRACKS: usize = hex_project::MAX_TRACKS;

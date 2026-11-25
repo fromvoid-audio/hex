@@ -1459,7 +1459,10 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         paired
             .render_with_node_signal_observer(
                 &mut paired_output,
-                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                Some(&mut |identity: crate::PostNodeIdentity,
+                           phase: crate::NodeSignalPhase,
+                           offset: usize,
+                           frames: &[Frame]| {
                     assert_eq!(identity.owner, hex_lattice::ProcessorChainOwner::Track(1));
                     assert_eq!(identity.device_id, 7);
                     paired_calls.push((phase, offset, frames.len()));
@@ -1547,7 +1550,10 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
         paired
             .render_with_node_signal_observer(
                 &mut paired_output,
-                Some(&mut |identity, phase, offset, frames: &[Frame]| {
+                Some(&mut |identity: crate::PostNodeIdentity,
+                           phase: crate::NodeSignalPhase,
+                           offset: usize,
+                           frames: &[Frame]| {
                     if identity == return_identity {
                         signals.push((phase, offset, frames.to_vec()));
                     }

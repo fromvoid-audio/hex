@@ -2855,12 +2855,14 @@ fn clocked_main_and_detached_suffix_match_single_frames_across_loop_wraps() {
             blocked
                 .render_with_node_signal_observer(
                     &mut actual,
-                    Some(&mut |node, _, _, frames| {
-                        if node.owner == hex_lattice::ProcessorChainOwner::Main {
-                            first_width.get_or_insert(frames.len());
-                            width = width.max(frames.len());
-                        }
-                    }),
+                    Some(
+                        &mut |node: crate::PostNodeIdentity, _, _, frames: &[Frame]| {
+                            if node.owner == hex_lattice::ProcessorChainOwner::Main {
+                                first_width.get_or_insert(frames.len());
+                                width = width.max(frames.len());
+                            }
+                        },
+                    ),
                 )
                 .unwrap();
             for frame in &mut expected {

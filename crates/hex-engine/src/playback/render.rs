@@ -342,14 +342,8 @@ impl Playback {
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), Invalid> {
         if let Some(observer) = observer {
-            self.render_with_node_signal_observer(
-                output,
-                Some(&mut |identity, phase, offset, frames| {
-                    if phase == crate::NodeSignalPhase::Output {
-                        observer(identity, offset, frames);
-                    }
-                }),
-            )
+            let mut adapter = crate::PostNodeSignalAdapter(observer);
+            self.render_with_node_signal_observer(output, Some(&mut adapter))
         } else {
             self.render_with_node_signal_observer(output, None)
         }
@@ -650,15 +644,8 @@ impl Playback {
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), Invalid> {
         if let Some(observer) = observer {
-            self.render_with_pages_and_node_signal_observer(
-                output,
-                pages,
-                Some(&mut |identity, phase, offset, frames| {
-                    if phase == crate::NodeSignalPhase::Output {
-                        observer(identity, offset, frames);
-                    }
-                }),
-            )
+            let mut adapter = crate::PostNodeSignalAdapter(observer);
+            self.render_with_pages_and_node_signal_observer(output, pages, Some(&mut adapter))
         } else {
             self.render_with_pages_and_node_signal_observer(output, pages, None)
         }
@@ -920,12 +907,7 @@ pub(super) fn with_shifted_observer<R>(
 ) -> R {
     match observer {
         Some(inner) if offset != 0 => {
-            let mut shifted = |identity: crate::PostNodeIdentity,
-                               phase: crate::NodeSignalPhase,
-                               at: usize,
-                               frames: &[Frame]| {
-                inner(identity, phase, offset.saturating_add(at), frames);
-            };
+            let mut shifted = crate::ShiftedNodeSignalObserver::new(inner, offset);
             render(Some(&mut shifted))
         }
         other => render(other),

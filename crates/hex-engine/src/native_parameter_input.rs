@@ -106,7 +106,7 @@ fn dispatch_stage(
 ) -> Result<(), hex_lattice_contract::DeviceContractError> {
     let mut observe = |owner, device, kind, phase, offset, frames: &[Frame]| {
         if let Some(observer) = observer.as_mut() {
-            observer(
+            observer.observe_signal(
                 PostNodeIdentity::new(owner, device, kind),
                 phase,
                 offset,
