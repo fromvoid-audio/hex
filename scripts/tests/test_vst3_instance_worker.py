@@ -225,7 +225,13 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 10, closed=False, unloaded=False, message=session.stop())
 
     def test_actual_parameter_step_ramp_and_feedback_across_variable_sdk_blocks(self):
-        session = self.session(variant=37)
+        self.check_parameter_step_ramp_and_feedback(variant=37)
+
+    def test_double_only_effect_processes_float_wire_audio_and_parameter_points(self):
+        self.check_parameter_step_ramp_and_feedback(variant=164)
+
+    def check_parameter_step_ramp_and_feedback(self, variant):
+        session = self.session(variant=variant)
         self.ready(session, controller=True)
         cases = [
             (1, [(0, 7, .25)], [.25]),

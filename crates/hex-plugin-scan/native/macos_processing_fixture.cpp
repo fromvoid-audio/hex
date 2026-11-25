@@ -192,6 +192,7 @@ constexpr int full_output_with_editor_input_variant=159;
 constexpr int split_slice_65_outputs_variant=160;
 constexpr int midi_cc_mapping_restart_variant=161, midi_cc_mapping_and_value_restart_variant=162;
 constexpr int stale_step_count_two_lanes_variant=163;
+constexpr int double_only_effect_variant=164;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -650,7 +651,8 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
         fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant ||
         fault==stopped_bus_refusal_instrument;
     const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
-    const int mode=midi_instrument?1:next_mode;
+    const bool double_only=next_mode>=3 || fault==double_only_effect_variant;
+    const int mode=midi_instrument || next_mode==4?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
@@ -910,6 +912,7 @@ public:
     }
     tresult PLUGIN_API canProcessSampleSize(int32 size) override {
         if (!control() || !initialized || fault==6) return kResultFalse;
+        if (double_only) return size==kSample64?kResultOk:kResultFalse;
         return size==kSample32 || (mode==2 && size==kSample64)?kResultOk:kResultFalse;
     }
     tresult PLUGIN_API setBusArrangements(SpeakerArrangement* in,int32 ni,SpeakerArrangement* out,int32 no) override {
@@ -932,7 +935,7 @@ public:
     tresult PLUGIN_API setupProcessing(ProcessSetup& request) override {
         if (!control() || (!arranged && !silent_input && !multiple_outputs) || active || processing ||
             (request.processMode!=kRealtime && request.processMode!=kOffline) ||
-            (request.symbolicSampleSize!=kSample32 && !(mode==2 && request.symbolicSampleSize==kSample64)) ||
+            canProcessSampleSize(request.symbolicSampleSize)!=kResultOk ||
             request.maxSamplesPerBlock<1 || request.maxSamplesPerBlock>256 ||
             (request.sampleRate!=44100 && request.sampleRate!=48000 && request.sampleRate!=88200 && request.sampleRate!=96000)) return kResultFalse;
         ++observed.setups;
@@ -1361,7 +1364,7 @@ public:
 } // namespace
 
 extern "C" __attribute__((visibility("default"))) bool HexProcessingConfigure(int mode,int fault) {
-    if (!control() || mode<0 || mode>2 || fault<0 || fault>13) return false;
+    if (!control() || mode<0 || mode>4 || fault<0 || fault>13) return false;
     next_mode=mode;next_fault=fault;return true;
 }
 extern "C" __attribute__((visibility("default"))) int HexProcessingObservation(int* out,int capacity) {
@@ -1383,7 +1386,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>stale_step_count_two_lanes_variant) return false;next_fault=value;
+        if (value>double_only_effect_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

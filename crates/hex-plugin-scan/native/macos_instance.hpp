@@ -40,7 +40,8 @@ class Instance final {
     int32 event_input_channels_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
-    InactiveInstrumentOutputs inactive_outputs_;
+    InactiveInstrumentOutputs<Sample32> inactive_outputs_;
+    std::unique_ptr<DoubleProcessing> double_processing_;
     StateStream* component_stream=nullptr;
     StateStream* controller_stream=nullptr;
     StateStream* restore_component_stream=nullptr;
@@ -183,12 +184,16 @@ public:
             active || configuration_started || processing.load() || quarantined.load())
             return ConfigurationResult::InvalidState;
         if (!valid_configuration(request)) return ConfigurationResult::InvalidConfiguration;
-        // No implicit float64 conversion/cast. Any future conversion is owned
-        // by the isolated helper, never by the Rust audio callback.
+        // The wire stays float. Only a double-only processor needs conversion.
         if (request.precision!=kSample32) return ConfigurationResult::UnsupportedPrecision;
         configuration_started = true;
-        if (processor->canProcessSampleSize(kSample32)!=kResultOk)
-            return ConfigurationResult::UnsupportedPrecision;
+        if (processor->canProcessSampleSize(kSample32)!=kResultOk) {
+            if (processor->canProcessSampleSize(kSample64)!=kResultOk)
+                return ConfigurationResult::UnsupportedPrecision;
+            double_processing_.reset(new (std::nothrow) DoubleProcessing);
+            if (!double_processing_ || !double_processing_->reserve(request.maximum_frames))
+                return ConfigurationResult::SetupRefused;
+        }
         const auto input_count=component->getBusCount(kAudio,kInput);
         const auto output_count=component->getBusCount(kAudio,kOutput);
         // An instrument may advertise one main or auxiliary audio input. Keep
@@ -278,7 +283,7 @@ public:
             if (!additional_output_matches(i,observed) || observed!=outputs[i])
                 return ConfigurationResult::ArrangementMismatch;
         ProcessSetup setup{};
-        setup.processMode = request.process_mode; setup.symbolicSampleSize = kSample32;
+        setup.processMode = request.process_mode; setup.symbolicSampleSize = double_processing_?kSample64:kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
         if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
         // Inactive trailing buses need no PCM buffer, even if default active.
@@ -303,7 +308,8 @@ public:
         }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
         configuration_=sdk;
-        inactive_outputs_.prepare(output_count,outputs);
+        if (double_processing_) double_processing_->inactive_outputs.prepare(output_count,outputs);
+        else inactive_outputs_.prepare(output_count,outputs);
         silent_input_=silent_input;
         active = true; configured = true;
         return ConfigurationResult::Prepared;
@@ -448,9 +454,21 @@ public:
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
         auto sdk=data;
-        inactive_outputs_.attach(sdk);
-        const ProcessingShape shape(sdk);
-        clear_disjoint_outputs(configuration_,sdk);
+        clear_disjoint_outputs(configuration_,data);
+        if (double_processing_) {
+            double_processing_->attach(configuration_,sdk);
+            if (!process_checked(sdk,double_processing_->inactive_outputs,sdk_process_ns)) return false;
+            if (configuration_.output_enabled) double_processing_->copy_outputs(data);
+        } else if (!process_checked(sdk,inactive_outputs_,sdk_process_ns)) return false;
+        if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
+        if (!finite_outputs(configuration_,data)) { processing_fault.store(true); return false; }
+        return true;
+    }
+private:
+    template<class Sample> bool process_checked(ProcessData& sdk,InactiveInstrumentOutputs<Sample>& inactive,
+                                                uint64_t* sdk_process_ns) {
+        inactive.attach(sdk);
+        const ProcessingShape<Sample> shape(sdk);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
         const auto start=sdk_process_ns?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
@@ -461,15 +479,12 @@ public:
             *sdk_process_ns=ns>std::numeric_limits<uint64_t>::max()-*sdk_process_ns?
                 std::numeric_limits<uint64_t>::max():*sdk_process_ns+ns;
         }
-        if (result!=kResultOk || !shape.unchanged(sdk) || !inactive_outputs_.unchanged()) {
-            processing_fault.store(true); return false;
-        }
-        if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
-        if (!finite_outputs(configuration_,data)) {
+        if (result!=kResultOk || !shape.unchanged(sdk) || !inactive.unchanged()) {
             processing_fault.store(true); return false;
         }
         return true;
     }
+public:
     // A parameter-only stopped flush is distinct from a positive-frame block.
     // Serialize it on the same helper worker; main/control must join before close.
     FlushResult flush_stopped(ProcessData& data) {
@@ -494,8 +509,12 @@ private:
         if (count<0 || count>64) return FlushResult::InvalidData;
         if (!count) return FlushResult::Empty;
         processing_thread=std::this_thread::get_id();
-        const ProcessingShape shape(data);
-        if (processor->process(data)!=kResultOk || !shape.unchanged(data)) { processing_fault.store(true); return FlushResult::Refused; }
+        auto sdk=data;
+        if (double_processing_) sdk.symbolicSampleSize=kSample64;
+        // Flush has no audio buses. The shape checks the negotiated precision
+        // and all parameter/event pointers without accessing sample storage.
+        const ProcessingShape<Sample32> shape(sdk);
+        if (processor->process(sdk)!=kResultOk || !shape.unchanged(sdk)) { processing_fault.store(true); return FlushResult::Refused; }
         return FlushResult::Applied;
     }
 public:
