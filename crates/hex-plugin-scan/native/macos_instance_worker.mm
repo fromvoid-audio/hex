@@ -448,7 +448,7 @@ int main(int argc,char** argv) {
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
-            if(!instance.open(module.factory,cid,trace_messages,editor_groups)) throw Refusal{};
+            if(!instance.open(module.factory,cid,trace_messages,editor_groups,config->inputs==0)) throw Refusal{};
             // State synchronization can issue kLatencyChanged even before
             // processing. Fold it into the facts we already validate here.
             instance.observe_latency_restarts();
@@ -1269,6 +1269,8 @@ int main(int argc,char** argv) {
                         if(event_channels) {
                             for (size_t n=0;n<packet.note_count;++n)
                                 valid=valid && packet.notes[n].channel<event_channels;
+                            for(size_t n=0;n<packet.pressure_count;++n)
+                                valid=valid && packet.pressures[n].channel<event_channels;
                         }
                         if(!valid) { worker_failure.store(ProtocolFailure);break; }
                         instance.refresh_processing_parameters(processing_parameters);
@@ -1338,13 +1340,22 @@ int main(int argc,char** argv) {
                         // copied exchange and its reply remain one quantum.
                         const auto dense=packet.dense_parameter?std::optional{packet.dense_id}:std::nullopt;
                         packet.reply_parameter_count=0;
-                        size_t next_note=0,next_parameter=0;
+                        size_t next_note=0,next_parameter=0,next_pressure=0;
                         for(size_t slice=0;slice<=packet.timing_change_count;++slice) {
                             const size_t first=slice?packet.timing_changes[slice-1].offset:0;
                             const size_t end=slice<packet.timing_change_count?packet.timing_changes[slice].offset:packet.frames;
                             const auto width=static_cast<int32_t>(end-first);
                             if(!parameter_input.reset(width,false) || !parameter_output.reset(width,true)) {
                                 error(channel,&*config,Processing);std::_Exit(Processing);
+                            }
+                            // Explicit authored, restored and editor values take precedence at
+                            // the same sample. A dense lane owns its parameter at every sample.
+                            while(next_pressure<packet.pressure_count && packet.pressures[next_pressure].offset<end) {
+                                const auto& pressure=packet.pressures[next_pressure++];
+                                const auto id=processing_parameters.pressure[pressure.channel];
+                                if(event_channels && id && dense!=id && (!touch || !touch->masks(*id)) &&
+                                    !parameter_input.input(*id,pressure.offset-static_cast<int32>(first),
+                                        static_cast<double>(pressure.value)/127.0)) valid=false;
                             }
                             while(next_parameter<packet.parameter_count && static_cast<size_t>(packet.parameters[next_parameter].offset)<end) {
                                 const auto& point=packet.parameters[next_parameter++];
