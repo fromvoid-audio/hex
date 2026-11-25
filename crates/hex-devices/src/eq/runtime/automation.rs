@@ -380,7 +380,7 @@ mod tests {
         }
     }
     fn render(
-        rt: &mut dyn NativeProcessorRuntime,
+        rt: &mut dyn OwnedProcessorRuntime,
         input: &[[f32; 2]],
         mut values: Values,
         width: usize,
@@ -412,12 +412,12 @@ mod tests {
                 )
                 .unwrap();
                 let f = PreparedEq::automated(s.clone(), rate, &[OUTPUT_GAIN]).unwrap();
-                let mut actual = f.create_runtime();
+                let mut actual = f.create_runtime().unwrap();
                 actual
                     .process_block_with_automation(&mut [], None, &Values::held(Some(0.5)), &R)
                     .unwrap();
                 s.output_gain = 0.5;
-                let mut canonical = PreparedEq::new(s, rate).unwrap().create_runtime();
+                let mut canonical = PreparedEq::new(s, rate).unwrap().create_runtime().unwrap();
                 let input: Vec<_> = (0..257)
                     .map(|i| [(i as f32 * 0.17).sin(), (i as f32 * 0.31).sin() * 0.4])
                     .collect();
@@ -446,7 +446,7 @@ mod tests {
             expected.push([(0.5 * gain) as f32, (-0.25 * gain) as f32]);
         }
         for width in [1, 17, 513] {
-            let mut rt = f.create_runtime();
+            let mut rt = f.create_runtime().unwrap();
             let mut v = Values::held(None);
             v.moving = true;
             assert_eq!(render(rt.as_mut(), &input, v, width), expected);
@@ -455,7 +455,7 @@ mod tests {
     #[test]
     fn checkpoint_retry_and_live_base_handoff_preserve_gain_progress_and_bypass() {
         let f = PreparedEq::automated(EqState::default(), 48000, &[OUTPUT_GAIN]).unwrap();
-        let mut primary = f.create_runtime();
+        let mut primary = f.create_runtime().unwrap();
         render(
             primary.as_mut(),
             &[[0.5, -0.25]; 32],
@@ -469,8 +469,8 @@ mod tests {
             ParameterValue::Float(16.1),
             ParameterValue::Bool(true),
         ] {
-            let mut scratch = f.create_runtime();
-            scratch.copy_history_from(primary.as_ref());
+            let mut scratch = f.create_runtime().unwrap();
+            scratch.inherit_from(primary.as_ref());
             let mut values = Values::held(Some(0.75));
             values.bad = Some(bad);
             assert!(
@@ -478,7 +478,7 @@ mod tests {
                     .process_block_with_automation(&mut [[0.5, -0.25]; 32], None, &values, &R)
                     .is_err()
             );
-            scratch.copy_history_from(primary.as_ref());
+            scratch.inherit_from(primary.as_ref());
             assert_eq!(
                 render(
                     scratch.as_mut(),
@@ -500,8 +500,9 @@ mod tests {
         };
         let mut candidate = PreparedEq::automated(settings, 48000, &[OUTPUT_GAIN])
             .unwrap()
-            .create_runtime();
-        candidate.copy_history_from(primary.as_ref());
+            .create_runtime()
+            .unwrap();
+        candidate.inherit_from(primary.as_ref());
         let prior = primary.as_any().downcast_ref::<EqRuntime>().unwrap().gain;
         let actual = render(candidate.as_mut(), &[[0.5, -0.25]], Values::held(None), 1);
         assert_eq!(
@@ -513,8 +514,8 @@ mod tests {
             .process_bypassed_block_with_automation(&mut dry, None, &Values::held(Some(0.1)), &R)
             .unwrap();
         assert_eq!(dry, [[0.5, -0.25]; 37]);
-        let mut clone = f.create_runtime();
-        clone.copy_history_from(candidate.as_ref());
+        let mut clone = f.create_runtime().unwrap();
+        clone.inherit_from(candidate.as_ref());
         assert_eq!(
             render(
                 candidate.as_mut(),
@@ -570,6 +571,7 @@ mod tests {
         );
         assert!(
             f.create_runtime()
+                .unwrap()
                 .supports_parameter_automation(OUTPUT_GAIN)
         );
         assert!(
@@ -586,8 +588,8 @@ mod tests {
             .add(Node::new(NodeId::new(1).unwrap(), 1_000.0, 6.0, 0).unwrap())
             .unwrap();
         let prepared = PreparedEq::automated(settings, 48_000, &[OUTPUT_GAIN]).unwrap();
-        let mut candidate = prepared.create_runtime();
-        let mut reference = prepared.create_runtime();
+        let mut candidate = prepared.create_runtime().unwrap();
+        let mut reference = prepared.create_runtime().unwrap();
         let input: Vec<[f32; 2]> = (0..64)
             .map(|i| [(i as f32 * 0.13).sin() * 0.5, (i as f32 * 0.29).cos() * 0.5])
             .collect();
@@ -658,7 +660,8 @@ mod clock_tests {
         state.add(Node::new(id, 1_000.0, 12.0, 0).unwrap()).unwrap();
         let mut authored = PreparedEq::new(state.clone(), 48_000)
             .unwrap()
-            .create_runtime();
+            .create_runtime()
+            .unwrap();
         state
             .set_lane(AutomationLane {
                 node: id,
@@ -669,7 +672,10 @@ mod clock_tests {
                 }],
             })
             .unwrap();
-        let mut warmed = PreparedEq::new(state, 48_000).unwrap().create_runtime();
+        let mut warmed = PreparedEq::new(state, 48_000)
+            .unwrap()
+            .create_runtime()
+            .unwrap();
         let input = [[0.25, -0.25]; 64];
         let mut expected = input;
         authored.process_block(&mut expected, &R);
@@ -711,8 +717,9 @@ mod clock_tests {
         static_settings.lanes.clear();
         let mut without_lane = PreparedEq::new(static_settings, 48000)
             .unwrap()
-            .create_runtime();
-        let mut canonical = PreparedEq::new(s, 48000).unwrap().create_runtime();
+            .create_runtime()
+            .unwrap();
+        let mut canonical = PreparedEq::new(s, 48000).unwrap().create_runtime().unwrap();
         let input: Vec<_> = (0..513)
             .map(|i| [(i as f32 * 0.17).sin(), (i as f32 * 0.31).sin() * 0.4])
             .collect();
@@ -726,7 +733,7 @@ mod clock_tests {
         );
         for width in [1, 17, 513] {
             let mut actual = input.clone();
-            let mut rt = f.create_runtime();
+            let mut rt = f.create_runtime().unwrap();
             for (i, block) in actual.chunks_mut(width).enumerate() {
                 rt.process_block_with_automation(block, Some(&Clock(i * width)), &Held, &R)
                     .unwrap();
@@ -822,7 +829,7 @@ mod clock_tests {
             .map(|i| [(i as f32 * 0.13).sin() * 0.5, (i as f32 * 0.29).cos() * 0.5])
             .collect();
         let mut expected = input.clone();
-        let mut rt_single = prepared.create_runtime();
+        let mut rt_single = prepared.create_runtime().unwrap();
         for (i, sample) in expected.iter_mut().enumerate() {
             let v = Sweep {
                 ids: [n2_freq],
@@ -839,7 +846,7 @@ mod clock_tests {
         }
         for width in [17_usize, 128, 260] {
             let mut actual = input.clone();
-            let mut rt = prepared.create_runtime();
+            let mut rt = prepared.create_runtime().unwrap();
             let mut offset = 0;
             for chunk in actual.chunks_mut(width) {
                 let v = Sweep {

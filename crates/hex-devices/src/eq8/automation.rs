@@ -269,6 +269,11 @@ impl Eq8Runtime {
         }
     }
     pub(super) fn restore_canonical_controls(&mut self) {
+        self.snapshot_controls();
+        self.snapshot_pending_routing();
+        self.snapshot_scalars();
+        self.snapshot_audition();
+        self.snapshot_automated_target();
         self.controls.reset();
         let base = self.controls.base();
         let target = if self.controls.admitted(MODE_SLOT) {
@@ -323,11 +328,16 @@ impl Eq8Runtime {
                     let pending =
                         self.routing
                             .stage(next_values, previous, self.mode, self.sample_rate)?;
+                    self.snapshot_pending_routing();
                     self.routing.install(pending);
                 }
+                self.snapshot_controls();
+                self.snapshot_scalars();
+                self.snapshot_audition();
                 self.controls.install(next);
                 self.install_enabled_bands(&next_values.banks);
                 if let Some(target) = target {
+                    self.snapshot_automated_target();
                     self.set_automation_target(Some(target));
                     self.band_targets_pending = false;
                 }

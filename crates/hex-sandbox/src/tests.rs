@@ -604,3 +604,49 @@ fn shared_housing_visibility_does_not_transfer_to_another_fixture(cx: &mut TestA
     assert!(visual.debug_bounds("device-macro-panel").is_none());
     assert!(visual.debug_bounds("device-modulator-panel").is_none());
 }
+
+#[gpui::test]
+fn sandbox_horizontal_macro_and_modulator_panels_expand_with_square_slots_and_rings(
+    cx: &mut TestAppContext,
+) {
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, _view) = open(cx, Entry::Eq8);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1100.0), px(660.0)));
+    visual.run_until_parked();
+
+    let closed_card = visual.debug_bounds("catalog-card").unwrap();
+    let closed_body = visual.debug_bounds("fixture-body").unwrap();
+    let header = visual.debug_bounds("device-frame-header").unwrap();
+
+    // Open macro panel via click and verify horizontal expansion + square slot + ring.
+    let macro_toggle = visual.debug_bounds("device-macro-toggle").unwrap();
+    visual.simulate_click(macro_toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    let macro_panel = visual.debug_bounds("device-macro-panel").unwrap();
+    let after_macro_card = visual.debug_bounds("catalog-card").unwrap();
+    let after_macro_body = visual.debug_bounds("fixture-body").unwrap();
+    assert!(after_macro_card.size.width > closed_card.size.width);
+    assert!(header.right() <= macro_panel.left());
+    assert!(macro_panel.right() <= after_macro_body.left());
+    assert_eq!(after_macro_body.size.width, closed_body.size.width);
+
+    let m_slot = visual.debug_bounds("host-slot-sandbox-m1").unwrap();
+    assert_eq!(m_slot.size.width, m_slot.size.height);
+    let m_ring = visual.debug_bounds("host-slot-ring-sandbox-m1").unwrap();
+    assert!(m_slot.contains(&m_ring.center()));
+
+    // Keyboard navigation: down + enter opens modulator panel alongside macro panel.
+    visual.simulate_keystrokes("down enter");
+    visual.run_until_parked();
+    let mod_panel = visual.debug_bounds("device-modulator-panel").unwrap();
+    let after_both_card = visual.debug_bounds("catalog-card").unwrap();
+    let after_both_body = visual.debug_bounds("fixture-body").unwrap();
+    assert!(after_both_card.size.width > after_macro_card.size.width);
+    assert!(macro_panel.right() <= mod_panel.left());
+    assert!(mod_panel.right() <= after_both_body.left());
+    let lfo_slot = visual.debug_bounds("host-slot-sandbox-lfo1").unwrap();
+    assert_eq!(lfo_slot.size.width, lfo_slot.size.height);
+    let lfo_ring = visual.debug_bounds("host-slot-ring-sandbox-lfo1").unwrap();
+    assert!(lfo_slot.contains(&lfo_ring.center()));
+}

@@ -737,7 +737,7 @@ impl Render for Gallery {
             .child(div().flex().flex_1().min_h_0().gap(px(10.0)).child(navigation)
                 .child(div().flex_1().min_w_0().flex().flex_col().gap(px(8.0))
                     .child(theme::text(status)).child(controls)
-                    .child(div().id("sample-viewport").debug_selector(|| "sample-viewport".into()).w_full().min_w_0().h(px(208.0)).flex_shrink_0().overflow_x_scroll().child(sample))
+                    .child(div().id("sample-viewport").debug_selector(|| "sample-viewport".into()).flex().items_start().w_full().min_w_0().h(px(208.0)).flex_shrink_0().overflow_x_scroll().child(sample))
                     .when(self.entry == Entry::Eq, |view| view.child(theme::text("static spectrum fixture · audition unavailable")))
                     .child(theme::text("local controls · tab / shift-tab focus · arrows edit · escape cancels"))
                     .child(theme::text("selection paints only the header · click any card area to select"))

@@ -14,8 +14,8 @@ struct ProposedEqTwin {
 #[test]
 fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() {
     let state = EQ8_DEFINITION.default_state().unwrap();
-    let prepared = EQ8_DEFINITION
-        .prepare_processor(
+    let hex_lattice::PreparedProcessorFactory::Owned(prepared) = EQ8_DEFINITION
+        .prepare_runtime_factory(
             &state,
             &hex_lattice::DevicePreparationContext {
                 sample_rate: 48000,
@@ -24,22 +24,24 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() 
             },
         )
         .unwrap()
-        .unwrap();
-    assert_eq!(prepared.declared_runtime_bytes(), size_of::<Eq8Runtime>());
-    // The historical 7,536-byte runtime predated the fixed inline bank
-    // inventory; each runtime now owns that inventory rather than a shared target.
-    assert_eq!(size_of::<Eq8Runtime>(), 22_272);
+        .unwrap()
+    else {
+        panic!("eq8 should prepare as OwnedProcessorRuntime");
+    };
+    let runtime = prepared.create_runtime().unwrap();
+    let eq = runtime.as_any().downcast_ref::<Eq8Runtime>().unwrap();
+    let (inline, [rollback, _]) = eq.control_storage().unwrap();
+    assert_eq!(inline, size_of::<Eq8Runtime>());
+    assert_eq!(prepared.declared_pair_bytes(), inline + rollback);
+    // Owned EQ8 keeps canonical banks once (not duplicated per twin), so total
+    // pair storage stays strictly below the legacy 44,544-byte twin pair.
+    assert!(prepared.declared_pair_bytes() < 44_544);
     assert_eq!(
         (size_of::<kernel::History>(), align_of::<kernel::History>()),
         (632, 8)
     );
-    assert_eq!(size_of::<ProposedEqTwin>(), 22_904);
-    // Historical 4 KiB refusal evidence remains true; the current 256 KiB
-    // per-twin policy does not itself admit this private prototype.
     assert!(size_of::<ProposedEqTwin>() > 4_096);
     assert!(size_of::<ProposedEqTwin>() <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
-    let runtime = prepared.create_runtime();
-    let eq = runtime.as_any().downcast_ref::<Eq8Runtime>().unwrap();
     let a = Box::new(ProposedEqTwin {
         eq: eq.clone(),
         fir: kernel::History::new(96000).unwrap(),
@@ -48,15 +50,10 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() 
         eq: eq.clone(),
         fir: kernel::History::new(96000).unwrap(),
     });
-    assert_eq!(size_of_val(&*a) + size_of_val(&*b), 45_808);
     assert_eq!(size_of_val(&a) + size_of_val(&b), 16);
     assert_eq!(kernel::weights_bytes(), 128);
     assert_eq!(size_of_val(&*prepared), size_of::<PreparedEq8>());
-    assert_eq!(size_of_val(&prepared), 16); // Actual boxed trait-object prepared handle.
-    assert_eq!(
-        size_of::<Box<dyn hex_lattice::NativeProcessorRuntime>>(),
-        16
-    );
+    assert_eq!(size_of::<Box<dyn hex_lattice::OwnedProcessorRuntime>>(), 16);
     // The prepared owner holds its own inline banks, with no separate target Arc.
     let prepared_arc_charge = size_of::<PreparedEq8>()
         + 2 * size_of::<usize>()
@@ -66,14 +63,11 @@ fn actual_eq_twin_storage_and_complete_shared_ownership_exceeded_original_cap() 
         Some(prepared_arc_charge)
     );
     eprintln!(
-        "actual Eq={} FIR={} twin={} excess={} twin_payloads={} twin_box_handles={} static_FIR={} prepared_payload={} prepared_arc_charge={}",
+        "actual Eq={} FIR={} pair={} twin={} prepared_payload={} prepared_arc_charge={}",
         size_of::<Eq8Runtime>(),
         size_of::<kernel::History>(),
+        prepared.declared_pair_bytes(),
         size_of::<ProposedEqTwin>(),
-        size_of::<ProposedEqTwin>() - 4096,
-        size_of_val(&*a) + size_of_val(&*b),
-        16,
-        kernel::weights_bytes(),
         size_of::<PreparedEq8>(),
         prepared_arc_charge
     );

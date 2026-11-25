@@ -1,6 +1,224 @@
 //! Native and VST3 modulator strip panel layout and controls.
 use super::*;
 
+pub(in crate::editor) fn macro_panel(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &Device,
+    view_data: &NativeDeviceView,
+    is_effect: bool,
+) -> Option<AnyElement> {
+    macro_panel_with_targets(view, cx, device, Some(view_data), is_effect)
+}
+
+pub(in crate::editor) fn vst3_macro_panel(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &Device,
+) -> Option<AnyElement> {
+    macro_panel_with_targets(view, cx, device, None, true)
+}
+
+fn slot_preview_and_value(
+    source: &hex_project::Modulator,
+    kind: SourceKind,
+) -> (hex_widgets::HostSlotPreview, String, f32) {
+    match kind {
+        SourceKind::Macro => {
+            let v =
+                manual::Settings::decode(&source.state).map_or(0.0, |s| s.value.clamp(0.0, 1.0));
+            (
+                hex_widgets::HostSlotPreview::MacroDial(v),
+                format!("{:.0}%", v * 100.0),
+                v,
+            )
+        }
+        SourceKind::MacroFour => {
+            let v = macro_four::Settings::decode(&source.state)
+                .map_or(0.0, |s| s.values[0].clamp(0.0, 1.0));
+            (
+                hex_widgets::HostSlotPreview::MacroDial(v),
+                format!("{:.0}%", v * 100.0),
+                v,
+            )
+        }
+        SourceKind::Button => {
+            let on = manual_button::decode(&source.state).unwrap_or(false);
+            (
+                hex_widgets::HostSlotPreview::Toggle(on),
+                if on { "on".into() } else { "off".into() },
+                if on { 1.0 } else { 0.0 },
+            )
+        }
+        SourceKind::Buttons => {
+            let active = buttons::Settings::decode(&source.state)
+                .map_or(0, |s| s.on.into_iter().filter(|on| *on).count());
+            (
+                hex_widgets::HostSlotPreview::Toggle(active > 0),
+                format!("{active}/4"),
+                active as f32 / 4.0,
+            )
+        }
+        SourceKind::Lfo => {
+            let (wf, text) = lfo::Settings::decode(&source.state).map_or(
+                (hex_widgets::HostSlotWaveform::Sine, "lfo".into()),
+                |s| {
+                    let wf = match s.waveform {
+                        lfo::Waveform::Sine => hex_widgets::HostSlotWaveform::Sine,
+                        lfo::Waveform::Triangle => hex_widgets::HostSlotWaveform::Triangle,
+                        lfo::Waveform::RisingRamp => hex_widgets::HostSlotWaveform::Ramp,
+                        lfo::Waveform::Square => hex_widgets::HostSlotWaveform::Square,
+                    };
+                    let text = match s.rate {
+                        lfo::Rate::Hertz(hz) => format!("{hz:.1} hz"),
+                        lfo::Rate::BeatsPerCycle(beats) => format!("{beats:.2} b"),
+                    };
+                    (wf, text)
+                },
+            );
+            (hex_widgets::HostSlotPreview::Waveform(wf), text, 0.5)
+        }
+        SourceKind::Random => {
+            let text = random::Settings::decode(&source.state)
+                .map_or_else(|_| "rnd".into(), |s| format!("{:.1} hz", s.rate_hz));
+            (
+                hex_widgets::HostSlotPreview::Waveform(hex_widgets::HostSlotWaveform::Random),
+                text,
+                0.5,
+            )
+        }
+        SourceKind::AhdRelease | SourceKind::Adsr | SourceKind::Ramp => (
+            hex_widgets::HostSlotPreview::Waveform(hex_widgets::HostSlotWaveform::Envelope),
+            kind.label().to_owned(),
+            0.5,
+        ),
+        SourceKind::Steps => (
+            hex_widgets::HostSlotPreview::Waveform(hex_widgets::HostSlotWaveform::Steps),
+            "steps".into(),
+            0.5,
+        ),
+        SourceKind::Follower | SourceKind::AudioRate | SourceKind::NotePressure => (
+            hex_widgets::HostSlotPreview::Level(0.5),
+            kind.label().to_owned(),
+            0.5,
+        ),
+        SourceKind::Math | SourceKind::Mix | SourceKind::NoteCounter => (
+            hex_widgets::HostSlotPreview::Level(0.5),
+            kind.label().to_owned(),
+            0.5,
+        ),
+    }
+}
+
+fn slot_source_kind(source: &hex_project::Modulator) -> Option<SourceKind> {
+    match source.state.type_id() {
+        lfo::TYPE_ID => Some(SourceKind::Lfo),
+        follower::TYPE_ID => Some(SourceKind::Follower),
+        manual::TYPE_ID => Some(SourceKind::Macro),
+        macro_four::TYPE_ID => Some(SourceKind::MacroFour),
+        random::TYPE_ID => Some(SourceKind::Random),
+        audio_rate::TYPE_ID => Some(SourceKind::AudioRate),
+        pressure::TYPE_ID => Some(SourceKind::NotePressure),
+        manual_button::TYPE_ID => Some(SourceKind::Button),
+        math::TYPE_ID => Some(SourceKind::Math),
+        buttons::TYPE_ID => Some(SourceKind::Buttons),
+        mix::TYPE_ID => Some(SourceKind::Mix),
+        note_counter::TYPE_ID => Some(SourceKind::NoteCounter),
+        ramp::TYPE_ID => Some(SourceKind::Ramp),
+        ahd_release::TYPE_ID => Some(SourceKind::AhdRelease),
+        adsr::TYPE_ID => Some(SourceKind::Adsr),
+        steps::TYPE_ID => Some(SourceKind::Steps),
+        _ => None,
+    }
+}
+
+fn source_ring(
+    bank: &DeviceModulation,
+    source_id: ModulationSourceId,
+    base: f32,
+    color: u32,
+) -> Option<hex_widgets::HostSlotModulationRing> {
+    let delta = bank
+        .routes()
+        .iter()
+        .filter(|route| route.enabled && route.source == source_id)
+        .map(|route| route.amount.get())
+        .next()?;
+    Some(hex_widgets::HostSlotModulationRing { base, delta, color })
+}
+
+fn macro_panel_with_targets(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: &Device,
+    view_data: Option<&NativeDeviceView>,
+    _is_effect: bool,
+) -> Option<AnyElement> {
+    let state = view.state.as_ref()?;
+    let id = device.id();
+    let revision = state.revision;
+    let generation = view.project_generation;
+    let bank = device.modulation();
+    let has_target = view_data.map_or_else(
+        || vst3_parameters::has_mapping_target(view, id),
+        |view_data| {
+            view_data.parameters.iter().any(|row| {
+                row.enabled
+                    && row.semantics.is_some_and(|semantics| {
+                        semantics.modulation == ParameterModulation::SampleRate
+                    })
+            })
+        },
+    );
+    let mut cfg = hex_widgets::HostSlotPanelConfig::new(
+        "device-macro-slots",
+        "macros",
+        "no macros",
+        theme::device_style(theme::DeviceStyleRole::Control),
+    );
+    if (has_target || !bank.is_empty())
+        && bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE
+        && hex_engine::device_available_modulation_outputs(device) > 0
+    {
+        cfg.header_action = Some(
+            action(format!("add-macro-{}", id.value()), theme::text("+"))
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    submit(view, generation, revision, id, Edit::Add(SourceKind::Macro));
+                    cx.notify();
+                }))
+                .into_any_element(),
+        );
+    }
+    let mut macro_index = 0usize;
+    for source in bank.sources() {
+        let Some(kind) = slot_source_kind(source) else {
+            continue;
+        };
+        if !matches!(
+            kind,
+            SourceKind::Macro | SourceKind::MacroFour | SourceKind::Button | SourceKind::Buttons
+        ) {
+            continue;
+        }
+        macro_index += 1;
+        let color = theme::element_colors(source.color).accent;
+        let (preview, value, base) = slot_preview_and_value(source, kind);
+        let ring = source_ring(bank, source.id, base, color);
+        cfg.slots.push(hex_widgets::HostSlotItem {
+            id: format!("macro-{}", source.id.value()).into(),
+            label: format!("m{macro_index}").into(),
+            value: value.into(),
+            accent_color: color,
+            enabled: source.enabled,
+            preview,
+            modulation_ring: ring,
+            interactive: None,
+        });
+    }
+    Some(hex_widgets::host_slot_panel(cfg).into_any_element())
+}
+
 pub(in crate::editor) fn panel(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -1083,16 +1301,42 @@ pub(in crate::editor) fn panel_with_targets(
             );
         }
     }
-    Some(
+    let mut slot_cfg = hex_widgets::HostSlotPanelConfig::new(
+        "device-modulator-slots",
+        "modulators",
+        "no modulators",
+        theme::device_style(theme::DeviceStyleRole::Control),
+    );
+    for (slot_index, source) in bank.sources().iter().enumerate() {
+        let Some(kind) = slot_source_kind(source) else {
+            continue;
+        };
+        let color = theme::element_colors(source.color).accent;
+        let (preview, value, base) = slot_preview_and_value(source, kind);
+        let ring = source_ring(bank, source.id, base, color);
+        slot_cfg.slots.push(hex_widgets::HostSlotItem {
+            id: format!("mod-{}", source.id.value()).into(),
+            label: format!("{} {}", kind.label(), slot_index + 1).into(),
+            value: value.into(),
+            accent_color: color,
+            enabled: source.enabled,
+            preview,
+            modulation_ring: ring,
+            interactive: None,
+        });
+    }
+    slot_cfg.detail = Some(
         div()
             .id("device-modulator-scroll")
             .debug_selector(|| "device-modulator-scroll".into())
             .flex()
             .flex_col()
-            .max_h(px(78.0))
+            .w(px(104.0))
+            .h_full()
             .occlude()
             .overflow_y_scroll()
             .child(body)
             .into_any_element(),
-    )
+    );
+    Some(hex_widgets::host_slot_panel(slot_cfg).into_any_element())
 }

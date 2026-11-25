@@ -646,20 +646,7 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
             let mut processor_backing_bytes = 0;
-            let processor = if eq {
-                let prepared = EqDefinition::prepare_owned(&migrated, rate, parameters)
-                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-                processor_backing_bytes = prepared.configuration_storage_bytes();
-                Some(OwnedShared::new_owned(prepared).into_processor_parts_on_control())
-            } else if eq8 {
-                Some(
-                    OwnedShared::new_owned(
-                        hex_devices::eq8::Eq8Definition::prepare_owned(&migrated, rate, parameters)
-                            .map_err(|_| AudioStorageError::UnsupportedGraph)?,
-                    )
-                    .into_processor_parts_on_control(),
-                )
-            } else if rattle {
+            let processor = if rattle {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::rattle::RattleDefinition::prepare_owned(
@@ -788,6 +775,36 @@ impl ChainCustody {
             } else if delay {
                 let (owner, declaration) = OwnedShared::new_owned(
                     hex_devices::delay::DelayDefinition::prepare_owned(
+                        &configuration,
+                        rate,
+                        parameters,
+                    )
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                )
+                .into_owned_processor_parts_on_control();
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                (
+                    Some(PreparedProcessorFactory::Owned(owner)),
+                    Some(declaration),
+                )
+            } else if eq {
+                let prepared = EqDefinition::prepare_owned(&configuration, rate, parameters)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                processor_backing_bytes = prepared.configuration_storage_bytes();
+                let (owner, declaration) =
+                    OwnedShared::new_owned(prepared).into_owned_processor_parts_on_control();
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                (
+                    Some(PreparedProcessorFactory::Owned(owner)),
+                    Some(declaration),
+                )
+            } else if eq8 {
+                let (owner, declaration) = OwnedShared::new_owned(
+                    hex_devices::eq8::Eq8Definition::prepare_owned(
                         &configuration,
                         rate,
                         parameters,
@@ -960,11 +977,15 @@ impl ChainCustody {
                         pair.device_type != hex_devices::delay::TYPE_ID
                             && pair.device_type != hex_devices::limiter::TYPE_ID
                             && pair.device_type != hex_devices::reverb::REVERB_TYPE_ID
+                            && pair.device_type != EQ_TYPE_ID
+                            && pair.device_type != hex_devices::eq8::EQ8_TYPE_ID
                     }
                     (Some(PreparedProcessorFactory::Legacy(_)), None, true) => {
                         pair.device_type == hex_devices::delay::TYPE_ID
                             || pair.device_type == hex_devices::limiter::TYPE_ID
                             || pair.device_type == hex_devices::reverb::REVERB_TYPE_ID
+                            || pair.device_type == EQ_TYPE_ID
+                            || pair.device_type == hex_devices::eq8::EQ8_TYPE_ID
                     }
                     (None, None, false) => false,
                     _ => true,

@@ -773,3 +773,156 @@ fn shared_housing_panels_toggle_independently_and_follow_device_identity(cx: &mu
     visual.run_until_parked();
     assert!(a.contains(&visual.debug_bounds("device-macro-panel").unwrap().center()));
 }
+
+struct HorizontalSlotFixture {
+    macro_count: usize,
+    modulator_count: usize,
+}
+impl Render for HorizontalSlotFixture {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let palette = [0x4c9aff, 0x36b37e, 0xffab00, 0xff5630, 0x8777d9, 0x00b8d9];
+        let mut macro_cfg = crate::HostSlotPanelConfig::new("macros", "macros", "no macros", STYLE);
+        for index in 0..self.macro_count {
+            let norm = ((index + 1) as f32 / (self.macro_count.max(1) + 1) as f32).clamp(0.0, 1.0);
+            macro_cfg.slots.push(crate::HostSlotItem {
+                id: format!("m-{}", index + 1).into(),
+                label: format!("m{}", index + 1).into(),
+                value: format!("{:.0}%", norm * 100.0).into(),
+                accent_color: palette[index % palette.len()],
+                enabled: true,
+                preview: crate::HostSlotPreview::MacroDial(norm),
+                modulation_ring: Some(crate::HostSlotModulationRing {
+                    base: norm,
+                    delta: 0.25,
+                    color: palette[index % palette.len()],
+                }),
+                interactive: None,
+            });
+        }
+        let mut mod_cfg =
+            crate::HostSlotPanelConfig::new("mods", "modulators", "no modulators", STYLE);
+        for index in 0..self.modulator_count {
+            mod_cfg.slots.push(crate::HostSlotItem {
+                id: format!("mod-{}", index + 1).into(),
+                label: format!("lfo {}", index + 1).into(),
+                value: "1.0 hz".into(),
+                accent_color: palette[(index + 2) % palette.len()],
+                enabled: true,
+                preview: crate::HostSlotPreview::Waveform(crate::HostSlotWaveform::Sine),
+                modulation_ring: Some(crate::HostSlotModulationRing {
+                    base: 0.5,
+                    delta: -0.3,
+                    color: palette[(index + 2) % palette.len()],
+                }),
+                interactive: None,
+            });
+        }
+        div().flex().child(
+            crate::device_frame_with_panels(
+                vertical_device_name("eq8"),
+                STYLE,
+                div(),
+                div(),
+                device_body(STYLE)
+                    .debug_selector(|| "slot-fixture-body".into())
+                    .w(px(160.0))
+                    .h_full()
+                    .child("controls"),
+                Some(crate::host_slot_panel(macro_cfg).into_any_element()),
+                Some(crate::host_slot_panel(mod_cfg).into_any_element()),
+            )
+            .id("slot-fixture-host")
+            .debug_selector(|| "slot-fixture-host".into())
+            .min_w(px(160.0 + DEVICE_FRAME_HEADER_WIDTH))
+            .h(px(crate::DEVICE_HOST_PANEL_HEIGHT))
+            .flex_shrink_0(),
+        )
+    }
+}
+
+#[gpui::test]
+fn horizontal_macro_and_modulator_slot_panels_expand_uniformly_with_rings_and_keyboard_nav(
+    cx: &mut TestAppContext,
+) {
+    let handle = cx.add_window(|_, _| HorizontalSlotFixture {
+        macro_count: 2,
+        modulator_count: 3,
+    });
+    let view = handle.root(cx).unwrap();
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.simulate_resize(size(px(900.0), px(220.0)));
+    visual.run_until_parked();
+
+    let closed_host = visual.debug_bounds("slot-fixture-host").unwrap();
+    let closed_body = visual.debug_bounds("slot-fixture-body").unwrap();
+    assert_eq!(closed_host.size.height, px(crate::DEVICE_HOST_PANEL_HEIGHT));
+
+    // Open macros by click; verify horizontal expansion and uniform 2-high squares.
+    let macro_toggle = visual.debug_bounds("device-macro-toggle").unwrap();
+    visual.simulate_click(macro_toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    let macro_panel = visual.debug_bounds("device-macro-panel").unwrap();
+    let host_after_macro = visual.debug_bounds("slot-fixture-host").unwrap();
+    let body_after_macro = visual.debug_bounds("slot-fixture-body").unwrap();
+    let header = visual.debug_bounds("device-frame-header").unwrap();
+    assert!(host_after_macro.size.width > closed_host.size.width);
+    assert!(header.right() <= macro_panel.left());
+    assert!(macro_panel.right() <= body_after_macro.left());
+    assert_eq!(body_after_macro.size.width, closed_body.size.width);
+
+    let m1 = visual.debug_bounds("host-slot-m-1").unwrap();
+    let m2 = visual.debug_bounds("host-slot-m-2").unwrap();
+    assert_eq!(m1.size.width, m1.size.height, "2-high slot must be square");
+    assert_eq!(
+        m1.size, m2.size,
+        "all slots in a panel share one uniform size"
+    );
+    let ring1 = visual.debug_bounds("host-slot-ring-m-1").unwrap();
+    assert!(
+        m1.contains(&ring1.center()),
+        "modulation ring renders inside slot"
+    );
+
+    // Keyboard navigation: down moves focus to modulator toggle, space opens it alongside macros.
+    visual.simulate_keystrokes("down space");
+    visual.run_until_parked();
+    let mod_panel = visual.debug_bounds("device-modulator-panel").unwrap();
+    let body_both = visual.debug_bounds("slot-fixture-body").unwrap();
+    let host_both = visual.debug_bounds("slot-fixture-host").unwrap();
+    assert!(host_both.size.width > host_after_macro.size.width);
+    assert!(macro_panel.right() <= mod_panel.left());
+    assert!(mod_panel.right() <= body_both.left());
+
+    // 3-high uniform square modulator slots.
+    let s1 = visual.debug_bounds("host-slot-mod-1").unwrap();
+    let s2 = visual.debug_bounds("host-slot-mod-2").unwrap();
+    let s3 = visual.debug_bounds("host-slot-mod-3").unwrap();
+    assert_eq!(s1.size.width, s1.size.height);
+    assert_eq!(s1.size, s2.size);
+    assert_eq!(s2.size, s3.size);
+    assert!(
+        s1.size.width < m1.size.width,
+        "3-high slots are smaller than 2-high"
+    );
+
+    // 5 slots -> 2 columns at uniform 4-high square size.
+    view.update(cx, |fixture, cx| {
+        fixture.modulator_count = 5;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let f1 = visual.debug_bounds("host-slot-mod-1").unwrap();
+    let f4 = visual.debug_bounds("host-slot-mod-4").unwrap();
+    let f5 = visual.debug_bounds("host-slot-mod-5").unwrap();
+    assert_eq!(f1.size.width, f1.size.height);
+    assert_eq!(f1.size, f4.size);
+    assert_eq!(f4.size, f5.size);
+    assert!(
+        f5.left() > f1.right(),
+        "5th slot starts a second column at 4-high size"
+    );
+    assert!(
+        f1.size.width < s1.size.width,
+        "4-high slots are smaller than 3-high"
+    );
+}

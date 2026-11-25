@@ -781,9 +781,7 @@ fn parameter_retarget_accepts_filter_edits_and_mode_crossfades_but_requires_same
 
 #[test]
 fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes() {
-    use hex_lattice::{
-        NativeRuntimeChain, PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
-    };
+    use hex_lattice::{NativeRuntimeChain, ProcessorChainOwner, StereoMatrix};
 
     let mut old_state = EQ8_DEFINITION.default_state().unwrap();
     old_state = EQ8_DEFINITION
@@ -816,8 +814,12 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
         .unwrap();
 
     let chain_for = |state: NativeDeviceState| {
-        let prepared = Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
-        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        let prepared = hex_lattice::PreparedProcessorFactory::Owned(Arc::new(
+            PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap(),
+        ));
+        NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            modulation: None,
+            automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Track(1),
             device_id: 9,
@@ -852,10 +854,57 @@ fn registered_runtime_chain_accepts_routing_change_and_resets_incompatible_lanes
 }
 
 #[test]
+fn eq8_owned_runtime_dirty_range_rollback_restores_exact_committed_pcm() {
+    use hex_lattice::{EMPTY_DEVICE_RESOURCES as R, PreparedOwnedProcessorRuntime};
+
+    let mut state = EQ8_DEFINITION.default_state().unwrap();
+    state = EQ8_DEFINITION
+        .patch_parameter(&state, parameter::enabled(0, 0), ParameterValue::Bool(true))
+        .unwrap();
+    state = EQ8_DEFINITION
+        .patch_parameter(&state, parameter::gain(0, 0), ParameterValue::Float(9.0))
+        .unwrap();
+    let prepared = PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap();
+    let mut actual = prepared.create_runtime().unwrap();
+    let mut reference = prepared.create_runtime().unwrap();
+
+    let warm: Vec<StereoFrame> = (0..64)
+        .map(|i| [(i as f32 * 0.13).sin() * 0.4, (i as f32 * 0.07).cos() * 0.3])
+        .collect();
+    let mut w1 = warm.clone();
+    let mut w2 = warm.clone();
+    actual.begin_block();
+    actual.process_block(&mut w1, &R);
+    actual.commit_block();
+    reference.begin_block();
+    reference.process_block(&mut w2, &R);
+    reference.commit_block();
+    assert_eq!(w1, w2);
+
+    // Speculative block followed by rollback must leave committed history untouched.
+    let mut speculative = vec![[0.9, -0.8]; 48];
+    actual.begin_block();
+    actual.process_block(&mut speculative, &R);
+    actual.rollback_block();
+
+    let next: Vec<StereoFrame> = (64..160)
+        .map(|i| [(i as f32 * 0.13).sin() * 0.4, (i as f32 * 0.07).cos() * 0.3])
+        .collect();
+    let mut n1 = next.clone();
+    let mut n2 = next;
+    actual.begin_block();
+    actual.process_block(&mut n1, &R);
+    actual.commit_block();
+    reference.begin_block();
+    reference.process_block(&mut n2, &R);
+    reference.commit_block();
+    assert_eq!(n1, n2);
+}
+
+#[test]
 fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twins() {
     use hex_lattice::{
-        NativeRuntimeChain, PreparedProcessorInstance, ProcessorAuditionSelection,
-        ProcessorChainOwner, StereoMatrix,
+        NativeRuntimeChain, ProcessorAuditionSelection, ProcessorChainOwner, StereoMatrix,
     };
 
     let mut state = EQ8_DEFINITION.default_state().unwrap();
@@ -863,9 +912,12 @@ fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twin
         .patch_parameter(&state, parameter::enabled(0, 2), ParameterValue::Bool(true))
         .unwrap();
     let state = Arc::new(state);
-    let definition: Arc<dyn hex_lattice::PreparedNativeProcessor> =
-        Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
-    let mut chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+    let definition = hex_lattice::PreparedProcessorFactory::Owned(Arc::new(
+        PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap(),
+    ));
+    let mut chain = NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+        modulation: None,
+        automation: Default::default(),
         meter: Default::default(),
         owner: ProcessorChainOwner::Return(7),
         device_id: 19,
@@ -874,21 +926,24 @@ fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twin
         bypassed: false,
         sample_rate: 48_000,
         configuration: Some(Arc::clone(&state)),
-        definition: Some(Arc::clone(&definition)),
+        definition: Some(definition.clone()),
     }])
     .unwrap();
-    let mut bypassed_chain = NativeRuntimeChain::new(vec![PreparedProcessorInstance {
-        meter: Default::default(),
-        owner: ProcessorChainOwner::Return(7),
-        device_id: 19,
-        device_type: EQ8_TYPE_ID,
-        matrix: StereoMatrix::identity(),
-        bypassed: true,
-        sample_rate: 48_000,
-        configuration: Some(state),
-        definition: Some(definition),
-    }])
-    .unwrap();
+    let mut bypassed_chain =
+        NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            modulation: None,
+            automation: Default::default(),
+            meter: Default::default(),
+            owner: ProcessorChainOwner::Return(7),
+            device_id: 19,
+            device_type: EQ8_TYPE_ID,
+            matrix: StereoMatrix::identity(),
+            bypassed: true,
+            sample_rate: 48_000,
+            configuration: Some(state),
+            definition: Some(definition),
+        }])
+        .unwrap();
     let selection = ProcessorAuditionSelection { index: 2, lane: 0 };
 
     assert!(!chain.select_processor_audition(
@@ -945,8 +1000,7 @@ fn registered_eq8_chain_audition_uses_exact_enabled_owner_and_releases_both_twin
 #[test]
 fn registered_eq8_can_transfer_only_the_held_selector_to_a_compatible_candidate() {
     use hex_lattice::{
-        NativeRuntimeChain, PreparedProcessorInstance, ProcessorAuditionSelection,
-        ProcessorChainOwner, StereoMatrix,
+        NativeRuntimeChain, ProcessorAuditionSelection, ProcessorChainOwner, StereoMatrix,
     };
 
     let owner = ProcessorChainOwner::Track(7);
@@ -974,9 +1028,12 @@ fn registered_eq8_can_transfer_only_the_held_selector_to_a_compatible_candidate(
 
     let make_chain = |state: hex_lattice_contract::NativeDeviceState| {
         let state = Arc::new(state);
-        let definition: Arc<dyn hex_lattice::PreparedNativeProcessor> =
-            Arc::new(PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap());
-        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        let definition = hex_lattice::PreparedProcessorFactory::Owned(Arc::new(
+            PreparedEq8::new(decode(&state).unwrap(), 48_000).unwrap(),
+        ));
+        NativeRuntimeChain::new_prepared(vec![hex_lattice::PreparedRuntimeInstance {
+            modulation: None,
+            automation: Default::default(),
             meter: Default::default(),
             owner,
             device_id: 19,

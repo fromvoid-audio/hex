@@ -60,6 +60,10 @@ pub trait PreparedOwnedProcessorRuntime: Send + Sync {
     fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError>;
     fn output_tail(&self) -> OutputTail;
     fn algorithmic_latency_frames(&self) -> Option<u32>;
+    /// Control-side frequency response preview capability, when actually supported.
+    fn frequency_response_at_hz(&self, _frequency_hz: f32) -> Option<[f32; 2]> {
+        None
+    }
 }
 
 /// One exclusive owner of committed and speculative effect history. No method
@@ -377,11 +381,12 @@ impl PreparedProcessorFactory {
                 .is_ok_and(|frames| frames.is_some())
     }
 
-    /// Control-side legacy preview capability, when actually supported.
+    /// Control-side frequency response preview capability, when actually supported.
     pub fn frequency_response_at_hz(&self, hz: f32) -> Option<[f32; 2]> {
         match self {
             Self::Legacy(v) => v.frequency_response_at_hz(hz),
-            Self::Owned(_) | Self::Foreign(_) | Self::PoweredOff => None,
+            Self::Owned(v) => v.frequency_response_at_hz(hz),
+            Self::Foreign(_) | Self::PoweredOff => None,
         }
     }
 }

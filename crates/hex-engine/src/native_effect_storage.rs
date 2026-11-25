@@ -49,10 +49,24 @@ pub(crate) fn pair_bytes(
             .ok_or(AudioStorageError::Overflow)?;
         return Ok(Some((committed, scratch)));
     }
-    if let Some((primary, scratch)) = entry.runtime_pair::<hex_devices::eq::EqRuntime>() {
+    if let Some(eq) = entry.owned_runtime::<hex_devices::eq::EqRuntime>() {
+        let (inline, [committed, scratch]) =
+            eq.control_storage().ok_or(AudioStorageError::Overflow)?;
         return Ok(Some((
-            primary.private_storage_bytes(),
-            scratch.private_storage_bytes(),
+            inline
+                .checked_add(committed)
+                .ok_or(AudioStorageError::Overflow)?,
+            scratch,
+        )));
+    }
+    if let Some(eq8) = entry.owned_runtime::<hex_devices::eq8::Eq8Runtime>() {
+        let (inline, [committed, scratch]) =
+            eq8.control_storage().ok_or(AudioStorageError::Overflow)?;
+        return Ok(Some((
+            inline
+                .checked_add(committed)
+                .ok_or(AudioStorageError::Overflow)?,
+            scratch,
         )));
     }
     match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
@@ -65,7 +79,6 @@ pub(crate) fn pair_bytes(
                 || entry.runtime_types_are::<hex_devices::filter::FilterRuntime>()
                 || entry.runtime_types_are::<hex_devices::gate::GateRuntime>()
                 || entry.runtime_types_are::<hex_devices::compressor::CompressorRuntime>()
-                || entry.runtime_types_are::<hex_devices::eq8::Eq8Runtime>()
                 || entry.runtime_types_are::<hex_devices::rattle::RattleRuntime>() =>
         {
             Ok(Some((a, b)))

@@ -311,7 +311,7 @@ pub(super) fn render_return_effect(
         ),
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
-            hex_widgets::device_frame_with_modulators(
+            hex_widgets::device_frame_with_panels(
                 device_drag_title(
                     view,
                     cx,
@@ -323,6 +323,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::vst3_macro_panel(view, cx, device),
                 super::modulators::vst3_panel(view, cx, device),
             )
         }
@@ -388,7 +389,7 @@ pub(super) fn render_return_effect(
                     device_view,
                 )
             };
-            hex_widgets::device_frame_with_modulators(
+            hex_widgets::device_frame_with_panels(
                 device_drag_title(
                     view,
                     cx,
@@ -400,6 +401,7 @@ pub(super) fn render_return_effect(
                 leading,
                 actions,
                 body,
+                super::modulators::macro_panel(view, cx, device, device_view, true),
                 super::modulators::panel(view, cx, device, device_view, true),
             )
         }
@@ -440,7 +442,7 @@ pub(super) fn render_return_effect(
         .h_full()
         .debug_selector(move || format!("device-shell-{}", id.value()));
     let rendered = div()
-        .w(px(card_width - super::device_meter::WIDTH))
+        .min_w(px(card_width - super::device_meter::WIDTH))
         .flex_shrink_0()
         .child(rendered);
     div()
@@ -448,7 +450,7 @@ pub(super) fn render_return_effect(
             format!("effect-device-{}", id.value()).into(),
         ))
         .debug_selector(move || format!("effect-device-{}", id.value()))
-        .w(px(card_width))
+        .min_w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
