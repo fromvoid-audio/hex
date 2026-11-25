@@ -26,7 +26,7 @@ commands:
   render-wav <input.wav> <new-output.wav>
   import-project <input.wav> <new-project.hex>
   render-project <project.hex> <new-output.wav>
-  export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32] [--overwrite]
+  export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32|flac16|flac24|flac] [--sample-rate=<hz>] [--normalize-peak=<dbfs>|--normalize-lufs=<lufs>] [--true-peak-ceiling=<dbfs>] [--overwrite]
   recover-project <target.hex> <new-project.hex>
   --help | -h | help";
 

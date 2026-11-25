@@ -432,6 +432,8 @@ fn format_label(format: ExportFormat) -> &'static str {
         ExportFormat::Pcm16 => "16-bit pcm",
         ExportFormat::Pcm24 => "24-bit pcm",
         ExportFormat::Float32 => "32-bit float",
+        ExportFormat::Flac16 => "16-bit flac",
+        ExportFormat::Flac24 => "24-bit flac",
     }
 }
 
@@ -473,9 +475,20 @@ mod status_tests {
         assert_eq!(format_choice(1), Some(ExportFormat::Pcm16));
         assert_eq!(format_choice(2), Some(ExportFormat::Pcm24));
         assert_eq!(format_choice(3), Some(ExportFormat::Float32));
-        assert_eq!(format_choice(4), None);
+        assert_eq!(format_choice(4), Some(ExportFormat::Flac16));
+        assert_eq!(format_choice(5), Some(ExportFormat::Flac24));
+        assert_eq!(format_choice(6), None);
         let labels: Vec<_> = ExportFormat::ALL.iter().map(|f| format_label(*f)).collect();
-        assert_eq!(labels, ["16-bit pcm", "24-bit pcm", "32-bit float"]);
+        assert_eq!(
+            labels,
+            [
+                "16-bit pcm",
+                "24-bit pcm",
+                "32-bit float",
+                "16-bit flac",
+                "24-bit flac"
+            ]
+        );
         assert!(labels.iter().all(|label| *label == label.to_lowercase()));
     }
 

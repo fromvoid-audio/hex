@@ -820,10 +820,10 @@ fn render_and_export_load_nested_retained_audio_roots() {
 }
 
 #[test]
-fn render_and_export_refuse_device_referenced_audio_assets_explicitly() {
+fn render_and_export_support_device_referenced_sampler_projects() {
     let directory = TempDir::new();
     let sample_wav = directory.path().join("sampler.wav");
-    fs::write(&sample_wav, wav(&[8192, 8192, 8192, 8192])).unwrap();
+    fs::write(&sample_wav, wav(&[16_384; 2048])).unwrap();
 
     let sampler_type =
         hex_engine::native_device_catalog_for_class(hex_engine::NativeDeviceClass::Instrument)
@@ -838,10 +838,10 @@ fn render_and_export_refuse_device_referenced_audio_assets_explicitly() {
     )
     .expect("empty sampler default");
     let (template, source_slot) =
-        hex_engine::sampler_replacement_template_on_control(&empty_sampler, 4)
+        hex_engine::sampler_replacement_template_on_control(&empty_sampler, 2048)
             .expect("sampler replacement template");
 
-    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddMidiTrack {
             name: "sampler".into(),
@@ -858,26 +858,152 @@ fn render_and_export_refuse_device_referenced_audio_assets_explicitly() {
             },
             path: sample_wav,
             sample_rate: 48_000,
-            frames: 4,
+            frames: 2048,
             state: template,
             source_slot,
         })
         .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("expected midi clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            channel: 0,
+            pitch: 60,
+            velocity: 127,
+            start: hex_project::BeatTime::ZERO,
+            duration: hex_project::BeatTime::from_ratio(1, 2).unwrap(),
+        })
+        .unwrap();
     hex_storage::save_new(directory.path().join("sampler.hex"), editor.project()).unwrap();
 
-    for args in [
-        &["render-project", "sampler.hex", "out.wav"][..],
-        &["export-project", "sampler.hex", "out.wav", "0", "4"][..],
-    ] {
-        let output = run(directory.path(), args);
-        assert!(!output.status.success());
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("device-referenced audio assets are not supported by hex-cli"),
-            "unexpected stderr: {stderr}"
-        );
-        assert!(!directory.path().join("out.wav").exists());
-    }
+    let rendered = run(
+        directory.path(),
+        &["render-project", "sampler.hex", "rendered-sampler.wav"],
+    );
+    assert!(
+        rendered.status.success(),
+        "render-project failed: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let rendered_audio = hex_media::decode_audio_file(
+        directory.path().join("rendered-sampler.wav"),
+        Limits::new(8 * 1024 * 1024, 100_000),
+    )
+    .expect("decode rendered sampler wav");
+    assert!(
+        rendered_audio
+            .audio()
+            .frames()
+            .iter()
+            .any(|&[l, r]| l.abs() > 0.05 || r.abs() > 0.05),
+        "expected audible Sampler output from render-project"
+    );
+
+    let exported = run(
+        directory.path(),
+        &[
+            "export-project",
+            "sampler.hex",
+            "exported-sampler.flac",
+            "0",
+            "4096",
+            "--format=flac24",
+            "--sample-rate=44100",
+            "--normalize-peak=-1.0",
+        ],
+    );
+    assert!(
+        exported.status.success(),
+        "export-project failed: {}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&exported.stdout);
+    assert!(
+        stdout.contains("applied normalization gain:"),
+        "expected applied normalization gain in stdout: {stdout}"
+    );
+    let exported_audio = hex_media::decode_audio_file(
+        directory.path().join("exported-sampler.flac"),
+        Limits::new(8 * 1024 * 1024, 100_000),
+    )
+    .expect("decode exported sampler flac");
+    assert_eq!(exported_audio.sample_rate(), 44_100);
+    let peak = exported_audio
+        .audio()
+        .frames()
+        .iter()
+        .flat_map(|f| [f[0].abs(), f[1].abs()])
+        .fold(0.0_f32, f32::max);
+    let expected_peak = 10.0_f64.powf(-1.0 / 20.0) as f32;
+    assert!(
+        (peak - expected_peak).abs() < 0.01,
+        "peak {peak} vs expected {expected_peak}"
+    );
+}
+
+#[test]
+fn export_project_streams_multi_page_audio_and_supports_flac_and_lufs() {
+    let directory = TempDir::new();
+    // 10,000 samples spans 3 stream pages (4096 + 4096 + 1808).
+    let samples: Vec<i16> = (0..10_000)
+        .map(|i| {
+            let phase = 2.0 * std::f64::consts::PI * 1000.0 * (i as f64) / 48_000.0;
+            (phase.sin() * 8192.0) as i16
+        })
+        .collect();
+    fs::write(directory.path().join("long.wav"), wav(&samples)).unwrap();
+    assert!(
+        run(
+            directory.path(),
+            &["import-project", "long.wav", "long.hex"]
+        )
+        .status
+        .success()
+    );
+
+    let out = run(
+        directory.path(),
+        &[
+            "export-project",
+            "long.hex",
+            "long.flac",
+            "0",
+            "10000",
+            "--format=flac16",
+            "--normalize-lufs=-14.0",
+            "--true-peak-ceiling=-1.0",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let decoded = hex_media::decode_audio_file(
+        directory.path().join("long.flac"),
+        Limits::new(8 * 1024 * 1024, 32_768),
+    )
+    .expect("decode streamed flac");
+    assert_eq!(decoded.sample_rate(), 48_000);
+    assert_eq!(decoded.frames(), 10_000);
+    assert!(
+        decoded
+            .audio()
+            .frames()
+            .iter()
+            .skip(5000)
+            .any(|&[l, _]| l.abs() > 0.1),
+        "second and third streamed pages must carry audio"
+    );
 }
 
 #[test]
