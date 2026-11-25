@@ -6,6 +6,7 @@ pub const FRAME_HEADER: usize = 12;
 #[derive(Default)]
 pub struct PacketWriter {
     bytes: Vec<u8>,
+    overflowed: bool,
 }
 
 impl PacketWriter {
@@ -29,9 +30,18 @@ impl PacketWriter {
         self.u64(value.to_bits());
     }
 
-    pub fn blob(&mut self, value: &[u8]) {
-        self.u32(value.len() as u32);
+    pub fn try_blob(&mut self, value: &[u8]) -> Result<(), String> {
+        let len = u32::try_from(value.len()).map_err(|_| {
+            self.overflowed = true;
+            "offline field capacity refused".to_owned()
+        })?;
+        self.u32(len);
         self.bytes.extend(value);
+        Ok(())
+    }
+
+    pub fn blob(&mut self, value: &[u8]) {
+        let _ = self.try_blob(value);
     }
 
     pub fn raw(&mut self, bytes: &[u8]) {
@@ -51,6 +61,9 @@ impl PacketWriter {
     }
 
     pub fn into_packet(self, magic: &[u8; 8], max_packet: usize) -> Result<Vec<u8>, String> {
+        if self.overflowed {
+            return Err("offline field capacity refused".into());
+        }
         frame_packet(magic, self.bytes, max_packet)
     }
 }
@@ -59,9 +72,10 @@ pub fn frame_packet(magic: &[u8; 8], bytes: Vec<u8>, max_packet: usize) -> Resul
     if bytes.len() > max_packet {
         return Err("offline packet capacity refused".into());
     }
+    let len = u32::try_from(bytes.len()).map_err(|_| "offline packet capacity refused")?;
     let mut framed = Vec::with_capacity(FRAME_HEADER + bytes.len());
     framed.extend_from_slice(magic);
-    framed.extend((bytes.len() as u32).to_le_bytes());
+    framed.extend(len.to_le_bytes());
     framed.extend(bytes);
     Ok(framed)
 }
@@ -212,5 +226,20 @@ mod tests {
             .unwrap()
             .reject_nul();
         assert_eq!(strict.text(8).unwrap_err(), "offline NUL refused");
+    }
+
+    #[test]
+    fn try_blob_and_overflow_flag_fail_packet_framing_cleanly() {
+        let mut writer = PacketWriter::default();
+        writer.try_blob(b"ok").unwrap();
+        let framed = writer.into_packet(b"TESTPK01", 64).unwrap();
+        let mut reader = PacketReader::packet(&framed, b"TESTPK01", 64).unwrap();
+        assert_eq!(reader.text(8).unwrap(), "ok");
+
+        let overflowed = PacketWriter {
+            overflowed: true,
+            ..Default::default()
+        };
+        assert!(overflowed.into_packet(b"TESTPK01", 64).is_err());
     }
 }

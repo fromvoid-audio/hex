@@ -35,12 +35,14 @@ impl Pending {
         }
         let Some(pid) = self.pid else {
             // An unsupported PID never authorizes a group signal or result.
-            if self
-                .child
-                .try_wait()
-                .map_err(|_| "unidentified child wait failed")?
-                .is_none()
-            {
+            let status = loop {
+                match self.child.try_wait() {
+                    Ok(status) => break status,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err("unidentified child wait failed".into()),
+                }
+            };
+            if status.is_none() {
                 return Ok(false);
             }
             self.state.record_direct_reaped();
@@ -48,15 +50,26 @@ impl Pending {
             return Ok(true);
         };
         if !self.state.direct_reaped {
-            let state = process::waitid(
-                WaitId::Pid(pid),
-                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
-            )
-            .map_err(|_| "child observation failed")?;
+            let state = loop {
+                match process::waitid(
+                    WaitId::Pid(pid),
+                    WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+                ) {
+                    Ok(value) => break value,
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(_) => return Err("child observation failed".into()),
+                }
+            };
             if state.is_none() {
                 return Ok(false);
             }
-            self.child.wait().map_err(|_| "direct reap failed")?;
+            loop {
+                match self.child.wait() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => return Err("direct reap failed".into()),
+                }
+            }
             self.state.record_direct_reaped();
         }
         loop {
@@ -65,6 +78,7 @@ impl Pending {
                     self.state.record_descendant(pid.as_raw_nonzero().get());
                 }
                 Ok(None) => return Ok(false),
+                Err(rustix::io::Errno::INTR) => continue,
                 Err(rustix::io::Errno::CHILD) => {
                     self.state.record_complete();
                     return Ok(true);
