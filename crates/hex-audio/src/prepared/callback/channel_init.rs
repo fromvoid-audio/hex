@@ -116,7 +116,7 @@ pub fn channel_with_spectrum(
     rate: u32,
     capture: Option<SpectrumCapture>,
 ) -> Result<(Control, Callback), Invalid> {
-    channel_with_interface(rate, capture, None)
+    channel_with_interface_and_buffer(rate, capture, None, None)
 }
 
 /// Construct the prepared callback with a preallocated lock-free DSP wave worker pool.
@@ -130,10 +130,20 @@ pub fn channel_with_worker_pool(
     Ok((control, callback))
 }
 
+#[cfg(test)]
 pub(crate) fn channel_with_interface(
     rate: u32,
     capture: Option<SpectrumCapture>,
     interface_sample_rate: Option<u32>,
+) -> Result<(Control, Callback), Invalid> {
+    channel_with_interface_and_buffer(rate, capture, interface_sample_rate, None)
+}
+
+pub(crate) fn channel_with_interface_and_buffer(
+    rate: u32,
+    capture: Option<SpectrumCapture>,
+    interface_sample_rate: Option<u32>,
+    buffer_size_frames: Option<u32>,
 ) -> Result<(Control, Callback), Invalid> {
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
@@ -149,6 +159,7 @@ pub(crate) fn channel_with_interface(
     let (trace_writer, trace_reader) = audio_diagnostics::channel();
     let mut status = Status::try_new()?;
     status.interface_sample_rate = interface_sample_rate;
+    status.buffer_size_frames = buffer_size_frames;
     let status = Arc::new(status);
     let (spectrum_target, callback_target) = spectrum_target::channel();
     let (processor_audition, callback_audition) = processor_audition::channel();

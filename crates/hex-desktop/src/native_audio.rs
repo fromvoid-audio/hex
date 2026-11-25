@@ -180,6 +180,9 @@ pub(crate) struct NativeAudioSink {
     route_watch: Option<hex_audio::OutputRouteWatch>,
     route_seen: u64,
     route_follow: route_follow::RouteFollow,
+    output_preferences_path: Option<std::path::PathBuf>,
+    output_selection: hex_audio::OutputDeviceSelection,
+    preferred_sample_rate: Option<u32>,
     pub(crate) desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     verified_preview: Option<VerifiedSource>,
     verified_edit: Option<verified_graph_edit::Edit>,
@@ -272,6 +275,11 @@ impl NativeAudioSink {
             route_watch: None,
             route_seen: 0,
             route_follow: Default::default(),
+            output_preferences_path: std::env::var_os("HOME").map(|home| {
+                hex_preferences::audio_device_preferences_path(std::path::Path::new(&home))
+            }),
+            output_selection: hex_audio::OutputDeviceSelection::default(),
+            preferred_sample_rate: None,
             desired: None,
             verified_preview: None,
             verified_edit: None,
@@ -477,9 +485,11 @@ impl NativeAudioSink {
             } else {
                 hex_audio::WorkerOutputProfile::DeviceDefault
             };
-            match hex_audio::request_worker_open_with_reliable_action_outcomes(
+            match hex_audio::request_worker_open_with_selection(
                 self.requested_rate,
                 profile,
+                self.output_selection.clone(),
+                true,
             ) {
                 Ok(opening) => self.opening = Some(opening),
                 Err(
@@ -733,10 +743,10 @@ impl NativeAudioSink {
             self.route_follow.confirm(route);
         }
         let delivered = self.output_identity.zip(self.output.as_ref());
-        if let Some(output_identity) = self
-            .route_follow
-            .output_to_move(delivered.map(|(identity, output)| (identity, output.route.as_ref())))
-        {
+        if let Some(output_identity) = self.route_follow.output_to_move_for_selection(
+            delivered.map(|(identity, output)| (identity, output.route.as_ref())),
+            self.output_selection.device_uid.as_deref(),
+        ) {
             self.pending_route_event =
                 Some(EditorAudioEvent::OutputRouteChanged { output_identity });
         }
@@ -2941,7 +2951,10 @@ impl WorkerAudioSink for NativeAudioSink {
         #[cfg(all(test, feature = "allocation-probe"))]
         let rate = (self.project_rate_probe)();
         #[cfg(not(all(test, feature = "allocation-probe")))]
-        let rate = hex_audio::OutputRoute::probe_default_on_control().map(|route| route.nominal_hz);
+        let rate = hex_audio::probe_output_route_for_device_on_control(
+            self.output_selection.device_uid.as_deref(),
+        )
+        .map(|route| route.nominal_hz);
         rate.filter(|rate| (8_000..=192_000).contains(rate))
     }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
@@ -2949,11 +2962,15 @@ impl WorkerAudioSink for NativeAudioSink {
             self.close();
             return Err("audio startup cancelled".into());
         }
+        self.reload_output_preferences();
         self.plugins.initialize();
         self.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
         // Choose the rate before the first project is authored. Stream
         // completion still happens asynchronously.
-        let rate = self.default_project_sample_rate().unwrap_or(48_000);
+        let rate = self
+            .preferred_sample_rate
+            .or_else(|| self.default_project_sample_rate())
+            .unwrap_or(48_000);
         self.request_open(Some(rate), None);
         self.initial_open_started = Some(std::time::Instant::now());
         Ok(rate)
@@ -3048,6 +3065,7 @@ impl WorkerAudioSink for NativeAudioSink {
             });
             return Ok(());
         }
+        self.reload_output_preferences();
         self.request_open(Some(rate), Some(request_id));
         self.plugins.request_reopen(&snapshot);
         Ok(())
@@ -3342,6 +3360,21 @@ impl WorkerAudioSink for NativeAudioSink {
         self.pending_release_event = None;
         self.relinquished_output_identity = None;
         self.desired = None;
+    }
+}
+
+impl NativeAudioSink {
+    fn reload_output_preferences(&mut self) {
+        let Some(path) = self.output_preferences_path.as_deref() else {
+            return;
+        };
+        if let Ok(prefs) = hex_preferences::load_audio_device_preferences(path) {
+            self.output_selection = hex_audio::OutputDeviceSelection {
+                device_uid: prefs.output_device_uid,
+                buffer_size_frames: prefs.buffer_size_frames,
+            };
+            self.preferred_sample_rate = prefs.sample_rate_hz;
+        }
     }
 }
 

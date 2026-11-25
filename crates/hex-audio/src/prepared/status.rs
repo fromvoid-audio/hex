@@ -3,6 +3,7 @@ use super::*;
 
 pub struct Status {
     pub(super) interface_sample_rate: Option<u32>,
+    pub(super) buffer_size_frames: Option<u32>,
     pub(super) diagnostics_flags: AtomicU32,
     pub(super) diagnostics_dropped: AtomicU64,
     pub(super) sampler_edit: sampler_edit::Fence,
@@ -133,6 +134,10 @@ impl Status {
     /// Headless endpoints do not have an interface.
     pub fn interface_sample_rate(&self) -> Option<u32> {
         self.interface_sample_rate
+    }
+    /// Configured hardware buffer size in frames when fixed by the output open.
+    pub fn buffer_size_frames(&self) -> Option<u32> {
+        self.buffer_size_frames
     }
 
     /// Wait-free callback publication of output sample peaks and between-poll
@@ -310,6 +315,7 @@ impl Status {
             render_fault: AtomicBool::new(false),
             render_fault_record: crate::render_fault::RenderFaultRecord::default(),
             interface_sample_rate: None,
+            buffer_size_frames: None,
             diagnostics_flags: AtomicU32::new(0),
             diagnostics_dropped: AtomicU64::new(0),
             cpu_meter: crate::cpu_meter::CpuMeter::default(),

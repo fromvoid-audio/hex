@@ -356,6 +356,7 @@ impl EditorView {
             self.close_controller_input_menu(window, cx);
         }
         self.prepare_controller_settings(cx);
+        self.prepare_audio_device_settings(cx);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         self.load_vst3_editor_settings(cx);
         self.project_rate_settings.clear_draft();
@@ -1013,6 +1014,7 @@ impl EditorView {
                     )
                     .child(controls),
             );
+        let audio_output = self.audio_device_settings_row(cx);
         let audio_rates = self.project_rate_settings_row(cx);
         let live_mode = self.live_mode_settings_row(cx);
         let settings = self.audio_import_settings_row(cx);
@@ -1022,7 +1024,13 @@ impl EditorView {
             .flex_col()
             .flex_shrink_0()
             .gap(px(8.0))
-            .children([audio_rates, live_mode, settings, track_defaults])
+            .children([
+                audio_output,
+                audio_rates,
+                live_mode,
+                settings,
+                track_defaults,
+            ])
             .child(self.controller_input_settings(cx));
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let controls = {

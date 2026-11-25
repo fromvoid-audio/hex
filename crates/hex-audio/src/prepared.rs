@@ -142,8 +142,10 @@ mod policy;
 mod route_snapshot;
 mod status;
 
+#[cfg(test)]
+pub(crate) use callback::channel_with_interface;
 pub use callback::{Callback, channel, channel_with_spectrum, channel_with_worker_pool};
-pub(crate) use callback::{channel_with_interface, native_endpoint_bank_storage_quote};
+pub(crate) use callback::{channel_with_interface_and_buffer, native_endpoint_bank_storage_quote};
 pub use control::{
     AdmittedPublishError, Control, PublicationControl, PublishError, PublishErrorKind,
 };

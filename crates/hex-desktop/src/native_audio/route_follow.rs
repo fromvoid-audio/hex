@@ -25,20 +25,39 @@ impl RouteFollow {
     /// Identity of the delivered output to move, if the newest confirmed
     /// route differs from the route it opened on. A due check waits while no
     /// output is delivered. An output without a reported route never moves.
-    pub(super) fn output_to_move(
+    ///
+    /// When `pinned_device_uid` is `Some(uid)`, unrelated system default device
+    /// changes (`confirmed.device != uid`) are ignored so pinned interfaces stay
+    /// running without teardown. A nominal sample-rate change on the pinned
+    /// device itself still triggers a move.
+    pub(super) fn output_to_move_for_selection(
         &mut self,
         output: Option<(u64, Option<&OutputRoute>)>,
+        pinned_device_uid: Option<&str>,
     ) -> Option<u64> {
         let (identity, opened) = output?;
         if !std::mem::take(&mut self.due) {
             return None;
         }
         let confirmed = self.confirmed.as_ref()?;
+        if let Some(pinned) = pinned_device_uid
+            && confirmed.device != pinned
+        {
+            return None;
+        }
         if self.reported == Some(identity) || opened.is_none_or(|opened| opened == confirmed) {
             return None;
         }
         self.reported = Some(identity);
         Some(identity)
+    }
+
+    #[cfg(test)]
+    pub(super) fn output_to_move(
+        &mut self,
+        output: Option<(u64, Option<&OutputRoute>)>,
+    ) -> Option<u64> {
+        self.output_to_move_for_selection(output, None)
     }
 }
 
@@ -92,5 +111,41 @@ mod tests {
         // An output whose route the backend did not report never moves.
         follow.confirm(speakers);
         assert_eq!(follow.output_to_move(Some((6, None))), None);
+    }
+
+    #[test]
+    fn pinned_output_device_ignores_unrelated_system_default_switches() {
+        let interface = route("coreaudio:Scarlett-4i4", 48_000);
+        let airpods = route("coreaudio:AirPods-Pro", 48_000);
+        let speakers = route("coreaudio:BuiltInSpeaker", 48_000);
+        let mut follow = RouteFollow::default();
+
+        // System default changes to AirPods or Speakers while Scarlett is pinned -> ignored.
+        follow.confirm(airpods);
+        assert_eq!(
+            follow.output_to_move_for_selection(
+                Some((1, Some(&interface))),
+                Some("coreaudio:Scarlett-4i4")
+            ),
+            None
+        );
+        follow.confirm(speakers);
+        assert_eq!(
+            follow.output_to_move_for_selection(
+                Some((1, Some(&interface))),
+                Some("coreaudio:Scarlett-4i4")
+            ),
+            None
+        );
+
+        // If the pinned interface itself changes nominal sample rate -> moves once.
+        follow.confirm(route("coreaudio:Scarlett-4i4", 96_000));
+        assert_eq!(
+            follow.output_to_move_for_selection(
+                Some((1, Some(&interface))),
+                Some("coreaudio:Scarlett-4i4")
+            ),
+            Some(1)
+        );
     }
 }
