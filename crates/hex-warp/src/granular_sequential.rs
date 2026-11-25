@@ -10,6 +10,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 // reported rather than allowing a checkpoint from another renderer to match.
 static NEXT_RENDERER_ID: AtomicU64 = AtomicU64::new(1);
 
+pub(crate) fn next_renderer_id() -> Result<u64, Error> {
+    NEXT_RENDERER_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+            next.checked_add(1)
+        })
+        .map_err(|_| Error::Invalid("warp renderer identity exhausted"))
+}
+
 /// Instance-bound snapshot of granular overlap and scheduling state.
 /// Checkpoints own no source or filter; callers own total checkpoint admission,
 /// eviction and generation validation, and must keep them off the audio callback.

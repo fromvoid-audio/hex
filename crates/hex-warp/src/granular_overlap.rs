@@ -133,6 +133,62 @@ impl GranularOverlap {
         self.cursor
     }
 
+    /// Preview an already-accumulated, not-yet-drained frame from the ring.
+    pub(crate) fn preview(&self, frame: i128) -> Option<[f64; 2]> {
+        let frame = u64::try_from(frame).ok()?;
+        if frame < self.cursor
+            || frame >= self.total
+            || frame - self.cursor >= self.samples.len() as u64
+        {
+            return None;
+        }
+        let index = (frame % self.samples.len() as u64) as usize;
+        (self.weights[index] > 1e-12).then(|| self.samples[index].map(|x| x / self.weights[index]))
+    }
+
+    /// Accumulate a correlation-compensated weighted sample for Beats WSOLA.
+    pub(crate) fn add_correlated(
+        &mut self,
+        frame: i128,
+        sample: [f64; 2],
+        weight: f64,
+        correlation: f64,
+        previous_mean: [f64; 2],
+        next_mean: [f64; 2],
+    ) -> Result<(), Error> {
+        let Ok(at) = u64::try_from(frame) else {
+            return Ok(());
+        };
+        if at >= self.total {
+            return Ok(());
+        }
+        if at < self.cursor || at - self.cursor >= self.samples.len() as u64 {
+            return Err(Error::Invalid(
+                "audio overlap exceeds bounded normalization ring",
+            ));
+        }
+        let i = (at % self.samples.len() as u64) as usize;
+        let a = self.weights[i];
+        let b = weight;
+        let gain = if a > 1e-12 && b > 1e-12 {
+            ((a + b) / (a * a + b * b + 2.0 * correlation.clamp(0.0, 1.0) * a * b).sqrt())
+                .clamp(1.0, std::f64::consts::SQRT_2)
+        } else {
+            1.0
+        };
+        for c in 0..2 {
+            let sum = self.samples[i][c] + sample[c] * b;
+            let mean = previous_mean[c] * a + next_mean[c] * b;
+            self.samples[i][c] = if gain == 1.0 {
+                sum
+            } else {
+                (sum - mean) * gain + mean
+            };
+        }
+        self.weights[i] += b;
+        Ok(())
+    }
+
     /// Accumulate a weighted sample. Frames outside the output extent are ignored;
     /// a frame already drained or beyond the ring window is rejected unchanged.
     #[inline]

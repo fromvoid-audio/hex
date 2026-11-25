@@ -1,7 +1,7 @@
 //! Control-side admission and selection of instance-bound granular checkpoints.
 use crate::{GranularSeekProgress, VerifiedGranularCursor, VerifiedGranularStepError};
 use hex_media::{ResamplePlan, VerifiedWavReader};
-use hex_warp::{Error, GranularCheckpoint};
+use hex_warp::{Error, WarpCheckpoint};
 
 pub(crate) const MAX_ENTRIES: usize = 64;
 
@@ -31,7 +31,7 @@ pub enum CheckpointRecord {
     Replaced { evicted_position: u64 },
 }
 struct Entry {
-    checkpoint: GranularCheckpoint,
+    checkpoint: WarpCheckpoint,
     age: u64,
 }
 
@@ -81,7 +81,7 @@ impl VerifiedGranularCheckpointCache {
         let remaining = budget
             .checked_sub(vector_bytes)
             .ok_or(Error::ScratchLimit)?;
-        let checkpoint = cursor.checkpoint(remaining)?;
+        let checkpoint = cursor.warp_checkpoint(remaining)?;
         entries.push(Entry { checkpoint, age: 0 });
         Ok(Self {
             entries,
@@ -155,7 +155,7 @@ impl VerifiedGranularCheckpointCache {
                 .budget
                 .checked_sub(self.backing_bytes().ok_or(Error::ScratchLimit)?)
                 .ok_or(Error::ScratchLimit)?;
-            match cursor.checkpoint(remaining) {
+            match cursor.warp_checkpoint(remaining) {
                 Ok(checkpoint) => {
                     self.entries.push(Entry {
                         checkpoint,
@@ -207,7 +207,7 @@ impl VerifiedGranularCheckpointCache {
         if target - checkpoint.position() > max_preroll_frames {
             return Err(CheckpointCacheError::NotCovered);
         }
-        let progress = cursor.begin_seek(
+        let progress = cursor.begin_seek_warp(
             checkpoint,
             target,
             max_preroll_frames,

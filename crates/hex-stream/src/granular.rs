@@ -5,7 +5,9 @@ use crate::{
 };
 use hex_engine::{Frame, STREAM_PAGE_FRAMES, StreamedSourceMetadata};
 use hex_media::{ResamplePlan, VerifiedWavReader};
-use hex_warp::{Error, GranularSource, ReferenceChannelScan, SequentialGranular, SourceRegion};
+use hex_warp::{
+    Error, GranularSource, ReferenceChannelScan, SequentialGranular, SequentialWarp, SourceRegion,
+};
 use std::cell::RefCell;
 
 /// Caller-owned source conversion, bounded cache and grain scratch.
@@ -56,6 +58,91 @@ pub fn advance_verified_granular_on_control(
     validate_source(reference.metadata(), reader, plan)
         .map_err(VerifiedGranularStepError::Source)?;
     if renderer.source_parameters() != (reference.metadata().project_rate(), reference.channel()) {
+        return Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::UnknownSource,
+        ));
+    }
+    let aggregate = renderer
+        .backing_bytes()
+        .and_then(|n| {
+            reference.region().map_or(Some(n), |region| {
+                region.backing_bytes().and_then(|v| n.checked_add(v))
+            })
+        })
+        .and_then(|n| {
+            buffers
+                .grain
+                .len()
+                .checked_mul(std::mem::size_of::<[f64; 2]>())
+                .and_then(|v| n.checked_add(v))
+        })
+        .and_then(|n| {
+            buffers
+                .source
+                .len()
+                .checked_mul(std::mem::size_of::<Frame>())
+                .and_then(|v| n.checked_add(v))
+        })
+        .and_then(|n| {
+            buffers
+                .cache
+                .len()
+                .checked_mul(std::mem::size_of::<Frame>())
+                .and_then(|v| n.checked_add(v))
+        });
+    if aggregate.is_none_or(|n| n > hex_warp::MAX_SCRATCH_BYTES) {
+        return Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::CapacityExhausted,
+        ));
+    }
+    let slots = if reference.region().is_some() { 4 } else { 2 };
+    let slot = (buffers.cache.len() / slots)
+        .min(STREAM_PAGE_FRAMES)
+        .min(plan.max_output_window_frames());
+    if reference.region().is_some() && slot < region_min_slot(plan.target_rate()) {
+        return Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::CapacityExhausted,
+        ));
+    }
+    if slot == 0 || buffers.source.is_empty() {
+        return Err(VerifiedGranularStepError::Source(
+            StreamFailureKind::CapacityExhausted,
+        ));
+    }
+    let cancel: RefCell<&mut dyn FnMut() -> bool> = RefCell::new(&mut cancelled);
+    let mut source = Source {
+        reader,
+        plan,
+        source: buffers.source,
+        cache: buffers.cache,
+        slot,
+        valid: [None; 4],
+        ages: [0; 4],
+        slots,
+        clock: 0,
+        checks: 0,
+        region: reference.region(),
+        cancel: &cancel,
+    };
+    renderer.advance(&mut source, buffers.grain, &mut || check_cancel(&cancel))
+}
+
+/// Advance at most one bounded warp step (`Tones`, `Texture`, `Beats`, `Complex`,
+/// or `ComplexPro`) using verified project-rate audio.
+pub fn advance_verified_warp_on_control(
+    renderer: &mut SequentialWarp,
+    reference: &VerifiedReferenceChannel,
+    reader: &mut VerifiedWavReader,
+    plan: &ResamplePlan,
+    buffers: VerifiedGranularBuffers<'_>,
+    mut cancelled: impl FnMut() -> bool,
+) -> Result<bool, VerifiedGranularStepError> {
+    validate_source(reference.metadata(), reader, plan)
+        .map_err(VerifiedGranularStepError::Source)?;
+    let (rate, required_channel) = renderer.source_parameters();
+    if rate != reference.metadata().project_rate()
+        || required_channel.is_some_and(|ch| ch != reference.channel())
+    {
         return Err(VerifiedGranularStepError::Source(
             StreamFailureKind::UnknownSource,
         ));

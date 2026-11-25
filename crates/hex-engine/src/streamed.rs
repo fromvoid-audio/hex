@@ -241,7 +241,29 @@ impl StreamedSourceMetadata {
         pitch_cents: i16,
         law: hex_warp::Resampler,
     ) -> Result<Self, Invalid> {
-        let identity = GranularStreamIdentity::new(self, region, map, mode, pitch_cents, law)?;
+        self.with_warped(region, map, mode, pitch_cents, law, &[])
+    }
+
+    /// Declare warped streaming output identity and extent (Tones, Texture, Beats,
+    /// Complex, or ComplexPro, including optional explicit Beat attacks).
+    pub fn with_warped(
+        &self,
+        region: &hex_warp::SourceRegion,
+        map: &hex_warp::TimeMap,
+        mode: hex_warp::Mode,
+        pitch_cents: i16,
+        law: hex_warp::Resampler,
+        attacks: &[u64],
+    ) -> Result<Self, Invalid> {
+        let identity = GranularStreamIdentity::new_with_attacks(
+            self,
+            region,
+            map,
+            mode,
+            pitch_cents,
+            law,
+            attacks,
+        )?;
         let mut derived = self.clone();
         derived.key = StreamSourceKey::granular(identity);
         derived.playback_frames = map
@@ -375,6 +397,18 @@ impl GranularStreamIdentity {
         pitch_cents: i16,
         law: hex_warp::Resampler,
     ) -> Result<Self, Invalid> {
+        Self::new_with_attacks(raw, region, map, mode, pitch_cents, law, &[])
+    }
+
+    pub fn new_with_attacks(
+        raw: &StreamedSourceMetadata,
+        region: &hex_warp::SourceRegion,
+        map: &hex_warp::TimeMap,
+        mode: hex_warp::Mode,
+        pitch_cents: i16,
+        law: hex_warp::Resampler,
+        attacks: &[u64],
+    ) -> Result<Self, Invalid> {
         use sha2::{Digest, Sha256};
         if !raw.key().is_raw()
             || region.source_frames() != raw.playback_frames()
@@ -384,6 +418,16 @@ impl GranularStreamIdentity {
                 .is_none_or(|s| s.output_end > hex_warp::MAX_STREAMED_OUTPUT_FRAMES)
         {
             return Err(Invalid("invalid granular source identity"));
+        }
+        if !attacks.is_empty() && !matches!(mode, hex_warp::Mode::Beats { .. }) {
+            return Err(Invalid("beat attacks require beats warp mode"));
+        }
+        if attacks.len() > hex_warp::MAX_POINTS
+            || (!attacks.is_empty() && attacks.first() != Some(&0))
+            || attacks.iter().any(|&frame| frame >= region.length())
+            || attacks.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(Invalid("invalid explicit beat attacks"));
         }
         let mut hash = Sha256::new();
         hash.update(b"hex.granular-stream.identity.v1\0");
@@ -402,6 +446,35 @@ impl GranularStreamIdentity {
                 hash.update(grain_ms.to_le_bytes());
                 hash.update([fluctuation]);
                 hash.update(seed.to_le_bytes());
+            }
+            hex_warp::Mode::Beats {
+                division_frames,
+                tail,
+                decay,
+            } if decay <= 100 && division_frames != Some(0) => {
+                hash.update([3]);
+                hash.update([u8::from(division_frames.is_some())]);
+                hash.update(division_frames.unwrap_or(0).to_le_bytes());
+                hash.update([match tail {
+                    hex_warp::Tail::Off => 0,
+                    hex_warp::Tail::Forward => 1,
+                    hex_warp::Tail::Alternating => 2,
+                }]);
+                hash.update([decay]);
+                hash.update((attacks.len() as u64).to_le_bytes());
+                for attack in attacks {
+                    hash.update(attack.to_le_bytes());
+                }
+            }
+            hex_warp::Mode::Complex => {
+                hash.update([4]);
+            }
+            hex_warp::Mode::ComplexPro { formants, envelope }
+                if formants <= 100 && (32..=512).contains(&envelope) =>
+            {
+                hash.update([5]);
+                hash.update([formants]);
+                hash.update(envelope.to_le_bytes());
             }
             _ => return Err(Invalid("invalid granular mode")),
         }
