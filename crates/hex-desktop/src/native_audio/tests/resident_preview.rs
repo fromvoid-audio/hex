@@ -4707,6 +4707,7 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
             first_frame: binding.first_frame(),
             end_frame: binding.end_frame(),
             loop_region: binding.loop_region(),
+            route: binding.capture_route(),
         },
         project_generation: 0,
         canonical_revision: placed.state.revision,

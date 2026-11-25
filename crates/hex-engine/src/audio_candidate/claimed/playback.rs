@@ -407,6 +407,19 @@ impl ClaimedAudioCandidateRuntime {
         self.current_playback()
             .map_or(0, |playback| playback.arrangement_loop_pass())
     }
+    pub fn midi_capture_clock(
+        &self,
+        route: crate::midi_capture::MidiCaptureRoute,
+    ) -> crate::midi_capture::MidiCaptureClock {
+        self.current_playback().map_or(
+            crate::midi_capture::MidiCaptureClock {
+                content_frame: 0,
+                performance_frame: 0,
+                loop_pass: 0,
+            },
+            |playback| playback.midi_capture_clock(route),
+        )
+    }
     pub fn arm_midi_capture(
         &mut self,
         binding: crate::midi_capture::MidiCaptureBinding,

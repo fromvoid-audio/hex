@@ -2,7 +2,7 @@
 //! conversion. Engine render success and Status are correlation, never delivery.
 use super::*;
 use crate::midi_recording::{AbortReason, Target};
-use hex_engine::midi_capture::{MidiCaptureClock, MidiCaptureFault};
+use hex_engine::midi_capture::MidiCaptureFault;
 
 impl Callback {
     pub(super) fn recording_source(&self) -> Option<AppliedAudioSource> {
@@ -166,11 +166,7 @@ impl Callback {
                         .map_err(|_| AbortReason::InputChanged)?;
                 }
                 Ok((
-                    MidiCaptureClock {
-                        content_frame: active.playback.position(),
-                        performance_frame: active.playback.performance_frame(),
-                        loop_pass: active.playback.arrangement_loop_pass(),
-                    },
+                    active.playback.midi_capture_clock(target.capture.route),
                     active
                         .playback
                         .main_output_latency_frames()

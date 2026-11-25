@@ -51,9 +51,7 @@ impl Recorder {
     }
     pub(super) fn label(&self) -> &'static str {
         match self.mode {
-            Mode::Idle => {
-                "record midi into selected arrangement clip · start playback inside the clip first"
-            }
+            Mode::Idle => "record midi into selected clip · start playback inside the clip first",
             Mode::Preparing => "preparing midi recording · click to cancel",
             Mode::Capturing | Mode::Finishing => "finish midi recording",
             Mode::Ready => "retry committing retained midi take",
@@ -186,14 +184,12 @@ impl EditorView {
             || self.midi_editor.step.enabled
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
-            || self.mode != EditorMode::Arrangement
+            || !matches!(self.mode, EditorMode::Arrangement | EditorMode::Session)
             || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
             || !self.worker_owns_keyboard_publication()
         {
-            self.error = Some(
-                "finish pending edits and use resident arrangement playback before recording midi"
-                    .into(),
-            );
+            self.error =
+                Some("finish pending edits and use resident playback before recording midi".into());
             return;
         }
         if !self.computer_keyboard.enabled && !self.controller_wants_live_notes() {
@@ -203,10 +199,6 @@ impl EditorView {
             );
             return;
         }
-        let Some(track) = self.selected_track else {
-            self.error = Some("select an arrangement midi track or clip before recording".into());
-            return;
-        };
         let Some(state) = self.state.as_ref() else {
             return;
         };
@@ -217,10 +209,13 @@ impl EditorView {
                 return;
             }
         };
-        let Some((playing, position)) = self
-            .audio_status()
-            .map(|s| (s.playing.load(Acquire), s.position.load(Acquire)))
-        else {
+        let Some((playing, position, performance_frame)) = self.audio_status().map(|s| {
+            (
+                s.playing.load(Acquire),
+                s.position.load(Acquire),
+                s.performance_frame.load(Acquire),
+            )
+        }) else {
             self.error = Some("start playback before recording midi".into());
             return;
         };
@@ -228,10 +223,83 @@ impl EditorView {
             self.error = Some("start playback before recording midi".into());
             return;
         }
-        let binding = if let Some(clip) = self.selected_clip {
-            MidiTakeBinding::capture_with_grid(&state.project, track, clip, grid)
+        let (binding, current_frame) = if self.mode == EditorMode::Session {
+            let Some(clip) = self.detail_clip_id() else {
+                self.error = Some("select an existing console midi clip before recording".into());
+                return;
+            };
+            let Some(track) = state.project.session_cells().iter().find_map(|cell| {
+                matches!(cell.content(), hex_project::SessionCellContent::Midi(item) if item.id() == clip)
+                    .then_some(cell.track())
+            }) else {
+                self.error = Some("select an existing console midi clip before recording".into());
+                return;
+            };
+            let audible = self.audible_playback.as_ref().map(|candidate| {
+                (
+                    candidate.audio_revision,
+                    candidate.state.revision,
+                    candidate.project_generation,
+                )
+            });
+            let snapshot = self.audio.as_ref().and_then(|audio| {
+                self.session_grid.routes.matching_snapshot(
+                    audio.control.output_identity()?,
+                    audible,
+                    state.revision,
+                    self.project_generation,
+                )
+            });
+            let Some(snapshot) = snapshot else {
+                self.error =
+                    Some("wait for the current console clip audio before recording".into());
+                return;
+            };
+            let ready = self.session_grid.routes.routes_available(
+                snapshot,
+                &state.project,
+                state.revision,
+                self.project_generation,
+            );
+            let route = self
+                .session_grid
+                .routes
+                .entry_for_track(snapshot, ready, track.value());
+            let Some(origin) = route.and_then(|route| {
+                (route.owner
+                    == hex_audio::prepared::SessionRouteOwner::Session {
+                        clip_id: clip.value(),
+                    })
+                .then_some(route.active_origin)
+                .flatten()
+            }) else {
+                self.error = Some("launch the selected console midi clip before recording".into());
+                return;
+            };
+            (
+                MidiTakeBinding::capture_session_clip_with_grid(
+                    &state.project,
+                    track,
+                    clip,
+                    origin,
+                    snapshot.clock_anchor,
+                    performance_frame,
+                    grid,
+                ),
+                performance_frame,
+            )
         } else {
-            MidiTakeBinding::capture_track(&state.project, track, position, grid)
+            let Some(track) = self.selected_track else {
+                self.error =
+                    Some("select an arrangement midi track or clip before recording".into());
+                return;
+            };
+            let binding = if let Some(clip) = self.selected_clip {
+                MidiTakeBinding::capture_with_grid(&state.project, track, clip, grid)
+            } else {
+                MidiTakeBinding::capture_track(&state.project, track, position, grid)
+            };
+            (binding, position)
         };
         let binding = match binding {
             Ok(binding) => Arc::new(binding),
@@ -241,8 +309,8 @@ impl EditorView {
             }
         };
         let position_valid = match binding.loop_region() {
-            Some((_, loop_end)) => position < loop_end,
-            None => (binding.first_frame()..binding.end_frame()).contains(&position),
+            Some((_, loop_end)) => current_frame < loop_end,
+            None => (binding.first_frame()..binding.end_frame()).contains(&current_frame),
         };
         if !position_valid {
             self.error =
@@ -394,6 +462,7 @@ impl EditorView {
                 first_frame: binding.first_frame(),
                 end_frame: binding.end_frame(),
                 loop_region: binding.loop_region(),
+                route: binding.capture_route(),
             },
             project_generation: self.midi_editor.recorder.generation,
             canonical_revision: self.midi_editor.recorder.revision,

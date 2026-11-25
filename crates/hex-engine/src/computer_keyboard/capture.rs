@@ -277,6 +277,7 @@ mod tests {
             first_frame: 0,
             end_frame: 48_000,
             loop_region: None,
+            route: MidiCaptureRoute::Arrangement,
         }
     }
     #[test]
@@ -737,5 +738,140 @@ mod tests {
                 + std::mem::size_of::<ordered_keys::OrderedKeys>()
         );
         assert!(b.storage_bytes().unwrap() <= MAX_COMPUTER_KEYBOARD_STORAGE_BYTES);
+    }
+
+    #[test]
+    fn session_midi_clip_capture_binds_performance_clock_and_faults_on_route_or_origin_change() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(8_000).unwrap(), 16).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::InsertTrackWithDevice {
+                name: "console".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let hex_project::Created::Scene(scene) = editor
+            .execute(hex_project::Command::AddScene { name: "s1".into() })
+            .unwrap()
+        else {
+            panic!("scene")
+        };
+        let hex_project::Created::SessionClip(clip) = editor
+            .execute(hex_project::Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "lead".into(),
+                source_length: hex_project::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("session clip")
+        };
+        let project = editor.project().clone();
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input = Arc::new(
+            ComputerKeyboardInput::with_output_activation(Arc::clone(&clock))
+                .unwrap()
+                .with_recording_support()
+                .unwrap(),
+        );
+        let mut runtime = playback(&project, track, &input);
+        runtime.apply(PlaybackCommand::Play);
+        // Advance 64 frames, then launch the Console clip so origin.performance_anchor > 0.
+        runtime.render(&mut [[0.0; 2]; 64]).unwrap();
+        runtime
+            .try_apply_action(crate::playback::PlaybackAction::Session(
+                crate::SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: crate::LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let route_snap = runtime.session_route_status(0).expect("route");
+        let origin = route_snap.active_origin.expect("active session origin");
+        let anchor = runtime.session_clock_anchor();
+        let perf_start = runtime.performance_frame();
+        assert_eq!(perf_start, 64);
+        assert!(origin.performance_anchor > hex_project::BeatTime::ZERO);
+
+        let keys = input.begin_ordered_keys_on_control().unwrap();
+        let base_binding = MidiCaptureBinding {
+            take_id: 1,
+            track,
+            device: project.track(track).unwrap().instrument().unwrap().id(),
+            sample_rate: project.sample_rate(),
+            output_epoch: input.output_epoch_on_control().unwrap(),
+            keys,
+            hardware: None,
+            first_frame: perf_start,
+            end_frame: perf_start + 16_000,
+            loop_region: None,
+            route: MidiCaptureRoute::SessionMidi {
+                clip,
+                origin,
+                clock_anchor: anchor,
+            },
+        };
+        // Arrangement capture must refuse while Console clip owns the track.
+        assert!(
+            runtime
+                .arm_midi_capture(
+                    MidiCaptureBinding {
+                        route: MidiCaptureRoute::Arrangement,
+                        ..base_binding
+                    },
+                    &clock
+                )
+                .is_err()
+        );
+        // Wrong origin must refuse.
+        assert!(
+            runtime
+                .arm_midi_capture(
+                    MidiCaptureBinding {
+                        route: MidiCaptureRoute::SessionMidi {
+                            clip,
+                            origin: crate::SessionMidiOrigin::launch(hex_project::BeatTime::ONE),
+                            clock_anchor: anchor,
+                        },
+                        ..base_binding
+                    },
+                    &clock
+                )
+                .is_err()
+        );
+        // Exact active Console clip + origin + clock_anchor arms on performance clock (64, not 0!).
+        let armed_clock = runtime.arm_midi_capture(base_binding, &clock).unwrap();
+        assert_eq!(armed_clock.content_frame, 64);
+        assert_eq!(armed_clock.performance_frame, 64);
+        assert_eq!(armed_clock.loop_pass, 0);
+
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        runtime.render(&mut [[0.0; 2]; 16]).unwrap();
+        let render = runtime.midi_capture_render(1).unwrap().unwrap();
+        assert_eq!(render.clock.content_frame, 64);
+        assert_eq!(render.clock.performance_frame, 64);
+        assert_eq!(render.events.len(), 1);
+        assert_eq!(render.events[0].performance_frame, 64);
+
+        // Switching the route away from the Console clip immediately faults with RouteChanged.
+        runtime
+            .try_apply_action(crate::playback::PlaybackAction::Session(
+                crate::SessionPlaybackCommand::StopTrack {
+                    track,
+                    quantization: crate::LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        runtime.render(&mut [[0.0; 2]; 16]).unwrap();
+        assert_eq!(
+            runtime.midi_capture_fault(1),
+            Some(MidiCaptureFault::RouteChanged)
+        );
     }
 }

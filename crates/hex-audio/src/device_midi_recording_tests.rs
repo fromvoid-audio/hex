@@ -232,6 +232,7 @@ fn fixture_with_mode(
             first_frame: 0,
             end_frame: end,
             loop_region: None,
+            route: hex_engine::midi_capture::MidiCaptureRoute::Arrangement,
         },
         project_generation: 7,
         canonical_revision: 11,
@@ -733,4 +734,260 @@ fn assert_delayed_output_rejected(target: Target) {
             ..
         }]
     ));
+}
+
+#[test]
+fn console_midi_clip_recording_delivers_zero_alloc_receipts_and_aborts_on_route_switch() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "console".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "s1".into() })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "clip".into(),
+            source_length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let input = Arc::new(
+        control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_recording_support()
+            .unwrap(),
+    );
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    graph
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 3,
+        editor_revision: 5,
+    };
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            graph,
+            prepared::PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+    // Launch Console MIDI clip at performance_frame = 64.
+    control
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+
+    let mut routes = [prepared::SessionRouteEntry::default(); 8];
+    let snapshot = control
+        .status
+        .session_routes(&mut routes)
+        .expect("snapshot");
+    let route_entry = routes[..snapshot.count]
+        .iter()
+        .find(|entry| entry.track_id == track.value())
+        .expect("route");
+    let origin = route_entry.active_origin.expect("active session origin");
+    let anchor = snapshot.clock_anchor;
+    let actual = control.status.recording_source().unwrap();
+    let keys = input.begin_ordered_keys_on_control().unwrap();
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let target = Target {
+        capture: hex_engine::midi_capture::MidiCaptureBinding {
+            take_id: 1,
+            track,
+            device,
+            sample_rate: 48_000,
+            output_epoch: input.output_epoch_on_control().unwrap(),
+            keys,
+            hardware: None,
+            first_frame: 64,
+            end_frame: 96_064,
+            loop_region: None,
+            route: hex_engine::midi_capture::MidiCaptureRoute::SessionMidi {
+                clip,
+                origin,
+                clock_anchor: anchor,
+            },
+        },
+        project_generation: 3,
+        canonical_revision: 5,
+        audio_revision: revision,
+        output_identity: actual.output_identity,
+        transport_epoch: control.status.transport_epoch.load(Acquire),
+    };
+    control.midi_recording.begin(target).unwrap();
+    input.set_key(0, Some((60, 100, 1))).unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+    input.set_key(0, None).unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+    control.midi_recording.finish();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 16], 2));
+    let seen = receipts(&mut control);
+    assert!(
+        matches!(seen.first(), Some(Receipt::Armed { clock, .. }) if clock.content_frame == 128 && clock.performance_frame == 128)
+    );
+    let notes: Vec<_> = seen
+        .iter()
+        .filter(|r| matches!(r, Receipt::Note { .. }))
+        .collect();
+    assert_eq!(notes.len(), 2);
+    assert!(
+        matches!(seen.last(), Some(Receipt::Finished { clock: Some(c), .. }) if c.content_frame == 192 && c.performance_frame == 192)
+    );
+
+    // Second take on a fresh fixture: switching route away via StopTrack aborts with RouteChanged at zero allocations.
+    let (mut control2, mut callback2) = prepared::channel(48_000).unwrap();
+    control2
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let input2 = Arc::new(
+        control2
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_recording_support()
+            .unwrap(),
+    );
+    let prepared2 = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut graph2 = Playback::try_from_prepared_with_session(prepared2).unwrap();
+    graph2
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input2))
+        .unwrap();
+    let rev2 = control2
+        .publish_with_admission_and_source_on_control(
+            graph2,
+            prepared::PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control2.command(hex_engine::PlaybackCommand::Play).unwrap();
+    assert!(deliver(&mut callback2, &mut [[0.0; 2]; 64], 2));
+    control2
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    assert!(deliver(&mut callback2, &mut [[0.0; 2]; 64], 2));
+    let mut routes2 = [prepared::SessionRouteEntry::default(); 8];
+    let snap2 = control2.status.session_routes(&mut routes2).unwrap();
+    let origin2 = routes2[..snap2.count]
+        .iter()
+        .find(|e| e.track_id == track.value())
+        .unwrap()
+        .active_origin
+        .unwrap();
+    let actual2 = control2.status.recording_source().unwrap();
+    let keys2 = input2.begin_ordered_keys_on_control().unwrap();
+    let target2 = Target {
+        capture: hex_engine::midi_capture::MidiCaptureBinding {
+            take_id: 1,
+            track,
+            device,
+            sample_rate: 48_000,
+            output_epoch: input2.output_epoch_on_control().unwrap(),
+            keys: keys2,
+            hardware: None,
+            first_frame: 64,
+            end_frame: 96_064,
+            loop_region: None,
+            route: hex_engine::midi_capture::MidiCaptureRoute::SessionMidi {
+                clip,
+                origin: origin2,
+                clock_anchor: snap2.clock_anchor,
+            },
+        },
+        project_generation: 3,
+        canonical_revision: 5,
+        audio_revision: rev2,
+        output_identity: actual2.output_identity,
+        transport_epoch: control2.status.transport_epoch.load(Acquire),
+    };
+    control2.midi_recording.begin(target2).unwrap();
+    assert!(deliver(&mut callback2, &mut [[0.0; 2]; 16], 2));
+    control2
+        .session_command_with_ticket(hex_engine::SessionPlaybackCommand::StopTrack {
+            track,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    assert!(deliver(&mut callback2, &mut [[0.0; 2]; 16], 2));
+    let seen2 = receipts(&mut control2);
+    assert!(
+        matches!(
+            seen2.last(),
+            Some(Receipt::Aborted {
+                reason: AbortReason::RouteChanged,
+                ..
+            })
+        ),
+        "expected RouteChanged abort, got: {seen2:?}"
+    );
 }
