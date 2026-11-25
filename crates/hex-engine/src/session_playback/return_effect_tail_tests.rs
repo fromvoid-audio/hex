@@ -1167,7 +1167,7 @@ fn compensated_return_tail_matches_scalar_through_completion() {
             runtime
                 .render_with_node_signal_observer(
                     &mut pcm,
-                    Some(&mut |_, _, _, frames| width = width.max(frames.len())),
+                    Some(&mut |_, _, _, frames: &[Frame]| width = width.max(frames.len())),
                 )
                 .unwrap();
             assert_eq!(width, if scalar { 1 } else { 2 });
@@ -1287,7 +1287,7 @@ fn check_compensated_track_tail(group_send: Option<bool>) {
         playback
             .render_with_node_signal_observer(
                 &mut first,
-                Some(&mut |_, _, _, frames| width = width.max(frames.len())),
+                Some(&mut |_, _, _, frames: &[Frame]| width = width.max(frames.len())),
             )
             .unwrap();
         assert_eq!(width, if scalar { 1 } else { 2 });
@@ -1332,7 +1332,7 @@ fn check_compensated_track_tail(group_send: Option<bool>) {
         playback
             .render_with_node_signal_observer(
                 &mut wide,
-                Some(&mut |_, _, _, frames| {
+                Some(&mut |_, _, _, frames: &[Frame]| {
                     first_width.get_or_insert(frames.len());
                 }),
             )

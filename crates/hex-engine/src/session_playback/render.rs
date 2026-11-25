@@ -9,6 +9,8 @@ mod return_buses;
 mod route_chunk;
 mod shared_source;
 mod source_live;
+#[cfg(test)]
+mod wave_tests;
 use super::capture::CaptureSink;
 use super::return_effect_tails::MainTailClock;
 use super::{commands::transition_captures, *};
@@ -429,14 +431,8 @@ impl SessionPlayback {
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if let Some(observer) = observer {
-            self.render_with_node_signal_observer(
-                output,
-                Some(&mut |identity, phase, offset, frames| {
-                    if phase == crate::NodeSignalPhase::Output {
-                        observer(identity, offset, frames);
-                    }
-                }),
-            )
+            let mut adapter = crate::PostNodeSignalAdapter(observer);
+            self.render_with_node_signal_observer(output, Some(&mut adapter))
         } else {
             self.render_with_node_signal_observer(output, None)
         }
@@ -569,15 +565,8 @@ impl SessionPlayback {
         observer: Option<&mut crate::PostNodeObserver<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if let Some(observer) = observer {
-            self.render_with_pages_and_node_signal_observer(
-                output,
-                pages,
-                Some(&mut |identity, phase, offset, frames| {
-                    if phase == crate::NodeSignalPhase::Output {
-                        observer(identity, offset, frames);
-                    }
-                }),
-            )
+            let mut adapter = crate::PostNodeSignalAdapter(observer);
+            self.render_with_pages_and_node_signal_observer(output, pages, Some(&mut adapter))
         } else {
             self.render_with_pages_and_node_signal_observer(output, pages, None)
         }

@@ -62,7 +62,7 @@ pub(crate) fn process_with_foreign(
             frames,
             hex_lattice::StageProcessContext::new(offset, clock, clock).with_foreign(foreign),
             &mut |owner, device, kind, phase, offset, frames| {
-                observer(
+                observer.observe_signal(
                     PostNodeIdentity::new(owner, device, kind),
                     phase,
                     offset,

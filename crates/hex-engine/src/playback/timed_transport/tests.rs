@@ -267,7 +267,7 @@ fn timed_node_observation_preserves_offsets_and_pcm_across_partitions() {
                 .render_with_timed_transport_and_node_observer(
                     part,
                     &commands,
-                    &mut |_, phase, offset, frames| {
+                    &mut |_, phase: NodeSignalPhase, offset: usize, frames: &[Frame]| {
                         assert!(offset + frames.len() <= end - start);
                         let target = match phase {
                             NodeSignalPhase::Input => &mut input,
@@ -292,7 +292,7 @@ fn timed_node_observation_preserves_offsets_and_pcm_across_partitions() {
             offset: 5,
             command: PlaybackCommand::Play,
         }],
-        &mut |_, _, _, _| calls += 1,
+        &mut |_, _, _, _: &[Frame]| calls += 1,
     );
     assert_eq!(result, Err(TimedTransportError::InvalidOffset { index: 0 }));
     assert_eq!(calls, 0);
@@ -313,7 +313,7 @@ fn timed_node_observation_preserves_offsets_and_pcm_across_partitions() {
                 command: PlaybackCommand::PlayFrom(u64::MAX),
             },
         ],
-        &mut |_, _, offset, frames| {
+        &mut |_, _, offset: usize, frames: &[Frame]| {
             assert!(offset + frames.len() <= 4);
             calls += 1;
         },

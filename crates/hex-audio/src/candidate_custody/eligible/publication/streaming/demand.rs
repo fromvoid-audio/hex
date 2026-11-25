@@ -1095,14 +1095,12 @@ impl ActiveView<'_> {
                     left: left[0].as_mut().map(|p| p.pages()),
                     right: right[0].as_mut().map(|p| p.pages()),
                 };
-                let observed = observer.is_some();
-                let mut observe = |identity, phase, offset, frames: &[hex_engine::Frame]| {
-                    if let Some(observer) = observer.as_deref_mut() {
-                        observer(identity, phase, committed + offset, frames);
-                    }
-                };
-                let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
-                    if observed { Some(&mut observe) } else { None };
+                let mut shifted = observer
+                    .as_deref_mut()
+                    .map(|inner| hex_engine::ShiftedNodeSignalObserver::new(inner, committed));
+                let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> = shifted
+                    .as_mut()
+                    .map(|obs| obs as &mut hex_engine::NodeSignalObserver<'_>);
                 let project_selection = project.as_ref().map(|tap| (tap.tracks(), tap.returns()));
                 let mut observe_project = |signal, offset, frames: &[hex_engine::Frame]| {
                     if let Some(project) = project.as_mut() {

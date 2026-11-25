@@ -2569,7 +2569,10 @@ fn power_fade_enters_the_live_stateful_receiver_once() {
             runtime
                 .render_with_node_signal_observer(
                     &mut output,
-                    Some(&mut |node, phase, offset, frames| {
+                    Some(&mut |node: crate::PostNodeIdentity,
+                               phase: crate::NodeSignalPhase,
+                               offset: usize,
+                               frames: &[Frame]| {
                         if node.device_id == gate.value() && phase == crate::NodeSignalPhase::Input
                         {
                             assert_eq!(offset, count, "one active receiver processor");

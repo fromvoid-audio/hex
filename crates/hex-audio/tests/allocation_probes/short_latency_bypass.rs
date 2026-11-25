@@ -358,7 +358,10 @@ fn fresh_effect_delta(
     let mut next_output = 0;
     dry.render_with_node_signal_observer(
         output,
-        Some(&mut |node, phase, offset, pcm| {
+        Some(&mut |node: hex_engine::PostNodeIdentity,
+                   phase: NodeSignalPhase,
+                   offset: usize,
+                   pcm: &[hex_engine::Frame]| {
             if node.device_id != device.value() {
                 return;
             }

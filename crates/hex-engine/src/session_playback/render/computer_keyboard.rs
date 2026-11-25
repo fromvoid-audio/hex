@@ -391,7 +391,7 @@ impl SessionPlayback {
                             frames,
                             offset,
                             &mut |owner, device, kind, phase, offset, frames| {
-                                observer(
+                                observer.observe_signal(
                                     crate::PostNodeIdentity::new(owner, device, kind),
                                     phase,
                                     offset,

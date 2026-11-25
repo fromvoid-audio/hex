@@ -97,8 +97,7 @@ impl SessionPlayback {
             return Ok(());
         }
         let bus_count = self.revision.arrangement().return_buses().len();
-        let can_parallel_returns = observer.is_none()
-            && external.is_none()
+        let can_parallel_returns = external.is_none()
             && self
                 .native_parameter_state
                 .as_deref()
@@ -111,6 +110,12 @@ impl SessionPlayback {
         if can_parallel_returns && let Some(exec) = wave.as_deref_mut() {
             let mut eligible_count = 0usize;
             for index in 0..bus_count {
+                let bus_id = self.revision.arrangement().return_buses()[index].id.value();
+                if observer.as_deref().is_some_and(|obs| {
+                    obs.observes_owner(crate::ProcessorChainOwner::Return(bus_id))
+                }) {
+                    continue;
+                }
                 let chain = &self.return_chains[index];
                 if !chain.is_empty()
                     && chain.len() <= crate::wave_executor::MAX_WAVE_STAGES
@@ -130,6 +135,12 @@ impl SessionPlayback {
                 }
                 let mut staged = [None; crate::wave_executor::MAX_WAVE_TASKS];
                 for (index, slot_out) in staged[..bus_count].iter_mut().enumerate() {
+                    let bus_id = self.revision.arrangement().return_buses()[index].id.value();
+                    if observer.as_deref().is_some_and(|obs| {
+                        obs.observes_owner(crate::ProcessorChainOwner::Return(bus_id))
+                    }) {
+                        continue;
+                    }
                     let chain = &self.return_chains[index];
                     if !chain.is_empty()
                         && chain.len() <= crate::wave_executor::MAX_WAVE_STAGES

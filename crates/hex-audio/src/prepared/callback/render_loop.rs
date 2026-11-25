@@ -341,7 +341,10 @@ impl Callback {
                 })
                 .map(|graph| graph.playback.as_mut());
             let stages = &mut self.spectrum_stages;
-            let mut observe = |identity, phase, offset, frames: &[Frame]| {
+            let mut observe = |identity: hex_engine::PostNodeIdentity,
+                               phase: hex_engine::NodeSignalPhase,
+                               offset: usize,
+                               frames: &[Frame]| {
                 stages.observe_signal(targets, identity, phase, offset, frames)
             };
             let observer: Option<&mut hex_engine::NodeSignalObserver<'_>> =
@@ -456,7 +459,10 @@ impl Callback {
         }
         let stages = &mut self.spectrum_stages;
         let targets = self.spectrum_target.current_targets();
-        let mut observe = |identity, phase, offset, frames: &[Frame]| {
+        let mut observe = |identity: hex_engine::PostNodeIdentity,
+                           phase: hex_engine::NodeSignalPhase,
+                           offset: usize,
+                           frames: &[Frame]| {
             stages.observe_signal(targets, identity, phase, offset, frames)
         };
         let mut project_capture = self

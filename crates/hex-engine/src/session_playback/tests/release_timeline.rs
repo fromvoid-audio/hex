@@ -97,7 +97,7 @@ fn compensated_release_matches_scalar_through_expiry() {
     block
         .render_with_node_signal_observer(
             &mut pcm,
-            Some(&mut |_, _, _, frames| max_slice = max_slice.max(frames.len())),
+            Some(&mut |_, _, _, frames: &[Frame]| max_slice = max_slice.max(frames.len())),
         )
         .unwrap();
     let mut oracle = [[0.0; 2]; 32];
@@ -105,7 +105,7 @@ fn compensated_release_matches_scalar_through_expiry() {
     scalar
         .render_with_node_signal_observer(
             &mut oracle,
-            Some(&mut |_, _, _, frames| scalar_slice = scalar_slice.max(frames.len())),
+            Some(&mut |_, _, _, frames: &[Frame]| scalar_slice = scalar_slice.max(frames.len())),
         )
         .unwrap();
     assert_eq!(scalar_slice, 1);
