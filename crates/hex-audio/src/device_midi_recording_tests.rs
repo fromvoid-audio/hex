@@ -231,6 +231,7 @@ fn fixture_with_mode(
             hardware: None,
             first_frame: 0,
             end_frame: end,
+            loop_region: None,
         },
         project_generation: 7,
         canonical_revision: 11,
@@ -471,7 +472,8 @@ fn midi_recording_confirms_short_notes_only_after_real_direct_conversion_and_sto
         Receipt::Finished {
             clock: Some(hex_engine::midi_capture::MidiCaptureClock {
                 content_frame: 72,
-                performance_frame: 72
+                performance_frame: 72,
+                loop_pass: 0,
             }),
             ..
         }

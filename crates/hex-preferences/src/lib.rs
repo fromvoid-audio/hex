@@ -27,8 +27,8 @@ pub use audio_import::{
 
 mod midi_input;
 pub use midi_input::{
-    MidiInputPort, MidiInputPreferences, load_midi_input_preferences, midi_input_preferences_path,
-    save_midi_input_preferences,
+    MAX_MIDI_INPUT_PORTS, MidiInputPort, MidiInputPreferences, load_midi_input_preferences,
+    midi_input_preferences_path, save_midi_input_preferences,
 };
 
 mod playback;

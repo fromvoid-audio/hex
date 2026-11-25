@@ -25,6 +25,56 @@ use std::sync::{
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+/// Maximum number of MIDI input ports aggregated into one logical live input stream.
+pub const MAX_AGGREGATED_PORTS: usize = 16;
+
+/// Channel filter applied to decoded MIDI 1.0 channel-voice messages.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ChannelFilter {
+    /// Accept all 16 MIDI channels (`0..=15`), retaining each message's wire channel.
+    #[default]
+    Omni,
+    /// Accept only one zero-based MIDI channel (`0..=15`).
+    Single(u8),
+}
+
+impl ChannelFilter {
+    /// Construct a validated single-channel filter (`0..=15`).
+    pub const fn single(channel: u8) -> Option<Self> {
+        if channel < 16 {
+            Some(Self::Single(channel))
+        } else {
+            None
+        }
+    }
+
+    /// Construct from an optional single channel (`None` => `Omni`, `Some(0..=15)` => `Single`).
+    pub const fn from_option(channel: Option<u8>) -> Option<Self> {
+        match channel {
+            None => Some(Self::Omni),
+            Some(ch) => Self::single(ch),
+        }
+    }
+
+    /// True when the filter configuration itself is valid (`Omni` or `Single(0..=15)`).
+    pub const fn is_valid(self) -> bool {
+        match self {
+            Self::Omni => true,
+            Self::Single(channel) => channel < 16,
+        }
+    }
+
+    /// Return the zero-based wire channel when `status` matches this filter.
+    pub(crate) const fn matches(self, status: u8) -> Option<u8> {
+        let wire_channel = status & 15;
+        match self {
+            Self::Omni => Some(wire_channel),
+            Self::Single(channel) if channel < 16 && wire_channel == channel => Some(wire_channel),
+            Self::Single(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Controllers {
     pub pressure: u8,
@@ -34,16 +84,26 @@ pub struct Controllers {
     pub sustain: u8,
     /// Expression (CC11) 7-bit controller value.
     pub expression: u8,
-    /// Most recent non-reset Control Change received on the selected channel.
+    /// Most recent non-reset Control Change received on a matched channel.
     pub last_cc: Option<ControlChange>,
 }
 /// Exact channel-voice messages only; malformed input never changes the snapshot.
 pub fn parse(message: &[u8], channel: u8, current: Controllers) -> Option<Controllers> {
+    parse_filtered(message, ChannelFilter::Single(channel), current)
+}
+/// Channel-filtered counterpart of [`parse`], supporting both [`ChannelFilter::Omni`]
+/// (all 16 channels) and [`ChannelFilter::Single`].
+pub fn parse_filtered(
+    message: &[u8],
+    filter: ChannelFilter,
+    current: Controllers,
+) -> Option<Controllers> {
     if !(2..=3).contains(&message.len()) {
         return None;
     }
     let (&status, data) = message.split_first()?;
-    if channel >= 16 || status & 15 != channel || data.iter().any(|value| *value > 127) {
+    let channel = filter.matches(status)?;
+    if data.iter().any(|value| *value > 127) {
         return None;
     }
     let mut next = current;
@@ -74,15 +134,29 @@ pub fn parse(message: &[u8], channel: u8, current: Controllers) -> Option<Contro
 /// Fixed MIDI 1 byte-stream decoder, including running status across packets.
 /// Realtime bytes may interleave anywhere. SysEx/system-common cancel channel
 /// running status; unsupported channel messages are consumed at their exact width.
-#[derive(Default)]
 pub struct Decoder {
     status: u8,
     data: [u8; 2],
     used: usize,
     sysex: bool,
     held: HeldNotes,
+    held_channels: [u16; HELD_NOTE_COUNT],
     held_changed: bool,
     held_fault: Option<HeldNoteFault>,
+}
+impl Default for Decoder {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            data: [0; 2],
+            used: 0,
+            sysex: false,
+            held: HeldNotes::default(),
+            held_channels: [0; HELD_NOTE_COUNT],
+            held_changed: false,
+            held_fault: None,
+        }
+    }
 }
 impl Decoder {
     /// Coalesced note changes from the same decoded stream as controllers.
@@ -94,6 +168,10 @@ impl Decoder {
             None
         }
     }
+    /// Borrow the decoder's current held-note snapshot without consuming its dirty flag.
+    pub fn held_notes(&self) -> &HeldNotes {
+        &self.held
+    }
     pub fn held_note_fault(&self) -> Option<HeldNoteFault> {
         self.held_fault
     }
@@ -101,6 +179,7 @@ impl Decoder {
     /// does. Note tokens stay monotonic for the activation's control-side floor.
     fn reset(&mut self, note: &dyn Fn(NoteEvent)) {
         self.held.clear();
+        self.held_channels.fill(0);
         self.held_changed = true;
         self.status = 0;
         self.used = 0;
@@ -108,7 +187,15 @@ impl Decoder {
         note(NoteEvent::AllNotesOff);
     }
     pub fn byte(&mut self, byte: u8, channel: u8, current: Controllers) -> Option<Controllers> {
-        self.byte_with_notes(byte, channel, current, &|_| {})
+        self.byte_with_notes_filtered(byte, ChannelFilter::Single(channel), current, &|_| {})
+    }
+    pub fn byte_filtered(
+        &mut self,
+        byte: u8,
+        filter: ChannelFilter,
+        current: Controllers,
+    ) -> Option<Controllers> {
+        self.byte_with_notes_filtered(byte, filter, current, &|_| {})
     }
     /// Delivers each complete note message synchronously, in wire order. Unlike
     /// `take_held_notes`, this preserves an on/off pair within one packet. The
@@ -117,6 +204,17 @@ impl Decoder {
         &mut self,
         byte: u8,
         channel: u8,
+        current: Controllers,
+        note: &dyn Fn(NoteEvent),
+    ) -> Option<Controllers> {
+        self.byte_with_notes_filtered(byte, ChannelFilter::Single(channel), current, note)
+    }
+    /// Channel-filtered counterpart of [`Self::byte_with_notes`], supporting Omni
+    /// (all 16 channels) and single-channel modes.
+    pub fn byte_with_notes_filtered(
+        &mut self,
+        byte: u8,
+        filter: ChannelFilter,
         current: Controllers,
         note: &dyn Fn(NoteEvent),
     ) -> Option<Controllers> {
@@ -154,22 +252,27 @@ impl Decoder {
         self.used = 0;
         let message = [self.status, self.data[0], self.data[1]];
         if self.held_fault.is_none() {
-            match self.held.observe(&message[..width + 1], channel) {
+            match self.held.observe_omni_with_channels(
+                &mut self.held_channels,
+                &message[..width + 1],
+                filter,
+            ) {
                 Ok(changed) => self.held_changed |= changed,
                 Err(fault) => {
                     self.held.clear();
+                    self.held_channels.fill(0);
                     self.held_fault = Some(fault);
                     self.held_changed = true;
                     note(NoteEvent::InputLost(fault));
                 }
             }
             if self.held_fault.is_none()
-                && let Some(event) = NoteEvent::parse(&message[..width + 1], channel)
+                && let Some(event) = NoteEvent::parse_filtered(&message[..width + 1], filter)
             {
                 note(event);
             }
         }
-        parse(&message[..width + 1], channel, current)
+        parse_filtered(&message[..width + 1], filter, current)
     }
 }
 const CALLBACK_BYTES: usize = 65_536;
@@ -192,7 +295,27 @@ pub fn deliver_packets<'a>(
     notes: &HeldNoteInput,
     publish: &dyn Fn(Controllers),
 ) -> Controllers {
-    deliver_packets_with_notes(decoder, channel, current, packets, notes, publish, &|_| {})
+    deliver_packets_with_notes_filtered(
+        decoder,
+        ChannelFilter::Single(channel),
+        current,
+        packets,
+        notes,
+        publish,
+        &|_| {},
+    )
+}
+
+/// Channel-filtered counterpart of [`deliver_packets`], supporting Omni and single-channel modes.
+pub fn deliver_packets_filtered<'a>(
+    decoder: &mut Decoder,
+    filter: ChannelFilter,
+    current: Controllers,
+    packets: impl IntoIterator<Item = &'a [u8]>,
+    notes: &HeldNoteInput,
+    publish: &dyn Fn(Controllers),
+) -> Controllers {
+    deliver_packets_with_notes_filtered(decoder, filter, current, packets, notes, publish, &|_| {})
 }
 
 /// Ordered-note counterpart of `deliver_packets`, sharing its byte/packet and
@@ -209,10 +332,31 @@ pub fn deliver_packets_with_notes<'a>(
     publish: &dyn Fn(Controllers),
     note: &dyn Fn(NoteEvent),
 ) -> Controllers {
-    let mut clock = MonotonicTimestampClock::default();
-    deliver_timed_packets_with_notes(
+    deliver_packets_with_notes_filtered(
         decoder,
-        channel,
+        ChannelFilter::Single(channel),
+        current,
+        packets,
+        notes,
+        publish,
+        note,
+    )
+}
+
+/// Channel-filtered counterpart of [`deliver_packets_with_notes`].
+pub fn deliver_packets_with_notes_filtered<'a>(
+    decoder: &mut Decoder,
+    filter: ChannelFilter,
+    current: Controllers,
+    packets: impl IntoIterator<Item = &'a [u8]>,
+    notes: &HeldNoteInput,
+    publish: &dyn Fn(Controllers),
+    note: &dyn Fn(NoteEvent),
+) -> Controllers {
+    let mut clock = MonotonicTimestampClock::default();
+    deliver_timed_packets_with_notes_filtered(
+        decoder,
+        filter,
         current,
         MachTimebase::NANOSECONDS,
         &mut clock,
@@ -234,6 +378,32 @@ pub fn deliver_packets_with_notes<'a>(
 pub fn deliver_timed_packets_with_notes<'a>(
     decoder: &mut Decoder,
     channel: u8,
+    current: Controllers,
+    timebase: MachTimebase,
+    clock: &mut MonotonicTimestampClock,
+    packets: impl IntoIterator<Item = TimedPacket<'a>>,
+    notes: &HeldNoteInput,
+    publish: &dyn Fn(Controllers),
+    note: &dyn Fn(TimestampedNoteEvent),
+) -> Controllers {
+    deliver_timed_packets_with_notes_filtered(
+        decoder,
+        ChannelFilter::Single(channel),
+        current,
+        timebase,
+        clock,
+        packets,
+        notes,
+        publish,
+        note,
+    )
+}
+
+/// Channel-filtered counterpart of [`deliver_timed_packets_with_notes`].
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_timed_packets_with_notes_filtered<'a>(
+    decoder: &mut Decoder,
+    filter: ChannelFilter,
     mut current: Controllers,
     timebase: MachTimebase,
     clock: &mut MonotonicTimestampClock,
@@ -263,7 +433,7 @@ pub fn deliver_timed_packets_with_notes<'a>(
             });
         };
         for byte in accepted {
-            if let Some(next) = decoder.byte_with_notes(*byte, channel, current, &emit) {
+            if let Some(next) = decoder.byte_with_notes_filtered(*byte, filter, current, &emit) {
                 current = next;
                 publish(current);
             }
@@ -284,6 +454,150 @@ pub fn deliver_timed_packets_with_notes<'a>(
         notes.publish(snapshot);
     }
     current
+}
+
+struct AggregatedState {
+    decoders: Vec<Decoder>,
+    current: Controllers,
+    clock: MonotonicTimestampClock,
+    merged_through: u64,
+    publish: Box<dyn Fn(Controllers) + Send>,
+    note: Box<dyn Fn(TimestampedNoteEvent) + Send>,
+}
+
+/// Bounded multi-port MIDI input aggregator (up to [`MAX_AGGREGATED_PORTS`] ports).
+///
+/// Each port retains its own isolated [`Decoder`] so running status, SysEx framing,
+/// and per-port burst overflow never bleed across physical inputs. One control-side
+/// mutex serializes merged controller snapshots, monotonic cross-port timestamps,
+/// ordered note/CC delivery, and sole-writer publication into [`HeldNoteInput`].
+pub struct MultiPortAggregator {
+    filter: ChannelFilter,
+    timebase: MachTimebase,
+    notes: Arc<HeldNoteInput>,
+    state: std::sync::Mutex<AggregatedState>,
+}
+
+impl MultiPortAggregator {
+    /// Construct a bounded multi-port aggregator for `port_count` distinct input ports
+    /// (`1..=MAX_AGGREGATED_PORTS`) using `filter` and `timebase`.
+    pub fn new(
+        port_count: usize,
+        filter: ChannelFilter,
+        timebase: MachTimebase,
+        notes: Arc<HeldNoteInput>,
+        publish: Box<dyn Fn(Controllers) + Send>,
+        note: Box<dyn Fn(TimestampedNoteEvent) + Send>,
+    ) -> Result<Self, &'static str> {
+        if port_count == 0 || port_count > MAX_AGGREGATED_PORTS {
+            return Err("controller port count must be between 1 and 16");
+        }
+        if !filter.is_valid() {
+            return Err("controller channel is invalid");
+        }
+        let mut decoders = Vec::new();
+        decoders
+            .try_reserve_exact(port_count)
+            .map_err(|_| "could not allocate midi port decoders")?;
+        for _ in 0..port_count {
+            decoders.push(Decoder::default());
+        }
+        Ok(Self {
+            filter,
+            timebase,
+            notes,
+            state: std::sync::Mutex::new(AggregatedState {
+                decoders,
+                current: Controllers::default(),
+                clock: MonotonicTimestampClock::default(),
+                merged_through: 0,
+                publish,
+                note,
+            }),
+        })
+    }
+
+    /// Deliver one batch of timestamped packets from `port_index` into its isolated
+    /// decoder and publish merged held-note / controller / ordered-event updates.
+    pub fn deliver_timed_packets<'a>(
+        &self,
+        port_index: usize,
+        packets: impl IntoIterator<Item = TimedPacket<'a>>,
+    ) {
+        if self.notes.is_cancelled() {
+            return;
+        }
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if self.notes.is_cancelled() || port_index >= state.decoders.len() {
+            return;
+        }
+        let AggregatedState {
+            decoders,
+            current,
+            clock,
+            merged_through,
+            publish,
+            note,
+        } = &mut *state;
+        let decoder = &mut decoders[port_index];
+        let mut remaining = CALLBACK_BYTES;
+        let mut any_held_change = false;
+        for (index, packet) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
+            let timestamp_ns = clock.advance(self.timebase, packet.timestamp_ticks);
+            let bytes = packet.data;
+            let overflow = index == CALLBACK_PACKETS || bytes.len() > remaining;
+            let accepted = if index == CALLBACK_PACKETS {
+                &[][..]
+            } else {
+                bytes.get(..remaining).unwrap_or(bytes)
+            };
+            let emit = |event| {
+                note(TimestampedNoteEvent {
+                    timestamp_ns,
+                    event,
+                });
+            };
+            for byte in accepted {
+                if let Some(next) =
+                    decoder.byte_with_notes_filtered(*byte, self.filter, *current, &emit)
+                {
+                    *current = next;
+                    publish(*current);
+                }
+                if let Some(fault) = decoder.held_note_fault() {
+                    self.notes.fail(fault);
+                    return;
+                }
+            }
+            if overflow {
+                decoder.reset(&emit);
+                break;
+            }
+            remaining -= accepted.len();
+        }
+        if let Some(fault) = decoder.held_note_fault() {
+            self.notes.fail(fault);
+            return;
+        }
+        if let Some(port_snapshot) = decoder.take_held_notes() {
+            *merged_through = (*merged_through).max(port_snapshot.through());
+            any_held_change = true;
+        }
+        if any_held_change {
+            let merged =
+                HeldNotes::merge_from(decoders.iter().map(Decoder::held_notes), *merged_through);
+            self.notes.publish(merged);
+        }
+    }
+
+    pub fn controllers(&self) -> Controllers {
+        self.state
+            .lock()
+            .map(|state| state.current)
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -315,6 +629,15 @@ pub enum Command {
         activation: u64,
         port: Port,
         channel: u8,
+        sink: Sink,
+    },
+    /// Connect one or more ports (up to [`MAX_AGGREGATED_PORTS`]) with a
+    /// [`ChannelFilter`] (single channel or Omni), aggregating them through one
+    /// serialized [`MultiPortAggregator`].
+    ConnectPorts {
+        activation: u64,
+        ports: Vec<Port>,
+        channel_filter: ChannelFilter,
         sink: Sink,
     },
     Disconnect {
@@ -361,7 +684,10 @@ impl Handle {
         match self.commands.try_send(Request::Command(command)) {
             Ok(()) => Ok(()),
             Err(mpsc::TrySendError::Full(request) | mpsc::TrySendError::Disconnected(request)) => {
-                if let Request::Command(Command::Connect { sink, .. }) = request {
+                if let Request::Command(
+                    Command::Connect { sink, .. } | Command::ConnectPorts { sink, .. },
+                ) = request
+                {
                     sink.cancel();
                 }
                 Err("controller input worker is busy or unavailable")
@@ -456,7 +782,9 @@ impl Outbox {
 fn cancel_queued(requests: &Receiver<Request>) {
     for _ in 0..=COMMAND_CAPACITY {
         match requests.try_recv() {
-            Ok(Request::Command(Command::Connect { sink, .. })) => sink.cancel(),
+            Ok(Request::Command(
+                Command::Connect { sink, .. } | Command::ConnectPorts { sink, .. },
+            )) => sink.cancel(),
             Ok(_) => {}
             Err(_) => break,
         }
@@ -511,11 +839,11 @@ mod native {
     use super::*;
     use coremidi::{Client, InputPort, Source, Sources};
     struct Active {
-        // Rust drops fields in declaration order: input port closes before client.
+        // Rust drops fields in declaration order: input ports close before client.
         activation: u64,
-        _port: InputPort,
+        _ports: Vec<InputPort>,
         _client: Client,
-        source: Source,
+        sources: Vec<Source>,
         cancel: Box<dyn Fn() + Send>,
         is_cancelled: Box<dyn Fn() -> bool + Send>,
         notes: Arc<HeldNoteInput>,
@@ -557,59 +885,78 @@ mod native {
         }
         Ok(result)
     }
-    fn connect(activation: u64, port: Port, channel: u8, sink: Sink) -> Result<Active, String> {
+    fn connect_ports(
+        activation: u64,
+        ports: Vec<Port>,
+        filter: ChannelFilter,
+        sink: Sink,
+    ) -> Result<Active, String> {
         let result = (|| {
             if sink.notes.is_cancelled() || (sink.is_cancelled)() {
                 return Err("controller activation was cancelled".into());
             }
-            if channel >= 16 {
+            if ports.is_empty() || ports.len() > MAX_AGGREGATED_PORTS {
+                return Err("controller port count must be between 1 and 16".into());
+            }
+            if !filter.is_valid() {
                 return Err("controller channel is invalid".into());
             }
-            let source = source_by_id(port.id).ok_or("controller port is unavailable")?;
+            let mut seen_ids = std::collections::HashSet::with_capacity(ports.len());
+            let mut sources = Vec::with_capacity(ports.len());
+            for port in &ports {
+                if !seen_ids.insert(port.id) {
+                    return Err("controller port list contains duplicate port ids".into());
+                }
+                let source = source_by_id(port.id).ok_or("controller port is unavailable")?;
+                sources.push(source);
+            }
             let client = Client::new("hex controller input")
                 .map_err(|status| format!("controller client failed: {status}"))?;
-            let mut decoder = Decoder::default();
-            let mut current = Controllers::default();
-            let timebase = MachTimebase::host();
-            let mut clock = MonotonicTimestampClock::default();
-            let publish = sink.publish;
-            let note = sink.note;
-            let notes = Arc::clone(&sink.notes);
-            let input = client
-                .input_port("hex controller input", move |packets| {
-                    current = deliver_timed_packets_with_notes(
-                        &mut decoder,
-                        channel,
-                        current,
-                        timebase,
-                        &mut clock,
-                        packets.iter().map(|packet| TimedPacket {
-                            timestamp_ticks: packet.timestamp(),
-                            data: packet.data(),
-                        }),
-                        &notes,
-                        publish.as_ref(),
-                        note.as_ref(),
-                    );
-                })
-                .map_err(|status| format!("controller port creation failed: {status}"))?;
-            input
-                .connect_source(&source)
-                .map_err(|status| format!("controller connection failed: {status}"))?;
-            Ok((input, client, source))
+            let aggregator = Arc::new(
+                MultiPortAggregator::new(
+                    sources.len(),
+                    filter,
+                    MachTimebase::host(),
+                    Arc::clone(&sink.notes),
+                    sink.publish,
+                    sink.note,
+                )
+                .map_err(str::to_owned)?,
+            );
+            let mut inputs = Vec::with_capacity(sources.len());
+            for (port_index, source) in sources.iter().enumerate() {
+                let agg = Arc::clone(&aggregator);
+                let port_name = format!("hex controller input {port_index}");
+                let input = client
+                    .input_port(&port_name, move |packets| {
+                        agg.deliver_timed_packets(
+                            port_index,
+                            packets.iter().map(|packet| TimedPacket {
+                                timestamp_ticks: packet.timestamp(),
+                                data: packet.data(),
+                            }),
+                        );
+                    })
+                    .map_err(|status| format!("controller port creation failed: {status}"))?;
+                input
+                    .connect_source(source)
+                    .map_err(|status| format!("controller connection failed: {status}"))?;
+                inputs.push(input);
+            }
+            Ok((inputs, client, sources))
         })();
         match result {
-            Ok((input, client, source)) => Ok(Active {
+            Ok((inputs, client, sources)) => Ok(Active {
                 activation,
-                _port: input,
+                _ports: inputs,
                 _client: client,
-                source,
+                sources,
                 cancel: sink.cancel,
                 is_cancelled: sink.is_cancelled,
                 notes: sink.notes,
             }),
             Err(error) => {
-                // publish moved into the callback; cancel the remaining owners.
+                // publish/note may have moved into the aggregator; cancel remaining owners.
                 sink.notes.cancel();
                 (sink.cancel)();
                 Err(error)
@@ -667,7 +1014,28 @@ mod native {
                     sink,
                 })) => {
                     active.take();
-                    let result = match connect(activation, port, channel, sink) {
+                    let result = match connect_ports(
+                        activation,
+                        vec![port],
+                        ChannelFilter::Single(channel),
+                        sink,
+                    ) {
+                        Ok(connection) => {
+                            active = Some(connection);
+                            Ok(true)
+                        }
+                        Err(error) => Err(error),
+                    };
+                    outbox.send(&events, Event::Connection { activation, result });
+                }
+                Ok(Request::Command(Command::ConnectPorts {
+                    activation,
+                    ports,
+                    channel_filter,
+                    sink,
+                })) => {
+                    active.take();
+                    let result = match connect_ports(activation, ports, channel_filter, sink) {
                         Ok(connection) => {
                             active = Some(connection);
                             Ok(true)
@@ -696,11 +1064,12 @@ mod native {
             }
             if let Some(connection) = &active {
                 // Check endpoint identity/presence, never infer loss from silence.
-                let present = connection
-                    .source
-                    .unique_id()
-                    .and_then(source_by_id)
-                    .is_some_and(|source| source == connection.source);
+                let present = connection.sources.iter().all(|connected| {
+                    connected
+                        .unique_id()
+                        .and_then(source_by_id)
+                        .is_some_and(|source| source == *connected)
+                });
                 if !present || connection.notes.is_cancelled() || (connection.is_cancelled)() {
                     let activation = connection.activation;
                     active.take();
@@ -755,9 +1124,14 @@ mod native {
             outbox.flush(&events);
             match requests.recv_timeout(outbox.wait()) {
                 Ok(Request::Shutdown) => break,
-                Ok(Request::Command(Command::Connect {
-                    activation, sink, ..
-                })) => {
+                Ok(Request::Command(
+                    Command::Connect {
+                        activation, sink, ..
+                    }
+                    | Command::ConnectPorts {
+                        activation, sink, ..
+                    },
+                )) => {
                     sink.cancel();
                     outbox.send(
                         &events,
@@ -1264,5 +1638,235 @@ mod tests {
         drop(worker);
         let elapsed = started.elapsed();
         assert!(elapsed < Duration::from_millis(50), "{elapsed:?}");
+    }
+
+    #[test]
+    fn omni_channel_mode_delivers_all_sixteen_channels_with_wire_channel_preserved() {
+        let mut decoder = Decoder::default();
+        let held = HeldNoteInput::default();
+        let notes = std::cell::RefCell::new(Vec::new());
+        let controllers = std::cell::RefCell::new(Vec::new());
+        // Notes, poly pressure, sustain, expression, and general CCs across channels 0, 5, and 15.
+        let final_ctrl = deliver_packets_with_notes_filtered(
+            &mut decoder,
+            ChannelFilter::Omni,
+            Controllers::default(),
+            [&[
+                0x90, 60, 100, // ch 0 note on C4
+                0x95, 60, 88, // ch 5 same pitch C4 (must stay held when ch 0 releases)
+                0x9f, 67, 120, // ch 15 note on G4
+                0xa5, 60, 77, // ch 5 poly pressure
+                0xb0, 64, 127, // ch 0 sustain down
+                0xb5, 11, 90, // ch 5 expression
+                0xbf, 74, 63, // ch 15 cutoff CC74
+                0x80, 60, 10, // ch 0 note off C4 (ch 5 still holds C4)
+            ][..]],
+            &held,
+            &|ctrl| controllers.borrow_mut().push(ctrl),
+            &|event| notes.borrow_mut().push(event),
+        );
+        assert_eq!(final_ctrl.sustain, 127);
+        assert_eq!(final_ctrl.expression, 90);
+        assert_eq!(
+            final_ctrl.last_cc,
+            Some(ControlChange {
+                channel: 15,
+                cc: 74,
+                value: 63,
+            })
+        );
+        assert_eq!(
+            *notes.borrow(),
+            vec![
+                NoteEvent::On {
+                    channel: 0,
+                    pitch: 60,
+                    velocity: 100
+                },
+                NoteEvent::On {
+                    channel: 5,
+                    pitch: 60,
+                    velocity: 88
+                },
+                NoteEvent::On {
+                    channel: 15,
+                    pitch: 67,
+                    velocity: 120
+                },
+                NoteEvent::PolyPressure {
+                    channel: 5,
+                    pitch: 60,
+                    value: 77
+                },
+                NoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 64,
+                    value: 127
+                },
+                NoteEvent::ControlChange {
+                    channel: 5,
+                    cc: 11,
+                    value: 90
+                },
+                NoteEvent::ControlChange {
+                    channel: 15,
+                    cc: 74,
+                    value: 63
+                },
+                NoteEvent::Off {
+                    channel: 0,
+                    pitch: 60,
+                    velocity: 10
+                },
+            ]
+        );
+        // Pitch 60 must remain held because channel 5 has not released it yet.
+        let HeldNotesRead::Snapshot(snapshot) = held.read() else {
+            panic!("expected snapshot");
+        };
+        let mut pitches: Vec<u8> = snapshot.after(0).map(|n| n.pitch).collect();
+        pitches.sort_unstable();
+        assert_eq!(pitches, vec![60, 67]);
+
+        // Releasing channel 5 drops pitch 60 while keeping channel 15's pitch 67.
+        deliver_packets_with_notes_filtered(
+            &mut decoder,
+            ChannelFilter::Omni,
+            final_ctrl,
+            [&[0x85, 60, 0][..]],
+            &held,
+            &|_| {},
+            &|_| {},
+        );
+        let HeldNotesRead::Snapshot(after_ch5_off) = held.read() else {
+            panic!("expected snapshot");
+        };
+        let remaining: Vec<u8> = after_ch5_off.after(0).map(|n| n.pitch).collect();
+        assert_eq!(remaining, vec![67]);
+    }
+
+    #[test]
+    fn multi_port_aggregator_isolates_running_status_merges_held_notes_and_enforces_bounds() {
+        let held = Arc::new(HeldNoteInput::default());
+        // Bound checks: 0 ports, > MAX_AGGREGATED_PORTS, invalid single channel are rejected.
+        assert!(
+            MultiPortAggregator::new(
+                0,
+                ChannelFilter::Omni,
+                MachTimebase::NANOSECONDS,
+                Arc::clone(&held),
+                Box::new(|_| {}),
+                Box::new(|_| {}),
+            )
+            .is_err()
+        );
+        assert!(
+            MultiPortAggregator::new(
+                MAX_AGGREGATED_PORTS + 1,
+                ChannelFilter::Omni,
+                MachTimebase::NANOSECONDS,
+                Arc::clone(&held),
+                Box::new(|_| {}),
+                Box::new(|_| {}),
+            )
+            .is_err()
+        );
+        assert!(
+            MultiPortAggregator::new(
+                2,
+                ChannelFilter::Single(16),
+                MachTimebase::NANOSECONDS,
+                Arc::clone(&held),
+                Box::new(|_| {}),
+                Box::new(|_| {}),
+            )
+            .is_err()
+        );
+
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let delivered_sink = Arc::clone(&delivered);
+        let agg = MultiPortAggregator::new(
+            2,
+            ChannelFilter::Omni,
+            MachTimebase::NANOSECONDS,
+            Arc::clone(&held),
+            Box::new(|_| {}),
+            Box::new(move |ev| {
+                delivered_sink.lock().unwrap().push(ev);
+            }),
+        )
+        .unwrap();
+
+        // Port 0 establishes running status 0x90 (ch 0 NoteOn) and presses pitch 60 at t=100.
+        agg.deliver_timed_packets(
+            0,
+            [TimedPacket {
+                timestamp_ticks: 100,
+                data: &[0x90, 60, 100],
+            }],
+        );
+        // Port 1 establishes its own independent running status 0x92 (ch 2 NoteOn) at t=90 (clamped monotonic to 100!)
+        // and presses the same pitch 60 + pitch 64.
+        agg.deliver_timed_packets(
+            1,
+            [TimedPacket {
+                timestamp_ticks: 90,
+                data: &[0x92, 60, 95, 64, 80],
+            }],
+        );
+        // Port 0 uses its preserved running status 0x90 (without status byte!) to send note-off (vel 0) for pitch 60.
+        agg.deliver_timed_packets(
+            0,
+            [TimedPacket {
+                timestamp_ticks: 200,
+                data: &[60, 0],
+            }],
+        );
+
+        let events = delivered.lock().unwrap();
+        assert_eq!(
+            *events,
+            vec![
+                TimestampedNoteEvent {
+                    timestamp_ns: 100,
+                    event: NoteEvent::On {
+                        channel: 0,
+                        pitch: 60,
+                        velocity: 100
+                    }
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 100, // clamped monotonic against port 0's t=100
+                    event: NoteEvent::On {
+                        channel: 2,
+                        pitch: 60,
+                        velocity: 95
+                    }
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 100,
+                    event: NoteEvent::On {
+                        channel: 2,
+                        pitch: 64,
+                        velocity: 80
+                    }
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 200,
+                    event: NoteEvent::Off {
+                        channel: 0,
+                        pitch: 60,
+                        velocity: 0
+                    }
+                },
+            ]
+        );
+        // Pitch 60 must remain held in the merged snapshot because port 1 still holds it!
+        let HeldNotesRead::Snapshot(merged) = held.read() else {
+            panic!("expected merged snapshot");
+        };
+        let mut pitches: Vec<u8> = merged.after(0).map(|n| n.pitch).collect();
+        pitches.sort_unstable();
+        assert_eq!(pitches, vec![60, 64]);
     }
 }

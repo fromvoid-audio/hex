@@ -356,6 +356,7 @@ fn latency_corrected_take_clips_preroll_and_finishes_at_the_audible_end() {
         MidiCaptureClock {
             content_frame: 100,
             performance_frame: 1_000,
+            loop_pass: 0,
         },
         3,
     )
@@ -397,6 +398,7 @@ fn latency_corrected_take_clips_preroll_and_finishes_at_the_audible_end() {
         .finish(MidiCaptureClock {
             content_frame: 113,
             performance_frame: 1_013,
+            loop_pass: 0,
         })
         .unwrap();
     assert_eq!(end, 110);
@@ -422,6 +424,7 @@ fn delivered_short_notes_chords_and_stop_pair_by_occurrence_and_keep_take_until_
         MidiCaptureClock {
             content_frame: 8_500,
             performance_frame: 100,
+            loop_pass: 0,
         },
     )
     .unwrap();
@@ -468,6 +471,7 @@ fn delivered_short_notes_chords_and_stop_pair_by_occurrence_and_keep_take_until_
     take.finish(MidiCaptureClock {
         content_frame: 8_512,
         performance_frame: 112,
+        loop_pass: 0,
     })
     .unwrap();
     assert!(take.complete());
@@ -521,6 +525,7 @@ fn seven_frame_corrected_note_commits_at_the_heard_arrangement_beat() {
         MidiCaptureClock {
             content_frame: 8_507,
             performance_frame: 100,
+            loop_pass: 0,
         },
         7,
     )
@@ -542,6 +547,7 @@ fn seven_frame_corrected_note_commits_at_the_heard_arrangement_beat() {
         .finish(MidiCaptureClock {
             content_frame: 8_512,
             performance_frame: 105,
+            loop_pass: 0,
         })
         .unwrap();
     let Command::AddMidiNotes { notes, .. } = finish_take(&project, &binding, take.notes(), end)
@@ -564,6 +570,7 @@ fn interrupted_or_noncontiguous_delivery_cannot_become_a_complete_take() {
         MidiCaptureClock {
             content_frame: 8_500,
             performance_frame: 100,
+            loop_pass: 0,
         },
     )
     .unwrap();
@@ -580,7 +587,8 @@ fn interrupted_or_noncontiguous_delivery_cannot_become_a_complete_take() {
     assert!(
         take.finish(MidiCaptureClock {
             content_frame: 8_512,
-            performance_frame: 112
+            performance_frame: 112,
+            loop_pass: 0,
         })
         .is_err()
     );
@@ -695,4 +703,273 @@ fn input_quantization_across_faster_tempo_keeps_one_rendered_frame() {
         "quantized take must remain renderable: {:?}",
         prepared.err()
     );
+}
+
+#[test]
+fn loop_enabled_midi_recording_wraps_across_passes_with_undo_redo_and_save_reopen() {
+    use hex_engine::midi_capture::*;
+    let (project, track, clip) = fixture();
+    let mut editor = Editor::new(project, 8).unwrap();
+    // Clip spans beats 2..4 = frames 8_000..16_000 at 120 bpm, 8 kHz.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 8_000,
+            end: 16_000,
+            enabled: true,
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let binding = MidiTakeBinding::capture(editor.project(), track, clip).unwrap();
+    assert_eq!(binding.loop_region(), Some((8_000, 16_000)));
+    let origin = MidiCaptureClock {
+        content_frame: 8_000,
+        performance_frame: 1_000,
+        loop_pass: 0,
+    };
+    let mut take = MidiTake::new_with_latency_and_loop(
+        binding.first_frame(),
+        binding.end_frame(),
+        origin,
+        0,
+        binding.loop_region(),
+    )
+    .unwrap();
+    let source = capture_source();
+    // Pass 0: note A at 14_000..15_000, note B starts at 15_000 and is held across loop wrap.
+    take.push(
+        AcceptedMidiNote {
+            source,
+            occurrence_id: 1,
+            performance_frame: 7_000,
+            event: MidiCaptureEvent::On {
+                pitch: 60,
+                velocity: 100,
+            },
+        },
+        14_000,
+    )
+    .unwrap();
+    take.push(
+        AcceptedMidiNote {
+            source,
+            occurrence_id: 1,
+            performance_frame: 8_000,
+            event: MidiCaptureEvent::Off,
+        },
+        15_000,
+    )
+    .unwrap();
+    take.push(
+        AcceptedMidiNote {
+            source,
+            occurrence_id: 2,
+            performance_frame: 8_000,
+            event: MidiCaptureEvent::On {
+                pitch: 64,
+                velocity: 90,
+            },
+        },
+        15_000,
+    )
+    .unwrap();
+    // Pass 1 (after wrapping at 16_000 -> 8_000 at perf 9_000): release note B at 8_500 (perf 9_500),
+    // and overdub note C at 9_000..10_000 (perf 10_000..11_000).
+    take.push(
+        AcceptedMidiNote {
+            source,
+            occurrence_id: 2,
+            performance_frame: 9_500,
+            event: MidiCaptureEvent::Off,
+        },
+        8_500,
+    )
+    .unwrap();
+    take.push(
+        AcceptedMidiNote {
+            source,
+            occurrence_id: 3,
+            performance_frame: 10_000,
+            event: MidiCaptureEvent::On {
+                pitch: 67,
+                velocity: 88,
+            },
+        },
+        9_000,
+    )
+    .unwrap();
+    take.push(
+        AcceptedMidiNote {
+            source,
+            occurrence_id: 3,
+            performance_frame: 11_000,
+            event: MidiCaptureEvent::Off,
+        },
+        10_000,
+    )
+    .unwrap();
+    // Finish at pass 1, content_frame 11_000 (elapsed 11_000 -> 8000+11000=19000 -> wrap 16000 -> 11000, pass 1).
+    let stop_frame = take
+        .finish(MidiCaptureClock {
+            content_frame: 11_000,
+            performance_frame: 12_000,
+            loop_pass: 1,
+        })
+        .unwrap();
+    assert_eq!(stop_frame, 16_000);
+    assert_eq!(
+        take.notes(),
+        &[
+            RecordedMidiNote {
+                start_frame: 9_000,
+                end_frame: 10_000,
+                pitch: 67,
+                channel: 0,
+                velocity: 88,
+            },
+            RecordedMidiNote {
+                start_frame: 14_000,
+                end_frame: 15_000,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            },
+            RecordedMidiNote {
+                start_frame: 15_000,
+                end_frame: 16_000,
+                pitch: 64,
+                channel: 0,
+                velocity: 90,
+            },
+        ]
+    );
+    // Changing the Arrangement loop region mid-take refuses without mutating the project.
+    let mut mutated = Editor::new(editor.project().clone(), 8).unwrap();
+    mutated
+        .execute(Command::SetLoopRegion {
+            start: 8_000,
+            end: 16_000,
+            enabled: false,
+        })
+        .unwrap();
+    assert!(finish_take(mutated.project(), &binding, take.notes(), stop_frame).is_err());
+
+    let command = finish_take(editor.project(), &binding, take.notes(), stop_frame)
+        .unwrap()
+        .unwrap();
+    editor.execute(command).unwrap();
+    let notes = editor.project().midi_clip(clip).unwrap().notes();
+    assert_eq!(notes.len(), 3);
+    assert_eq!(
+        notes.iter().map(|n| n.pitch()).collect::<Vec<_>>(),
+        vec![67, 60, 64]
+    );
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
+    assert!(editor.undo());
+    let mut restored = before;
+    restored.next_id = after.next_id;
+    assert_eq!(editor.project().snapshot(), restored);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn capture_track_auto_creates_clip_when_empty_and_supports_undo_redo_and_save_reopen() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "auto".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let binding = MidiTakeBinding::capture_track(
+        editor.project(),
+        track,
+        8_000,
+        hex_project::ResolvedInputGrid::off(),
+    )
+    .unwrap();
+    assert!(binding.clip().is_none());
+    assert!(binding.is_open_ended());
+    assert_eq!(binding.first_frame(), 8_000);
+    // Empty take creates no clip and no history edit.
+    assert!(
+        finish_take(editor.project(), &binding, &[], 12_000)
+            .unwrap()
+            .is_none()
+    );
+    let captured = [note(9_000, 10_000, 60), note(11_000, 12_000, 64)];
+    let command = finish_take(editor.project(), &binding, &captured, 12_000)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(command, Command::PlaceMidiClipWithNotes { .. }));
+    let Created::Clip(new_clip) = editor.execute(command).unwrap() else {
+        panic!("auto-created clip")
+    };
+    let clip = editor.project().midi_clip(new_clip).unwrap();
+    assert_eq!(clip.start(), beat(2));
+    assert_eq!(clip.length(), beat(1));
+    assert_eq!(clip.notes().len(), 2);
+    assert_eq!(clip.notes()[0].start(), BeatTime::from_ratio(1, 4).unwrap());
+    assert_eq!(clip.notes()[1].start(), BeatTime::from_ratio(3, 4).unwrap());
+
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
+    assert!(editor.undo());
+    let mut restored = before;
+    restored.next_id = after.next_id;
+    assert_eq!(editor.project().snapshot(), restored);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn capture_track_extends_existing_clip_past_end_as_one_atomic_persisted_edit() {
+    let (project, track, clip) = fixture();
+    let mut editor = Editor::new(project, 8).unwrap();
+    let before = editor.project().snapshot();
+    // Clip spans beats 2..4 (frames 8_000..16_000). Start recording inside it at frame 12_000
+    // and keep playing past frame 16_000 to frame 20_000 (beat 5 -> new clip length 3 beats).
+    let binding = MidiTakeBinding::capture_track(
+        editor.project(),
+        track,
+        12_000,
+        hex_project::ResolvedInputGrid::off(),
+    )
+    .unwrap();
+    assert_eq!(binding.clip(), Some(clip));
+    assert!(binding.is_open_ended());
+    let captured = [note(12_000, 14_000, 60), note(16_000, 19_000, 67)];
+    let command = finish_take(editor.project(), &binding, &captured, 20_000)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(command, Command::ExtendMidiClipWithNotes { .. }));
+    editor.execute(command).unwrap();
+    let extended = editor.project().midi_clip(clip).unwrap();
+    assert_eq!(extended.start(), beat(2));
+    assert_eq!(extended.length(), beat(3));
+    assert_eq!(extended.notes().len(), 2);
+    assert_eq!(extended.notes()[1].pitch(), 67);
+    assert_eq!(extended.notes()[1].start(), beat(3));
+
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
+    assert!(editor.undo());
+    let mut restored = before;
+    restored.next_id = after.next_id;
+    assert_eq!(editor.project().snapshot(), restored);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
 }

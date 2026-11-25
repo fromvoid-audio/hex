@@ -700,6 +700,89 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 true,
             )
         }
+        Command::PlaceMidiClipWithNotes {
+            track,
+            start,
+            length,
+            notes,
+        } => {
+            if notes.is_empty() {
+                return Err(Invalid("recorded midi clip requires at least one note"));
+            }
+            validate_clip(start, length)?;
+            project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?;
+            let incoming = MidiClip {
+                content_view: None,
+                active: true,
+                playback_offset: crate::BeatTime::ZERO,
+                name: "clip".into(),
+                flavor: crate::ClipFlavor::default(),
+                id: ClipId(0),
+                start,
+                length,
+                volume: crate::MidiClipVolume::default(),
+                source: Arc::new(MidiSource::defaults(length)),
+            };
+            let Created::Clip(clip_id) = crate::clip_group::place_one(
+                project,
+                track,
+                crate::ClipGroupContent::Midi(incoming),
+                true,
+            )?
+            else {
+                return Err(Invalid("midi clip placement returned no clip"));
+            };
+            crate::midi_batch::edit(project, clip_id, Vec::new(), notes)?;
+            Ok(Created::Clip(clip_id))
+        }
+        Command::ExtendMidiClipWithNotes {
+            clip,
+            length,
+            notes,
+        } => {
+            if notes.is_empty() {
+                return Err(Invalid("midi note edit batch must not be empty"));
+            }
+            let original = project
+                .midi_clip(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            if original.content_view().is_some() || original.looping() || !original.active() {
+                return Err(Invalid(
+                    "extending midi recording requires an active forward non-looping clip",
+                ));
+            }
+            validate_clip(original.start, length)?;
+            if length < original.length {
+                return Err(Invalid("extending midi clip cannot shrink its length"));
+            }
+            let original_length = original.length;
+            let original_source_length = original.source().source_length();
+            let needed_source = original
+                .source_start()
+                .raw()
+                .checked_add(original.playback_offset().raw())
+                .and_then(|start| start.checked_add(length.raw()))
+                .map(BeatTime::from_raw)
+                .ok_or(Invalid("midi clip source extent overflow"))?;
+            if needed_source > original_source_length {
+                let source = project.midi_source_mut(clip)?;
+                source.source_length = needed_source;
+                if source.loop_end < needed_source {
+                    source.loop_end = needed_source;
+                }
+            }
+            if length > original_length {
+                let mut target = project
+                    .midi_clip(clip)
+                    .ok_or(Invalid("midi clip no longer exists"))?
+                    .clone();
+                target.length = length;
+                crate::clip_group::replace_midi(project, target)?;
+            }
+            crate::midi_batch::edit(project, clip, Vec::new(), notes)
+        }
         Command::StretchMidiClipEdge { clip, edge, beat } => {
             crate::midi_stretch::apply(project, clip, edge, beat)
         }

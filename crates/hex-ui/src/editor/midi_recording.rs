@@ -203,8 +203,8 @@ impl EditorView {
             );
             return;
         }
-        let Some((track, clip)) = self.selected_track.zip(self.selected_clip) else {
-            self.error = Some("select an arrangement midi clip before recording".into());
+        let Some(track) = self.selected_track else {
+            self.error = Some("select an arrangement midi track or clip before recording".into());
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -217,17 +217,34 @@ impl EditorView {
                 return;
             }
         };
-        let binding = match MidiTakeBinding::capture_with_grid(&state.project, track, clip, grid) {
+        let Some((playing, position)) = self
+            .audio_status()
+            .map(|s| (s.playing.load(Acquire), s.position.load(Acquire)))
+        else {
+            self.error = Some("start playback before recording midi".into());
+            return;
+        };
+        if !playing {
+            self.error = Some("start playback before recording midi".into());
+            return;
+        }
+        let binding = if let Some(clip) = self.selected_clip {
+            MidiTakeBinding::capture_with_grid(&state.project, track, clip, grid)
+        } else {
+            MidiTakeBinding::capture_track(&state.project, track, position, grid)
+        };
+        let binding = match binding {
             Ok(binding) => Arc::new(binding),
             Err(reason) => {
                 self.error = Some(reason.into());
                 return;
             }
         };
-        if !self.audio_status().is_some_and(|s| {
-            s.playing.load(Acquire)
-                && (binding.first_frame()..binding.end_frame()).contains(&s.position.load(Acquire))
-        }) {
+        let position_valid = match binding.loop_region() {
+            Some((_, loop_end)) => position < loop_end,
+            None => (binding.first_frame()..binding.end_frame()).contains(&position),
+        };
+        if !position_valid {
             self.error =
                 Some("start playback inside the selected midi clip before recording".into());
             return;
@@ -376,6 +393,7 @@ impl EditorView {
                 hardware,
                 first_frame: binding.first_frame(),
                 end_frame: binding.end_frame(),
+                loop_region: binding.loop_region(),
             },
             project_generation: self.midi_editor.recorder.generation,
             canonical_revision: self.midi_editor.recorder.revision,
@@ -477,11 +495,12 @@ impl EditorView {
                     clock,
                     latency_frames,
                 } => {
-                    match MidiTake::new_with_latency(
+                    match MidiTake::new_with_latency_and_loop(
                         target.capture.first_frame,
                         target.capture.end_frame,
                         clock,
                         latency_frames,
+                        target.capture.loop_region,
                     ) {
                         Ok(take) => {
                             self.midi_editor.recorder.take = Some(take);

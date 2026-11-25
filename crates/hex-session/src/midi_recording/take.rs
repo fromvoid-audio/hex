@@ -3,12 +3,14 @@
 use super::{MAX_MIDI_TAKE_NOTES, RecordedMidiNote};
 use hex_engine::midi_capture::{
     AcceptedMidiNote, MidiCaptureClock, MidiCaptureEvent, MidiCaptureSource,
+    advance_midi_capture_clock, compensate_midi_capture_frame,
 };
 
 const MAX_HELD: usize = 320;
 struct Held {
     source: MidiCaptureSource,
     occurrence: u64,
+    start_pass: u64,
     note: RecordedMidiNote,
 }
 /// Mutable assembly on control only. An error leaves the captured prefix owned
@@ -16,9 +18,11 @@ struct Held {
 pub struct MidiTake {
     first: u64,
     end: u64,
+    loop_region: Option<(u64, u64)>,
     origin: MidiCaptureClock,
     latency_frames: u64,
-    previous: Option<(u64, u64)>,
+    previous: Option<(u64, u64, u64)>,
+    wrapped: bool,
     held: Vec<Held>,
     notes: Vec<RecordedMidiNote>,
     onsets: usize,
@@ -27,7 +31,7 @@ pub struct MidiTake {
 }
 impl MidiTake {
     pub fn new(first: u64, end: u64, origin: MidiCaptureClock) -> Result<Self, &'static str> {
-        Self::new_with_latency(first, end, origin, 0)
+        Self::new_with_latency_and_loop(first, end, origin, 0, None)
     }
     /// Bind raw delivered clocks to the graph latency reported at Arm.
     pub fn new_with_latency(
@@ -36,7 +40,25 @@ impl MidiTake {
         origin: MidiCaptureClock,
         latency_frames: u32,
     ) -> Result<Self, &'static str> {
-        if first >= end || origin.content_frame < first || origin.content_frame >= end {
+        Self::new_with_latency_and_loop(first, end, origin, latency_frames, None)
+    }
+    /// Bind raw delivered clocks to the graph latency and optional enabled
+    /// Arrangement loop interval `(loop_start_frame, loop_end_frame)` reported at Arm.
+    pub fn new_with_latency_and_loop(
+        first: u64,
+        end: u64,
+        origin: MidiCaptureClock,
+        latency_frames: u32,
+        loop_region: Option<(u64, u64)>,
+    ) -> Result<Self, &'static str> {
+        if first >= end {
+            return Err("midi take starts outside its clip");
+        }
+        if let Some((loop_start, loop_end)) = loop_region {
+            if loop_start >= loop_end || origin.content_frame >= loop_end {
+                return Err("midi take starts outside its loop region");
+            }
+        } else if origin.content_frame < first || origin.content_frame >= end {
             return Err("midi take starts outside its clip");
         }
         end.checked_add(u64::from(latency_frames))
@@ -51,9 +73,11 @@ impl MidiTake {
         Ok(Self {
             first,
             end,
+            loop_region,
             origin,
             latency_frames: u64::from(latency_frames),
             previous: None,
+            wrapped: false,
             held,
             notes,
             onsets: 0,
@@ -80,19 +104,34 @@ impl MidiTake {
             .performance_frame
             .checked_sub(self.origin.performance_frame)
             .ok_or("midi take performance clock moved backwards")?;
-        let expected = self
-            .origin
-            .content_frame
-            .checked_add(elapsed)
-            .map(|raw| raw.saturating_sub(self.latency_frames).max(self.first));
-        if expected != Some(frame)
-            || frame < self.first
-            || frame >= self.end
-            || self.previous.is_some_and(|(content, performance)| {
-                frame < content || event.performance_frame < performance
-            })
+        let (raw_frame, raw_pass) = advance_midi_capture_clock(
+            self.origin.content_frame,
+            self.origin.loop_pass,
+            elapsed,
+            self.loop_region,
+        )
+        .ok_or("midi take delivery clock is invalid")?;
+        let (expected_frame, expected_pass) = compensate_midi_capture_frame(
+            raw_frame,
+            raw_pass,
+            self.latency_frames,
+            self.first,
+            self.loop_region,
+        )
+        .ok_or("midi take delivery clock is invalid")?;
+        if expected_frame != frame
+            || (self.loop_region.is_none() && (frame < self.first || frame >= self.end))
+            || self
+                .previous
+                .is_some_and(|(prev_pass, prev_frame, prev_perf)| {
+                    (expected_pass, frame) < (prev_pass, prev_frame)
+                        || event.performance_frame < prev_perf
+                })
         {
             return Err("midi take delivery clock is invalid");
+        }
+        if expected_pass > self.origin.loop_pass || raw_pass > self.origin.loop_pass {
+            self.wrapped = true;
         }
         let channel = match event.source {
             MidiCaptureSource::Computer {
@@ -110,6 +149,10 @@ impl MidiTake {
             .position(|held| held.source == event.source && held.occurrence == event.occurrence_id);
         match event.event {
             MidiCaptureEvent::On { pitch, velocity } => {
+                if frame < self.first || frame >= self.end {
+                    self.previous = Some((expected_pass, frame, event.performance_frame));
+                    return Ok(());
+                }
                 if pitch > 127 || !(1..=127).contains(&velocity) || held.is_some() {
                     return Err("midi take onset is invalid or repeated");
                 }
@@ -119,6 +162,7 @@ impl MidiTake {
                 self.held.push(Held {
                     source: event.source,
                     occurrence: event.occurrence_id,
+                    start_pass: expected_pass,
                     note: RecordedMidiNote {
                         start_frame: frame,
                         end_frame: frame,
@@ -133,20 +177,25 @@ impl MidiTake {
                 // Releases of voices already held before Arm are audible but are
                 // deliberately absent from this take's onset set.
                 if let Some(index) = held {
-                    if frame <= self.held[index].note.start_frame
-                        && (self.latency_frames == 0 || frame != self.first)
+                    let wrapped_hold = self
+                        .loop_region
+                        .filter(|_| expected_pass > self.held[index].start_pass)
+                        .map(|(_, loop_end)| loop_end.min(self.end));
+                    let close_frame = wrapped_hold.unwrap_or_else(|| frame.min(self.end));
+                    if close_frame <= self.held[index].note.start_frame
+                        && (self.latency_frames == 0 || close_frame != self.first)
                     {
                         return Err("midi take note has no positive duration");
                     }
                     let mut held = self.held.swap_remove(index);
-                    held.note.end_frame = frame;
+                    held.note.end_frame = close_frame;
                     if held.note.end_frame > held.note.start_frame {
                         self.notes.push(held.note);
                     }
                 }
             }
         }
-        self.previous = Some((frame, event.performance_frame));
+        self.previous = Some((expected_pass, frame, event.performance_frame));
         Ok(())
     }
     /// Close gates at the last confirmed delivered boundary. This never uses a
@@ -169,31 +218,69 @@ impl MidiTake {
             .performance_frame
             .checked_sub(self.origin.performance_frame)
             .ok_or("midi take end clock moved backwards")?;
-        let corrected_end = clock
-            .content_frame
-            .saturating_sub(self.latency_frames)
-            .clamp(self.first, self.end);
-        if self.origin.content_frame.checked_add(elapsed) != Some(clock.content_frame)
-            || clock.content_frame > self.end.saturating_add(self.latency_frames)
-            || self.previous.is_some_and(|(frame, performance)| {
-                corrected_end < frame
-                    || (corrected_end == frame && (self.latency_frames == 0 || frame != self.first))
-                    || clock.performance_frame <= performance
+        let Some((expected_raw, expected_raw_pass)) = advance_midi_capture_clock(
+            self.origin.content_frame,
+            self.origin.loop_pass,
+            elapsed,
+            self.loop_region,
+        ) else {
+            self.faulted = true;
+            return Err("midi take end is not a delivered boundary");
+        };
+        if expected_raw != clock.content_frame
+            || expected_raw_pass != clock.loop_pass
+            || (self.loop_region.is_none()
+                && clock.content_frame > self.end.saturating_add(self.latency_frames))
+        {
+            self.faulted = true;
+            return Err("midi take end is not a delivered boundary");
+        }
+        let Some((compensated_end, final_pass)) = compensate_midi_capture_frame(
+            clock.content_frame,
+            clock.loop_pass,
+            self.latency_frames,
+            self.first,
+            self.loop_region,
+        ) else {
+            self.faulted = true;
+            return Err("midi take end is not a delivered boundary");
+        };
+        let corrected_end = compensated_end.clamp(self.first, self.end);
+        if self
+            .previous
+            .is_some_and(|(prev_pass, prev_frame, prev_perf)| {
+                (final_pass, corrected_end) < (prev_pass, prev_frame)
+                    || ((final_pass, corrected_end) == (prev_pass, prev_frame)
+                        && (self.latency_frames == 0 || prev_frame != self.first))
+                    || clock.performance_frame <= prev_perf
             })
         {
             self.faulted = true;
             return Err("midi take end is not a delivered boundary");
         }
+        if final_pass > self.origin.loop_pass || clock.loop_pass > self.origin.loop_pass {
+            self.wrapped = true;
+        }
         for held in self.held.drain(..) {
             let mut note = held.note;
-            note.end_frame = corrected_end;
+            note.end_frame = self
+                .loop_region
+                .filter(|_| final_pass > held.start_pass)
+                .map_or(corrected_end, |(_, loop_end)| loop_end.min(self.end));
             if note.end_frame > note.start_frame {
                 self.notes.push(note);
             }
         }
         self.notes.sort_by_key(|note| note.start_frame);
-        self.finished = Some(corrected_end);
-        Ok(corrected_end)
+        let stop_frame = if self.wrapped {
+            self.loop_region.map_or(corrected_end, |(_, loop_end)| {
+                corrected_end.max(loop_end.min(self.end))
+            })
+        } else {
+            corrected_end
+        };
+        self.finished = Some(stop_frame);
+        Ok(stop_frame)
     }
     /// Borrow captured spans without consuming them; only a successful commit
     /// acknowledgment authorizes the editor to retire this take.
