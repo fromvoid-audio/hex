@@ -1128,14 +1128,16 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(magic, b"HXVB")
         self.assertEqual(struct.unpack("<14f", pcm[64:]), tuple(v * .375 for v in inputs))
 
-        # The same notice during a later state read cannot bypass graph custody.
+        # A mapping change during the state read refuses this capture operation.
         restored.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0,
                                            *BINDING, restored.sequence, restored.frames))
         self.assertEqual(restored.message()[0], b"HXVIQF03")
         restored.socket.sendall(struct.pack("<4sHHH6x7Q", b"HXVC", 1, 0, 0,
                                            *BINDING, restored.sequence, restored.frames, 1))
-        self.error(restored, 6)
-        self.assertEqual(restored.process.wait(timeout=10), 6)
+        magic, refusal = restored.message()
+        self.assertEqual(magic, b"HXVICR02")
+        self.assertEqual(struct.unpack("<H7QB", refusal), (1, *BINDING, 1, 7, 1, 2))
+        self.assertEqual(self.terminal(restored, 0, message=restored.stop())[5:7], (1, 7))
 
     def test_restore_parameter_echo_and_empty_restart_do_not_change_restored_pcm(self):
         for variant in (118, 119):
@@ -1461,8 +1463,17 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual(magic, b"HXVB")
                 self.terminal(session, 0, message=session.stop())
 
+    def test_nonfinite_plugin_output_is_silenced_in_the_accepted_pcm_block(self):
+        session = self.session(variant=4)
+        self.ready(session)
+        header, _, (magic, body) = session.render(1)
+        self.assertEqual((magic, body[:64]), (b"HXVB", header))
+        self.assertEqual(struct.unpack("<2f", body[64:]), (0., 0.))
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 1))
+        self.assertEqual(self.observation()[8:11], (1, 1, 1))
+
     def test_foreign_process_faults_have_one_attempt_and_no_replay_or_fake_pcm(self):
-        for variant in (4, 8, 10, 13):
+        for variant in (8, 10, 13):
             with self.subTest(variant=variant):
                 session = self.session(variant=variant)
                 self.ready(session)
