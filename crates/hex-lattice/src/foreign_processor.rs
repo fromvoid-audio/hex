@@ -645,6 +645,20 @@ pub struct ForeignProcessorNode<'a> {
     pub output_gain: f32,
 }
 
+/// The MIDI message carried by a foreign instrument note event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ForeignNoteKind {
+    On,
+    Off,
+    PolyPressure,
+}
+
+impl ForeignNoteKind {
+    pub fn gate(on: bool) -> Self {
+        if on { Self::On } else { Self::Off }
+    }
+}
+
 /// One MIDI 1.0 note event at an offset within the supplied render segment.
 /// The caller owns note scheduling and sends release events through the same
 /// endpoint as the matching note-on.
@@ -653,9 +667,10 @@ pub struct ForeignNote {
     pub frame: u16,
     pub channel: u8,
     pub pitch: u8,
-    pub velocity: u8,
-    pub on: bool,
-    /// Graph-assigned identity shared by this occurrence's on/off pair.
+    pub kind: ForeignNoteKind,
+    /// Seven-bit note velocity or polyphonic pressure.
+    pub value: u8,
+    /// Graph-assigned identity shared by the onset, its pressure and its release.
     pub note_id: Option<std::num::NonZeroU32>,
     /// True for live monitored hardware or computer-keyboard input; false for
     /// sequenced clip playback.
