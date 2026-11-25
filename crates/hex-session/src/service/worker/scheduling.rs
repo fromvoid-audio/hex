@@ -104,15 +104,20 @@ impl PendingExportEvents {
         self.queued.is_empty()
     }
 
-    pub(super) fn push_and_flush(&mut self, event: ExportEvent, sender: &SyncSender<ExportEvent>) {
+    pub(super) fn push_and_flush(
+        &mut self,
+        event: ExportEvent,
+        sender: &SyncSender<ExportEvent>,
+    ) -> bool {
         self.queued.push_back(event);
-        self.flush(sender);
+        self.flush(sender)
     }
 
-    pub(super) fn flush(&mut self, sender: &SyncSender<ExportEvent>) {
+    pub(super) fn flush(&mut self, sender: &SyncSender<ExportEvent>) -> bool {
+        let mut sent = false;
         while let Some(event) = self.queued.pop_front() {
             match sender.try_send(event) {
-                Ok(()) => {}
+                Ok(()) => sent = true,
                 Err(TrySendError::Full(event)) => {
                     self.queued.push_front(event);
                     break;
@@ -123,5 +128,6 @@ impl PendingExportEvents {
                 }
             }
         }
+        sent
     }
 }

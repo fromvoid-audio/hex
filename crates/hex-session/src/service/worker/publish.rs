@@ -1047,19 +1047,25 @@ impl WorkerLoop {
         if !self.deliver_outcome(outcome) {
             return false;
         }
+        let mut sent_export = false;
         if let Some(job) = export_job
             && let Err(event) = self.core.export_lane.submit(job)
         {
-            self.core
+            sent_export |= self
+                .core
                 .pending_export_events
                 .push_and_flush(event, &self.export_events);
         }
         if let Some(event) = export_completion {
-            self.core
+            sent_export |= self
+                .core
                 .pending_export_events
                 .push_and_flush(event, &self.export_events);
         }
-        self.core.pending_export_events.flush(&self.export_events);
+        sent_export |= self.core.pending_export_events.flush(&self.export_events);
+        if sent_export {
+            self.events.wake_ui();
+        }
         true
     }
 }

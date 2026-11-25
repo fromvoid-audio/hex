@@ -149,6 +149,7 @@ impl EditorView {
         self.check_device_gesture_admission()?;
         self.device_gesture
             .begin(self.project_generation, target, initial)?;
+        self.pump_device_gesture();
         Ok(())
     }
 
@@ -162,6 +163,7 @@ impl EditorView {
         self.check_device_gesture_admission()?;
         self.device_gesture
             .begin_pair(self.project_generation, device, first, second, initial)?;
+        self.pump_device_gesture();
         Ok(())
     }
 
@@ -171,8 +173,11 @@ impl EditorView {
         initial: DeviceParameterSnapshot,
     ) -> Result<GestureKey, &'static str> {
         self.check_device_gesture_admission()?;
-        self.device_gesture
-            .begin_snapshot(self.project_generation, device, initial)
+        let key = self
+            .device_gesture
+            .begin_snapshot(self.project_generation, device, initial)?;
+        self.pump_device_gesture();
+        Ok(key)
     }
 
     pub(super) fn begin_eq_creation_gesture(
@@ -181,8 +186,11 @@ impl EditorView {
         snapshot: EqNodeCreationSnapshot,
     ) -> Result<GestureKey, &'static str> {
         self.check_device_gesture_admission()?;
-        self.device_gesture
-            .begin_eq_creation(self.project_generation, device, snapshot)
+        let key =
+            self.device_gesture
+                .begin_eq_creation(self.project_generation, device, snapshot)?;
+        self.pump_device_gesture();
+        Ok(key)
     }
 
     pub(super) fn begin_track_gains_gesture(
@@ -192,36 +200,47 @@ impl EditorView {
         self.check_device_gesture_admission()?;
         self.device_gesture
             .begin_track_gains(self.project_generation, group)?;
+        self.pump_device_gesture();
         Ok(())
     }
 
     pub fn change_device_gesture(&mut self, value: ParameterValue) -> Result<(), &'static str> {
-        self.device_gesture.change(value).map(|_| ())
+        self.device_gesture.change(value)?;
+        self.pump_device_gesture();
+        Ok(())
     }
 
     pub(super) fn change_device_pair_gesture(
         &mut self,
         value: ParameterPairValue,
     ) -> Result<(), &'static str> {
-        self.device_gesture.change_pair(value).map(|_| ())
+        self.device_gesture.change_pair(value)?;
+        self.pump_device_gesture();
+        Ok(())
     }
 
     pub(super) fn finish_device_gesture(
         &mut self,
         value: ParameterValue,
     ) -> Result<(), &'static str> {
-        self.device_gesture.finish(value)
+        self.device_gesture.finish(value)?;
+        self.pump_device_gesture();
+        Ok(())
     }
 
     pub(super) fn finish_device_pair_gesture(
         &mut self,
         value: ParameterPairValue,
     ) -> Result<(), &'static str> {
-        self.device_gesture.finish_pair(value)
+        self.device_gesture.finish_pair(value)?;
+        self.pump_device_gesture();
+        Ok(())
     }
 
     pub fn cancel_device_gesture(&mut self) -> Result<(), &'static str> {
-        self.device_gesture.cancel()
+        self.device_gesture.cancel()?;
+        self.pump_device_gesture();
+        Ok(())
     }
 
     pub(super) fn device_gesture_pending(&self) -> bool {
@@ -378,6 +397,8 @@ impl EditorView {
                     .unwrap_or_else(|| "device parameter edit could not start".into())
                     .into(),
             );
+        } else {
+            self.pump_device_gesture();
         }
         true
     }
@@ -420,6 +441,7 @@ impl EditorView {
                 self.error = Some(error.into());
                 return false;
             }
+            self.pump_device_gesture();
         }
         if defer_request(
             &mut self.pending_requests,
@@ -1178,11 +1200,13 @@ mod admission_tests {
 
         // 1. Refusing a queued Request::InsertPluginEffect retires pending_plugin_effect cleanly.
         view.update(&mut visual, |view, cx| {
-            view.begin_device_gesture(
-                GestureTarget::TrackGain { track },
-                ParameterValue::Float(1.0),
-            )
-            .unwrap();
+            view.device_gesture
+                .begin(
+                    view.project_generation,
+                    GestureTarget::TrackGain { track },
+                    ParameterValue::Float(1.0),
+                )
+                .unwrap();
             let _ = view.device_gesture.next_request();
             view.device_gesture.mark_submitted();
             view.insert_plugin_effect(
@@ -1225,12 +1249,13 @@ mod admission_tests {
         view.update(&mut visual, |view, cx| {
             start_rev = view.state.as_ref().unwrap().revision;
             let generation = view.project_generation;
+            let pending_before = view.worker_requests_pending;
             view.begin_device_gesture(
                 GestureTarget::DeviceParameter { device, parameter },
                 initial,
             )
             .unwrap();
-            assert!(view.pump_device_gesture());
+            assert_eq!(view.worker_requests_pending, pending_before + 1);
             let begin_event = recv_event(&view.service);
             assert!(
                 begin_event.gesture_ack.as_ref().unwrap().accepted,

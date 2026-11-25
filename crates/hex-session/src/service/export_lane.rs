@@ -705,6 +705,7 @@ mod tests {
                     Arc::new(|_, _, _, _, _, _, _, _| unreachable!()),
                     finished_tx,
                     Arc::new(AtomicBool::new(false)),
+                    client::WakeHook::default(),
                     Arc::new(std::sync::Mutex::new(None)),
                 )
             });
@@ -749,6 +750,7 @@ mod tests {
                 }),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
+                client::WakeHook::default(),
                 hook,
             )
         });
@@ -840,6 +842,7 @@ mod tests {
                         Arc::new(move |_, _, _, _, _, _, _, _| Err(failure(case).into())),
                         finished_tx,
                         Arc::new(AtomicBool::new(false)),
+                        client::WakeHook::default(),
                         Arc::new(std::sync::Mutex::new(None)),
                     );
                 });
@@ -909,6 +912,7 @@ mod tests {
                     }),
                     finished_tx,
                     Arc::new(AtomicBool::new(false)),
+                    client::WakeHook::default(),
                     Arc::new(std::sync::Mutex::new(None)),
                 );
             });
@@ -993,6 +997,7 @@ mod tests {
                     Arc::new(|_, _, _, _, _, _, _, _| Err("export failed".into())),
                     finished_tx,
                     worker_shutdown,
+                    client::WakeHook::default(),
                     Arc::new(std::sync::Mutex::new(None)),
                 );
                 stopped.send(()).unwrap();
@@ -1027,6 +1032,7 @@ mod tests {
                 Arc::new(|_, _, _, _, _, _, _, _| Err("unexpected asset-free exporter".into())),
                 finished_tx,
                 Arc::new(AtomicBool::new(false)),
+                client::WakeHook::default(),
                 worker_hook,
             )
         });

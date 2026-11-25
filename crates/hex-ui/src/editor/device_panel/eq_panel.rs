@@ -1153,6 +1153,8 @@ fn creation_event(
                 .and_then(|snapshot| view.device_gesture.finish_eq_creation(snapshot));
             if let Err(error) = result {
                 view.device_panel.message = Some(error.into());
+            } else {
+                view.pump_device_gesture();
             }
         }
         creation.terminal = view.device_gesture.terminal();
@@ -1168,6 +1170,8 @@ fn creation_event(
                 .and_then(|snapshot| view.device_gesture.change_eq_creation(snapshot));
             if let Err(error) = result {
                 view.device_panel.message = Some(error.into());
+            } else {
+                view.pump_device_gesture();
             }
         }
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {

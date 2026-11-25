@@ -208,9 +208,15 @@ pub(super) fn event(
     let result = match event.phase {
         Phase::Cancel => view.cancel_device_gesture(),
         Phase::Commit => snapshot(&plan.bands, delta, plan.rate)
-            .and_then(|values| view.device_gesture.finish_snapshot(values)),
+            .and_then(|values| view.device_gesture.finish_snapshot(values))
+            .map(|()| {
+                view.pump_device_gesture();
+            }),
         Phase::Change => snapshot(&plan.bands, delta, plan.rate)
-            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ())),
+            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()))
+            .map(|()| {
+                view.pump_device_gesture();
+            }),
         _ => Ok(()),
     };
     if let Err(error) = result {
@@ -267,6 +273,8 @@ pub(super) fn disable(view: &mut EditorView, device: DeviceId, cx: &mut Context<
             let result = view.device_gesture.finish_snapshot(disabled);
             if result.is_err() {
                 let _ = view.cancel_device_gesture();
+            } else {
+                view.pump_device_gesture();
             }
             result
         });

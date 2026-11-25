@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) const REQUEST_CAPACITY: usize = 32;
 
-pub(super) const EVENT_CAPACITY: usize = 2;
+pub(super) const EVENT_CAPACITY: usize = 64;
 pub(super) const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]

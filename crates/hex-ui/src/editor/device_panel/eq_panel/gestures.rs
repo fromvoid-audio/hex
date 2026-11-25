@@ -289,9 +289,15 @@ pub(super) fn group_event(
     let result = match event.phase {
         ResponseGraphPhase::Cancel => view.cancel_device_gesture(),
         ResponseGraphPhase::Commit => group_snapshot(&plan.nodes, delta, rate)
-            .and_then(|values| view.device_gesture.finish_snapshot(values)),
+            .and_then(|values| view.device_gesture.finish_snapshot(values))
+            .map(|()| {
+                view.pump_device_gesture();
+            }),
         ResponseGraphPhase::Change => group_snapshot(&plan.nodes, delta, rate)
-            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ())),
+            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()))
+            .map(|()| {
+                view.pump_device_gesture();
+            }),
         _ => Ok(()),
     };
     if let Err(error) = result {

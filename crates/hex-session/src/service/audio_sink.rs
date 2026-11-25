@@ -1773,6 +1773,7 @@ pub(super) struct WorkerEvents {
     recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     events_closed: Arc<AtomicBool>,
+    wake_hook: super::client::WakeHook,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
     // Last delivered actor observation, not another editable gesture model.
@@ -1949,6 +1950,7 @@ impl WorkerEvents {
             recovery_timing: None,
             shutdown,
             events_closed: Arc::new(AtomicBool::new(false)),
+            wake_hook: super::client::WakeHook::default(),
             audio,
             last_context: None,
             last_verified_gain: None,
@@ -1963,6 +1965,16 @@ impl WorkerEvents {
     pub(super) fn with_events_closed(mut self, events_closed: Arc<AtomicBool>) -> Self {
         self.events_closed = events_closed;
         self
+    }
+    pub(super) fn with_wake_hook(mut self, wake_hook: super::client::WakeHook) -> Self {
+        self.wake_hook = wake_hook;
+        self
+    }
+    pub(super) fn wake_hook_clone(&self) -> super::client::WakeHook {
+        self.wake_hook.clone()
+    }
+    pub(super) fn wake_ui(&self) {
+        self.wake_hook.wake();
     }
     pub(super) fn initialize(&mut self) -> Result<u32, String> {
         let rate = self
@@ -2157,6 +2169,7 @@ impl WorkerEvents {
             );
             match self.sender.try_send(event, diagnostic) {
                 Ok(()) => {
+                    self.wake_hook.wake();
                     self.diagnostics.emit(
                         diagnostic,
                         super::diagnostics::DiagnosticStage::OutcomeQueued,
