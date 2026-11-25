@@ -202,6 +202,7 @@ constexpr int split_slice_65_outputs_variant=160;
 constexpr int midi_cc_mapping_restart_variant=161, midi_cc_mapping_and_value_restart_variant=162;
 constexpr int stale_step_count_two_lanes_variant=163;
 constexpr int double_only_effect_variant=164;
+constexpr int midi_effect_variant=165, auxiliary_event_effect_variant=166;
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -675,6 +676,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
         fault==authored_instrument_variant || fault==held_instrument_variant || fault==grouped_instrument_variant ||
         fault==stopped_bus_refusal_instrument;
+    const bool requires_event_input=midi_instrument || fault==midi_effect_variant;
     const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
     const bool double_only=next_mode>=3 || fault==double_only_effect_variant;
     const int mode=midi_instrument || next_mode==4?1:next_mode;
@@ -890,7 +892,7 @@ public:
     }
     int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
         if (!control() || !initialized) return 0;
-        if (media==kEvent) return midi_instrument && direction==kInput?1:0;
+        if (media==kEvent) return (requires_event_input || fault==auxiliary_event_effect_variant) && direction==kInput?1:0;
         if (media!=kAudio) return 0;
         if (fault==5) return 2;
         if (fault==106 && direction==kInput) return 2;
@@ -907,6 +909,7 @@ public:
             return kInvalidArgument;
         info={};info.mediaType=media;info.direction=direction;info.busType=kMain;
         info.channelCount=media==kEvent?4:(direction==kInput?inputs:outputs);
+        if (media==kEvent && fault==auxiliary_event_effect_variant) info.busType=kAux;
         if (auxiliary) {
             info.busType=(fault==multiple_aux_main_input_variant && index==2)?kMain:kAux;
             info.channelCount=(multiple_aux_inputs && (index==1 || (fault==multiple_aux_mismatch_variant && index==2)))?1:2;
@@ -999,7 +1002,7 @@ public:
         if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
         if (enabled && multiple_aux_inputs && inactive_aux_inputs!=6) return kResultFalse;
         if (enabled && multiple_outputs && inactive_outputs!=6) return kResultFalse;
-        if (enabled && midi_instrument && !event_active) return kResultFalse;
+        if (enabled && requires_event_input && !event_active) return kResultFalse;
         if (enabled && fault==111) {
             if (activated_once) restored_latency=7;
             activated_once=true;
@@ -1129,7 +1132,7 @@ public:
             return kResultOk;
         }
         if (!processing || data.numSamples<1 || data.numSamples>maximum ||
-            (midi_instrument?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
+            (requires_event_input?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
             data.numInputs!=((mode==1 && !silent_input) || (!input && data.numInputs==0)?0:1) ||
             data.numOutputs!=(!output && data.numOutputs==0?0:(multiple_outputs?3:1))) return kInvalidArgument;
         if (data.numInputs && (!data.inputs || data.inputs[0].numChannels!=inputs ||
@@ -1427,7 +1430,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>double_only_effect_variant) return false;next_fault=value;
+        if (value>auxiliary_event_effect_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
