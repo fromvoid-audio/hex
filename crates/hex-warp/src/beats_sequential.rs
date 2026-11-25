@@ -273,6 +273,7 @@ enum EnginePhase {
 /// Instance-bound snapshot of Beats sequential WSOLA, onset scanner, and overlap state.
 pub struct BeatsCheckpoint {
     owner: u64,
+    budget: usize,
     overlap: OverlapCheckpoint,
     history: DrainedHistory,
     scanner: Option<OnsetScannerCheckpoint>,
@@ -689,6 +690,7 @@ impl SequentialBeats {
         env_boundaries.extend_from_slice(&self.env_boundaries);
         let checkpoint = BeatsCheckpoint {
             owner: self.owner,
+            budget: effective,
             overlap,
             history,
             scanner,
@@ -714,28 +716,106 @@ impl SequentialBeats {
         checkpoint.owner == self.owner
     }
 
+    /// Refresh an existing checkpoint in place within its originally admitted
+    /// slot byte budget. Leaves `checkpoint` unchanged on error.
     pub fn refresh_checkpoint(&self, checkpoint: &mut BeatsCheckpoint) -> Result<(), Error> {
+        self.refresh_checkpoint_with_budget(checkpoint, checkpoint.budget)
+    }
+
+    /// Refresh an existing checkpoint in place within `budget` bytes (capped by
+    /// the renderer's remaining scratch allowance). Leaves `checkpoint`
+    /// completely unchanged if the budget is exceeded or allocation fails.
+    pub fn refresh_checkpoint_with_budget(
+        &self,
+        checkpoint: &mut BeatsCheckpoint,
+        budget: usize,
+    ) -> Result<(), Error> {
         if self.poisoned {
             return Err(Error::Invalid("beats renderer is poisoned"));
         }
         if !self.owns_checkpoint(checkpoint) {
             return Err(Error::Invalid("foreign beats checkpoint"));
         }
+        let available = MAX_SCRATCH_BYTES
+            .checked_sub(self.backing_bytes().ok_or(Error::ScratchLimit)?)
+            .and_then(|n| {
+                self.max_source_frames
+                    .checked_mul(std::mem::size_of::<[f64; 2]>())
+                    .and_then(|scratch| n.checked_sub(scratch))
+            })
+            .ok_or(Error::ScratchLimit)?;
+        let effective = budget.min(available);
+        let fixed_bytes = checkpoint
+            .overlap
+            .backing_bytes()
+            .and_then(|a| a.checked_add(checkpoint.history.backing_bytes()?))
+            .ok_or(Error::ScratchLimit)?;
+        let mut rem = effective
+            .checked_sub(fixed_bytes)
+            .ok_or(Error::ScratchLimit)?;
+        let scanner_onsets = match (&self.scanner, &checkpoint.scanner) {
+            (Some(sc), Some(cp)) => {
+                let (replacement, bytes) = sc.prepare_refresh_onsets(cp, rem)?;
+                rem = rem.checked_sub(bytes).ok_or(Error::ScratchLimit)?;
+                Some(replacement)
+            }
+            (None, None) => None,
+            _ => return Err(Error::Invalid("incompatible beats checkpoint")),
+        };
+        let (anchors_rep, anchors_bytes) = prepare_vec_within(
+            &self.physical_anchors,
+            checkpoint.physical_anchors.capacity(),
+            rem,
+        )?;
+        rem = rem.checked_sub(anchors_bytes).ok_or(Error::ScratchLimit)?;
+        let (chosen_rep, chosen_bytes) = prepare_vec_within(
+            &self.chosen_boundaries,
+            checkpoint.chosen_boundaries.capacity(),
+            rem,
+        )?;
+        rem = rem.checked_sub(chosen_bytes).ok_or(Error::ScratchLimit)?;
+        let (env_rep, env_bytes) = prepare_vec_within(
+            &self.env_boundaries,
+            checkpoint.env_boundaries.capacity(),
+            rem,
+        )?;
+        let _ = rem.checked_sub(env_bytes).ok_or(Error::ScratchLimit)?;
+
+        // All budgets and fallible reservations succeeded; validate fixed-shape
+        // copies before committing dynamic buffers and metadata.
         self.overlap.refresh_checkpoint(&mut checkpoint.overlap)?;
         self.history.refresh_checkpoint(&mut checkpoint.history)?;
-        match (&self.scanner, &mut checkpoint.scanner) {
-            (Some(sc), Some(cp)) => sc.refresh_checkpoint(cp)?,
-            (None, None) => {}
-            _ => return Err(Error::Invalid("incompatible beats checkpoint")),
+        if let (Some(sc), Some(cp), Some(onsets_rep)) =
+            (&self.scanner, &mut checkpoint.scanner, scanner_onsets)
+        {
+            sc.commit_refresh(cp, onsets_rep);
         }
-        copy_vec(&self.physical_anchors, &mut checkpoint.physical_anchors)?;
-        copy_vec(&self.chosen_boundaries, &mut checkpoint.chosen_boundaries)?;
-        copy_vec(&self.env_boundaries, &mut checkpoint.env_boundaries)?;
+        commit_vec_replacement(
+            &self.physical_anchors,
+            &mut checkpoint.physical_anchors,
+            anchors_rep,
+        );
+        commit_vec_replacement(
+            &self.chosen_boundaries,
+            &mut checkpoint.chosen_boundaries,
+            chosen_rep,
+        );
+        commit_vec_replacement(
+            &self.env_boundaries,
+            &mut checkpoint.env_boundaries,
+            env_rep,
+        );
+        checkpoint.budget = effective;
         checkpoint.physical_stream = self.physical_stream;
         checkpoint.chosen_stream = self.chosen_stream;
         checkpoint.phase = self.phase;
         checkpoint.ready_end = self.ready_end;
         checkpoint.pristine = self.pristine;
+        debug_assert!(
+            checkpoint
+                .backing_bytes()
+                .is_some_and(|bytes| bytes <= effective)
+        );
         Ok(())
     }
 
@@ -2495,10 +2575,51 @@ impl SequentialBeats {
     }
 }
 
-fn copy_vec<T: Copy>(src: &[T], dst: &mut Vec<T>) -> Result<(), Error> {
+pub(super) fn prepare_vec_within<T: Copy>(
+    src: &[T],
+    existing_capacity: usize,
+    remaining_bytes: usize,
+) -> Result<(Option<Vec<T>>, usize), Error> {
+    let elem = std::mem::size_of::<T>();
+    let existing_bytes = existing_capacity
+        .checked_mul(elem)
+        .ok_or(Error::ScratchLimit)?;
+    if existing_capacity >= src.len() && existing_bytes <= remaining_bytes {
+        return Ok((None, existing_bytes));
+    }
+    let min_bytes = src.len().checked_mul(elem).ok_or(Error::ScratchLimit)?;
+    if min_bytes > remaining_bytes {
+        return Err(Error::ScratchLimit);
+    }
+    let mut fresh = Vec::new();
+    fresh
+        .try_reserve_exact(src.len())
+        .map_err(|_| Error::Allocation)?;
+    let actual_bytes = fresh
+        .capacity()
+        .checked_mul(elem)
+        .ok_or(Error::ScratchLimit)?;
+    if actual_bytes > remaining_bytes {
+        return Err(Error::ScratchLimit);
+    }
+    fresh.extend_from_slice(src);
+    Ok((Some(fresh), actual_bytes))
+}
+
+fn commit_vec_replacement<T: Copy>(src: &[T], dst: &mut Vec<T>, replacement: Option<Vec<T>>) {
+    match replacement {
+        Some(fresh) => *dst = fresh,
+        None => {
+            dst.clear();
+            dst.extend_from_slice(src);
+        }
+    }
+}
+
+pub(super) fn copy_vec<T: Copy>(src: &[T], dst: &mut Vec<T>) -> Result<(), Error> {
     dst.clear();
     if dst.capacity() < src.len() {
-        dst.try_reserve(src.len() - dst.capacity())
+        dst.try_reserve_exact(src.len())
             .map_err(|_| Error::Allocation)?;
     }
     dst.extend_from_slice(src);

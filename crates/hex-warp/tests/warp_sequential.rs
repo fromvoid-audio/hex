@@ -694,3 +694,103 @@ fn beats_long_extent_exceeding_max_output_frames_streams_within_scratch_cap() {
     assert_eq!(cp.position(), 4096);
     assert!(cp.backing_bytes().unwrap() <= MAX_SCRATCH_BYTES);
 }
+
+#[test]
+fn beats_checkpoint_refresh_enforces_budget_and_reserves_after_dynamic_growth() {
+    let source_len = 8_192_u64;
+    let out_len = 12_288_u64;
+    let map = linear_map(out_len, source_len);
+    let mode = Mode::Beats {
+        division_frames: None,
+        tail: Tail::Forward,
+        decay: 55,
+    };
+    let beats = SequentialBeats::new(
+        SequentialBeatsConfig {
+            map: map.clone(),
+            sample_rate: 16_000,
+            mode,
+            pitch_cents: 0,
+            resampler: Resampler::V1,
+            region_length: source_len,
+            looping: false,
+            attacks: Vec::new(),
+        },
+        &mut || false,
+    )
+    .unwrap();
+    let mut src = TestSource::percussive(source_len as usize, true);
+    let expected = render_resident(&src, &map, out_len as usize, 0, mode, Resampler::V1, &[]);
+    let mut scratch = vec![[0.0; 2]; beats.max_source_frames()];
+
+    // Capture pristine checkpoint at exact minimum backing size (before any
+    // dynamic onset/anchor/boundary growth).
+    let base_bytes = beats
+        .checkpoint(MAX_SCRATCH_BYTES)
+        .unwrap()
+        .backing_bytes()
+        .unwrap();
+    let cp = beats.checkpoint(base_bytes).unwrap();
+    assert_eq!(cp.position(), 0);
+    assert_eq!(cp.backing_bytes().unwrap(), base_bytes);
+
+    // Advance across multiple percussive transients so onset/anchor/envelope
+    // vectors grow beyond the pristine slot budget.
+    let mut warp = SequentialWarp::from_beats(beats);
+    let head = render_warp_chunk(&mut warp, &mut src, &mut scratch, 3_072, 128);
+    assert_eq!(head, expected[..3_072]);
+
+    // Refreshing with the original tight budget must refuse with ScratchLimit
+    // without mutating or growing the existing checkpoint.
+    let grown_bytes = warp
+        .checkpoint(MAX_SCRATCH_BYTES)
+        .unwrap()
+        .backing_bytes()
+        .unwrap();
+    assert!(
+        grown_bytes > base_bytes,
+        "beats checkpoint must grow dynamically after scanning transients ({grown_bytes} <= {base_bytes})"
+    );
+    let mut wrapped = WarpCheckpoint::Beats(Box::new(cp));
+    assert_eq!(
+        warp.refresh_checkpoint(&mut wrapped),
+        Err(Error::ScratchLimit),
+        "refresh must enforce admitted slot budget"
+    );
+    assert_eq!(wrapped.position(), 0);
+    assert_eq!(wrapped.backing_bytes().unwrap(), base_bytes);
+
+    // Refreshing with an exact budget covering the grown vectors succeeds,
+    // stays within budget, and subsequent smaller growth (where src.len() <=
+    // 2 * old_cap) reserves accurately and restores bit-exact audio.
+    warp.refresh_checkpoint_with_budget(&mut wrapped, grown_bytes)
+        .unwrap();
+    assert_eq!(wrapped.position(), 3_072);
+    assert!(wrapped.backing_bytes().unwrap() <= grown_bytes);
+
+    let mid = render_warp_chunk(&mut warp, &mut src, &mut scratch, 2_048, 128);
+    assert_eq!(mid, expected[3_072..5_120]);
+    let mid_bytes = warp
+        .checkpoint(MAX_SCRATCH_BYTES)
+        .unwrap()
+        .backing_bytes()
+        .unwrap();
+    let refresh_budget = mid_bytes.max(wrapped.backing_bytes().unwrap());
+    warp.refresh_checkpoint_with_budget(&mut wrapped, refresh_budget)
+        .unwrap();
+    assert_eq!(wrapped.position(), 5_120);
+    assert!(wrapped.backing_bytes().unwrap() <= refresh_budget);
+
+    // Advance further, then restore refreshed checkpoint and check bit-exact tail.
+    let _ = render_warp_chunk(&mut warp, &mut src, &mut scratch, 1_024, 128);
+    warp.restore(&wrapped).unwrap();
+    assert_eq!(warp.position(), 5_120);
+    let tail = render_warp_chunk(
+        &mut warp,
+        &mut src,
+        &mut scratch,
+        out_len as usize - 5_120,
+        128,
+    );
+    assert_eq!(tail, expected[5_120..]);
+}
