@@ -18,11 +18,12 @@ inline constexpr size_t LEGACY_INPUT_NOTE_COUNT=64;
 // Matches the copied identified-note limit in hex-plugin-host. Keep room for
 // the corresponding release set on stopped worker renewal.
 inline constexpr size_t INPUT_NOTE_COUNT=160;
+enum class InputNoteKind : uint8 { Off, On, PolyPressure };
 struct InputNote {
     int32 offset=0;
     int16 channel=0,pitch=0;
-    uint8 velocity=0;
-    bool on=false;
+    uint8 value=0;
+    InputNoteKind kind=InputNoteKind::Off;
     int32 note_id=-1;
     bool is_live=false;
 };
@@ -37,11 +38,12 @@ public:
         if(length>notes.size()) return false;
         for(size_t index=0;index<length;++index) {
             const auto note=notes[index];
+            if(note.kind==InputNoteKind::PolyPressure) continue;
             const auto end=held.begin()+count;
             const auto match=std::find_if(held.begin(),end,[&](const InputNote& active) {
                 return active.note_id==note.note_id && active.channel==note.channel && active.pitch==note.pitch;
             });
-            if(note.on) {
+            if(note.kind==InputNoteKind::On) {
                 if(note.note_id>=0 && match!=end) continue;
                 if(count==held.size()) return false;
                 held[count++]=note;
@@ -55,7 +57,7 @@ public:
     size_t release_into(std::array<InputNote,INPUT_NOTE_COUNT>& notes) {
         for(size_t index=0;index<count;++index) {
             auto note=held[index];
-            note.offset=0;note.velocity=0;note.on=false;
+            note.offset=0;note.value=0;note.kind=InputNoteKind::Off;
             notes[index]=note;
         }
         const auto released=count;
@@ -111,13 +113,16 @@ public:
                     :context->projectTimeMusic;
             }
             // A byte-only MIDI message retains the SDK's absent note ID.
-            const auto velocity=note.velocity/127.0f;
-            if(note.on) {
+            const auto value=note.value/127.0f;
+            if(note.kind==InputNoteKind::On) {
                 event.type=Event::kNoteOnEvent;
-                event.noteOn={note.channel,note.pitch,0,velocity,0,note.note_id};
+                event.noteOn={note.channel,note.pitch,0,value,0,note.note_id};
+            } else if(note.kind==InputNoteKind::PolyPressure) {
+                event.type=Event::kPolyPressureEvent;
+                event.polyPressure={note.channel,note.pitch,value,note.note_id};
             } else {
                 event.type=Event::kNoteOffEvent;
-                event.noteOff={note.channel,note.pitch,velocity,note.note_id,0};
+                event.noteOff={note.channel,note.pitch,value,note.note_id,0};
             }
         }
         active=true;

@@ -698,6 +698,55 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
     assert!(config.validate_block(&nonfinite, 0).is_err());
 }
 
+#[test]
+fn instrument_key_pressure_keeps_note_metadata_on_the_wire() {
+    let effect = config();
+    let mut instrument = effect.clone();
+    instrument.input_channels = 0;
+    let mut block = Block {
+        binding: instrument.binding,
+        sequence: 0,
+        first_frame: 0,
+        frames: 8,
+        pcm: [[0.0; 2]; 256],
+        events: Events::default(),
+        parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: Default::default(),
+    };
+    let pressure = MidiEvent {
+        frame: 3,
+        bytes: [0xa2, 60, 64],
+        len: 3,
+        note_id: std::num::NonZeroU32::new(41),
+        is_live: true,
+    };
+    block.events.push(pressure).unwrap();
+    assert!(effect.validate_block(&block, 0).is_err());
+    instrument.validate_block(&block, 0).unwrap();
+    let mut wire = Vec::new();
+    crate::transport::wire::write(&mut wire, &block).unwrap();
+    let decoded = crate::transport::wire::read(&mut wire.as_slice())
+        .unwrap()
+        .unwrap();
+    assert_eq!(decoded.events.as_slice(), &[pressure]);
+
+    for invalid in [
+        MidiEvent {
+            bytes: [0xa2, 60, 128],
+            ..pressure
+        },
+        MidiEvent {
+            note_id: std::num::NonZeroU32::new(u32::MAX),
+            ..pressure
+        },
+    ] {
+        block.events = Events::default();
+        block.events.push(invalid).unwrap();
+        assert!(crate::transport::wire::write(&mut Vec::new(), &block).is_err());
+    }
+}
+
 fn known() -> Option<PresentationLatency> {
     Some(PresentationLatency {
         input_frames: 77,

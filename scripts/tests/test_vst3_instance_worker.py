@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from test_vst3_macos_bootstrap import BOOT
 
 STATE_ENVELOPE_BYTES = 16 * 1024 * 1024
@@ -515,6 +516,33 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
 
+    def test_instrument_poly_pressure_preserves_note_identity_and_sample_offset(self):
+        for identity, live in ((41, True), (0, False)):
+            with self.subTest(identity=identity):
+                trace = self.root / f"pressure-{identity}.bin"
+                with patch.dict(os.environ, {"HEX_ORIGINAL_EVENT_TRACE": str(trace)}):
+                    session = self.session(variant=115, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD05")
+                header = bytearray(session.packet(8))
+                struct.pack_into("<HHH", header, 4, 3, 8, 3)
+                events = b"".join(struct.pack("<HBBBBBBI", offset, 3, status, 60, value,
+                                              live, 0, identity)
+                                  for offset, status, value in ((0, 0x92, 127), (3, 0xa2, 64),
+                                                                (6, 0x82, 0)))
+                session.socket.sendall(header + bytes(64) + events)
+                magic, reply = session.message()
+                self.assertEqual(magic, b"HXVB")
+                pcm = struct.unpack("<16f", reply[64:])
+                for actual, expected in zip(pcm, [0.5] * 6 + [0.5 * 64 / 127] * 6 + [0.] * 4):
+                    self.assertAlmostEqual(actual, expected, places=6)
+                session.sequence += 1
+                session.frames += 8
+                self.terminal(session, 0, message=session.stop())
+                count, *rows = struct.unpack("=19q", trace.read_bytes())
+                self.assertEqual(count, 3)
+                # SDK event type, offset, pitch, noteId and kIsLive flag.
+                self.assertEqual(rows[6:11], [3, 3, 60, identity or -1, int(live)])
+
     def test_note_teardown_trace_distinguishes_held_from_released_identity(self):
         for release in (False, True):
             with self.subTest(release=release):
@@ -575,7 +603,7 @@ class NativeInstanceTests(unittest.TestCase):
             session.frames += 8
             return max(map(abs, struct.unpack("<16f", reply[64:])))
 
-        self.assertGreater(render(BINDING, [(0x92, 100, 41), (0x92, 100, 42), (0x82, 0, 41)]), 0)
+        self.assertGreater(render(BINDING, [(0x92, 100, 41), (0x92, 100, 42), (0x82, 0, 41), (0xa2, 64, 42)]), 0)
         session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 2, 0, 0,
                                            *BINDING, session.sequence, session.frames))
         magic, facts = session.message()

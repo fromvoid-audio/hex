@@ -75,8 +75,13 @@ struct EventTrace {
         const bool on=event.type==Event::kNoteOnEvent;
         entries[base].store(event.type,std::memory_order_relaxed);
         entries[base+1].store(event.sampleOffset,std::memory_order_relaxed);
-        entries[base+2].store(on?event.noteOn.pitch:event.noteOff.pitch,std::memory_order_relaxed);
-        entries[base+3].store(on?event.noteOn.noteId:event.noteOff.noteId,std::memory_order_relaxed);
+        if(event.type==Event::kPolyPressureEvent) {
+            entries[base+2].store(event.polyPressure.pitch,std::memory_order_relaxed);
+            entries[base+3].store(event.polyPressure.noteId,std::memory_order_relaxed);
+        } else {
+            entries[base+2].store(on?event.noteOn.pitch:event.noteOff.pitch,std::memory_order_relaxed);
+            entries[base+3].store(on?event.noteOn.noteId:event.noteOff.noteId,std::memory_order_relaxed);
+        }
         entries[base+4].store(event.flags,std::memory_order_relaxed);
         int64_t ppq_bits=0;
         std::memcpy(&ppq_bits,&event.ppqPosition,sizeof(ppq_bits));
@@ -1020,6 +1025,43 @@ public:
         if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
         return fault==122?kNotImplemented:kResultOk;
     }
+    bool apply_note_event(const Event& event) {
+        if(event.type==Event::kPolyPressureEvent) {
+            const auto& pressure=event.polyPressure;
+            if(pressure.channel!=(fault==127?0:2) || pressure.pitch!=60) return false;
+            if(pressure.noteId==-1) note_signal=pressure.pressure;
+            else {
+                const auto voice=std::find_if(named_voices.begin(),named_voices.end(),
+                    [&](const Voice& v) {return v.id==pressure.noteId;});
+                if(voice==named_voices.end()) return false;
+                voice->gain=pressure.pressure;
+            }
+            return true;
+        }
+        const bool on=event.type==Event::kNoteOnEvent;
+        if ((!on && event.type!=Event::kNoteOffEvent) ||
+            (on?event.noteOn.channel:event.noteOff.channel)!=(fault==127?0:2) ||
+            (on?event.noteOn.pitch:event.noteOff.pitch)!=60) return false;
+        const auto id=on?event.noteOn.noteId:event.noteOff.noteId;
+        if(id==-1) note_signal=on?event.noteOn.velocity:0;
+        else {
+            const auto existing=std::find_if(named_voices.begin(),named_voices.end(),
+                [id](const Voice& voice) {return voice.id==id;});
+            if(on) {
+                if(existing!=named_voices.end()) return false;
+                const auto free=std::find_if(named_voices.begin(),named_voices.end(),
+                    [](const Voice& voice) {return voice.id==-1;});
+                if(free==named_voices.end()) return false;
+                *free={id,event.noteOn.velocity};
+            } else {
+                if(existing==named_voices.end()) return false;
+                *existing={};
+            }
+        }
+        if(on) { ++observed.note_ons;observed.last_on=id; }
+        else { ++observed.note_offs;observed.last_off=id; }
+        return true;
+    }
     tresult PLUGIN_API process(ProcessData& data) override {
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=process_mode ||
             data.symbolicSampleSize!=precision) { ++observed.violations;return kResultFalse; }
@@ -1189,28 +1231,7 @@ public:
             while (next_event<event_count && event.sampleOffset==frame) {
                 if (event.busIndex!=0) return kResultFalse;
                 event_trace.record(event);
-                const bool on=event.type==Event::kNoteOnEvent;
-                if ((!on && event.type!=Event::kNoteOffEvent) ||
-                    (on?event.noteOn.channel:event.noteOff.channel)!=(fault==127?0:2) ||
-                    (on?event.noteOn.pitch:event.noteOff.pitch)!=60) return kResultFalse;
-                const auto id=on?event.noteOn.noteId:event.noteOff.noteId;
-                if(id==-1) note_signal=on?event.noteOn.velocity:0;
-                else {
-                    const auto existing=std::find_if(named_voices.begin(),named_voices.end(),
-                        [id](const Voice& voice) {return voice.id==id;});
-                    if(on) {
-                        if(existing!=named_voices.end()) return kResultFalse;
-                        const auto free=std::find_if(named_voices.begin(),named_voices.end(),
-                            [](const Voice& voice) {return voice.id==-1;});
-                        if(free==named_voices.end()) return kResultFalse;
-                        *free={id,event.noteOn.velocity};
-                    } else {
-                        if(existing==named_voices.end()) return kResultFalse;
-                        *existing={};
-                    }
-                }
-                if(on) { ++observed.note_ons;observed.last_on=id; }
-                else { ++observed.note_offs;observed.last_off=id; }
+                if(!apply_note_event(event)) return kResultFalse;
                 if (++next_event<event_count && data.inputEvents->getEvent(next_event,event)!=kResultOk)
                     return kResultFalse;
             }
