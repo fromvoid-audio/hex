@@ -699,7 +699,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
 }
 
 #[test]
-fn instrument_key_pressure_keeps_note_metadata_on_the_wire() {
+fn instrument_pressure_preserves_message_width_and_note_identity_on_the_wire() {
     let effect = config();
     let mut instrument = effect.clone();
     instrument.input_channels = 0;
@@ -721,7 +721,14 @@ fn instrument_key_pressure_keeps_note_metadata_on_the_wire() {
         note_id: std::num::NonZeroU32::new(41),
         is_live: true,
     };
+    let channel_pressure = MidiEvent {
+        bytes: [0xd2, 64, 0],
+        len: 2,
+        note_id: None,
+        ..pressure
+    };
     block.events.push(pressure).unwrap();
+    block.events.push(channel_pressure).unwrap();
     assert!(effect.validate_block(&block, 0).is_err());
     instrument.validate_block(&block, 0).unwrap();
     let mut wire = Vec::new();
@@ -729,9 +736,21 @@ fn instrument_key_pressure_keeps_note_metadata_on_the_wire() {
     let decoded = crate::transport::wire::read(&mut wire.as_slice())
         .unwrap()
         .unwrap();
-    assert_eq!(decoded.events.as_slice(), &[pressure]);
+    assert_eq!(decoded.events.as_slice(), &[pressure, channel_pressure]);
 
     for invalid in [
+        MidiEvent {
+            note_id: std::num::NonZeroU32::new(1),
+            ..channel_pressure
+        },
+        MidiEvent {
+            bytes: [0xd2, 64, 1],
+            ..channel_pressure
+        },
+        MidiEvent {
+            frame: block.frames,
+            ..channel_pressure
+        },
         MidiEvent {
             bytes: [0xa2, 60, 128],
             ..pressure

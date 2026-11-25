@@ -225,7 +225,7 @@ static double parameter_value(int variant,double value) {
 // The latency fixture invokes one additional restart synchronously during
 // activation. Its controller owns this borrowed handler on the main lane.
 IComponentHandler* latency_handler=nullptr;
-class RestoreController final : public IEditController {
+class RestoreController final : public IEditController, public IMidiMapping {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
     const int32 inventory_size=fault==grouped_instrument_variant?3:
@@ -351,6 +351,10 @@ class RestoreController final : public IEditController {
             self->handler->restartComponent(kParamTitlesChanged);
             return;
         }
+        if(self->fault==authored_instrument_variant) {
+            if(self->handler->restartComponent(kMidiCCAssignmentChanged)!=kResultOk) ++observed.violations;
+            return;
+        }
         if(self->fault==midi_cc_mapping_restart_variant) {
             if(self->handler->restartComponent(kMidiCCAssignmentChanged)!=kNotImplemented) ++observed.violations;
             trace(25);
@@ -419,8 +423,16 @@ public:
     uint32 PLUGIN_API release() override { const auto value=--refs;if(!value)delete this;return value; }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!iid || !out) return kInvalidArgument;*out=nullptr;
+        if(fault==authored_instrument_variant && same(iid,INLINE_UID_OF(IMidiMapping))) {
+            *out=static_cast<IMidiMapping*>(this);addRef();return kResultOk;
+        }
         if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IEditController))) return kNoInterface;
         *out=static_cast<IEditController*>(this);addRef();return kResultOk;
+    }
+    tresult PLUGIN_API getMidiControllerAssignment(int32 bus,int16 channel,CtrlNumber cc,ParamID& id) override {
+        if(!control() || !context || bus || cc!=128) { ++observed.violations;return kInvalidArgument; }
+        if(channel!=(edits_sent?1:2)) return kResultFalse;
+        id=parameter_id(fault);return kResultOk;
     }
     tresult PLUGIN_API initialize(FUnknown* host) override {
         if (!control() || context || !host) return kResultFalse;
@@ -439,6 +451,7 @@ public:
         if(value)value->addRef();if(handler)handler->release();handler=value;
         if(fault==104 || fault==105 || fault==118 || fault==119) latency_handler=handler;
         if(value && ((fault>=85 && fault<=89) || fault==105 || fault==116 || (fault>=131 && fault<=135) || fault==141 || fault==142 || fault==stale_step_count_two_lanes_variant || fault==touched_automation_variant || fault==stopped_editor_echo_variant || fault==full_output_with_editor_input_variant || fault==midi_cc_mapping_restart_variant || fault==midi_cc_mapping_and_value_restart_variant || grouped_editor(fault) ||
+            (fault==authored_instrument_variant && std::getenv("HEX_ORIGINAL_INSTANCE_RELEASE")) ||
             (fault==held_instrument_variant && std::getenv("HEX_ORIGINAL_EDITOR_TOUCH")))) {
             CFRunLoopTimerContext timer_context{};timer_context.info=this;
             edit_timer=CFRunLoopTimerCreate(nullptr,CFAbsoluteTimeGetCurrent(),0.001,0,0,edit_tick,&timer_context);
