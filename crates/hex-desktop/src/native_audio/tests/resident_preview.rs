@@ -5834,19 +5834,13 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         32_768,
         &[8192, 0],
     )));
-    let Some(Created::Imported {
-        track: destination, ..
-    }) = imported.created
-    else {
-        panic!("destination track not imported");
-    };
+    let destination = imported.state.project.tracks()[0].id();
     applied = h.applied(applied).0;
-    h.run(Request::Import(files.constant_wav(
-        "unaffected.wav",
-        48_000,
-        32_768,
-        &[0, 4096],
-    )));
+    h.run(Request::ImportToNewTrack {
+        path: files.constant_wav("unaffected.wav", 48_000, 32_768, &[0, 4096]),
+        before_track: None,
+        start: 0,
+    });
     applied = h.applied(applied).0;
     let state = |id| {
         hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(id)).unwrap()
@@ -5918,7 +5912,7 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         assert_eq!(active.audio_revision, receipt.submission.audio_revision);
         assert_eq!(active.context, receipt.submission.context);
         assert_eq!(installed.state.revision, previous.revision + 1);
-        // Render past the 144-frame Main delay and the 240-frame route fade-in.
+        // Render past the Main limiter lookahead and the 240-frame route fade-in.
         for _ in 0..8 {
             rendered.extend(h.render());
         }
