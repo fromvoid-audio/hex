@@ -4196,3 +4196,165 @@ fn live_tuning_enable_and_edit_succeeds_while_playing_with_source_effects() {
         );
     }
 }
+
+#[test]
+fn nested_multi_device_native_source_plays_back_with_parent_bypass_preserving_child_switches() {
+    use crate::{
+        PreparedRevision, SineTable,
+        session_playback::{SessionPlayback, SessionPlaybackCommand},
+    };
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
+
+    let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(receiver) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "receiver".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("receiver");
+    };
+    let source_id = editor
+        .project()
+        .track(receiver)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let Created::Track(contributor) = editor
+        .execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })
+        .unwrap()
+    else {
+        panic!("contributor");
+    };
+    editor
+        .execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source_id),
+        })
+        .unwrap();
+    for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                pitch,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                velocity: 100,
+                channel: 0,
+            })
+            .unwrap();
+    }
+    let instrument = editor
+        .project()
+        .native_source(source_id)
+        .unwrap()
+        .instrument()
+        .id();
+    let half_gain = hex_devices::utility::UTILITY_DEFINITION
+        .patch_parameter(
+            &hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+            ParameterId::from_static(1),
+            ParameterValue::Float(0.5),
+        )
+        .unwrap();
+
+    let render = |project: &hex_project::Project| {
+        let revision = Arc::new(
+            PreparedRevision::prepare(project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut frames = [[0.0_f32; 2]; 128];
+        playback.render(&mut frames).unwrap();
+        frames
+    };
+
+    let baseline = render(editor.project());
+    assert!(baseline.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Attach a nested multi-device suffix on the retained NativeSource:
+    // instrument -> parent_fx (0.5x) -> grandchild_fx (0.5x) + sibling_fx (0.5x).
+    let Created::Device(parent_fx) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: half_gain.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("parent_fx");
+    };
+    let Created::Device(grandchild_fx) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: parent_fx,
+            state: half_gain.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("grandchild_fx");
+    };
+    let Created::Device(sibling_fx) = editor
+        .execute(Command::InsertNestedDevice {
+            parent: instrument,
+            state: half_gain,
+        })
+        .unwrap()
+    else {
+        panic!("sibling_fx");
+    };
+
+    // All three stages active -> 0.5^3 = 0.125x baseline.
+    let all_active = render(editor.project());
+    for (wet, dry) in all_active.iter().zip(baseline.iter()) {
+        assert!((wet[0] - dry[0] * 0.125).abs() < 1e-4);
+    }
+
+    // Bypass parent_fx: parent_fx and grandchild_fx are effectively bypassed,
+    // sibling_fx stays active (0.5x), and grandchild_fx's own switch stays enabled.
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: parent_fx,
+            bypassed: true,
+        })
+        .unwrap();
+    let parent_bypassed = render(editor.project());
+    for (wet, dry) in parent_bypassed.iter().zip(baseline.iter()) {
+        assert!((wet[0] - dry[0] * 0.5).abs() < 1e-4);
+    }
+    assert!(!editor.project().device(grandchild_fx).unwrap().bypassed());
+    assert!(!editor.project().device(sibling_fx).unwrap().bypassed());
+
+    // Re-enable parent_fx via Undo: exact 0.125x PCM returns.
+    assert!(editor.undo());
+    assert_eq!(render(editor.project()), all_active);
+
+    // Bypassing the source instrument silences source output while preserving child switches.
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: instrument,
+            bypassed: true,
+        })
+        .unwrap();
+    let instrument_bypassed = render(editor.project());
+    assert!(instrument_bypassed.iter().flatten().all(|s| *s == 0.0));
+    assert!(!editor.project().device(parent_fx).unwrap().bypassed());
+    assert!(!editor.project().device(grandchild_fx).unwrap().bypassed());
+    assert!(!editor.project().device(sibling_fx).unwrap().bypassed());
+}
