@@ -81,6 +81,8 @@ pub(crate) fn new_track(
         mute_lane: crate::MixerAutomationLane::default(),
         send_lanes: Vec::new(),
         frozen: None,
+        output_destination: crate::TrackOutputDestination::Default,
+        input_monitoring: crate::InputMonitoring::Auto,
         id,
         name,
         automatic_name: false,

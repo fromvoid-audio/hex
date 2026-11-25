@@ -296,6 +296,51 @@ impl SessionPlayback {
         Ok(())
     }
 
+    /// True when the track at `index` is actively playing an Arrangement or Session clip
+    /// at `arrangement_frame`. Used by `InputMonitoring::Auto` to inhibit live monitoring
+    /// while clips are sounding.
+    pub(super) fn track_monitors_live_audio_for(
+        track: &crate::Track,
+        route_owner: RouteOwner,
+        arrangement_frame: u64,
+        playing: bool,
+    ) -> bool {
+        let clip_playing = playing
+            && match route_owner {
+                RouteOwner::Arrangement => {
+                    let has_audio = track.clips.iter().any(|clip| {
+                        clip.start <= arrangement_frame && arrangement_frame < clip.end
+                    });
+                    let has_midi = track.instrument.as_ref().is_some_and(|inst| {
+                        inst.spans.iter().any(|span| {
+                            span.start <= arrangement_frame && arrangement_frame < span.end
+                        })
+                    });
+                    has_audio || has_midi
+                }
+                RouteOwner::Session { .. } | RouteOwner::SessionAudio { .. } => true,
+                RouteOwner::Silence => false,
+            };
+        crate::monitoring_passes_input(track.input_monitoring(), true, clip_playing)
+    }
+
+    /// Whether live audio input supplied to track `index` should be mixed into its
+    /// pre-effect input at `arrangement_frame` under the track's canonical monitoring mode.
+    pub(super) fn track_monitors_live_audio(
+        &self,
+        index: usize,
+        arrangement_frame: u64,
+        playing: bool,
+    ) -> bool {
+        let (Some(track), Some(route)) = (
+            self.revision.arrangement().tracks().get(index),
+            self.route_scratch.get(index),
+        ) else {
+            return false;
+        };
+        Self::track_monitors_live_audio_for(track, route.owner, arrangement_frame, playing)
+    }
+
     /// Only the separate paused input owner calls this after binding and
     /// validating the borrowed quantum. The ordinary live track entry stays
     /// restricted to the playing Arrangement runtime.

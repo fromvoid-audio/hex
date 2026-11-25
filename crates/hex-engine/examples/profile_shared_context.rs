@@ -320,6 +320,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
         automatic_track_names: Vec::new(),
         mixer_automation: Vec::new(),
         frozen_tracks: Vec::new(),
+        track_io: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),

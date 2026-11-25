@@ -146,6 +146,8 @@ fn classify_delta(
             || compiled_track.canonical_track_id() != Some(new_track.id())
             || old_track.kind() != new_track.kind()
             || old_track.parent_group() != new_track.parent_group()
+            || old_track.output_destination() != new_track.output_destination()
+            || old_track.input_monitoring() != new_track.input_monitoring()
             || old_track.gain_lane() != new_track.gain_lane()
             || old_track.source_id() != new_track.source_id()
             || old_track.retained_source_path() != new_track.retained_source_path()

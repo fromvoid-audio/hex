@@ -530,6 +530,15 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("set_midi_source"; ["destination" => destination.value(), "source" => source.map(|id| id.value())]; omitted="")
         }
+        Command::AssignTrackAudioInput { destination, .. } => {
+            describe!("assign_track_audio_input"; ["destination" => destination.value()]; omitted="source")
+        }
+        Command::SetTrackOutput { track, .. } => {
+            describe!("set_track_output"; ["track" => track.value()]; omitted="destination")
+        }
+        Command::SetTrackInputMonitoring { track, .. } => {
+            describe!("set_track_input_monitoring"; ["track" => track.value()]; omitted="mode")
+        }
         Command::SetReturnFeed {
             source,
             destination,

@@ -970,7 +970,8 @@ fn compile_project_inner<'a>(
         } else {
             input_muted
         };
-        let local_content_enabled = shared_source.is_none() || !input_muted;
+        let plays_clips = crate::monitoring_plays_clips(track.input_monitoring());
+        let local_content_enabled = (shared_source.is_none() || !input_muted) && plays_clips;
         if source_index != track_index && previews.is_some() && !track.midi_clips().is_empty() {
             // Authored preview remains on its canonical owner even when that owner's
             // instrument listens to a different root.
@@ -984,7 +985,10 @@ fn compile_project_inner<'a>(
                 previews.as_deref_mut(),
             )?;
         }
-        let instrument = if is_frozen || midi_source.midi_clips().is_empty() {
+        let instrument = if is_frozen
+            || midi_source.midi_clips().is_empty()
+            || (!plays_clips && source_index == track_index)
+        {
             None
         } else {
             let prepared_instrument = track
@@ -1131,6 +1135,7 @@ fn compile_project_inner<'a>(
                 device_chain,
             )?
             .with_track_id(track.id())
+            .with_input_monitoring(track.input_monitoring())
             .with_source_audio_receiver(track.receives_source_audio())
             .with_source_mix_scope(
                 local_content_enabled && !track.retained_source_path(),

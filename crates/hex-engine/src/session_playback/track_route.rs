@@ -121,6 +121,7 @@ impl SessionPlayback {
                         return None;
                     }
                 }
+                _ => return None,
             }
         }
         let (from, to) = changed?;

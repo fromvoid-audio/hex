@@ -128,6 +128,8 @@ impl Project {
                 mute_lane,
                 send_lanes,
                 frozen,
+                output_destination,
+                input_monitoring,
                 id,
                 name,
                 automatic_name,
@@ -149,6 +151,8 @@ impl Project {
             } = gain_lane;
             if kind != &next.kind
                 || parent_group != &next.parent_group
+                || output_destination != &next.output_destination
+                || input_monitoring != &next.input_monitoring
                 || color != &next.color
                 || id != &next.id
                 || tags != &next.tags

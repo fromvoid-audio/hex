@@ -14,6 +14,7 @@ pub struct Track {
     pub(crate) source_audio_receiver: bool,
     pub(crate) source_input_enabled: bool,
     pub(crate) audio_content_enabled: bool,
+    pub(crate) input_monitoring: hex_project::InputMonitoring,
     pub(crate) clips: Vec<Clip>,
     /// Control-built `clip_index` over `clips`; rendering never scans them.
     pub(crate) clip_index: Vec<clip_index::ClipIndexEntry>,
@@ -325,6 +326,7 @@ impl Track {
             source_audio_receiver: true,
             source_input_enabled: true,
             audio_content_enabled: true,
+            input_monitoring: hex_project::InputMonitoring::Auto,
             mutable_instrument: false,
             mutable_looping_source: false,
             midi_source_index: None,
@@ -389,6 +391,7 @@ impl Track {
             source_audio_receiver: true,
             source_input_enabled: true,
             audio_content_enabled: true,
+            input_monitoring: hex_project::InputMonitoring::Auto,
             mutable_instrument: false,
             mutable_looping_source: false,
             midi_source_index: None,
@@ -457,6 +460,13 @@ impl Track {
     }
     pub(crate) fn audio_content_enabled(&self) -> bool {
         self.audio_content_enabled
+    }
+    pub(crate) fn with_input_monitoring(mut self, mode: hex_project::InputMonitoring) -> Self {
+        self.input_monitoring = mode;
+        self
+    }
+    pub fn input_monitoring(&self) -> hex_project::InputMonitoring {
+        self.input_monitoring
     }
     pub fn receives_source_audio(&self) -> bool {
         self.source_audio_receiver

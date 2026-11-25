@@ -1153,6 +1153,8 @@ fn same_shell(
             mute_lane,
             send_lanes,
             frozen,
+            output_destination,
+            input_monitoring,
             id,
             name,
             automatic_name,
@@ -1178,6 +1180,8 @@ fn same_shell(
         } = content;
         kind == &b.kind
             && parent_group == &b.parent_group
+            && output_destination == &b.output_destination
+            && input_monitoring == &b.input_monitoring
             && color == &b.color
             && id == &b.id
             && tags == &b.tags
