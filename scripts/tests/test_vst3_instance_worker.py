@@ -843,7 +843,7 @@ class NativeInstanceTests(unittest.TestCase):
         for channels, variant, note in [
             ((0, 2), 115, (0, 0x94, 60, 127)),  # the fixture has four MIDI channels
             ((0, 2), 145, (0, 0xd4, 64, 0)),
-            ((0, 2), 115, (0, 0xb2, 60, 127)),  # controllers are not note events
+            ((0, 2), 145, (0, 0xb4, 74, 127)),  # CC outside the instrument event bus
             ((2, 2), 0, (0, 0x92, 60, 127)),
         ]:
             with self.subTest(channels=channels, note=note):

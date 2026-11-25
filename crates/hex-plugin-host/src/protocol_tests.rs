@@ -682,8 +682,8 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
         .events
         .push(MidiEvent {
             frame: 0,
-            bytes: [0xb0, 64, 127],
-            len: 3,
+            bytes: [0xc0, 64, 0], // Program changes require a separate host contract.
+            len: 2,
             note_id: None,
             is_live: false,
         })
