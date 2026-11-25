@@ -102,6 +102,18 @@ pub trait NativeParameterAutomation {
         false
     }
 
+    /// Returns `true` when this provider is backed by a control-prepared
+    /// mapping whose emitted values are guaranteed valid against `descriptors`
+    /// across `0..frames`, allowing the host to skip redundant full-block
+    /// pre-evaluation before provider processing.
+    fn guarantees_valid_values(
+        &self,
+        _descriptors: &[ParameterDescriptor],
+        _frames: usize,
+    ) -> bool {
+        false
+    }
+
     /// Canonical units at this segment's sample offset. None means no authored
     /// lane or unavailable content origin; callers use their immutable base.
     fn value_at(&self, parameter: ParameterId, sample_offset: usize) -> Option<ParameterValue>;
@@ -269,6 +281,23 @@ impl Mapping {
     }
     fn discrete(self) -> bool {
         matches!(self, Self::Bool | Self::Choice { .. })
+    }
+    pub(crate) fn matches_descriptor(self, descriptor: ParameterDescriptor) -> bool {
+        match (self, descriptor.kind) {
+            (
+                Self::Float { min, max, .. },
+                ParameterKind::Float {
+                    min: dmin,
+                    max: dmax,
+                    ..
+                },
+            ) => min >= f64::from(dmin) && max <= f64::from(dmax),
+            (Self::Bool, ParameterKind::Bool) => true,
+            (Self::Choice { last }, ParameterKind::Choice { labels }) => {
+                (last as usize) < labels.len()
+            }
+            _ => false,
+        }
     }
     pub(crate) fn value(self, normalized: f32) -> Result<CanonicalValue, Error> {
         Ok(match self {
@@ -1095,6 +1124,34 @@ impl ParameterAutomationBlock<'_> {
 impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
     fn parameter_ids(&self) -> &[ParameterId] {
         self.program.parameter_ids()
+    }
+    fn guarantees_valid_values(&self, descriptors: &[ParameterDescriptor], frames: usize) -> bool {
+        if frames > self.frames {
+            return false;
+        }
+        if let (Some(DeviceAutomationTarget::Parameter(input_id)), Some(input)) =
+            (self.program.input_target, self.input)
+        {
+            let Ok(index) = descriptors.binary_search_by_key(&input_id, |d| d.id) else {
+                return false;
+            };
+            let Some(value) = input.provider() else {
+                return false;
+            };
+            if descriptors[index].validate(value).is_err() {
+                return false;
+            }
+        }
+        self.program
+            .ids
+            .iter()
+            .zip(&self.program.lanes)
+            .all(|(id, lane)| {
+                descriptors
+                    .binary_search_by_key(id, |d| d.id)
+                    .ok()
+                    .is_some_and(|index| lane.mapping.matches_descriptor(descriptors[index]))
+            })
     }
     fn value_at(&self, parameter: ParameterId, offset: usize) -> Option<ParameterValue> {
         if offset >= self.frames {

@@ -783,3 +783,59 @@ fn automation_only_view_refuses_an_active_sample_rate_route_before_rendering() {
     assert!(output[0][0] > 0.0);
     pair.commit_block();
 }
+
+#[test]
+fn prevalidated_provider_skips_redundant_full_block_values_at_pass() {
+    struct CountingPrevalidated {
+        bulk_calls: AtomicUsize,
+        scalar_calls: AtomicUsize,
+    }
+    impl NativeParameterAutomation for CountingPrevalidated {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &[ID]
+        }
+        fn guarantees_valid_values(
+            &self,
+            descriptors: &[ParameterDescriptor],
+            _frames: usize,
+        ) -> bool {
+            descriptors.binary_search_by_key(&ID, |d| d.id).is_ok()
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            self.scalar_calls.fetch_add(1, Ordering::Relaxed);
+            (id == ID).then(|| ParameterValue::Float(1.0 + offset as f32 / 64.0))
+        }
+        fn values_at(
+            &self,
+            _offset: usize,
+            _output: &mut [Option<ParameterValue>],
+        ) -> Result<(), DeviceContractError> {
+            self.bulk_calls.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+
+    let mut pair = NativeInstrumentRuntimePair::new(&Factory::supported(), LIMITS).unwrap();
+    let values = CountingPrevalidated {
+        bulk_calls: AtomicUsize::new(0),
+        scalar_calls: AtomicUsize::new(0),
+    };
+    let mut output = [[0.0; 2]; 16];
+    pair.begin_block();
+    pair.process_block_with_clock_and_automation(
+        &[on(60)],
+        &mut output,
+        None,
+        &[],
+        &values,
+        &crate::EMPTY_DEVICE_RESOURCES,
+    )
+    .unwrap();
+    pair.commit_block();
+    assert_eq!(
+        values.bulk_calls.load(Ordering::Relaxed),
+        0,
+        "prevalidated provider must not be double-evaluated via values_at before rendering"
+    );
+    assert!(output[0][0] > 0.0);
+}

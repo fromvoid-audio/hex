@@ -224,7 +224,9 @@ impl ModulationRuntime {
             let source_block = sources
                 .get(..self.bank.source_count())
                 .ok_or(Error::RuntimeBudgetExceeded)?;
-            let block = self.program.block(upstream, source_block, frames)?;
+            let block = self
+                .program
+                .block_from_trusted_sources(upstream, source_block, frames)?;
             consume(&block)
         })();
         if result.is_err() {

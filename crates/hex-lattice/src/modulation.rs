@@ -178,7 +178,7 @@ impl PreparedPressureRoute {
             None => f64::from(
                 self.semantics
                     .normalization
-                    .normalize(self.descriptor, base)?,
+                    .normalize_validated(self.descriptor, base)?,
             ),
         };
         self.mapping
@@ -505,6 +505,40 @@ impl PreparedModulation {
             frames,
         })
     }
+
+    /// Borrow a block backed by bank-owned source buffers that were rendered by
+    /// `ModulationSourceBank` and are already guaranteed finite in `[-1.0, 1.0]`.
+    /// Avoids re-scanning every source sample on the audio callback while still
+    /// checking slice bounds and upstream parameter IDs.
+    pub(crate) fn block_from_trusted_sources<'a>(
+        &'a self,
+        upstream: Option<&'a dyn NativeParameterAutomation>,
+        sources: &'a [&'a [f32]],
+        frames: usize,
+    ) -> Result<ModulationBlock<'a>, Error> {
+        if frames > MAX_MODULATION_BLOCK_FRAMES {
+            return Err(Error::RuntimeBudgetExceeded);
+        }
+        if sources.len() != self.source_count
+            || sources.iter().any(|samples| samples.len() != frames)
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        if let Some(upstream) = upstream {
+            let ids = upstream.parameter_ids();
+            if ids.windows(2).any(|pair| pair[0] >= pair[1])
+                || ids.iter().any(|id| self.ids.binary_search(id).is_err())
+            {
+                return Err(Error::UnknownParameter);
+            }
+        }
+        Ok(ModulationBlock {
+            program: self,
+            upstream,
+            sources,
+            frames,
+        })
+    }
 }
 
 /// Immutable, freely reorderable parameter queries for one source block.
@@ -628,7 +662,7 @@ impl ModulationBlock<'_> {
             authored
                 .semantics
                 .normalization
-                .normalize(authored.descriptor, base)?
+                .normalize_validated(authored.descriptor, base)?
         } else {
             target.normalized_base
         };
@@ -658,7 +692,7 @@ impl NativeParameterAutomation for ModulationBlock<'_> {
                     .authored
                     .semantics
                     .normalization
-                    .normalize(target.authored.descriptor, selected)
+                    .normalize_validated(target.authored.descriptor, selected)
                     .ok()
             },
         )?;
@@ -667,6 +701,29 @@ impl NativeParameterAutomation for ModulationBlock<'_> {
 
     fn parameter_ids(&self) -> &[ParameterId] {
         &self.program.ids
+    }
+
+    fn guarantees_valid_values(&self, descriptors: &[ParameterDescriptor], frames: usize) -> bool {
+        if frames > self.frames {
+            return false;
+        }
+        if !self
+            .upstream
+            .is_none_or(|up| up.guarantees_valid_values(descriptors, frames))
+        {
+            return false;
+        }
+        self.program.targets.iter().all(|target| {
+            descriptors
+                .binary_search_by_key(&target.authored.descriptor.id, |d| d.id)
+                .ok()
+                .is_some_and(|index| {
+                    let descriptor = descriptors[index];
+                    descriptor.validate(target.authored.base).is_ok()
+                        && (target.route_start == target.route_end
+                            || target.mapping.matches_descriptor(descriptor))
+                })
+        })
     }
 
     fn has_sample_rate_modulation(&self, parameter: ParameterId) -> bool {

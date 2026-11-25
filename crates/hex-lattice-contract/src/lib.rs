@@ -131,23 +131,22 @@ impl DeviceTypeId {
             valid: true,
         })
     }
-    /// Static built-in identifier; state and registry boundaries still validate it.
+    /// Static built-in identifier; validates character and dot rules at compile
+    /// time via [`Self::is_valid`]. Invalid inputs produce an invalid ID whose
+    /// [`Self::as_str`] and [`Self::validate`] return [`DeviceContractError::InvalidId`].
     pub const fn from_static(value: &str) -> Self {
         let source = value.as_bytes();
+        let valid = Self::is_valid(value);
         let mut bytes = [0; MAX_DEVICE_TYPE_ID_BYTES];
         let mut index = 0;
-        while index < source.len() && index < MAX_DEVICE_TYPE_ID_BYTES {
+        while valid && index < source.len() {
             bytes[index] = source[index];
             index += 1;
         }
         Self {
             bytes,
-            length: if source.len() <= MAX_DEVICE_TYPE_ID_BYTES {
-                source.len() as u8
-            } else {
-                0
-            },
-            valid: source.len() <= MAX_DEVICE_TYPE_ID_BYTES,
+            length: if valid { source.len() as u8 } else { 0 },
+            valid,
         }
     }
     pub fn as_str(&self) -> Result<&str, DeviceContractError> {
@@ -162,18 +161,37 @@ impl DeviceTypeId {
             .then_some(())
             .ok_or(DeviceContractError::InvalidId)
     }
-    fn is_valid(value: &str) -> bool {
-        !value.is_empty()
-            && value.len() <= MAX_DEVICE_TYPE_ID_BYTES
-            && value.contains('.')
-            && !value.starts_with('.')
-            && !value.ends_with('.')
-            && !value.contains("..")
-            && value.bytes().all(|byte| {
-                byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || matches!(byte, b'.' | b'_' | b'-')
-            })
+    const fn is_valid(value: &str) -> bool {
+        let bytes = value.as_bytes();
+        if bytes.is_empty() || bytes.len() > MAX_DEVICE_TYPE_ID_BYTES {
+            return false;
+        }
+        if bytes[0] == b'.' || bytes[bytes.len() - 1] == b'.' {
+            return false;
+        }
+        let mut has_dot = false;
+        let mut prev_dot = false;
+        let mut i = 0;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            let allowed = byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'.' | b'_' | b'-');
+            if !allowed {
+                return false;
+            }
+            if byte == b'.' {
+                if prev_dot {
+                    return false;
+                }
+                has_dot = true;
+                prev_dot = true;
+            } else {
+                prev_dot = false;
+            }
+            i += 1;
+        }
+        has_dot
     }
 }
 
