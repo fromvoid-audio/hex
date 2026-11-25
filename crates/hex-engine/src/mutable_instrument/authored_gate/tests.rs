@@ -47,6 +47,7 @@ fn foreign_gates_keep_channel_and_identity_across_segment_boundaries() {
                 channel,
                 velocity: 101,
                 contributor_fade_in: false,
+                expression: Default::default(),
             })
             .unwrap();
     }
@@ -109,6 +110,7 @@ fn foreign_note_ids_and_offsets_refuse_narrowing() {
         channel: 0,
         velocity: 101,
         on: true,
+        expression: Default::default(),
     };
     assert_eq!(
         ForeignNote::try_from(gate),

@@ -1145,6 +1145,8 @@ fn transport_loop_project(expanded: bool) -> Project {
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             })
             .collect();
         snapshot.next_id += 4;
@@ -1157,6 +1159,8 @@ fn transport_loop_project(expanded: bool) -> Project {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         }];
         snapshot.next_id += 1;
         snapshot.loop_region =
@@ -1186,6 +1190,8 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
                     pitch: 36 + (index % 48) as u8,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 })
                 .collect();
         }
@@ -1207,6 +1213,8 @@ fn shared_source_transport_loop_admits_one_aggregate_voice_and_release_envelope(
                     pitch: 36 + (index % 48) as u8,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 })
                 .collect();
         }
@@ -1336,6 +1344,8 @@ fn combined_loop_expanded_oracle_project() -> Project {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     })
     .collect();
     snapshot.next_id = first_note_id + 11;
@@ -1728,6 +1738,8 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         })
         .chain(std::iter::once(MidiNoteSnapshot {
             active: true,
@@ -1737,6 +1749,8 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         }))
         .collect();
     clip.length_raw = 5 * Q;
@@ -1852,6 +1866,8 @@ fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
             pitch: 36 + (index % 48) as u8,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         })
         .collect();
     let short_length = beat_raw_for_frames(2);
@@ -1876,6 +1892,8 @@ fn finite_arrangement_admission_bounds_aggregate_edges_across_clips() {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         }];
         midi_clips.push(clip);
     }
@@ -1925,6 +1943,8 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             pitch: 36 + (index % 48) as u8,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         })
         .chain((0..64_u64).map(|index| MidiNoteSnapshot {
             active: true,
@@ -1934,6 +1954,8 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         }))
         .collect();
     snapshot.next_id = first_note_id + 192;
@@ -1975,6 +1997,8 @@ fn mutable_transport_handoff_ignores_pre_loop_release_only_candidate() {
         pitch: 60,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     }];
     old_snapshot.next_id = 43;
     old_snapshot.loop_region = Some(LoopRegion::new(48_000, 48_001, true).expect("short loop"));

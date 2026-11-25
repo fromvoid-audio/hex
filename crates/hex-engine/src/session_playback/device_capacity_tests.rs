@@ -70,6 +70,8 @@ fn mutable_session_loop_project(id: hex_lattice_contract::DeviceTypeId) -> Proje
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         },
         MidiNoteSnapshot {
             active: true,
@@ -79,6 +81,8 @@ fn mutable_session_loop_project(id: hex_lattice_contract::DeviceTypeId) -> Proje
             pitch: 64,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         },
     ];
     snapshot.next_id = second_note_id + 1;
@@ -186,6 +190,8 @@ fn registered_voice_cap_rejects_overlapping_finite_arrangement_notes() {
         pitch: 64,
         channel: 0,
         velocity: 100,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     snapshot.next_id += 1;
     let project = Project::from_snapshot(snapshot).unwrap();

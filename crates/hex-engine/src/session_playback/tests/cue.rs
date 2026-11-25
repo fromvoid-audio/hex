@@ -18,6 +18,8 @@ fn cue_project() -> Project {
             pitch: 64,
             channel: 0,
             velocity: 93,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         },
         MidiNoteSnapshot {
             active: true,
@@ -27,6 +29,8 @@ fn cue_project() -> Project {
             pitch: 67,
             channel: 0,
             velocity: 37,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         },
     ]);
     snapshot.next_id = 1_000_010;

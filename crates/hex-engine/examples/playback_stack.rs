@@ -331,6 +331,8 @@ fn project_fixture(
                     pitch: 36 + (note_index % 48) as u8,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 });
                 next_id += 1;
             }
@@ -343,6 +345,8 @@ fn project_fixture(
                 pitch: 60,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             });
             next_id += 1;
         }
@@ -399,6 +403,7 @@ fn project_fixture(
                     loop_end_raw: BeatTime::from_quarters(2)?.raw(),
                     looping: false,
                     notes,
+                    expression_lanes: Vec::new(),
                 }],
             },
             sends: vec![SendLevelSnapshot {

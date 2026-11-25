@@ -63,6 +63,8 @@ pub fn project(
                 },
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             });
         }
         track_snapshots.push(TrackSnapshot {
@@ -108,6 +110,7 @@ pub fn project(
                 loop_end_raw: clip_length,
                 looping: false,
                 notes,
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         });

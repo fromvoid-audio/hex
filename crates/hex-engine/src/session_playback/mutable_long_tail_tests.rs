@@ -77,12 +77,7 @@ impl MutableInstrumentRuntime for FiniteTailRuntime {
         let mut events = events.iter().peekable();
         for (offset, frame) in frames.iter_mut().enumerate() {
             while let Some(event) = events.peek() {
-                let position = match event {
-                    NativeInstrumentEvent::NoteOn { frame_offset, .. }
-                    | NativeInstrumentEvent::NoteOff { frame_offset, .. }
-                    | NativeInstrumentEvent::NotePressure { frame_offset, .. }
-                    | NativeInstrumentEvent::Expression { frame_offset, .. } => *frame_offset,
-                };
+                let position = event.frame_offset();
                 if position != offset {
                     break;
                 }
@@ -185,6 +180,7 @@ fn longest_mutable_tail_keeps_audio_and_occurrence_until_exact_quiescence_with_r
             channel: 0,
             velocity: 100,
             contributor_fade_in: false,
+            expression: Default::default(),
         })
         .unwrap();
     let mut events = Vec::with_capacity(256);

@@ -98,6 +98,7 @@ pub struct MidiSourceSnapshot {
     pub loop_end_raw: u64,
     pub looping: bool,
     pub notes: Vec<MidiNoteSnapshot>,
+    pub expression_lanes: Vec<crate::MidiExpressionLane>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -218,6 +219,7 @@ pub struct MidiClipSnapshot {
     pub loop_end_raw: u64,
     pub looping: bool,
     pub notes: Vec<MidiNoteSnapshot>,
+    pub expression_lanes: Vec<crate::MidiExpressionLane>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,6 +231,8 @@ pub struct MidiNoteSnapshot {
     pub pitch: u8,
     pub channel: u8,
     pub velocity: u8,
+    pub expression: crate::NoteExpression,
+    pub expression_points: Vec<crate::NoteExpressionPoint>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -436,8 +440,15 @@ impl Project {
                                         pitch: note.pitch,
                                         channel: note.channel,
                                         velocity: note.velocity,
+                                        expression: note.expression,
+                                        expression_points: note.expression_points.clone(),
                                     })
                                     .collect(),
+                                expression_lanes: if self.clip_alias(clip.id).is_none() {
+                                    clip.source.expression_lanes.clone()
+                                } else {
+                                    Vec::new()
+                                },
                             })
                             .collect(),
                     },
@@ -521,8 +532,15 @@ impl Project {
                                                 pitch: note.pitch,
                                                 channel: note.channel,
                                                 velocity: note.velocity,
+                                                expression: note.expression,
+                                                expression_points: note.expression_points.clone(),
                                             })
                                             .collect(),
+                                        expression_lanes: if self.clip_alias(clip.id).is_none() {
+                                            clip.source.expression_lanes.clone()
+                                        } else {
+                                            Vec::new()
+                                        },
                                     },
                                 })
                             }
@@ -1096,6 +1114,11 @@ impl Project {
                         note.channel,
                         note.velocity,
                     )?;
+                    note.expression.validate()?;
+                    crate::midi::validate_note_expression_points(
+                        &note.expression_points,
+                        duration,
+                    )?;
                     notes.push(MidiNote {
                         id: NoteId(note.id),
                         active: note.active,
@@ -1104,9 +1127,12 @@ impl Project {
                         pitch: note.pitch,
                         channel: note.channel,
                         velocity: note.velocity,
+                        expression: note.expression,
+                        expression_points: note.expression_points,
                     });
                 }
                 crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                crate::midi::validate_expression_lanes(&clip.expression_lanes, source_length)?;
                 clip.volume.validate_source_length(source_length)?;
                 clip.playback_offset_raw
                     .checked_add(length.raw())
@@ -1131,6 +1157,7 @@ impl Project {
                             std::sync::Arc::new(crate::MidiContent {
                                 source_length,
                                 notes,
+                                expression_lanes: clip.expression_lanes,
                             })
                         }),
                         one_shot_boundary: clip.one_shot_boundary,
@@ -1282,6 +1309,11 @@ impl Project {
                             note.channel,
                             note.velocity,
                         )?;
+                        note.expression.validate()?;
+                        crate::midi::validate_note_expression_points(
+                            &note.expression_points,
+                            duration,
+                        )?;
                         notes.push(MidiNote {
                             id: NoteId(note.id),
                             active: note.active,
@@ -1290,9 +1322,15 @@ impl Project {
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
+                            expression: note.expression,
+                            expression_points: note.expression_points,
                         });
                     }
                     crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                    crate::midi::validate_expression_lanes(
+                        &clip.source.expression_lanes,
+                        source_length,
+                    )?;
                     clip.volume.validate_source_length(source_length)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
                         active: clip.active,
@@ -1306,6 +1344,7 @@ impl Project {
                                 std::sync::Arc::new(crate::MidiContent {
                                     source_length,
                                     notes,
+                                    expression_lanes: clip.source.expression_lanes,
                                 })
                             }),
                             one_shot_boundary: clip.source.one_shot_boundary,

@@ -1007,6 +1007,9 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
                 &[
                     note(0, true, 201, true),
                     ForeignNote { frame: 2, kind: ForeignNoteKind::PolyPressure, value: 64, ..note(0, true, 201, true) },
+                    ForeignNote::control_change(2, 2, 74, 96, std::num::NonZeroU32::new(201), true),
+                    ForeignNote::pitch_bend(2, 2, 2048, std::num::NonZeroU32::new(201), true),
+                    ForeignNote::channel_pressure(2, 2, 72, None, true),
                     note(3, false, 201, true),
                 ],
                 &[note(1, true, 202, true), note(5, false, 202, true)],

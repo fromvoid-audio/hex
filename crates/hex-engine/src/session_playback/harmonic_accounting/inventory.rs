@@ -157,7 +157,10 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
                         pitch: 60,
                         channel: 0,
                         velocity: 100,
+                        expression: Default::default(),
+                        expression_points: Vec::new(),
                     }],
+                    expression_lanes: Vec::new(),
                 }],
             };
             next += 2;

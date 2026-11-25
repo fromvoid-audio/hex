@@ -1699,6 +1699,8 @@ fn maximum_valid_project_compiles_exactly_the_bounded_edge_count() {
             pitch: 60,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         })
         .collect();
     snapshot.next_id = first_note + hex_project::MAX_NOTES as u64;

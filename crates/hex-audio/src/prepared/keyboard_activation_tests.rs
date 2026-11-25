@@ -438,6 +438,9 @@ mod vst_audition_probe {
                     ForeignNoteKind::On => self.on += 1,
                     ForeignNoteKind::Off => self.off += 1,
                     ForeignNoteKind::PolyPressure => self.pressures += 1,
+                    ForeignNoteKind::ControlChange
+                    | ForeignNoteKind::PitchBend
+                    | ForeignNoteKind::ChannelPressure => {}
                 }
             }
             Ok(())

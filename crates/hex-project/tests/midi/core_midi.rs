@@ -1411,6 +1411,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
             loop_start_raw: 0,
             loop_end_raw: beat(4).raw(),
             looping: false,
+            expression_lanes: Vec::new(),
             notes: (0..count)
                 .map(|index| MidiNoteSnapshot {
                     active: true,
@@ -1420,6 +1421,8 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
                     pitch: 60,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 })
                 .collect(),
         }]),
@@ -1864,6 +1867,8 @@ fn snapshot_rejects_bad_global_ids_and_note_cap() {
         pitch: 60,
         channel: 0,
         velocity: 1,
+        expression: Default::default(),
+        expression_points: Vec::new(),
     });
     assert!(Project::from_snapshot(duplicate_id).is_err());
 
@@ -1883,6 +1888,8 @@ fn snapshot_rejects_bad_global_ids_and_note_cap() {
             pitch: 60,
             channel: 0,
             velocity: 1,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         })
         .collect();
     over_limit.next_id = 100 + MAX_NOTES as u64 + 1;

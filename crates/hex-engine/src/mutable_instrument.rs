@@ -29,6 +29,7 @@ use hex_project::{BeatTime, ClipId, NoteId, TrackId};
 pub(crate) const MAX_MUTABLE_NOTE_EVENTS_PER_QUERY: usize = 256;
 pub(crate) const MAX_MUTABLE_EVENTS_PER_QUERY: usize = MAX_MUTABLE_NOTE_EVENTS_PER_QUERY + 3;
 pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
+pub(crate) const MAX_MUTABLE_EXPRESSION_EVENTS_PER_QUERY: usize = 64;
 /// The MIDI compiler admits at most 64 overlapping source intervals per
 /// instrument, including the declared release tail. This fixed proof capacity
 /// therefore covers every dispatched occurrence whose old-law tail can still
@@ -87,6 +88,7 @@ pub(crate) struct MutableNoteOnset {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    pub(crate) expression: hex_project::NoteExpression,
     /// An explicitly admitted source-bound onset requiring a 5 ms fade-in.
     pub(crate) contributor_fade_in: bool,
 }
@@ -205,6 +207,9 @@ pub(crate) struct MutableOnsetBuffer {
     spans: [Option<MutableNoteOnset>; MAX_MUTABLE_SPANS_PER_QUERY],
     len: usize,
     has_contributor_fade_in: bool,
+    clip_expression: [Option<crate::midi_compile::CompiledExpressionEvent>;
+        MAX_MUTABLE_EXPRESSION_EVENTS_PER_QUERY],
+    clip_expression_len: usize,
 }
 
 impl Default for MutableOnsetBuffer {
@@ -213,6 +218,8 @@ impl Default for MutableOnsetBuffer {
             spans: [None; MAX_MUTABLE_SPANS_PER_QUERY],
             len: 0,
             has_contributor_fade_in: false,
+            clip_expression: [None; MAX_MUTABLE_EXPRESSION_EVENTS_PER_QUERY],
+            clip_expression_len: 0,
         }
     }
 }
@@ -223,12 +230,19 @@ impl MutableOnsetBuffer {
             spans,
             len,
             has_contributor_fade_in,
+            clip_expression,
+            clip_expression_len,
         } = self;
-        *len == 0 && !has_contributor_fade_in && spans.iter().all(Option::is_none)
+        *len == 0
+            && !has_contributor_fade_in
+            && spans.iter().all(Option::is_none)
+            && *clip_expression_len == 0
+            && clip_expression.iter().all(Option::is_none)
     }
     pub(crate) fn clear(&mut self) {
         self.len = 0;
         self.has_contributor_fade_in = false;
+        self.clip_expression_len = 0;
     }
 
     pub(crate) fn push(&mut self, onset: MutableNoteOnset) -> Result<(), ()> {
@@ -239,6 +253,26 @@ impl MutableOnsetBuffer {
         self.len += 1;
         self.has_contributor_fade_in |= onset.contributor_fade_in;
         Ok(())
+    }
+
+    pub(crate) fn push_expression(
+        &mut self,
+        event: crate::midi_compile::CompiledExpressionEvent,
+    ) -> Result<(), ()> {
+        let Some(slot) = self.clip_expression.get_mut(self.clip_expression_len) else {
+            return Err(());
+        };
+        *slot = Some(event);
+        self.clip_expression_len += 1;
+        Ok(())
+    }
+
+    fn expression_iter(
+        &self,
+    ) -> impl Iterator<Item = crate::midi_compile::CompiledExpressionEvent> + '_ {
+        self.clip_expression[..self.clip_expression_len]
+            .iter()
+            .filter_map(|event| *event)
     }
 
     fn iter(&self) -> impl Iterator<Item = MutableNoteOnset> + '_ {
@@ -1410,21 +1444,92 @@ impl MutableInstrumentTrackRuntime {
             live: self.source_live_count(),
             suppressions,
         };
+        for expr_event in onsets.expression_iter() {
+            if let Some(delta) = expr_event.frame.checked_sub(source_start)
+                && delta < width
+            {
+                let frame_offset = usize::try_from(delta)
+                    .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
+                let native = match expr_event.kind {
+                    crate::midi_compile::CompiledExpressionKind::ControlChange { cc, value } => {
+                        NativeInstrumentEvent::ControlChange {
+                            frame_offset,
+                            cc,
+                            value,
+                        }
+                    }
+                    crate::midi_compile::CompiledExpressionKind::PitchBend { value } => {
+                        NativeInstrumentEvent::PitchBend {
+                            frame_offset,
+                            value,
+                        }
+                    }
+                };
+                push_event(events, native)?;
+            }
+        }
+        let supports_pressure = self.supports_note_pressure();
         authored_gate::stage_authored_gates(
             &mut self.scratch,
             &mut self.next_id_scratch,
             onsets,
             context,
-            |gate| push_event(events, gate.into()),
+            |gate| {
+                push_event(events, gate.into())?;
+                if gate.is_on()
+                    && !gate.expression().is_default()
+                    && let Some(occurrence_id) = std::num::NonZeroU64::new(gate.occurrence_id())
+                {
+                    let expr = gate.expression();
+                    let frame_offset = gate.frame_offset();
+                    if expr.pitch_offset_cents != 0 {
+                        push_event(
+                            events,
+                            NativeInstrumentEvent::NotePitchBend {
+                                frame_offset,
+                                occurrence_id,
+                                cents: expr.pitch_offset_cents,
+                            },
+                        )?;
+                    }
+                    if expr.timbre != 0 {
+                        push_event(
+                            events,
+                            NativeInstrumentEvent::NoteTimbre {
+                                frame_offset,
+                                occurrence_id,
+                                value: expr.timbre,
+                            },
+                        )?;
+                    }
+                    if expr.pressure != 0 && supports_pressure {
+                        push_event(
+                            events,
+                            NativeInstrumentEvent::NotePressure {
+                                frame_offset,
+                                occurrence_id,
+                                value: expr.pressure,
+                            },
+                        )?;
+                    }
+                }
+                Ok(())
+            },
         )?;
 
         events.sort_unstable_by_key(|event| {
             let (rank, occurrence_id) = match *event {
-                NativeInstrumentEvent::Expression { .. } => (0, 0),
+                NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::ControlChange { .. }
+                | NativeInstrumentEvent::PitchBend { .. } => (0, 0),
                 NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
                 NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
-                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
+                NativeInstrumentEvent::NotePitchBend { occurrence_id, .. } => {
                     (3, occurrence_id.get())
+                }
+                NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => (4, occurrence_id.get()),
+                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
+                    (5, occurrence_id.get())
                 }
             };
             (event.frame_offset(), rank, occurrence_id)

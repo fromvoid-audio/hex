@@ -117,7 +117,10 @@ fn inventory_shape(
                         pitch: 60,
                         channel: 0,
                         velocity: 100,
+                        expression: Default::default(),
+                        expression_points: Vec::new(),
                     }],
+                    expression_lanes: Vec::new(),
                 }],
             };
             next += 2;

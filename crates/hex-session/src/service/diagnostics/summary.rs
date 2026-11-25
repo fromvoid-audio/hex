@@ -1339,6 +1339,17 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("set_midi_notes_active"; ["clip" => clip.value(), "notes_count" => notes.len(), "active" => active]; omitted="")
         }
+        Command::SetMidiExpressionLane { clip, kind, points } => {
+            describe!("set_midi_expression_lane"; ["clip" => clip.value(), "kind" => format!("{kind:?}"), "points_count" => points.len()]; omitted="point_data")
+        }
+        Command::SetMidiNoteExpression {
+            clip,
+            note,
+            expression,
+            points,
+        } => {
+            describe!("set_midi_note_expression"; ["clip" => clip.value(), "note" => note.value(), "pitch_cents" => expression.pitch_offset_cents, "timbre" => expression.timbre, "pressure" => expression.pressure, "points_count" => points.len()]; omitted="point_data")
+        }
         Command::RemoveMidiNote(value0) => {
             describe!("remove_midi_note"; ["value0" => value0.value()]; omitted="")
         }

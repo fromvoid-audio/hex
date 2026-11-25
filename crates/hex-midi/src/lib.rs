@@ -9,10 +9,15 @@
 //! note hosting is outside this input-capture boundary. Physical held snapshots
 //! support control-side step entry without scheduling or monitoring sound.
 mod held_notes;
+mod mpe;
 mod note_events;
 mod timebase;
 pub use held_notes::{
     HELD_NOTE_COUNT, HeldNote, HeldNoteFault, HeldNoteInput, HeldNotes, HeldNotesRead,
+};
+pub use mpe::{
+    DEFAULT_MPE_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_SEMITONES, MpeConfig, MpeDecoder,
+    MpeExpressionEvent, MpeZone,
 };
 pub use note_events::{ControlChange, NoteEvent};
 pub use timebase::{MachTimebase, MonotonicTimestampClock, TimedPacket, TimestampedNoteEvent};

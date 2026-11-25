@@ -460,12 +460,15 @@ fn paste_rows_with_source(
                 pitch: original.pitch,
                 channel: original.channel,
                 velocity: original.velocity,
+                expression: crate::NoteExpression::default(),
+                expression_points: Vec::new(),
             });
         }
         let source = MidiSource {
             content: std::sync::Arc::new(crate::MidiContent {
                 source_length: length,
                 notes,
+                expression_lanes: Vec::new(),
             }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_start: BeatTime::ZERO,

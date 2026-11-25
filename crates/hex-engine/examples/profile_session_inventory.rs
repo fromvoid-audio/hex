@@ -72,6 +72,8 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                     pitch: 48 + ((index + voice) % 36) as u8,
                     channel: 0,
                     velocity: 80 + (index % 21) as u8,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 });
             }
             cells.push(SessionCellSnapshot {
@@ -92,6 +94,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                         loop_end_raw: 4 << 32,
                         looping: true,
                         notes,
+                        expression_lanes: Vec::new(),
                     },
                 }),
             });

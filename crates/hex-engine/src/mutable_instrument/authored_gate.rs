@@ -22,6 +22,7 @@ pub(crate) struct AuthoredGate {
     channel: u8,
     velocity: u8,
     on: bool,
+    expression: hex_project::NoteExpression,
 }
 
 impl AuthoredGate {
@@ -34,7 +35,32 @@ impl AuthoredGate {
             channel,
             velocity: 0,
             on: false,
+            expression: hex_project::NoteExpression::default(),
         }
+    }
+
+    pub(crate) fn is_on(self) -> bool {
+        self.on
+    }
+
+    pub(crate) fn frame_offset(self) -> usize {
+        self.frame_offset
+    }
+
+    pub(crate) fn occurrence_id(self) -> u64 {
+        self.occurrence_id
+    }
+
+    pub(crate) fn pitch(self) -> u8 {
+        self.pitch
+    }
+
+    pub(crate) fn channel(self) -> u8 {
+        self.channel
+    }
+
+    pub(crate) fn expression(self) -> hex_project::NoteExpression {
+        self.expression
     }
 }
 
@@ -142,6 +168,7 @@ pub(crate) fn stage_authored_gates(
                 channel,
                 velocity: 0,
                 on: false,
+                expression: hex_project::NoteExpression::default(),
             })?;
             occurrence.note_off_sent = true;
             occurrence.quiet_deadline_age = source_age.map(|age| {
@@ -231,6 +258,7 @@ pub(crate) fn stage_authored_gates(
             channel: onset.channel,
             velocity: onset.velocity,
             on: true,
+            expression: onset.expression,
         };
         emit(on)?;
         let note_off_sent = gate_end_frame < performance_end;
@@ -241,6 +269,7 @@ pub(crate) fn stage_authored_gates(
                 frame_offset: offset,
                 velocity: 0,
                 on: false,
+                expression: hex_project::NoteExpression::default(),
                 ..on
             })?;
         }

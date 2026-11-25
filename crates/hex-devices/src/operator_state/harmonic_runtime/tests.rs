@@ -646,6 +646,8 @@ fn quality_phase_advance_preserves_odd_steps_and_wrap_across_partitions() {
         local_frame: 0,
         ledger: Ledger::default(),
         expression: [0.0; 3],
+        channel_pitch_bend: 0,
+        cc_timbre: 0,
         last_targets: automation::base_target_values(&factory.settings),
     };
     let note = NativeInstrumentEvent::NoteOn {

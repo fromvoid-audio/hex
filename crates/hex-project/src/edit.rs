@@ -96,6 +96,8 @@ impl Project {
             | Command::TrimMidiClipEdge { .. }
             | Command::StretchMidiClipEdge { .. }
             | Command::SplitMidiClip { .. }
+            | Command::SetMidiExpressionLane { .. }
+            | Command::SetMidiNoteExpression { .. }
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
             | Command::EditMidiNotes { .. }

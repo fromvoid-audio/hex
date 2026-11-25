@@ -164,6 +164,7 @@ fn place_incoming(
                         std::sync::Arc::new(crate::MidiContent {
                             source_length: clip.source_length(),
                             notes: Vec::new(),
+                            expression_lanes: Vec::new(),
                         });
                 }
                 ClipGroupContent::Audio(clip) => {

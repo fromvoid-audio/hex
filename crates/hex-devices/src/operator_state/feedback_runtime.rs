@@ -279,7 +279,11 @@ impl OperatorFeedbackRuntime {
         match event {
             // Unsupported controllers are rejected by preflight before processing.
             NativeInstrumentEvent::Expression { .. }
-            | NativeInstrumentEvent::NotePressure { .. } => {}
+            | NativeInstrumentEvent::NotePressure { .. }
+            | NativeInstrumentEvent::ControlChange { .. }
+            | NativeInstrumentEvent::PitchBend { .. }
+            | NativeInstrumentEvent::NotePitchBend { .. }
+            | NativeInstrumentEvent::NoteTimbre { .. } => {}
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
                 pitch,
@@ -534,6 +538,10 @@ impl MutableInstrumentRuntime for OperatorFeedbackRuntime {
                 NativeInstrumentEvent::NotePressure { .. } => {
                     return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
                 }
+                NativeInstrumentEvent::ControlChange { .. }
+                | NativeInstrumentEvent::PitchBend { .. }
+                | NativeInstrumentEvent::NotePitchBend { .. }
+                | NativeInstrumentEvent::NoteTimbre { .. } => {}
                 NativeInstrumentEvent::Expression { .. } => {
                     return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
                 }

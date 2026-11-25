@@ -48,6 +48,7 @@ pub(super) fn content(
                     loop_start_raw: source.loop_start().raw(),
                     loop_end_raw: source.loop_end().raw(),
                     looping: source.looping(),
+                    expression_lanes: source.expression_lanes().to_vec(),
                     notes: source
                         .notes()
                         .iter()
@@ -59,6 +60,8 @@ pub(super) fn content(
                             pitch: n.pitch(),
                             velocity: n.velocity(),
                             channel: n.channel(),
+                            expression: n.expression(),
+                            expression_points: n.expression_points().to_vec(),
                         })
                         .collect(),
                 }],

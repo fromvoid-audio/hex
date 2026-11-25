@@ -58,6 +58,8 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
                     pitch: 48 + (note % 12) as u8,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 });
             }
             midi_clips.push(MidiClipSnapshot {
@@ -77,6 +79,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
                 loop_end_raw: length,
                 looping: false,
                 notes,
+                expression_lanes: Vec::new(),
             });
         }
         tracks.push(TrackSnapshot {

@@ -34,12 +34,215 @@ pub enum MidiOneShotBoundary {
     LoopEnd,
 }
 
-/// Authored notes and their finite source extent. Playback windows belong to
-/// `MidiSource`, so changing a window can retain this immutable content backing.
+/// Maximum expression points across all CC/pitch-bend lanes in one MIDI source.
+pub const MAX_MIDI_EXPRESSION_POINTS: usize = 4_096;
+/// Maximum distinct CC/pitch-bend lanes in one MIDI source.
+pub const MAX_MIDI_CC_LANES: usize = 16;
+/// Maximum time-varying per-note expression points on one MIDI note.
+pub const MAX_NOTE_EXPRESSION_POINTS: usize = 64;
+/// Minimum per-note MPE pitch offset in cents (-48 semitones).
+pub const MIN_NOTE_PITCH_OFFSET_CENTS: i16 = -4_800;
+/// Maximum per-note MPE pitch offset in cents (+48 semitones).
+pub const MAX_NOTE_PITCH_OFFSET_CENTS: i16 = 4_800;
+
+/// Target controller or pitch-bend lane authored inside a MIDI clip source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MidiLaneKind {
+    /// Standard MIDI 1.0 Control Change (`0..=127`, e.g. CC1 Mod Wheel, CC11 Expression, CC64 Sustain, CC74 Timbre).
+    ControlChange(u8),
+    /// Channel 14-bit Pitch Bend (`-8192..=8191`).
+    PitchBend,
+}
+
+impl MidiLaneKind {
+    pub fn validate(self) -> Result<(), Invalid> {
+        match self {
+            Self::ControlChange(cc) if cc > 127 => {
+                Err(Invalid("midi cc lane number must be 0..127"))
+            }
+            _ => Ok(()),
+        }
+    }
+
+    pub fn validate_value(self, value: i16) -> Result<(), Invalid> {
+        match self {
+            Self::ControlChange(_) if !(0..=127).contains(&value) => {
+                Err(Invalid("midi cc value must be 0..127"))
+            }
+            Self::PitchBend if !(-8192..=8191).contains(&value) => {
+                Err(Invalid("midi pitch bend value must be -8192..8191"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+/// One authored MIDI CC or Pitch Bend point in source-local beat coordinates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MidiLanePoint {
+    pub beat: BeatTime,
+    pub channel: u8,
+    pub value: i16,
+}
+
+/// One canonically sorted clip-local MIDI CC or Pitch Bend lane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiExpressionLane {
+    pub kind: MidiLaneKind,
+    pub points: Vec<MidiLanePoint>,
+}
+
+/// Static per-note MPE expression authored on a [`MidiNote`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoteExpression {
+    /// Per-note pitch offset in cents (`-4800..=4800`, 0 = concert/unbent pitch).
+    pub pitch_offset_cents: i16,
+    /// Per-note timbre / slide (`0..=127`, CC74).
+    pub timbre: u8,
+    /// Per-note pressure / aftertouch (`0..=127`).
+    pub pressure: u8,
+}
+
+impl NoteExpression {
+    pub const fn is_default(self) -> bool {
+        self.pitch_offset_cents == 0 && self.timbre == 0 && self.pressure == 0
+    }
+
+    pub fn validate(self) -> Result<(), Invalid> {
+        if !(MIN_NOTE_PITCH_OFFSET_CENTS..=MAX_NOTE_PITCH_OFFSET_CENTS)
+            .contains(&self.pitch_offset_cents)
+        {
+            return Err(Invalid(
+                "note pitch offset must be within -4800..=4800 cents",
+            ));
+        }
+        if self.timbre > 127 {
+            return Err(Invalid("note timbre must be 0..127"));
+        }
+        if self.pressure > 127 {
+            return Err(Invalid("note pressure must be 0..127"));
+        }
+        Ok(())
+    }
+}
+
+/// Time-varying per-note MPE expression point at a note-relative beat offset (`0..=duration`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoteExpressionPoint {
+    pub offset: BeatTime,
+    pub pitch_offset_cents: i16,
+    pub timbre: u8,
+    pub pressure: u8,
+}
+
+impl NoteExpressionPoint {
+    pub fn validate(self, note_duration: BeatTime) -> Result<(), Invalid> {
+        if self.offset > note_duration {
+            return Err(Invalid(
+                "note expression point offset exceeds note duration",
+            ));
+        }
+        NoteExpression {
+            pitch_offset_cents: self.pitch_offset_cents,
+            timbre: self.timbre,
+            pressure: self.pressure,
+        }
+        .validate()
+    }
+}
+
+pub(crate) fn validate_lane_points(
+    kind: MidiLaneKind,
+    points: &[MidiLanePoint],
+    source_length: BeatTime,
+) -> Result<(), Invalid> {
+    kind.validate()?;
+    if points.len() > MAX_MIDI_EXPRESSION_POINTS {
+        return Err(Invalid("midi expression lane exceeds point limit"));
+    }
+    let mut prev: Option<(u64, u8)> = None;
+    for point in points {
+        if point.channel > 15 {
+            return Err(Invalid("midi expression channel must be 0..15"));
+        }
+        if point.beat >= source_length {
+            return Err(Invalid("midi expression point exceeds clip source length"));
+        }
+        kind.validate_value(point.value)?;
+        let key = (point.beat.raw(), point.channel);
+        if let Some(previous) = prev
+            && key <= previous
+        {
+            return Err(Invalid(
+                "midi expression lane points must be strictly ordered by (beat, channel)",
+            ));
+        }
+        prev = Some(key);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_expression_lanes(
+    lanes: &[MidiExpressionLane],
+    source_length: BeatTime,
+) -> Result<(), Invalid> {
+    if lanes.len() > MAX_MIDI_CC_LANES {
+        return Err(Invalid("midi source exceeds expression lane limit"));
+    }
+    let mut total_points = 0usize;
+    let mut prev_kind: Option<MidiLaneKind> = None;
+    for lane in lanes {
+        if lane.points.is_empty() {
+            return Err(Invalid("midi expression lane must not be empty"));
+        }
+        if let Some(previous) = prev_kind
+            && lane.kind <= previous
+        {
+            return Err(Invalid(
+                "midi expression lanes must be unique and canonically ordered",
+            ));
+        }
+        validate_lane_points(lane.kind, &lane.points, source_length)?;
+        total_points = total_points
+            .checked_add(lane.points.len())
+            .filter(|&count| count <= MAX_MIDI_EXPRESSION_POINTS)
+            .ok_or(Invalid("midi source exceeds total expression point limit"))?;
+        prev_kind = Some(lane.kind);
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_note_expression_points(
+    points: &[NoteExpressionPoint],
+    note_duration: BeatTime,
+) -> Result<(), Invalid> {
+    if points.len() > MAX_NOTE_EXPRESSION_POINTS {
+        return Err(Invalid("note expression curve exceeds point limit"));
+    }
+    let mut prev_offset: Option<u64> = None;
+    for point in points {
+        point.validate(note_duration)?;
+        let raw = point.offset.raw();
+        if let Some(previous) = prev_offset
+            && raw <= previous
+        {
+            return Err(Invalid(
+                "note expression points must be strictly ascending by offset",
+            ));
+        }
+        prev_offset = Some(raw);
+    }
+    Ok(())
+}
+
+/// Authored notes, expression lanes, and their finite source extent. Playback
+/// windows belong to `MidiSource`, so changing a window can retain this
+/// immutable content backing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiContent {
     pub(crate) source_length: BeatTime,
     pub(crate) notes: Vec<MidiNote>,
+    pub(crate) expression_lanes: Vec<MidiExpressionLane>,
 }
 impl MidiContent {
     pub fn source_length(&self) -> BeatTime {
@@ -47,6 +250,12 @@ impl MidiContent {
     }
     pub fn notes(&self) -> &[MidiNote] {
         &self.notes
+    }
+    pub fn expression_lanes(&self) -> &[MidiExpressionLane] {
+        &self.expression_lanes
+    }
+    pub fn expression_lane(&self, kind: MidiLaneKind) -> Option<&MidiExpressionLane> {
+        self.expression_lanes.iter().find(|lane| lane.kind == kind)
     }
 }
 
@@ -88,6 +297,30 @@ impl MidiSourceIdentity {
     /// capacity and Arc header/alignment. Shared clones may be charged repeatedly. This is not
     /// PCM, allocation identity, exclusive ownership, or a closed-storage proof.
     pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
+        let note_expr_bytes = self.0.notes.iter().try_fold(0usize, |acc, note| {
+            acc.checked_add(
+                note.expression_points
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<NoteExpressionPoint>())?,
+            )
+        })?;
+        let lane_bytes = self
+            .0
+            .expression_lanes
+            .capacity()
+            .checked_mul(std::mem::size_of::<MidiExpressionLane>())?
+            .checked_add(
+                self.0
+                    .expression_lanes
+                    .iter()
+                    .try_fold(0usize, |acc, lane| {
+                        acc.checked_add(
+                            lane.points
+                                .capacity()
+                                .checked_mul(std::mem::size_of::<MidiLanePoint>())?,
+                        )
+                    })?,
+            )?;
         std::mem::size_of::<MidiSource>()
             .checked_add(std::mem::size_of::<MidiContent>())?
             .checked_add(
@@ -96,6 +329,8 @@ impl MidiSourceIdentity {
                     .capacity()
                     .checked_mul(std::mem::size_of::<MidiNote>())?,
             )?
+            .checked_add(note_expr_bytes)?
+            .checked_add(lane_bytes)?
             .checked_add(4usize.checked_mul(std::mem::size_of::<usize>())?)?
             .checked_add(
                 std::mem::align_of::<usize>()
@@ -142,6 +377,12 @@ impl MidiSource {
     pub fn notes(&self) -> &[MidiNote] {
         &self.notes
     }
+    pub fn expression_lanes(&self) -> &[MidiExpressionLane] {
+        &self.expression_lanes
+    }
+    pub fn expression_lane(&self, kind: MidiLaneKind) -> Option<&MidiExpressionLane> {
+        self.content.expression_lane(kind)
+    }
     pub fn one_shot_boundary(&self) -> MidiOneShotBoundary {
         self.one_shot_boundary
     }
@@ -176,6 +417,7 @@ impl MidiSource {
             content: Arc::new(MidiContent {
                 source_length: length,
                 notes: Vec::new(),
+                expression_lanes: Vec::new(),
             }),
             source_start: BeatTime::ZERO,
             loop_start: BeatTime::ZERO,
@@ -512,6 +754,8 @@ pub struct MidiNote {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    pub(crate) expression: NoteExpression,
+    pub(crate) expression_points: Vec<NoteExpressionPoint>,
 }
 impl MidiNote {
     pub fn id(&self) -> NoteId {
@@ -534,6 +778,12 @@ impl MidiNote {
     }
     pub fn velocity(&self) -> u8 {
         self.velocity
+    }
+    pub fn expression(&self) -> NoteExpression {
+        self.expression
+    }
+    pub fn expression_points(&self) -> &[NoteExpressionPoint] {
+        &self.expression_points
     }
 }
 
@@ -943,6 +1193,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                             pitch: note.pitch,
                             channel: note.channel,
                             velocity: note.velocity,
+                            expression: note.expression,
+                            expression_points: Vec::new(),
                         });
                     }
                 }
@@ -996,6 +1248,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     content: std::sync::Arc::new(crate::MidiContent {
                         source_length: right_length,
                         notes,
+                        expression_lanes: Vec::new(),
                     }),
                     one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                     source_start: BeatTime::ZERO,
@@ -1056,6 +1309,61 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             target.looping = looping;
             target.source_playback()?;
             crate::clip_group::replace_midi(project, target)
+        }
+        Command::SetMidiExpressionLane {
+            clip,
+            kind,
+            mut points,
+        } => {
+            kind.validate()?;
+            let target = project
+                .midi_source(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let source_length = target.source_length();
+            // Canonically sort by (beat, channel); reject duplicate or invalid entries.
+            points.sort_by_key(|p| (p.beat.raw(), p.channel));
+            validate_lane_points(kind, &points, source_length)?;
+
+            let mut next_lanes = target.expression_lanes().to_vec();
+            next_lanes.retain(|lane| lane.kind != kind);
+            if !points.is_empty() {
+                next_lanes.push(MidiExpressionLane { kind, points });
+                next_lanes.sort_by_key(|lane| lane.kind);
+            }
+            validate_expression_lanes(&next_lanes, source_length)?;
+
+            let source = project.midi_source_mut(clip)?;
+            source.expression_lanes = next_lanes;
+            Ok(Created::None)
+        }
+        Command::SetMidiNoteExpression {
+            clip,
+            note,
+            expression,
+            mut points,
+        } => {
+            expression.validate()?;
+            let target = project
+                .midi_source(clip)
+                .ok_or(Invalid("midi clip no longer exists"))?;
+            let note_index = target
+                .notes()
+                .iter()
+                .position(|n| n.id == note)
+                .ok_or(Invalid("midi note no longer exists in clip"))?;
+            let duration = target.notes()[note_index].duration;
+            points.sort_by_key(|p| p.offset.raw());
+            validate_note_expression_points(&points, duration)?;
+
+            let source = project.midi_source_mut(clip)?;
+            let target_note = source
+                .notes
+                .iter_mut()
+                .find(|n| n.id == note)
+                .ok_or(Invalid("midi note no longer exists in clip"))?;
+            target_note.expression = expression;
+            target_note.expression_points = points;
+            Ok(Created::None)
         }
         Command::AddMidiNote {
             clip,
@@ -1507,6 +1815,7 @@ fn materialize_overwrite_ranges_inner(
                 content: std::sync::Arc::new(crate::MidiContent {
                     source_length: length,
                     notes: Vec::new(),
+                    expression_lanes: Vec::new(),
                 }),
                 one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
                 source_start: BeatTime::ZERO,
@@ -1561,6 +1870,8 @@ fn materialize_overwrite_ranges_inner(
                         pitch: note.pitch,
                         channel: note.channel,
                         velocity: note.velocity,
+                        expression: note.expression,
+                        expression_points: Vec::new(),
                     });
                 }
             }
@@ -1617,6 +1928,192 @@ mod retained_metadata_tests {
         assert_eq!(
             identity.clone().retained_control_metadata_bytes(),
             identity.retained_control_metadata_bytes()
+        );
+    }
+
+    #[test]
+    fn clip_cc_pitch_bend_and_note_expression_validate_and_undo_redo_cleanly() {
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "synth".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected midi track");
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("expected midi clip");
+        };
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch: 60,
+                channel: 1,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("expected midi note");
+        };
+
+        // Set CC1 and PitchBend lanes (out-of-order input gets canonically sorted).
+        editor
+            .execute(Command::SetMidiExpressionLane {
+                clip,
+                kind: MidiLaneKind::ControlChange(1),
+                points: vec![
+                    MidiLanePoint {
+                        beat: BeatTime::from_quarters(2).unwrap(),
+                        channel: 0,
+                        value: 100,
+                    },
+                    MidiLanePoint {
+                        beat: BeatTime::ZERO,
+                        channel: 0,
+                        value: 32,
+                    },
+                ],
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetMidiExpressionLane {
+                clip,
+                kind: MidiLaneKind::PitchBend,
+                points: vec![MidiLanePoint {
+                    beat: BeatTime::ONE,
+                    channel: 0,
+                    value: 4096,
+                }],
+            })
+            .unwrap();
+        // Set per-note MPE expression + time-varying point.
+        let expr = NoteExpression {
+            pitch_offset_cents: 200,
+            timbre: 90,
+            pressure: 75,
+        };
+        let curve = vec![NoteExpressionPoint {
+            offset: BeatTime::ONE,
+            pitch_offset_cents: 350,
+            timbre: 110,
+            pressure: 100,
+        }];
+        editor
+            .execute(Command::SetMidiNoteExpression {
+                clip,
+                note,
+                expression: expr,
+                points: curve.clone(),
+            })
+            .unwrap();
+
+        let source = editor.project().midi_source(clip).unwrap();
+        assert_eq!(source.expression_lanes().len(), 2);
+        let cc1 = source
+            .expression_lane(MidiLaneKind::ControlChange(1))
+            .unwrap();
+        assert_eq!(cc1.points[0].beat, BeatTime::ZERO);
+        assert_eq!(cc1.points[0].value, 32);
+        assert_eq!(cc1.points[1].value, 100);
+        let bend = source.expression_lane(MidiLaneKind::PitchBend).unwrap();
+        assert_eq!(bend.points[0].value, 4096);
+        assert_eq!(source.notes()[0].expression(), expr);
+        assert_eq!(source.notes()[0].expression_points(), curve.as_slice());
+
+        // Strict validation refuses out-of-range CC, bend, channel, beat, and note-expression values.
+        assert!(
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::ControlChange(128),
+                    points: vec![MidiLanePoint {
+                        beat: BeatTime::ZERO,
+                        channel: 0,
+                        value: 10,
+                    }],
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::ControlChange(1),
+                    points: vec![MidiLanePoint {
+                        beat: BeatTime::ZERO,
+                        channel: 0,
+                        value: 128,
+                    }],
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::PitchBend,
+                    points: vec![MidiLanePoint {
+                        beat: BeatTime::from_quarters(4).unwrap(),
+                        channel: 0,
+                        value: 0,
+                    }],
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::SetMidiNoteExpression {
+                    clip,
+                    note,
+                    expression: NoteExpression {
+                        pitch_offset_cents: 5000,
+                        timbre: 0,
+                        pressure: 0,
+                    },
+                    points: Vec::new(),
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::SetMidiNoteExpression {
+                    clip,
+                    note,
+                    expression: NoteExpression::default(),
+                    points: vec![NoteExpressionPoint {
+                        offset: BeatTime::from_quarters(3).unwrap(),
+                        pitch_offset_cents: 0,
+                        timbre: 64,
+                        pressure: 0,
+                    }],
+                })
+                .is_err()
+        );
+
+        // Snapshot round-trip preserves everything.
+        let restored = Project::from_snapshot(editor.project().snapshot()).unwrap();
+        assert_eq!(restored, *editor.project());
+
+        // Undo & Redo preserve exact expression state.
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().midi_source(clip).unwrap().notes()[0].expression(),
+            NoteExpression::default()
+        );
+        assert!(editor.redo());
+        assert_eq!(
+            editor.project().midi_source(clip).unwrap().notes()[0].expression(),
+            expr
         );
     }
 }

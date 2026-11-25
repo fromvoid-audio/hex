@@ -210,6 +210,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
             loop_end_raw: beat(2).raw(),
             looping: false,
             notes: Vec::new(),
+            expression_lanes: Vec::new(),
         })
         .collect();
     let full_project = Project::from_legacy_snapshot(Snapshot {

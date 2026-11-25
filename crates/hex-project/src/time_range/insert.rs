@@ -406,6 +406,8 @@ fn materialize_shifted_midi(
                 pitch: note.pitch(),
                 channel: note.channel(),
                 velocity: note.velocity(),
+                expression: note.expression(),
+                expression_points: Vec::new(),
             });
         }
     }
@@ -434,6 +436,7 @@ fn materialize_shifted_midi(
             content: std::sync::Arc::new(crate::MidiContent {
                 source_length: length,
                 notes,
+                expression_lanes: Vec::new(),
             }),
             one_shot_boundary: crate::MidiOneShotBoundary::SourceEnd,
             source_start: BeatTime::ZERO,

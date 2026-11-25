@@ -68,6 +68,8 @@ fn fixture(notes: usize, duration: u64) -> Project {
                 pitch: 36 + index as u8,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             })
             .collect::<Vec<_>>()
     };
@@ -927,6 +929,8 @@ fn note_chase_off_imports_only_the_admitted_analytic_voice() {
             pitch: 64,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         if !keep_historical {
             clips[0].notes.remove(0);

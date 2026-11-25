@@ -85,7 +85,11 @@ impl Runtime {
                     .ok_or(Error::InvalidEventBatch)?;
                 *pressure = value;
             }
-            NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
+            NativeInstrumentEvent::Expression { .. }
+            | NativeInstrumentEvent::ControlChange { .. }
+            | NativeInstrumentEvent::PitchBend { .. }
+            | NativeInstrumentEvent::NotePitchBend { .. }
+            | NativeInstrumentEvent::NoteTimbre { .. } => return Err(Error::InvalidEventBatch),
         }
         Ok(())
     }

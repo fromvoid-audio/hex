@@ -877,11 +877,58 @@ impl ForeignArrangement {
         } else {
             MAX_FOREIGN_NOTES
         };
-        let mut emit = |gate| -> Result<(), MutableInstrumentRuntimeError> {
+        let mut emit = |gate: AuthoredGate| -> Result<(), MutableInstrumentRuntimeError> {
             if events.len() == authored_capacity {
                 return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
             }
-            events.push(ForeignNote::try_from(gate)?);
+            let foreign_note = ForeignNote::try_from(gate)?;
+            events.push(foreign_note);
+            if gate.is_on() && !gate.expression().is_default() {
+                let expr = gate.expression();
+                let frame = foreign_note.frame;
+                let channel = gate.channel();
+                if expr.pitch_offset_cents != 0 {
+                    if events.len() == authored_capacity {
+                        return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
+                    }
+                    let bend = ((i32::from(expr.pitch_offset_cents) * 8191) / 4800)
+                        .clamp(-8192, 8191) as i16;
+                    events.push(ForeignNote::pitch_bend(
+                        frame,
+                        channel,
+                        bend,
+                        foreign_note.note_id,
+                        false,
+                    ));
+                }
+                if expr.timbre != 0 {
+                    if events.len() == authored_capacity {
+                        return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
+                    }
+                    events.push(ForeignNote::control_change(
+                        frame,
+                        channel,
+                        74,
+                        expr.timbre,
+                        foreign_note.note_id,
+                        false,
+                    ));
+                }
+                if expr.pressure != 0 {
+                    if events.len() == authored_capacity {
+                        return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
+                    }
+                    events.push(ForeignNote {
+                        frame,
+                        channel,
+                        pitch: gate.pitch(),
+                        value: expr.pressure,
+                        kind: hex_lattice::ForeignNoteKind::PolyPressure,
+                        note_id: foreign_note.note_id,
+                        is_live: false,
+                    });
+                }
+            }
             Ok(())
         };
         let route_changed = ledger.route.is_some_and(|old| old != session.route.owner);
@@ -958,6 +1005,7 @@ impl ForeignArrangement {
                                     pitch: span.pitch,
                                     channel: span.channel,
                                     velocity: span.velocity,
+                                    expression: span.expression,
                                     contributor_fade_in: false,
                                 })
                                 .is_err();
@@ -998,6 +1046,25 @@ impl ForeignArrangement {
                 emit,
             )
             .map_err(|error| error.render_error())?;
+            if session.route.owner == RouteOwner::Arrangement {
+                for expr in track.expression_events_in_range(context.arrangement, end) {
+                    if events.len() == authored_capacity {
+                        return Err(
+                            MutableInstrumentRuntimeError::OccurrenceCapacity.render_error()
+                        );
+                    }
+                    let note = match expr.kind {
+                        crate::midi_compile::CompiledExpressionKind::ControlChange {
+                            cc,
+                            value,
+                        } => ForeignNote::control_change(0, expr.channel, cc, value, None, false),
+                        crate::midi_compile::CompiledExpressionKind::PitchBend { value } => {
+                            ForeignNote::pitch_bend(0, expr.channel, value, None, false)
+                        }
+                    };
+                    events.push(note);
+                }
+            }
         }
         // One physical callback spans at most one quantum boundary. Preserve
         // headroom for this snapshot even when the authored slice is full.

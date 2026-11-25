@@ -291,6 +291,22 @@ pub const MAX_ONSETS_PER_WINDOW: usize = 128;
 /// Renderer queries instrument intervals in chunks no larger than this frame count.
 pub const RENDER_QUERY_FRAMES: u64 = 256;
 
+/// Maximum compiled clip CC / pitch-bend expression events per track.
+pub const MAX_MIDI_EXPRESSION_EVENTS_PER_TRACK: usize = 16_384;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompiledExpressionKind {
+    ControlChange { cc: u8, value: u8 },
+    PitchBend { value: i16 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompiledExpressionEvent {
+    pub(crate) frame: u64,
+    pub(crate) channel: u8,
+    pub(crate) kind: CompiledExpressionKind,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct CompiledNoteSpan {
     pub(crate) starts_inside_gate: bool,
@@ -303,6 +319,7 @@ pub(crate) struct CompiledNoteSpan {
     pub(crate) pitch: u8,
     pub(crate) channel: u8,
     pub(crate) velocity: u8,
+    pub(crate) expression: hex_project::NoteExpression,
     pub(crate) clip: ClipId,
     pub(crate) note: hex_project::NoteId,
     pub(crate) iteration: u64,
@@ -621,6 +638,7 @@ fn compile_instrument_track_with_empty_bank(
                         pitch: note.pitch(),
                         channel: note.channel(),
                         velocity: note.velocity(),
+                        expression: note.expression(),
                         clip: clip.id(),
                         note: note.id(),
                         iteration,
@@ -653,6 +671,7 @@ fn compile_instrument_track_with_empty_bank(
             span.iteration,
         )
     });
+    let expression_events = compile_track_expression_events(project, track)?;
     validate_density(&spans, mutable_limits)?;
     let mut nodes = Vec::with_capacity(spans.len());
     let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
@@ -665,7 +684,121 @@ fn compile_instrument_track_with_empty_bank(
         shared_contexts,
         mutable,
         volumes,
+        expression_events,
     }))
+}
+
+fn compile_track_expression_events(
+    project: &Project,
+    track: &Track,
+) -> Result<Vec<CompiledExpressionEvent>, Invalid> {
+    let mut events = Vec::new();
+    for clip in track.midi_clips().iter().filter(|clip| clip.active()) {
+        let lanes = clip.expression_lanes();
+        if lanes.is_empty() {
+            continue;
+        }
+        let source = clip.source();
+        let playback = clip.source_playback().map_err(|error| Invalid(error.0))?;
+        let arrangement_len = playback.arrangement_duration().raw();
+        let source_start = source.source_start().raw();
+        let effective_end = source.effective_end().raw();
+        let clip_start_raw = clip.start().raw();
+
+        for lane in lanes {
+            for point in &lane.points {
+                let kind = match lane.kind {
+                    hex_project::MidiLaneKind::ControlChange(cc) => {
+                        CompiledExpressionKind::ControlChange {
+                            cc,
+                            value: point.value.clamp(0, 127) as u8,
+                        }
+                    }
+                    hex_project::MidiLaneKind::PitchBend => CompiledExpressionKind::PitchBend {
+                        value: point.value.clamp(-8192, 8191),
+                    },
+                };
+                let channel = point.channel.min(15);
+                let pos = point.beat.raw();
+                // Intro pass: [source_start, effective_end)
+                if pos >= source_start && pos < effective_end {
+                    let offset = pos - source_start;
+                    if offset < arrangement_len {
+                        push_compiled_expression(
+                            project,
+                            clip_start_raw,
+                            offset,
+                            channel,
+                            kind,
+                            &mut events,
+                        )?;
+                    }
+                }
+                // Loop repetitions if looping
+                if source.looping() {
+                    let loop_start = source.loop_start().raw();
+                    let loop_end = source.loop_end().raw();
+                    if loop_end > loop_start && pos >= loop_start && pos < loop_end {
+                        let first_pass = effective_end.saturating_sub(source_start);
+                        let period = loop_end - loop_start;
+                        let in_loop = pos - loop_start;
+                        let mut base = first_pass;
+                        while let Some(offset) = base.checked_add(in_loop) {
+                            if offset >= arrangement_len {
+                                break;
+                            }
+                            push_compiled_expression(
+                                project,
+                                clip_start_raw,
+                                offset,
+                                channel,
+                                kind,
+                                &mut events,
+                            )?;
+                            let Some(next) = base.checked_add(period) else {
+                                break;
+                            };
+                            base = next;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    events.sort_by_key(|event| {
+        let (rank, id) = match event.kind {
+            CompiledExpressionKind::PitchBend { .. } => (0_u8, 0_u8),
+            CompiledExpressionKind::ControlChange { cc, .. } => (1_u8, cc),
+        };
+        (event.frame, rank, id, event.channel)
+    });
+    Ok(events)
+}
+
+fn push_compiled_expression(
+    project: &Project,
+    clip_start_raw: u64,
+    offset_raw: u64,
+    channel: u8,
+    kind: CompiledExpressionKind,
+    events: &mut Vec<CompiledExpressionEvent>,
+) -> Result<(), Invalid> {
+    if events.len() >= MAX_MIDI_EXPRESSION_EVENTS_PER_TRACK {
+        return Err(Invalid("midi expression event limit reached"));
+    }
+    let abs_raw = clip_start_raw
+        .checked_add(offset_raw)
+        .ok_or(Invalid("midi expression beat overflow"))?;
+    let frame = project
+        .tempo_map()
+        .beat_to_frame(BeatTime::from_raw(abs_raw))
+        .map_err(|_| Invalid("midi expression exceeds frame range"))?;
+    events.push(CompiledExpressionEvent {
+        frame,
+        channel,
+        kind,
+    });
+    Ok(())
 }
 
 trait DensitySpan {

@@ -39,6 +39,8 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                     pitch: 48 + (index % 36) as u8,
                     channel: 0,
                     velocity: 100,
+                    expression: Default::default(),
+                    expression_points: Vec::new(),
                 }
             })
             .collect();
@@ -77,6 +79,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
                 loop_end_raw: 256 << 32,
                 looping: false,
                 notes,
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         });

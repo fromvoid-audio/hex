@@ -383,6 +383,10 @@ impl<const N: usize> Runtime<N> {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
             }
+            NativeInstrumentEvent::ControlChange { .. }
+            | NativeInstrumentEvent::PitchBend { .. }
+            | NativeInstrumentEvent::NotePitchBend { .. }
+            | NativeInstrumentEvent::NoteTimbre { .. } => {}
             NativeInstrumentEvent::Expression { .. } => return Err(Error::InvalidEventBatch),
             NativeInstrumentEvent::NoteOn {
                 occurrence_id,
@@ -859,6 +863,8 @@ impl<const N: usize> super::harmonic_runtime::VoiceHistory for Runtime<N> {
             modulated_filter: None,
             drain: 0,
             pitch_steps: Default::default(),
+            pitch_offset_cents: 0,
+            timbre: 0,
             pan_gains: Default::default(),
             lfo_rate_multiplier: 1.0,
             envelope_age: old.age as f64,
@@ -1037,8 +1043,12 @@ mod tests {
             ] {
                 if (start..end).contains(&at) {
                     events.push(match event {
-                        NativeInstrumentEvent::NotePressure { .. } => {
-                            panic!("unexpected test note pressure")
+                        NativeInstrumentEvent::NotePressure { .. }
+                        | NativeInstrumentEvent::NotePitchBend { .. }
+                        | NativeInstrumentEvent::NoteTimbre { .. }
+                        | NativeInstrumentEvent::ControlChange { .. }
+                        | NativeInstrumentEvent::PitchBend { .. } => {
+                            panic!("unexpected test note expression")
                         }
                         NativeInstrumentEvent::Expression { expression, .. } => {
                             NativeInstrumentEvent::Expression {

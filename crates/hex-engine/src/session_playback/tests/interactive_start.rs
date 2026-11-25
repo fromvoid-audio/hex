@@ -739,6 +739,8 @@ mod note_chase {
             pitch: 64,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         if !keep_historical {
             clips[0].notes.remove(0);
@@ -1223,6 +1225,8 @@ mod note_chase {
                 pitch: 64,
                 channel: 0,
                 velocity: 100,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             });
             if compensated {
                 snapshot.main_devices.push(DeviceSnapshot {
@@ -1336,6 +1340,8 @@ mod note_chase {
             pitch: 67,
             channel: 0,
             velocity: 100,
+            expression: Default::default(),
+            expression_points: Vec::new(),
         });
         let edited = Project::from_snapshot(edited_snapshot).unwrap();
         let edited_prepared = revision(&edited, Arc::new(hex_devices::SineTable::new()));

@@ -262,6 +262,8 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
                 pitch,
                 channel: 0,
                 velocity,
+                expression: Default::default(),
+                expression_points: Vec::new(),
             });
             next_id += 1;
         }
@@ -308,6 +310,7 @@ fn fixture(instrument_type: DeviceTypeId) -> Result<ProfileFixture, Box<dyn Erro
                 loop_end_raw: clip_length,
                 looping: false,
                 notes,
+                expression_lanes: Vec::new(),
             }]),
             sends: Vec::new(),
         });

@@ -127,6 +127,7 @@ fn clone_midi(project: &mut Project, clip: &MidiClip) -> Result<MidiClip, Invali
         content: std::sync::Arc::new(crate::MidiContent {
             source_length: source.source_length,
             notes,
+            expression_lanes: source.expression_lanes.clone(),
         }),
         one_shot_boundary: source.one_shot_boundary,
         source_start: source.source_start,

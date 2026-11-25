@@ -491,6 +491,8 @@ impl Command {
             | Self::SetMidiClipSource { clip, .. }
             | Self::ReplaceMidiClipVolume { clip, .. }
             | Self::SetMidiClipGain { clip, .. }
+            | Self::SetMidiExpressionLane { clip, .. }
+            | Self::SetMidiNoteExpression { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
             | Self::SetMidiNotesActive { clip, .. }
