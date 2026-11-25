@@ -26,7 +26,7 @@ ALLOWED = {
     'hex-lattice': {'hex-lattice-contract', 'hex-dsp', 'hex-tuning'},
     'hex-devices': {'hex-lattice', 'hex-lattice-contract', 'hex-dsp'},
     'hex-media': {'hex-engine', 'hex-project'},
-    'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning'},
+    'hex-storage': {'hex-project', 'hex-lattice-contract', 'hex-tuning', 'hex-plugin-state'},
     # Pure captured-save envelope validation; no native runtime/ABI ownership.
     'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
@@ -52,8 +52,6 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
-    # Real generic project/file/history round trips, never runtime state I/O.
-    'hex-storage': {'hex-plugin-state'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     # Worker/key-handler/native gallery fixtures and complete EQ upgrade codec round trips.

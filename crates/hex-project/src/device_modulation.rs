@@ -117,6 +117,11 @@ impl DeviceModulation {
             return Err(Invalid("device modulation capacity reached"));
         }
         for (index, source) in sources.iter().enumerate() {
+            // Compact large-state storage belongs to device and comparison slots.
+            // A modulator retains its historical per-slot envelope bound.
+            if source.state.payload().len() > hex_lattice_contract::MAX_VST3_DEVICE_STATE_BYTES {
+                return Err(Invalid("modulator state exceeds its per-slot byte limit"));
+            }
             if !source.state.asset_references().is_empty() {
                 return Err(Invalid(
                     "asset-backed modulators are not supported by this build; keep the original project and use a compatible build",

@@ -3,7 +3,7 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json, sha2 and fs2, plus
+//! Uses hex-project, hex-tuning, hex-lattice-contract, hex-plugin-state, base64, serde/serde_json, sha2 and fs2, plus
 //! libc errno/flags, rustix's safe exclusive rename for create-new publication and its safe
 //! xattr calls to keep a replaced project's extended attributes, and same-file on Windows
 //! for hardlink/alias file identity checks.
@@ -85,7 +85,9 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = EVENT_WARP_SOURCE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LARGE_VST3_STATE_SCHEMA_VERSION;
+/// Schema125 keeps large opaque VST3 envelopes outside the predecessor document.
+pub const LARGE_VST3_STATE_SCHEMA_VERSION: u32 = 125;
 /// Schema124 adds event-owned marker forks over an unchanged live source clock.
 pub const EVENT_WARP_SOURCE_SCHEMA_VERSION: u32 = 124;
 /// Schema123 admits an independent musical event source alongside a finite scope.
@@ -284,6 +286,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::large_vst3_state::contains(project) {
+        return LARGE_VST3_STATE_SCHEMA_VERSION;
+    }
     if schema::event_warp_sources::contains(project) {
         return EVENT_WARP_SOURCE_SCHEMA_VERSION;
     }
@@ -581,6 +586,9 @@ impl From<serde_json::Error> for StorageError {
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::large_vst3_state::contains(project) {
+        return schema::large_vst3_state::encode(project);
+    }
     if schema::event_warp_sources::contains(project) {
         return schema::event_warp_sources::encode(project);
     }
@@ -962,6 +970,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
+    }
+    if header.version == LARGE_VST3_STATE_SCHEMA_VERSION && !inside_envelope {
+        return schema::large_vst3_state::decode(bytes);
     }
     if header.version == EVENT_WARP_SOURCE_SCHEMA_VERSION && !inside_envelope {
         return schema::event_warp_sources::decode(bytes);

@@ -38,8 +38,10 @@ use std::{fmt, sync::Arc};
 
 /// Maximum opaque state for providers without a dedicated bound.
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
-/// Maximum complete opaque state envelope for the VST3 provider.
+/// Maximum VST3 envelope in historical project formats and the live transport.
 pub const MAX_VST3_DEVICE_STATE_BYTES: usize = 512 * 1024;
+/// Maximum complete VST3 envelope retained by the current project model.
+pub const MAX_STORED_VST3_DEVICE_STATE_BYTES: usize = 16 * 1024 * 1024;
 pub const VST3_DEVICE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.vst3");
 pub const MAX_DEVICE_TYPE_ID_BYTES: usize = 128;
 /// Device-owned IDs exclude zero and the two host gain identifiers.
@@ -338,7 +340,7 @@ impl NativeDeviceState {
             return Err(DeviceContractError::InvalidStateVersion);
         }
         let max_bytes = if type_id == VST3_DEVICE_TYPE_ID {
-            MAX_VST3_DEVICE_STATE_BYTES
+            MAX_STORED_VST3_DEVICE_STATE_BYTES
         } else {
             MAX_NATIVE_DEVICE_STATE_BYTES
         };
@@ -992,7 +994,7 @@ mod tests {
 
     #[test]
     fn vst3_envelopes_have_a_separate_bounded_size() {
-        let max = MAX_VST3_DEVICE_STATE_BYTES;
+        let max = MAX_STORED_VST3_DEVICE_STATE_BYTES;
         let state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![255; max]).unwrap();
         assert_eq!(state.payload().len(), max);
         assert_eq!(

@@ -6,6 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+base64 = "=0.22.1"
+hex-plugin-state = { path = "../hex-plugin-state" }
 hex-tuning = { path = "../hex-tuning" }
 fs2 = "=0.4.3"
 sha2 = "=0.11.0"
@@ -25,6 +27,3 @@ same-file = "=1.0.6"
 
 [lints]
 workspace = true
-
-[dev-dependencies]
-hex-plugin-state = { path = "../hex-plugin-state" }
