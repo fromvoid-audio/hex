@@ -2679,6 +2679,120 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
     });
 }
 
+#[gpui::test]
+fn stopped_native_latency_restart_in_midi_project_restores_instead_of_waiting(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::super::audio_admission::{LatencyRebuild, ProjectRevision, StoppedPlaybackRestore};
+    use super::super::controller::LATENCY_EDIT_WAITING;
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (project, ..) = super::super::clip_drag_ui_test::midi_project();
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &project,
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let (_, editor) = super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let revision_on_audio = control
+        .publish_with_admission_and_source_on_control(
+            Playback::try_from_prepared_with_session(prepared).unwrap(),
+            hex_audio::prepared::PublicationPolicy::InstallFreshRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 0,
+                editor_revision: 0,
+            },
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 64];
+    backend.render(&mut pcm).unwrap();
+    let client = output.take_client().unwrap();
+    client
+        .status()
+        .unwrap()
+        .set_ordinary_native_revision_for_test(revision_on_audio);
+    let applied = client.status().unwrap().native_effect_source().unwrap();
+    assert_eq!(applied.audio_revision, revision_on_audio);
+
+    editor.update(cx, |view, _| {
+        let output_id = client.output_identity().unwrap();
+        let revision = view.state.as_ref().unwrap().revision;
+        let project = ProjectRevision {
+            generation: 0,
+            revision,
+        };
+        client.status().unwrap().playing.store(true, Release);
+        view.audio = Some(EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "midi native latency fixture".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.project_generation = 0;
+        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+            project,
+            output: output_id,
+            runtime_audio: Some(applied.audio_revision),
+        });
+
+        // While playing, a MIDI project waits and displays the notice once.
+        assert!(view.tick_latency_rebuild());
+        assert_eq!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
+        assert!(!view.tick_latency_rebuild());
+
+        // A newer action error is not clobbered by the waiting notice.
+        view.error = Some("bounce failed".into());
+        assert!(!view.tick_latency_rebuild());
+        assert_eq!(view.error.as_deref(), Some("bounce failed"));
+
+        // Once stopped or paused, native latency restart restores immediately
+        // instead of remaining stuck in LATENCY_EDIT_WAITING.
+        view.error = Some(LATENCY_EDIT_WAITING.into());
+        view.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .playing
+            .store(false, Release);
+        assert!(view.tick_latency_rebuild());
+        assert!(view.error.is_none());
+        assert_eq!(
+            view.stopped_playback_restore,
+            Some(StoppedPlaybackRestore::Preparing)
+        );
+        assert!(matches!(
+            view.latency_rebuild,
+            Some(LatencyRebuild::Restoring {
+                resume: false,
+                runtime_audio: Some(rev),
+                ..
+            }) if rev == applied.audio_revision
+        ));
+        view.audio.take().unwrap().control.close();
+    });
+    backend.close();
+}
+
 /// Pulse #3784: a streamed document replaces its sampler output only while
 /// stopped. A playing edit stops first and resumes at the same frame once it
 /// settles, even when the worker refuses it; it never asks the user to stop.
