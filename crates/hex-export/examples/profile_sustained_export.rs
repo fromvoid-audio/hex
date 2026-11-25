@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let elapsed = start.elapsed();
         if report.sample_rate != RATE
             || report.frames != FRAMES as u64
-            || report.data_bytes != FRAMES as u32 * 4
+            || report.data_bytes != FRAMES as u64 * 4
         {
             return Err("unexpected export report".into());
         }

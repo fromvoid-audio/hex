@@ -7,11 +7,10 @@
 //! signal. Digital silence never divides by zero and always applies unity gain
 //! (`1.0` linear, `0.0 dB`).
 
-use crate::ExportError;
-use hex_engine::{Audio, Frame};
-use hex_media::{ResampleLimits, ResampleVersion, resample_cancellable};
+use crate::{ExportControl, ExportError};
+use hex_engine::Frame;
+use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion};
 use std::f64::consts::PI;
-use std::sync::atomic::AtomicBool;
 
 /// Supported target sample-rate bounds matching `hex-media`.
 const MIN_TARGET_SAMPLE_RATE: u32 = 8_000;
@@ -19,6 +18,8 @@ const MAX_TARGET_SAMPLE_RATE: u32 = 192_000;
 /// Bounded maximum frame count for post-processed (SRC / normalized) exports.
 /// Covers > 2 hours at 48 kHz while preventing runaway allocations.
 pub(crate) const MAX_POST_PROCESSED_FRAMES: usize = 360_000_000;
+/// Converted frames rendered between cooperative cancellation polls during SRC.
+const SRC_CANCEL_CHUNK_FRAMES: usize = 16_384;
 
 /// Explicit opt-in normalization mode for an export job.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -29,8 +30,8 @@ pub enum ExportNormalization {
     /// Normalize sample peak to `target_dbfs` (finite, `<= 0.0`).
     Peak { target_dbfs: f64 },
     /// Normalize ITU-R BS.1770-4 K-weighted integrated loudness to `target_lufs`
-    /// (finite, `-70.0..=0.0`), optionally clamping linear gain so sample peak
-    /// does not exceed `true_peak_ceiling_dbfs` (finite, `<= 0.0`).
+    /// (finite, `-70.0..=0.0`), optionally clamping linear gain so 4x oversampled
+    /// true peak does not exceed `true_peak_ceiling_dbfs` (finite, `<= 0.0`).
     Loudness {
         target_lufs: f64,
         true_peak_ceiling_dbfs: Option<f64>,
@@ -44,7 +45,7 @@ impl ExportNormalization {
             Self::Peak { target_dbfs } => {
                 if !target_dbfs.is_finite() || !(-144.0..=0.0).contains(&target_dbfs) {
                     return Err(ExportError::Invalid(
-                        "peak normalization target must be finite and within [-144, 0] dBFS",
+                        "peak normalization target must be finite and within [-144, 0] dbfs",
                     ));
                 }
                 Ok(())
@@ -55,14 +56,14 @@ impl ExportNormalization {
             } => {
                 if !target_lufs.is_finite() || !(-70.0..=0.0).contains(&target_lufs) {
                     return Err(ExportError::Invalid(
-                        "loudness normalization target must be finite and within [-70, 0] LUFS",
+                        "loudness normalization target must be finite and within [-70, 0] lufs",
                     ));
                 }
                 if let Some(ceiling) = true_peak_ceiling_dbfs
                     && (!ceiling.is_finite() || !(-144.0..=0.0).contains(&ceiling))
                 {
                     return Err(ExportError::Invalid(
-                        "loudness peak ceiling must be finite and within [-144, 0] dBFS",
+                        "loudness peak ceiling must be finite and within [-144, 0] dbfs",
                     ));
                 }
                 Ok(())
@@ -88,7 +89,7 @@ impl ExportOptions {
             && !(MIN_TARGET_SAMPLE_RATE..=MAX_TARGET_SAMPLE_RATE).contains(&rate)
         {
             return Err(ExportError::Invalid(
-                "target sample rate must be within 8000..=192000 Hz",
+                "target sample rate must be within 8000..=192000 hz",
             ));
         }
         self.normalization.validate()
@@ -133,28 +134,116 @@ impl AppliedGain {
 }
 
 /// Resample rendered stereo PCM to `target_rate` using `hex-media`'s
-/// deterministic windowed-sinc V2 kernel, honoring cooperative cancellation.
+/// deterministic windowed-sinc V2 kernel, polling live cooperative cancellation
+/// per chunk, allocating the output buffer fallibly, and dropping the input
+/// buffer immediately after conversion (avoiding a 3x RAM `.to_vec()` copy).
 pub(crate) fn resample_export_frames(
     source_rate: u32,
     target_rate: u32,
     frames: Vec<Frame>,
-    cancel: &AtomicBool,
+    control: &ExportControl,
 ) -> Result<Vec<Frame>, ExportError> {
+    resample_export_frames_with_hook(source_rate, target_rate, frames, control, |_| {})
+}
+
+fn resample_export_frames_with_hook(
+    source_rate: u32,
+    target_rate: u32,
+    frames: Vec<Frame>,
+    control: &ExportControl,
+    mut after_chunk: impl FnMut(usize),
+) -> Result<Vec<Frame>, ExportError> {
+    control.check()?;
     if source_rate == target_rate || frames.is_empty() {
         return Ok(frames);
     }
-    let audio = Audio::new(source_rate, frames)
-        .map_err(|_| ExportError::Invalid("rendered export audio is invalid for resampling"))?;
-    let limits = ResampleLimits {
-        max_source_frames: MAX_POST_PROCESSED_FRAMES,
-        max_output_frames: MAX_POST_PROCESSED_FRAMES,
+    let source_frames = u64::try_from(frames.len())
+        .map_err(|_| ExportError::Invalid("rendered export frame count exceeds range"))?;
+    let max_frames = u64::try_from(MAX_POST_PROCESSED_FRAMES)
+        .map_err(|_| ExportError::Invalid("post-processed export frame limit exceeds range"))?;
+    let map_media = |err: hex_media::ImportError| match err {
+        hex_media::ImportError::Cancelled => ExportError::Cancelled,
+        hex_media::ImportError::AllocationFailed => {
+            ExportError::Invalid("could not allocate resampled export buffer")
+        }
+        other => ExportError::Media(format!("target sample-rate conversion failed: {other}")),
     };
-    let converted = resample_cancellable(&audio, target_rate, limits, ResampleVersion::V2, cancel)
-        .map_err(|err| match err {
-            hex_media::ImportError::Cancelled => ExportError::Cancelled,
-            other => ExportError::Media(format!("target sample-rate conversion failed: {other}")),
-        })?;
-    Ok(converted.frames().to_vec())
+    let kernel = ResampleKernel::with_version(source_rate, target_rate, ResampleVersion::V2)
+        .map_err(map_media)?;
+    let plan = ResamplePlan::with_kernel(kernel, source_frames, max_frames, max_frames, usize::MAX)
+        .map_err(map_media)?;
+    let output_capacity = usize::try_from(plan.output_frames())
+        .map_err(|_| ExportError::Invalid("resampled export frame count exceeds range"))?;
+    control.check()?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(output_capacity)
+        .map_err(|_| ExportError::Invalid("could not allocate resampled export buffer"))?;
+    output.resize(output_capacity, [0.0; 2]);
+    let mut window_start = 0_u64;
+    for (chunk_index, window) in output.chunks_mut(SRC_CANCEL_CHUNK_FRAMES).enumerate() {
+        control.check()?;
+        plan.render_window(0, &frames, window_start, window)
+            .map_err(map_media)?;
+        let count = u64::try_from(window.len())
+            .map_err(|_| ExportError::Invalid("resampled export window range overflows"))?;
+        window_start = window_start.checked_add(count).ok_or(ExportError::Invalid(
+            "resampled export window range overflows",
+        ))?;
+        after_chunk(chunk_index);
+    }
+    drop(frames);
+    control.check()?;
+    Ok(output)
+}
+
+/// Measure 4x oversampled inter-sample true peak using a 4-phase, 12-tap-per-phase
+/// Blackman-windowed sinc polyphase FIR (phase 0 is the exact integer sample, so
+/// the result is always `>= sample_peak`). Zero heap allocations.
+fn measure_true_peak_4x(frames: &[Frame], sample_peak: f64) -> f64 {
+    if frames.len() < 2 {
+        return sample_peak;
+    }
+    let phases: [[f64; 12]; 3] = std::array::from_fn(|p| {
+        let frac = (p + 1) as f64 * 0.25;
+        let mut taps = [0.0_f64; 12];
+        let mut sum = 0.0_f64;
+        for (j, tap) in taps.iter_mut().enumerate() {
+            let t = (j as i32 - 5) as f64 - frac;
+            let u = (t + 6.0) / 12.0;
+            let window = 0.42 - 0.5 * (2.0 * PI * u).cos() + 0.08 * (4.0 * PI * u).cos();
+            let sinc = (PI * t).sin() / (PI * t);
+            let value = sinc * window;
+            *tap = value;
+            sum += value;
+        }
+        if sum != 0.0 {
+            for tap in &mut taps {
+                *tap /= sum;
+            }
+        }
+        taps
+    });
+
+    let len = frames.len();
+    let mut true_peak = sample_peak;
+    for i in 0..len {
+        for taps in &phases {
+            let mut acc_l = 0.0_f64;
+            let mut acc_r = 0.0_f64;
+            for (j, &coeff) in taps.iter().enumerate() {
+                let offset = j as isize - 5;
+                let idx = i as isize + offset;
+                if idx >= 0 && (idx as usize) < len {
+                    let [l, r] = frames[idx as usize];
+                    acc_l += f64::from(l) * coeff;
+                    acc_r += f64::from(r) * coeff;
+                }
+            }
+            true_peak = true_peak.max(acc_l.abs()).max(acc_r.abs());
+        }
+    }
+    true_peak
 }
 
 /// Compute and apply explicit opt-in normalization in-place, returning the
@@ -196,7 +285,8 @@ pub(crate) fn apply_normalization(
             let mut linear = db_to_linear(target_lufs - measured_lufs);
             if let Some(ceiling_dbfs) = true_peak_ceiling_dbfs {
                 let ceiling_linear = db_to_linear(ceiling_dbfs);
-                linear = linear.min(ceiling_linear / peak);
+                let true_peak = measure_true_peak_4x(frames, peak);
+                linear = linear.min(ceiling_linear / true_peak);
             }
             linear
         }
@@ -486,6 +576,64 @@ mod tests {
             }
             .validate()
             .is_err()
+        );
+    }
+
+    #[test]
+    fn resample_export_frames_honors_live_cancellation_mid_conversion() {
+        let frames = sine_stereo(48_000, 40_000, 440.0, 0.25);
+        let control = ExportControl::default();
+        let mut chunks_completed = 0_usize;
+        let result =
+            resample_export_frames_with_hook(48_000, 44_100, frames, &control, |chunk_index| {
+                chunks_completed += 1;
+                if chunk_index == 0 {
+                    control.cancel();
+                }
+            });
+        assert!(matches!(result, Err(ExportError::Cancelled)));
+        assert_eq!(chunks_completed, 1);
+    }
+
+    #[test]
+    fn loudness_true_peak_ceiling_clamps_intersample_peaks_above_sample_peak() {
+        // Fs/4 alternating pairs [+0.5, +0.5, -0.5, -0.5] have sample peak 0.5
+        // (-6.02 dBFS) but 4x oversampled true peak ~0.707 (-3.01 dBTP).
+        let pattern = [0.5_f32, 0.5, -0.5, -0.5];
+        let mut frames: Vec<Frame> = (0..48_000)
+            .map(|i| {
+                let s = pattern[i % 4];
+                [s, s]
+            })
+            .collect();
+        let initial_tp = measure_true_peak_4x(&frames, 0.5);
+        assert!(
+            initial_tp > 0.68,
+            "expected ~0.707 true peak, got {initial_tp}"
+        );
+
+        apply_normalization(
+            &mut frames,
+            48_000,
+            ExportNormalization::Loudness {
+                target_lufs: -1.0,
+                true_peak_ceiling_dbfs: Some(-6.0),
+            },
+        )
+        .unwrap();
+        let after_sample_peak = frames
+            .iter()
+            .flat_map(|f| [f[0].abs(), f[1].abs()])
+            .fold(0.0_f64, |acc, s| acc.max(f64::from(s)));
+        let after_true_peak = measure_true_peak_4x(&frames, after_sample_peak);
+        let ceiling = db_to_linear(-6.0);
+        assert!(
+            (after_true_peak - ceiling).abs() < 1e-3,
+            "expected true peak near {ceiling}, got {after_true_peak}"
+        );
+        assert!(
+            after_sample_peak < ceiling - 0.1,
+            "sample peak {after_sample_peak} should be well below true-peak ceiling {ceiling}"
         );
     }
 }
