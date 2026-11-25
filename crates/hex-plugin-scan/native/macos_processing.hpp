@@ -79,37 +79,160 @@ template<class Sample> inline Sample** channel_buffers(const AudioBusBuffers& bu
 inline void set_channel_buffers(AudioBusBuffers& bus,Sample32** channels) { bus.channelBuffers32=channels; }
 inline void set_channel_buffers(AudioBusBuffers& bus,Sample64** channels) { bus.channelBuffers64=channels; }
 
-// Preserve the SDK slots of disabled instrument outputs. Only bus zero has
-// PCM custody. The remaining slots have stable arrays of null sample pointers.
-template<class Sample> class InactiveInstrumentOutputs {
+// Bounded auxiliary sidechain input bus (input index 1) for effects. Preallocated
+// on control during configure; zero processing-thread allocation.
+template<class Sample> class AuxInputBus {
+    int32 channels_=0;
+    int32 stride_=0;
+    std::unique_ptr<Sample[]> storage_;
+    std::array<Sample*,2> pointers_{};
+    AudioBusBuffers aux_bus_{};
+    std::array<AudioBusBuffers,2> buses_{};
+public:
+    bool prepare(int32 channels,int32 maximum_frames) {
+        channels_=0;stride_=0;storage_.reset();pointers_={};aux_bus_={};
+        if (!channels) return true;
+        if (channels<1 || channels>2 || maximum_frames<1) return false;
+        storage_.reset(new (std::nothrow) Sample[static_cast<size_t>(channels)*static_cast<size_t>(maximum_frames)]);
+        if (!storage_) return false;
+        channels_=channels;stride_=maximum_frames;
+        for (int32 c=0;c<channels_;++c) pointers_[c]=storage_.get()+c*stride_;
+        aux_bus_.numChannels=channels_;
+        set_channel_buffers(aux_bus_,pointers_.data());
+        return true;
+    }
+    bool active() const { return channels_>0; }
+    int32 channels() const { return channels_; }
+    void attach(ProcessData& sdk,const float* aux_left,const float* aux_right) {
+        if (!channels_ || !sdk.numInputs || !sdk.inputs) return;
+        buses_[0]=sdk.inputs[0];
+        if (aux_left && aux_right) {
+            uint64_t silence=0;
+            for (int32 c=0;c<channels_;++c) {
+                const float* src=c==0?aux_left:aux_right;
+                bool all_zero=true;
+                for (int32 n=0;n<sdk.numSamples;++n) {
+                    const Sample value=static_cast<Sample>(src[n]);
+                    pointers_[c][n]=value;
+                    if (value!=Sample(0)) all_zero=false;
+                }
+                if (all_zero) silence|=(uint64_t{1}<<c);
+            }
+            aux_bus_.silenceFlags=silence;
+        } else {
+            for (int32 c=0;c<channels_;++c) std::fill_n(pointers_[c],sdk.numSamples,Sample(0));
+            aux_bus_.silenceFlags=(uint64_t{1}<<channels_)-1;
+        }
+        buses_[1]=aux_bus_;
+        sdk.numInputs=2;
+        sdk.inputs=buses_.data();
+    }
+    bool unchanged(const ProcessData& sdk) const {
+        if (!channels_ || sdk.numInputs<2 || !sdk.inputs) return true;
+        if (sdk.inputs[1].numChannels!=channels_ ||
+            channel_buffers<Sample>(sdk.inputs[1])!=pointers_.data()) return false;
+        for (int32 c=0;c<channels_;++c) {
+            if (pointers_[c]!=storage_.get()+c*stride_) return false;
+        }
+        return true;
+    }
+};
+
+// Preserve SDK slots for multi-out instrument outputs. Activated auxiliary output
+// buses receive preallocated non-null sample buffers and mix cleanly into main
+// stereo output; inactive trailing buses keep stable null sample pointers.
+template<class Sample> class InstrumentOutputs {
     int32 count=1;
+    int32 stride_=0;
+    std::unique_ptr<Sample[]> storage_;
     std::array<AudioBusBuffers,max_instrument_outputs> buses{};
     std::array<std::array<Sample*,64>,max_instrument_outputs-1> pointers{};
+    std::array<std::array<Sample*,64>,max_instrument_outputs-1> expected_pointers{};
     std::array<int32,max_instrument_outputs-1> channels{};
+    std::array<bool,max_instrument_outputs-1> active_{};
 public:
-    void prepare(int32 output_count,const InstrumentOutputLayout& layout) {
-        count=output_count;
+    bool prepare(int32 output_count,const InstrumentOutputLayout& layout,uint32_t active_mask,int32 maximum_frames) {
+        count=output_count;stride_=maximum_frames;storage_.reset();
+        pointers={};expected_pointers={};channels={};active_={};
+        size_t active_channels=0;
         for (int32 i=1;i<count;++i) {
             channels[i-1]=SpeakerArr::getChannelCount(layout[i]);
+            if ((active_mask&(uint32_t{1}<<i)) && channels[i-1]>=1 && channels[i-1]<=2) {
+                active_[i-1]=true;
+                active_channels+=static_cast<size_t>(channels[i-1]);
+            }
+        }
+        if (active_channels) {
+            storage_.reset(new (std::nothrow) Sample[active_channels*static_cast<size_t>(maximum_frames)]);
+            if (!storage_) return false;
+        }
+        size_t slot=0;
+        for (int32 i=1;i<count;++i) {
+            if (active_[i-1]) {
+                for (int32 c=0;c<channels[i-1];++c) {
+                    auto* buf=storage_.get()+(slot++)*static_cast<size_t>(stride_);
+                    pointers[i-1][c]=buf;
+                    expected_pointers[i-1][c]=buf;
+                }
+            }
             buses[i].numChannels=channels[i-1];
             set_channel_buffers(buses[i],pointers[i-1].data());
         }
+        return true;
     }
     void attach(ProcessData& data) {
         if (count==1) return;
         buses[0]=data.outputs[0];
-        for (int32 i=1;i<count;++i) buses[i].silenceFlags=0;
+        for (int32 i=1;i<count;++i) {
+            buses[i].silenceFlags=0;
+            if (active_[i-1]) {
+                for (int32 c=0;c<channels[i-1];++c)
+                    std::fill_n(pointers[i-1][c],data.numSamples,Sample(0));
+            }
+        }
         data.numOutputs=count;
         data.outputs=buses.data();
     }
     bool unchanged() const {
         for (int32 i=1;i<count;++i) {
             if (buses[i].numChannels!=channels[i-1] ||
-                channel_buffers<Sample>(buses[i])!=pointers[i-1].data() ||
-                std::any_of(pointers[i-1].begin(),pointers[i-1].begin()+channels[i-1],
-                    [](const Sample* sample) { return sample!=nullptr; })) return false;
+                channel_buffers<Sample>(buses[i])!=pointers[i-1].data()) return false;
+            for (int32 c=0;c<channels[i-1];++c) {
+                if (pointers[i-1][c]!=expected_pointers[i-1][c]) return false;
+            }
         }
         return true;
+    }
+    // Mix active auxiliary output buses into bus zero so multi-out instruments
+    // deliver all routed voices with non-finite sanitization.
+    void mix_into_main(AudioBusBuffers& main_bus,int32 num_samples) const {
+        if (count==1 || !main_bus.numChannels) return;
+        auto** main_ch=channel_buffers<Sample>(main_bus);
+        if (!main_ch) return;
+        for (int32 i=1;i<count;++i) {
+            if (!active_[i-1]) continue;
+            const int32 aux_ch=channels[i-1];
+            for (int32 n=0;n<num_samples;++n) {
+                const Sample l=std::isfinite(pointers[i-1][0][n])?pointers[i-1][0][n]:Sample(0);
+                const Sample r=(aux_ch>=2 && std::isfinite(pointers[i-1][1][n]))?pointers[i-1][1][n]:l;
+                if (main_bus.numChannels==1 && main_ch[0]) {
+                    const Sample sum=aux_ch>=2?Sample(0.5)*(l+r):l;
+                    if (sum!=Sample(0)) {
+                        main_ch[0][n]+=sum;
+                        main_bus.silenceFlags&=~uint64_t{1};
+                    }
+                } else {
+                    if (main_ch[0] && l!=Sample(0)) {
+                        main_ch[0][n]+=l;
+                        main_bus.silenceFlags&=~uint64_t{1};
+                    }
+                    if (main_bus.numChannels>=2 && main_ch[1] && r!=Sample(0)) {
+                        main_ch[1][n]+=r;
+                        main_bus.silenceFlags&=~uint64_t{2};
+                    }
+                }
+            }
+        }
     }
 };
 inline bool bus_buffers(AudioBusBuffers* buses,int32 count,int32 channels,bool enabled) {
@@ -208,7 +331,8 @@ class DoubleProcessing {
     AudioBusBuffers input_{},output_{};
     std::array<Sample64*,2> inputs_{},outputs_{};
 public:
-    InactiveInstrumentOutputs<Sample64> inactive_outputs;
+    AuxInputBus<Sample64> aux_input;
+    InstrumentOutputs<Sample64> instrument_outputs;
     bool reserve(int32 maximum_frames) {
         stride_=maximum_frames;
         storage_.reset(new (std::nothrow) Sample64[4*static_cast<size_t>(maximum_frames)]);

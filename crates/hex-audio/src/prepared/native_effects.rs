@@ -96,6 +96,24 @@ impl ForeignProcessors for PausedNoteBanks<'_> {
         bank.process_segment_with_notes(node, offset, frames, parameters, notes, clock)
     }
 
+    fn process_segment_with_sidechain(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [Frame],
+        sidechain: &[Frame],
+        parameters: &[ForeignParameterPoint],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        let bank = if node.prepared.is_instrument_profile() {
+            self.staged_instrument = true;
+            &mut self.ordinary
+        } else {
+            &mut self.private
+        };
+        bank.process_segment_with_sidechain(node, offset, frames, sidechain, parameters, clock)
+    }
+
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         let bank = if node.prepared.is_instrument_profile() {
             &self.ordinary
@@ -350,6 +368,23 @@ impl hex_lattice::ForeignProcessors for NativeEffectWindow<'_> {
         };
         self.inner
             .process_segment_with_notes(node, offset, frames, parameters, notes, clock)
+    }
+    fn process_segment_with_sidechain(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        sidechain: &[[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        let Some(offset) = self.start.checked_add(offset) else {
+            self.inner.reject_callback();
+            frames.fill([0.0; 2]);
+            return Err(hex_lattice_contract::DeviceContractError::ForeignProcessingFailed);
+        };
+        self.inner
+            .process_segment_with_sidechain(node, offset, frames, sidechain, parameters, clock)
     }
     fn process_segment_with_modulation(
         &mut self,

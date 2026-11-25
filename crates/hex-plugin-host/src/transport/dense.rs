@@ -193,10 +193,38 @@ impl DenseEffectCallback {
         origins: EffectSegmentOrigins<'_>,
         lane: Option<DenseParameterLane<'_>>,
     ) -> Result<Option<(usize, usize)>, Fault> {
-        self.stage_lane(input.len(), parameters, lane, output)?;
-        self.callback.stage_effect_pcm_segment(
+        self.stage_effect_pcm_segment_with_sidechain(
             frame_offset,
             input,
+            None,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+            lane,
+        )
+    }
+
+    /// Stage native PCM alongside an optional aligned stereo sidechain key segment.
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows as ordinary effect staging.
+    pub fn stage_effect_pcm_segment_with_sidechain(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        sidechain: Option<&[Frame]>,
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+        lane: Option<DenseParameterLane<'_>>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
+        self.stage_lane(input.len(), parameters, lane, output)?;
+        self.callback.stage_effect_pcm_segment_with_sidechain(
+            frame_offset,
+            input,
+            sidechain,
             events,
             parameters,
             output,

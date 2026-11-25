@@ -829,6 +829,7 @@ pub struct EffectSegmentOrigins<'a> {
 #[derive(Clone, Copy)]
 struct InputRequest {
     block: Block,
+    sidechain: Option<[Frame; MAX_FRAMES]>,
     // Minimum spare capacity of every physical callback contributing to this
     // quantum. Control-originated input may consume it only after acceptance.
     parameter_capacity: usize,
@@ -839,6 +840,9 @@ struct InputRequest {
 
 pub struct WorkerRequest {
     pub block: Block,
+    /// Aligned stereo external sidechain key frames for this quantum, when
+    /// routed to a sidechain-capable VST3 effect via `SignalGraph`'s `KeyStage`.
+    pub sidechain: Option<[Frame; MAX_FRAMES]>,
     pub parameter_capacity: usize,
     pub dense_parameter: Option<DenseParameterRequest>,
     /// Opening program, also the conservative frontier for retained history
@@ -963,6 +967,7 @@ impl OutputReply {
 struct State {
     position: u64,
     input: Block,
+    input_sidechain: Option<[Frame; MAX_FRAMES]>,
     input_manual_origin: Option<ManualParameterOrigin>,
     input_editor_scope: Option<NonZeroU64>,
     output: OutputReply,
@@ -1098,6 +1103,7 @@ fn channel_with_policy(
             state: State {
                 position,
                 input: empty,
+                input_sidechain: None,
                 input_manual_origin: None,
                 input_editor_scope: None,
                 output: OutputReply {
@@ -1371,6 +1377,7 @@ impl Callback {
         reply.concealed_output = self.stage_effect_segment_with_reply(
             frame_offset,
             input,
+            None,
             events,
             parameters,
             output,
@@ -1394,9 +1401,36 @@ impl Callback {
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
     ) -> Result<Option<(usize, usize)>, Fault> {
+        self.stage_effect_pcm_segment_with_sidechain(
+            frame_offset,
+            input,
+            None,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+        )
+    }
+
+    /// Stage native PCM alongside an optional aligned stereo sidechain key
+    /// segment (for VST3 `kAux` sidechain inputs).
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows as ordinary effect staging.
+    pub fn stage_effect_pcm_segment_with_sidechain(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        sidechain: Option<&[Frame]>,
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+    ) -> Result<Option<(usize, usize)>, Fault> {
         self.stage_effect_segment_with_reply(
             frame_offset,
             input,
+            sidechain,
             events,
             parameters,
             output,
@@ -1411,6 +1445,7 @@ impl Callback {
         &mut self,
         frame_offset: usize,
         input: &[Frame],
+        sidechain: Option<&[Frame]>,
         events: &[MidiEvent],
         parameters: &[ParameterPoint],
         output: &mut [Frame],
@@ -1422,6 +1457,7 @@ impl Callback {
         let result = self.stage_segment_inner(
             frame_offset,
             input,
+            sidechain,
             events,
             parameters,
             output,
@@ -1441,6 +1477,7 @@ impl Callback {
         &mut self,
         frame_offset: usize,
         input: &[Frame],
+        sidechain: Option<&[Frame]>,
         events: &[MidiEvent],
         parameters: &[ParameterPoint],
         output: &mut [Frame],
@@ -1458,11 +1495,14 @@ impl Callback {
         if frame_offset != stage.staged_frames
             || input.is_empty()
             || input.len() != output.len()
+            || sidechain.is_some_and(|key| key.len() != input.len())
             || end > stage.expected_frames
         {
             return Err(Fault::Protocol);
         }
-        if !input.iter().flatten().all(|x| x.is_finite()) {
+        if !input.iter().flatten().all(|x| x.is_finite())
+            || sidechain.is_some_and(|key| !key.iter().flatten().all(|x| x.is_finite()))
+        {
             return Err(Fault::InvalidSamples);
         }
         let input_event_count = stage
@@ -1532,6 +1572,7 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
+                stage.state.input_sidechain = sidechain.map(|_| [[0.0; 2]; MAX_FRAMES]);
                 stage.state.input_manual_origin = manual.and_then(|origin| origin(index));
                 let editor_scope = self.revoked.editor_scope.load(Acquire);
                 stage.state.input_editor_scope = if editor_scope & 1 != 0 {
@@ -1631,6 +1672,13 @@ impl Callback {
                 }
             }
             stage.state.input.pcm[offset] = *source;
+            if let Some(key) = sidechain {
+                let buf = stage
+                    .state
+                    .input_sidechain
+                    .get_or_insert([[0.0; 2]; MAX_FRAMES]);
+                buf[offset] = key[index];
+            }
             while let Some(event) = events
                 .get(event_index)
                 .filter(|e| usize::from(e.frame) == index)
@@ -1710,6 +1758,7 @@ impl Callback {
                 }
                 stage.request = Some(InputRequest {
                     block: stage.state.input,
+                    sidechain: stage.state.input_sidechain.take(),
                     parameter_capacity: stage.state.parameter_capacity,
                     authored_program: self.authored_origins.program,
                     manual_origin: stage.state.input_manual_origin,
@@ -1975,6 +2024,7 @@ impl Worker {
         });
         Ok(Some(WorkerRequest {
             block,
+            sidechain: request.sidechain,
             parameter_capacity: request.parameter_capacity,
             dense_parameter,
             authored_program: request.authored_program,

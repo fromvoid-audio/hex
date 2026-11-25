@@ -393,6 +393,25 @@ impl ForeignProcessors for WithPrograms<'_> {
         )
     }
 
+    fn process_segment_with_sidechain(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        sidechain: &[[f32; 2]],
+        parameters: &[ForeignParameterPoint],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.inner.process_segment_with_sidechain(
+            self.programs.attach(node)?,
+            offset,
+            frames,
+            sidechain,
+            parameters,
+            clock,
+        )
+    }
+
     fn process_segment_with_modulation(
         &mut self,
         node: ForeignProcessorNode<'_>,

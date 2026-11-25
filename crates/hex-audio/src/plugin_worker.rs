@@ -424,9 +424,11 @@ impl State {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
     fn process(
         &mut self,
         block: Block,
+        sidechain: Option<&[[f32; 2]]>,
         authored: bool,
         dense: Option<hex_plugin_host::transport::DenseParameterLane<'_>>,
         manual_parameter: Option<ParameterPoint>,
@@ -434,7 +436,7 @@ impl State {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))] editor_touch: Option<EditorPlan>,
     ) -> Result<hex_plugin_host::protocol::EditorPcm, Fault> {
         #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        let _ = (manual_parameter, dense);
+        let _ = (sidechain, manual_parameter, dense);
         match self.processor.as_mut() {
             Some(Processor::Function(process)) if !authored && !observe_editor => process(block)
                 .map(|block| hex_plugin_host::protocol::EditorPcm {
@@ -446,24 +448,25 @@ impl State {
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             Some(Processor::Native(instance)) => {
+                let exchange = instance.with_sidechain_on_worker(sidechain);
                 let result = match (dense, authored, observe_editor, editor_touch) {
-                    (Some(dense), _, observe, None) => instance.exchange_armed_dense_on_worker(
+                    (Some(dense), _, observe, None) => exchange.exchange_armed_dense_on_worker(
                         block,
                         dense,
                         manual_parameter,
                         observe,
                     ),
                     (Some(_), _, _, Some(_)) => return Err(Fault::InvalidParameters),
-                    (None, true, _, Some(EditorPlan::Single(plan))) => instance
+                    (None, true, _, Some(EditorPlan::Single(plan))) => exchange
                         .exchange_armed_authored_with_editor_touch_on_worker(
                             block,
                             plan,
                             manual_parameter,
                         ),
                     (None, false, _, Some(EditorPlan::Single(plan))) => {
-                        instance.exchange_editor_touch_on_worker(block, plan)
+                        exchange.exchange_editor_touch_on_worker(block, plan)
                     }
-                    (None, true, _, Some(EditorPlan::Group(plan))) => instance
+                    (None, true, _, Some(EditorPlan::Group(plan))) => exchange
                         .exchange_armed_authored_with_editor_group_touch_on_worker(
                             block,
                             &plan,
@@ -472,13 +475,13 @@ impl State {
                     (None, false, _, Some(EditorPlan::Group(_))) => {
                         return Err(Fault::InvalidParameters);
                     }
-                    (None, true, true, None) => instance
+                    (None, true, true, None) => exchange
                         .exchange_armed_authored_with_editor_on_worker(block, manual_parameter),
-                    (None, false, true, None) => instance.exchange_editor_on_worker(block),
+                    (None, false, true, None) => exchange.exchange_editor_on_worker(block),
                     (None, true, false, None) => {
-                        instance.exchange_armed_authored_timed_on_worker(block, manual_parameter)
+                        exchange.exchange_armed_authored_timed_on_worker(block, manual_parameter)
                     }
-                    (None, false, false, None) => instance.exchange_timed_on_worker(block),
+                    (None, false, false, None) => exchange.exchange_timed_on_worker(block),
                 };
                 match result {
                     Ok(reply) => Ok(reply),
@@ -729,6 +732,7 @@ fn transport_runner_with_setup(
             match state.worker.receive_request() {
                 Ok(Some(hex_plugin_host::transport::WorkerRequest {
                     block,
+                    sidechain,
                     parameter_capacity,
                     dense_parameter,
                     authored_program,
@@ -807,8 +811,12 @@ fn transport_runner_with_setup(
                         )),
                         _ => None,
                     };
+                    let sidechain_slice = sidechain
+                        .as_ref()
+                        .map(|buf| &buf[..usize::from(block.frames)]);
                     let processed = state.process(
                         block,
+                        sidechain_slice,
                         authored,
                         dense,
                         manual_parameter,

@@ -38,9 +38,13 @@ class Instance final {
     bool input_active = false, output_active = false, active = false;
     bool silent_input_ = false;
     int32 event_input_channels_ = 0;
+    int32 aux_input_channels_ = 0;
+    int32 output_bus_count_ = 1;
+    uint32_t active_aux_outputs_mask_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
-    InactiveInstrumentOutputs<Sample32> inactive_outputs_;
+    AuxInputBus<Sample32> aux_input_;
+    InstrumentOutputs<Sample32> instrument_outputs_;
     std::unique_ptr<DoubleProcessing> double_processing_;
     StateStream* component_stream=nullptr;
     StateStream* controller_stream=nullptr;
@@ -291,13 +295,33 @@ public:
         setup.processMode = request.process_mode; setup.symbolicSampleSize = double_processing_?kSample64:kSample32;
         setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
         if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
-        // Inactive trailing buses need no PCM buffer, even if default active.
-        for (int32 i=1;i<input_count;++i)
-            if (component->activateBus(kAudio,kInput,i,false)!=kResultOk)
+        // Activate the first stereo/mono kAux sidechain input bus on effects
+        // when exposed; keep any additional trailing input buses inactive.
+        int32 aux_in_channels=0;
+        for (int32 i=1;i<input_count;++i) {
+            BusInfo aux_info{};
+            if (i==1 && request.input_channels>0 &&
+                audio_bus_info(component,kInput,1,kAux,aux_info) &&
+                aux_info.channelCount>=1 && aux_info.channelCount<=2 &&
+                component->activateBus(kAudio,kInput,1,true)==kResultOk) {
+                aux_in_channels=aux_info.channelCount;
+            } else if (component->activateBus(kAudio,kInput,i,false)!=kResultOk) {
                 return ConfigurationResult::ActivationRefused;
-        for (int32 i=1;i<output_count;++i)
-            if (component->activateBus(kAudio,kOutput,i,false)!=kResultOk)
+            }
+        }
+        // Activate multi-out stereo/mono instrument buses when exposed so
+        // voices routed to auxiliary buses render into real buffers; decline
+        // or unsupported channel widths fall back to inactive null slots.
+        uint32_t active_out_mask=0;
+        for (int32 i=1;i<output_count;++i) {
+            const int32 bus_channels=SpeakerArr::getChannelCount(outputs[i]);
+            if (multiple_outputs && bus_channels>=1 && bus_channels<=2 &&
+                component->activateBus(kAudio,kOutput,i,true)==kResultOk) {
+                active_out_mask|=(uint32_t{1}<<i);
+            } else if (component->activateBus(kAudio,kOutput,i,false)!=kResultOk) {
                 return ConfigurationResult::ActivationRefused;
+            }
+        }
         if (component->activateBus(kAudio,kOutput,0,request.output_enabled)!=kResultOk)
             return ConfigurationResult::ActivationRefused;
         output_active = request.output_enabled;
@@ -313,8 +337,18 @@ public:
         }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
         configuration_=sdk;
-        if (double_processing_) double_processing_->inactive_outputs.prepare(output_count,outputs);
-        else inactive_outputs_.prepare(output_count,outputs);
+        aux_input_channels_=aux_in_channels;
+        output_bus_count_=output_count;
+        active_aux_outputs_mask_=active_out_mask;
+        if (double_processing_) {
+            if (!double_processing_->aux_input.prepare(aux_in_channels,request.maximum_frames) ||
+                !double_processing_->instrument_outputs.prepare(output_count,outputs,active_out_mask,request.maximum_frames))
+                return ConfigurationResult::SetupRefused;
+        } else {
+            if (!aux_input_.prepare(aux_in_channels,request.maximum_frames) ||
+                !instrument_outputs_.prepare(output_count,outputs,active_out_mask,request.maximum_frames))
+                return ConfigurationResult::SetupRefused;
+        }
         silent_input_=silent_input;
         active = true; configured = true;
         return ConfigurationResult::Prepared;
@@ -330,6 +364,8 @@ public:
     }
     // Immutable while the serialized processing lane owns the instance.
     int32 event_input_channels() const { return event_input_channels_; }
+    int32 aux_input_channels() const { return aux_input_channels_; }
+    uint32_t active_aux_outputs_mask() const { return active_aux_outputs_mask_; }
 
     // One initial stopped capture; later project restore/capture transactions
     // must reuse the same actual instance owner, not create a competing state path.
@@ -462,24 +498,36 @@ public:
         processing.store(true);
         return true;
     }
-    bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr) {
+    bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr,
+                 const float* aux_left=nullptr,const float* aux_right=nullptr) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
         auto sdk=data;
         clear_disjoint_outputs(configuration_,data);
         if (double_processing_) {
             double_processing_->attach(configuration_,sdk);
-            if (!process_checked(sdk,double_processing_->inactive_outputs,sdk_process_ns)) return false;
-            if (configuration_.output_enabled) double_processing_->copy_outputs(data);
-        } else if (!process_checked(sdk,inactive_outputs_,sdk_process_ns)) return false;
+            if (!process_checked(sdk,double_processing_->aux_input,double_processing_->instrument_outputs,
+                                 aux_left,aux_right,sdk_process_ns)) return false;
+            if (configuration_.output_enabled) {
+                double_processing_->instrument_outputs.mix_into_main(sdk.outputs[0],sdk.numSamples);
+                double_processing_->copy_outputs(data);
+            }
+        } else {
+            if (!process_checked(sdk,aux_input_,instrument_outputs_,aux_left,aux_right,sdk_process_ns)) return false;
+            if (configuration_.output_enabled)
+                instrument_outputs_.mix_into_main(sdk.outputs[0],sdk.numSamples);
+        }
         if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
         if (!finite_outputs(configuration_,data)) { processing_fault.store(true); return false; }
         return true;
     }
 private:
-    template<class Sample> bool process_checked(ProcessData& sdk,InactiveInstrumentOutputs<Sample>& inactive,
+    template<class Sample> bool process_checked(ProcessData& sdk,AuxInputBus<Sample>& aux_input,
+                                                InstrumentOutputs<Sample>& outputs,
+                                                const float* aux_left,const float* aux_right,
                                                 uint64_t* sdk_process_ns) {
-        inactive.attach(sdk);
+        aux_input.attach(sdk,aux_left,aux_right);
+        outputs.attach(sdk);
         const ProcessingShape<Sample> shape(sdk);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
@@ -491,7 +539,7 @@ private:
             *sdk_process_ns=ns>std::numeric_limits<uint64_t>::max()-*sdk_process_ns?
                 std::numeric_limits<uint64_t>::max():*sdk_process_ns+ns;
         }
-        if (result!=kResultOk || !shape.unchanged(sdk) || !inactive.unchanged()) {
+        if (result!=kResultOk || !shape.unchanged(sdk) || !aux_input.unchanged(sdk) || !outputs.unchanged()) {
             processing_fault.store(true); return false;
         }
         return true;
@@ -644,9 +692,21 @@ private:
         // failed setup retains the existing conservative cleanup path.
         if (clean_stop) {
             input_active = false;
+            aux_input_channels_ = 0;
+            active_aux_outputs_mask_ = 0;
             event_input_channels_ = 0;
             output_active = false;
         } else {
+            if (aux_input_channels_) {
+                if (component->activateBus(kAudio, kInput, 1, false) != kResultOk) return refuse_cleanup();
+                aux_input_channels_ = 0;
+            }
+            for (int32 i = 1; i < output_bus_count_; ++i) {
+                if (active_aux_outputs_mask_ & (uint32_t{1} << i)) {
+                    if (component->activateBus(kAudio, kOutput, i, false) != kResultOk) return refuse_cleanup();
+                }
+            }
+            active_aux_outputs_mask_ = 0;
             if (input_active) {
                 if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
                 input_active = false;

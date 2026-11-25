@@ -2646,3 +2646,210 @@ fn empty_track_edits_retain_compensated_sidechain_history() {
         }
     }
 }
+
+#[test]
+fn vst3_sidechain_delivers_latency_compensated_key_and_main_to_foreign_endpoint() {
+    use hex_lattice::{
+        DevicePreparationContext, ForeignProcessorNode, ForeignProcessors,
+        PreparedForeignProcessor, PreparedProcessorFactory, ProcessorInstanceIdentity,
+    };
+    use hex_lattice_contract::VST3_DEVICE_TYPE_ID;
+
+    struct Vst3SidechainDef;
+    impl NativeDeviceMetadata for Vst3SidechainDef {
+        fn type_id(&self) -> DeviceTypeId {
+            VST3_DEVICE_TYPE_ID
+        }
+        fn state_version(&self) -> u32 {
+            1
+        }
+        fn descriptors(&self) -> &'static [ParameterDescriptor] {
+            &[]
+        }
+        fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+            NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1])
+        }
+        fn migrate_state(
+            &self,
+            state: &NativeDeviceState,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            if state.type_id() != VST3_DEVICE_TYPE_ID || state.state_version() != 1 {
+                return Err(DeviceContractError::MalformedState);
+            }
+            Ok(state.clone())
+        }
+        fn read_parameter(
+            &self,
+            _: &NativeDeviceState,
+            _: ParameterId,
+        ) -> Result<ParameterValue, DeviceContractError> {
+            Err(DeviceContractError::UnknownParameter)
+        }
+        fn patch_parameter(
+            &self,
+            _: &NativeDeviceState,
+            _: ParameterId,
+            _: ParameterValue,
+        ) -> Result<NativeDeviceState, DeviceContractError> {
+            Err(DeviceContractError::UnknownParameter)
+        }
+    }
+    impl NativeDeviceDefinition for Vst3SidechainDef {
+        fn prepare_matrix(
+            &self,
+            _: &NativeDeviceState,
+        ) -> Result<StereoMatrix, DeviceContractError> {
+            Ok(StereoMatrix::identity())
+        }
+        fn prepare_runtime_factory(
+            &self,
+            _: &NativeDeviceState,
+            _: &DevicePreparationContext<'_>,
+        ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+            Err(DeviceContractError::UnsupportedProcessingClass)
+        }
+        fn prepare_instance_runtime_factory(
+            &self,
+            _: ProcessorInstanceIdentity,
+            _: &NativeDeviceState,
+            _: &DevicePreparationContext<'_>,
+        ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+            Ok(Some(PreparedProcessorFactory::Foreign(
+                PreparedForeignProcessor::new(8, 0, 16)?,
+            )))
+        }
+    }
+
+    struct SidechainProbe {
+        seen_main: Vec<[f32; 2]>,
+        seen_key: Vec<[f32; 2]>,
+        ducked: bool,
+    }
+    impl ForeignProcessors for SidechainProbe {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [[f32; 2]],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            panic!("keyed VST3 effect must dispatch via process_segment_with_sidechain");
+        }
+        fn process_segment_with_sidechain(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            frames: &mut [[f32; 2]],
+            sidechain: &[[f32; 2]],
+            _: &[hex_lattice_contract::ForeignParameterPoint],
+            _: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert_eq!(frames.len(), sidechain.len());
+            self.seen_main.extend_from_slice(frames);
+            self.seen_key.extend_from_slice(sidechain);
+            for (main, key) in frames.iter_mut().zip(sidechain) {
+                let duck = if key[0].abs().max(key[1].abs()) > 0.5 {
+                    self.ducked = true;
+                    0.25
+                } else {
+                    1.0
+                };
+                main[0] *= duck;
+                main[1] *= duck;
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+
+    const FRAMES: usize = 64;
+    const DELAY: usize = 7;
+    const BRIDGE: usize = 16;
+    let render = |key_late: bool| {
+        let delay = [DELAY as u32];
+        let mut f = if key_late {
+            fixture(&[&[], &delay], FRAMES)
+        } else {
+            fixture(&[&delay, &[]], FRAMES)
+        };
+        let main = f.tracks[0];
+        let key = f.tracks[1];
+        for (track, samples) in [
+            (main, vec![[0.4, -0.4]; FRAMES]),
+            (key, vec![[0.0, 0.75]; FRAMES]),
+        ] {
+            let asset = f.editor.project().track(track).unwrap().clips()[0].asset();
+            f.media.insert(asset, Audio::new(48_000, samples).unwrap());
+        }
+        let Created::Device(vst3_device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: main,
+                before: None,
+                state: Vst3SidechainDef.default_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("vst3 device");
+        };
+        f.editor
+            .execute(Command::SetSidechain {
+                device: vst3_device,
+                source: Some(key),
+            })
+            .unwrap();
+        let definitions: [&dyn NativeDeviceDefinition; 2] = [&Definition, &Vst3SidechainDef];
+        let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_registries(
+                f.editor.project(),
+                &f.media,
+                Arc::new(SineTable::new()),
+                None,
+                &effects,
+                &instruments,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            revision.arrangement().main_latency_frames(),
+            (DELAY + BRIDGE) as u32
+        );
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut probe = SidechainProbe {
+            seen_main: Vec::new(),
+            seen_key: Vec::new(),
+            ducked: false,
+        };
+        let mut out = vec![[0.0_f32; 2]; FRAMES + DELAY + BRIDGE];
+        playback
+            .render_with_foreign_processors(&mut out, None, None, None, &mut probe)
+            .unwrap();
+        assert_eq!(probe.seen_key.len(), FRAMES + DELAY + BRIDGE);
+        assert!(probe.ducked);
+        // Both main and sidechain key arrive at the VST3 stage aligned at DELAY.
+        assert_eq!(&probe.seen_main[..DELAY], &[[0.0_f32; 2]; DELAY]);
+        assert_eq!(&probe.seen_key[..DELAY], &[[0.0_f32; 2]; DELAY]);
+        assert_eq!(probe.seen_main[DELAY], [0.4, -0.4]);
+        assert_eq!(probe.seen_key[DELAY], [0.0, 0.75]);
+        (out, probe.seen_main, probe.seen_key)
+    };
+
+    let (key_late_out, key_late_main, key_late_key) = render(true);
+    let (main_late_out, main_late_main, main_late_key) = render(false);
+    // Delay alignment ensures both asymmetric paths deliver identical main/key
+    // inputs to the VST3 stage and identical rendered output.
+    assert_eq!(key_late_main, main_late_main);
+    assert_eq!(key_late_key, main_late_key);
+    assert_eq!(key_late_out, main_late_out);
+    // Output before total compensated latency (DELAY + BRIDGE) is gated silent,
+    // then aligned ducked main [0.1, -0.1] + key track [0.0, 0.75] = [0.1, 0.65].
+    assert_eq!(
+        &key_late_out[..DELAY + BRIDGE],
+        &[[0.0_f32; 2]; DELAY + BRIDGE]
+    );
+    assert!((key_late_out[DELAY + BRIDGE][0] - 0.1_f32).abs() < 1e-5);
+    assert!((key_late_out[DELAY + BRIDGE][1] - 0.65_f32).abs() < 1e-5);
+}

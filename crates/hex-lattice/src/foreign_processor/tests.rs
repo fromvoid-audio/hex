@@ -836,3 +836,70 @@ fn exact_foreign_continuation_compares_only_the_named_state_pair() {
             .is_err()
     );
 }
+
+#[test]
+fn foreign_auxiliary_stage_delivers_aligned_stereo_sidechain_key() {
+    struct SidechainEndpoint {
+        seen_key: Vec<StereoFrame>,
+        seen_main: Vec<StereoFrame>,
+    }
+    impl ForeignProcessors for SidechainEndpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            panic!("expected process_segment_with_sidechain for keyed auxiliary stage");
+        }
+        fn process_segment_with_sidechain(
+            &mut self,
+            node: ForeignProcessorNode<'_>,
+            frame_offset: usize,
+            frames: &mut [StereoFrame],
+            sidechain: &[StereoFrame],
+            parameters: &[ForeignParameterPoint],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert_eq!(frame_offset, 2);
+            assert!(parameters.is_empty());
+            assert_eq!(frames.len(), sidechain.len());
+            self.seen_main.extend_from_slice(frames);
+            self.seen_key.extend_from_slice(sidechain);
+            if !node.bypassed {
+                for (main, key) in frames.iter_mut().zip(sidechain) {
+                    main[0] *= 1.0 - key[0].abs();
+                    main[1] *= 1.0 - key[1].abs();
+                }
+            }
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+
+    let instance = declaration(ProcessorChainOwner::Track(2), false);
+    let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+    let mut frames: [StereoFrame; 4] = [[0.5, -0.5], [0.25, -0.25], [1.0, -1.0], [0.5, 0.5]];
+    let key: [StereoFrame; 4] = [[0.5, 0.25], [0.0, 0.5], [0.25, 0.75], [0.5, 0.0]];
+    let mut endpoint = SidechainEndpoint {
+        seen_key: Vec::new(),
+        seen_main: Vec::new(),
+    };
+    chain.begin_block();
+    let mut silence = [[0.0; 2]; 4];
+    let block = crate::StereoAuxiliaryBlock::new(&mut frames, Some(&key), &mut silence, 4).unwrap();
+    let context = crate::StageProcessContext::new(2, None, None).with_foreign(&mut endpoint);
+    chain
+        .process_auxiliary_stage_with_context(0, block, context, &mut |_, _, _, _, _, _| {})
+        .unwrap();
+    assert_eq!(endpoint.seen_key, key);
+    assert_eq!(
+        endpoint.seen_main,
+        vec![[0.5, -0.5], [0.25, -0.25], [1.0, -1.0], [0.5, 0.5]]
+    );
+    // Endpoint leaves input_gain untouched while host applies -20 dB output trim (*0.1):
+    // frame[0] = [0.5 * (1 - 0.5) * 0.1, -0.5 * (1 - 0.25) * 0.1] = [0.025, -0.0375].
+    assert!((frames[0][0] - 0.025_f32).abs() < 1e-5);
+    assert!((frames[0][1] + 0.0375_f32).abs() < 1e-5);
+}

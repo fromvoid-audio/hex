@@ -87,6 +87,7 @@ impl EffectTransport {
         &mut self,
         offset: usize,
         input: &[[f32; 2]],
+        sidechain: Option<&[[f32; 2]]>,
         events: &[MidiEvent],
         parameters: &[ParameterPoint],
         frames: &mut [[f32; 2]],
@@ -95,16 +96,17 @@ impl EffectTransport {
         lane: Option<DenseParameterLane<'_>>,
     ) -> Result<Option<(usize, usize)>, Fault> {
         match self {
-            Self::Ordinary(callback) if lane.is_none() => callback.stage_effect_pcm_segment(
-                offset, input, events, parameters, frames, timing, origins,
-            ),
+            Self::Ordinary(callback) if lane.is_none() => callback
+                .stage_effect_pcm_segment_with_sidechain(
+                    offset, input, sidechain, events, parameters, frames, timing, origins,
+                ),
             Self::Ordinary(callback) => {
                 callback.reject(Fault::InvalidParameters);
                 frames.fill([0.0; 2]);
                 Err(Fault::InvalidParameters)
             }
-            Self::Dense(callback) => callback.stage_effect_pcm_segment(
-                offset, input, events, parameters, frames, timing, origins, lane,
+            Self::Dense(callback) => callback.stage_effect_pcm_segment_with_sidechain(
+                offset, input, sidechain, events, parameters, frames, timing, origins, lane,
             ),
         }
     }

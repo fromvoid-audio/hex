@@ -12,11 +12,13 @@ use std::{
 // scheduling may delay them and readiness or signals may wake the poll sooner.
 const CHECK_INTERVAL: Duration = Duration::from_millis(10);
 
-// Dense PCM requests with a grouped editor touch are the largest audio exchange.
-// State replies can be much larger. Reserve their full allowance once, then
-// initialize the extra backing only after validating the control-frame header.
-const PCM_BYTES: usize =
-    crate::transport::wire::MAX_DENSE_PACKET_BYTES + protocol::EditorTouchPlanSet::WIRE_BYTES;
+// Dense PCM requests with stereo sidechain key and a grouped editor touch are
+// the largest audio exchange. State replies can be much larger. Reserve their
+// full allowance once, then initialize the extra backing only after validating
+// the control-frame header.
+const PCM_BYTES: usize = crate::transport::wire::MAX_DENSE_PACKET_BYTES
+    + crate::transport::MAX_FRAMES * 8
+    + protocol::EditorTouchPlanSet::WIRE_BYTES;
 const _: () = assert!(PCM_BYTES <= protocol::PACKET_LIMIT);
 const _: () = assert!(PCM_BYTES <= hex_shm_ring::SLOT_CAPACITY);
 

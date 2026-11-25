@@ -945,6 +945,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .requests
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
+                            sidechain: None,
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
@@ -961,6 +962,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                         .requests
                         .push(InputRequest {
                             block: Block::empty(BINDING, 8),
+                            sidechain: None,
                             parameter_capacity: MAX_PARAMETER_POINTS,
                             authored_program: None,
                             manual_origin: None,
@@ -2166,4 +2168,117 @@ fn queued_request_snapshot_preserves_the_exact_pcm_and_allocates_nothing() {
         (0, 0, 0, 0)
     );
     control.revoke();
+}
+
+#[test]
+fn effect_sidechain_pcm_staging_preserves_key_rejects_malformed_and_allocates_nothing() {
+    let (_control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 4, 0).unwrap();
+    let main_a = [[0.25, -0.25], [0.5, -0.5]];
+    let key_a = [[0.1, 0.2], [0.3, 0.4]];
+    let main_b = [[0.75, -0.75], [1.0, -1.0]];
+    let key_b = [[0.5, 0.6], [0.7, 0.8]];
+    let mut out_a = [[0.0; 2]; 2];
+    let mut out_b = [[0.0; 2]; 2];
+
+    let counts = allocation_counter::measure(|| {
+        callback.begin_physical_callback(4).unwrap();
+        callback
+            .stage_effect_pcm_segment_with_sidechain(
+                0,
+                &main_a,
+                Some(&key_a),
+                &[],
+                &[],
+                &mut out_a,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+            )
+            .unwrap();
+        callback
+            .stage_effect_pcm_segment_with_sidechain(
+                2,
+                &main_b,
+                Some(&key_b),
+                &[],
+                &[],
+                &mut out_b,
+                SegmentTiming {
+                    playing: None,
+                    at: |_| None,
+                },
+                EffectSegmentOrigins::default(),
+            )
+            .unwrap();
+        callback.finish(true).unwrap();
+
+        let req = worker.receive_request().unwrap().unwrap();
+        assert_eq!(req.block.sequence, 0);
+        assert_eq!(req.block.frames, 4);
+        assert_eq!(&req.block.pcm[..2], &main_a);
+        assert_eq!(&req.block.pcm[2..4], &main_b);
+        let sidechain = req
+            .sidechain
+            .expect("sidechain PCM present on worker request");
+        assert_eq!(&sidechain[..2], &key_a);
+        assert_eq!(&sidechain[2..4], &key_b);
+        worker.complete(req.block).unwrap();
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+
+    // Mismatched sidechain length is rejected as Fault::Protocol.
+    let (_c1, mut cb1, _w1) = native_pcm_channel_from_completed_prefix(BINDING, 4, 0).unwrap();
+    cb1.begin_physical_callback(4).unwrap();
+    let mut out = [[0.0; 2]; 4];
+    assert_eq!(
+        cb1.stage_effect_pcm_segment_with_sidechain(
+            0,
+            &[[0.1; 2]; 4],
+            Some(&[[0.2; 2]; 2]),
+            &[],
+            &[],
+            &mut out,
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+            EffectSegmentOrigins::default(),
+        )
+        .unwrap_err(),
+        Fault::Protocol
+    );
+
+    // Non-finite sidechain samples are rejected as Fault::InvalidSamples.
+    let (_c2, mut cb2, _w2) = native_pcm_channel_from_completed_prefix(BINDING, 4, 0).unwrap();
+    cb2.begin_physical_callback(4).unwrap();
+    let mut bad_key = [[0.2; 2]; 4];
+    bad_key[1][0] = f32::NAN;
+    assert_eq!(
+        cb2.stage_effect_pcm_segment_with_sidechain(
+            0,
+            &[[0.1; 2]; 4],
+            Some(&bad_key),
+            &[],
+            &[],
+            &mut out,
+            SegmentTiming {
+                playing: None,
+                at: |_| None,
+            },
+            EffectSegmentOrigins::default(),
+        )
+        .unwrap_err(),
+        Fault::InvalidSamples
+    );
 }

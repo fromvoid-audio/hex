@@ -1068,7 +1068,7 @@ int main(int argc,char** argv) {
                     wire::Packet packet{};
                     hex_instance::InputNotes input_notes;
                     hex_instance::HeldInputNotes held_notes;
-                    std::array<float,wire::max_frames> left{},right{},output_left{},output_right{};
+                    std::array<float,wire::max_frames> left{},right{},aux_left{},aux_right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
                     AudioBusBuffers input{},output{};
                     input.numChannels=instance.configuration()->input_channels;output.numChannels=config->outputs;
@@ -1269,6 +1269,12 @@ int main(int argc,char** argv) {
                             valid=valid && (config->inputs==2 || right[n]==0) && (config->inputs!=0 || left[n]==0);
                             if(trace_messages) nonzero_input|=left[n]!=0 || right[n]!=0;
                         }
+                        if(packet.has_sidechain) {
+                            for(size_t n=0;n<packet.frames;++n) {
+                                aux_left[n]=wire::sample(packet.bytes.data()+packet.sidechain_offset+n*8);
+                                aux_right[n]=wire::sample(packet.bytes.data()+packet.sidechain_offset+n*8+4);
+                            }
+                        }
                         const auto event_channels=instance.event_input_channels();
                         // The wire has already validated the notes. A generator
                         // with no event bus still renders with inputEvents=null.
@@ -1406,7 +1412,10 @@ int main(int argc,char** argv) {
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
                             const bool observed_slice=slice_clock.begin(*config,blocks,frames,slice,first,static_cast<size_t>(width));
 #endif
-                            const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr);
+                            const float* slice_aux_left=packet.has_sidechain?aux_left.data()+first:nullptr;
+                            const float* slice_aux_right=packet.has_sidechain?aux_right.data()+first:nullptr;
+                            const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr,
+                                slice_aux_left,slice_aux_right);
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
                             slice_clock.end(observed_slice,processed);
 #endif
