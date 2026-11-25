@@ -6,6 +6,7 @@
 #include "macos_parameters.hpp"
 #include "macos_editor_touch.hpp"
 #include "macos_parameter_page.hpp"
+#include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "public.sdk/source/vst/utility/midiconvert.h"
 #include <array>
@@ -232,7 +233,7 @@ struct Packet {
     uint32_t dense_id=0,dense_steps=0;
     std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
-    struct ControllerPoint { uint16_t offset; uint8_t channel; bool bend; double normalized; };
+    struct ControllerPoint { uint16_t offset; uint8_t channel,controller; double normalized; };
     std::array<ControllerPoint,hex_instance::LEGACY_INPUT_NOTE_COUNT> controllers{};
     size_t note_count=0,controller_count=0;
     size_t parameter_count=0;
@@ -413,12 +414,24 @@ struct Packet {
                 (dense_notes && !note_id) ||
                 note_id>static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) return -1;
             previous_offset=offset;
-            if(status==0xd0 || status==0xe0) {
-                const bool bend=status==0xe0;
-                if(raw[2]!=(bend?3:2) || (!bend && raw[5]) || note_id || controller_count>=controllers.size()) return -1;
-                const double value=bend?Steinberg::Vst::midi14BitToNormalized<double>(raw[4]|(raw[5]<<7)):
-                    static_cast<double>(raw[4])/127.0;
-                controllers[controller_count++]={static_cast<uint16_t>(offset),static_cast<uint8_t>(raw[3]&15),bend,value};
+            if(status==0xb0 || status==0xd0 || status==0xe0) {
+                using namespace Steinberg::Vst;
+                const bool pressure=status==0xd0;
+                if(raw[2]!=(pressure?2:3) || (pressure && raw[5]) || note_id ||
+                        controller_count>=controllers.size()) return -1;
+                auto& point=controllers[controller_count++];
+                point.offset=static_cast<uint16_t>(offset);
+                point.channel=raw[3]&15;
+                if(pressure) {
+                    point.controller=kAfterTouch;
+                    point.normalized=static_cast<double>(raw[4])/127.0;
+                } else if(status==0xe0) {
+                    point.controller=kPitchBend;
+                    point.normalized=midi14BitToNormalized<double>(raw[4]|(raw[5]<<7));
+                } else {
+                    point.controller=raw[4];
+                    point.normalized=midi7BitToNormalized<double>(raw[5]);
+                }
                 continue;
             }
             if(raw[2]!=3 || (status!=0x80 && status!=0x90 && status!=0xa0)) return -1;

@@ -186,7 +186,7 @@ impl Configuration {
                 self.input_channels != 0
                     || !matches!(
                         (event.bytes[0] & 0xf0, event.len),
-                        (0x80 | 0x90 | 0xa0 | 0xe0, 3) | (0xd0, 2)
+                        (0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0, 3) | (0xd0, 2)
                     )
             })
             || !block.pcm[..usize::from(self.quantum)]

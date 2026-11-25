@@ -1351,8 +1351,7 @@ int main(int argc,char** argv) {
                             // the same sample. A dense lane owns its parameter at every sample.
                             while(next_controller<packet.controller_count && packet.controllers[next_controller].offset<end) {
                                 const auto& point=packet.controllers[next_controller++];
-                                const auto& assignment=processing_parameters.assignments[point.channel];
-                                const auto id=point.bend?assignment.bend:assignment.pressure;
+                                const auto id=processing_parameters.assignments[point.channel][point.controller];
                                 if(event_channels && id && dense!=id && (!touch || !touch->masks(*id)) &&
                                     !parameter_input.input(*id,point.offset-static_cast<int32>(first),point.normalized)) valid=false;
                             }
