@@ -5453,7 +5453,7 @@ fn removing_longer_main_limiter_retains_the_running_pass_delay_without_consent()
     h.applied(applied);
     let device = inserted.state.project.main_devices()[0].id();
     h.audio
-        .as_ref()
+        .as_mut()
         .unwrap()
         .control
         .command(PlaybackCommand::Play)
@@ -5470,7 +5470,7 @@ fn removing_longer_main_limiter_retains_the_running_pass_delay_without_consent()
         &inserted.state,
     );
     assert!(installed.state.project.main_devices().is_empty());
-    let status = h.audio.as_ref().unwrap().status().unwrap().clone();
+    let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(status.playing.load(Acquire));
     let expected_edge = MARKER_START + LOOKAHEAD_FRAMES;
     let mut frame = status.position.load(Acquire);
