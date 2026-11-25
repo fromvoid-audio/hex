@@ -48,7 +48,7 @@ impl WorkerLoop {
             sampler_load_complete,
         } = exec.meta;
         let RequestOutcome {
-            request_document_intent: _,
+            request_document_intent,
             device_insert_proposal,
             device_insert_proposal_accepted,
             replacing_catalog_instrument: _,
@@ -122,6 +122,7 @@ impl WorkerLoop {
             } = self;
             let WorkerLoopCore {
                 session,
+                document_intent,
                 export_lane,
                 recovery,
                 resident_seek,
@@ -305,6 +306,10 @@ impl WorkerLoop {
                             Arc::ptr_eq(&snapshot.prepared, prepared)
                         });
                     if accepted {
+                        let switch_submission = resident_snapshot.as_ref().and_then(|snapshot| snapshot.submission)
+                            .filter(|_| committed_track_switch && device_gesture.snapshot().is_some_and(|active| {
+                                matches!(active.target, crate::device_gesture::GestureTarget::DeviceParameterPair { .. })
+                            }));
                         let admission = export_lane.admission_with_resident_owners(
                             compiled.as_ref().map(|(_, prepared)| {
                                 hex_engine::native_device_resources::ControlSamplerSelection {
@@ -322,6 +327,17 @@ impl WorkerLoop {
                                 let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                     "native preview output unavailable",
                                 ))?;
+                                if let Some(submission) = switch_submission {
+                                    super::publication_wait::wait_for_switch_rebase(
+                                        sink,
+                                        submission,
+                                        || {
+                                            session.shutdown.load(Ordering::Acquire)
+                                                || document_intent.load(Ordering::Acquire)
+                                                    != request_document_intent
+                                        },
+                                    )?;
+                                }
                                 if let crate::device_gesture::GesturePreparation::Plugin(
                                     operation,
                                 ) = operation
