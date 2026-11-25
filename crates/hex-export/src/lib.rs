@@ -1,25 +1,28 @@
 //! # Purpose
 //! Render fixed-block Arrangement and stem exports in a selected
-//! [`ExportFormat`] (dithered PCM16 by default, packed PCM24 or float32), and
-//! bounded float32 source bounces and resident source publication, with explicit
-//! publication and ordinary prepared runtime custody.
+//! [`ExportFormat`] (dithered PCM16 WAV by default, packed PCM24 WAV, float32
+//! WAV, or lossless 16/24-bit FLAC), with optional target sample-rate
+//! conversion, explicit opt-in peak or loudness normalization, bounded float32
+//! source bounces and resident source publication, explicit publication custody
+//! and ordinary prepared runtime custody.
 //!
-//! PCM16 and PCM24 files use the canonical 44-byte header (16-byte `fmt `,
+//! PCM16 and PCM24 WAV files use the canonical 44-byte header (16-byte `fmt `,
 //! format tag 1).
-//! Float32 files use `WAVE_FORMAT_IEEE_FLOAT` (tag 3) with the 18-byte `fmt `
+//! Float32 WAV files use `WAVE_FORMAT_IEEE_FLOAT` (tag 3) with the 18-byte `fmt `
 //! chunk (`cbSize` = 0) and the `fact` chunk the RIFF specification requires for
-//! non-PCM data, giving a 58-byte header. Integer exports count samples beyond
+//! non-PCM data, giving a 58-byte header. FLAC files use RFC 9639 streaming
+//! frames via `hex-media::FlacStreamWriter`. Integer exports count samples beyond
 //! full scale that quantisation clamps; see [`ExportReport::clipped_samples`].
-//! PCM16 quantisation applies deterministic TPDF dither and keeps exact digital
-//! silence at zero; see the private `dither` module.
+//! 16-bit quantisation (`Pcm16`, `Flac16`) applies deterministic TPDF dither and
+//! keeps exact digital silence at zero; see the private `dither` module.
 //!
 //! # Dependencies
-//! Uses hex-engine and the standard library; callers supply the exact prepared revision and
-//! matching ordinary device resources or an explicit private offline source scope.
+//! Uses hex-engine, hex-media and the standard library; callers supply the exact prepared
+//! revision and matching ordinary device resources or an explicit private offline source scope.
 //!
 //! # Does not own
-//! Does not edit projects, resolve missing media, normalize musical output or overwrite an
-//! existing destination implicitly.
+//! Does not edit projects, resolve missing media, apply unrequested loudness changes or overwrite
+//! an existing destination implicitly.
 
 use hex_engine::native_device_resources::PreparedDeviceResources;
 use hex_engine::{PreparedRevision, Project, Renderer, SessionPlayback, SessionPlaybackCommand};
@@ -58,9 +61,11 @@ pub use bounce::{
     render_arrangement_bounce_with_pages, render_bounce_new,
     render_bounce_new_with_device_resources,
 };
-pub use format::ExportFormat;
+pub use format::{ExportFormat, FLAC_HEADER_BYTES};
 mod pages;
 pub use pages::PreparedExportPages;
+mod post;
+pub use post::{AppliedGain, ExportNormalization, ExportOptions, measure_integrated_lufs};
 mod resident_source;
 pub use resident_source::publish_resident_source_new;
 mod publication;
@@ -70,7 +75,8 @@ pub use controlled::{
     ExportControl, ExportJobSpec, ExportProgress, ExportSignal, ForeignLinearExportSpec,
     render_linear_main_with_foreign, render_prepared_controlled,
     render_prepared_controlled_with_device_resources,
-    render_prepared_with_device_resources_and_policy, render_prepared_with_pages_and_policy,
+    render_prepared_with_device_resources_and_policy, render_prepared_with_options,
+    render_prepared_with_pages_and_policy,
 };
 pub use controlled::{
     control_storage_allowance, controlled_frame_count, render_control_sampler_with_policy,
@@ -79,18 +85,24 @@ pub use controlled::{
 pub use publication::{OverwriteConsent, Publication};
 pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ExportReport {
     pub path: PathBuf,
     pub sample_rate: u32,
     pub frames: u64,
     pub data_bytes: u32,
-    /// Individual channel samples outside [-1.0, 1.0] that integer (PCM16)
+    /// Individual channel samples outside [-1.0, 1.0] that integer
     /// quantisation clamped to full scale. Float32 output preserves overs
     /// unclamped and always reports zero.
     pub clipped_samples: u64,
     /// The displaced file retained after confirmed replacement, if any.
     pub recovery_path: Option<PathBuf>,
+    /// Exact linear gain applied by opt-in export normalization (`1.0` when off
+    /// or when normalizing digital silence).
+    pub applied_gain_linear: f64,
+    /// Exact gain in dB applied by opt-in export normalization (`0.0` when off
+    /// or when normalizing digital silence).
+    pub applied_gain_db: f64,
 }
 
 #[derive(Debug)]
@@ -448,20 +460,56 @@ fn publish_encoded<R: BlockRenderer>(
     encoding: ExportFormat,
     prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
 ) -> Result<ExportReport, ExportError> {
+    publish_encoded_with_gain(
+        path,
+        sample_rate,
+        start,
+        frames,
+        publication,
+        encoding,
+        AppliedGain::UNITY,
+        prepare_renderer,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_encoded_with_gain<R: BlockRenderer>(
+    path: &Path,
+    sample_rate: u32,
+    start: u64,
+    frames: u64,
+    publication: &Publication,
+    encoding: ExportFormat,
+    applied_gain: AppliedGain,
+    prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
+) -> Result<ExportReport, ExportError> {
     if sample_rate == 0 {
         return Err(ExportError::Invalid("sample rate is zero"));
     }
     start
         .checked_add(frames)
         .ok_or(ExportError::Invalid("frame range overflows"))?;
-    let data_bytes = frames
-        .checked_mul(u64::from(encoding.frame_bytes()))
-        .and_then(|bytes| u32::try_from(bytes).ok())
-        .filter(|bytes| *bytes <= u32::MAX - encoding.riff_overhead())
-        .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
-    let byte_rate = sample_rate
-        .checked_mul(encoding.frame_bytes())
-        .ok_or(ExportError::Invalid("sample rate is too large"))?;
+    let (wav_data_bytes, byte_rate) = if encoding.is_flac() {
+        if !(8_000..=192_000).contains(&sample_rate) {
+            return Err(ExportError::Invalid(
+                "flac sample rate must be within 8000..=192000 Hz",
+            ));
+        }
+        if frames >= (1_u64 << 36) {
+            return Err(ExportError::Invalid("flac exceeds the 36-bit sample limit"));
+        }
+        (0_u32, 0_u32)
+    } else {
+        let data_bytes = frames
+            .checked_mul(u64::from(encoding.frame_bytes()))
+            .and_then(|bytes| u32::try_from(bytes).ok())
+            .filter(|bytes| *bytes <= u32::MAX - encoding.riff_overhead())
+            .ok_or(ExportError::Invalid("wav exceeds the RIFF size limit"))?;
+        let byte_rate = sample_rate
+            .checked_mul(encoding.frame_bytes())
+            .ok_or(ExportError::Invalid("sample rate is too large"))?;
+        (data_bytes, byte_rate)
+    };
     if path.file_name().is_none() {
         return Err(ExportError::Invalid("destination has no file name"));
     }
@@ -496,23 +544,28 @@ fn publish_encoded<R: BlockRenderer>(
     // When available, keep this lock until return for older cooperating sweeps.
     let _ownership = stale_temporary::hold(&file);
     let write_result = prepare_renderer().and_then(|mut renderer| {
-        let clipped = write_wav(
-            file,
-            WavWriteSpec {
-                sample_rate,
-                start,
-                frames,
-                data_bytes,
-                byte_rate,
-                encoding,
-            },
-            &mut renderer,
-        )?;
+        let (clipped, actual_data_bytes) = if encoding.is_flac() {
+            write_flac(file, sample_rate, start, frames, encoding, &mut renderer)?
+        } else {
+            let clipped = write_wav(
+                file,
+                WavWriteSpec {
+                    sample_rate,
+                    start,
+                    frames,
+                    data_bytes: wav_data_bytes,
+                    byte_rate,
+                    encoding,
+                },
+                &mut renderer,
+            )?;
+            (clipped, wav_data_bytes)
+        };
         renderer.before_publication()?;
-        Ok(clipped)
+        Ok((clipped, actual_data_bytes))
     });
-    let clipped_samples = match write_result {
-        Ok(clipped) => clipped,
+    let (clipped_samples, data_bytes) = match write_result {
+        Ok(result) => result,
         Err(error) => return Err(retained_stage(temporary_path, error)),
     };
 
@@ -590,6 +643,8 @@ fn publish_encoded<R: BlockRenderer>(
         data_bytes,
         clipped_samples,
         recovery_path,
+        applied_gain_linear: applied_gain.linear,
+        applied_gain_db: applied_gain.db,
     })
 }
 
@@ -769,6 +824,83 @@ fn write_wav(
     Ok(clipped)
 }
 
+/// Write a streaming RFC 9639 FLAC file from rendered blocks; returns
+/// `(clipped_samples, encoded_bytes)`. 16-bit FLAC shares the exact
+/// timeline-anchored TPDF dither and silence-preservation law as `Pcm16`.
+fn write_flac(
+    file: File,
+    sample_rate: u32,
+    start: u64,
+    frames: u64,
+    encoding: ExportFormat,
+    renderer: &mut impl BlockRenderer,
+) -> Result<(u64, u32), ExportError> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    let file = write_fault::Writer::new(file);
+    let writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
+    let mut flac = hex_media::FlacStreamWriter::new(
+        writer,
+        sample_rate,
+        2,
+        encoding.bits_per_sample(),
+        frames,
+    )
+    .map_err(map_flac_encode_error)?;
+    let mut clipped = 0_u64;
+    let quantiser = dither::Pcm16Quantiser::main();
+    let mut position = start;
+    let mut block = [[0.0_f32; 2]; FRAMES_PER_BLOCK];
+    let mut pcm_block = [[0_i32; 2]; FRAMES_PER_BLOCK];
+    let mut remaining = frames;
+    while remaining > 0 {
+        let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
+        renderer.render_block(&mut block[..count])?;
+        for ((frame, dst), at) in block[..count]
+            .iter()
+            .zip(&mut pcm_block[..count])
+            .zip(position..)
+        {
+            for (channel, &sample) in frame.iter().enumerate() {
+                if !sample.is_finite() {
+                    return Err(ExportError::Invalid("render produced a non-finite sample"));
+                }
+                let (pcm, over) =
+                    format::quantise_integer_sample(encoding, quantiser, sample, at, channel);
+                dst[channel] = pcm;
+                clipped += u64::from(over);
+            }
+        }
+        flac.write_stereo_frames(&pcm_block[..count])
+            .map_err(map_flac_encode_error)?;
+        remaining -= count as u64;
+        position = position.wrapping_add(count as u64);
+    }
+    let (mut writer, bytes_written) = flac.finish().map_err(map_flac_encode_error)?;
+    writer.flush().map_err(|source| ExportError::Io {
+        operation: "flush the temporary flac",
+        source,
+    })?;
+    writer
+        .get_ref()
+        .sync_all()
+        .map_err(|source| ExportError::Io {
+            operation: "synchronize the temporary flac",
+            source,
+        })?;
+    Ok((clipped, u32::try_from(bytes_written).unwrap_or(u32::MAX)))
+}
+
+fn map_flac_encode_error(error: hex_media::ImportError) -> ExportError {
+    match error {
+        hex_media::ImportError::Io(source) => ExportError::Io {
+            operation: "write flac samples",
+            source,
+        },
+        hex_media::ImportError::Invalid(reason) => ExportError::Invalid(reason),
+        other => ExportError::Media(other.to_string()),
+    }
+}
+
 // Simulate an underlying staged-file write failure, including a partial write,
 // without filling a real user volume. Production always uses the File directly.
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -885,6 +1017,11 @@ fn write_header_encoded(
             let frames = data_bytes / encoding.frame_bytes();
             header[46..50].copy_from_slice(&frames.to_le_bytes());
             50
+        }
+        ExportFormat::Flac16 | ExportFormat::Flac24 => {
+            return Err(ExportError::Invalid(
+                "flac format does not use a wav header",
+            ));
         }
     };
     header[data_chunk..data_chunk + 4].copy_from_slice(b"data");

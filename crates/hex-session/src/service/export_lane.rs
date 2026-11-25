@@ -621,6 +621,8 @@ mod tests {
                 data_bytes: 0,
                 clipped_samples: 0,
                 recovery_path: None,
+                applied_gain_linear: 1.0,
+                applied_gain_db: 0.0,
             })
         }
         {
@@ -908,6 +910,8 @@ mod tests {
                             data_bytes: 4,
                             clipped_samples: 0,
                             recovery_path: has_recovery.then(|| recovery_for_worker.clone()),
+                            applied_gain_linear: 1.0,
+                            applied_gain_db: 0.0,
                         })
                     }),
                     finished_tx,

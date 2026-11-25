@@ -34,7 +34,7 @@ ALLOWED = {
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage', 'hex-warp'},
-    'hex-export': {'hex-engine'},
+    'hex-export': {'hex-engine', 'hex-media'},
     'hex-library': set(),
     'hex-preferences': set(),
     'hex-widgets': set(),

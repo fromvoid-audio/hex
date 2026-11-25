@@ -1,6 +1,6 @@
 //! # Purpose
-//! Own bounded control-side WAV, RF64/BW64, AIFF/AIFC, and FLAC decoding, verified source
-//! readers, sample-rate conversion and waveform summaries.
+//! Own bounded control-side WAV, RF64/BW64, AIFF/AIFC, and FLAC decoding, FLAC stream
+//! encoding, verified source readers, sample-rate conversion and waveform summaries.
 //!
 //! # Dependencies
 //! Uses hex-engine/hex-project data contracts and sha2 for source verification.
@@ -61,6 +61,7 @@ fn cancelled(cancel: &AtomicBool) -> Result<(), ImportError> {
     }
 }
 
+pub use flac::{FLAC_DEFAULT_BLOCK_SIZE, FlacStreamWriter};
 pub use resample::{
     ResampleLimits, ResamplePlan, resample, resample_cancellable, resample_with_version,
 };

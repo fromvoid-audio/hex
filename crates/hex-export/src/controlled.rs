@@ -429,6 +429,174 @@ pub fn render_prepared_with_pages_and_policy(
     render_prepared_using_pages(spec, Some(pages))
 }
 
+/// Controlled range export with explicit post-processing [`ExportOptions`]
+/// (optional deterministic windowed-sinc target sample-rate conversion and
+/// explicit opt-in peak or LUFS loudness normalization) and optional verified
+/// offline pages.
+///
+/// When `options` is identity (no rate change and normalization off), rendering
+/// streams directly to the staged WAV or FLAC output with zero extra buffering.
+/// When target SRC or normalization is requested, the compensated Arrangement
+/// output is rendered in cancellable blocks, resampled via `hex-media` V2 SRC,
+/// normalized with the exact applied gain reported on [`ExportReport`], and
+/// published atomically under the same [`Publication`] policy.
+pub fn render_prepared_with_options(
+    spec: ExportJobSpec<'_>,
+    options: ExportOptions,
+    mut pages: Option<&mut dyn PreparedExportPages>,
+) -> Result<ExportReport, ExportError> {
+    options.validate()?;
+    let source_rate = spec.revision.arrangement().sample_rate();
+    if options.is_identity(source_rate) {
+        return render_prepared_using_pages(spec, pages);
+    }
+    let ExportJobSpec {
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        signal,
+        format,
+        control,
+        publication,
+    } = spec;
+    if matches!(signal, ExportSignal::Stems(_)) {
+        return Err(ExportError::Invalid(
+            "stem batch export does not support target sample-rate conversion or normalization",
+        ));
+    }
+    let target_rate = options.target_sample_rate.unwrap_or(source_rate);
+    let source_frame_count = usize::try_from(frames)
+        .ok()
+        .filter(|&count| count <= crate::post::MAX_POST_PROCESSED_FRAMES)
+        .ok_or(ExportError::Invalid(
+            "post-processed export frame count exceeds bounded limit",
+        ))?;
+
+    control.claim()?;
+    let latency = main_compensation(&revision, &signal, frames);
+    let rendered_frames = compensated_frames(start, frames, latency)?;
+
+    let playback = prepare_runtime_with_pages(
+        revision,
+        resources,
+        start,
+        rendered_frames,
+        control,
+        pages.as_deref_mut(),
+    )?;
+    let (plan, buffers) = match signal {
+        ExportSignal::Main => (None, Vec::new()),
+        ExportSignal::CapturedMix(ids) => {
+            if ids.is_empty() {
+                return Err(ExportError::Invalid("export output selection is empty"));
+            }
+            let plan = playback
+                .output_capture_plan(&ids, FRAMES_PER_BLOCK)
+                .map_err(|_| ExportError::Invalid("invalid export output selection"))?;
+            let mut buffers = Vec::new();
+            buffers
+                .try_reserve_exact(ids.len())
+                .map_err(|_| ExportError::Invalid("could not reserve export capture buffers"))?;
+            for _ in &ids {
+                buffers.push([[0.0; 2]; FRAMES_PER_BLOCK]);
+            }
+            (Some(plan), buffers)
+        }
+        ExportSignal::Stems(_) => {
+            return Err(ExportError::Invalid(
+                "stem batch export does not support target sample-rate conversion or normalization",
+            ));
+        }
+    };
+    let mut renderer = ControlledRenderer {
+        playback,
+        sources: None,
+        pages,
+        plan,
+        buffers,
+        control: control.clone(),
+    };
+    discard_latency(&mut renderer, latency)?;
+
+    let mut rendered = Vec::new();
+    rendered
+        .try_reserve_exact(source_frame_count)
+        .map_err(|_| ExportError::Invalid("could not allocate post-processed export buffer"))?;
+    let mut block = [[0.0_f32; 2]; FRAMES_PER_BLOCK];
+    let mut remaining = source_frame_count;
+    while remaining > 0 {
+        let count = remaining.min(FRAMES_PER_BLOCK);
+        renderer.render_block(&mut block[..count])?;
+        for &[l, r] in &block[..count] {
+            if !l.is_finite() || !r.is_finite() {
+                return Err(ExportError::Invalid("render produced a non-finite sample"));
+            }
+        }
+        rendered.extend_from_slice(&block[..count]);
+        remaining -= count;
+    }
+    if let Some(pages) = renderer.pages.as_deref_mut() {
+        pages.finish(control)?;
+    }
+    control.check()?;
+
+    // Perform deterministic windowed-sinc target SRC if requested.
+    let cancel_flag = AtomicBool::new(control.is_cancelled());
+    let mut processed =
+        crate::post::resample_export_frames(source_rate, target_rate, rendered, &cancel_flag)?;
+    control.check()?;
+
+    // Apply explicit opt-in peak or LUFS normalization and capture exact applied gain.
+    let applied_gain =
+        crate::post::apply_normalization(&mut processed, target_rate, options.normalization)?;
+    control.check()?;
+
+    let output_frames = processed.len() as u64;
+    let output_start = if target_rate == source_rate { start } else { 0 };
+    publish_encoded_with_gain(
+        path,
+        target_rate,
+        output_start,
+        output_frames,
+        publication,
+        format,
+        applied_gain,
+        || {
+            Ok(BufferedExportRenderer {
+                frames: processed,
+                offset: 0,
+                control: control.clone(),
+            })
+        },
+    )
+}
+
+struct BufferedExportRenderer {
+    frames: Vec<Frame>,
+    offset: usize,
+    control: ExportControl,
+}
+
+impl BlockRenderer for BufferedExportRenderer {
+    fn render_block(&mut self, out: &mut [Frame]) -> Result<(), ExportError> {
+        self.control.check()?;
+        let end = self
+            .offset
+            .checked_add(out.len())
+            .filter(|&end| end <= self.frames.len())
+            .ok_or(ExportError::Invalid("buffered export underrun"))?;
+        out.copy_from_slice(&self.frames[self.offset..end]);
+        self.offset = end;
+        Ok(())
+    }
+
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        self.control.begin_publication()
+    }
+}
+
 /// Render linear Main through independently owned offline processors and,
 /// optionally, verified pages. Both owners finish before publication. Their
 /// custody remains with the caller and failures abort the staged export.
