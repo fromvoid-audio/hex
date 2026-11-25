@@ -100,7 +100,7 @@ pub(super) fn project_for_save_with_capture(
     context: hex_engine::AudioSourceContext,
     cancellation: &RequestCancellation,
     audio: Option<&mut (dyn WorkerAudioSink + 'static)>,
-) -> Result<Project, String> {
+) -> Result<Arc<Project>, String> {
     let project = super::recovery::project_for_save(session, media_base)?;
     let captures = match audio {
         Some(audio) => audio
@@ -128,7 +128,10 @@ pub(super) fn project_for_save_with_capture(
     if !captures.is_empty() && cancellation.is_cancelled() {
         return Err("project save cancelled".into());
     }
-    project_with_captures(project, captures)
+    if captures.is_empty() {
+        return Ok(project);
+    }
+    project_with_captures((*project).clone(), captures).map(Arc::new)
 }
 
 /// Snapshot current hosted state into an isolated export projection without

@@ -34,7 +34,7 @@ pub fn prepare_device_take_adoption_on_control(
         return Err("sealed take provenance differs from the completed gesture".into());
     }
     let project = super::super::recovery::project_for_save(session, document_base)?;
-    if take.source() != &project {
+    if take.source() != project.as_ref() {
         return Err("sealed take source differs from the current project; retain the draft".into());
     }
     let vst3_class = if matches!(target, hex_project::DeviceAutomationTarget::Vst3 { .. }) {
@@ -80,7 +80,7 @@ pub fn prepare_group_take_adoption_on_control(
         return Err("sealed group provenance differs from the completed gesture".into());
     }
     let project = super::super::recovery::project_for_save(session, document_base)?;
-    if take.source() != &project {
+    if take.source() != project.as_ref() {
         return Err(
             "sealed group source differs from the current project; retain the draft".into(),
         );

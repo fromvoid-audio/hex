@@ -3368,11 +3368,24 @@ impl Session {
         | Transition::SectionCommand { command, .. } = &transition
         {
             crate::validate_command_media(command)?;
-            if let Command::PlaceClip { asset, .. } = command.as_ref()
-                && self.native_assets.contains(*asset)
-                && !self.media.contains_key(asset)
-            {
-                return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+            match command.as_ref() {
+                Command::PlaceClip { asset, .. }
+                    if self.native_assets.contains(*asset) && !self.media.contains_key(asset) =>
+                {
+                    return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+                }
+                Command::FreezeTrackWithAsset { asset, .. } => {
+                    if self.native_assets.contains(*asset) {
+                        return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+                    }
+                    if !self.media.contains_key(asset) && !self.verified_sources.contains_key(asset)
+                    {
+                        return Err(SessionError::Invalid(
+                            "frozen track asset requires resident or verified prepared media",
+                        ));
+                    }
+                }
+                _ => {}
             }
         }
         let plugin_control = match &transition {
