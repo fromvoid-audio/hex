@@ -36,11 +36,12 @@ impl Drop for Temp {
         let _ = fs::remove_dir_all(&self.0);
     }
 }
-fn wait(service: &Service) -> Event {
-    let deadline = Instant::now() + std::time::Duration::from_secs(60);
+fn wait_for(service: &Service, matches: impl Fn(&Event) -> bool) -> Event {
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         match service.try_event() {
-            Ok(event) => return event,
+            Ok(event) if matches(&event) => return event,
+            Ok(event) => assert!(event.error.is_none(), "{:?}", event.error),
             Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
                 thread::sleep(Duration::from_millis(1))
             }
@@ -48,9 +49,33 @@ fn wait(service: &Service) -> Event {
         }
     }
 }
+
+fn wait(service: &Service) -> Event {
+    wait_for(service, |_| true)
+}
+
+fn wait_for_checkpoint(path: &Path, expected: &Project) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match hex_storage::load_journal(path) {
+            Ok(project) if &project == expected => return,
+            Ok(_) => {} // The previous complete checkpoint is still visible.
+            Err(hex_storage::StorageError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("invalid recovery checkpoint at {}: {error}", path.display()),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "checkpoint did not reach expected project at {}",
+            path.display()
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn request(service: &Service, request: Request) -> Event {
     service.submit(request).expect("submit");
-    let event = wait(service);
+    let event = wait_for(service, |event| event.request_complete);
     assert!(event.error.is_none(), "{:?}", event.error);
     event
 }
@@ -266,7 +291,7 @@ fn render_session(event: &Event, partitions: &[usize]) -> Vec<[f32; 2]> {
 }
 
 #[test]
-fn abrupt_worker_process_exit_recovers_the_acknowledged_mixed_project() {
+fn abrupt_worker_process_exit_recovers_the_last_checkpointed_mixed_project() {
     let directory = Temp::new();
     wav(&directory.0.join("OriginalCase.wav"), 8);
     let status = std::process::Command::new(std::env::current_exe().expect("test binary"))
@@ -308,6 +333,7 @@ fn crash_worker_child() {
     let authored = mixed_fixture(&service, &directory.0.join("OriginalCase.wav"));
     hex_storage::save_new(directory.0.join("expected.hex"), &authored)
         .expect("acknowledged reference");
+    wait_for_checkpoint(&directory.slot(), &authored);
     std::process::exit(73); // No endpoint/worker destructors or graceful shutdown.
 }
 
@@ -322,10 +348,7 @@ fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edi
             name: "first untitled".into(),
         },
     );
-    assert_eq!(
-        hex_storage::load_journal(&directory.slot()).expect("first checkpoint"),
-        *old.state.project
-    );
+    wait_for_checkpoint(&directory.slot(), &old.state.project);
     let old_bytes = fs::read(directory.slot()).unwrap();
     drop(first);
     let latest = directory.service();
@@ -336,10 +359,7 @@ fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edi
             name: "most recent untitled".into(),
         },
     );
-    assert_eq!(
-        hex_storage::load_journal(&directory.slot()).expect("latest only"),
-        *new.state.project
-    );
+    wait_for_checkpoint(&directory.slot(), &new.state.project);
     let preserved = fs::read_dir(directory.slot().parent().unwrap())
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -357,7 +377,9 @@ fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edi
         *old.state.project
     );
     assert_eq!(
-        new.status.as_deref(),
+        wait_for(&latest, |event| event.status.is_some())
+            .status
+            .as_deref(),
         Some("previous recovery journal preserved beside its original slot")
     );
     drop(latest);
@@ -377,7 +399,9 @@ fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edi
             name: "edit remains usable".into(),
         }))
         .expect("edit");
-    let failed = wait(&restarted);
+    let edit = wait_for(&restarted, |event| event.request_complete);
+    assert!(edit.error.is_none() && edit.playback.is_some());
+    let failed = wait_for(&restarted, |event| event.recovery_failure.is_some());
     assert!(
         failed
             .error
@@ -386,7 +410,7 @@ fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edi
             .contains("project changed outside hex")
     );
     assert_eq!(failed.state.project.tracks().len(), 2);
-    assert!(failed.state.unsaved && failed.state.can_undo && failed.playback.is_some());
+    assert!(failed.state.unsaved && failed.state.can_undo && failed.playback.is_none());
     assert_eq!(
         fs::read(directory.slot()).expect("preserved external contents"),
         b"unrecognized external contents"
@@ -407,6 +431,7 @@ fn reopening_saved_project_preserves_leftover_journal_on_first_edit() {
         },
     );
     let slot = hex_storage::journal_path(&path).unwrap();
+    wait_for_checkpoint(&slot, &original.state.project);
     let bytes = fs::read(&slot).unwrap();
     drop(first);
     let second = directory.service();
@@ -418,6 +443,7 @@ fn reopening_saved_project_preserves_leftover_journal_on_first_edit() {
             name: "new edits".into(),
         },
     );
+    wait_for_checkpoint(&slot, &changed.state.project);
     let preserved = fs::read_dir(directory.0.as_path())
         .unwrap()
         .map(|entry| entry.unwrap().path())
@@ -448,10 +474,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     let service = directory.service();
     wait(&service);
     let authored = mixed_fixture(&service, &media);
-    assert_eq!(
-        hex_storage::load_journal(&directory.slot()).expect("mixed checkpoint"),
-        authored
-    );
+    wait_for_checkpoint(&directory.slot(), &authored);
     let target = directory.0.join("Original.hex");
     request(&service, Request::SaveNew(target.clone()));
     assert!(
@@ -464,10 +487,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
     let original_pcm = render_session(&dirty, &[1, 17, 257]);
     let saved_bytes = fs::read(&target).expect("saved source bytes");
     let named_journal = hex_storage::journal_path(&target).expect("named slot");
-    assert_eq!(
-        hex_storage::load_journal(&named_journal).expect("saved edits"),
-        dirty_project
-    );
+    wait_for_checkpoint(&named_journal, &dirty_project);
     assert_eq!(
         fs::read(&target).expect("saved source unchanged"),
         saved_bytes
@@ -499,7 +519,7 @@ fn mixed_project_relink_recovery_save_as_current_and_session_round_trip() {
             relinks: bad_relinks,
         })
         .expect("bad relink");
-    let rejected = wait(&restarted);
+    let rejected = wait_for(&restarted, |event| event.open_complete);
     assert!(
         rejected
             .error
