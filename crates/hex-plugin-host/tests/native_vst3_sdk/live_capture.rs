@@ -197,18 +197,36 @@ fn actual_live_capture_keeps_same_processing_instance_and_historical_startup() {
 fn actual_live_controller_capture_restores_into_an_independent_processing_instance() {
     let case = Case::new();
     let selected = source();
-    let saved = startup_state(&selected, true, 3);
+    let small = startup_state(&selected, true, 3);
+    let view = decode(&small).unwrap();
+    let controller = view.controller.unwrap();
+    let mut component = view.component.unwrap().to_vec();
+    component.resize(hex_plugin_state::MAX_OPAQUE_BYTES - controller.len(), 0);
+    *component.last_mut().unwrap() = 0x37;
+    let saved = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: view.identity,
+        component: Some(&component),
+        controller: Some(controller),
+    })
+    .unwrap();
+    let quoted = selected
+        .preparation_storage_bound_on_control(&build(), Some(&saved))
+        .unwrap();
     let mut instance = Pending::prepare_with_restore(
         &build(),
         selected,
         options().preparation,
         Some(saved.clone()),
         PreparationCancellation::new_on_control().unwrap(),
-        case.setup_restore(37),
+        case.setup_restore(121),
     )
     .unwrap()
     .complete_on_control(Some(options().presentation))
     .unwrap();
+    assert!(
+        instance.retained_storage_on_control().unwrap().data_bytes
+            <= quoted.max_prepared_data_bytes
+    );
     let block = request(instance.configuration(), 0);
     instance.exchange_on_worker(block).unwrap();
     let child = instance.child_id_on_control();
@@ -216,6 +234,11 @@ fn actual_live_controller_capture_restores_into_an_independent_processing_instan
     let block = request(instance.configuration(), 1);
     instance.exchange_on_worker(block).unwrap();
     let captured = poll_complete(&mut instance);
+    assert_eq!(captured.payload().len(), 16 * 1024 * 1024);
+    assert_eq!(
+        decode(&captured).unwrap().component.unwrap().last(),
+        Some(&0x37)
+    );
     assert_eq!(
         &decode(&captured).unwrap().component.unwrap()[8..12],
         &0.75_f32.to_le_bytes()
@@ -238,7 +261,7 @@ fn actual_live_controller_capture_restores_into_an_independent_processing_instan
         options().preparation,
         Some(captured),
         PreparationCancellation::new_on_control().unwrap(),
-        independent.setup_restore(37),
+        independent.setup_restore(121),
     )
     .unwrap()
     .complete_on_control(Some(options().presentation))
@@ -408,9 +431,9 @@ fn overflow_capture_recovers(variant: u32) {
                 crate::protocol::StateCaptureRefusal::ExceedsLimit { observed_bytes },
             )) => {
                 let expected_observed = match variant {
-                    95 => 524288,
-                    96 => 524320,
-                    157 | 158 => 524193,
+                    95 => 16_777_216,
+                    96 => 16_777_248,
+                    157 | 158 => 16_777_121,
                     other => panic!("unexpected overflow variant {other}"),
                 };
                 assert_eq!(observed_bytes, expected_observed);

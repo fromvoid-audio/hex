@@ -1,6 +1,8 @@
 //! Real source/worker and actual callback-carrier transfer; no Hex app/device.
 use super::*;
-use crate::candidate_custody::native_source_test_fixture::{identity, source_reservation};
+use crate::candidate_custody::native_source_test_fixture::{
+    domain_for_sources, identity, source_reservation,
+};
 use crate::native_callback_owner::{
     ErrorCallbackOwner, Guard, NativeCallbackOwner, NativeRetirement,
 };
@@ -85,7 +87,10 @@ fn setup_for_identity_with_profile(
     // this foreign-only graph. Reserve that current ceiling per runtime cell,
     // in addition to the fixture's existing source/compiler overlap allowance.
     // This is caller capacity, not allocated memory or a relaxed admission rule.
-    let fixture_data_bytes = (192 * 1024 * 1024_usize)
+    let fixture_data_bytes = domain_for_sources(2)
+        .max_construction_peak_data_bytes
+        .checked_add(192 * 1024 * 1024_usize)
+        .unwrap()
         .checked_add(
             hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
                 .checked_mul(runtime_slots)

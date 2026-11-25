@@ -44,24 +44,20 @@ fn fresh_selected_lookup_finds_raw_zero_beyond_the_first_page_without_inventory(
             },
         )
         .unwrap();
+    let source = Hosting::source_data_reservation().unwrap();
+    let (retained, peak) = source.pool_data_bytes(1).unwrap();
     control
         .configure_ordinary_streaming_on_control(
             hex_audio::AudioCandidateDomainReservation {
-                max_retained_data_bytes: 192 * 1024 * 1024,
-                max_construction_peak_data_bytes: 192 * 1024 * 1024,
+                max_retained_data_bytes: retained + 192 * 1024 * 1024,
+                max_construction_peak_data_bytes: peak + 192 * 1024 * 1024,
             },
             3,
             4096,
         )
         .unwrap();
     control
-        .configure_native_source_preparation(
-            1,
-            hex_audio::NativeSourceDataReservation {
-                max_retained_data_bytes: 4 * 1024 * 1024,
-                max_construction_peak_data_bytes: 24 * 1024 * 1024,
-            },
-        )
+        .configure_native_source_preparation(1, source)
         .unwrap();
     let host = host();
     let selected = selection();

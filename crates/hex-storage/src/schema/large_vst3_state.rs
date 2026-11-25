@@ -44,7 +44,7 @@ pub(crate) fn contains(project: &Project) -> bool {
 }
 
 fn placeholder(state: &NativeDeviceState) -> Result<NativeDeviceState, StorageError> {
-    let empty = match hex_plugin_state::decode_stored(state) {
+    let empty = match hex_plugin_state::decode(state) {
         Ok(view) => hex_plugin_state::encode(hex_plugin_state::State {
             identity: view.identity,
             component: view.component.map(|_| &[][..]),

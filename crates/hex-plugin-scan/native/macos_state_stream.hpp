@@ -37,7 +37,7 @@ class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeable
     }
     ~StateStream() = default;
 public:
-    static constexpr size_t envelope_capacity=512*1024;
+    static constexpr size_t envelope_capacity=16*1024*1024;
     static constexpr size_t capacity=envelope_capacity-96;
     const std::vector<unsigned char>& payload() const { return bytes; }
     explicit StateStream(size_t maximum):limit(std::min(maximum,capacity)) {}

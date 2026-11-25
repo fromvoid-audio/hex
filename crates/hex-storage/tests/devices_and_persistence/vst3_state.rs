@@ -1,8 +1,7 @@
 //! Real generic current-format/files/history consumers; no foreign plug-in or fake DSP.
 use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_state::{
-    BinaryIdentity, ClassId, Error, Identity, MAX_OPAQUE_BYTES, State, TYPE_ID, available, decode,
-    encode,
+    BinaryIdentity, ClassId, Error, Identity, State, TYPE_ID, available, decode, encode,
 };
 use hex_project::{Command, Created, DeviceId, Editor, Project, TrackId};
 use std::{
@@ -64,11 +63,14 @@ fn insert(editor: &mut Editor, track: TrackId, state: NativeDeviceState) -> Devi
     id
 }
 
+// Schema75 admits a 512 KiB envelope including the 96-byte HXVS header.
+const LEGACY_OPAQUE_BYTES: usize = hex_lattice_contract::MAX_VST3_DEVICE_STATE_BYTES - 96;
+
 #[test]
 fn current_file_and_history_preserve_exact_state_and_independent_project_instance_ids() {
     let directory = Directory::new();
     let path = directory.0.join("opaque.hex");
-    let component: Vec<_> = (0..MAX_OPAQUE_BYTES - 17).map(|n| n as u8).collect();
+    let component: Vec<_> = (0..LEGACY_OPAQUE_BYTES - 17).map(|n| n as u8).collect();
     let controller = [0, 255, 1, 128, 2, 0, 7, 8, 9, 33, 42, 21, 18, 16, 15, 3, 0];
     let original = encode(State {
         identity: identity(),
@@ -191,7 +193,7 @@ fn oversized_generic_document_refuses_without_touching_original_file() {
     let (mut editor, track) = editor();
     let state = encode(State {
         identity: identity(),
-        component: Some(&vec![255; MAX_OPAQUE_BYTES]),
+        component: Some(&vec![255; LEGACY_OPAQUE_BYTES]),
         controller: None,
     })
     .unwrap();
@@ -275,10 +277,13 @@ fn large_project_state_reopens_complete_without_rewriting_the_predecessor() {
         .with_host_metadata_from(&small)
         .unwrap();
     assert_eq!(
-        hex_plugin_state::decode_stored(&state).unwrap().controller,
+        hex_plugin_state::decode(&state).unwrap().controller,
         Some(&[0xfe][..])
     );
-    assert_eq!(available(&state, Some(identity())), Err(Error::TooLarge));
+    assert_eq!(
+        available(&state, Some(identity())).unwrap().identity,
+        identity()
+    );
     let opaque = NativeDeviceState::new(TYPE_ID, 777, vec![0xa3; 550_001]).unwrap();
     editor
         .execute(Command::ReplaceDeviceComparison {

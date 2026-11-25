@@ -1,5 +1,7 @@
 use super::super::endpoints::NativeEndpointBank;
-use super::super::tests::{dispose, identity, input, root, source_reservation, start};
+use super::super::tests::{
+    dispose, domain_for_sources, identity, input, root, source_reservation, start,
+};
 use super::*;
 use hex_plugin_host::protocol::ParameterEditKind;
 use std::time::{Duration, Instant};
@@ -7,18 +9,13 @@ use std::time::{Duration, Instant};
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn shutdown_consumes_original_pending_admission_before_sealing_the_editor() {
-    use crate::candidate_custody::{AudioCandidateDomainReservation, CandidateRoot};
+    use crate::candidate_custody::CandidateRoot;
     use hex_plugin_host::protocol::{ControllerRequest, EditorAdmissionState};
     use std::num::NonZeroU64;
 
     for release in [false, true] {
         let outer = CandidateRoot::new(2).unwrap();
-        outer
-            .configure_domains(AudioCandidateDomainReservation {
-                max_retained_data_bytes: 64 * 1024 * 1024,
-                max_construction_peak_data_bytes: 64 * 1024 * 1024,
-            })
-            .unwrap();
+        outer.configure_domains(domain_for_sources(1)).unwrap();
         outer
             .configure_native_source_preparation(1, source_reservation())
             .unwrap();
@@ -84,15 +81,10 @@ fn shutdown_consumes_original_pending_admission_before_sealing_the_editor() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn refused_unpublished_source_can_release_its_unclaimed_reservation() {
-    use crate::candidate_custody::{AudioCandidateDomainReservation, CandidateRoot};
+    use crate::candidate_custody::CandidateRoot;
     crate::lifecycle::prepare_candidate_cleanup().unwrap();
     let outer = CandidateRoot::new(2).unwrap();
-    outer
-        .configure_domains(AudioCandidateDomainReservation {
-            max_retained_data_bytes: 64 * 1024 * 1024,
-            max_construction_peak_data_bytes: 64 * 1024 * 1024,
-        })
-        .unwrap();
+    outer.configure_domains(domain_for_sources(1)).unwrap();
     outer
         .configure_native_source_preparation(1, source_reservation())
         .unwrap();
@@ -297,14 +289,9 @@ fn shutdown_retains_every_pending_page_and_honors_only_exact_disposition() {
         }
     };
 
-    use crate::candidate_custody::{AudioCandidateDomainReservation, CandidateRoot};
+    use crate::candidate_custody::CandidateRoot;
     let outer = CandidateRoot::new(2).unwrap();
-    outer
-        .configure_domains(AudioCandidateDomainReservation {
-            max_retained_data_bytes: 64 * 1024 * 1024,
-            max_construction_peak_data_bytes: 64 * 1024 * 1024,
-        })
-        .unwrap();
+    outer.configure_domains(domain_for_sources(1)).unwrap();
     outer
         .configure_native_source_preparation(1, source_reservation())
         .unwrap();
