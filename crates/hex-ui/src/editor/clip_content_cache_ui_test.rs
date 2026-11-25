@@ -1225,3 +1225,125 @@ fn deep_element_id_paths_keep_distinct_click_state_and_focus_across_repaints(
         assert_eq!(view.read_with(cx, |view, _| view.counts), [3, 2]);
     }
 }
+
+#[gpui::test]
+fn inner_cached_view_rebuilds_after_outer_cache_hit_switches_to_uncached(cx: &mut TestAppContext) {
+    struct InnerText {
+        builds: usize,
+    }
+    impl Render for InnerText {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.builds += 1;
+            div()
+                .size_full()
+                .debug_selector(|| "stale-inner-text".to_owned())
+                .child(theme::text("inner-line"))
+        }
+    }
+
+    struct OuterContainer {
+        inner: Entity<InnerText>,
+        builds: usize,
+    }
+    impl Render for OuterContainer {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            self.builds += 1;
+            div()
+                .size_full()
+                .relative()
+                .child(theme::text("outer-line"))
+                .children([cached(self.inner.clone())])
+        }
+    }
+
+    struct ToggleCacheRoot {
+        outer: Entity<OuterContainer>,
+        cache_outer: bool,
+        sibling_lines: usize,
+    }
+    impl Render for ToggleCacheRoot {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let outer_element: AnyElement = if self.cache_outer {
+                cached(self.outer.clone()).into_any_element()
+            } else {
+                self.outer.clone().into_any_element()
+            };
+            let mut root = div().size_full().relative().children([outer_element]);
+            for index in 0..self.sibling_lines {
+                root = root.child(theme::text(format!("sibling-line-{index}")));
+            }
+            root
+        }
+    }
+
+    let handle = cx.add_window(|_, cx| {
+        let inner = cx.new(|_| InnerText { builds: 0 });
+        let outer = cx.new(|_| OuterContainer { inner, builds: 0 });
+        ToggleCacheRoot {
+            outer,
+            cache_outer: true,
+            sibling_lines: 4,
+        }
+    });
+    let root = handle.root(cx).expect("toggle cache root");
+    let outer = root.read_with(cx, |root, _| root.outer.clone());
+    let inner = outer.read_with(cx, |outer, _| outer.inner.clone());
+    let mut visual = VisualTestContext::from_window(*handle, cx);
+    visual.run_until_parked();
+    let initial_outer_builds = outer.read_with(cx, |view, _| view.builds);
+    let initial_inner_builds = inner.read_with(cx, |view, _| view.builds);
+
+    // Frame 2: outer view hits its cache while sibling text shrinks, so the
+    // inner cached view's retained AnyViewState is carried over with Frame 1's
+    // paint_range line-layout indices (larger than Frame 2's used_lines).
+    visual.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.sibling_lines = 0;
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
+    assert_eq!(
+        outer.read_with(cx, |view, _| view.builds),
+        initial_outer_builds,
+        "outer view must hit cache on Frame 2"
+    );
+    assert_eq!(
+        inner.read_with(cx, |view, _| view.builds),
+        initial_inner_builds,
+        "inner view must not run during outer cache hit"
+    );
+
+    // Frame 3: outer switches from cached AnyView to uncached Entity with the
+    // same ElementId::View (matching EditorWindowRoot turning off sibling
+    // overlay). Inner must reject the stale Frame-1 state and rebuild cleanly
+    // instead of panicking in LineLayoutCache::reuse_layouts.
+    visual.update(|window, cx| {
+        root.update(cx, |root, cx| {
+            root.cache_outer = false;
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
+    assert_eq!(
+        outer.read_with(cx, |view, _| view.builds),
+        initial_outer_builds + 1
+    );
+    assert_eq!(
+        inner.read_with(cx, |view, _| view.builds),
+        initial_inner_builds + 1,
+        "inner view must rebuild once when its cached state predates rendered_frame"
+    );
+    assert!(visual.debug_bounds("stale-inner-text").is_some());
+
+    // Frame 4: once freshly painted on Frame 3, inner resumes cache hits cleanly.
+    visual.update(|window, cx| {
+        root.update(cx, |_, cx| cx.notify());
+        window.draw(cx).clear();
+    });
+    assert_eq!(
+        inner.read_with(cx, |view, _| view.builds),
+        initial_inner_builds + 1,
+        "inner view should reuse its Frame-3 cache on Frame 4"
+    );
+}

@@ -530,3 +530,63 @@ fn single_track_clip_drag_retains_cached_scene_replay_on_untouched_tracks(cx: &m
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
 }
+
+#[gpui::test]
+fn opening_foreground_overlay_after_cached_playback_tick_rebuilds_track_headers_without_panic(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, tracks, _first_clip) = three_track_audio_project();
+    let (handle, editor) = open_hosted_editor_window(cx, project);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(720.0)));
+    editor.update(&mut visual, |view, cx| {
+        view.audio_detail.clip_view_open = false;
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let baseline_editor_renders = editor.read_with(&visual, |view, _| view.render_count);
+
+    // Trigger an overlay-only redraw so EditorWindowRoot hits EditorView's
+    // outer cache while inner TrackHeaderView states are carried across a frame
+    // whose text layout count changes.
+    visual.update(|window, cx| {
+        let overlay = editor.read(cx).playback_subviews.overlay.clone();
+        let cpu = editor.read(cx).playback_subviews.cpu_meter.clone();
+        cpu.update(cx, |view, cx| {
+            view.sync(
+                "0%".into(),
+                "cpu".into(),
+                0.0,
+                false,
+                (0x111111, 0x222222, 0x333333),
+            );
+            cx.notify();
+        });
+        overlay.update(cx, |_, cx| cx.notify());
+        window.draw(cx).clear();
+    });
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.render_count),
+        baseline_editor_renders,
+        "overlay-only tick must hit EditorView's outer cache"
+    );
+
+    // Open a foreground overlay so EditorWindowRoot switches from cached
+    // AnyView(EditorView) to uncached Entity<EditorView>; nested track headers
+    // must cleanly reject their stale outer-cached frame indices.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            view.settings.theme.open = true;
+            cx.notify();
+        });
+        window.draw(cx).clear();
+    });
+    let header_selector =
+        Box::leak(format!("arrangement-track-header-{}", tracks[0].value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(header_selector).is_some(),
+        "track header must remain painted after switching EditorView out of outer cache"
+    );
+}
