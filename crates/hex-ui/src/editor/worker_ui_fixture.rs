@@ -8,7 +8,11 @@ use hex_session::service::{Event, Request, Service};
 use std::{
     io::Write,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, MutexGuard, atomic::AtomicBool, mpsc::sync_channel},
+    sync::{
+        Arc, MutexGuard,
+        atomic::{AtomicBool, AtomicU64},
+        mpsc::sync_channel,
+    },
     time::{Duration, Instant},
 };
 
@@ -17,6 +21,7 @@ pub(super) struct WorkerUiFixture {
     pub editor: Entity<EditorView>,
     pub backend: hex_audio::worker_fixture::HeadlessBackend,
     consume_next_inherited_candidate: Arc<AtomicBool>,
+    pub section_wait_observed: Option<Arc<AtomicU64>>,
     cleanup_app: Option<AsyncApp>,
     _serial: MutexGuard<'static, ()>,
 }
@@ -132,6 +137,7 @@ fn open_worker(
     if section_fixture {
         client.bind_resident_transport(0);
     }
+    let section_wait_observed = section_fixture.then(|| Arc::new(AtomicU64::new(0)));
     let (events, receiver) = sync_channel(64);
     let consume_next_inherited_candidate = Arc::new(AtomicBool::new(false));
     let service = Service::with_audio_sink_and_native_reservation(
@@ -143,7 +149,7 @@ fn open_worker(
             events,
             audition_ready,
             Arc::clone(&consume_next_inherited_candidate),
-            section_fixture,
+            section_wait_observed.clone(),
             paused_monitor_enabled,
         ),
         reservation,
@@ -173,6 +179,7 @@ fn open_worker(
         editor,
         backend,
         consume_next_inherited_candidate,
+        section_wait_observed,
         cleanup_app: Some(cx.to_async()),
         _serial: serial,
     };
