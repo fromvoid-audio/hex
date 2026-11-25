@@ -1,5 +1,6 @@
 //! # Purpose
-//! Own bounded controlled CLAP discovery/offline records and validation.
+//! Own bounded controlled CLAP discovery/offline records, explicit user-folder
+//! CLAP bundle discovery/static inspection, and validation.
 //!
 //! # Dependencies
 //! Uses serde/serde_json for records and sha2 for exact artifact identity; native execution is
@@ -20,6 +21,7 @@ use std::{
 };
 pub mod macho_identity;
 pub mod receipt_macos;
+pub mod user_folder;
 pub const SDK: &str = "195b42a004144fab0b3cf95e9c067187d15365b7";
 pub const MAX_PACKET: usize = 1024 * 1024;
 pub const NAMES: [&str; 13] = [

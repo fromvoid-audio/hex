@@ -874,6 +874,115 @@ pub fn available_app() -> Result<PathBuf, String> {
     Ok(app)
 }
 
+/// Explicit standard-folder CLAP discovery (`~/Library/Audio/Plug-Ins/CLAP` and
+/// `/Library/Audio/Plug-Ins/CLAP`) merged into the recoverable plugin catalog.
+pub fn scan_clap_standard(catalog_path: &Path, token: Token) -> Update {
+    match crate::roots::macos_standard_paths_for(crate::PluginFormat::Clap) {
+        Ok(roots) => scan_clap_folders(catalog_path, &roots, token),
+        Err(status) => Update {
+            catalog: None,
+            diagnostics: None,
+            status,
+        },
+    }
+}
+
+/// Bounded user-folder CLAP discovery merged atomically into the plugin catalog
+/// using the shared cancellation/publication token boundary.
+pub fn scan_clap_folders(catalog_path: &Path, roots: &[PathBuf], token: Token) -> Update {
+    let staged_result = (|| -> Result<(hex_clap_scan::user_folder::ClapFolderScanReport, usize, usize), String> {
+        let staged = Catalog::load(catalog_path)?;
+        let report = hex_clap_scan::user_folder::scan_clap_folders(roots, || token.cancelled())?;
+        let mut all_paths: std::collections::BTreeSet<PathBuf> = staged
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .chain(staged.clap_entries.iter().map(|entry| entry.path.clone()))
+            .collect();
+        for (path, _) in &report.results {
+            all_paths.insert(path.clone());
+        }
+        if all_paths.len() > crate::MAX_MODULES {
+            return Err("plugin catalog module capacity reached before clap scanning".into());
+        }
+        let discovered = report.results.iter().filter(|(_, res)| res.is_ok()).count();
+        let failed = report.results.len().saturating_sub(discovered);
+        Ok((report, discovered, failed))
+    })();
+
+    let (report, discovered, failed) = match staged_result {
+        Ok(value) => value,
+        Err(status) => {
+            return Update {
+                catalog: None,
+                diagnostics: None,
+                status,
+            };
+        }
+    };
+
+    match token.begin_publication() {
+        Ok(true) => {}
+        Ok(false) => {
+            return Update {
+                catalog: None,
+                diagnostics: None,
+                status: "clap folder scan cancelled · catalog unchanged".into(),
+            };
+        }
+        Err(status) => {
+            return Update {
+                catalog: None,
+                diagnostics: None,
+                status,
+            };
+        }
+    }
+
+    let status = format!(
+        "clap scan complete · {discovered} discovered · {failed} failed · {} linked entries skipped",
+        report.skipped_links
+    );
+
+    if report.results.is_empty() {
+        return match Catalog::load(catalog_path) {
+            Ok(catalog) => Update {
+                catalog: Some(catalog),
+                diagnostics: None,
+                status,
+            },
+            Err(error) => Update {
+                catalog: None,
+                diagnostics: None,
+                status: format!("clap folder scan catalog reload failed: {error}"),
+            },
+        };
+    }
+
+    match crate::storage::update(catalog_path, |catalog| {
+        for (path, outcome) in &report.results {
+            match outcome {
+                Ok(identity) => {
+                    catalog.record_clap(path.clone(), Ok((identity.clone(), Vec::new())))?
+                }
+                Err(error) => catalog.record_clap(path.clone(), Err(error.clone()))?,
+            }
+        }
+        Ok(())
+    }) {
+        Ok(publication) => Update {
+            catalog: Some(publication.catalog),
+            diagnostics: None,
+            status: publication.warning.unwrap_or(status),
+        },
+        Err(error) => Update {
+            catalog: None,
+            diagnostics: None,
+            status: format!("{status} · catalog update failed: {error}"),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

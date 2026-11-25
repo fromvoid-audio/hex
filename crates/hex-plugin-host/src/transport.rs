@@ -703,6 +703,9 @@ impl Control {
                 state,
             })
     }
+    pub fn binding(&self) -> Binding {
+        self.revoked.binding
+    }
     pub fn revoke(&self) {
         self.revoked.revoke();
     }
@@ -1909,6 +1912,12 @@ fn stage_reply(
 }
 
 impl Worker {
+    pub fn binding(&self) -> Binding {
+        self.binding
+    }
+    pub fn quantum(&self) -> u16 {
+        self.quantum
+    }
     /// Queue-independent revocation by the joining worker owner. Does not
     /// dispose either endpoint or grant native/canonical acceptance.
     pub fn revoke(&self) {

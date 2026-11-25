@@ -1,16 +1,19 @@
 //! # Purpose
 //!
 //! Bounded control-side persistence and selected-bundle discovery coordination for
-//! VST3 browser metadata. Owns a recoverable current-format catalog, copied records,
-//! last-good/error projection and the outer standalone scanner's control lifetime.
-//! All filesystem/process work runs on a background control worker.
+//! VST3 and CLAP browser metadata. Owns a recoverable current-format catalog,
+//! copied records, last-good/error projection, format-neutral discovery traits,
+//! and the outer standalone scanner's control lifetime. All filesystem/process
+//! work runs on a background control worker.
 //!
 //! # Dependencies
 //!
-//! `hex-plugin-scan` supplies copied metadata, fixed package identity and admission
-//! checks. Pinned serde/serde_json encode bounded current-format records. Pinned
-//! fs2 supplies nonblocking advisory writer exclusion, with locks held only during
-//! catalog read-modify-publication, never across foreign-code execution.
+//! `hex-plugin-scan` supplies copied VST3 metadata, fixed package identity and
+//! admission checks. `hex-clap-scan` supplies bounded explicit user-folder CLAP
+//! discovery, bundle identity inspection, and CLAP descriptor records. Pinned
+//! serde/serde_json encode bounded current-format records. Pinned fs2 supplies
+//! nonblocking advisory writer exclusion, with locks held only during catalog
+//! read-modify-publication, never across foreign-code execution.
 //!
 //! # Does not own
 //!
@@ -88,12 +91,17 @@
 //! Dynamic/discardable or unknown factory flags retain historical metadata only;
 //! rows explicitly require a rescan. Stored inventory never establishes future
 //! cacheable class availability or authorizes processing admission.
+pub mod format;
 mod resolve;
 pub mod roots;
 pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod worker;
 
+pub use format::{
+    CatalogFormatBackend, ClapCatalogBackend, PluginFormat, Vst3CatalogBackend, backend,
+};
+use hex_clap_scan::{Descriptor as ClapDescriptor, user_folder::ClapBundleIdentity};
 use hex_plugin_scan::{
     Discovery, PUBLIC_SDK, SDK,
     macos::{identity::Bundle, report::Report},
@@ -129,6 +137,16 @@ pub struct Entry {
     pub failed_tools_sha256: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClapEntry {
+    pub path: PathBuf,
+    pub last_good: Option<ClapBundleIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub descriptors: Vec<ClapDescriptor>,
+    pub failure: Option<String>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct FailedScan {
     bundle: Bundle,
@@ -140,6 +158,8 @@ pub(crate) struct FailedScan {
 pub struct Catalog {
     version: u32,
     pub entries: Vec<Entry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clap_entries: Vec<ClapEntry>,
     #[serde(skip)]
     source_errors: BTreeMap<PathBuf, String>,
 }
@@ -148,6 +168,7 @@ impl Default for Catalog {
         Self {
             version: CATALOG_VERSION,
             entries: Vec::new(),
+            clap_entries: Vec::new(),
             source_errors: BTreeMap::new(),
         }
     }
@@ -254,10 +275,12 @@ impl Catalog {
     /// Upgrade supported older formats in memory, retaining their diagnostics.
     pub(crate) fn migrate(&mut self) -> Result<(), String> {
         if matches!(self.version, CATALOG_VERSION_2 | CATALOG_VERSION_3) {
-            if self.entries.iter().any(|entry| {
-                entry.failed_tools_sha256.is_some()
-                    || (self.version == CATALOG_VERSION_2 && entry.failed_bundle.is_some())
-            }) {
+            if !self.clap_entries.is_empty()
+                || self.entries.iter().any(|entry| {
+                    entry.failed_tools_sha256.is_some()
+                        || (self.version == CATALOG_VERSION_2 && entry.failed_bundle.is_some())
+                })
+            {
                 return Err("invalid historical plugin catalog; existing file preserved".into());
             }
             self.version = CATALOG_VERSION;
@@ -276,7 +299,12 @@ impl Catalog {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != CATALOG_VERSION || self.entries.len() > MAX_MODULES {
+        let total_modules = self
+            .entries
+            .len()
+            .checked_add(self.clap_entries.len())
+            .ok_or("catalog module count overflow")?;
+        if self.version != CATALOG_VERSION || total_modules > MAX_MODULES {
             return Err("unsupported or oversized plugin catalog".into());
         }
         let mut paths = BTreeSet::new();
@@ -315,9 +343,104 @@ impl Catalog {
                 return Err("catalog entry has no scan result".into());
             }
         }
+        let mut clap_paths = BTreeSet::new();
+        for entry in &self.clap_entries {
+            if !path_valid(&entry.path)
+                || entry.path.extension().and_then(|s| s.to_str()) != Some("clap")
+                || !clap_paths.insert(&entry.path)
+                || entry.failure.as_ref().is_some_and(|s| !bounded(s, 512))
+            {
+                return Err("invalid clap plugin catalog entry".into());
+            }
+            if let Some(identity) = &entry.last_good {
+                if identity.supplied_path != entry.path
+                    || !path_valid(&identity.canonical_path)
+                    || identity.bundle_name.is_empty()
+                    || !bounded(&identity.bundle_name, 256)
+                    || identity
+                        .bundle_identifier
+                        .as_ref()
+                        .is_some_and(|s| s.is_empty() || !bounded(s, 256))
+                    || identity
+                        .info_plist_sha256
+                        .as_ref()
+                        .is_some_and(|s| !digest(s, 64))
+                    || !digest(&identity.executable_sha256, 64)
+                    || identity.executable_relative_path.is_empty()
+                    || identity.executable_relative_path.len() > 4096
+                    || Path::new(&identity.executable_relative_path).is_absolute()
+                {
+                    return Err("invalid retained clap plugin snapshot".into());
+                }
+                let mut descriptor_ids = BTreeSet::new();
+                for descriptor in &entry.descriptors {
+                    if descriptor.api[0] != 1
+                        || descriptor.id.trim().is_empty()
+                        || !bounded(&descriptor.id, 512)
+                        || descriptor.name.trim().is_empty()
+                        || !bounded(&descriptor.name, 512)
+                        || !bounded(&descriptor.vendor, 512)
+                        || !descriptor_ids.insert(&descriptor.id)
+                    {
+                        return Err("invalid clap descriptor metadata".into());
+                    }
+                }
+                classes = classes
+                    .checked_add(entry.descriptors.len().max(1))
+                    .ok_or("catalog count overflow")?;
+            } else if !entry.descriptors.is_empty() || entry.failure.is_none() {
+                return Err("clap catalog entry has no scan result".into());
+            }
+        }
         if classes > MAX_CLASSES {
             return Err("plugin catalog class bound exceeded".into());
         }
+        Ok(())
+    }
+
+    /// Record a CLAP bundle scan result (static bundle identity + optional descriptors).
+    pub fn record_clap(
+        &mut self,
+        path: PathBuf,
+        result: Result<(ClapBundleIdentity, Vec<ClapDescriptor>), String>,
+    ) -> Result<(), String> {
+        if !path_valid(&path) || path.extension().and_then(|s| s.to_str()) != Some("clap") {
+            return Err("absolute bounded .clap plugin path required".into());
+        }
+        let mut next = self.clone();
+        let index = match next.clap_entries.iter().position(|e| e.path == path) {
+            Some(index) => index,
+            None => {
+                if next.entries.len().saturating_add(next.clap_entries.len()) >= MAX_MODULES {
+                    return Err("plugin catalog module capacity reached".into());
+                }
+                next.clap_entries.push(ClapEntry {
+                    path: path.clone(),
+                    last_good: None,
+                    descriptors: Vec::new(),
+                    failure: None,
+                });
+                next.clap_entries.len() - 1
+            }
+        };
+        let entry = &mut next.clap_entries[index];
+        match result {
+            Ok((identity, descriptors)) => {
+                if identity.supplied_path != path {
+                    return Err("clap plugin result path mismatch".into());
+                }
+                entry.last_good = Some(identity);
+                entry.descriptors = descriptors;
+                entry.failure = None;
+                next.source_errors.remove(&path);
+            }
+            Err(error) => {
+                entry.failure = Some(error.chars().take(128).collect());
+            }
+        }
+        next.clap_entries.sort_by(|a, b| a.path.cmp(&b.path));
+        next.validate()?;
+        *self = next;
         Ok(())
     }
 
@@ -355,7 +478,7 @@ impl Catalog {
         let index = match next.entries.iter().position(|e| e.path == path) {
             Some(index) => index,
             None => {
-                if next.entries.len() == MAX_MODULES {
+                if next.entries.len().saturating_add(next.clap_entries.len()) >= MAX_MODULES {
                     return Err("plugin catalog module capacity reached".into());
                 }
                 next.entries.push(Entry {
@@ -572,11 +695,136 @@ impl Catalog {
                     .insert(entry.path.clone(), error.chars().take(128).collect());
             }
         }
+        for entry in &self.clap_entries {
+            let Some(identity) = &entry.last_good else {
+                continue;
+            };
+            if let Err(error) = identity.unchanged() {
+                self.source_errors
+                    .insert(entry.path.clone(), error.chars().take(128).collect());
+            }
+        }
         Ok(())
     }
 
-    /// Pure metadata projection; deliberately no filesystem work or code loading.
+    /// Pure metadata projection for one specific external plugin format.
+    pub fn rows_for(&self, format: PluginFormat, query: &str) -> Vec<Row> {
+        match format {
+            PluginFormat::Vst3 => self.vst3_rows(query),
+            PluginFormat::Clap => self.clap_rows(query),
+        }
+    }
+
+    /// Pure metadata projection across all cataloged formats (VST3 and CLAP).
     pub fn rows(&self, query: &str) -> Vec<Row> {
+        let mut rows = self.vst3_rows(query);
+        if !self.clap_entries.is_empty() {
+            rows.extend(self.clap_rows(query));
+            rows.sort_by(|a, b| (&a.module, a.cid).cmp(&(&b.module, b.cid)));
+        }
+        rows
+    }
+
+    /// Pure metadata projection for discovered CLAP bundles.
+    pub fn clap_rows(&self, query: &str) -> Vec<Row> {
+        let query = query.to_lowercase();
+        let mut rows = Vec::new();
+        for entry in &self.clap_entries {
+            let source = self
+                .source_errors
+                .get(&entry.path)
+                .map_or_else(String::new, |error| {
+                    format!("source unavailable · rescan required · {error} · ")
+                });
+            let Some(identity) = &entry.last_good else {
+                let name = entry.path.file_stem().map_or_else(
+                    || "unavailable clap plug-in".into(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                if query.is_empty()
+                    || name.to_lowercase().contains(&query)
+                    || "clap".contains(&query)
+                {
+                    rows.push(Row {
+                        module: entry.path.clone(),
+                        cid: None,
+                        selection: None,
+                        name,
+                        vendor: String::new(),
+                        status: entry
+                            .failure
+                            .clone()
+                            .unwrap_or_else(|| "clap unavailable".into()),
+                    });
+                }
+                continue;
+            };
+            let state = entry
+                .failure
+                .as_ref()
+                .map_or_else(String::new, |error| format!("last good · {error} · "));
+            if entry.descriptors.is_empty() {
+                let vendor = identity.bundle_identifier.clone().unwrap_or_default();
+                let arch = if identity.thin_arm64_module {
+                    "arm64 bundle"
+                } else {
+                    "mach-o bundle"
+                };
+                if query.is_empty()
+                    || identity.bundle_name.to_lowercase().contains(&query)
+                    || vendor.to_lowercase().contains(&query)
+                    || "clap".contains(&query)
+                {
+                    rows.push(Row {
+                        module: entry.path.clone(),
+                        cid: None,
+                        selection: None,
+                        name: identity.bundle_name.clone(),
+                        vendor,
+                        status: format!("{source}{state}clap {arch} · discovered"),
+                    });
+                }
+            } else {
+                for descriptor in &entry.descriptors {
+                    let kind = if descriptor
+                        .features
+                        .iter()
+                        .any(|f| f.eq_ignore_ascii_case("instrument"))
+                    {
+                        "instrument"
+                    } else if descriptor
+                        .features
+                        .iter()
+                        .any(|f| f.eq_ignore_ascii_case("audio-effect"))
+                    {
+                        "effect"
+                    } else {
+                        "processor"
+                    };
+                    if !query.is_empty()
+                        && !descriptor.name.to_lowercase().contains(&query)
+                        && !descriptor.vendor.to_lowercase().contains(&query)
+                        && !kind.contains(&query)
+                        && !"clap".contains(&query)
+                    {
+                        continue;
+                    }
+                    rows.push(Row {
+                        module: entry.path.clone(),
+                        cid: None,
+                        selection: None,
+                        name: descriptor.name.clone(),
+                        vendor: descriptor.vendor.clone(),
+                        status: format!("{source}{state}clap {kind} · discovered"),
+                    });
+                }
+            }
+        }
+        rows.sort_by(|a, b| (&a.module, &a.name).cmp(&(&b.module, &b.name)));
+        rows
+    }
+
+    fn vst3_rows(&self, query: &str) -> Vec<Row> {
         let query = query.to_lowercase();
         let mut rows = Vec::new();
         for entry in &self.entries {
@@ -1461,5 +1709,93 @@ mod tests {
                 .is_err(),
             "identity for another path"
         );
+    }
+
+    #[test]
+    fn clap_entries_persist_refresh_project_rows_and_coexist_with_vst3() {
+        let fixture = Fixture::new();
+        let vst3 = fixture.module();
+        let clap = fixture.0.join("HexClapLead.clap");
+        fs::create_dir_all(clap.join("Contents/MacOS")).unwrap();
+        let mut macho = vec![0u8; 56];
+        for (at, n) in [
+            (0, 0xfeedfacf_u32),
+            (4, 0x0100000c),
+            (12, 6),
+            (16, 1),
+            (20, 24),
+            (32, 0x1b),
+            (36, 24),
+        ] {
+            macho[at..at + 4].copy_from_slice(&n.to_le_bytes());
+        }
+        macho[40..56].fill(3);
+        fs::write(
+            clap.join("Contents/Info.plist"),
+            "<plist><dict><key>CFBundleIdentifier</key><string>org.hex.clap.lead</string><key>CFBundleExecutable</key><string>HexClapLead</string></dict></plist>",
+        )
+        .unwrap();
+        fs::write(clap.join("Contents/MacOS/HexClapLead"), &macho).unwrap();
+
+        let bad_clap = fixture.0.join("Broken.clap");
+        fs::create_dir_all(bad_clap.join("Contents/MacOS")).unwrap();
+        fs::write(bad_clap.join("Contents/MacOS/Broken"), b"corrupt").unwrap();
+
+        // Populate VST3 entry first via recoverable storage update.
+        storage::update(&fixture.catalog(), |catalog| {
+            catalog.record(
+                vst3.clone(),
+                Ok((effect_report(vst3.clone(), "Fx"), "e".repeat(40))),
+            )
+        })
+        .unwrap();
+
+        // Run CLAP folder scan through the shared worker cancellation/publication boundary.
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            let cancel = crate::worker::Cancellation::default();
+            let update = crate::worker::scan_clap_folders(
+                &fixture.catalog(),
+                std::slice::from_ref(&fixture.0),
+                cancel.token(),
+            );
+            assert!(
+                update.status.contains("1 discovered · 1 failed"),
+                "{}",
+                update.status
+            );
+            let mut catalog = update.catalog.expect("published catalog");
+            assert_eq!(catalog.entries.len(), 1);
+            assert_eq!(catalog.clap_entries.len(), 2);
+
+            // Reopen from disk and confirm format-neutral backends project cleanly.
+            let reopened = Catalog::load(&fixture.catalog()).unwrap();
+            assert_eq!(backend(PluginFormat::Vst3).rows(&reopened, "").len(), 1);
+            let clap_rows = backend(PluginFormat::Clap).rows(&reopened, "");
+            assert_eq!(clap_rows.len(), 2);
+            assert!(
+                clap_rows.iter().any(
+                    |row| row.name == "HexClapLead" && row.status.contains("clap arm64 bundle")
+                )
+            );
+            assert!(
+                clap_rows
+                    .iter()
+                    .any(|row| row.name == "Broken" && row.status.contains("Mach-O"))
+            );
+            assert_eq!(reopened.rows("").len(), 3);
+
+            // Mutating the CLAP binary triggers a transient source_error without deleting last_good.
+            macho[42] = 9;
+            fs::write(clap.join("Contents/MacOS/HexClapLead"), &macho).unwrap();
+            catalog.refresh_sources().unwrap();
+            let refreshed = catalog.clap_rows("HexClapLead");
+            assert_eq!(refreshed.len(), 1);
+            assert!(
+                refreshed[0].status.contains("source unavailable"),
+                "{}",
+                refreshed[0].status
+            );
+        }
     }
 }
