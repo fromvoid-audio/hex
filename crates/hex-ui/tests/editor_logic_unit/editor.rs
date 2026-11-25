@@ -8,9 +8,9 @@ mod user_errors;
 
 #[path = "../../src/editor/mode.rs"]
 mod mode;
+#[allow(unused_imports)]
+use hex_ui_model::{fade_calculation, session_navigation, track_proposals};
 pub(super) use mode::EditorMode;
-#[path = "../../src/editor/session_navigation.rs"]
-mod session_navigation;
 
 #[allow(dead_code)]
 #[path = "../../src/editor/audio_admission.rs"]
@@ -39,17 +39,10 @@ mod audio_import_settings;
 mod refresh_state;
 
 #[allow(dead_code)]
-#[path = "../../src/editor/fade_calculation.rs"]
-mod fade_calculation;
-
-#[allow(dead_code)]
 #[path = "../../src/editor/console_track_page.rs"]
 mod console_track_page;
 #[path = "track_meters.rs"]
 mod track_meters;
-#[allow(dead_code)]
-#[path = "../../src/editor/track_proposals.rs"]
-mod track_proposals;
 
 #[allow(dead_code)]
 #[path = "../../src/editor/fade_handle_geometry.rs"]

@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# Exposes fixed-division SnapGrid regression fixtures for downstream UI tests.
+test-support = []
+
 [dependencies]
 hex-project = { path = "../hex-project" }
 
