@@ -208,6 +208,7 @@ mod musical_time_controls;
 mod output_meter_ui_test;
 mod overview_waveform;
 mod play_intent;
+mod playback_subviews;
 mod poll_cadence;
 mod project_directory;
 mod project_rate_settings;
@@ -742,7 +743,7 @@ pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Resul
     cx.open_window(editor_window_options(cx), move |window, cx| {
         let view = cx.new(|cx| EditorView::new_with_backend(window, cx, backend));
         install_close_guard(window, cx, view.downgrade());
-        view
+        cx.new(|cx| playback_subviews::EditorWindowRoot::new(view, cx))
     })
     .map_err(|error| format!("could not open hex: {error}"))?;
     Ok(())
@@ -1072,6 +1073,10 @@ pub(super) struct EditorView {
     redraw_gate: RedrawGate,
     cpu_meter: cpu_meter::CpuMeter,
     output_meter_frame: Option<refresh::AudioFrame>,
+    playback_subviews: playback_subviews::PlaybackSubviews,
+    section_marker_only_modifier: bool,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) render_count: usize,
     disk_overload: disk_overload::DiskOverload,
     pub(in crate::editor) project_generation: u64,
     clip_view_open: bool,
@@ -1992,6 +1997,13 @@ impl EditorView {
             redraw_gate: RedrawGate::default(),
             cpu_meter: cpu_meter::CpuMeter::default(),
             output_meter_frame: None,
+            playback_subviews: playback_subviews::PlaybackSubviews::new(
+                cx.entity().downgrade(),
+                cx,
+            ),
+            section_marker_only_modifier: false,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            render_count: 0,
             disk_overload: disk_overload::DiskOverload::default(),
             project_generation: 0,
             clip_view_open: true,

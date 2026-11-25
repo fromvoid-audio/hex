@@ -305,7 +305,7 @@ pub(super) struct PendingTrim {
     replayed: bool,
     generation: u64,
     revision: u64,
-    track: TrackId,
+    pub(super) track: TrackId,
     command: ResizeCommand,
     remaining: Option<usize>,
     scroll_viewport: Option<Viewport>,

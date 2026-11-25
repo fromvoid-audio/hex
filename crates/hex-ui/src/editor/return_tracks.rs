@@ -250,10 +250,11 @@ impl EditorView {
                         self.track_performance_indicator(hex_engine::OutputCaptureId::Return(id)),
                     )
                     .children(self.track_latency_indicator(super::track_latency::Owner::Return(id)))
-                    .children([super::track_meters::render_return(
-                        id,
-                        self.track_meters.return_reading(id),
-                        RETURN_ROW_HEIGHT,
+                    .children([self.meter_slot_or_inline(
+                        super::playback_subviews::MeterTarget::Return {
+                            id,
+                            height: RETURN_ROW_HEIGHT,
+                        },
                     )]),
             )
             .children(selected.then(|| {

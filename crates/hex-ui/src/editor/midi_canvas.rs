@@ -212,7 +212,6 @@ impl EditorView {
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
         let draw_step = self.midi_step_preview();
-        let draw_playhead = self.midi_playhead_source_beat();
         let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
@@ -279,420 +278,377 @@ impl EditorView {
             .debug_selector(|| "midi-note-roll".into());
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
-        roll = roll.children([canvas(
-            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
-            move |bounds, hitbox, window, cx| {
-                let width = f32::from(bounds.size.width);
-                let height = f32::from(bounds.size.height);
-                let Some(row_height) = pitch.row_height_pixels(height) else {
-                    return;
-                };
-                if width <= 0.0 {
-                    return;
-                }
-                entity.read(cx).renew_midi_marquee_pointer(
-                    false,
-                    super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    clip_id,
-                    entity.entity_id(),
-                    window,
-                );
-                entity.read(cx).renew_midi_note_pointer(
-                    super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    clip_id,
-                    entity.entity_id(),
-                    window,
-                );
-                entity.read(cx).renew_midi_time_selection_capture(
-                    super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    clip_id,
-                    entity.entity_id(),
-                    window,
-                );
-                entity.read(cx).renew_piano_pan_capture(
-                    super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    clip_id,
-                    entity.entity_id(),
-                    window,
-                );
-                entity.read(cx).renew_midi_creation_capture(
-                    super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    clip_id,
-                    entity.entity_id(),
-                    window,
-                );
-                let marquee_context = super::midi_selection::MarqueeContext {
-                    scene: canvas_scene.key(),
-                    bounds: super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    selection_epoch,
-                };
-                let marquee = draw_marquee
-                    .as_ref()
-                    .filter(|m| m.is_current(marquee_context));
-                let draw_selected = marquee.map_or(draw_selected, |m| m.highlighted());
-                let draw_marquee = marquee.map(|m| m.rectangle());
-                let pointer = window.mouse_position();
-                let hovered = if hover_allowed && hitbox.is_hovered(window) {
-                    canvas_scene.hover(
-                        f32::from(pointer.x - bounds.origin.x),
-                        f32::from(pointer.y - bounds.origin.y),
-                        width,
-                        height,
-                        draw_hit_cycle,
-                        &draw_selected,
-                    )
-                } else {
-                    None
-                };
-                if let Some(cursor) = drag_cursor {
-                    window.set_cursor_style(cursor, &hitbox);
-                } else if let Some(target) = hovered {
-                    let cursor = if draw_mode {
-                        gpui::CursorStyle::Crosshair
-                    } else {
-                        match target.kind {
-                            midi_drag::HitKind::Move => gpui::CursorStyle::OpenHand,
-                            midi_drag::HitKind::ResizeLeading => gpui::CursorStyle::ResizeLeft,
-                            midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
-                        }
+        let playhead_slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+        let playhead_raw_span = beat_span.raw();
+        roll = roll
+            .children([canvas(
+                move |bounds, window, _| {
+                    if let Ok(mut slots) = playhead_slots.try_borrow_mut() {
+                        slots.piano_roll_playhead =
+                            Some(super::playback_subviews::PianoRollPlayheadSlot {
+                                bounds,
+                                beat_start,
+                                raw_span: playhead_raw_span,
+                                clip_mask: window.content_mask().bounds,
+                            });
+                    }
+                    window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+                },
+                move |bounds, hitbox, window, cx| {
+                    let width = f32::from(bounds.size.width);
+                    let height = f32::from(bounds.size.height);
+                    let Some(row_height) = pitch.row_height_pixels(height) else {
+                        return;
                     };
-                    window.set_cursor_style(cursor, &hitbox);
-                }
-                if let Some((first, last)) = draw_time {
-                    let end = beat_start.saturating_add(i128::from(beat_span.raw()));
-                    let first = i128::from(first).max(beat_start);
-                    let last = i128::from(last).min(end);
-                    if first < last {
-                        let left =
-                            ((first - beat_start) as f64 / beat_span.raw() as f64) as f32 * width;
-                        let right =
-                            ((last - beat_start) as f64 / beat_span.raw() as f64) as f32 * width;
-                        window.paint_quad(fill(
-                            Bounds::new(
-                                point(bounds.origin.x + px(left), bounds.origin.y),
-                                size(px(right - left), bounds.size.height),
-                            ),
-                            gpui::Hsla::from(rgb(theme::time_selection_fill()))
-                                .opacity(theme::TIME_SELECTION_OPACITY),
-                        ));
+                    if width <= 0.0 {
+                        return;
                     }
-                }
-                let quad_bounds = |x: f32, y: f32, w: f32, h: f32| {
-                    let left = x.max(0.0);
-                    let top = y.max(0.0);
-                    let right = (x + w).min(width);
-                    let bottom = (y + h).min(height);
-                    (right > left && bottom > top).then(|| {
-                        Bounds::new(
-                            point(bounds.origin.x + px(left), bounds.origin.y + px(top)),
-                            size(px(right - left), px(bottom - top)),
-                        )
-                    })
-                };
-                let quad = |window: &mut Window, x, y, w, h, color| {
-                    if let Some(bounds) = quad_bounds(x, y, w, h) {
-                        window.paint_quad(fill(bounds, rgb(color)));
-                    }
-                };
-                let note_quad = |x, y, w, h, (leading, trailing), color: gpui::Hsla| {
-                    let bounds = quad_bounds(x, y, w, h)?;
-                    // Clipping a note at the view edge reveals its body.
-                    let left = px(if leading { NOTE_CORNER_RADIUS } else { 0.0 });
-                    let right = px(if trailing { NOTE_CORNER_RADIUS } else { 0.0 });
-                    let corners = Corners {
-                        top_left: left,
-                        bottom_left: left,
-                        top_right: right,
-                        bottom_right: right,
-                    }
-                    .clamp_radii_for_quad_size(bounds.size);
-                    Some(fill(bounds, color).corner_radii(corners))
-                };
-                for (row, note) in pitch.coverage().rev().enumerate() {
-                    let Some(top) = pitch.note_top(note) else {
-                        continue;
-                    };
-                    let y = top.max(0.0) * height;
-                    quad(
-                        window,
-                        0.0,
-                        y,
-                        width,
-                        1.0,
-                        if row % 6 == 0 {
-                            theme::color(theme::PaletteRole::Border)
-                        } else {
-                            theme::color(theme::PaletteRole::Grid)
+                    entity.read(cx).renew_midi_marquee_pointer(
+                        false,
+                        super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
                         },
+                        clip_id,
+                        entity.entity_id(),
+                        window,
                     );
-                }
-                let raw_span = beat_span.raw();
-                let step = grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1);
-                if let Some(ticks) = super::midi_viewport_grid::ticks_with_origin(
-                    beat_start,
-                    raw_span,
-                    step,
-                    256,
-                    grid_origin,
-                ) {
-                    let grid_step = i128::from(step);
-                    let origin = i128::from(grid_origin);
-                    for index in 0..256_i128 {
-                        let beat = ticks.first + index * i128::from(ticks.stride);
-                        if beat > ticks.last {
-                            break;
+                    entity.read(cx).renew_midi_note_pointer(
+                        super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        },
+                        clip_id,
+                        entity.entity_id(),
+                        window,
+                    );
+                    entity.read(cx).renew_midi_time_selection_capture(
+                        super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        },
+                        clip_id,
+                        entity.entity_id(),
+                        window,
+                    );
+                    entity.read(cx).renew_piano_pan_capture(
+                        super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        },
+                        clip_id,
+                        entity.entity_id(),
+                        window,
+                    );
+                    entity.read(cx).renew_midi_creation_capture(
+                        super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        },
+                        clip_id,
+                        entity.entity_id(),
+                        window,
+                    );
+                    let marquee_context = super::midi_selection::MarqueeContext {
+                        scene: canvas_scene.key(),
+                        bounds: super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        },
+                        selection_epoch,
+                    };
+                    let marquee = draw_marquee
+                        .as_ref()
+                        .filter(|m| m.is_current(marquee_context));
+                    let draw_selected = marquee.map_or(draw_selected, |m| m.highlighted());
+                    let draw_marquee = marquee.map(|m| m.rectangle());
+                    let pointer = window.mouse_position();
+                    let hovered = if hover_allowed && hitbox.is_hovered(window) {
+                        canvas_scene.hover(
+                            f32::from(pointer.x - bounds.origin.x),
+                            f32::from(pointer.y - bounds.origin.y),
+                            width,
+                            height,
+                            draw_hit_cycle,
+                            &draw_selected,
+                        )
+                    } else {
+                        None
+                    };
+                    if let Some(cursor) = drag_cursor {
+                        window.set_cursor_style(cursor, &hitbox);
+                    } else if let Some(target) = hovered {
+                        let cursor = if draw_mode {
+                            gpui::CursorStyle::Crosshair
+                        } else {
+                            match target.kind {
+                                midi_drag::HitKind::Move => gpui::CursorStyle::OpenHand,
+                                midi_drag::HitKind::ResizeLeading => gpui::CursorStyle::ResizeLeft,
+                                midi_drag::HitKind::ResizeTrailing => {
+                                    gpui::CursorStyle::ResizeRight
+                                }
+                            }
+                        };
+                        window.set_cursor_style(cursor, &hitbox);
+                    }
+                    if let Some((first, last)) = draw_time {
+                        let end = beat_start.saturating_add(i128::from(beat_span.raw()));
+                        let first = i128::from(first).max(beat_start);
+                        let last = i128::from(last).min(end);
+                        if first < last {
+                            let left = ((first - beat_start) as f64 / beat_span.raw() as f64)
+                                as f32
+                                * width;
+                            let right = ((last - beat_start) as f64 / beat_span.raw() as f64)
+                                as f32
+                                * width;
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(bounds.origin.x + px(left), bounds.origin.y),
+                                    size(px(right - left), bounds.size.height),
+                                ),
+                                gpui::Hsla::from(rgb(theme::time_selection_fill()))
+                                    .opacity(theme::TIME_SELECTION_OPACITY),
+                            ));
                         }
-                        let relative = beat.saturating_mul(grid_step);
-                        let raw = origin.saturating_add(relative);
-                        let x = (raw.saturating_sub(beat_start) as f64 / raw_span as f64) as f32
-                            * width;
+                    }
+                    let quad_bounds = |x: f32, y: f32, w: f32, h: f32| {
+                        let left = x.max(0.0);
+                        let top = y.max(0.0);
+                        let right = (x + w).min(width);
+                        let bottom = (y + h).min(height);
+                        (right > left && bottom > top).then(|| {
+                            Bounds::new(
+                                point(bounds.origin.x + px(left), bounds.origin.y + px(top)),
+                                size(px(right - left), px(bottom - top)),
+                            )
+                        })
+                    };
+                    let quad = |window: &mut Window, x, y, w, h, color| {
+                        if let Some(bounds) = quad_bounds(x, y, w, h) {
+                            window.paint_quad(fill(bounds, rgb(color)));
+                        }
+                    };
+                    let note_quad = |x, y, w, h, (leading, trailing), color: gpui::Hsla| {
+                        let bounds = quad_bounds(x, y, w, h)?;
+                        // Clipping a note at the view edge reveals its body.
+                        let left = px(if leading { NOTE_CORNER_RADIUS } else { 0.0 });
+                        let right = px(if trailing { NOTE_CORNER_RADIUS } else { 0.0 });
+                        let corners = Corners {
+                            top_left: left,
+                            bottom_left: left,
+                            top_right: right,
+                            bottom_right: right,
+                        }
+                        .clamp_radii_for_quad_size(bounds.size);
+                        Some(fill(bounds, color).corner_radii(corners))
+                    };
+                    for (row, note) in pitch.coverage().rev().enumerate() {
+                        let Some(top) = pitch.note_top(note) else {
+                            continue;
+                        };
+                        let y = top.max(0.0) * height;
                         quad(
                             window,
-                            x,
                             0.0,
+                            y,
+                            width,
                             1.0,
-                            height,
-                            if relative
-                                .rem_euclid(i128::from(super::midi_viewport_grid::ACCENT_PERIOD))
-                                == 0
-                            {
+                            if row % 6 == 0 {
                                 theme::color(theme::PaletteRole::Border)
                             } else {
                                 theme::color(theme::PaletteRole::Grid)
                             },
                         );
                     }
-                }
-                let note_band = |normalized_top: f32| {
-                    let top = normalized_top * height;
-                    let bottom = top + row_height;
-                    if top >= 0.0 && bottom <= height + 0.001 {
-                        (
-                            top + NOTE_ROW_INSET,
-                            (row_height - 2.0 * NOTE_ROW_INSET).max(1.0),
-                        )
-                    } else {
-                        let top = top.max(0.0);
-                        let visible = (bottom.min(height) - top).max(0.0);
-                        let inset = NOTE_ROW_INSET.min((visible - 1.0).max(0.0) * 0.5);
-                        (top + inset, visible - 2.0 * inset)
-                    }
-                };
-                for note in canvas_scene.notes() {
-                    if draw_selected.binary_search(&note.id).is_ok()
-                        || draw_stroke
-                            .as_ref()
-                            .is_some_and(|stroke| stroke.removed.binary_search(&note.id).is_ok())
-                        || draw_preview.is_some_and(|(id, _, _)| id == note.id)
-                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
-                            !gesture.is_copy()
-                                && originals
-                                    .binary_search_by_key(&note.id, |item| item.id)
-                                    .is_ok()
-                        })
-                    {
-                        continue;
-                    }
-                    let Some(note) = super::midi_note_overwrite::retained_geometry(
-                        &canvas_scene,
-                        *note,
-                        draw_overwrite.as_ref(),
-                    ) else {
-                        continue;
-                    };
-                    let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
-                        continue;
-                    };
-                    let (y, note_height) = note_band(note.y);
-                    let w = right - x;
-                    let color = rgb(theme::color(if note.active {
-                        theme::PaletteRole::Secondary
-                    } else {
-                        theme::PaletteRole::Muted
-                    }));
-                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
-                    if let Some(body) = note_quad(x, y, w, note_height, ends, color.into()) {
-                        let stroke = px(1.0_f32.min(note_height));
-                        window.paint_quad(
-                            body.border_widths(Edges {
-                                top: stroke,
-                                bottom: stroke,
-                                left: px(if w >= 3.0 && ends.0 { 1.0 } else { 0.0 }),
-                                right: px(if w >= 3.0 && ends.1 { 1.0 } else { 0.0 }),
-                            })
-                            .border_color(rgb(theme::color(theme::PaletteRole::Background))),
-                        );
-                    }
-                }
-                for id in draw_selected.iter().copied() {
-                    if draw_preview.is_some_and(|(preview_id, _, _)| preview_id == id)
-                        || draw_stroke
-                            .as_ref()
-                            .is_some_and(|stroke| stroke.removed.binary_search(&id).is_ok())
-                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
-                            !gesture.is_copy()
-                                && originals.binary_search_by_key(&id, |item| item.id).is_ok()
-                        })
-                    {
-                        continue;
-                    }
-                    let Some(note) = canvas_scene.note(id) else {
-                        continue;
-                    };
-                    let Some(note) = super::midi_note_overwrite::retained_geometry(
-                        &canvas_scene,
-                        note,
-                        draw_overwrite.as_ref(),
-                    ) else {
-                        continue;
-                    };
-                    let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
-                        continue;
-                    };
-                    let (y, note_height) = note_band(note.y);
-                    let w = right - x;
-                    let color = rgb(theme::color(if note.active {
-                        theme::PaletteRole::Primary
-                    } else {
-                        theme::PaletteRole::Muted
-                    }));
-                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
-                    if let Some(body) = note_quad(x, y, w, note_height, ends, color.into()) {
-                        let accent = px(if draw_primary == Some(id) {
-                            2.0_f32.min(note_height)
-                        } else {
-                            0.0
-                        });
-                        window.paint_quad(
-                            body.border_widths(Edges {
-                                top: accent,
-                                bottom: accent,
-                                left: px(if w >= 3.0 && ends.0 { 1.0 } else { 0.0 }),
-                                right: px(if w >= 3.0 && ends.1 { 1.0 } else { 0.0 }),
-                            })
-                            .border_color(rgb(theme::color(theme::PaletteRole::Text))),
-                        );
-                    }
-                }
-
-                for (index, mut note) in draw_stroke
-                    .iter()
-                    .flat_map(|stroke| stroke.inserted.iter().copied())
-                    .chain(draw_creation)
-                    .enumerate()
-                {
-                    let Some(duration) = draw_overwrite
-                        .as_ref()
-                        .map_or(Some(note.duration), |preview| {
-                            preview.authored_duration(index)
-                        })
-                    else {
-                        continue;
-                    };
-                    note.duration = duration;
-                    if let Some(rect) = canvas_scene.insert_geometry(note) {
-                        let x = rect.x * width;
-                        let right = (rect.x + rect.width) * width;
-                        let (y, note_height) = note_band(rect.y);
-                        let start = i128::from(note.start.raw());
-                        let end = start + i128::from(note.duration.raw());
-                        let ends = (
-                            start >= beat_start,
-                            end <= beat_start + i128::from(raw_span),
-                        );
-                        let color = rgb(theme::color(theme::PaletteRole::Primary));
-                        if let Some(body) =
-                            note_quad(x, y, right - x, note_height, ends, color.into())
-                        {
-                            window.paint_quad(body);
+                    let raw_span = beat_span.raw();
+                    let step = grid.step_raw().unwrap_or(BeatTime::ONE.raw()).max(1);
+                    if let Some(ticks) = super::midi_viewport_grid::ticks_with_origin(
+                        beat_start,
+                        raw_span,
+                        step,
+                        256,
+                        grid_origin,
+                    ) {
+                        let grid_step = i128::from(step);
+                        let origin = i128::from(grid_origin);
+                        for index in 0..256_i128 {
+                            let beat = ticks.first + index * i128::from(ticks.stride);
+                            if beat > ticks.last {
+                                break;
+                            }
+                            let relative = beat.saturating_mul(grid_step);
+                            let raw = origin.saturating_add(relative);
+                            let x = (raw.saturating_sub(beat_start) as f64 / raw_span as f64)
+                                as f32
+                                * width;
+                            quad(
+                                window,
+                                x,
+                                0.0,
+                                1.0,
+                                height,
+                                if relative.rem_euclid(i128::from(
+                                    super::midi_viewport_grid::ACCENT_PERIOD,
+                                )) == 0
+                                {
+                                    theme::color(theme::PaletteRole::Border)
+                                } else {
+                                    theme::color(theme::PaletteRole::Grid)
+                                },
+                            );
                         }
                     }
-                }
-                if let Some((id, item, prefix)) = draw_preview
-                    && let Some(note) = canvas_scene.rebased_preview_geometry(id, item, prefix)
-                    && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
-                {
-                    let (y, note_height) = note_band(note.y);
-                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
-                    let color = rgb(theme::color(
-                        if canvas_scene.note(id).is_some_and(|n| !n.active) {
-                            theme::PaletteRole::Muted
+                    let note_band = |normalized_top: f32| {
+                        let top = normalized_top * height;
+                        let bottom = top + row_height;
+                        if top >= 0.0 && bottom <= height + 0.001 {
+                            (
+                                top + NOTE_ROW_INSET,
+                                (row_height - 2.0 * NOTE_ROW_INSET).max(1.0),
+                            )
                         } else {
-                            theme::PaletteRole::Primary
-                        },
-                    ));
-                    if let Some(body) = note_quad(x, y, right - x, note_height, ends, color.into())
-                    {
-                        window.paint_quad(body);
-                    }
-                }
-
-                if let Some((originals, gesture)) = &draw_group {
-                    for (index, original) in originals.iter().enumerate() {
-                        let Some(mut preview) = gesture.preview(original.id) else {
+                            let top = top.max(0.0);
+                            let visible = (bottom.min(height) - top).max(0.0);
+                            let inset = NOTE_ROW_INSET.min((visible - 1.0).max(0.0) * 0.5);
+                            (top + inset, visible - 2.0 * inset)
+                        }
+                    };
+                    for note in canvas_scene.notes() {
+                        if draw_selected.binary_search(&note.id).is_ok()
+                            || draw_stroke.as_ref().is_some_and(|stroke| {
+                                stroke.removed.binary_search(&note.id).is_ok()
+                            })
+                            || draw_preview.is_some_and(|(id, _, _)| id == note.id)
+                            || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                                !gesture.is_copy()
+                                    && originals
+                                        .binary_search_by_key(&note.id, |item| item.id)
+                                        .is_ok()
+                            })
+                        {
                             continue;
-                        };
-                        let Some(duration) = (if gesture.source_prefix() > 0 {
-                            Some(BeatTime::from_raw(preview.duration))
-                        } else {
-                            draw_overwrite
-                                .as_ref()
-                                .map_or(Some(BeatTime::from_raw(preview.duration)), |plan| {
-                                    plan.authored_duration(index)
-                                })
-                        }) else {
-                            continue;
-                        };
-                        preview.duration = duration.raw();
-                        let Some(note) = canvas_scene.rebased_preview_geometry(
-                            original.id,
-                            NotePreview {
-                                start: preview.start,
-                                duration: preview.duration,
-                                pitch: preview.pitch,
-                            },
-                            gesture.source_prefix(),
+                        }
+                        let Some(note) = super::midi_note_overwrite::retained_geometry(
+                            &canvas_scene,
+                            *note,
+                            draw_overwrite.as_ref(),
                         ) else {
                             continue;
                         };
-                        if let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) {
-                            let (y, note_height) = note_band(note.y);
-                            let ends = (note.leading_edge_visible, note.trailing_edge_visible);
-                            let color = rgb(theme::color(if original.active {
-                                theme::PaletteRole::Primary
+                        let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
+                            continue;
+                        };
+                        let (y, note_height) = note_band(note.y);
+                        let w = right - x;
+                        let color = rgb(theme::color(if note.active {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }));
+                        let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                        if let Some(body) = note_quad(x, y, w, note_height, ends, color.into()) {
+                            let stroke = px(1.0_f32.min(note_height));
+                            window.paint_quad(
+                                body.border_widths(Edges {
+                                    top: stroke,
+                                    bottom: stroke,
+                                    left: px(if w >= 3.0 && ends.0 { 1.0 } else { 0.0 }),
+                                    right: px(if w >= 3.0 && ends.1 { 1.0 } else { 0.0 }),
+                                })
+                                .border_color(rgb(theme::color(theme::PaletteRole::Background))),
+                            );
+                        }
+                    }
+                    for id in draw_selected.iter().copied() {
+                        if draw_preview.is_some_and(|(preview_id, _, _)| preview_id == id)
+                            || draw_stroke
+                                .as_ref()
+                                .is_some_and(|stroke| stroke.removed.binary_search(&id).is_ok())
+                            || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                                !gesture.is_copy()
+                                    && originals.binary_search_by_key(&id, |item| item.id).is_ok()
+                            })
+                        {
+                            continue;
+                        }
+                        let Some(note) = canvas_scene.note(id) else {
+                            continue;
+                        };
+                        let Some(note) = super::midi_note_overwrite::retained_geometry(
+                            &canvas_scene,
+                            note,
+                            draw_overwrite.as_ref(),
+                        ) else {
+                            continue;
+                        };
+                        let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
+                            continue;
+                        };
+                        let (y, note_height) = note_band(note.y);
+                        let w = right - x;
+                        let color = rgb(theme::color(if note.active {
+                            theme::PaletteRole::Primary
+                        } else {
+                            theme::PaletteRole::Muted
+                        }));
+                        let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                        if let Some(body) = note_quad(x, y, w, note_height, ends, color.into()) {
+                            let accent = px(if draw_primary == Some(id) {
+                                2.0_f32.min(note_height)
                             } else {
-                                theme::PaletteRole::Muted
-                            }));
+                                0.0
+                            });
+                            window.paint_quad(
+                                body.border_widths(Edges {
+                                    top: accent,
+                                    bottom: accent,
+                                    left: px(if w >= 3.0 && ends.0 { 1.0 } else { 0.0 }),
+                                    right: px(if w >= 3.0 && ends.1 { 1.0 } else { 0.0 }),
+                                })
+                                .border_color(rgb(theme::color(theme::PaletteRole::Text))),
+                            );
+                        }
+                    }
+
+                    for (index, mut note) in draw_stroke
+                        .iter()
+                        .flat_map(|stroke| stroke.inserted.iter().copied())
+                        .chain(draw_creation)
+                        .enumerate()
+                    {
+                        let Some(duration) = draw_overwrite
+                            .as_ref()
+                            .map_or(Some(note.duration), |preview| {
+                                preview.authored_duration(index)
+                            })
+                        else {
+                            continue;
+                        };
+                        note.duration = duration;
+                        if let Some(rect) = canvas_scene.insert_geometry(note) {
+                            let x = rect.x * width;
+                            let right = (rect.x + rect.width) * width;
+                            let (y, note_height) = note_band(rect.y);
+                            let start = i128::from(note.start.raw());
+                            let end = start + i128::from(note.duration.raw());
+                            let ends = (
+                                start >= beat_start,
+                                end <= beat_start + i128::from(raw_span),
+                            );
+                            let color = rgb(theme::color(theme::PaletteRole::Primary));
                             if let Some(body) =
                                 note_quad(x, y, right - x, note_height, ends, color.into())
                             {
@@ -700,464 +656,567 @@ impl EditorView {
                             }
                         }
                     }
-                }
-
-                if let Some(target) = hovered
-                    && draw_selected.binary_search(&target.note).is_err()
-                    && let Some(note) = canvas_scene.note(target.note)
-                    && let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
-                {
-                    let (top, note_height) = note_band(note.y);
-                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
-                    let w = right - left;
-                    if let Some(outline) =
-                        note_quad(left, top, w, note_height, ends, gpui::transparent_black())
+                    if let Some((id, item, prefix)) = draw_preview
+                        && let Some(note) = canvas_scene.rebased_preview_geometry(id, item, prefix)
+                        && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
                     {
-                        let stroke = px(1.0_f32.min(note_height));
-                        let handle = px(3.0_f32.min(w));
-                        window.paint_quad(
-                            outline
-                                .border_widths(Edges {
-                                    top: stroke,
-                                    bottom: stroke,
-                                    left: if target.kind == midi_drag::HitKind::ResizeLeading {
-                                        handle
-                                    } else {
-                                        px(1.0)
-                                    },
-                                    right: if target.kind == midi_drag::HitKind::ResizeTrailing {
-                                        handle
-                                    } else {
-                                        px(1.0)
-                                    },
-                                })
-                                .border_color(rgb(theme::color(theme::PaletteRole::SecondaryText))),
+                        let (y, note_height) = note_band(note.y);
+                        let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                        let color = rgb(theme::color(
+                            if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                                theme::PaletteRole::Muted
+                            } else {
+                                theme::PaletteRole::Primary
+                            },
+                        ));
+                        if let Some(body) =
+                            note_quad(x, y, right - x, note_height, ends, color.into())
+                        {
+                            window.paint_quad(body);
+                        }
+                    }
+
+                    if let Some((originals, gesture)) = &draw_group {
+                        for (index, original) in originals.iter().enumerate() {
+                            let Some(mut preview) = gesture.preview(original.id) else {
+                                continue;
+                            };
+                            let Some(duration) = (if gesture.source_prefix() > 0 {
+                                Some(BeatTime::from_raw(preview.duration))
+                            } else {
+                                draw_overwrite
+                                    .as_ref()
+                                    .map_or(Some(BeatTime::from_raw(preview.duration)), |plan| {
+                                        plan.authored_duration(index)
+                                    })
+                            }) else {
+                                continue;
+                            };
+                            preview.duration = duration.raw();
+                            let Some(note) = canvas_scene.rebased_preview_geometry(
+                                original.id,
+                                NotePreview {
+                                    start: preview.start,
+                                    duration: preview.duration,
+                                    pitch: preview.pitch,
+                                },
+                                gesture.source_prefix(),
+                            ) else {
+                                continue;
+                            };
+                            if let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) {
+                                let (y, note_height) = note_band(note.y);
+                                let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                                let color = rgb(theme::color(if original.active {
+                                    theme::PaletteRole::Primary
+                                } else {
+                                    theme::PaletteRole::Muted
+                                }));
+                                if let Some(body) =
+                                    note_quad(x, y, right - x, note_height, ends, color.into())
+                                {
+                                    window.paint_quad(body);
+                                }
+                            }
+                        }
+                    }
+
+                    if let Some(target) = hovered
+                        && draw_selected.binary_search(&target.note).is_err()
+                        && let Some(note) = canvas_scene.note(target.note)
+                        && let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
+                    {
+                        let (top, note_height) = note_band(note.y);
+                        let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                        let w = right - left;
+                        if let Some(outline) =
+                            note_quad(left, top, w, note_height, ends, gpui::transparent_black())
+                        {
+                            let stroke = px(1.0_f32.min(note_height));
+                            let handle = px(3.0_f32.min(w));
+                            window.paint_quad(
+                                outline
+                                    .border_widths(Edges {
+                                        top: stroke,
+                                        bottom: stroke,
+                                        left: if target.kind == midi_drag::HitKind::ResizeLeading {
+                                            handle
+                                        } else {
+                                            px(1.0)
+                                        },
+                                        right: if target.kind == midi_drag::HitKind::ResizeTrailing
+                                        {
+                                            handle
+                                        } else {
+                                            px(1.0)
+                                        },
+                                    })
+                                    .border_color(rgb(theme::color(
+                                        theme::PaletteRole::SecondaryText,
+                                    ))),
+                            );
+                        }
+                    }
+                    if let Some((first, last)) = draw_marquee {
+                        let left = first[0].min(last[0]);
+                        let top = first[1].min(last[1]);
+                        let width = (first[0] - last[0]).abs();
+                        let height = (first[1] - last[1]).abs();
+                        quad(
+                            window,
+                            left,
+                            top,
+                            width.max(1.0),
+                            1.0,
+                            theme::color(theme::PaletteRole::Primary),
+                        );
+                        quad(
+                            window,
+                            left,
+                            top + height,
+                            width.max(1.0),
+                            1.0,
+                            theme::color(theme::PaletteRole::Primary),
+                        );
+                        quad(
+                            window,
+                            left,
+                            top,
+                            1.0,
+                            height.max(1.0),
+                            theme::color(theme::PaletteRole::Primary),
+                        );
+                        quad(
+                            window,
+                            left + width,
+                            top,
+                            1.0,
+                            height.max(1.0),
+                            theme::color(theme::PaletteRole::Primary),
                         );
                     }
-                }
-                if let Some((first, last)) = draw_marquee {
-                    let left = first[0].min(last[0]);
-                    let top = first[1].min(last[1]);
-                    let width = (first[0] - last[0]).abs();
-                    let height = (first[1] - last[1]).abs();
-                    quad(
-                        window,
-                        left,
-                        top,
-                        width.max(1.0),
-                        1.0,
-                        theme::color(theme::PaletteRole::Primary),
-                    );
-                    quad(
-                        window,
-                        left,
-                        top + height,
-                        width.max(1.0),
-                        1.0,
-                        theme::color(theme::PaletteRole::Primary),
-                    );
-                    quad(
-                        window,
-                        left,
-                        top,
-                        1.0,
-                        height.max(1.0),
-                        theme::color(theme::PaletteRole::Primary),
-                    );
-                    quad(
-                        window,
-                        left + width,
-                        top,
-                        1.0,
-                        height.max(1.0),
-                        theme::color(theme::PaletteRole::Primary),
-                    );
-                }
 
-                // Held chords are lines, separate from authored/selected note bodies.
-                for note in draw_step.into_iter().flatten() {
-                    let Some((row_top, row_bottom)) = pitch.visible_row(note.pitch) else {
-                        continue;
-                    };
-                    let first = i128::from(note.start.raw()).max(beat_start);
-                    let last = i128::from(note.start.raw())
-                        .saturating_add(i128::from(note.duration.raw()))
-                        .min(beat_start.saturating_add(i128::from(raw_span)));
-                    if first >= last {
-                        continue;
-                    }
-                    let left = ((first - beat_start) as f64 / raw_span as f64) as f32 * width;
-                    let right = ((last - beat_start) as f64 / raw_span as f64) as f32 * width;
-                    let y = (row_top + row_bottom) * 0.5 * height;
-                    quad(
-                        window,
-                        left,
-                        y - 1.0,
-                        right - left,
-                        2.0,
-                        theme::color(theme::PaletteRole::Primary),
-                    );
-                }
-
-                // Draw the insertion position last so sustained notes cannot hide it.
-                if let Some(marker) = draw_marker.map(i128::from)
-                    && marker >= beat_start
-                    && marker < beat_start.saturating_add(i128::from(raw_span))
-                {
-                    let x =
-                        (marker.saturating_sub(beat_start) as f64 / raw_span as f64) as f32 * width;
-                    quad(
-                        window,
-                        x,
-                        0.0,
-                        1.0,
-                        height,
-                        theme::color(theme::PaletteRole::Text),
-                    );
-                    let cap_left = (x - 3.0).max(0.0);
-                    quad(
-                        window,
-                        cap_left,
-                        0.0,
-                        7.0_f32.min(width - cap_left),
-                        3.0,
-                        theme::color(theme::PaletteRole::Primary),
-                    );
-                }
-
-                if let Some(playhead) = draw_playhead.map(i128::from)
-                    && playhead >= beat_start
-                    && playhead < beat_start.saturating_add(i128::from(raw_span))
-                {
-                    let x = ((playhead - beat_start) as f64 / raw_span as f64) as f32 * width;
-                    quad(
-                        window,
-                        x,
-                        0.0,
-                        1.0,
-                        height,
-                        theme::color(theme::PaletteRole::Secondary),
-                    );
-                }
-
-                let rendered_context = super::midi_stroke::StrokeContext {
-                    generation,
-                    revision,
-                    clip: clip_id,
-                    clip_length: clip_len.raw(),
-                    // The checked playback minimum is captured on gesture
-                    // admission, never prepared or scanned during painting.
-                    minimum_gate: 1,
-                    grid,
-                    effective_grid: grid,
-                    grid_origin: canonical_grid_origin,
-                    snap_modifier: false,
-                    pitch_modifier: false,
-                    view_start: beat_start,
-                    view_span: beat_span.raw(),
-                    pitch,
-                    bounds: super::midi_stroke::CanvasBounds {
-                        x: f32::from(bounds.origin.x),
-                        y: f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    },
-                    pitch_locked: draw_pitch_locked,
-                    draw_mode,
-                };
-                entity.read(cx).renew_midi_draw_pointer(
-                    rendered_context,
-                    entity.entity_id(),
-                    window,
-                );
-                let Some(authoring_length) = rendered_context.authoring_length() else {
-                    return;
-                };
-                let authoring_length = BeatTime::from_raw(authoring_length);
-                let wheel_entity = entity.clone();
-                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
-                    if !phase.capture() || !bounds.contains(&event.position) {
-                        return;
-                    }
-                    let Some(nav) = super::midi_wheel::resolve(
-                        event.modifiers,
-                        event.delta,
-                        event.physical_delta(),
-                    ) else {
-                        return;
-                    };
-                    cx.stop_propagation();
-                    wheel_entity.update(cx, |view, cx| {
-                        let canvas = gesture_bounds_from(bounds);
-                        let changed = match nav {
-                            super::midi_wheel::WheelNav::Scroll { pitch, time } => {
-                                view.scroll_piano_wheel(canvas, pitch, time)
-                            }
-                            super::midi_wheel::WheelNav::ZoomTime(delta) => {
-                                view.zoom_piano_wheel_at(canvas, f32::from(event.position.x), delta)
-                            }
-                            super::midi_wheel::WheelNav::ZoomPitch(delta) => view
-                                .zoom_piano_pitch_wheel_at(
-                                    canvas,
-                                    f32::from(event.position.y),
-                                    delta,
-                                ),
+                    // Held chords are lines, separate from authored/selected note bodies.
+                    for note in draw_step.into_iter().flatten() {
+                        let Some((row_top, row_bottom)) = pitch.visible_row(note.pitch) else {
+                            continue;
                         };
-                        if changed {
-                            cx.notify();
+                        let first = i128::from(note.start.raw()).max(beat_start);
+                        let last = i128::from(note.start.raw())
+                            .saturating_add(i128::from(note.duration.raw()))
+                            .min(beat_start.saturating_add(i128::from(raw_span)));
+                        if first >= last {
+                            continue;
                         }
-                    });
-                });
-                let mouse_down_entity = entity.clone();
-                let event_scene = std::sync::Arc::clone(&canvas_scene_events);
-                window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
-                    if !phase.bubble()
-                        || !matches!(event.button, MouseButton::Left | MouseButton::Middle)
-                        || !bounds.contains(&event.position)
-                    {
-                        return;
+                        let left = ((first - beat_start) as f64 / raw_span as f64) as f32 * width;
+                        let right = ((last - beat_start) as f64 / raw_span as f64) as f32 * width;
+                        let y = (row_top + row_bottom) * 0.5 * height;
+                        quad(
+                            window,
+                            left,
+                            y - 1.0,
+                            right - left,
+                            2.0,
+                            theme::color(theme::PaletteRole::Primary),
+                        );
                     }
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    let x = f32::from(event.position.x - bounds.origin.x);
-                    let y = f32::from(event.position.y - bounds.origin.y);
-                    let effective_grid = midi_drag::effective_grid(grid, event.modifiers.platform);
-                    let gesture_bounds = [
-                        f32::from(bounds.origin.x),
-                        f32::from(bounds.origin.y),
-                        width,
-                        height,
-                    ];
-                    mouse_down_entity.update(cx, |view, view_cx| {
-                        if view.midi_ruler.cancel() {
-                            view_cx.notify();
+
+                    // Draw the insertion position last so sustained notes cannot hide it.
+                    if let Some(marker) = draw_marker.map(i128::from)
+                        && marker >= beat_start
+                        && marker < beat_start.saturating_add(i128::from(raw_span))
+                    {
+                        let x = (marker.saturating_sub(beat_start) as f64 / raw_span as f64) as f32
+                            * width;
+                        quad(
+                            window,
+                            x,
+                            0.0,
+                            1.0,
+                            height,
+                            theme::color(theme::PaletteRole::Text),
+                        );
+                        let cap_left = (x - 3.0).max(0.0);
+                        quad(
+                            window,
+                            cap_left,
+                            0.0,
+                            7.0_f32.min(width - cap_left),
+                            3.0,
+                            theme::color(theme::PaletteRole::Primary),
+                        );
+                    }
+
+                    let rendered_context = super::midi_stroke::StrokeContext {
+                        generation,
+                        revision,
+                        clip: clip_id,
+                        clip_length: clip_len.raw(),
+                        // The checked playback minimum is captured on gesture
+                        // admission, never prepared or scanned during painting.
+                        minimum_gate: 1,
+                        grid,
+                        effective_grid: grid,
+                        grid_origin: canonical_grid_origin,
+                        snap_modifier: false,
+                        pitch_modifier: false,
+                        view_start: beat_start,
+                        view_span: beat_span.raw(),
+                        pitch,
+                        bounds: super::midi_stroke::CanvasBounds {
+                            x: f32::from(bounds.origin.x),
+                            y: f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        },
+                        pitch_locked: draw_pitch_locked,
+                        draw_mode,
+                    };
+                    entity.read(cx).renew_midi_draw_pointer(
+                        rendered_context,
+                        entity.entity_id(),
+                        window,
+                    );
+                    let Some(authoring_length) = rendered_context.authoring_length() else {
+                        return;
+                    };
+                    let authoring_length = BeatTime::from_raw(authoring_length);
+                    let wheel_entity = entity.clone();
+                    window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                        if !phase.capture() || !bounds.contains(&event.position) {
+                            return;
                         }
-                        if view.project_generation == generation
-                            && view.state.as_ref().is_some_and(|s| s.revision == revision)
-                            && view.detail_clip_id() == Some(clip_id)
-                            && (event.button == MouseButton::Middle
-                                || (view.midi_pan.enabled && !view.time_selection_key_held))
+                        let Some(nav) = super::midi_wheel::resolve(
+                            event.modifiers,
+                            event.delta,
+                            event.physical_delta(),
+                        ) else {
+                            return;
+                        };
+                        cx.stop_propagation();
+                        wheel_entity.update(cx, |view, cx| {
+                            let canvas = gesture_bounds_from(bounds);
+                            let changed = match nav {
+                                super::midi_wheel::WheelNav::Scroll { pitch, time } => {
+                                    view.scroll_piano_wheel(canvas, pitch, time)
+                                }
+                                super::midi_wheel::WheelNav::ZoomTime(delta) => view
+                                    .zoom_piano_wheel_at(
+                                        canvas,
+                                        f32::from(event.position.x),
+                                        delta,
+                                    ),
+                                super::midi_wheel::WheelNav::ZoomPitch(delta) => view
+                                    .zoom_piano_pitch_wheel_at(
+                                        canvas,
+                                        f32::from(event.position.y),
+                                        delta,
+                                    ),
+                            };
+                            if changed {
+                                cx.notify();
+                            }
+                        });
+                    });
+                    let mouse_down_entity = entity.clone();
+                    let event_scene = std::sync::Arc::clone(&canvas_scene_events);
+                    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+                        if !phase.bubble()
+                            || !matches!(event.button, MouseButton::Left | MouseButton::Middle)
+                            || !bounds.contains(&event.position)
                         {
-                            view.midi_focus.focus(window);
-                            if view.begin_piano_pan(
-                                rendered_context.bounds,
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.button,
-                                window,
-                                view_cx,
-                            ) {
+                            return;
+                        }
+                        let width = f32::from(bounds.size.width);
+                        let height = f32::from(bounds.size.height);
+                        let x = f32::from(event.position.x - bounds.origin.x);
+                        let y = f32::from(event.position.y - bounds.origin.y);
+                        let effective_grid =
+                            midi_drag::effective_grid(grid, event.modifiers.platform);
+                        let gesture_bounds = [
+                            f32::from(bounds.origin.x),
+                            f32::from(bounds.origin.y),
+                            width,
+                            height,
+                        ];
+                        mouse_down_entity.update(cx, |view, view_cx| {
+                            if view.midi_ruler.cancel() {
                                 view_cx.notify();
                             }
-                            return;
-                        }
-                        if event.button != MouseButton::Left {
-                            return;
-                        }
-                        if view.project_generation != generation
-                            || view.state.as_ref().is_none_or(|s| s.revision != revision)
-                            || view.detail_clip_id() != Some(clip_id)
-                            || view.edit_pending()
-                        {
-                            return;
-                        }
-                        if view.time_selection_key_held {
+                            if view.project_generation == generation
+                                && view.state.as_ref().is_some_and(|s| s.revision == revision)
+                                && view.detail_clip_id() == Some(clip_id)
+                                && (event.button == MouseButton::Middle
+                                    || (view.midi_pan.enabled && !view.time_selection_key_held))
+                            {
+                                view.midi_focus.focus(window);
+                                if view.begin_piano_pan(
+                                    rendered_context.bounds,
+                                    [f32::from(event.position.x), f32::from(event.position.y)],
+                                    event.button,
+                                    window,
+                                    view_cx,
+                                ) {
+                                    view_cx.notify();
+                                }
+                                return;
+                            }
+                            if event.button != MouseButton::Left {
+                                return;
+                            }
+                            if view.project_generation != generation
+                                || view.state.as_ref().is_none_or(|s| s.revision != revision)
+                                || view.detail_clip_id() != Some(clip_id)
+                                || view.edit_pending()
+                            {
+                                return;
+                            }
+                            if view.time_selection_key_held {
+                                view.cancel_all_midi_marquees();
+                                view.midi_focus.focus(window);
+                                if view.begin_midi_grid_time_selection(
+                                    rendered_context.bounds,
+                                    f32::from(event.position.x),
+                                    event.modifiers.platform,
+                                    window,
+                                    view_cx,
+                                ) {
+                                    view_cx.stop_propagation();
+                                    view_cx.notify();
+                                }
+                                return;
+                            }
                             view.cancel_all_midi_marquees();
                             view.midi_focus.focus(window);
-                            if view.begin_midi_grid_time_selection(
-                                rendered_context.bounds,
-                                f32::from(event.position.x),
-                                event.modifiers.platform,
-                                window,
-                                view_cx,
-                            ) {
-                                view_cx.stop_propagation();
-                                view_cx.notify();
-                            }
-                            return;
-                        }
-                        view.cancel_all_midi_marquees();
-                        view.midi_focus.focus(window);
-                        let mut hit_cycle = view.midi_hit_cycle;
-                        let hit = event_scene
-                            .hit(x, y, width, height, &mut hit_cycle)
-                            .and_then(|id| event_scene.note(id));
-                        if view.midi_draw_mode {
-                            view.clear_midi_time_selection();
-                            if event.click_count != 1 {
+                            let mut hit_cycle = view.midi_hit_cycle;
+                            let hit = event_scene
+                                .hit(x, y, width, height, &mut hit_cycle)
+                                .and_then(|id| event_scene.note(id));
+                            if view.midi_draw_mode {
+                                view.clear_midi_time_selection();
+                                if event.click_count != 1 {
+                                    return;
+                                }
+                                view.midi_hit_cycle = hit_cycle;
+                                if view.begin_midi_draw(
+                                    rendered_context,
+                                    [f32::from(event.position.x), f32::from(event.position.y)],
+                                    hit.map(|note| note.id),
+                                    StrokeModifiers::from_platform(event.modifiers),
+                                    window,
+                                    view_cx,
+                                ) {
+                                    view_cx.stop_propagation();
+                                    view_cx.notify();
+                                }
                                 return;
                             }
-                            view.midi_hit_cycle = hit_cycle;
-                            if view.begin_midi_draw(
-                                rendered_context,
-                                [f32::from(event.position.x), f32::from(event.position.y)],
-                                hit.map(|note| note.id),
-                                StrokeModifiers::from_platform(event.modifiers),
-                                window,
-                                view_cx,
-                            ) {
-                                view_cx.stop_propagation();
-                                view_cx.notify();
-                            }
-                            return;
-                        }
-                        if let Some(note) = hit {
-                            view.clear_midi_time_selection();
-                            view.midi_time_selection.cancel();
-                            view.midi_hit_cycle = hit_cycle;
-                            if event.click_count >= 2 {
-                                view.midi_note_gesture = None;
-                                view.midi_group_gesture = None;
-                                view.midi_selection.set_single(note.id);
-                                view.enqueue(Request::Edit(Command::RemoveMidiNote(note.id)));
-                                view_cx.notify();
-                                return;
-                            }
-                            if event.modifiers.shift {
-                                let changed = view.midi_selection.toggle(note.id).unwrap_or(false);
-                                view.audition_midi_selection();
-                                if changed {
+                            if let Some(note) = hit {
+                                view.clear_midi_time_selection();
+                                view.midi_time_selection.cancel();
+                                view.midi_hit_cycle = hit_cycle;
+                                if event.click_count >= 2 {
+                                    view.midi_note_gesture = None;
+                                    view.midi_group_gesture = None;
+                                    view.midi_selection.set_single(note.id);
+                                    view.enqueue(Request::Edit(Command::RemoveMidiNote(note.id)));
+                                    view_cx.notify();
+                                    return;
+                                }
+                                if event.modifiers.shift {
+                                    let changed =
+                                        view.midi_selection.toggle(note.id).unwrap_or(false);
+                                    view.audition_midi_selection();
+                                    if changed {
+                                        view.midi_note_gesture = None;
+                                        view.midi_group_gesture = None;
+                                    }
+                                    view_cx.notify();
+                                    return;
+                                }
+                                let was_selected = view.midi_selection.contains(note.id);
+                                if !was_selected {
+                                    view.midi_selection.set_single(note.id);
                                     view.midi_note_gesture = None;
                                     view.midi_group_gesture = None;
                                 }
-                                view_cx.notify();
-                                return;
-                            }
-                            let was_selected = view.midi_selection.contains(note.id);
-                            if !was_selected {
-                                view.midi_selection.set_single(note.id);
-                                view.midi_note_gesture = None;
-                                view.midi_group_gesture = None;
-                            }
-                            view.audition_midi_selection();
-                            let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
-                            else {
-                                return;
-                            };
-                            let note_width = right - left;
-                            let kind = midi_drag::selected_hit_kind(
-                                x,
-                                left,
-                                note_width,
-                                note.leading_edge_visible,
-                                note.trailing_edge_visible,
-                                was_selected,
-                            );
-                            if view.midi_selection.len() > 1 || event.modifiers.alt {
-                                let Some(project_clip) = view
-                                    .state
-                                    .as_ref()
-                                    .and_then(|state| state.project.midi_source(clip_id))
+                                view.audition_midi_selection();
+                                let Some((left, right)) =
+                                    super::midi_scene::pixel_bounds(note, width)
                                 else {
                                     return;
                                 };
-                                let mut originals = Vec::new();
-                                if originals
-                                    .try_reserve_exact(view.midi_selection.len())
-                                    .is_err()
-                                {
-                                    view.error =
-                                        Some("could not reserve selected midi notes".into());
-                                    return;
-                                }
-                                for selected_note in project_clip.notes() {
-                                    if !view.midi_selection.contains(selected_note.id()) {
-                                        continue;
-                                    }
-                                    originals.push(super::midi_group_drag::GroupNote {
-                                        id: selected_note.id(),
-                                        active: selected_note.active(),
-                                        start: selected_note.start().raw(),
-                                        duration: selected_note.duration().raw(),
-                                        pitch: selected_note.pitch(),
-                                        channel: selected_note.channel(),
-                                        velocity: selected_note.velocity(),
-                                    });
-                                }
-                                if originals.len() != view.midi_selection.len() {
-                                    view.midi_group_gesture = None;
-                                    return;
-                                }
-                                view.midi_note_gesture = None;
-                                let gesture = super::midi_group_drag::GroupGesture::begin(
-                                    super::midi_group_drag::GroupStart {
-                                        copy: event.modifiers.alt,
-                                        kind,
-                                        generation,
-                                        revision,
-                                        clip: clip_id,
-                                        selection_epoch: view.midi_selection.epoch(),
-                                        originals,
-                                        pointer: [
-                                            f32::from(event.position.x),
-                                            f32::from(event.position.y),
-                                        ],
-                                        bounds: gesture_bounds,
-                                        beat_start,
-                                        beat_span: beat_span.raw(),
-                                        pitch,
-                                        clip_length: clip_len.raw(),
-                                        grid,
-                                    },
+                                let note_width = right - left;
+                                let kind = midi_drag::selected_hit_kind(
+                                    x,
+                                    left,
+                                    note_width,
+                                    note.leading_edge_visible,
+                                    note.trailing_edge_visible,
+                                    was_selected,
                                 );
+                                if view.midi_selection.len() > 1 || event.modifiers.alt {
+                                    let Some(project_clip) = view
+                                        .state
+                                        .as_ref()
+                                        .and_then(|state| state.project.midi_source(clip_id))
+                                    else {
+                                        return;
+                                    };
+                                    let mut originals = Vec::new();
+                                    if originals
+                                        .try_reserve_exact(view.midi_selection.len())
+                                        .is_err()
+                                    {
+                                        view.error =
+                                            Some("could not reserve selected midi notes".into());
+                                        return;
+                                    }
+                                    for selected_note in project_clip.notes() {
+                                        if !view.midi_selection.contains(selected_note.id()) {
+                                            continue;
+                                        }
+                                        originals.push(super::midi_group_drag::GroupNote {
+                                            id: selected_note.id(),
+                                            active: selected_note.active(),
+                                            start: selected_note.start().raw(),
+                                            duration: selected_note.duration().raw(),
+                                            pitch: selected_note.pitch(),
+                                            channel: selected_note.channel(),
+                                            velocity: selected_note.velocity(),
+                                        });
+                                    }
+                                    if originals.len() != view.midi_selection.len() {
+                                        view.midi_group_gesture = None;
+                                        return;
+                                    }
+                                    view.midi_note_gesture = None;
+                                    let gesture = super::midi_group_drag::GroupGesture::begin(
+                                        super::midi_group_drag::GroupStart {
+                                            copy: event.modifiers.alt,
+                                            kind,
+                                            generation,
+                                            revision,
+                                            clip: clip_id,
+                                            selection_epoch: view.midi_selection.epoch(),
+                                            originals,
+                                            pointer: [
+                                                f32::from(event.position.x),
+                                                f32::from(event.position.y),
+                                            ],
+                                            bounds: gesture_bounds,
+                                            beat_start,
+                                            beat_span: beat_span.raw(),
+                                            pitch,
+                                            clip_length: clip_len.raw(),
+                                            grid,
+                                        },
+                                    );
+                                    if let Some(gesture) = gesture
+                                        && view.capture_midi_note_pointer(
+                                            rendered_context,
+                                            note.id,
+                                            gesture.kind(),
+                                            gesture.is_copy(),
+                                            window,
+                                            view_cx,
+                                        )
+                                    {
+                                        view.midi_group_gesture = Some(gesture);
+                                        view_cx.stop_propagation();
+                                    }
+                                    view_cx.notify();
+                                    return;
+                                }
+                                let gesture = Some(midi_drag::GestureStart {
+                                    generation,
+                                    revision,
+                                    clip: clip_id,
+                                    note: note.id,
+                                    active: note.active,
+                                    original: NotePreview {
+                                        start: note.start,
+                                        duration: note.duration,
+                                        pitch: note.pitch,
+                                    },
+                                    channel: note.channel,
+                                    velocity: note.velocity,
+                                    kind,
+                                    pointer: [
+                                        f32::from(event.position.x),
+                                        f32::from(event.position.y),
+                                    ],
+                                    bounds: gesture_bounds,
+                                    beat_start,
+                                    beat_span: beat_span.raw(),
+                                    clip_length: clip_len.raw(),
+                                    pitch,
+                                    grid,
+                                })
+                                .and_then(midi_drag::begin);
                                 if let Some(gesture) = gesture
                                     && view.capture_midi_note_pointer(
                                         rendered_context,
                                         note.id,
-                                        gesture.kind(),
-                                        gesture.is_copy(),
+                                        kind,
+                                        false,
                                         window,
                                         view_cx,
                                     )
                                 {
-                                    view.midi_group_gesture = Some(gesture);
+                                    view.midi_note_gesture = Some(gesture);
                                     view_cx.stop_propagation();
                                 }
                                 view_cx.notify();
                                 return;
                             }
-                            let gesture = Some(midi_drag::GestureStart {
-                                generation,
-                                revision,
-                                clip: clip_id,
-                                note: note.id,
-                                active: note.active,
-                                original: NotePreview {
-                                    start: note.start,
-                                    duration: note.duration,
-                                    pitch: note.pitch,
-                                },
-                                channel: note.channel,
-                                velocity: note.velocity,
-                                kind,
-                                pointer: [f32::from(event.position.x), f32::from(event.position.y)],
-                                bounds: gesture_bounds,
-                                beat_start,
-                                beat_span: beat_span.raw(),
-                                clip_length: clip_len.raw(),
-                                pitch,
-                                grid,
-                            })
-                            .and_then(midi_drag::begin);
-                            if let Some(gesture) = gesture
-                                && view.capture_midi_note_pointer(
-                                    rendered_context,
-                                    note.id,
-                                    kind,
-                                    false,
-                                    window,
-                                    view_cx,
-                                )
-                            {
-                                view.midi_note_gesture = Some(gesture);
-                                view_cx.stop_propagation();
+                            view.midi_note_gesture = None;
+                            view.midi_group_gesture = None;
+                            view.midi_hit_cycle = None;
+                            if !view.midi_draw_mode && event.click_count < 2 {
+                                let Some(local_beat) = beat_at_x(
+                                    x,
+                                    width,
+                                    beat_start,
+                                    beat_span,
+                                    authoring_length,
+                                    effective_grid,
+                                    canonical_grid_origin,
+                                ) else {
+                                    return;
+                                };
+                                view.cancel_midi_audition();
+                                view.clear_midi_time_selection();
+                                view.midi_time_selection.cancel();
+                                view.midi_marker = Some(local_beat.raw());
+                                if let Some(marquee) = view
+                                    .midi_marquee_context(rendered_context.bounds)
+                                    .and_then(|context| {
+                                        super::midi_selection::Marquee::begin(
+                                            context,
+                                            [x, y],
+                                            event.modifiers.shift,
+                                            &view.midi_selection,
+                                        )
+                                    })
+                                    && view.capture_midi_marquee_pointer(
+                                        &marquee,
+                                        super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
+                                            &event_scene,
+                                        )),
+                                        window,
+                                        view_cx,
+                                    )
+                                {
+                                    view.midi_marquee = Some(marquee);
+                                    view_cx.stop_propagation();
+                                }
+                                view_cx.notify();
+                                return;
                             }
-                            view_cx.notify();
-                            return;
-                        }
-                        view.midi_note_gesture = None;
-                        view.midi_group_gesture = None;
-                        view.midi_hit_cycle = None;
-                        if !view.midi_draw_mode && event.click_count < 2 {
+                            if view.midi_draw_mode && event.click_count > 1 {
+                                return;
+                            }
                             let Some(local_beat) = beat_at_x(
                                 x,
                                 width,
@@ -1169,123 +1228,81 @@ impl EditorView {
                             ) else {
                                 return;
                             };
-                            view.cancel_midi_audition();
+                            let Some(pitch) = pitch.pitch_at_y(y, height) else {
+                                return;
+                            };
+                            let local = local_beat.raw();
+                            let duration = midi_drag::default_gate_raw(
+                                authoring_length.raw().saturating_sub(local),
+                                effective_grid,
+                            );
+                            if local >= authoring_length.raw() || duration == 0 {
+                                return;
+                            }
                             view.clear_midi_time_selection();
                             view.midi_time_selection.cancel();
-                            view.midi_marker = Some(local_beat.raw());
-                            if let Some(marquee) = view
-                                .midi_marquee_context(rendered_context.bounds)
-                                .and_then(|context| {
-                                    super::midi_selection::Marquee::begin(
-                                        context,
-                                        [x, y],
-                                        event.modifiers.shift,
-                                        &view.midi_selection,
-                                    )
-                                })
-                                && view.capture_midi_marquee_pointer(
-                                    &marquee,
-                                    super::midi_marquee::Surface::Piano(std::sync::Arc::clone(
-                                        &event_scene,
-                                    )),
-                                    window,
-                                    view_cx,
-                                )
-                            {
-                                view.midi_marquee = Some(marquee);
+                            view.cancel_all_midi_marquees();
+                            if view.begin_midi_creation(
+                                rendered_context,
+                                f32::from(event.position.x),
+                                hex_project::MidiNoteInsert {
+                                    active: true,
+                                    start: local_beat,
+                                    duration: BeatTime::from_raw(duration),
+                                    pitch,
+                                    channel: 0,
+                                    velocity: 100,
+                                },
+                                StrokeModifiers::from_platform(event.modifiers),
+                                window,
+                                view_cx,
+                            ) {
                                 view_cx.stop_propagation();
                             }
                             view_cx.notify();
-                            return;
-                        }
-                        if view.midi_draw_mode && event.click_count > 1 {
-                            return;
-                        }
-                        let Some(local_beat) = beat_at_x(
-                            x,
-                            width,
-                            beat_start,
-                            beat_span,
-                            authoring_length,
-                            effective_grid,
-                            canonical_grid_origin,
-                        ) else {
-                            return;
-                        };
-                        let Some(pitch) = pitch.pitch_at_y(y, height) else {
-                            return;
-                        };
-                        let local = local_beat.raw();
-                        let duration = midi_drag::default_gate_raw(
-                            authoring_length.raw().saturating_sub(local),
-                            effective_grid,
-                        );
-                        if local >= authoring_length.raw() || duration == 0 {
-                            return;
-                        }
-                        view.clear_midi_time_selection();
-                        view.midi_time_selection.cancel();
-                        view.cancel_all_midi_marquees();
-                        if view.begin_midi_creation(
-                            rendered_context,
-                            f32::from(event.position.x),
-                            hex_project::MidiNoteInsert {
-                                active: true,
-                                start: local_beat,
-                                duration: BeatTime::from_raw(duration),
-                                pitch,
-                                channel: 0,
-                                velocity: 100,
-                            },
-                            StrokeModifiers::from_platform(event.modifiers),
-                            window,
-                            view_cx,
-                        ) {
-                            view_cx.stop_propagation();
-                        }
-                        view_cx.notify();
+                        });
                     });
-                });
-                let mouse_move_entity = entity.clone();
-                let hover_scene = std::sync::Arc::clone(&canvas_scene_events);
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    // GPUI's dragging() recognizes only the left button.
-                    if matches!(
-                        event.pressed_button,
-                        Some(MouseButton::Left | MouseButton::Middle)
-                    ) || !phase.capture()
-                    {
-                        return;
-                    }
-                    mouse_move_entity.update(cx, |view, view_cx| {
-                        let target = if hover_allowed
-                            && hitbox.is_hovered(window)
-                            && view.project_generation == generation
-                            && view.state.as_ref().is_some_and(|s| s.revision == revision)
-                            && view.detail_clip_id() == Some(clip_id)
-                            && !view.edit_pending()
+                    let mouse_move_entity = entity.clone();
+                    let hover_scene = std::sync::Arc::clone(&canvas_scene_events);
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                        // GPUI's dragging() recognizes only the left button.
+                        if matches!(
+                            event.pressed_button,
+                            Some(MouseButton::Left | MouseButton::Middle)
+                        ) || !phase.capture()
                         {
-                            hover_scene.hover(
-                                f32::from(event.position.x - bounds.origin.x),
-                                f32::from(event.position.y - bounds.origin.y),
-                                width,
-                                height,
-                                view.midi_hit_cycle,
-                                view.midi_selection.ids(),
-                            )
-                        } else {
-                            None
-                        };
-                        if view.midi_hover != target {
-                            view.midi_hover = target;
-                            view_cx.notify();
+                            return;
                         }
+                        mouse_move_entity.update(cx, |view, view_cx| {
+                            let target = if hover_allowed
+                                && hitbox.is_hovered(window)
+                                && view.project_generation == generation
+                                && view.state.as_ref().is_some_and(|s| s.revision == revision)
+                                && view.detail_clip_id() == Some(clip_id)
+                                && !view.edit_pending()
+                            {
+                                hover_scene.hover(
+                                    f32::from(event.position.x - bounds.origin.x),
+                                    f32::from(event.position.y - bounds.origin.y),
+                                    width,
+                                    height,
+                                    view.midi_hit_cycle,
+                                    view.midi_selection.ids(),
+                                )
+                            } else {
+                                None
+                            };
+                            if view.midi_hover != target {
+                                view.midi_hover = target;
+                                view_cx.notify();
+                            }
+                        });
                     });
-                });
-            },
-        )
-        .absolute()
-        .inset_0()]);
+                },
+            )
+            .absolute()
+            .inset_0()])
+            .children([self.piano_roll_playhead_element(cx)]);
         let mut panel = div()
             .h(px(self.piano_panel_height()))
             .flex_shrink_0()

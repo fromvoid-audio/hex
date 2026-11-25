@@ -88,6 +88,10 @@ mod operator_panel;
 mod parameter_rows;
 pub(super) mod vst3_parameters;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
+
+pub(super) fn has_rattle_preview(view: &EditorView) -> bool {
+    !view.device_panel.rattle_previews.is_empty()
+}
 mod return_drag;
 mod sampler_overview;
 pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_preview};

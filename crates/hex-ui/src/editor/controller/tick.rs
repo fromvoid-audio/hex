@@ -396,10 +396,17 @@ impl EditorView {
                 .worker_requests_pending
                 .saturating_add(self.pending_requests.len());
             visible_change |= pending_before != pending_after;
-            visible_change |= self.tick_track_meters(Instant::now());
+            let now = Instant::now();
+            let track_meters_changed = self.tick_track_meters(now);
             visible_change |= crate::editor::device_panel::tick_hovered_meter(self);
-            visible_change |= self.tick_track_performance(Instant::now());
-            return self.observe_audio_frame(None, visible_change, Instant::now());
+            visible_change |= self.tick_track_performance(now);
+            return self.observe_audio_frame_for_tick(
+                None,
+                visible_change,
+                track_meters_changed,
+                now,
+                cx,
+            );
         };
         let reliable_outcomes = audio.control.has_action_outcomes();
         let mut outcome_batch = [None; hex_audio::prepared::ACTION_OUTCOME_CAPACITY];
@@ -1260,15 +1267,16 @@ impl EditorView {
         visible_change |= pending_before != pending_after;
         visible_change |= self.follow_output_route();
         visible_change |= self.finish_audio_recovery_tick();
-        visible_change |= self.tick_track_meters(Instant::now());
+        let now = Instant::now();
+        let track_meters_changed = self.tick_track_meters(now);
         visible_change |= crate::editor::device_panel::tick_hovered_meter(self);
-        visible_change |= self.tick_track_performance(Instant::now());
+        visible_change |= self.tick_track_performance(now);
         visible_change |= self.tick_latency_rebuild();
         visible_change |= self.tick_paused_republish();
         visible_change |= self.tick_sampler_edit_resume();
         visible_change |= self.tick_deferred_play();
         visible_change |= self.tick_deferred_toggle_play_and_metadata_seek();
-        self.observe_audio_frame(frame, visible_change, Instant::now())
+        self.observe_audio_frame_for_tick(frame, visible_change, track_meters_changed, now, cx)
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]

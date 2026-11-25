@@ -359,11 +359,9 @@ impl EditorView {
                 .border_color(rgb(theme::control_style().border))
                 .bg(rgb(theme::color(theme::PaletteRole::Surface)))
                 .child(controls)
-                .child(super::track_meters::render_return(
-                    id,
-                    self.track_meters.return_reading(id),
-                    50.0,
-                ));
+                .children([self.meter_slot_or_inline(
+                    super::playback_subviews::MeterTarget::Return { id, height: 50.0 },
+                )]);
             bank = bank.child(
                 div()
                     .debug_selector(move || format!("console-return-column-{}", id.value()))

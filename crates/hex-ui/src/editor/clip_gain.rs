@@ -109,6 +109,28 @@ impl State {
     pub(super) fn has_displayed(&self) -> bool {
         self.held.is_some() || self.pending.is_some()
     }
+    pub(super) fn affects_track(
+        &self,
+        track: &hex_project::Track,
+        selection: &super::clip_selection::ClipSelection,
+    ) -> bool {
+        let Some(drag) = self
+            .held
+            .as_ref()
+            .or_else(|| self.pending.as_ref().map(|pending| &pending.drag))
+        else {
+            return false;
+        };
+        if drag.track == track.id() {
+            return true;
+        }
+        // Multi-clip selection gain drag adjusts every selected audio clip.
+        selection.contains(drag.clip.id())
+            && track
+                .clips()
+                .iter()
+                .any(|clip| selection.contains(clip.id()))
+    }
 }
 impl EditorView {
     pub(super) fn set_held_gain_audition(&mut self, edit: Option<GainEdit>) {

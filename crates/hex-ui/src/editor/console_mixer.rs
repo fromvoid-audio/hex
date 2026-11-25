@@ -249,15 +249,9 @@ impl EditorView {
                 .border_l_1()
                 .border_color(rgb(theme::color(theme::PaletteRole::Border)))
                 .child(controls)
-                .child(
-                    div()
-                        .debug_selector(move || format!("console-track-meter-{}", id.value()))
-                        .child(super::track_meters::render(
-                            id,
-                            self.track_meters.reading(id),
-                            50.0,
-                        )),
-                );
+                .children([self.meter_slot_or_inline(
+                    super::playback_subviews::MeterTarget::ConsoleTrack { id, height: 50.0 },
+                )]);
             row = row.child(column);
         }
         let main = div()
@@ -281,7 +275,9 @@ impl EditorView {
                     .gap(px(4.0))
                     .child(self.main_track_controls(cx).w_full().min_w_0())
                     .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
-                super::track_meters::render_main(self.track_meters.main_reading(), 50.0),
+                self.meter_slot_or_inline(super::playback_subviews::MeterTarget::Main {
+                    height: 50.0,
+                }),
             ]);
         super::console_columns::pinned_row(
             row.child(div().flex_1().min_w(px(12.0))),
