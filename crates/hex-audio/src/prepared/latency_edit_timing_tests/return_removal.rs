@@ -62,7 +62,7 @@ fn removing_a_flat_return_fades_a_mixed_native_chain_after_all_effects() {
 }
 
 #[test]
-fn flat_return_fade_excludes_native_latency() {
+fn return_removal_with_native_latency_retains_pass_floor_until_stop() {
     use hex_devices::limiter::{DEFINITION, parameter::LOOKAHEAD};
 
     let (mut editor, track, prepare) = resident_input(vec![SIGNAL; 2048]);
@@ -82,8 +82,36 @@ fn flat_return_fade_excludes_native_latency() {
         })
         .unwrap();
     let old = prepare(editor.project());
-    assert!(old.arrangement().main_latency_frames() > 0);
-    assert_return_removal_skips_fade(&mut editor, bus, old, prepare);
+    let latency = old.arrangement().main_latency_frames();
+    assert!(latency > 0);
+    editor.execute(Command::RemoveReturnTrack(bus)).unwrap();
+    let after = prepare(editor.project());
+    assert_eq!(after.arrangement().main_latency_frames(), 0);
+
+    let (control, mut callback, _, receipt) =
+        begin_insert_with_pending_track(old, after, None, 512);
+    let mut block = [[0.0; 2]; 256];
+    render(&mut callback, &mut block);
+    render(&mut callback, &mut block);
+    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+    assert_eq!(
+        callback
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .and_then(|active| active.playback.main_output_latency_frames()),
+        Some(latency)
+    );
+    control.stop();
+    render(&mut callback, &mut block[..1]);
+    assert_eq!(
+        callback
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .and_then(|active| active.playback.main_output_latency_frames()),
+        Some(0)
+    );
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

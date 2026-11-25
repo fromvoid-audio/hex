@@ -243,9 +243,38 @@ fn begin_quantized_playback_insert(
 #[test]
 fn incompatible_latency_insert_preserves_the_admitted_action_and_pcm() {
     let sample = |frame: usize| [0.125 + frame as f32 / 65_536.0; 2];
-    let (revisions, track) = latency_revisions((0..8192).map(sample).collect());
+    let (mut editor, track, prepare) = resident_input((0..8192).map(sample).collect());
+    let dry = prepare(editor.project());
+    let limiter = &hex_devices::limiter::DEFINITION;
+    let Created::Device(_) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("1.5ms limiter");
+    };
+    let delayed = prepare(editor.project());
+    let limiter_3ms = limiter
+        .patch_parameter(
+            &limiter.default_state().unwrap(),
+            hex_devices::limiter::parameter::LOOKAHEAD,
+            ParameterValue::Choice(1),
+        )
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: limiter_3ms,
+        })
+        .unwrap();
+    let deeper_delayed = prepare(editor.project());
+    let revisions = [dry, delayed, deeper_delayed];
     for (old, next, position, delay, audible_prefix) in
-        [(0, 1, 2990, 0, 10), (1, 0, 2980, DELAY, 92)]
+        [(0, 1, 2990, 0, 10), (1, 2, 2980, DELAY, 92)]
     {
         for partition in [1, BLOCK] {
             let (control, mut callback, predecessor, receipt) = begin_insert(

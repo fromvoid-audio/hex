@@ -85,15 +85,22 @@ impl SessionPlayback {
         {
             return Err(SessionPlaybackError::InvalidCommand);
         }
+        let old_output_latency = previous.main_output_latency_frames();
+        let new_main_latency = self.revision.arrangement().main_latency_frames();
+        let fits_retained_floor = previous.main_pass_delay.is_some()
+            && !force_restart
+            && mapped_main_clock
+            && new_main_latency <= old_output_latency;
         if continuous_insert
             && (force_restart
                 || !mapped_main_clock
                 || (!keeps_pass_clock
-                    && self.revision.arrangement().main_latency_frames()
-                        != previous.revision.arrangement().main_latency_frames()))
+                    && !fits_retained_floor
+                    && new_main_latency != previous.revision.arrangement().main_latency_frames()))
         {
             return Err(SessionPlaybackError::DeviceInsertNeedsConfirmation);
         }
+        let needed_floor = old_output_latency.saturating_sub(new_main_latency);
         let main_pass_delay = if let Some(latency) = return_pass_latency {
             if demand.is_none() {
                 Some(
@@ -109,22 +116,63 @@ impl SessionPlayback {
                 let foreign_frames = transition
                     .foreign_main_pass()
                     .map(|(_, frames)| frames)
-                    .or_else(|| transition.foreign_return_pass().map(|_| 512));
-                let settled = if let Some(frames) = foreign_frames {
-                    self.main_pass_delay
-                        .filter(|delay| delay.latency_frames() == frames)
+                    .or_else(|| transition.foreign_return_pass_frames());
+                let resolved = if let Some(frames) = foreign_frames {
+                    if let Some(staged) = self.main_pass_delay.filter(|delay| {
+                        delay.latency_frames() == needed_floor
+                            || (previous.main_pass_delay.is_none()
+                                && delay.latency_frames() == frames)
+                    }) {
+                        if staged.latency_frames() == needed_floor {
+                            Some(staged)
+                        } else {
+                            staged.with_additional_delay(
+                                needed_floor.saturating_sub(staged.latency_frames()) as usize,
+                            )
+                        }
+                    } else if let Some(existing) = previous.main_pass_delay {
+                        let extra = needed_floor.saturating_sub(existing.latency_frames()) as usize;
+                        existing.with_additional_delay(extra)
+                    } else {
+                        hex_lattice::MainPassDelay::zeroed(needed_floor as usize)
+                    }
+                } else if previous.main_pass_delay.is_none()
+                    && let Some(settled) = previous.main_chain.settled_main_pass_delay(transition)
+                    && settled.latency_frames() == needed_floor
+                {
+                    Some(settled)
+                } else if let Some(existing) = previous.main_pass_delay {
+                    let extra = needed_floor.saturating_sub(existing.latency_frames()) as usize;
+                    existing.with_additional_delay(extra)
                 } else {
-                    previous.main_chain.settled_main_pass_delay(transition)
+                    hex_lattice::MainPassDelay::zeroed(needed_floor as usize)
                 };
-                Some(settled.ok_or(SessionPlaybackError::DeviceRuntime)?)
+                Some(resolved.ok_or(SessionPlaybackError::DeviceRuntime)?)
             } else {
                 None
             }
         } else if let Some(delay) = previous.main_pass_delay {
             if confirmed_insert {
                 None
-            } else if !force_restart && mapped_main_clock && self.compensation.is_none() {
-                Some(delay)
+            } else if !force_restart && mapped_main_clock && new_main_latency <= old_output_latency
+            {
+                if needed_floor == 0 {
+                    None
+                } else if needed_floor == delay.latency_frames() {
+                    Some(delay)
+                } else if needed_floor < delay.latency_frames() {
+                    Some(
+                        delay
+                            .shrink_to(needed_floor as usize)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                    )
+                } else {
+                    Some(
+                        delay
+                            .with_additional_delay((needed_floor - delay.latency_frames()) as usize)
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?,
+                    )
+                }
             } else {
                 return Err(if continuous_insert {
                     SessionPlaybackError::DeviceInsertNeedsConfirmation
@@ -463,7 +511,8 @@ impl SessionPlayback {
                     })
             });
         let planned_transfer = match (&self.compensation, &previous.compensation) {
-            (None, Some(_)) if keeps_pass_clock => Some(0),
+            (None, Some(_)) | (Some(_), Some(_)) | (Some(_), None) if keeps_pass_clock => Some(0),
+            (Some(_), None) | (Some(_), Some(_)) if fits_retained_floor => Some(0),
             (Some(_), Some(_)) if hosted_move.is_some() || hosted_effect_move.is_some() => {
                 Some(HOSTED_MOVE_HISTORY_TRANSFER)
             }

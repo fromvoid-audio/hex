@@ -29,11 +29,16 @@ impl NativeRemovalTransition {
         (self.identity.owner() == ProcessorChainOwner::Main).then_some((binding, frames.get()))
     }
 
-    /// The exact original binding for the sole 512-frame hosted Return going Off.
+    /// The exact original binding for a hosted Return going Off or being removed.
     pub fn foreign_return_pass(self) -> Option<hex_lattice_contract::ForeignProcessorBinding> {
-        let (binding, frames) = self.foreign_pass?;
-        (matches!(self.identity.owner(), ProcessorChainOwner::Return(_)) && frames.get() == 512)
-            .then_some(binding)
+        let (binding, _) = self.foreign_pass?;
+        matches!(self.identity.owner(), ProcessorChainOwner::Return(_)).then_some(binding)
+    }
+
+    /// The exact frame latency of a hosted Return stage going Off or being removed.
+    pub fn foreign_return_pass_frames(self) -> Option<u32> {
+        let (_, frames) = self.foreign_pass?;
+        matches!(self.identity.owner(), ProcessorChainOwner::Return(_)).then_some(frames.get())
     }
 
     fn matches(self, entry: &RuntimeEntry) -> bool {
@@ -832,14 +837,14 @@ impl NativeRuntimeChain {
             })
     }
 
-    /// One outgoing Main stage whose delayed dry history can be copied by
-    /// value. The host separately proves the unchanged upstream signal clock.
+    /// One outgoing Main stage (removed or powered off) in a single- or
+    /// multi-device chain whose pass-level latency is retained until Stop.
     pub fn main_pass_removal_from(&self, previous: &Self) -> Option<NativeRemovalTransition> {
         self.pass_removal_from(previous, ProcessorChainOwner::Main)
     }
 
-    /// Exactly one unchanged hosted Return stage becomes resource-free Off.
-    /// The host separately proves the original binding and both route clocks.
+    /// One outgoing Return stage (removed or powered off) in a single- or
+    /// multi-device chain whose pass-level latency is retained until Stop.
     pub fn return_power_off_from(
         &self,
         previous: &Self,
@@ -848,79 +853,120 @@ impl NativeRuntimeChain {
         self.pass_removal_from(previous, ProcessorChainOwner::Return(return_id))
     }
 
+    /// One outgoing Track stage (removed or powered off) in a single- or
+    /// multi-device chain whose pass-level latency is retained until Stop.
+    pub fn track_pass_removal_from(
+        &self,
+        previous: &Self,
+        track_id: u64,
+    ) -> Option<NativeRemovalTransition> {
+        self.pass_removal_from(previous, ProcessorChainOwner::Track(track_id))
+    }
+
     fn pass_removal_from(
         &self,
         previous: &Self,
         owner: ProcessorChainOwner,
     ) -> Option<NativeRemovalTransition> {
-        let [entry] = previous.entries.as_slice() else {
+        let max_delay = crate::MAX_MAIN_PASS_DELAY_FRAMES;
+        let is_powered_off_match = |old: &RuntimeEntry, new: &RuntimeEntry| -> bool {
+            new.powered_off
+                && new.bypassed
+                && new.owner == old.owner
+                && new.device_id == old.device_id
+                && new.device_type == old.device_type
+                && new.sample_rate == old.sample_rate
+                && new.algorithmic_latency_frames == Some(0)
+                && new.input_gain == old.input_gain
+                && new.output_gain == old.output_gain
+                && new
+                    .configuration
+                    .as_deref()
+                    .zip(old.configuration.as_deref())
+                    .is_some_and(|(a, b)| a.processing_eq_on_callback(b))
+        };
+
+        // Match either (a) single stage removed from a chain of any length, or
+        // (b) single stage switched to genuine powered-off in a chain of any length.
+        let (position, entry) = if previous.entries.len().checked_sub(1) == Some(self.entries.len())
+        {
+            let pos = self
+                .entries
+                .iter()
+                .zip(&previous.entries)
+                .position(|(next, prev)| !Self::same_runtime_identity(next, prev))
+                .unwrap_or(self.entries.len());
+            let entry = previous.entries.get(pos)?;
+            let remaining = previous
+                .entries
+                .iter()
+                .take(pos)
+                .chain(previous.entries.iter().skip(pos + 1));
+            if !self
+                .entries
+                .iter()
+                .zip(remaining)
+                .all(|(next, prev)| Self::same_runtime_identity(next, prev))
+                || !self.can_inherit_from(previous)
+            {
+                return None;
+            }
+            (pos, entry)
+        } else if previous.entries.len() == self.entries.len() && !previous.entries.is_empty() {
+            let mut found = None;
+            for (pos, (prev, next)) in previous.entries.iter().zip(&self.entries).enumerate() {
+                if !prev.bypassed && is_powered_off_match(prev, next) {
+                    if found.replace((pos, prev)).is_some() {
+                        return None;
+                    }
+                } else if !Self::same_runtime_identity(next, prev) {
+                    return None;
+                }
+            }
+            let (pos, entry) = found?;
+            // Every sibling stage outside `pos` must be inheritable.
+            if !self.can_inherit_from_excluding_old_range(previous, pos..pos + 1) {
+                return None;
+            }
+            (pos, entry)
+        } else {
             return None;
         };
+
         if entry.owner != owner {
             return None;
         }
-        let main = owner == ProcessorChainOwner::Main;
         let (latency_frames, foreign_pass) = match &entry.runtime {
             RuntimeOwnership::Memoryless => return None,
             RuntimeOwnership::Foreign(runtime) => {
                 let prepared = runtime.prepared;
                 if entry.device_type != DeviceTypeId::from_static("hex.vst3")
                     || prepared.is_instrument_profile()
-                    || prepared.quantum_frames() != 256
-                    || prepared.bridge_latency_frames() != 512
                 {
                     return None;
                 }
-                match prepared.processor_latency_frames() {
-                    0 => {}
-                    // Only deletion has been admitted for the seven-frame profile.
-                    7 if main && self.is_empty() => {}
-                    _ => return None,
-                }
                 let frames = NonZeroU32::new(prepared.total_latency_frames())?;
+                if frames.get() > max_delay {
+                    return None;
+                }
                 (frames.get(), Some((prepared.binding()?, frames)))
             }
-            _ if main => (
-                entry
+            _ => {
+                let frames = entry
                     .committed_aligned_dry
-                    .as_ref()?
-                    .main_pass_latency_frames()?,
-                None,
-            ),
-            _ => return None,
-        };
-        // A genuine hosted Off keeps authored identity but owns no runtime.
-        // Its live-pass timing is the same separately copied passive delay as
-        // deletion; the old foreign processor remains only in the donor graph.
-        let off = match self.entries.as_slice() {
-            [off] => {
-                matches!(entry.runtime, RuntimeOwnership::Foreign(_))
-                    && off.powered_off
-                    && off.bypassed
-                    && off.owner == entry.owner
-                    && off.device_id == entry.device_id
-                    && off.device_type == entry.device_type
-                    && off.sample_rate == entry.sample_rate
-                    && off.algorithmic_latency_frames == Some(0)
-                    && off.input_gain == entry.input_gain
-                    && off.output_gain == entry.output_gain
-                    && off
-                        .configuration
-                        .as_deref()
-                        .zip(entry.configuration.as_deref())
-                        .is_some_and(|(new, old)| new.processing_eq_on_callback(old))
+                    .as_ref()
+                    .and_then(|dry| dry.main_pass_latency_frames())
+                    .or_else(|| {
+                        entry
+                            .algorithmic_latency_frames
+                            .filter(|&f| f > 0 && f <= max_delay)
+                    })?;
+                (frames, None)
             }
-            _ => false,
         };
-        if !(off || (main && self.is_empty()))
-            || entry.algorithmic_latency_frames != Some(latency_frames)
+        if entry.algorithmic_latency_frames != Some(latency_frames)
             || entry.bypassed
             || entry.removal_bypassing
-            || !entry.automation.is_empty()
-            || entry.modulation.is_some()
-            || entry.input_gain != 1.0
-            || entry.output_gain != 1.0
-            || entry.matrix != StereoMatrix::identity()
             || entry.committed_bypass_ramp.is_active()
             || entry.committed_matrix_ramp.is_active()
             || entry.committed_output_gain_ramp.active()
@@ -929,7 +975,7 @@ impl NativeRuntimeChain {
             return None;
         }
         Some(NativeRemovalTransition {
-            position: 0,
+            position,
             identity: ProcessorInstanceIdentity::new(entry.owner, entry.device_id).ok()?,
             authored_bypass: false,
             foreign_pass,

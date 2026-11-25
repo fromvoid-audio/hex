@@ -485,8 +485,11 @@ impl SessionPlayback {
         if !self.require_continuous_insert || !previous.playing || self.live_restart {
             return Ok(false);
         }
-        let same_latency = self.revision.arrangement().main_latency_frames()
-            == previous.revision.arrangement().main_latency_frames();
+        let before_main = previous.revision.arrangement().main_latency_frames();
+        let after_main = self.revision.arrangement().main_latency_frames();
+        let old_floor = previous.main_output_latency_frames();
+        let same_latency = after_main == before_main;
+        let fits_existing_pass_floor = after_main <= old_floor && after_main >= before_main;
         let transition = if matches!(self.hosted_move, Some(HostedMoveRequest::Instrument(_))) {
             let movement = self
                 .direct_hosted_track_cut_from(previous)
@@ -504,7 +507,7 @@ impl SessionPlayback {
                 .direct_hosted_effect_reorder_from(previous)
                 .ok_or(SessionPlaybackError::DeviceInsertNeedsConfirmation)?;
             Some(RemovalTransition::Reorder(index))
-        } else if same_latency {
+        } else if same_latency || fits_existing_pass_floor {
             self.native_removal_transition_from(previous)
                 .map(RemovalTransition::Device)
                 .or_else(|| {
@@ -720,7 +723,15 @@ impl SessionPlayback {
         {
             return false;
         }
-        let Some(delay) = previous.committed_return_off_main_pass(identity.owner()) else {
+        let Some(needed_floor) = previous
+            .main_output_latency_frames()
+            .checked_sub(self.revision.arrangement().main_latency_frames())
+            .filter(|&frames| frames > 0)
+        else {
+            return false;
+        };
+        let Some(delay) = previous.committed_return_off_main_pass(identity.owner(), needed_floor)
+        else {
             return false;
         };
         self.main_pass_delay = Some(delay);

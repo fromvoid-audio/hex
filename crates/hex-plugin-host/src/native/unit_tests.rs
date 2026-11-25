@@ -155,3 +155,72 @@ fn sticky_lost_custody_preserves_original_io_error_without_heap_diagnostic_copie
     }
     assert!(matches!(custody, ChildCustody::Lost(_)));
 }
+
+#[test]
+fn source_unchanged_fast_avoids_rehash_when_intact_and_refuses_tampering() {
+    use std::io::Write;
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!(
+        "hex-plugin-host-fast-reval-{}-{unique}.vst3",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("Contents/MacOS")).unwrap();
+    let info_path = root.join("Contents/Info.plist");
+    let exec_path = root.join("Contents/MacOS/fixture");
+    std::fs::write(
+        &info_path,
+        b"<?xml version=\"1.0\"?><plist><dict><key>CFBundleExecutable</key><string>fixture</string></dict></plist>",
+    )
+    .unwrap();
+    // Minimal arm64 Mach-O bundle header (MH_MAGIC_64, CPU_TYPE_ARM64, MH_BUNDLE = 8, 1 cmd of 8 bytes).
+    let mut macho: Vec<u8> = [0xfeed_facf_u32, 0x0100_000c, 0, 8, 1, 8, 0, 0, 0, 8]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect();
+    macho.resize(4096, 0xAB);
+    std::fs::write(&exec_path, &macho).unwrap();
+
+    let source = Source::inspect_on_control(
+        &root,
+        "Contents/MacOS/fixture",
+        ClassId::new([0x11; 16]).unwrap(),
+    )
+    .unwrap();
+    // Intact bundle/executable passes the O(1) stat fingerprint check without re-hashing.
+    assert!(source.unchanged_fast().is_ok());
+
+    // Tampering with Info.plist triggers full validation refusal.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&info_path)
+        .unwrap()
+        .write_all(b"\n")
+        .unwrap();
+    assert!(matches!(source.unchanged_fast(), Err(Error::Validation(_))));
+
+    // Restoring Info.plist and tampering with the Mach-O binary triggers validation refusal.
+    std::fs::write(
+        &info_path,
+        b"<?xml version=\"1.0\"?><plist><dict><key>CFBundleExecutable</key><string>fixture</string></dict></plist>",
+    )
+    .unwrap();
+    let source2 = Source::inspect_on_control(
+        &root,
+        "Contents/MacOS/fixture",
+        ClassId::new([0x11; 16]).unwrap(),
+    )
+    .unwrap();
+    assert!(source2.unchanged_fast().is_ok());
+    macho[4095] ^= 0xFF;
+    std::fs::write(&exec_path, &macho).unwrap();
+    assert!(matches!(
+        source2.unchanged_fast(),
+        Err(Error::Validation(_))
+    ));
+
+    let _ = std::fs::remove_dir_all(&root);
+}

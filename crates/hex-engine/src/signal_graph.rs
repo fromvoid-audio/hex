@@ -2266,11 +2266,29 @@ impl SignalRuntime {
             .committed_main_pass_edge(self.resident_main_pass_edge(track)?, latency)
     }
 
-    pub(crate) fn committed_hosted_return_pair(&self) -> Option<[(&[Frame; 512], usize); 2]> {
-        self.delays.committed_hosted_return_pair([
-            self.resident_main_pass_edge(0)?,
-            self.resident_main_pass_edge(1)?,
-        ])
+    /// Sum the committed Fader→Main alignment rings of `0..track_count` direct
+    /// resident tracks at any bounded `latency` (`1..=MAX_MAIN_PASS_DELAY_FRAMES`)
+    /// into one `MainPassDelay` without heap allocation.
+    pub(crate) fn committed_resident_main_sum(
+        &self,
+        track_count: usize,
+        latency: u32,
+    ) -> Option<hex_lattice::MainPassDelay> {
+        if track_count == 0 {
+            return None;
+        }
+        if track_count == 1 {
+            return self.committed_resident_main_alignment(0, latency);
+        }
+        let mut sum = hex_lattice::MainPassDelay::zeroed(usize::try_from(latency).ok()?)?;
+        for track in 0..track_count {
+            let edge = self.resident_main_pass_edge(track)?;
+            let (frames, next) = self.delays.committed_main_pass_pcm_at(edge, latency)?;
+            if !sum.add_committed_ring(frames, next) {
+                return None;
+            }
+        }
+        Some(sum)
     }
 
     fn resident_main_pass_edge(&self, track: usize) -> Option<usize> {
