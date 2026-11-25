@@ -10,24 +10,179 @@ use hex_lattice_contract::{
 
 /// Existing authored linear gain, before envelope and occurrence output gain.
 pub const GAIN: ParameterId = ParameterId::from_static(1);
-pub(super) const GAIN_DESCRIPTORS: [ParameterDescriptor; 1] = [ParameterDescriptor {
-    id: GAIN,
-    label: "gain",
-    kind: ParameterKind::Float {
-        min: 0.0,
-        max: 4.0,
-        unit: None,
-    },
-    default: ParameterValue::Float(1.0),
-    presentation: ParameterPresentation::Linear,
-}];
+/// Stereo linear balance (-1.0 left ..= 1.0 right).
+pub const PAN: ParameterId = ParameterId::from_static(2);
+/// Semitone pitch transpose (-48.0 ..= 48.0 st).
+pub const TRANSPOSE: ParameterId = ParameterId::from_static(3);
+/// Fine pitch detune (-100.0 ..= 100.0 ct).
+pub const DETUNE: ParameterId = ParameterId::from_static(4);
+/// Normalized sample playback start position (0.0 ..= 1.0).
+pub const SAMPLE_START: ParameterId = ParameterId::from_static(5);
+/// Normalized sample playback end position (0.0 ..= 1.0).
+pub const SAMPLE_END: ParameterId = ParameterId::from_static(6);
+/// Normalized Classic loop start within the playback region (0.0 ..= 1.0).
+pub const LOOP_START: ParameterId = ParameterId::from_static(7);
+/// Normalized Classic loop length within the playback region (0.0 ..= 1.0).
+pub const LOOP_LENGTH: ParameterId = ParameterId::from_static(8);
+/// Envelope attack duration in seconds (0.0 ..= 60.0 s).
+pub const ATTACK: ParameterId = ParameterId::from_static(9);
+/// Envelope decay duration in seconds (0.0 ..= 60.0 s).
+pub const DECAY: ParameterId = ParameterId::from_static(10);
+/// Envelope sustain level (0.0 ..= 1.0).
+pub const SUSTAIN: ParameterId = ParameterId::from_static(11);
+/// Envelope release duration in seconds (0.0 ..= 60.0 s).
+pub const RELEASE: ParameterId = ParameterId::from_static(12);
 
-pub(super) fn gain_semantics(parameter: ParameterId) -> Option<ParameterSemantics> {
-    (parameter == GAIN).then_some(ParameterSemantics {
+pub(super) const PARAMETER_COUNT: usize = 12;
+
+pub(super) const DESCRIPTORS: [ParameterDescriptor; PARAMETER_COUNT] = [
+    ParameterDescriptor {
+        id: GAIN,
+        label: "gain",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 4.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: PAN,
+        label: "pan",
+        kind: ParameterKind::Float {
+            min: -1.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: TRANSPOSE,
+        label: "transpose",
+        kind: ParameterKind::Float {
+            min: -48.0,
+            max: 48.0,
+            unit: Some("st"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: DETUNE,
+        label: "detune",
+        kind: ParameterKind::Float {
+            min: -100.0,
+            max: 100.0,
+            unit: Some("ct"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: SAMPLE_START,
+        label: "sample start",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: SAMPLE_END,
+        label: "sample end",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: LOOP_START,
+        label: "loop start",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: LOOP_LENGTH,
+        label: "loop length",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: ATTACK,
+        label: "attack",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 60.0,
+            unit: Some("s"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: DECAY,
+        label: "decay",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 60.0,
+            unit: Some("s"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: SUSTAIN,
+        label: "sustain",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: RELEASE,
+        label: "release",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 60.0,
+            unit: Some("s"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+];
+
+pub(super) const fn parameter_index(parameter: ParameterId) -> Option<usize> {
+    match parameter.value() {
+        1..=12 => Some((parameter.value() - 1) as usize),
+        _ => None,
+    }
+}
+
+pub(super) fn parameter_semantics(parameter: ParameterId) -> Option<ParameterSemantics> {
+    parameter_index(parameter).map(|_| ParameterSemantics {
         access: ParameterAccess::ReadWrite,
         normalization: ParameterNormalization::Linear,
         stepping: ParameterStepping::Continuous,
-        automation: ParameterAutomation::Unsupported,
+        automation: ParameterAutomation::DeviceArrangementEnvelope,
         modulation: ParameterModulation::SampleRate,
         smoothing: ParameterSmoothing::None,
         change_impact: ParameterChangeImpact::ValueOnly,
@@ -47,7 +202,7 @@ impl NativeDeviceMetadata for SamplerDefinition {
         super::state::STATE_VERSION
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
-        &GAIN_DESCRIPTORS
+        &DESCRIPTORS
     }
     fn descriptors_for_state(
         &self,
@@ -65,7 +220,7 @@ impl NativeDeviceMetadata for SamplerDefinition {
         parameter: ParameterId,
     ) -> Result<Option<ParameterSemantics>, Error> {
         super::state::SamplerState::from_native(state)?;
-        Ok(gain_semantics(parameter))
+        Ok(parameter_semantics(parameter))
     }
     fn default_state(&self) -> Result<NativeDeviceState, Error> {
         super::state::empty_state()
@@ -91,11 +246,41 @@ impl NativeDeviceMetadata for SamplerDefinition {
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<ParameterValue, Error> {
-        if parameter != GAIN {
-            return Err(Error::UnknownParameter);
-        }
         let authored = super::state::SamplerState::from_native(state)?;
-        Ok(ParameterValue::Float(authored.gain as f32))
+        let extent = sampler_extent(&authored) as f64;
+        let region_len = authored
+            .region
+            .end
+            .saturating_sub(authored.region.start)
+            .max(1) as f64;
+        let value = match parameter {
+            GAIN => authored.gain as f32,
+            PAN => authored.pan as f32,
+            TRANSPOSE => authored.transpose_semitones as f32,
+            DETUNE => authored.detune_cents as f32,
+            SAMPLE_START => (authored.region.start as f64 / extent).clamp(0.0, 1.0) as f32,
+            SAMPLE_END => (authored.region.end as f64 / extent).clamp(0.0, 1.0) as f32,
+            LOOP_START => match authored.mode {
+                super::state::AuthoredMode::Classic { loop_region, .. } => {
+                    (loop_region.start.saturating_sub(authored.region.start) as f64 / region_len)
+                        .clamp(0.0, 1.0) as f32
+                }
+                _ => 0.0,
+            },
+            LOOP_LENGTH => match authored.mode {
+                super::state::AuthoredMode::Classic { loop_region, .. } => {
+                    (loop_region.end.saturating_sub(loop_region.start) as f64 / region_len)
+                        .clamp(0.0, 1.0) as f32
+                }
+                _ => 1.0,
+            },
+            ATTACK => authored.envelope.attack_seconds as f32,
+            DECAY => authored.envelope.decay_seconds as f32,
+            SUSTAIN => authored.envelope.sustain as f32,
+            RELEASE => authored.envelope.release_seconds as f32,
+            _ => return Err(Error::UnknownParameter),
+        };
+        Ok(ParameterValue::Float(value))
     }
     fn patch_parameter(
         &self,
@@ -103,16 +288,93 @@ impl NativeDeviceMetadata for SamplerDefinition {
         parameter: ParameterId,
         value: ParameterValue,
     ) -> Result<NativeDeviceState, Error> {
-        if parameter != GAIN {
-            return Err(Error::UnknownParameter);
-        }
-        GAIN_DESCRIPTORS[0].validate(value)?;
-        let ParameterValue::Float(gain) = value else {
+        let index = parameter_index(parameter).ok_or(Error::UnknownParameter)?;
+        DESCRIPTORS[index].validate(value)?;
+        let ParameterValue::Float(raw) = value else {
             return Err(Error::InvalidParameterValue);
         };
         let mut authored = super::state::SamplerState::from_native(state)?;
-        authored.gain = f64::from(gain);
+        let extent = sampler_extent(&authored);
+        match parameter {
+            GAIN => authored.gain = f64::from(raw),
+            PAN => authored.pan = f64::from(raw),
+            TRANSPOSE => authored.transpose_semitones = f64::from(raw),
+            DETUNE => authored.detune_cents = f64::from(raw),
+            SAMPLE_START => {
+                let start = ((f64::from(raw) * extent as f64).round() as usize)
+                    .min(authored.region.end.saturating_sub(1));
+                authored.region.start = start;
+                clamp_loop_to_region(&mut authored);
+            }
+            SAMPLE_END => {
+                let end = ((f64::from(raw) * extent as f64).round() as usize)
+                    .clamp(authored.region.start.saturating_add(1), extent.max(1));
+                authored.region.end = end;
+                clamp_loop_to_region(&mut authored);
+            }
+            LOOP_START => {
+                if let super::state::AuthoredMode::Classic {
+                    ref mut loop_region,
+                    ..
+                } = authored.mode
+                {
+                    let region_len = authored.region.end.saturating_sub(authored.region.start);
+                    let loop_len = loop_region.end.saturating_sub(loop_region.start).max(1);
+                    let start = authored.region.start
+                        + ((f64::from(raw) * region_len as f64).round() as usize)
+                            .min(region_len.saturating_sub(1));
+                    let end = start.saturating_add(loop_len).min(authored.region.end);
+                    loop_region.start = start.min(end.saturating_sub(1));
+                    loop_region.end = end.max(loop_region.start.saturating_add(1));
+                }
+            }
+            LOOP_LENGTH => {
+                if let super::state::AuthoredMode::Classic {
+                    ref mut loop_region,
+                    ..
+                } = authored.mode
+                {
+                    let region_len = authored.region.end.saturating_sub(authored.region.start);
+                    let desired_len =
+                        ((f64::from(raw) * region_len as f64).round() as usize).max(1);
+                    let start = loop_region
+                        .start
+                        .clamp(authored.region.start, authored.region.end.saturating_sub(1));
+                    let end = start.saturating_add(desired_len).min(authored.region.end);
+                    loop_region.start = start;
+                    loop_region.end = end.max(start.saturating_add(1));
+                }
+            }
+            ATTACK => authored.envelope.attack_seconds = f64::from(raw),
+            DECAY => authored.envelope.decay_seconds = f64::from(raw),
+            SUSTAIN => authored.envelope.sustain = f64::from(raw),
+            RELEASE => authored.envelope.release_seconds = f64::from(raw),
+            _ => return Err(Error::UnknownParameter),
+        }
         authored.replace_in(state)
+    }
+}
+
+fn sampler_extent(state: &super::state::SamplerState) -> usize {
+    let loop_end = match state.mode {
+        super::state::AuthoredMode::Classic { loop_region, .. } => loop_region.end,
+        _ => 0,
+    };
+    state.region.end.max(loop_end).max(1)
+}
+
+fn clamp_loop_to_region(state: &mut super::state::SamplerState) {
+    if let super::state::AuthoredMode::Classic {
+        loop_enabled: true,
+        ref mut loop_region,
+    } = state.mode
+    {
+        loop_region.start = loop_region
+            .start
+            .clamp(state.region.start, state.region.end.saturating_sub(1));
+        loop_region.end = loop_region
+            .end
+            .clamp(loop_region.start.saturating_add(1), state.region.end);
     }
 }
 impl NativeInstrumentDefinition for SamplerDefinition {
@@ -411,5 +673,159 @@ mod tests {
             registry.prepare_instrument(&ordinary, &context),
             Err(Error::AssetResourcesUnavailable)
         ));
+    }
+
+    #[test]
+    fn sampler_core_performance_parameters_roundtrip_and_modulate_runtime() {
+        use hex_lattice::{
+            BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity,
+            DeviceResourcePcm, DeviceResourceView, NativeInstrumentEvent,
+            NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, NativeParameterAutomation,
+        };
+        use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+
+        struct OneParam {
+            id: [ParameterId; 1],
+            values: Vec<f32>,
+        }
+        impl NativeParameterAutomation for OneParam {
+            fn parameter_ids(&self) -> &[ParameterId] {
+                &self.id
+            }
+            fn value_at(&self, parameter: ParameterId, offset: usize) -> Option<ParameterValue> {
+                (parameter == self.id[0])
+                    .then(|| self.values.get(offset).copied().map(ParameterValue::Float))
+                    .flatten()
+            }
+        }
+
+        let slot = DeviceAssetSlot::new(1).unwrap();
+        let asset = DeviceAssetKey::new(7).unwrap();
+        let mut authored = super::super::state::SamplerState::for_source_frames(64).unwrap();
+        authored.mode = super::super::state::AuthoredMode::Classic {
+            loop_enabled: true,
+            loop_region: super::super::Region { start: 8, end: 56 },
+        };
+        let state = authored
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference { slot, asset }])
+            .unwrap();
+
+        // All 12 core parameters expose DeviceArrangementEnvelope + SampleRate modulation.
+        assert_eq!(DEFINITION.descriptors().len(), PARAMETER_COUNT);
+        for d in DEFINITION.descriptors() {
+            let sem = DEFINITION
+                .parameter_semantics_for_state(&state, d.id)
+                .unwrap()
+                .expect("semantics");
+            assert_eq!(
+                sem.automation,
+                ParameterAutomation::DeviceArrangementEnvelope
+            );
+            assert_eq!(sem.modulation, ParameterModulation::SampleRate);
+        }
+
+        // Patch/read roundtrip preserves asset binding across pitch, region, loop, and ADSR.
+        let mut patched = state.clone();
+        for (id, value) in [
+            (GAIN, 1.5_f32),
+            (PAN, -0.5_f32),
+            (TRANSPOSE, 12.0_f32),
+            (DETUNE, 25.0_f32),
+            (SAMPLE_START, 0.25_f32),
+            (SAMPLE_END, 0.75_f32),
+            (LOOP_START, 0.25_f32),
+            (LOOP_LENGTH, 0.5_f32),
+            (ATTACK, 0.01_f32),
+            (DECAY, 0.02_f32),
+            (SUSTAIN, 0.5_f32),
+            (RELEASE, 0.05_f32),
+        ] {
+            patched = DEFINITION
+                .patch_parameter(&patched, id, ParameterValue::Float(value))
+                .unwrap();
+            assert_eq!(patched.asset_references(), state.asset_references());
+            let read = DEFINITION.read_parameter(&patched, id).unwrap();
+            let ParameterValue::Float(actual) = read else {
+                panic!("expected float");
+            };
+            assert!(actual.is_finite());
+        }
+
+        // Runtime sample-rate automation modulates pan, pitch, and sustain cleanly.
+        let pcm: Vec<f32> = (0..64)
+            .map(|i| ((i as f32) * 0.25).sin() * 0.5 + 0.25)
+            .collect();
+        let view = DeviceResourceView {
+            slot,
+            identity: DeviceResourceIdentity {
+                asset,
+                content: [5; 32],
+                derivation_version: 1,
+                derivation: [6; 32],
+            },
+            sample_rate: 48_000,
+            pcm: DeviceResourcePcm::Mono(&pcm),
+        };
+        let views = [view];
+        let resources = BorrowedDeviceResources(&views);
+        let tuning = hex_lattice::TuningTable::default();
+        let context = DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &tuning,
+            resources: &resources,
+        };
+        let prepared = DEFINITION.prepare_instrument(&state, &context).unwrap();
+        let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+        assert_eq!(
+            factory.parameter_automation_descriptors().len(),
+            PARAMETER_COUNT
+        );
+
+        let limits = NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: super::super::runtime::MAX_EVENTS,
+            max_active_occurrences: 32,
+            max_tail_frames: 48_000 * 600,
+        };
+        let render_with = |id: ParameterId, value: f32| {
+            let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+            let mut out = [[0.0_f32; 2]; 32];
+            let events = [NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 60,
+                velocity: 127,
+            }];
+            let auto = OneParam {
+                id: [id],
+                values: vec![value; 32],
+            };
+            pair.begin_block();
+            pair.process_block_with_clock_and_automation(
+                &events,
+                &mut out,
+                None,
+                &[],
+                &auto,
+                &resources,
+            )
+            .unwrap();
+            pair.commit_block();
+            out
+        };
+
+        let left_panned = render_with(PAN, -1.0);
+        assert!(left_panned.iter().any(|f| f[0].abs() > 0.01));
+        assert!(left_panned.iter().all(|f| f[1] == 0.0));
+
+        let pitched_up = render_with(TRANSPOSE, 12.0);
+        let unpitched = render_with(TRANSPOSE, 0.0);
+        assert_ne!(pitched_up, unpitched);
+
+        let low_sustain = render_with(SUSTAIN, 0.25);
+        let full_sustain = render_with(SUSTAIN, 1.0);
+        assert_ne!(low_sustain, full_sustain);
     }
 }

@@ -1,5 +1,8 @@
 //! Fixed-capacity mutable sampler host; PCM stays in the borrowed host scope.
-use super::catalog::{GAIN, GAIN_DESCRIPTORS, gain_semantics};
+use super::catalog::{
+    ATTACK, DECAY, DESCRIPTORS, DETUNE, GAIN, LOOP_LENGTH, LOOP_START, PAN, PARAMETER_COUNT,
+    RELEASE, SAMPLE_END, SAMPLE_START, SUSTAIN, TRANSPOSE, parameter_index, parameter_semantics,
+};
 use super::*;
 use hex_lattice::{
     DeviceResources, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
@@ -58,6 +61,9 @@ pub struct PreparedSamplerRuntime {
     velocity_amount: f64,
     base_gain: f64,
     pan: f64,
+    base_envelope: Envelope,
+    base_region: Region,
+    base_loop_region: Option<Region>,
     gain_modulation: bool,
     max_events: usize,
 }
@@ -79,6 +85,9 @@ impl PartialEq for PreparedSamplerRuntime {
             velocity_amount,
             base_gain,
             pan,
+            base_envelope,
+            base_region,
+            base_loop_region,
             gain_modulation,
             max_events,
         } = self;
@@ -90,6 +99,9 @@ impl PartialEq for PreparedSamplerRuntime {
             && *velocity_amount == other.velocity_amount
             && *base_gain == other.base_gain
             && *pan == other.pan
+            && *base_envelope == other.base_envelope
+            && *base_region == other.base_region
+            && *base_loop_region == other.base_loop_region
             && *gain_modulation == other.gain_modulation
             && *max_events == other.max_events
     }
@@ -148,6 +160,9 @@ impl PreparedSamplerRuntime {
             velocity_amount,
             base_gain: _,
             pan: _,
+            base_envelope: _,
+            base_region: _,
+            base_loop_region: _,
             gain_modulation: _,
             max_events,
         } = self;
@@ -239,9 +254,53 @@ impl BoundSamplerPlan<'_> {
             velocity_amount: self.plan.settings.velocity_amount,
             base_gain: self.plan.settings.gain,
             pan: self.plan.settings.pan,
+            base_envelope: self.plan.settings.envelope,
+            base_region: self.plan.settings.region,
+            base_loop_region: match self.plan.settings.mode {
+                Mode::Classic { loop_region } => loop_region,
+                _ => None,
+            },
             gain_modulation: false,
             max_events,
         })
+    }
+}
+
+impl PreparedSamplerRuntime {
+    fn base_targets(&self) -> [f32; PARAMETER_COUNT] {
+        let extent = self
+            .base_region
+            .end
+            .max(self.base_loop_region.map_or(0, |r| r.end))
+            .max(1) as f64;
+        let region_len = self
+            .base_region
+            .end
+            .saturating_sub(self.base_region.start)
+            .max(1) as f64;
+        let (loop_start, loop_length) = match self.base_loop_region {
+            Some(loop_region) => (
+                (loop_region.start.saturating_sub(self.base_region.start) as f64 / region_len)
+                    .clamp(0.0, 1.0) as f32,
+                (loop_region.end.saturating_sub(loop_region.start) as f64 / region_len)
+                    .clamp(0.0, 1.0) as f32,
+            ),
+            None => (0.0, 1.0),
+        };
+        [
+            self.base_gain as f32,
+            self.pan as f32,
+            self.authored_pitch.transpose_semitones as f32,
+            self.authored_pitch.detune_cents as f32,
+            (self.base_region.start as f64 / extent).clamp(0.0, 1.0) as f32,
+            (self.base_region.end as f64 / extent).clamp(0.0, 1.0) as f32,
+            loop_start,
+            loop_length,
+            self.base_envelope.attack_seconds as f32,
+            self.base_envelope.decay_seconds as f32,
+            self.base_envelope.sustain as f32,
+            self.base_envelope.release_seconds as f32,
+        ]
     }
 }
 
@@ -306,19 +365,19 @@ pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
     fading: Fading,
-    last_gain: f32,
+    last_targets: [f32; PARAMETER_COUNT],
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
         if self.gain_modulation {
-            &GAIN_DESCRIPTORS
+            &DESCRIPTORS
         } else {
             &[]
         }
     }
     fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
         self.gain_modulation
-            .then(|| gain_semantics(parameter))
+            .then(|| parameter_semantics(parameter))
             .flatten()
     }
     fn supports_active_occurrence_ids(&self) -> bool {
@@ -356,7 +415,7 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
             prepared: self.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
-            last_gain: self.base_gain as f32,
+            last_targets: self.base_targets(),
         })
     }
     fn as_any(&self) -> &dyn Any {
@@ -652,7 +711,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         gains: &[NativeInstrumentOccurrenceGain],
         resources: &dyn DeviceResources,
     ) {
-        self.process_with_gains::<false>(events, frames, gains, resources, &[]);
+        self.process_with_gains::<false>(events, frames, gains, resources, None, 0);
     }
     fn preflight_events(
         &self,
@@ -697,12 +756,12 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         frames: &mut [StereoFrame],
         resources: &dyn DeviceResources,
     ) {
-        self.process_with_gains::<false>(events, frames, &[], resources, &[]);
+        self.process_with_gains::<false>(events, frames, &[], resources, None, 0);
     }
     fn reset(&mut self) {
         self.active.fill(None);
         self.fading.fill(None);
-        self.last_gain = self.prepared.base_gain as f32;
+        self.last_targets = self.prepared.base_targets();
     }
     fn is_quiescent(&self) -> bool {
         self.active.iter().all(Option::is_none) && self.fading.iter().all(Option::is_none)
@@ -721,7 +780,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             self.active = previous.active;
             self.fading = previous.fading;
-            self.last_gain = previous.last_gain;
+            self.last_targets = previous.last_targets;
         }
     }
     fn can_retarget_history_from(
@@ -756,7 +815,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             self.active = previous.active;
             self.fading = previous.fading;
-            self.last_gain = previous.last_gain;
+            self.last_targets = previous.last_targets;
         }
     }
     fn fixed_storage_bytes(&self) -> usize {
@@ -769,16 +828,18 @@ impl MutableInstrumentRuntime for SamplerRuntime {
 
 impl InstrumentParameterRuntime for SamplerRuntime {
     fn descriptors(&self) -> &[ParameterDescriptor] {
-        &GAIN_DESCRIPTORS
+        &DESCRIPTORS
     }
     fn parameter_modulation_semantics(&self, parameter: ParameterId) -> Option<ParameterSemantics> {
-        gain_semantics(parameter)
+        parameter_semantics(parameter)
     }
     fn copy_targets(&self, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
-        let [target] = output else {
+        if output.len() != PARAMETER_COUNT {
             return Err(Error::InvalidParameterAutomation);
-        };
-        *target = Some(ParameterValue::Float(self.last_gain));
+        }
+        for (slot, value) in output.iter_mut().zip(self.last_targets) {
+            *slot = Some(ParameterValue::Float(value));
+        }
         Ok(())
     }
     fn preflight(
@@ -790,7 +851,7 @@ impl InstrumentParameterRuntime for SamplerRuntime {
         _: &dyn NativeParameterAutomation,
         _: &dyn DeviceResources,
     ) -> Result<(), Error> {
-        // The pair validates the complete single-gain view before rendering.
+        // The pair validates the complete parameter view before rendering.
         Ok(())
     }
     fn process(
@@ -802,33 +863,163 @@ impl InstrumentParameterRuntime for SamplerRuntime {
         values: &dyn NativeParameterAutomation,
         resources: &dyn DeviceResources,
     ) {
-        if !values.parameter_ids().contains(&GAIN) {
-            self.process_with_gains::<false>(events, frames, gains, resources, &[]);
-            return;
-        }
-        // Read each control sample once, outside the per-voice loops. A
-        // negative sentinel selects the exact authored f64 coefficient.
-        let mut sampled_gain = [-1.0_f32; MAX_INSTRUMENT_AUTOMATION_FRAMES];
-        let Some(sampled_gain) = sampled_gain.get_mut(..frames.len()) else {
-            return;
-        };
-        for (offset, slot) in sampled_gain.iter_mut().enumerate() {
-            if let Some(ParameterValue::Float(value)) = values.value_at(GAIN, offset) {
-                *slot = value;
+        let mut present_mask: u16 = 0;
+        for &id in values.parameter_ids() {
+            if let Some(index) = parameter_index(id) {
+                present_mask |= 1_u16 << index;
             }
         }
-        self.process_with_gains::<true>(events, frames, gains, resources, sampled_gain);
+        if present_mask == 0 {
+            self.process_with_gains::<false>(events, frames, gains, resources, None, 0);
+            return;
+        }
+        if frames.len() > MAX_INSTRUMENT_AUTOMATION_FRAMES {
+            return;
+        }
+        self.process_with_gains::<true>(
+            events,
+            frames,
+            gains,
+            resources,
+            Some(values),
+            present_mask,
+        );
     }
 }
 
 impl SamplerRuntime {
+    fn read_param(
+        values: Option<&dyn NativeParameterAutomation>,
+        mask: u16,
+        id: ParameterId,
+        offset: usize,
+    ) -> Option<f32> {
+        let index = parameter_index(id)?;
+        if (mask & (1_u16 << index)) == 0 {
+            return None;
+        }
+        match values?.value_at(id, offset) {
+            Some(ParameterValue::Float(v)) if v.is_finite() => Some(v),
+            _ => None,
+        }
+    }
+
+    fn apply_modulated_note(
+        &self,
+        base: &VoiceCoefficients,
+        note: &mut VoiceCoefficients,
+        velocity_gain: f64,
+        base_channel_gain: [f64; 2],
+        automation: (Option<&dyn NativeParameterAutomation>, u16, usize),
+    ) {
+        let (values, mask, offset) = automation;
+        const GAIN_PAN_MASK: u16 = (1 << 0) | (1 << 1);
+        const PITCH_MASK: u16 = (1 << 2) | (1 << 3);
+        const REGION_MASK: u16 = (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7);
+        const ENV_MASK: u16 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
+
+        if (mask & GAIN_PAN_MASK) != 0 {
+            let gain = Self::read_param(values, mask, GAIN, offset)
+                .map_or(self.prepared.base_gain, |v| f64::from(v).clamp(0.0, 4.0));
+            let pan = Self::read_param(values, mask, PAN, offset)
+                .map_or(self.prepared.pan, |v| f64::from(v).clamp(-1.0, 1.0));
+            let left = 1.0 - pan.max(0.0);
+            let right = 1.0 + pan.min(0.0);
+            note.channel_gain = [
+                (gain * left) * velocity_gain,
+                (gain * right) * velocity_gain,
+            ];
+        } else {
+            note.channel_gain = base_channel_gain;
+        }
+
+        if (mask & PITCH_MASK) != 0 {
+            let transpose = Self::read_param(values, mask, TRANSPOSE, offset)
+                .map_or(self.prepared.authored_pitch.transpose_semitones, |v| {
+                    f64::from(v).clamp(-48.0, 48.0)
+                });
+            let detune = Self::read_param(values, mask, DETUNE, offset)
+                .map_or(self.prepared.authored_pitch.detune_cents, |v| {
+                    f64::from(v).clamp(-100.0, 100.0)
+                });
+            let delta_semitones = (transpose - self.prepared.authored_pitch.transpose_semitones)
+                + (detune - self.prepared.authored_pitch.detune_cents) / 100.0;
+            let factor = (delta_semitones / 12.0).exp2();
+            let scaled = (base.step as f64 * factor).round();
+            note.step = (scaled as u64).max(1);
+        } else {
+            note.step = base.step;
+        }
+
+        if (mask & REGION_MASK) != 0 {
+            let extent = base.expected_frames.max(1);
+            let mut region = base.region;
+            if let Some(s) = Self::read_param(values, mask, SAMPLE_START, offset) {
+                region.start = ((f64::from(s).clamp(0.0, 1.0) * extent as f64).round() as usize)
+                    .min(extent.saturating_sub(1));
+            }
+            if let Some(e) = Self::read_param(values, mask, SAMPLE_END, offset) {
+                region.end = ((f64::from(e).clamp(0.0, 1.0) * extent as f64).round() as usize)
+                    .clamp(1, extent);
+            }
+            if region.start >= region.end {
+                region.start = region.end.saturating_sub(1);
+            }
+            note.region = region;
+            let region_len = region.end.saturating_sub(region.start).max(1);
+            if let Some((base_ls, base_le)) = base.loop_offsets {
+                let mut ls = base_ls.min(region_len.saturating_sub(1));
+                let mut loop_len = base_le.saturating_sub(base_ls).max(1);
+                if let Some(s) = Self::read_param(values, mask, LOOP_START, offset) {
+                    ls = ((f64::from(s).clamp(0.0, 1.0) * region_len as f64).round() as usize)
+                        .min(region_len.saturating_sub(1));
+                }
+                if let Some(l) = Self::read_param(values, mask, LOOP_LENGTH, offset) {
+                    loop_len = ((f64::from(l).clamp(0.0, 1.0) * region_len as f64).round()
+                        as usize)
+                        .max(1);
+                }
+                let le = ls.saturating_add(loop_len).min(region_len);
+                let ls = ls.min(le.saturating_sub(1));
+                let le = le.max(ls.saturating_add(1));
+                note.loop_offsets = Some((ls, le));
+                note.loop_crossfade = base.loop_crossfade.min((le - ls).min(ls));
+            }
+        }
+
+        if (mask & ENV_MASK) != 0 {
+            let env = Envelope {
+                attack_seconds: Self::read_param(values, mask, ATTACK, offset)
+                    .map_or(self.prepared.base_envelope.attack_seconds, |v| {
+                        f64::from(v).clamp(0.0, 60.0)
+                    }),
+                decay_seconds: Self::read_param(values, mask, DECAY, offset)
+                    .map_or(self.prepared.base_envelope.decay_seconds, |v| {
+                        f64::from(v).clamp(0.0, 60.0)
+                    }),
+                sustain: Self::read_param(values, mask, SUSTAIN, offset)
+                    .map_or(self.prepared.base_envelope.sustain, |v| {
+                        f64::from(v).clamp(0.0, 1.0)
+                    }),
+                release_seconds: Self::read_param(values, mask, RELEASE, offset)
+                    .map_or(self.prepared.base_envelope.release_seconds, |v| {
+                        f64::from(v).clamp(0.0, 60.0)
+                    }),
+            };
+            if let Ok(prepared_env) = env.prepare(self.prepared.authored_pitch.output_rate) {
+                note.envelope = prepared_env;
+            }
+        }
+    }
+
     fn process_with_gains<const MODULATED: bool>(
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         gains: &[NativeInstrumentOccurrenceGain],
         resources: &dyn DeviceResources,
-        sampled_gain: &[f32],
+        values: Option<&dyn NativeParameterAutomation>,
+        mask: u16,
     ) {
         let pcm = (0..resources
             .len()
@@ -836,19 +1027,11 @@ impl SamplerRuntime {
             .filter_map(|index| resources.get(index))
             .find(|view| self.prepared.source.matches(*view));
         let Some(view) = pcm else { return };
-        let pan = self.prepared.pan;
-        let left = 1.0 - pan.max(0.0);
-        let right = 1.0 + pan.min(0.0);
-        let with_gain = |offset: usize, velocity: f64, base: [f64; 2]| {
-            let value = sampled_gain[offset];
-            if value >= 0.0 {
-                let gain = f64::from(value);
-                [(gain * left) * velocity, (gain * right) * velocity]
-            } else {
-                base
-            }
-        };
+        let dynamic_cursor = MODULATED && (mask & ((1 << 2) | (1 << 3) | (1 << 4) | (1 << 5))) != 0;
         if events.is_empty() && self.is_quiescent() {
+            if MODULATED && !frames.is_empty() {
+                self.record_last_targets(values, mask, frames.len() - 1);
+            }
             return;
         }
         let mut active = self.active;
@@ -884,53 +1067,107 @@ impl SamplerRuntime {
             let span = end - offset;
             for entry in &mut active {
                 let Some(voice) = *entry else { continue };
-                let Ok(count) = self.sounding_frames(&voice, span, None) else {
-                    return;
-                };
-                let Some(mut note) = self.prepared.notes[usize::from(voice.pitch)] else {
+                let Some(base_note) = self.prepared.notes[usize::from(voice.pitch)] else {
                     *entry = None;
                     continue;
                 };
+                let mut note = base_note;
                 for channel_gain in &mut note.channel_gain {
                     *channel_gain *= voice.gain;
                 }
                 let base_gain = note.channel_gain;
-                let mut final_voice = voice;
-                let Ok(alive) = self.advance_voice(&mut final_voice, span as u64) else {
-                    return;
-                };
                 let gain_index = gains
                     .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
                     .ok();
-                let mut cursor = voice;
-                for (relative, frame) in frames[offset..offset + count].iter_mut().enumerate() {
-                    let gain = gain_index.map_or(1.0, |index| {
-                        gains[index].value_at_offset((offset + relative) as u64)
-                    });
-                    if MODULATED {
-                        note.channel_gain = with_gain(offset + relative, voice.gain, base_gain);
+                if dynamic_cursor {
+                    let mut cursor = voice;
+                    let mut alive = true;
+                    for (relative, frame) in frames[offset..offset + span].iter_mut().enumerate() {
+                        self.apply_modulated_note(
+                            &base_note,
+                            &mut note,
+                            voice.gain,
+                            base_gain,
+                            (values, mask, offset + relative),
+                        );
+                        if note.loop_offsets.is_none()
+                            && cursor.position
+                                >= (note.region.end - note.region.start) as u128 * ONE
+                        {
+                            alive = false;
+                            break;
+                        }
+                        if note.gate == GateMode::Gate
+                            && let Some(gate) = cursor.gate
+                            && cursor.age.saturating_sub(gate) >= note.release_frames()
+                        {
+                            alive = false;
+                            break;
+                        }
+                        let gain = gain_index.map_or(1.0, |index| {
+                            gains[index].value_at_offset((offset + relative) as u64)
+                        });
+                        Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
+                        cursor.age = cursor.age.saturating_add(1);
+                        cursor.position = cursor.position.saturating_add(u128::from(note.step));
                     }
-                    Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
-                    // Checked span advancement above proves these increments
-                    // cannot overflow during the rendered prefix.
-                    cursor.age = cursor.age.wrapping_add(1);
-                    cursor.position = cursor.position.wrapping_add(u128::from(note.step));
+                    if alive {
+                        if note.loop_offsets.is_none()
+                            && cursor.position
+                                >= (note.region.end - note.region.start) as u128 * ONE
+                        {
+                            alive = false;
+                        } else if note.gate == GateMode::Gate
+                            && let Some(gate) = cursor.gate
+                            && cursor.age.saturating_sub(gate) >= note.release_frames()
+                        {
+                            alive = false;
+                        }
+                    }
+                    *entry = alive.then_some(cursor);
+                } else {
+                    let Ok(count) = self.sounding_frames(&voice, span, None) else {
+                        return;
+                    };
+                    let mut final_voice = voice;
+                    let Ok(alive) = self.advance_voice(&mut final_voice, span as u64) else {
+                        return;
+                    };
+                    let mut cursor = voice;
+                    for (relative, frame) in frames[offset..offset + count].iter_mut().enumerate() {
+                        let gain = gain_index.map_or(1.0, |index| {
+                            gains[index].value_at_offset((offset + relative) as u64)
+                        });
+                        if MODULATED {
+                            self.apply_modulated_note(
+                                &base_note,
+                                &mut note,
+                                voice.gain,
+                                base_gain,
+                                (values, mask, offset + relative),
+                            );
+                        }
+                        Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
+                        cursor.age = cursor.age.wrapping_add(1);
+                        cursor.position = cursor.position.wrapping_add(u128::from(note.step));
+                    }
+                    *entry = alive.then_some(final_voice);
                 }
-                *entry = alive.then_some(final_voice);
             }
             for entry in &mut fading {
                 let Some(item) = *entry else { continue };
-                let Ok(count) = self.sounding_frames(&item.voice, span, Some(item.start)) else {
-                    return;
-                };
-                let Some(mut note) = self.prepared.notes[usize::from(item.voice.pitch)] else {
+                let Some(base_note) = self.prepared.notes[usize::from(item.voice.pitch)] else {
                     *entry = None;
                     continue;
                 };
+                let mut note = base_note;
                 for channel_gain in &mut note.channel_gain {
                     *channel_gain *= item.voice.gain;
                 }
                 let base_gain = note.channel_gain;
+                let Ok(count) = self.sounding_frames(&item.voice, span, Some(item.start)) else {
+                    return;
+                };
                 let mut final_item = item;
                 let Ok(alive) = self.advance_voice(&mut final_item.voice, span as u64) else {
                     return;
@@ -938,8 +1175,13 @@ impl SamplerRuntime {
                 let mut cursor = item.voice;
                 for (relative, frame) in frames[offset..offset + count].iter_mut().enumerate() {
                     if MODULATED {
-                        note.channel_gain =
-                            with_gain(offset + relative, item.voice.gain, base_gain);
+                        self.apply_modulated_note(
+                            &base_note,
+                            &mut note,
+                            item.voice.gain,
+                            base_gain,
+                            (values, mask, offset + relative),
+                        );
                     }
                     let declick = 1.0 - cursor.age.saturating_sub(item.start) as f64 / fade;
                     Self::mix_prepared(frame, view.pcm, &cursor, item.gain * declick, &note);
@@ -956,11 +1198,24 @@ impl SamplerRuntime {
         self.active = active;
         self.fading = fading;
         if !frames.is_empty() {
-            self.last_gain = sampled_gain
-                .last()
-                .copied()
-                .filter(|value| *value >= 0.0)
-                .unwrap_or(self.prepared.base_gain as f32);
+            if MODULATED {
+                self.record_last_targets(values, mask, frames.len() - 1);
+            } else {
+                self.last_targets = self.prepared.base_targets();
+            }
+        }
+    }
+
+    fn record_last_targets(
+        &mut self,
+        values: Option<&dyn NativeParameterAutomation>,
+        mask: u16,
+        last_offset: usize,
+    ) {
+        let defaults = self.prepared.base_targets();
+        for (index, descriptor) in DESCRIPTORS.iter().enumerate() {
+            self.last_targets[index] = Self::read_param(values, mask, descriptor.id, last_offset)
+                .unwrap_or(defaults[index]);
         }
     }
 

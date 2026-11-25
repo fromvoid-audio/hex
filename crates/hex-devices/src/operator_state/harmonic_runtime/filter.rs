@@ -9,6 +9,7 @@ pub(in crate::operator_state) struct Trajectory {
     pub armed: bool,
 }
 impl Trajectory {
+    #[cfg(test)]
     pub fn inactive(rate: u32) -> Self {
         let frame = Frame::dry();
         Self {

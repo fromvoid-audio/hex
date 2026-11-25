@@ -160,10 +160,18 @@ fn filter_output_gate_has_exact_finite_quiescence_and_reuse_resets_history() {
 #[test]
 fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
     let current = OPERATOR_METADATA.default_state().unwrap();
+    let current_v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     let old =
-        NativeDeviceState::new(OPERATOR_TYPE_ID, 7, current.payload()[..364].to_vec()).unwrap();
+        NativeDeviceState::new(OPERATOR_TYPE_ID, 7, current_v17.payload()[..364].to_vec()).unwrap();
     let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-    assert_eq!(&migrated.payload()[..364], old.payload());
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    assert_eq!(&migrated_v17.payload()[..364], old.payload());
     assert_eq!(
         OPERATOR_METADATA
             .read_parameter(&migrated, ParameterId::from_static(20_001))
@@ -181,9 +189,13 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
         }
     }
     let v8 =
-        NativeDeviceState::new(OPERATOR_TYPE_ID, 8, current.payload()[..380].to_vec()).unwrap();
+        NativeDeviceState::new(OPERATOR_TYPE_ID, 8, current_v17.payload()[..380].to_vec()).unwrap();
     let migrated_v8 = OPERATOR_METADATA.migrate_state(&v8).unwrap();
-    assert_eq!(&migrated_v8.payload()[..380], v8.payload());
+    let migrated_v8_v17 = OperatorSettings::from_state(&migrated_v8)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    assert_eq!(&migrated_v8_v17.payload()[..380], v8.payload());
     for version in [9, 10, OPERATOR_STATE_VERSION + 1] {
         assert!(
             OperatorSettings::from_state(
@@ -265,7 +277,11 @@ fn filter_level_carrier_and_feedback_edits_keep_actual_in_flight_boundary() {
 fn activating_filter_during_feedback_ramp_keeps_its_actual_boundary() {
     let mut s = state();
     // Build an unarmed source from its legacy prefix.
-    s = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, s.payload()[..364].to_vec()).unwrap();
+    let s_v17 = OperatorSettings::from_state(&s)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    s = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, s_v17.payload()[..364].to_vec()).unwrap();
     s = OPERATOR_METADATA
         .patch_parameter(&s, ParameterId::from_static(78), ParameterValue::Float(0.4))
         .unwrap();
@@ -323,7 +339,12 @@ fn activating_filter_during_feedback_ramp_keeps_its_actual_boundary() {
 #[test]
 fn analytic_import_refuses_invalid_ids_gates_capacity_and_payload_without_mutation() {
     let s = state();
-    let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, s.payload()[..364].to_vec()).unwrap();
+    let s_v17 = OperatorSettings::from_state(&s)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    let legacy =
+        NativeDeviceState::new(OPERATOR_TYPE_ID, 7, s_v17.payload()[..364].to_vec()).unwrap();
     let prepared = OPERATOR_METADATA
         .prepare_instrument(
             &legacy,

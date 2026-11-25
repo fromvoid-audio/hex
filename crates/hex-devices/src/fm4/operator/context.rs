@@ -382,6 +382,7 @@ impl PreparedOperatorConfiguration {
     /// Bounded sequential pitch integration, sharing the existing FM/envelope law.
     /// Harmonic caps conservatively cover the full one-octave LFO excursion; an
     /// oscillator whose excursion could reach Nyquist is silenced for this note.
+    #[cfg(test)]
     pub(crate) fn prepare_lfo_note(
         &self,
         pitch: u8,
@@ -416,6 +417,7 @@ impl PreparedOperatorConfiguration {
         note.steps
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)] // Explicit borrowed note, integrated phase and feedback recurrence.
     pub(crate) fn sample_lfo(
         &self,
@@ -430,6 +432,7 @@ impl PreparedOperatorConfiguration {
         self.sample_lfo_with_levels(table, note, age, gate, phases, feedback, previous, None)
     }
 
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)] // Explicit integrated phases, recurrence and shared scalar override.
     pub(crate) fn sample_lfo_with_levels(
         &self,
@@ -667,6 +670,7 @@ impl PreparedOperatorConfiguration {
         self.configuration_id
     }
 
+    #[cfg(test)]
     pub(crate) const fn effective_oscillator_levels(&self) -> [f64; OPERATORS] {
         self.oscillator_levels
     }

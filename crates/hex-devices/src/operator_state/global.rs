@@ -235,10 +235,11 @@ mod tests {
                     state
                 );
                 // Version 15 already stored its count; adding fine tuning must not reset it.
+                let v17 = saved.to_v17_state().unwrap();
                 let old = NativeDeviceState::new(
                     super::super::OPERATOR_TYPE_ID,
                     15,
-                    state.payload()[..super::super::MODULATION_PAYLOAD_BYTES].to_vec(),
+                    v17.payload()[..super::super::MODULATION_PAYLOAD_BYTES].to_vec(),
                 )
                 .unwrap();
                 let migrated = super::super::OPERATOR_METADATA.migrate_state(&old).unwrap();
@@ -276,7 +277,11 @@ mod tests {
     #[test]
     fn historical_states_keep_legacy_mode_until_a_global_control_is_patched() {
         let state = super::super::tests::legacy_state();
-        let bytes = state.payload()[..super::super::COMPANION_PAYLOAD_BYTES].to_vec();
+        let v17 = OperatorSettings::from_state(&state)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
+        let bytes = v17.payload()[..super::super::COMPANION_PAYLOAD_BYTES].to_vec();
         let old = NativeDeviceState::new(super::super::OPERATOR_TYPE_ID, 14, bytes).unwrap();
         let migrated = super::super::OPERATOR_METADATA.migrate_state(&old).unwrap();
         assert_eq!(

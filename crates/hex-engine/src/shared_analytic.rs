@@ -387,6 +387,8 @@ impl SharedAnalyticContextTable {
             )
             .map_err(|_| Invalid("track instrument state is unsupported"))?;
             if prepared.prefers_mutable_continuation()
+                || !device.automation().is_empty()
+                || !device.modulation().is_empty()
                 || previous.is_some_and(|old| {
                     old.mutable_continuations
                         .iter()

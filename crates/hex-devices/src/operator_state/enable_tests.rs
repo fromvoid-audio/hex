@@ -3,8 +3,12 @@ use super::super::*;
 #[test]
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {
     let current = tests::legacy_state();
-    assert_eq!(current.payload().len(), PAYLOAD_BYTES);
+    assert_eq!(current.payload().len(), tlv_codec::CANONICAL_BYTES);
     assert_eq!(PARAMETER_COUNT, 432);
+    let current_v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -18,12 +22,16 @@ fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on
         let old = NativeDeviceState::new(
             OPERATOR_TYPE_ID,
             version,
-            current.payload()[..length].to_vec(),
+            current_v17.payload()[..length].to_vec(),
         )
         .unwrap();
         let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
         assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
-        assert_eq!(&migrated.payload()[..length], old.payload());
+        let migrated_v17 = OperatorSettings::from_state(&migrated)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
+        assert_eq!(&migrated_v17.payload()[..length], old.payload());
         for operator in 1..=4 {
             assert_eq!(
                 OPERATOR_METADATA.read_parameter(&migrated, parameter::enabled(operator)),
@@ -35,10 +43,18 @@ fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on
     let with_lfo = OPERATOR_METADATA
         .patch_parameter(&current, parameter::LFO_RATE, ParameterValue::Float(4.25))
         .unwrap();
-    let old =
-        NativeDeviceState::new(OPERATOR_TYPE_ID, 7, with_lfo.payload()[..364].to_vec()).unwrap();
+    let with_lfo_v17 = OperatorSettings::from_state(&with_lfo)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    let old = NativeDeviceState::new(OPERATOR_TYPE_ID, 7, with_lfo_v17.payload()[..364].to_vec())
+        .unwrap();
     let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-    assert_eq!(&migrated.payload()[..364], old.payload());
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
+    assert_eq!(&migrated_v17.payload()[..364], old.payload());
     assert_eq!(
         OPERATOR_METADATA.read_parameter(&migrated, parameter::LFO_RATE),
         Ok(ParameterValue::Float(4.25))

@@ -51,16 +51,24 @@ fn version_fifteen_preserves_global_modulation_prefix_and_exact_zero_offset_soun
             .patch_parameter(&state, ParameterId::from_static(id), value)
             .unwrap();
     }
+    let state_v17 = OperatorSettings::from_state(&state)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     let legacy = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
         15,
-        state.payload()[..MODULATION_PAYLOAD_BYTES].to_vec(),
+        state_v17.payload()[..MODULATION_PAYLOAD_BYTES].to_vec(),
     )
     .unwrap();
     let migrated = OPERATOR_METADATA.migrate_state(&legacy).unwrap();
     assert_eq!(migrated, state);
+    let migrated_v17 = OperatorSettings::from_state(&migrated)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     assert_eq!(
-        &migrated.payload()[..MODULATION_PAYLOAD_BYTES],
+        &migrated_v17.payload()[..MODULATION_PAYLOAD_BYTES],
         legacy.payload()
     );
     let old = OperatorSettings::from_state(&legacy)

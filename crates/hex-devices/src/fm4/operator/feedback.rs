@@ -44,6 +44,7 @@ impl PreparedOperatorConfiguration {
 }
 
 /// Immutable voice state snapshot needed to seed a filter-equipped operator voice.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct FilterSeed {
     pub(crate) note: PreparedOperatorNote,
@@ -54,6 +55,7 @@ pub(crate) struct FilterSeed {
 }
 
 impl PreparedOperatorFeedbackVoice {
+    #[cfg(test)]
     pub(crate) fn harmonic_snapshot(&self) -> (PreparedOperatorNote, u64, Option<u64>, [f64; 4]) {
         (
             self.note,
@@ -64,6 +66,7 @@ impl PreparedOperatorFeedbackVoice {
     }
 
     /// Snapshot note, age, gate, recurrence outputs, and feedback turns for filter handoff.
+    #[cfg(test)]
     pub(crate) const fn filter_seed(&self) -> FilterSeed {
         FilterSeed {
             note: self.note,

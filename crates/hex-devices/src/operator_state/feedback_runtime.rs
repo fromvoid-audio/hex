@@ -40,8 +40,9 @@ pub(super) fn prepare_factory(
         return Ok(None);
     }
     let feedback_turns = effective.map(f64::from);
-    let native_state = settings.to_state()?;
-    let compatibility_state = native_state.payload()[..FEEDBACK_PAYLOAD_BYTES]
+    let _native_state = settings.to_state()?;
+    let base_prefix = settings.encode_base_prefix();
+    let compatibility_state = base_prefix[..FEEDBACK_PAYLOAD_BYTES]
         .try_into()
         .map_err(|_| DeviceContractError::MalformedState)?;
     Ok(Some(OperatorFeedbackFactory {

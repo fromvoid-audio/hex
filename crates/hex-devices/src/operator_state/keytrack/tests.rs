@@ -9,8 +9,8 @@ fn patch(state: &NativeDeviceState, operator: u32, value: f32) -> NativeDeviceSt
 #[test]
 fn independent_amounts_have_stable_ids_domains_and_current_roundtrips() {
     let mut state = OperatorSettings::defaults().to_state().unwrap();
-    assert_eq!(state.state_version(), 17);
-    assert_eq!(state.payload().len(), 1760);
+    assert_eq!(state.state_version(), OPERATOR_STATE_VERSION);
+    assert_eq!(state.payload().len(), tlv_codec::CANONICAL_BYTES);
     for i in 1..=4 {
         let id = crate::operator_state::parameter::pitch_keytrack(i);
         assert_eq!(id, parameter(i));
@@ -117,6 +117,10 @@ fn every_supported_historical_prefix_migrates_to_matching_pitch_endpoints() {
     let mut current = crate::operator_state::tests::legacy_state();
     current = patch(&current, 1, 0.0);
     current = patch(&current, 3, 0.0);
+    let current_v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     for (version, length) in [
         (1, 224),
         (2, 240),
@@ -132,16 +136,21 @@ fn every_supported_historical_prefix_migrates_to_matching_pitch_endpoints() {
         (14, 1616),
         (15, 1728),
         (16, 1744),
+        (17, 1760),
     ] {
         let old = NativeDeviceState::new(
             OPERATOR_TYPE_ID,
             version,
-            current.payload()[..length].to_vec(),
+            current_v17.payload()[..length].to_vec(),
         )
         .unwrap();
         let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
-        assert_eq!(migrated.state_version(), 17);
-        assert_eq!(&migrated.payload()[..length], old.payload());
+        assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
+        let migrated_v17 = OperatorSettings::from_state(&migrated)
+            .unwrap()
+            .to_v17_state()
+            .unwrap();
+        assert_eq!(&migrated_v17.payload()[..length], old.payload());
         let expected = if version < 3 {
             [100.0; 4]
         } else {
@@ -180,10 +189,14 @@ fn version_sixteen_preserves_fine_global_and_modulation_values_and_pcm() {
             .patch_parameter(&current, id, value)
             .unwrap();
     }
+    let current_v17 = OperatorSettings::from_state(&current)
+        .unwrap()
+        .to_v17_state()
+        .unwrap();
     let old = NativeDeviceState::new(
         OPERATOR_TYPE_ID,
         16,
-        current.payload()[..FINE_PAYLOAD_BYTES].to_vec(),
+        current_v17.payload()[..FINE_PAYLOAD_BYTES].to_vec(),
     )
     .unwrap();
     let migrated = OPERATOR_METADATA.migrate_state(&old).unwrap();
@@ -212,7 +225,7 @@ fn version_sixteen_preserves_fine_global_and_modulation_values_and_pcm() {
 
 #[test]
 fn malformed_keytrack_suffix_and_inconsistent_fixed_flags_are_rejected() {
-    let current = OperatorSettings::defaults().to_state().unwrap();
+    let current = OperatorSettings::defaults().to_v17_state().unwrap();
     for length in [FINE_PAYLOAD_BYTES, PAYLOAD_BYTES - 1, PAYLOAD_BYTES + 1] {
         let mut bytes = current.payload().to_vec();
         bytes.resize(length, 0);
@@ -234,7 +247,16 @@ fn malformed_keytrack_suffix_and_inconsistent_fixed_flags_are_rejected() {
     }
     assert!(
         OperatorSettings::from_state(
-            &NativeDeviceState::new(OPERATOR_TYPE_ID, 18, current.payload().to_vec()).unwrap()
+            &NativeDeviceState::new(
+                OPERATOR_TYPE_ID,
+                OPERATOR_STATE_VERSION + 1,
+                OperatorSettings::defaults()
+                    .to_state()
+                    .unwrap()
+                    .payload()
+                    .to_vec()
+            )
+            .unwrap()
         )
         .is_err()
     );
