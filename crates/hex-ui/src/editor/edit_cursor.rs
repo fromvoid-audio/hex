@@ -11,11 +11,19 @@ use hex_session::service::Request;
 use std::time::{Duration, Instant};
 
 const PULSE_PERIOD: Duration = Duration::from_millis(1_200);
+// Quantize both cursor pulses to 100 ms steps (10 Hz) matching `IDLE_INTERVAL`
+// so idle pulsing advances smoothly without 60 Hz wakeups or full-window renders.
+const PULSE_STEP_MS: u128 = 100;
 const LOCK_PULSE_PERIOD_MS: u128 = 2_400;
-// A slow marker pulse needs at most 20 repaints per second.
-const LOCK_PULSE_STEP_MS: u128 = 50;
+const LOCK_PULSE_STEP_MS: u128 = 100;
 pub(super) const POINT_CLICK_SLOP_PX: f64 = 2.0;
 const LOCKED_DRAG_THRESHOLD_PX: f32 = 3.0;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct EditCursorTick {
+    pub(super) structural_changed: bool,
+    pub(super) pulse_changed: bool,
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct EditCursor {
@@ -73,9 +81,11 @@ impl EditCursor {
     }
 
     fn pulse(&mut self, now: Instant) -> bool {
-        let elapsed = now.saturating_duration_since(self.pulse_started);
-        let phase = (elapsed.as_millis() % PULSE_PERIOD.as_millis()) as f64
-            / PULSE_PERIOD.as_millis() as f64;
+        let elapsed = now
+            .saturating_duration_since(self.pulse_started)
+            .as_millis();
+        let step = (elapsed % PULSE_PERIOD.as_millis()) / PULSE_STEP_MS;
+        let phase = (step * PULSE_STEP_MS) as f64 / PULSE_PERIOD.as_millis() as f64;
         let blend = (1.0 - (phase * std::f64::consts::TAU).cos()) * 0.5;
         let mut color = 0;
         for shift in [16, 8, 0] {
@@ -795,20 +805,26 @@ impl EditorView {
         self.suppress_cursor_click = false;
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
-        let mut lock_drag_canceled = false;
+        let tick = self.tick_edit_cursor_detailed(now);
+        tick.structural_changed || tick.pulse_changed
+    }
+
+    pub(super) fn tick_edit_cursor_detailed(&mut self, now: Instant) -> EditCursorTick {
+        let mut structural_changed = false;
         if self
             .locked_play_start
             .is_some_and(|cursor| !self.cursor_is_current(cursor))
         {
             self.locked_play_start = None;
-            lock_drag_canceled |= self.cancel_locked_play_start_drag();
+            structural_changed |= self.cancel_locked_play_start_drag();
         }
         if self
             .locked_play_start_drag
             .is_some_and(|drag| !self.locked_play_start_drag_valid(drag))
         {
-            lock_drag_canceled |= self.cancel_locked_play_start_drag();
+            structural_changed |= self.cancel_locked_play_start_drag();
         }
         if self.context_menu.is_some()
             || self.persistence.close_prompt_open
@@ -818,17 +834,19 @@ impl EditorView {
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
         {
-            return self.cancel_time_selection_gesture() || lock_drag_canceled;
+            return EditCursorTick {
+                structural_changed: self.cancel_time_selection_gesture() || structural_changed,
+                pulse_changed: false,
+            };
         }
         // The locked triangles can outlive the point cursor or coexist with
         // range endpoints. Update them together from one elapsed-time phase.
-        let lock_changed = lock_drag_canceled
-            || (self.mode == EditorMode::Arrangement
-                && !self.play_start_at_beginning
-                && self
-                    .locked_play_start
-                    .as_mut()
-                    .is_some_and(|locked| locked.pulse_locked_marker(now)));
+        let lock_pulse_changed = self.mode == EditorMode::Arrangement
+            && !self.play_start_at_beginning
+            && self
+                .locked_play_start
+                .as_mut()
+                .is_some_and(|locked| locked.pulse_locked_marker(now));
         if self.time_selection_project_scope
             && let Some(state) = &self.state
         {
@@ -843,7 +861,10 @@ impl EditorView {
             }
         }
         let Some(cursor) = &mut self.edit_cursor else {
-            return self.cancel_time_selection_gesture() || lock_changed;
+            return EditCursorTick {
+                structural_changed: self.cancel_time_selection_gesture() || structural_changed,
+                pulse_changed: lock_pulse_changed,
+            };
         };
         if self
             .state
@@ -855,7 +876,10 @@ impl EditorView {
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
             self.suppress_cursor_click = false;
-            return true;
+            return EditCursorTick {
+                structural_changed: true,
+                pulse_changed: lock_pulse_changed,
+            };
         }
         if !self.time_selection_project_scope
             && self.time_selection.is_some_and(|selection| {
@@ -870,25 +894,34 @@ impl EditorView {
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
             self.suppress_cursor_click = false;
-            return true;
+            return EditCursorTick {
+                structural_changed: true,
+                pulse_changed: lock_pulse_changed,
+            };
         }
         if self
             .time_selection
             .is_some_and(|selection| selection.anchor_frame != selection.end_frame)
         {
-            return lock_changed;
+            return EditCursorTick {
+                structural_changed,
+                pulse_changed: lock_pulse_changed,
+            };
         }
         // A completed range belongs to Arrangement even while Console is shown.
         // Its stale-source checks above still run; hidden point cursors need no pulse.
         // A point cursor hidden behind a rectangle play start needs no pulse either.
-        let point_changed = self.mode == EditorMode::Arrangement
+        let point_pulse_changed = self.mode == EditorMode::Arrangement
             && !self.play_start_at_beginning
             && self.selected_arrangement_play_start().is_none()
             && self
                 .edit_cursor
                 .as_mut()
                 .is_some_and(|cursor| cursor.pulse(now));
-        lock_changed || point_changed
+        EditCursorTick {
+            structural_changed,
+            pulse_changed: lock_pulse_changed || point_pulse_changed,
+        }
     }
 
     /// Paint the same live range bounds above the loop rail and at the bottom
@@ -1003,7 +1036,52 @@ impl EditorView {
         }
         if !reset
             && let Some(frame) = point_frame
-            && let Some(mut marker) = viewport.fraction(frame).and_then(|position| {
+            && let Some(position) = viewport.fraction(frame)
+            && let Some(mut marker) = if locked.is_some() && self.uses_sibling_playback_overlay() {
+                if position.is_finite() && (0.0..=1.0).contains(&position) {
+                    let slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+                    let bottom_entity =
+                        (edge == hex_widgets::TimeMarkerEdge::Bottom).then(|| cx.entity());
+                    Some(
+                        div()
+                            .absolute()
+                            .left(gpui::relative(position))
+                            .ml(px(-5.0))
+                            .w(px(10.0))
+                            .h(px(hex_widgets::TIME_POSITION_MARKER_HEIGHT))
+                            .when(edge == hex_widgets::TimeMarkerEdge::Top, |m| m.top_0())
+                            .when(edge == hex_widgets::TimeMarkerEdge::Bottom, |m| {
+                                m.bottom_0()
+                            })
+                            .child(
+                                canvas(
+                                    move |bounds, window, cx| {
+                                        if let Ok(mut slots) = slots.try_borrow_mut() {
+                                            slots.locked_markers.push(
+                                                super::playback_subviews::LockedMarkerSlot {
+                                                    edge,
+                                                    bounds,
+                                                    clip_mask: window.content_mask().bounds,
+                                                },
+                                            );
+                                        }
+                                        if let Some(entity) = &bottom_entity {
+                                            entity
+                                                .read(cx)
+                                                .bottom_play_start_marker_bounds
+                                                .set(Some(bounds));
+                                        }
+                                    },
+                                    |_, _, _, _| (),
+                                )
+                                .absolute()
+                                .inset_0(),
+                            ),
+                    )
+                } else {
+                    None
+                }
+            } else {
                 time_position_marker(
                     if locked.is_some() {
                         format!("locked-play-start-{edge_name}").into()
@@ -1017,9 +1095,11 @@ impl EditorView {
                     edge,
                     locked.map_or_else(theme::time_position_marker_color, |point| point.color()),
                 )
-            })
+            }
         {
-            if edge == hex_widgets::TimeMarkerEdge::Bottom {
+            if edge == hex_widgets::TimeMarkerEdge::Bottom
+                && !(locked.is_some() && self.uses_sibling_playback_overlay())
+            {
                 let bounds_entity = cx.entity();
                 marker = marker.child(
                     canvas(
@@ -1141,13 +1221,49 @@ impl EditorView {
                 0,
                 theme::time_position_marker_color(),
                 "transport-start-line",
+                false,
             ))
         } else {
-            self.project_point_cursor()
-                .map(|cursor| (cursor.frame, cursor.color(), "project-edit-cursor-line"))
+            self.project_point_cursor().map(|cursor| {
+                (
+                    cursor.frame,
+                    cursor.color(),
+                    "project-edit-cursor-line",
+                    true,
+                )
+            })
         };
-        let line = line.and_then(|(frame, color, selector)| {
+        let line = line.and_then(|(frame, color, selector, pulsing)| {
             let position = viewport.fraction(frame)?;
+            if pulsing && self.uses_sibling_playback_overlay() {
+                let slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+                return Some(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(gpui::relative(position))
+                        .w(px(1.0))
+                        .child(
+                            canvas(
+                                move |bounds, window, _| {
+                                    if let Ok(mut slots) = slots.try_borrow_mut() {
+                                        slots.edit_cursor_lines.push(
+                                            super::playback_subviews::EditCursorLineSlot {
+                                                selector: selector.into(),
+                                                bounds,
+                                                clip_mask: window.content_mask().bounds,
+                                            },
+                                        );
+                                    }
+                                },
+                                |_, _, _, _| (),
+                            )
+                            .absolute()
+                            .inset_0(),
+                        ),
+                );
+            }
             Some(
                 div()
                     .debug_selector(move || selector.into())

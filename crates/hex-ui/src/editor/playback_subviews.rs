@@ -61,6 +61,20 @@ pub(super) struct MeterSlot {
     pub(super) clip_mask: Bounds<Pixels>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct EditCursorLineSlot {
+    pub(super) selector: String,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) clip_mask: Bounds<Pixels>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct LockedMarkerSlot {
+    pub(super) edge: hex_widgets::TimeMarkerEdge,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) clip_mask: Bounds<Pixels>,
+}
+
 #[derive(Default)]
 pub(super) struct PlaybackOverlaySlots {
     pub(super) position_readout: Option<Bounds<Pixels>>,
@@ -72,6 +86,8 @@ pub(super) struct PlaybackOverlaySlots {
     pub(super) arrangement_viewport: Option<Viewport>,
     pub(super) piano_roll_playhead: Option<PianoRollPlayheadSlot>,
     pub(super) meters: Vec<MeterSlot>,
+    pub(super) edit_cursor_lines: Vec<EditCursorLineSlot>,
+    pub(super) locked_markers: Vec<LockedMarkerSlot>,
 }
 
 impl PlaybackOverlaySlots {
@@ -84,6 +100,8 @@ impl PlaybackOverlaySlots {
         self.arrangement_viewport = None;
         self.piano_roll_playhead = None;
         self.meters.clear();
+        self.edit_cursor_lines.clear();
+        self.locked_markers.clear();
     }
 
     pub(super) fn arrangement_playhead(&self) -> Option<ArrangementPlayheadSlot> {
@@ -711,11 +729,141 @@ impl Render for LiveMetersView {
     }
 }
 
+/// Isolated Arrangement edit-cursor pulse line and locked play-start marker
+/// overlay (`arrangement-edit-cursor-layer`). Pulsing updates only this sibling
+/// entity so `EditorView::render` stays cached and idle `PollCadence` sleeps.
+pub(super) struct ArrangementEditCursorView {
+    cursor_color: u32,
+    locked_color: u32,
+    slots: Rc<RefCell<PlaybackOverlaySlots>>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    render_count: usize,
+}
+
+impl ArrangementEditCursorView {
+    fn new(slots: Rc<RefCell<PlaybackOverlaySlots>>) -> Self {
+        Self {
+            cursor_color: theme::color(theme::PaletteRole::Text),
+            locked_color: theme::locked_time_position_marker_color(0.0),
+            slots,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            render_count: 0,
+        }
+    }
+
+    fn sync(&mut self, cursor_color: u32, locked_color: u32) -> bool {
+        if self.cursor_color == cursor_color && self.locked_color == locked_color {
+            return false;
+        }
+        self.cursor_color = cursor_color;
+        self.locked_color = locked_color;
+        true
+    }
+}
+
+impl Render for ArrangementEditCursorView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.render_count = self.render_count.saturating_add(1);
+        }
+        let Ok(slots) = self.slots.try_borrow() else {
+            return div().absolute().inset_0();
+        };
+        let mut container = div()
+            .debug_selector(|| "arrangement-edit-cursor-layer".into())
+            .absolute()
+            .inset_0();
+        let cursor_color = self.cursor_color;
+        for slot in &slots.edit_cursor_lines {
+            let clip = slot.clip_mask;
+            let bounds = slot.bounds;
+            let clip_left = clip.left().max(bounds.left());
+            let clip_top = clip.top().max(bounds.top());
+            let clip_right = clip.right().min(bounds.right());
+            let clip_bottom = clip.bottom().min(bounds.bottom());
+            if clip_right <= clip_left || clip_bottom <= clip_top {
+                continue;
+            }
+            let selector = slot.selector.clone();
+            container = container.child(
+                div()
+                    .debug_selector(move || selector.clone())
+                    .absolute()
+                    .left(clip_left)
+                    .top(clip_top)
+                    .w(clip_right - clip_left)
+                    .h(clip_bottom - clip_top)
+                    .bg(rgb(cursor_color)),
+            );
+        }
+        let locked_color = self.locked_color;
+        for slot in &slots.locked_markers {
+            let clip = slot.clip_mask;
+            let bounds = slot.bounds;
+            if bounds.bottom() <= clip.top()
+                || bounds.top() >= clip.bottom()
+                || bounds.right() <= clip.left()
+                || bounds.left() >= clip.right()
+            {
+                continue;
+            }
+            let edge = slot.edge;
+            let selector = match edge {
+                hex_widgets::TimeMarkerEdge::Top => "locked-play-start-top",
+                hex_widgets::TimeMarkerEdge::Bottom => "locked-play-start-bottom",
+            };
+            container = container.child(
+                div()
+                    .debug_selector(move || selector.into())
+                    .absolute()
+                    .left(bounds.origin.x)
+                    .top(bounds.origin.y)
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .child(
+                        canvas(
+                            |_, _, _| (),
+                            move |paint_bounds, _, window, _| {
+                                window.with_content_mask(
+                                    Some(ContentMask { bounds: clip }),
+                                    |window| {
+                                        let (base, apex) = match edge {
+                                            hex_widgets::TimeMarkerEdge::Top => {
+                                                (paint_bounds.top(), paint_bounds.bottom())
+                                            }
+                                            hex_widgets::TimeMarkerEdge::Bottom => {
+                                                (paint_bounds.bottom(), paint_bounds.top())
+                                            }
+                                        };
+                                        let tip =
+                                            paint_bounds.left() + paint_bounds.size.width * 0.5;
+                                        let mut path = gpui::PathBuilder::fill();
+                                        path.move_to(point(paint_bounds.left(), base));
+                                        path.line_to(point(paint_bounds.right(), base));
+                                        path.line_to(point(tip, apex));
+                                        path.close();
+                                        if let Ok(path) = path.build() {
+                                            window.paint_path(path, rgb(locked_color));
+                                        }
+                                    },
+                                );
+                            },
+                        )
+                        .size_full(),
+                    ),
+            );
+        }
+        container
+    }
+}
+
 /// Sibling playback overlay hosting all isolated 60 Hz playback entities.
 pub(super) struct PlaybackOverlayView {
     position_readout: Entity<TransportReadoutView>,
     cpu_meter: Entity<CpuMeterView>,
     output_meter: Entity<OutputMeterView>,
+    arrangement_edit_cursor: Entity<ArrangementEditCursorView>,
     arrangement_playhead: Entity<ArrangementPlayheadView>,
     piano_roll_playhead: Entity<PianoRollPlayheadView>,
     live_meters: Entity<LiveMetersView>,
@@ -724,6 +872,7 @@ pub(super) struct PlaybackOverlayView {
 impl Render for PlaybackOverlayView {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
         div().absolute().inset_0().children([
+            self.arrangement_edit_cursor.clone().into_any_element(),
             self.arrangement_playhead.clone().into_any_element(),
             self.piano_roll_playhead.clone().into_any_element(),
             self.live_meters.clone().into_any_element(),
@@ -808,6 +957,7 @@ pub(super) struct PlaybackSubviews {
     pub(super) position_readout: Entity<TransportReadoutView>,
     pub(super) cpu_meter: Entity<CpuMeterView>,
     pub(super) output_meter: Entity<OutputMeterView>,
+    pub(super) arrangement_edit_cursor: Entity<ArrangementEditCursorView>,
     pub(super) arrangement_playhead: Entity<ArrangementPlayheadView>,
     pub(super) piano_roll_playhead: Entity<PianoRollPlayheadView>,
     pub(super) live_meters: Entity<LiveMetersView>,
@@ -825,6 +975,7 @@ impl PlaybackSubviews {
             .new(|_| CpuMeterView::new(editor, Rc::clone(&slots), Rc::clone(&use_sibling_overlay)));
         let output_meter =
             cx.new(|_| OutputMeterView::new(Rc::clone(&slots), Rc::clone(&use_sibling_overlay)));
+        let arrangement_edit_cursor = cx.new(|_| ArrangementEditCursorView::new(Rc::clone(&slots)));
         let arrangement_playhead = cx.new(|_| ArrangementPlayheadView::new(Rc::clone(&slots)));
         let piano_roll_playhead = cx.new(|_| PianoRollPlayheadView::new(Rc::clone(&slots)));
         let live_meters = cx.new(|_| LiveMetersView::new(Rc::clone(&slots)));
@@ -832,6 +983,7 @@ impl PlaybackSubviews {
             position_readout: position_readout.clone(),
             cpu_meter: cpu_meter.clone(),
             output_meter: output_meter.clone(),
+            arrangement_edit_cursor: arrangement_edit_cursor.clone(),
             arrangement_playhead: arrangement_playhead.clone(),
             piano_roll_playhead: piano_roll_playhead.clone(),
             live_meters: live_meters.clone(),
@@ -843,6 +995,7 @@ impl PlaybackSubviews {
             position_readout,
             cpu_meter,
             output_meter,
+            arrangement_edit_cursor,
             arrangement_playhead,
             piano_roll_playhead,
             live_meters,
@@ -871,6 +1024,7 @@ impl PlaybackSubviews {
             position_readout: self.position_readout.read(cx).render_count,
             cpu_meter: self.cpu_meter.read(cx).render_count,
             output_meter: self.output_meter.read(cx).render_count,
+            arrangement_edit_cursor: self.arrangement_edit_cursor.read(cx).render_count,
             arrangement_playhead: self.arrangement_playhead.read(cx).render_count,
             piano_roll_playhead: self.piano_roll_playhead.read(cx).render_count,
             live_meters: self.live_meters.read(cx).render_count,
@@ -884,6 +1038,7 @@ pub(super) struct SubviewRenderCounts {
     pub(super) position_readout: usize,
     pub(super) cpu_meter: usize,
     pub(super) output_meter: usize,
+    pub(super) arrangement_edit_cursor: usize,
     pub(super) arrangement_playhead: usize,
     pub(super) piano_roll_playhead: usize,
     pub(super) live_meters: usize,
@@ -1073,8 +1228,30 @@ impl EditorView {
         changed
     }
 
+    /// Sync the isolated Arrangement edit-cursor / locked-marker pulse colors.
+    /// Deliberately omits `mark_tick_activity()` so idle cursor pulsing never
+    /// pins `PollCadence` awake at 60 Hz.
+    pub(super) fn sync_edit_cursor_subview(&self, cx: &mut Context<Self>, notify: bool) -> bool {
+        let cursor_color = self
+            .edit_cursor
+            .map_or_else(|| theme::color(theme::PaletteRole::Text), |c| c.color());
+        let locked_color = self.valid_locked_play_start().map_or_else(
+            || theme::locked_time_position_marker_color(0.0),
+            |c| c.color(),
+        );
+        let entity = self.playback_subviews.arrangement_edit_cursor.clone();
+        entity.update(cx, |view, cx| {
+            let changed = view.sync(cursor_color, locked_color);
+            if changed && notify {
+                cx.notify();
+            }
+            changed
+        })
+    }
+
     pub(super) fn sync_all_playback_subviews(&self, cx: &mut Context<Self>, notify: bool) -> bool {
         let mut any = false;
+        any |= self.sync_edit_cursor_subview(cx, notify);
         any |= self.sync_playhead_and_position_subviews(cx, notify);
         any |= self.sync_cpu_meter_subview(cx, notify);
         any |= self.sync_output_meter_subview(cx, notify);

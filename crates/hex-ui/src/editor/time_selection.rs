@@ -1918,6 +1918,37 @@ impl EditorView {
                 return None;
             }
             let fraction = viewport.fraction(frame)?;
+            if self.uses_sibling_playback_overlay() {
+                let slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+                let selector = format!("edit-cursor-line-{}", track.value());
+                return Some(
+                    div()
+                        .id(("edit-cursor-line", track.value()))
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(fraction))
+                        .w(px(stroke))
+                        .child(
+                            canvas(
+                                move |bounds, window, _| {
+                                    if let Ok(mut slots) = slots.try_borrow_mut() {
+                                        slots.edit_cursor_lines.push(
+                                            super::playback_subviews::EditCursorLineSlot {
+                                                selector: selector.clone(),
+                                                bounds,
+                                                clip_mask: window.content_mask().bounds,
+                                            },
+                                        );
+                                    }
+                                },
+                                |_, _, _, _| (),
+                            )
+                            .absolute()
+                            .inset_0(),
+                        ),
+                );
+            }
             let color = self
                 .edit_cursor
                 .map_or(theme::color(theme::PaletteRole::Text), |cursor| {
@@ -2043,6 +2074,36 @@ impl EditorView {
                 return None;
             }
             let fraction = viewport.fraction(frame)?;
+            if self.uses_sibling_playback_overlay() {
+                let slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+                return Some(
+                    div()
+                        .id("main-project-edit-cursor")
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(relative(fraction))
+                        .w(px(1.0))
+                        .child(
+                            canvas(
+                                move |bounds, window, _| {
+                                    if let Ok(mut slots) = slots.try_borrow_mut() {
+                                        slots.edit_cursor_lines.push(
+                                            super::playback_subviews::EditCursorLineSlot {
+                                                selector: "main-project-edit-cursor".to_owned(),
+                                                bounds,
+                                                clip_mask: window.content_mask().bounds,
+                                            },
+                                        );
+                                    }
+                                },
+                                |_, _, _, _| (),
+                            )
+                            .absolute()
+                            .inset_0(),
+                        ),
+                );
+            }
             let color = self
                 .edit_cursor
                 .map_or(theme::color(theme::PaletteRole::Text), |cursor| {

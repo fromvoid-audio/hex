@@ -325,7 +325,15 @@ impl EditorView {
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
         visible_change |= self.tick_track_reorder(now);
         visible_change |= self.poll_committed_copy();
-        visible_change |= self.tick_edit_cursor(now);
+        let cursor_tick = self.tick_edit_cursor_detailed(now);
+        visible_change |= cursor_tick.structural_changed;
+        if cursor_tick.pulse_changed {
+            if self.uses_sibling_playback_overlay() {
+                self.sync_edit_cursor_subview(cx, true);
+            } else {
+                visible_change = true;
+            }
+        }
         let project_edit_pending = self.edit_pending();
         visible_change |= self.tick_project_spectrum(cx);
         visible_change |= self.tick_sample_recorder();

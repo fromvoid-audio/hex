@@ -590,3 +590,156 @@ fn opening_foreground_overlay_after_cached_playback_tick_rebuilds_track_headers_
         "track header must remain painted after switching EditorView out of outer cache"
     );
 }
+
+#[gpui::test]
+fn pulsing_edit_cursor_and_locked_play_start_do_not_rerender_editor_view_or_pin_poll_cadence(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (project, tracks, _first_clip) = three_track_audio_project();
+    let (handle, editor) = open_hosted_editor_window(cx, project);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1200.0), px(720.0)));
+    visual.run_until_parked();
+
+    let pulse_start = Instant::now();
+    editor.update(&mut visual, |view, cx| {
+        view.audio_detail.clip_view_open = false;
+        view.mode = EditorMode::Arrangement;
+        view.play_start_at_beginning = false;
+        view.selected_clip = None;
+        view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
+            track: Some(tracks[0]),
+            frame: 48_000,
+            generation: view.project_generation,
+            pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+            pulse_started: pulse_start,
+        });
+        view.time_selection = Some(crate::editor::time_selection::TimeSelection {
+            anchor_track: Some(tracks[0]),
+            end_track: Some(tracks[0]),
+            anchor_frame: 48_000,
+            end_frame: 48_000,
+        });
+        view.locked_play_start = Some(crate::editor::edit_cursor::EditCursor {
+            track: None,
+            frame: 96_000,
+            generation: view.project_generation,
+            pulse_color: crate::theme::locked_time_position_marker_color(0.0),
+            pulse_started: pulse_start,
+        });
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    assert!(
+        visual.debug_bounds("locked-play-start-top").is_some(),
+        "locked top marker must be painted in sibling overlay"
+    );
+    assert!(
+        visual.debug_bounds("locked-play-start-bottom").is_some(),
+        "locked bottom marker must be painted in sibling overlay"
+    );
+    let rest: gpui::Background =
+        gpui::rgb(crate::theme::locked_time_position_marker_color(0.0)).into();
+    let peak: gpui::Background =
+        gpui::rgb(crate::theme::locked_time_position_marker_color(1.0)).into();
+    assert_eq!(
+        visual.rendered_path_triangles("locked-play-start-top")[0].color,
+        rest
+    );
+
+    // Let any initial post-setup tick settle once before recording baselines.
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            let _ = view.poll_tick(window, cx);
+        });
+    });
+    visual.run_until_parked();
+
+    let baseline_editor_renders = editor.read_with(&visual, |view, _| view.render_count);
+    let baseline_cursor_renders = editor.read_with(&visual, |view, cx| {
+        view.playback_subviews
+            .subview_render_counts(cx)
+            .arrangement_edit_cursor
+    });
+
+    // Advance across multiple quantized pulse steps (including the locked peak at
+    // 1,200 ms) and confirm root EditorView::render() never re-executes and
+    // PollCadence never receives tick activity from cursor pulsing.
+    let mut saw_pulse = false;
+    for step in 1_u64..=12 {
+        let now = pulse_start + Duration::from_millis(step * 100);
+        let root_changed = editor.update(&mut visual, |view, cx| {
+            let cursor_tick = view.tick_edit_cursor_detailed(now);
+            assert!(
+                !cursor_tick.structural_changed,
+                "active cursor pulse must not report a structural change"
+            );
+            if cursor_tick.pulse_changed {
+                saw_pulse = true;
+                view.sync_edit_cursor_subview(cx, true);
+            }
+            let root = view.observe_audio_frame_for_tick(None, false, false, now, cx);
+            assert!(
+                !view.playback_subviews.take_tick_activity(),
+                "cursor pulse must not mark playback tick activity or reset PollCadence"
+            );
+            root
+        });
+        assert!(!root_changed, "cursor pulse must not request root redraw");
+        visual.update(|window, cx| {
+            window.draw(cx).clear();
+        });
+    }
+    assert!(saw_pulse, "pulse steps should advance across 1,200 ms");
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.render_count),
+        baseline_editor_renders,
+        "EditorView render count must remain constant across edit-cursor and locked-marker pulses"
+    );
+    let after_cursor_renders = editor.read_with(&visual, |view, cx| {
+        view.playback_subviews
+            .subview_render_counts(cx)
+            .arrangement_edit_cursor
+    });
+    assert!(
+        after_cursor_renders > baseline_cursor_renders,
+        "isolated ArrangementEditCursorView must repaint on pulse steps"
+    );
+    assert_eq!(
+        visual.rendered_path_triangles("locked-play-start-top")[0].color,
+        peak,
+        "locked marker triangle must reach peak pulse color inside sibling overlay"
+    );
+
+    // Run enough stopped/idle poll_tick iterations while shifting pulse phase
+    // each tick to verify PollCadence backs off into idle sleep and root
+    // EditorView never re-renders even with live edit_cursor + locked_play_start pulsing.
+    let quiet_needed = crate::editor::poll_cadence::QUIET_TICKS_BEFORE_IDLE + 4;
+    for step in 1_u64..=u64::from(quiet_needed) {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                if let Some(started) = Instant::now().checked_sub(Duration::from_millis(step * 100))
+                {
+                    if let Some(cursor) = view.edit_cursor.as_mut() {
+                        cursor.pulse_started = started;
+                    }
+                    if let Some(locked) = view.locked_play_start.as_mut() {
+                        locked.pulse_started = started;
+                    }
+                }
+                let _ = view.poll_tick(window, cx);
+            });
+        });
+    }
+    assert!(
+        editor.read_with(&visual, |view, _| view.poll_cadence.is_idle()),
+        "PollCadence must sleep cleanly when stopped/idle with active edit_cursor and locked_play_start"
+    );
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.render_count),
+        baseline_editor_renders,
+        "idle poll_tick loop with active edit_cursor must not re-render root EditorView"
+    );
+}
