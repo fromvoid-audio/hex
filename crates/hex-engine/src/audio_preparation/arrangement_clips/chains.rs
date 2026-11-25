@@ -654,7 +654,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if compressor {
                 Some(
@@ -664,7 +664,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if filter {
                 Some(
@@ -674,7 +674,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if gate {
                 Some(
@@ -684,7 +684,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if overdrive {
                 Some(
@@ -694,7 +694,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if auto_pan {
                 Some(
@@ -704,7 +704,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if saturator {
                 Some(
@@ -714,7 +714,7 @@ impl ChainCustody {
                         )
                         .map_err(|_| AudioStorageError::UnsupportedGraph)?,
                     )
-                    .into_processor_parts_on_control(),
+                    .into_owned_processor_parts_on_control(),
                 )
             } else if utility {
                 (if parameters.is_empty() {
@@ -726,7 +726,7 @@ impl ChainCustody {
                     .map(Some)
                 })
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?
-                .map(|value| OwnedShared::new_owned(value).into_processor_parts_on_control())
+                .map(|value| OwnedShared::new_owned(value).into_owned_processor_parts_on_control())
             } else {
                 None
             };
@@ -841,7 +841,7 @@ impl ChainCustody {
                     .parts(&owner)
                     .ok_or(AudioStorageError::UnknownStorage)?;
                 (
-                    Some(PreparedProcessorFactory::Legacy(owner)),
+                    Some(PreparedProcessorFactory::Owned(owner)),
                     Some(declaration),
                 )
             } else {
@@ -973,20 +973,8 @@ impl ChainCustody {
                     (Some(PreparedProcessorFactory::Foreign(actual)), Some(expected), false) => {
                         *actual != expected
                     }
-                    (Some(PreparedProcessorFactory::Owned(_)), None, true) => {
-                        pair.device_type != hex_devices::delay::TYPE_ID
-                            && pair.device_type != hex_devices::limiter::TYPE_ID
-                            && pair.device_type != hex_devices::reverb::REVERB_TYPE_ID
-                            && pair.device_type != EQ_TYPE_ID
-                            && pair.device_type != hex_devices::eq8::EQ8_TYPE_ID
-                    }
-                    (Some(PreparedProcessorFactory::Legacy(_)), None, true) => {
-                        pair.device_type == hex_devices::delay::TYPE_ID
-                            || pair.device_type == hex_devices::limiter::TYPE_ID
-                            || pair.device_type == hex_devices::reverb::REVERB_TYPE_ID
-                            || pair.device_type == EQ_TYPE_ID
-                            || pair.device_type == hex_devices::eq8::EQ8_TYPE_ID
-                    }
+                    (Some(PreparedProcessorFactory::Owned(_)), None, true) => false,
+                    (Some(PreparedProcessorFactory::Legacy(_)), None, true) => true,
                     (None, None, false) => false,
                     _ => true,
                 }

@@ -391,23 +391,40 @@ fn fresh_effect_delta(
             parameters,
         )
         .unwrap();
-    let mut fresh = prepared
-        .processor
-        .as_ref()
-        .and_then(|factory| factory.legacy())
-        .unwrap()
-        .create_runtime();
-    if let Some(tempo) = tempo {
-        fresh
-            .process_block_with_automation(
-                &mut input,
-                None,
-                &FreshDrive(tempo),
-                &EMPTY_DEVICE_RESOURCES,
-            )
-            .unwrap();
-    } else {
-        fresh.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+    match prepared.processor.as_ref().expect("processor factory") {
+        hex_lattice::PreparedProcessorFactory::Legacy(factory) => {
+            let mut fresh = factory.create_runtime();
+            if let Some(tempo) = tempo {
+                fresh
+                    .process_block_with_automation(
+                        &mut input,
+                        None,
+                        &FreshDrive(tempo),
+                        &EMPTY_DEVICE_RESOURCES,
+                    )
+                    .unwrap();
+            } else {
+                fresh.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+            }
+        }
+        hex_lattice::PreparedProcessorFactory::Owned(factory) => {
+            let mut fresh = factory.create_runtime().unwrap();
+            fresh.begin_block();
+            if let Some(tempo) = tempo {
+                fresh
+                    .process_block_with_automation(
+                        &mut input,
+                        None,
+                        &FreshDrive(tempo),
+                        &EMPTY_DEVICE_RESOURCES,
+                    )
+                    .unwrap();
+            } else {
+                fresh.process_block(&mut input, &EMPTY_DEVICE_RESOURCES);
+            }
+            fresh.commit_block();
+        }
+        _ => panic!("expected native processor factory"),
     }
     let gain = state.output_gain_linear();
     for (wet, dry) in input.iter_mut().zip(aligned_dry) {

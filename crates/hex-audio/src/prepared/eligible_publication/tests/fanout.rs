@@ -44,10 +44,11 @@ fn actual_native_abc_moves_independent_utility_subsets_and_reclaims_each_origina
             runtime.test_track_boxes(z).unwrap(),
         ];
     });
+    // Utility uses single-owner InlineOwnedRuntime: one owned box (sorted to `(None, Some(addr))`).
     assert!(
         original_boxes
             .iter()
-            .all(|(a, b)| a.is_some() && b.is_some() && a != b)
+            .all(|(a, b)| a.is_none() && b.is_some())
     );
     let b_ticket = control
         .stage_eligible_audio_candidate(b, vec![], PublicationPolicy::InheritRuntime, 15)

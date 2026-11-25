@@ -225,6 +225,26 @@ pub trait OwnedProcessorRuntime: Any + Send {
     fn can_retarget_parameters_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
         false
     }
+    /// Owned counterpart of `NativeProcessorRuntime::supports_manual_host_matrix_retarget`.
+    fn supports_manual_host_matrix_retarget(&self) -> bool {
+        false
+    }
+    /// Owned counterpart of `NativeProcessorRuntime::can_retarget_source_host_matrix_from`.
+    fn can_retarget_source_host_matrix_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
+    /// Owned counterpart of `NativeProcessorRuntime::can_retarget_source_parameters_from`.
+    fn can_retarget_source_parameters_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {
+        false
+    }
+    /// Owned counterpart of `NativeProcessorRuntime::permits_memoryless_modulation_handoff`.
+    fn permits_memoryless_modulation_handoff(&self) -> bool {
+        false
+    }
+    /// Owned counterpart of `NativeProcessorRuntime::supports_detached_source_rejoin`.
+    fn supports_detached_source_rejoin(&self) -> bool {
+        false
+    }
     /// Owned counterpart of `NativeProcessorRuntime::transition_busy_from`
     /// (Pulse #4178), evaluated against the previous COMMITTED history only.
     fn transition_busy_from(&self, _previous: &dyn OwnedProcessorRuntime) -> bool {

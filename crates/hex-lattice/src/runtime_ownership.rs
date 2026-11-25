@@ -191,6 +191,9 @@ impl RuntimeOwnership {
                 primary.permits_memoryless_modulation_handoff()
                     && scratch.permits_memoryless_modulation_handoff()
             }
+            (Self::Memoryless, Self::Owned(runtime)) | (Self::Owned(runtime), Self::Memoryless) => {
+                runtime.permits_memoryless_modulation_handoff()
+            }
             _ => false,
         }
     }
@@ -267,6 +270,9 @@ impl RuntimeOwnership {
                 primary.can_retarget_source_host_matrix_from(old.as_ref())
                     && scratch.can_retarget_source_host_matrix_from(old.as_ref())
             }
+            (Self::Owned(new), Self::Owned(old)) => {
+                new.can_retarget_source_host_matrix_from(old.as_ref())
+            }
             _ => false,
         }
     }
@@ -275,6 +281,9 @@ impl RuntimeOwnership {
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {
                 primary.can_retarget_source_parameters_from(old.as_ref())
                     && scratch.can_retarget_source_parameters_from(old.as_ref())
+            }
+            (Self::Owned(new), Self::Owned(old)) => {
+                new.can_retarget_source_parameters_from(old.as_ref())
             }
             _ => false,
         }
@@ -646,5 +655,77 @@ mod tail_notification_tests {
         assert_eq!(frames, [[0.25; 2]]);
         let mut memoryless = RuntimeOwnership::Memoryless;
         memoryless.begin_output_tail();
+    }
+
+    struct ParityOwned {
+        matrix_retarget: bool,
+        param_retarget: bool,
+        memoryless_handoff: bool,
+        detached_rejoin: bool,
+    }
+    impl OwnedProcessorRuntime for ParityOwned {
+        fn fixed_storage_pair_bytes(&self) -> Option<usize> {
+            Some(std::mem::size_of::<Self>())
+        }
+        fn begin_block(&mut self) {}
+        fn process_block(&mut self, _: &mut [crate::StereoFrame], _: &dyn crate::DeviceResources) {}
+        fn commit_block(&mut self) {}
+        fn rollback_block(&mut self) {}
+        fn reset(&mut self) {}
+        fn committed_is_quiescent(&self) -> bool {
+            true
+        }
+        fn speculative_is_quiescent(&self) -> bool {
+            true
+        }
+        fn can_retarget_source_host_matrix_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
+            self.matrix_retarget && old.as_any().is::<Self>()
+        }
+        fn supports_manual_host_matrix_retarget(&self) -> bool {
+            self.matrix_retarget
+        }
+        fn can_retarget_source_parameters_from(&self, old: &dyn OwnedProcessorRuntime) -> bool {
+            self.param_retarget && old.as_any().is::<Self>()
+        }
+        fn permits_memoryless_modulation_handoff(&self) -> bool {
+            self.memoryless_handoff
+        }
+        fn supports_detached_source_rejoin(&self) -> bool {
+            self.detached_rejoin
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    #[test]
+    fn owned_runtime_forwards_source_retarget_memoryless_and_detached_rejoin_hooks() {
+        let enabled = RuntimeOwnership::Owned(Box::new(ParityOwned {
+            matrix_retarget: true,
+            param_retarget: true,
+            memoryless_handoff: true,
+            detached_rejoin: true,
+        }));
+        let disabled = RuntimeOwnership::Owned(Box::new(ParityOwned {
+            matrix_retarget: false,
+            param_retarget: false,
+            memoryless_handoff: false,
+            detached_rejoin: false,
+        }));
+        let memoryless = RuntimeOwnership::Memoryless;
+
+        assert!(enabled.can_retarget_source_host_matrix_from(&disabled));
+        assert!(!disabled.can_retarget_source_host_matrix_from(&enabled));
+        assert!(enabled.can_retarget_source_parameters_from(&disabled));
+        assert!(!disabled.can_retarget_source_parameters_from(&enabled));
+        assert!(enabled.permits_memoryless_modulation_handoff_from(&memoryless));
+        assert!(memoryless.permits_memoryless_modulation_handoff_from(&enabled));
+        assert!(!disabled.permits_memoryless_modulation_handoff_from(&memoryless));
+        if let RuntimeOwnership::Owned(runtime) = &enabled {
+            assert!(runtime.supports_detached_source_rejoin());
+        }
+        if let RuntimeOwnership::Owned(runtime) = &disabled {
+            assert!(!runtime.supports_detached_source_rejoin());
+        }
     }
 }

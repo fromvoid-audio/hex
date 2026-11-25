@@ -18,6 +18,8 @@
 //! hardware and workload and require measurement.
 #[cfg(test)]
 mod bypass_transition_tests;
+mod inline_owned;
+pub use inline_owned::InlineOwnedRuntime;
 mod oversampling;
 mod parameter_binding;
 mod response;

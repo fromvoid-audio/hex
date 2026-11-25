@@ -1160,6 +1160,12 @@ impl NativeRuntimeChain {
             } else {
                 base
             };
+            // Static HostOutputGain uses the 5 ms OutputGainRamp across compatible
+            // handoffs and transient trims. Static HostInputGain intentionally does
+            // not share OutputGainRamp: it feeds nonlinear drive/threshold stages,
+            // is not a transient preview target, and incompatible static input-gain
+            // edits rely on the chain's de-click cut while automated/modulated input
+            // gain runs per-sample via `host_input_gain_modulation` / `host_gain_at`.
             if !input && !entry.automation_frozen {
                 if let Some(gain) = entry.scratch_output_gain_ramp.apply(gain, frames) {
                     entry.scratch_host_gains[index] = gain;

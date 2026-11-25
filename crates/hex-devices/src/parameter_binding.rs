@@ -174,17 +174,6 @@ pub(crate) fn parameter_semantics_with_sample_rate_modulation<C>(
     Ok(Some(semantics))
 }
 
-pub(crate) fn prepared_legacy_runtime<F: hex_lattice::PreparedNativeProcessor + 'static>(
-    factory: F,
-) -> hex_lattice::PreparedRuntimeDevice {
-    hex_lattice::PreparedRuntimeDevice {
-        matrix: hex_lattice::StereoMatrix::identity(),
-        processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
-            std::sync::Arc::new(factory),
-        )),
-    }
-}
-
 macro_rules! delegate_automated_block_processing {
     ($method:ident) => {
         fn process_block_with_automation(

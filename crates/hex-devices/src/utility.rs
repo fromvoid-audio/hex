@@ -707,13 +707,21 @@ impl NativeDeviceDefinition for UtilityDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             Self::prepare_owned_automated_filter_for_parameters(
                 state,
                 context.sample_rate,
                 parameters,
             )?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Self::prepare_owned_filter(state, context.sample_rate)
+            .map(|value| value.map(crate::inline_owned::owned_factory))
     }
 
     fn prepare_matrix(
@@ -924,7 +932,7 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
     }
 
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        Box::new(crate::utility_filters::UtilityFilterProcessor::with_automation(self.0, self.1))
+        Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
     }
 
     fn algorithmic_latency_frames(&self) -> Option<u32> {
@@ -933,6 +941,13 @@ impl PreparedNativeProcessor for PreparedUtilityFilterRuntime {
 
     fn output_tail(&self) -> OutputTail {
         OutputTail::Unbounded
+    }
+}
+
+impl crate::inline_owned::InlinePreparedProcessor for PreparedUtilityFilterRuntime {
+    type Runtime = crate::utility_filters::UtilityFilterProcessor;
+    fn create_inline_runtime(&self) -> Self::Runtime {
+        crate::utility_filters::UtilityFilterProcessor::with_automation(self.0, self.1)
     }
 }
 

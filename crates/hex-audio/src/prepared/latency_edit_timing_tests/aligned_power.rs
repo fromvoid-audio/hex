@@ -58,14 +58,21 @@ fn aligned_effect_power(state: NativeDeviceState) {
             },
         )
         .unwrap();
-    let Some(PreparedProcessorFactory::Legacy(factory)) = prepared.processor else {
-        panic!("aligned native stage");
-    };
+    let processor = prepared.processor.expect("aligned native stage");
     let wet = |input: &[Frame]| {
         let mut rendered = input.to_vec();
-        factory
-            .create_runtime()
-            .process_block(&mut rendered, &EMPTY_DEVICE_RESOURCES);
+        match &processor {
+            PreparedProcessorFactory::Legacy(factory) => factory
+                .create_runtime()
+                .process_block(&mut rendered, &EMPTY_DEVICE_RESOURCES),
+            PreparedProcessorFactory::Owned(factory) => {
+                let mut runtime = factory.create_runtime().unwrap();
+                runtime.begin_block();
+                runtime.process_block(&mut rendered, &EMPTY_DEVICE_RESOURCES);
+                runtime.commit_block();
+            }
+            _ => panic!("aligned native stage"),
+        }
         rendered
     };
     let uninterrupted = wet(&input[..3 * BLOCK]);

@@ -382,18 +382,6 @@ mod explicit_empty_tests {
     }
 }
 
-impl<T: hex_lattice::PreparedNativeProcessor + 'static> OwnedShared<T> {
-    pub(crate) fn into_processor_parts_on_control(
-        self,
-    ) -> (
-        Arc<dyn hex_lattice::PreparedNativeProcessor>,
-        SharedDeclaration,
-    ) {
-        let (owner, declaration) = self.into_paired_parts_on_control();
-        (owner, declaration)
-    }
-}
-
 impl<T: hex_lattice::PreparedOwnedProcessorRuntime + 'static> OwnedShared<T> {
     pub(crate) fn into_owned_processor_parts_on_control(
         self,
