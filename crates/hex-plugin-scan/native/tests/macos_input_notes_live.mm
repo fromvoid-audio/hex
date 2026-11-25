@@ -17,12 +17,12 @@ int main() {
     //    (including overlapping identified notes sharing a pitch) leave kIsLive clear.
     {
         std::array<InputNote, INPUT_NOTE_COUNT> notes{};
-        notes[0] = {0, 0, 60, 100, true, 11, true};    // live hardware/keyboard press
-        notes[1] = {1, 0, 60, 90, true, 21, false};    // sequenced clip note 1
-        notes[2] = {2, 0, 60, 80, true, 22, false};    // overlapping sequenced note 2
-        notes[3] = {4, 0, 60, 0, false, 11, true};     // matching live release
-        notes[4] = {5, 0, 60, 0, false, 21, false};    // matching sequenced release 1
-        notes[5] = {6, 0, 60, 0, false, 22, false};    // matching sequenced release 2
+        notes[0] = {0, 0, 60, 100, InputNoteKind::On, 11, true};    // live hardware/keyboard press
+        notes[1] = {1, 0, 60, 90, InputNoteKind::On, 21, false};    // sequenced clip note 1
+        notes[2] = {2, 0, 60, 80, InputNoteKind::On, 22, false};    // overlapping sequenced note 2
+        notes[3] = {4, 0, 60, 0, InputNoteKind::Off, 11, true};     // matching live release
+        notes[4] = {5, 0, 60, 0, InputNoteKind::Off, 21, false};    // matching sequenced release 1
+        notes[5] = {6, 0, 60, 0, InputNoteKind::Off, 22, false};    // matching sequenced release 2
 
         InputNotes list;
         assert(list.begin(notes, 6, 0, 0, nullptr));
@@ -33,7 +33,7 @@ int main() {
             assert(ev.sampleOffset == notes[i].offset);
             const uint16 expected_flags = notes[i].is_live ? Event::kIsLive : 0;
             assert(ev.flags == expected_flags);
-            if (notes[i].on) {
+            if (notes[i].kind == InputNoteKind::On) {
                 assert(ev.type == Event::kNoteOnEvent);
                 assert(ev.noteOn.noteId == notes[i].note_id);
                 assert(ev.noteOn.pitch == notes[i].pitch);
@@ -49,14 +49,14 @@ int main() {
     // 2. HeldInputNotes::release_into preserves is_live per held note.
     {
         std::array<InputNote, INPUT_NOTE_COUNT> staged{};
-        staged[0] = {0, 0, 64, 100, true, 31, true};
-        staged[1] = {1, 0, 67, 100, true, 32, false};
+        staged[0] = {0, 0, 64, 100, InputNoteKind::On, 31, true};
+        staged[1] = {1, 0, 67, 100, InputNoteKind::On, 32, false};
         HeldInputNotes held;
         assert(held.stage(staged, 2));
         std::array<InputNote, INPUT_NOTE_COUNT> released{};
         assert(held.release_into(released) == 2);
-        assert(!released[0].on && released[0].note_id == 31 && released[0].is_live);
-        assert(!released[1].on && released[1].note_id == 32 && !released[1].is_live);
+        assert(released[0].kind == InputNoteKind::Off && released[0].note_id == 31 && released[0].is_live);
+        assert(released[1].kind == InputNoteKind::Off && released[1].note_id == 32 && !released[1].is_live);
     }
 
     // 3. Wire decoder decodes byte 6 (0 -> sequenced, 1 -> live) and rejects > 1.

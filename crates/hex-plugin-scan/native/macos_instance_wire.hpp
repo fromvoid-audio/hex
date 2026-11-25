@@ -402,13 +402,17 @@ struct Packet {
             const auto offset=number(raw,2);
             const auto status=raw[3]&0xf0;
             const auto note_id=identified_notes?number(raw+8,4):0;
-            if (offset>=frames || raw[2]!=3 || (status!=0x80 && status!=0x90) ||
+            if (offset>=frames || raw[2]!=3 || (status!=0x80 && status!=0x90 && status!=0xa0) ||
                 raw[4]>=128 || raw[5]>=128 || raw[6]>1 || raw[7] ||
                 (dense_notes && !note_id) ||
                 note_id>static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
                 (n && notes[n-1].offset>static_cast<int32_t>(offset))) return -1;
+            using hex_instance::InputNoteKind;
+            auto kind=InputNoteKind::Off;
+            if(status==0xa0) kind=InputNoteKind::PolyPressure;
+            else if(status==0x90 && raw[5]!=0) kind=InputNoteKind::On;
             notes[n]={static_cast<int32_t>(offset),static_cast<int16_t>(raw[3]&0x0f),
-                static_cast<int16_t>(raw[4]),raw[5],status==0x90 && raw[5]!=0,
+                static_cast<int16_t>(raw[4]),raw[5],kind,
                 note_id?static_cast<int32_t>(note_id):-1,raw[6]!=0};
         }
         const auto* points=payload+note_count*note_bytes;

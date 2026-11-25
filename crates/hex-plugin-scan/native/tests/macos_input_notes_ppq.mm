@@ -37,8 +37,8 @@ int main() {
     //    pitch, noteId, duration, or sample offsets.
     {
         std::array<InputNote, INPUT_NOTE_COUNT> notes{};
-        notes[0] = {0, 2, 60, 100, true, 41};
-        notes[1] = {12, 2, 60, 0, false, 41};
+        notes[0] = {0, 2, 60, 100, InputNoteKind::On, 41};
+        notes[1] = {12, 2, 60, 0, InputNoteKind::Off, 41};
 
         const auto beat8 = decode_context(48000.0, 192000, 8ULL << 32, 120000000, 3);
         const auto beat16 = decode_context(48000.0, 384000, 16ULL << 32, 120000000, 3);
@@ -75,7 +75,7 @@ int main() {
         std::array<InputNote, INPUT_NOTE_COUNT> notes{};
         const int32 offsets[4] = {0, 5, 37, 63};
         for (size_t i = 0; i < 4; ++i) {
-            notes[i] = {offsets[i], 0, static_cast<int16>(60 + i), 110, true, static_cast<int32>(10 + i)};
+            notes[i] = {offsets[i], 0, static_cast<int16>(60 + i), 110, InputNoteKind::On, static_cast<int32>(10 + i)};
         }
         const auto ctx150 = decode_context(48000.0, 240000, 10ULL << 32, 150000000, 3);
         InputNotes list;
@@ -104,9 +104,9 @@ int main() {
     //    wraps to beat 4.0 and adjusts sampleOffset and ppqPosition relative to slice start.
     {
         std::array<InputNote, INPUT_NOTE_COUNT> notes{};
-        notes[0] = {2, 2, 60, 127, true, 51};   // slice 0, local offset 2
-        notes[1] = {4, 2, 62, 127, true, 52};   // slice 1, local offset 0
-        notes[2] = {10, 2, 62, 0, false, 52};   // slice 1, local offset 6
+        notes[0] = {2, 2, 60, 127, InputNoteKind::On, 51};   // slice 0, local offset 2
+        notes[1] = {4, 2, 62, 127, InputNoteKind::On, 52};   // slice 1, local offset 0
+        notes[2] = {10, 2, 62, 0, InputNoteKind::Off, 52};   // slice 1, local offset 6
 
         const uint64_t pre_beat_raw = (7ULL << 32) + ((3ULL << 32) / 4ULL);  // 7.75
         const auto pre = decode_context(48000.0, 186000, pre_beat_raw, 120000000, 3);
@@ -132,7 +132,7 @@ int main() {
     //    ppqPosition at 0.0; paused with kProjectTimeMusicValid holds projectTimeMusic.
     {
         std::array<InputNote, INPUT_NOTE_COUNT> notes{};
-        notes[0] = {5, 0, 60, 100, true, 70};
+        notes[0] = {5, 0, 60, 100, InputNoteKind::On, 70};
 
         InputNotes list;
         Event ev{};

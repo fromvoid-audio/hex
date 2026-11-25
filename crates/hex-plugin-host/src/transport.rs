@@ -359,7 +359,9 @@ pub struct MidiEvent {
 }
 impl MidiEvent {
     fn valid(self, frames: usize) -> bool {
-        let expected = match self.bytes[0] & 0xf0 {
+        let status = self.bytes[0] & 0xf0;
+        let carries_note_identity = matches!(status, 0x80 | 0x90 | 0xa0);
+        let expected = match status {
             0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0 => 3,
             0xc0 | 0xd0 => 2,
             _ => return false,
@@ -370,10 +372,10 @@ impl MidiEvent {
                 .iter()
                 .all(|b| *b < 128)
             && (self.len == 3 || self.bytes[2] == 0)
-            && self.note_id.is_none_or(|id| {
-                matches!(self.bytes[0] & 0xf0, 0x80 | 0x90) && i32::try_from(id.get()).is_ok()
-            })
-            && (!self.is_live || matches!(self.bytes[0] & 0xf0, 0x80 | 0x90))
+            && self
+                .note_id
+                .is_none_or(|id| carries_note_identity && i32::try_from(id.get()).is_ok())
+            && (!self.is_live || carries_note_identity)
     }
 }
 

@@ -185,7 +185,7 @@ impl Configuration {
             || block.events.as_slice().iter().any(|event| {
                 self.input_channels != 0
                     || event.len != 3
-                    || !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90)
+                    || !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90 | 0xa0)
             })
             || !block.pcm[..usize::from(self.quantum)]
                 .iter()
