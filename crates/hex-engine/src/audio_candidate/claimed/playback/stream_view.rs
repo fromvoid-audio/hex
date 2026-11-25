@@ -77,6 +77,15 @@ impl StreamPlayback<'_> {
             Runtime::Ordinary(r, _) => r.session_route_status(index),
         }
     }
+    pub fn drain_applied_session_route_transitions(
+        &mut self,
+        visit: impl FnMut(crate::AppliedSessionRouteTransition),
+    ) -> bool {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => r.drain_applied_session_route_transitions(visit),
+            Runtime::Ordinary(r, _) => r.drain_applied_session_route_transitions(visit),
+        }
+    }
     pub fn apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
         match &mut self.runtime {
             Runtime::Constructor(r) => r.apply_action(action),

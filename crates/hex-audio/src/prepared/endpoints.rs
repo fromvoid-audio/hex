@@ -30,6 +30,7 @@ pub(crate) struct ClientEndpoints {
     pub(super) native_parameter_input: crate::native_parameter_input::Control,
     pub(crate) retained_receipt_target: Option<ScalarReceiptTarget>,
     midi_recording: crate::midi_recording::Control,
+    route_transitions: route_transitions::RouteTransitionControl,
     pub(super) status: Arc<Status>,
     command_ticket: u64,
     #[cfg(all(test, feature = "allocation-probe"))]
@@ -58,6 +59,7 @@ impl Control {
             gain_recording,
             native_parameter_input,
             midi_recording,
+            route_transitions,
             command_ticket,
             mut publication,
         } = self;
@@ -89,6 +91,7 @@ impl Control {
             gain_recording,
             native_parameter_input,
             midi_recording,
+            route_transitions,
             status,
             command_ticket,
             retained_receipt_target: None,
@@ -586,6 +589,30 @@ impl Client {
         self.endpoints
             .owner_mut()
             .and_then(|e| e.midi_recording.try_receipt())
+    }
+    /// Drain callback-delivered applied Session route transitions into `out`.
+    pub fn drain_session_route_transitions(
+        &mut self,
+        out: &mut [SessionRouteTransitionObservation],
+    ) -> SessionRouteTransitionDrain {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            return SessionRouteTransitionDrain {
+                count: 0,
+                overflowed: false,
+                dropped_total: 0,
+            };
+        };
+        endpoints.route_transitions.drain(&endpoints.status, out)
+    }
+    pub fn session_route_transitions_overflowed(&self) -> bool {
+        self.endpoints
+            .owner_ref()
+            .is_some_and(|e| e.status.route_transition_overflowed.load(Acquire))
+    }
+    pub fn session_route_transitions_dropped(&self) -> u64 {
+        self.endpoints
+            .owner_ref()
+            .map_or(0, |e| e.status.route_transition_dropped.load(Acquire))
     }
     pub fn native_parameter_target(&self) -> Option<crate::native_parameter_input::Target> {
         self.endpoints

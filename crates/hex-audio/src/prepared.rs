@@ -140,6 +140,7 @@ mod control;
 mod legacy_advance;
 mod policy;
 mod route_snapshot;
+mod route_transitions;
 mod status;
 
 #[cfg(test)]
@@ -157,6 +158,9 @@ pub(crate) use policy::{Publication, ReturnedPublication};
 pub use route_snapshot::{
     SESSION_ROUTE_CAPACITY, SessionPendingRoute, SessionRouteEntry, SessionRouteOwner,
     SessionRouteSnapshot, SessionRouteTarget,
+};
+pub use route_transitions::{
+    ROUTE_TRANSITION_CAPACITY, SessionRouteTransitionDrain, SessionRouteTransitionObservation,
 };
 pub use status::Status;
 

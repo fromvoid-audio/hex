@@ -83,6 +83,7 @@ impl SessionPlayback {
         self.tail_output_scratch
             .copy_from_slice(&self.tail_output_active);
         self.route_scratch.copy_from_slice(&self.routes);
+        self.route_transitions.begin_scratch();
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
         self.release_order_scratch = self.release_order;
@@ -163,6 +164,7 @@ impl SessionPlayback {
                 let result = self.apply_due_routes(
                     performance_frame,
                     arrangement_frame,
+                    arrangement_loop_pass,
                     (arrangement_loop_pass == 0)
                         .then_some(self.interactive_onset_floor)
                         .flatten(),
@@ -673,6 +675,7 @@ impl SessionPlayback {
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.release_order = self.release_order_scratch;
+        self.route_transitions.commit_scratch();
         self.performance_frame = performance_frame;
         self.arrangement_frame = arrangement_frame;
         self.arrangement_loop_pass = arrangement_loop_pass;
@@ -689,6 +692,7 @@ impl SessionPlayback {
         &mut self,
         performance_frame: u64,
         arrangement_frame: u64,
+        arrangement_loop_pass: u64,
         interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     ) -> Result<(bool, bool), SessionPlaybackError> {
         let mut captured_release = false;
@@ -749,6 +753,24 @@ impl SessionPlayback {
                     fade,
                 )?;
                 let track = self.route_scratch[index].id;
+                let applied_beat =
+                    timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
+                        .frame_to_beat(performance_frame)
+                        .unwrap_or(pending.beat);
+                if owner != plan.owner || matches!(pending.target, RouteTarget::Session(_)) {
+                    self.route_transitions.stage(
+                        route_transitions::AppliedSessionRouteTransition {
+                            track,
+                            scene: pending.scene,
+                            previous: owner.into(),
+                            target: plan.owner.into(),
+                            performance_frame,
+                            content_frame: arrangement_frame,
+                            loop_pass: arrangement_loop_pass,
+                            beat: applied_beat,
+                        },
+                    );
+                }
                 self.suppression_scratch.retain(|e| e.track != track);
                 applied_route = true;
                 continue;
@@ -808,7 +830,7 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
-            self.route_scratch[index].owner = if let Some(plan) = current_plan {
+            let next_owner = if let Some(plan) = current_plan {
                 plan.owner
             } else {
                 self.owner_for_target(
@@ -818,6 +840,7 @@ impl SessionPlayback {
                     pending.note_chase,
                 )?
             };
+            self.route_scratch[index].owner = next_owner;
             self.route_scratch[index].pending = None;
             let fade = self.audio_release_fade();
             super::audio_release::begin(
@@ -826,6 +849,26 @@ impl SessionPlayback {
                 performance_frame,
                 fade,
             )?;
+            let applied_beat = if matches!(pending.target, RouteTarget::Session(_)) && !is_audio {
+                target_beat
+            } else {
+                timing_view_for(self.revision.session(), self.periodic_tempo(), self.anchor)
+                    .frame_to_beat(performance_frame)
+                    .unwrap_or(pending.beat)
+            };
+            if owner != next_owner || matches!(pending.target, RouteTarget::Session(_)) {
+                self.route_transitions
+                    .stage(route_transitions::AppliedSessionRouteTransition {
+                        track: self.route_scratch[index].id,
+                        scene: pending.scene,
+                        previous: owner.into(),
+                        target: next_owner.into(),
+                        performance_frame,
+                        content_frame: arrangement_frame,
+                        loop_pass: arrangement_loop_pass,
+                        beat: applied_beat,
+                    });
+            }
             applied_route = true;
             if transition_captures(owner, pending.target) {
                 for destination in 0..self.route_scratch.len() {

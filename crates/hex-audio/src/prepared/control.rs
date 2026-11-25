@@ -58,6 +58,7 @@ pub struct Control {
     pub gain_recording: crate::gain_recording::Control,
     pub native_parameter_input: crate::native_parameter_input::Control,
     pub midi_recording: crate::midi_recording::Control,
+    pub(super) route_transitions: route_transitions::RouteTransitionControl,
     pub(super) command_ticket: u64,
     pub(super) publication: PublicationControl,
 }
@@ -1430,6 +1431,32 @@ impl Control {
         self.sample_preview.reclaim();
         self.publication.reclaim()
     }
+
+    /// Drain callback-delivered applied Session route transitions into `out`.
+    pub fn drain_session_route_transitions(
+        &mut self,
+        out: &mut [SessionRouteTransitionObservation],
+    ) -> SessionRouteTransitionDrain {
+        self.route_transitions.drain(&self.publication.status, out)
+    }
+
+    /// True if the route transition observation buffer overflowed since the
+    /// previous drain.
+    pub fn session_route_transitions_overflowed(&self) -> bool {
+        self.publication
+            .status
+            .route_transition_overflowed
+            .load(Acquire)
+    }
+
+    /// Total count of route transition observations dropped on this output due
+    /// to bounded capacity.
+    pub fn session_route_transitions_dropped(&self) -> u64 {
+        self.publication
+            .status
+            .route_transition_dropped
+            .load(Acquire)
+    }
 }
 
 impl Drop for PublicationControl {
@@ -1531,6 +1558,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(crate::foreign_parameter_delivery::constructor_storage_quote()?)?
         .checked_add(editor_bytes)?
         .checked_add(crate::midi_recording::constructor_storage_quote()?)?
+        .checked_add(route_transitions::constructor_storage_quote()?)?
         .checked_add(spectrum_target::constructor_storage_quote()?)?
         .checked_add(processor_audition::constructor_storage_quote()?)?
         .checked_add(endpoints::constructor_endpoint_storage_quote()?)?

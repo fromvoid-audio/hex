@@ -453,6 +453,50 @@ impl Callback {
         }
     }
 
+    /// Drain committed applied Session route transitions from the active
+    /// runtime and stamp them with this output's identity, installed revision,
+    /// control generation, and transport epoch. Zero callback allocation; any
+    /// overflow is latched on `Status` without perturbing audio.
+    pub(in crate::prepared) fn flush_session_route_transitions(&mut self) {
+        if self.status.closing.load(Acquire)
+            || self.status.device_fault.load(Acquire)
+            || self.status.render_fault.load(Acquire)
+        {
+            return;
+        }
+        let output_identity = self.candidate_root.root_id();
+        let transport_epoch = self.status.transport_epoch.load(Acquire);
+        let status = &self.status;
+        let producer = &mut self.route_transitions;
+        let Some(mut active) = self
+            .active
+            .as_mut()
+            .and_then(ActivePublication::current_mut)
+        else {
+            return;
+        };
+        let audio_revision = active.revision;
+        let control_generation = active.control_context_generation;
+        let engine_overflowed =
+            active
+                .playback
+                .drain_applied_session_route_transitions(|transition| {
+                    producer.push(
+                        status,
+                        SessionRouteTransitionObservation {
+                            output_identity,
+                            audio_revision,
+                            control_generation,
+                            transport_epoch,
+                            transition,
+                        },
+                    );
+                });
+        if engine_overflowed {
+            producer.record_engine_overflow(status);
+        }
+    }
+
     pub(in crate::prepared) fn publish_active_routes(&mut self, force: bool) {
         let Some(active) = self.active.as_ref().and_then(ActivePublication::current) else {
             return;

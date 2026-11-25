@@ -494,6 +494,9 @@ pub use session_inventory::{
     PreparedSessionInventory, PreparedSessionMidiClip, PreparedSessionScene, PreparedSessionTrack,
     SessionWorkEnvelope,
 };
+pub use session_playback::route_transitions::{
+    AppliedSessionRouteTarget, AppliedSessionRouteTransition, MAX_APPLIED_SESSION_ROUTE_TRANSITIONS,
+};
 pub use session_playback::{
     ArrangementPrerollError, LaunchQuantization, MAX_ARRANGEMENT_PREROLL_FRAMES,
     MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES, MAX_OUTPUT_CAPTURE_FRAMES, MAX_OUTPUT_CAPTURES,

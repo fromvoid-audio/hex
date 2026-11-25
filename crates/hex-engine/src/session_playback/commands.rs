@@ -618,6 +618,7 @@ impl SessionPlayback {
             _ => crate::NoteChase::On,
         };
         self.route_scratch.copy_from_slice(&self.routes);
+        self.route_transitions.begin_scratch();
         self.release_scratch.clear();
         self.release_scratch.extend_from_slice(&self.releases);
         self.release_order_scratch = self.release_order;
@@ -670,7 +671,14 @@ impl SessionPlayback {
                 })
                 .ok_or(SessionPlaybackError::UnknownClip)?;
                 let index = self.route_index(track)?;
-                self.set_route(index, RouteTarget::Session(clip), moment, None, note_chase)?;
+                self.set_route(
+                    index,
+                    RouteTarget::Session(clip),
+                    None,
+                    moment,
+                    None,
+                    note_chase,
+                )?;
             }
             SessionPlaybackCommand::CueMidiClip {
                 track,
@@ -727,6 +735,7 @@ impl SessionPlayback {
                 self.set_route(
                     index,
                     RouteTarget::Session(clip),
+                    None,
                     moment,
                     Some(SessionMidiOrigin::new(target_beat, elapsed)),
                     note_chase,
@@ -776,21 +785,28 @@ impl SessionPlayback {
                         }
                     };
                     let index = self.route_index(cell.track)?;
-                    self.set_route(index, target, moment, None, note_chase)?;
+                    self.set_route(index, target, Some(scene), moment, None, note_chase)?;
                 }
             }
             SessionPlaybackCommand::StopTrack { track, .. } => {
                 let index = self.route_index(track)?;
-                self.set_route(index, RouteTarget::Silence, moment, None, note_chase)?;
+                self.set_route(index, RouteTarget::Silence, None, moment, None, note_chase)?;
             }
             SessionPlaybackCommand::StopAllClips { .. } => {
                 for index in 0..self.route_scratch.len() {
-                    self.set_route(index, RouteTarget::Silence, moment, None, note_chase)?;
+                    self.set_route(index, RouteTarget::Silence, None, moment, None, note_chase)?;
                 }
             }
             SessionPlaybackCommand::BackToArrangement { .. } => {
                 for index in 0..self.route_scratch.len() {
-                    self.set_route(index, RouteTarget::Arrangement, moment, None, note_chase)?;
+                    self.set_route(
+                        index,
+                        RouteTarget::Arrangement,
+                        None,
+                        moment,
+                        None,
+                        note_chase,
+                    )?;
                 }
             }
             _ => return Err(SessionPlaybackError::InvalidCommand),
@@ -919,6 +935,7 @@ impl SessionPlayback {
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.release_order = self.release_order_scratch;
+        self.route_transitions.commit_scratch();
         if route_changed {
             self.advance_route_state_generation();
         }
@@ -943,6 +960,7 @@ impl SessionPlayback {
         &mut self,
         index: usize,
         target: RouteTarget,
+        scene: Option<hex_project::SceneId>,
         moment: TransitionMoment,
         origin_override: Option<SessionMidiOrigin>,
         note_chase: crate::NoteChase,
@@ -1078,6 +1096,7 @@ impl SessionPlayback {
                 .route_scratch
                 .get_mut(index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            let track_id = route.id;
             route.pending = None;
             route.owner = next_owner;
             if self.playing {
@@ -1086,6 +1105,19 @@ impl SessionPlayback {
             if let Some(reservation) = current_reservation {
                 route.current_incarnation = reservation.incarnation;
                 route.current_first_frame = true;
+            }
+            if owner != next_owner || matches!(target, RouteTarget::Session(_)) {
+                self.route_transitions
+                    .stage(route_transitions::AppliedSessionRouteTransition {
+                        track: track_id,
+                        scene,
+                        previous: owner.into(),
+                        target: next_owner.into(),
+                        performance_frame: moment.performance_frame,
+                        content_frame: moment.source_frame,
+                        loop_pass: self.arrangement_loop_pass,
+                        beat: moment.target_beat,
+                    });
             }
             for destination in 0..self.route_scratch.len() {
                 if self.revision.arrangement().tracks()[destination]
@@ -1110,6 +1142,7 @@ impl SessionPlayback {
                 frame: moment.target_frame,
                 beat: moment.target_beat,
                 target,
+                scene,
                 current_reservation,
             });
         }

@@ -1532,6 +1532,18 @@ impl Playback {
             .and_then(|runtime| runtime.route_status(index))
     }
 
+    /// Drain committed applied Session route transitions in FIFO order without
+    /// allocation. Returns `true` if the runtime's bounded transition log
+    /// overflowed since the previous drain.
+    pub fn drain_applied_session_route_transitions(
+        &mut self,
+        visit: impl FnMut(crate::AppliedSessionRouteTransition),
+    ) -> bool {
+        self.session_runtime
+            .as_mut()
+            .is_some_and(|runtime| runtime.drain_applied_route_transitions(visit))
+    }
+
     /// Compatibility transport entry point. Callback code uses `try_apply_action`
     /// so Session query errors are reported through typed rejection telemetry.
     pub fn apply(&mut self, command: PlaybackCommand) {
