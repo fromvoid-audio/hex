@@ -1,16 +1,21 @@
 //! Original stereo cutoff filter. Version 1 stores thirteen 32-bit little-endian
 //! words in descriptor order. The TPT kernel is shared with Operator. The
 //! per-channel cutoff is modulated by a free-running oscillator and a linked
-//! peak envelope. All authored values are checked before runtime construction.
+//! peak envelope. Core continuous parameters admit shared host automation and
+//! sample-rate modulation through the closed inline parameter binding table;
+//! all authored values are checked before runtime construction.
 
 mod runtime;
 
 use hex_lattice::{
-    DevicePreparationContext, NativeDeviceDefinition, PreparedNativeProcessor, StereoMatrix,
+    DevicePreparationContext, NativeDeviceDefinition, PreparedNativeProcessor,
+    PreparedRuntimeDevice, ProcessorInstanceIdentity, StereoMatrix,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
-    ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
+    ParameterAutomation, ParameterDescriptor, ParameterId, ParameterKind, ParameterModulation,
+    ParameterNormalization, ParameterPresentation, ParameterSemantics, ParameterSmoothing,
+    ParameterValue,
 };
 pub use runtime::{FilterRuntime, PreparedFilter};
 
@@ -18,6 +23,24 @@ pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.filter");
 const VERSION: u32 = 1;
 const COUNT: usize = 13;
 const WORD_BYTES: usize = size_of::<u32>();
+
+pub mod parameter {
+    use hex_lattice_contract::ParameterId;
+
+    pub const TYPE: ParameterId = ParameterId::from_static(1);
+    pub const SLOPE: ParameterId = ParameterId::from_static(2);
+    pub const CUTOFF: ParameterId = ParameterId::from_static(3);
+    pub const RESONANCE: ParameterId = ParameterId::from_static(4);
+    pub const MORPH: ParameterId = ParameterId::from_static(5);
+    pub const MIX: ParameterId = ParameterId::from_static(6);
+    pub const LFO_AMOUNT: ParameterId = ParameterId::from_static(7);
+    pub const LFO_RATE: ParameterId = ParameterId::from_static(8);
+    pub const LFO_SHAPE: ParameterId = ParameterId::from_static(9);
+    pub const LFO_PHASE: ParameterId = ParameterId::from_static(10);
+    pub const ENV_AMOUNT: ParameterId = ParameterId::from_static(11);
+    pub const ENV_RELEASE: ParameterId = ParameterId::from_static(12);
+    pub const ENV_ATTACK: ParameterId = ParameterId::from_static(13);
+}
 
 const TYPE: usize = 0;
 const SLOPE: usize = 1;
@@ -107,6 +130,114 @@ const DESCRIPTORS: [ParameterDescriptor; COUNT] = [
     ),
 ];
 
+const STATIC_CHOICE: ParameterSemantics = ParameterSemantics {
+    automation: ParameterAutomation::Unsupported,
+    modulation: ParameterModulation::Unsupported,
+    smoothing: ParameterSmoothing::None,
+    ..crate::parameter_binding::CHOICE_ENVELOPE
+};
+
+const MODULATED_LINEAR: ParameterSemantics = ParameterSemantics {
+    smoothing: ParameterSmoothing::DeviceManaged,
+    modulation: ParameterModulation::SampleRate,
+    ..crate::parameter_binding::SCALAR_ENVELOPE
+};
+
+const MODULATED_LOG: ParameterSemantics = ParameterSemantics {
+    normalization: ParameterNormalization::PositiveLogarithmic,
+    ..MODULATED_LINEAR
+};
+
+const BINDINGS: [crate::parameter_binding::Binding<Settings>; COUNT] = [
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[TYPE],
+        STATIC_CHOICE,
+        |s| s.0[TYPE],
+        |s, v| {
+            s.0[TYPE] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[SLOPE],
+        STATIC_CHOICE,
+        |s| s.0[SLOPE],
+        |s, v| {
+            s.0[SLOPE] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[CUTOFF],
+        MODULATED_LOG,
+        |s| s.f32_at(CUTOFF),
+        |s, v| s.set_f32(CUTOFF, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[RESONANCE],
+        MODULATED_LINEAR,
+        |s| s.f32_at(RESONANCE),
+        |s, v| s.set_f32(RESONANCE, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[MORPH],
+        MODULATED_LINEAR,
+        |s| s.f32_at(MORPH),
+        |s, v| s.set_f32(MORPH, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[MIX],
+        MODULATED_LINEAR,
+        |s| s.f32_at(MIX),
+        |s, v| s.set_f32(MIX, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[LFO_AMOUNT],
+        MODULATED_LINEAR,
+        |s| s.f32_at(LFO_AMOUNT),
+        |s, v| s.set_f32(LFO_AMOUNT, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[LFO_RATE],
+        MODULATED_LOG,
+        |s| s.f32_at(LFO_RATE),
+        |s, v| s.set_f32(LFO_RATE, v),
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[LFO_SHAPE],
+        STATIC_CHOICE,
+        |s| s.0[LFO_SHAPE],
+        |s, v| {
+            s.0[LFO_SHAPE] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[LFO_PHASE],
+        MODULATED_LINEAR,
+        |s| s.f32_at(LFO_PHASE),
+        |s, v| s.set_f32(LFO_PHASE, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[ENV_AMOUNT],
+        MODULATED_LINEAR,
+        |s| s.f32_at(ENV_AMOUNT),
+        |s, v| s.set_f32(ENV_AMOUNT, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[ENV_RELEASE],
+        MODULATED_LOG,
+        |s| s.f32_at(ENV_RELEASE),
+        |s, v| s.set_f32(ENV_RELEASE, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[ENV_ATTACK],
+        MODULATED_LOG,
+        |s| s.f32_at(ENV_ATTACK),
+        |s, v| s.set_f32(ENV_ATTACK, v),
+    ),
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Settings([u32; COUNT]);
 
@@ -155,6 +286,14 @@ impl Settings {
         )
     }
 
+    fn f32_at(self, index: usize) -> f32 {
+        f32::from_bits(self.0[index])
+    }
+
+    fn set_f32(&mut self, index: usize, value: f32) {
+        self.0[index] = value.to_bits();
+    }
+
     fn float(self, index: usize) -> f64 {
         f64::from(f32::from_bits(self.0[index]))
     }
@@ -179,10 +318,15 @@ impl Settings {
 }
 
 fn parameter_index(id: ParameterId) -> Result<usize, DeviceContractError> {
-    DESCRIPTORS
-        .iter()
-        .position(|descriptor| descriptor.id == id)
-        .ok_or(DeviceContractError::UnknownParameter)
+    let index = id
+        .value()
+        .checked_sub(1)
+        .ok_or(DeviceContractError::UnknownParameter)? as usize;
+    if index < COUNT {
+        Ok(index)
+    } else {
+        Err(DeviceContractError::UnknownParameter)
+    }
 }
 
 /// Built-in effect metadata and validated control-side construction.
@@ -197,11 +341,20 @@ impl FilterDefinition {
         rate: u32,
         parameters: &[ParameterId],
     ) -> Result<PreparedFilter, DeviceContractError> {
-        if !parameters.is_empty() {
-            return Err(DeviceContractError::UnsupportedProcessingClass);
-        }
         state.require_asset_free_processing()?;
-        PreparedFilter::new(Settings::decode(state)?, rate)
+        if parameters.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        let mut admitted = [false; COUNT];
+        for &id in parameters {
+            let binding = crate::parameter_binding::binding(&BINDINGS, id)?;
+            binding.semantics.validate(binding.descriptor)?;
+            if !binding.declares_arrangement_automation() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
+            admitted[parameter_index(id)?] = true;
+        }
+        PreparedFilter::new(Settings::decode(state)?, rate, admitted)
     }
 }
 
@@ -217,6 +370,18 @@ impl NativeDeviceMetadata for FilterDefinition {
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &DESCRIPTORS
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        state: &NativeDeviceState,
+        id: ParameterId,
+    ) -> Result<Option<ParameterSemantics>, DeviceContractError> {
+        crate::parameter_binding::parameter_semantics_for_state(
+            &BINDINGS,
+            state,
+            id,
+            Settings::decode,
+        )
     }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         Settings::default_values()?.encode()
@@ -249,6 +414,26 @@ impl NativeDeviceMetadata for FilterDefinition {
 impl NativeDeviceDefinition for FilterDefinition {
     fn source_effect_factory_bytes(&self) -> Option<usize> {
         Some(crate::source_effect_arc_bytes::<PreparedFilter>())
+    }
+    fn supports_parameter_automation(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<bool, DeviceContractError> {
+        Settings::decode(state)?;
+        Ok(crate::parameter_binding::binding(&BINDINGS, parameter)
+            .is_ok_and(|binding| binding.declares_arrangement_automation()))
+    }
+    fn prepare_automated_runtime_instance(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+        parameters: &[ParameterId],
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        Ok(crate::parameter_binding::prepared_legacy_runtime(
+            Self::prepare_owned(state, context.sample_rate, parameters)?,
+        ))
     }
     fn prepare_matrix(
         &self,
@@ -301,7 +486,31 @@ pub fn response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hex_lattice::EMPTY_DEVICE_RESOURCES;
+    use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, OutputTail};
+
+    struct RampAutomation {
+        ids: Vec<ParameterId>,
+        start: f32,
+        end: f32,
+        length: usize,
+        offset_base: usize,
+    }
+
+    impl NativeParameterAutomation for RampAutomation {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.ids
+        }
+        fn value_at(&self, id: ParameterId, frame_offset: usize) -> Option<ParameterValue> {
+            if !self.ids.contains(&id) {
+                return None;
+            }
+            let frame = (self.offset_base + frame_offset).min(self.length);
+            let t = frame as f32 / self.length.max(1) as f32;
+            Some(ParameterValue::Float(
+                self.start + (self.end - self.start) * t,
+            ))
+        }
+    }
 
     fn parameter(index: usize) -> ParameterId {
         DESCRIPTORS[index].id
@@ -397,5 +606,161 @@ mod tests {
             let broken = NativeDeviceState::new(TYPE_ID, version, vec![0; 4]).unwrap();
             assert!(DEFINITION.migrate_state(&broken).is_err());
         }
+    }
+
+    #[test]
+    fn continuous_parameters_declare_automation_and_sample_rate_modulation_and_choices_refuse() {
+        let state = DEFINITION.default_state().unwrap();
+        let continuous = [
+            parameter::CUTOFF,
+            parameter::RESONANCE,
+            parameter::MORPH,
+            parameter::MIX,
+            parameter::LFO_AMOUNT,
+            parameter::LFO_RATE,
+            parameter::LFO_PHASE,
+            parameter::ENV_AMOUNT,
+            parameter::ENV_RELEASE,
+            parameter::ENV_ATTACK,
+        ];
+        for id in continuous {
+            assert_eq!(
+                DEFINITION.supports_parameter_automation(&state, id),
+                Ok(true)
+            );
+            let semantics = DEFINITION
+                .parameter_semantics_for_state(&state, id)
+                .unwrap()
+                .expect("semantics declared");
+            assert_eq!(semantics.modulation, ParameterModulation::SampleRate);
+            assert_eq!(
+                semantics.automation,
+                ParameterAutomation::DeviceArrangementEnvelope
+            );
+            let prepared = FilterDefinition::prepare_owned(&state, 48_000, &[id]).unwrap();
+            assert!(prepared.supports_parameter_automation(id));
+            assert_eq!(prepared.parameter_modulation_semantics(id), Some(semantics));
+            assert!(prepared.parameter_automation_descriptor(id).is_some());
+        }
+
+        for discrete in [parameter::TYPE, parameter::SLOPE, parameter::LFO_SHAPE] {
+            assert_eq!(
+                DEFINITION.supports_parameter_automation(&state, discrete),
+                Ok(false)
+            );
+            assert_eq!(
+                FilterDefinition::prepare_owned(&state, 48_000, &[discrete]).err(),
+                Some(DeviceContractError::UnsupportedProcessingClass)
+            );
+        }
+
+        let unknown = ParameterId::from_static(99);
+        assert_eq!(
+            DEFINITION.supports_parameter_automation(&state, unknown),
+            Ok(false)
+        );
+        assert_eq!(
+            FilterDefinition::prepare_owned(&state, 48_000, &[unknown]).err(),
+            Some(DeviceContractError::UnknownParameter)
+        );
+    }
+
+    #[test]
+    fn automated_cutoff_sweep_matches_across_block_partitions_and_preserves_bypass() {
+        let state = DEFINITION.default_state().unwrap();
+        let prepared =
+            FilterDefinition::prepare_owned(&state, 48_000, &[parameter::CUTOFF]).unwrap();
+        let input = signal(4000.0);
+
+        let mut whole = input.clone();
+        let mut rt_whole = prepared.create_runtime();
+        let auto_whole = RampAutomation {
+            ids: vec![parameter::CUTOFF],
+            start: 150.0,
+            end: 12_000.0,
+            length: input.len(),
+            offset_base: 0,
+        };
+        rt_whole
+            .process_block_with_automation(&mut whole, None, &auto_whole, &EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+
+        let mut partitioned = input.clone();
+        let mut rt_part = prepared.create_runtime();
+        let mut offset = 0;
+        for chunk in partitioned.chunks_mut(113) {
+            let auto = RampAutomation {
+                ids: vec![parameter::CUTOFF],
+                start: 150.0,
+                end: 12_000.0,
+                length: input.len(),
+                offset_base: offset,
+            };
+            rt_part
+                .process_block_with_automation(chunk, None, &auto, &EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            offset += chunk.len();
+        }
+
+        assert_eq!(whole, partitioned);
+        let early_power: f32 = whole[256..1024].iter().map(|f| f[0] * f[0]).sum();
+        let late_power: f32 = whole[7168..7936].iter().map(|f| f[0] * f[0]).sum();
+        assert!(
+            late_power > early_power * 20.0,
+            "automated cutoff opening must raise high-frequency power ({early_power} -> {late_power})"
+        );
+
+        let mut bypassed = input.clone();
+        let mut rt_bypass = prepared.create_runtime();
+        rt_bypass
+            .process_bypassed_block_with_automation(
+                &mut bypassed,
+                None,
+                &auto_whole,
+                &EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        assert_eq!(bypassed, input);
+    }
+
+    #[test]
+    fn finite_output_tail_drains_deterministically_even_at_extreme_resonance() {
+        let state = DEFINITION.default_state().unwrap();
+        let extreme = patch(&state, CUTOFF, ParameterValue::Float(20.0));
+        let extreme = patch(&extreme, RESONANCE, ParameterValue::Float(100.0));
+        let extreme = patch(&extreme, SLOPE, ParameterValue::Choice(1));
+        let extreme = patch(&extreme, LFO_AMOUNT, ParameterValue::Float(1.0));
+        let extreme = patch(&extreme, ENV_AMOUNT, ParameterValue::Float(2.0));
+
+        let prepared = FilterDefinition::prepare_owned(&extreme, 48_000, &[]).unwrap();
+        let OutputTail::Finite { max_tail_frames } = prepared.output_tail() else {
+            panic!("hex.filter must declare a finite OutputTail");
+        };
+        assert!(max_tail_frames > 0 && max_tail_frames <= 48_000 * 6);
+
+        let mut runtime = prepared.create_runtime();
+        assert!(runtime.is_quiescent(), "fresh runtime starts quiescent");
+
+        let mut impulse = [[0.0_f32; 2]; 256];
+        impulse[0] = [1.0, -1.0];
+        runtime.process_block(&mut impulse, &EMPTY_DEVICE_RESOURCES);
+        assert!(
+            !runtime.is_quiescent(),
+            "resonant impulse must excite filter history"
+        );
+
+        let mut silence = vec![[0.0_f32; 2]; max_tail_frames as usize];
+        for chunk in silence.chunks_mut(256) {
+            runtime.process_block(chunk, &EMPTY_DEVICE_RESOURCES);
+        }
+        assert!(
+            runtime.is_quiescent(),
+            "filter must become quiescent within max_tail_frames"
+        );
+        assert!(silence.iter().flatten().all(|s| s.is_finite()));
+
+        let mut after = [[0.0_f32; 2]; 128];
+        runtime.process_block(&mut after, &EMPTY_DEVICE_RESOURCES);
+        assert_eq!(after, [[0.0_f32; 2]; 128]);
     }
 }
