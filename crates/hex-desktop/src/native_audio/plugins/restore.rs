@@ -23,7 +23,15 @@ enum Stage {
     Prepare(usize),
     Ready,
 }
+impl Stage {
+    fn is_returning_epoch(&self) -> bool {
+        !matches!(self, Self::Fence | Self::Return { .. })
+    }
+}
 impl Restore {
+    pub(super) fn is_returning_epoch(&self) -> bool {
+        self.stage.is_returning_epoch()
+    }
     pub(super) fn submitted_revision(&self) -> Option<u64> {
         self.submitted
     }
@@ -35,6 +43,17 @@ impl Restore {
     }
 }
 impl Plugins {
+    fn has_pending_controller_query(&self) -> bool {
+        self.parameters
+            .as_ref()
+            .is_some_and(parameters::Inventory::has_pending_token)
+            || self
+                .parameter_conversion
+                .as_ref()
+                .is_some_and(parameter_conversion::Conversion::has_pending_token)
+            || self.editor_ops.iter().any(|op| op.request.is_some())
+            || self.editor_visibility.iter().any(|op| op.request.is_some())
+    }
     pub(super) fn restored_canonical_source(
         &self,
         context: AudioSourceContext,
@@ -120,6 +139,9 @@ impl Plugins {
             .map_err(str::to_owned)?;
         self.invalidate_editor_close();
         self.release_replay_editor_hold(Some(control));
+        if let Some(inventory) = self.parameters.as_mut() {
+            inventory.request_yield();
+        }
         self.restore = Some(Restore {
             context,
             source,
@@ -177,6 +199,7 @@ impl Plugins {
         control: &mut PublicationControl,
         context: Option<AudioSourceContext>,
     ) {
+        let pending_controller_query = self.has_pending_controller_query();
         let Some(restore) = self.restore.as_mut() else {
             return;
         };
@@ -219,11 +242,15 @@ impl Plugins {
                         };
                     }
                 },
-                // The original controller must settle its exact release
-                // before returning the endpoint and reusing the SDK child.
+                // The original controller must settle its exact release and any
+                // in-flight controller query before returning the endpoint and
+                // quiescing/reusing the SDK child.
                 Stage::Return {
                     hold_release_deadline,
-                } if self.editor_close.is_some() || self.replay_editor_hold.is_some() => {
+                } if self.editor_close.is_some()
+                    || self.replay_editor_hold.is_some()
+                    || pending_controller_query =>
+                {
                     if std::time::Instant::now() >= hold_release_deadline {
                         return Err(
                             "could not confirm release of the original vst3 editor hold".into()
@@ -400,5 +427,37 @@ impl Plugins {
             Ok(false) => {}
             Err(error) => restore.result = Some(Err(bounded_error(error))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn returning_epoch_begins_only_after_epoch_return_is_requested() {
+        let binding = Binding {
+            root: 1,
+            instance: 449,
+            graph: 1,
+            epoch: 1,
+        };
+        assert!(!Stage::Fence.is_returning_epoch());
+        assert!(
+            !Stage::Return {
+                hold_release_deadline: std::time::Instant::now(),
+            }
+            .is_returning_epoch()
+        );
+        assert!(Stage::Renew(0).is_returning_epoch());
+        assert!(Stage::RefreshLatency(binding).is_returning_epoch());
+        assert!(Stage::Prepare(0).is_returning_epoch());
+        assert!(Stage::Ready.is_returning_epoch());
+    }
+
+    #[test]
+    fn idle_plugins_report_no_pending_controller_query() {
+        let plugins = Plugins::default();
+        assert!(!plugins.has_pending_controller_query());
     }
 }
