@@ -58,8 +58,14 @@ impl std::error::Error for ShmError {}
 
 /// Host-side endpoint of a paired shared-memory audio transport ring.
 /// Writes requests into the request ring and reads replies from the reply ring.
+///
+/// Producer/consumer sequence counters owned by the host (`req_write_seq`,
+/// `rep_read_seq`) are kept in process-local fields and only published to
+/// `MAP_SHARED` memory, never read back from peer-writable shared memory.
 pub struct HostRing {
     mapping: RawMapping,
+    req_write_seq: u64,
+    rep_read_seq: u64,
 }
 
 impl HostRing {
@@ -68,7 +74,14 @@ impl HostRing {
     /// the mapping remains valid until both sides unmap.
     pub fn create() -> io::Result<(Self, OwnedFd)> {
         let (mapping, fd) = RawMapping::create()?;
-        Ok((Self { mapping }, fd))
+        Ok((
+            Self {
+                mapping,
+                req_write_seq: 0,
+                rep_read_seq: 0,
+            },
+            fd,
+        ))
     }
 
     /// Publish one bounded request packet into the next free request slot.
@@ -76,37 +89,42 @@ impl HostRing {
         if payload.is_empty() || payload.len() > SLOT_CAPACITY {
             return Err(ShmError::PayloadTooLarge);
         }
-        let write_seq = self.mapping.req_write_seq().load(Ordering::Relaxed);
+        let write_seq = self.req_write_seq;
         let read_seq = self.mapping.req_read_seq().load(Ordering::Acquire);
-        if write_seq < read_seq || write_seq - read_seq >= SLOT_COUNT as u64 {
-            return Err(if write_seq < read_seq {
-                ShmError::CorruptSequence
-            } else {
-                ShmError::RingFull
-            });
+        let pending = write_seq
+            .checked_sub(read_seq)
+            .ok_or(ShmError::CorruptSequence)?;
+        if pending >= SLOT_COUNT as u64 {
+            return Err(ShmError::RingFull);
         }
+        let next_seq = write_seq.checked_add(1).ok_or(ShmError::CorruptSequence)?;
         let slot = (write_seq % SLOT_COUNT as u64) as usize;
         let offset = REQ_SLOTS_OFFSET + slot * SLOT_CAPACITY;
         self.mapping.write_bytes_relaxed(offset, payload);
         self.mapping
             .req_slot_len(slot)
             .store(payload.len() as u32, Ordering::Relaxed);
+        self.req_write_seq = next_seq;
         self.mapping
             .req_write_seq()
-            .store(write_seq + 1, Ordering::Release);
+            .store(next_seq, Ordering::Release);
         Ok(())
     }
 
     /// Consume the next completed reply packet from the reply ring into `out`.
     pub fn read_reply(&mut self, out: &mut [u8]) -> Result<usize, ShmError> {
-        let read_seq = self.mapping.rep_read_seq().load(Ordering::Relaxed);
+        let read_seq = self.rep_read_seq;
         let write_seq = self.mapping.rep_write_seq().load(Ordering::Acquire);
-        if write_seq < read_seq || write_seq - read_seq > SLOT_COUNT as u64 {
+        let available = write_seq
+            .checked_sub(read_seq)
+            .ok_or(ShmError::CorruptSequence)?;
+        if available > SLOT_COUNT as u64 {
             return Err(ShmError::CorruptSequence);
         }
-        if read_seq == write_seq {
+        if available == 0 {
             return Err(ShmError::RingEmpty);
         }
+        let next_seq = read_seq.checked_add(1).ok_or(ShmError::CorruptSequence)?;
         let slot = (read_seq % SLOT_COUNT as u64) as usize;
         let len = self.mapping.rep_slot_len(slot).load(Ordering::Relaxed) as usize;
         if len == 0 || len > SLOT_CAPACITY {
@@ -117,9 +135,10 @@ impl HostRing {
         }
         let offset = REP_SLOTS_OFFSET + slot * SLOT_CAPACITY;
         self.mapping.read_bytes_relaxed(offset, &mut out[..len]);
+        self.rep_read_seq = next_seq;
         self.mapping
             .rep_read_seq()
-            .store(read_seq + 1, Ordering::Release);
+            .store(next_seq, Ordering::Release);
         Ok(len)
     }
 
@@ -135,8 +154,13 @@ impl HostRing {
 
 /// Worker-side endpoint of a paired shared-memory audio transport ring.
 /// Reads requests from the request ring and writes replies into the reply ring.
+///
+/// Worker-owned sequence counters (`req_read_seq`, `rep_write_seq`) are kept in
+/// process-local fields and never loaded back from peer-writable shared memory.
 pub struct WorkerRing {
     mapping: RawMapping,
+    req_read_seq: u64,
+    rep_write_seq: u64,
 }
 
 impl WorkerRing {
@@ -144,19 +168,27 @@ impl WorkerRing {
     /// The descriptor is closed immediately after `mmap`.
     pub fn from_fd(fd: OwnedFd) -> io::Result<Self> {
         let mapping = RawMapping::from_fd(fd)?;
-        Ok(Self { mapping })
+        Ok(Self {
+            mapping,
+            req_read_seq: 0,
+            rep_write_seq: 0,
+        })
     }
 
     /// Consume the next pending request packet into `out`.
     pub fn read_request(&mut self, out: &mut [u8]) -> Result<usize, ShmError> {
-        let read_seq = self.mapping.req_read_seq().load(Ordering::Relaxed);
+        let read_seq = self.req_read_seq;
         let write_seq = self.mapping.req_write_seq().load(Ordering::Acquire);
-        if write_seq < read_seq || write_seq - read_seq > SLOT_COUNT as u64 {
+        let available = write_seq
+            .checked_sub(read_seq)
+            .ok_or(ShmError::CorruptSequence)?;
+        if available > SLOT_COUNT as u64 {
             return Err(ShmError::CorruptSequence);
         }
-        if read_seq == write_seq {
+        if available == 0 {
             return Err(ShmError::RingEmpty);
         }
+        let next_seq = read_seq.checked_add(1).ok_or(ShmError::CorruptSequence)?;
         let slot = (read_seq % SLOT_COUNT as u64) as usize;
         let len = self.mapping.req_slot_len(slot).load(Ordering::Relaxed) as usize;
         if len == 0 || len > SLOT_CAPACITY {
@@ -167,9 +199,10 @@ impl WorkerRing {
         }
         let offset = REQ_SLOTS_OFFSET + slot * SLOT_CAPACITY;
         self.mapping.read_bytes_relaxed(offset, &mut out[..len]);
+        self.req_read_seq = next_seq;
         self.mapping
             .req_read_seq()
-            .store(read_seq + 1, Ordering::Release);
+            .store(next_seq, Ordering::Release);
         Ok(len)
     }
 
@@ -178,24 +211,25 @@ impl WorkerRing {
         if payload.is_empty() || payload.len() > SLOT_CAPACITY {
             return Err(ShmError::PayloadTooLarge);
         }
-        let write_seq = self.mapping.rep_write_seq().load(Ordering::Relaxed);
+        let write_seq = self.rep_write_seq;
         let read_seq = self.mapping.rep_read_seq().load(Ordering::Acquire);
-        if write_seq < read_seq || write_seq - read_seq >= SLOT_COUNT as u64 {
-            return Err(if write_seq < read_seq {
-                ShmError::CorruptSequence
-            } else {
-                ShmError::RingFull
-            });
+        let pending = write_seq
+            .checked_sub(read_seq)
+            .ok_or(ShmError::CorruptSequence)?;
+        if pending >= SLOT_COUNT as u64 {
+            return Err(ShmError::RingFull);
         }
+        let next_seq = write_seq.checked_add(1).ok_or(ShmError::CorruptSequence)?;
         let slot = (write_seq % SLOT_COUNT as u64) as usize;
         let offset = REP_SLOTS_OFFSET + slot * SLOT_CAPACITY;
         self.mapping.write_bytes_relaxed(offset, payload);
         self.mapping
             .rep_slot_len(slot)
             .store(payload.len() as u32, Ordering::Relaxed);
+        self.rep_write_seq = next_seq;
         self.mapping
             .rep_write_seq()
-            .store(write_seq + 1, Ordering::Release);
+            .store(next_seq, Ordering::Release);
         Ok(())
     }
 
@@ -205,6 +239,29 @@ impl WorkerRing {
         self.mapping
             .rep_slot_len(slot)
             .store(len, Ordering::Release);
+    }
+
+    /// Test-only helper for simulating a hostile peer tampering shared sequence counters.
+    #[cfg(test)]
+    fn corrupt_shared_sequences(
+        &self,
+        req_write_seq: Option<u64>,
+        req_read_seq: Option<u64>,
+        rep_write_seq: Option<u64>,
+        rep_read_seq: Option<u64>,
+    ) {
+        if let Some(v) = req_write_seq {
+            self.mapping.req_write_seq().store(v, Ordering::Release);
+        }
+        if let Some(v) = req_read_seq {
+            self.mapping.req_read_seq().store(v, Ordering::Release);
+        }
+        if let Some(v) = rep_write_seq {
+            self.mapping.rep_write_seq().store(v, Ordering::Release);
+        }
+        if let Some(v) = rep_read_seq {
+            self.mapping.rep_read_seq().store(v, Ordering::Release);
+        }
     }
 }
 
@@ -300,5 +357,55 @@ mod tests {
             Err(ShmError::BufferTooSmall)
         );
         assert_eq!(host.read_reply(&mut [0_u8; 32]), Ok(32));
+    }
+
+    #[test]
+    fn hostile_peer_sequence_tampering_to_u64_max_never_panics_or_corrupts_host() {
+        let (host_sock, worker_sock) = UnixStream::pair().unwrap();
+        let (mut host, shm_fd) = HostRing::create().unwrap();
+        send_shm_fd(&host_sock, shm_fd.as_fd()).unwrap();
+        drop(shm_fd);
+        let mut worker = WorkerRing::from_fd(recv_shm_fd(&worker_sock).unwrap()).unwrap();
+
+        // Hostile worker overwrites host-owned `req_write_seq` and `rep_read_seq` with `u64::MAX`.
+        // Because `HostRing` keeps its own counters private, neither overflows nor corrupts slots.
+        worker.corrupt_shared_sequences(Some(u64::MAX), None, None, Some(u64::MAX));
+        host.write_request(b"safe-req").unwrap();
+        assert_eq!(host.mapping.req_write_seq().load(Ordering::Acquire), 1);
+
+        let mut req_buf = [0_u8; 32];
+        assert_eq!(worker.read_request(&mut req_buf), Ok(8));
+        assert_eq!(&req_buf[..8], b"safe-req");
+
+        // Restore rep_read_seq to 0 so the worker can publish a valid reply, then tamper again.
+        worker.corrupt_shared_sequences(None, None, None, Some(0));
+        worker.write_reply(b"safe-rep").unwrap();
+        worker.corrupt_shared_sequences(None, None, None, Some(u64::MAX));
+        let mut rep_buf = [0_u8; 32];
+        assert_eq!(host.read_reply(&mut rep_buf), Ok(8));
+        assert_eq!(&rep_buf[..8], b"safe-rep");
+        assert_eq!(host.mapping.rep_read_seq().load(Ordering::Acquire), 1);
+
+        // Hostile worker writes `u64::MAX` into peer-owned `req_read_seq` and `rep_write_seq`.
+        worker.corrupt_shared_sequences(None, Some(u64::MAX), Some(u64::MAX), None);
+        assert_eq!(
+            host.write_request(b"blocked"),
+            Err(ShmError::CorruptSequence)
+        );
+        assert_eq!(
+            host.read_reply(&mut rep_buf),
+            Err(ShmError::CorruptSequence)
+        );
+
+        // Exhausted local counter refuses cleanly with `CorruptSequence` instead of wrapping.
+        host.req_write_seq = u64::MAX;
+        worker.corrupt_shared_sequences(None, Some(u64::MAX), None, None);
+        assert_eq!(
+            host.write_request(b"overflow"),
+            Err(ShmError::CorruptSequence)
+        );
+        host.rep_read_seq = u64::MAX;
+        worker.corrupt_shared_sequences(None, None, Some(u64::MAX), None);
+        assert_eq!(host.read_reply(&mut rep_buf), Err(ShmError::RingEmpty));
     }
 }
