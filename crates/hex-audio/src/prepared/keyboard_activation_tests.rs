@@ -481,19 +481,44 @@ mod vst_audition_probe {
             )
             .unwrap(),
         );
-        let input = Arc::new(
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        let audition = Arc::new(
             ComputerKeyboardInput::default()
                 .with_note_audition(&[(60, 37), (64, 93)], 8)
-                .unwrap()
-                .with_live_notes()
                 .unwrap(),
         );
-        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        playback
+            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&audition))
+            .unwrap();
+        audition.trigger_note_audition().unwrap();
+        let mut output = [[0.0; 2]; 8];
+        let mut endpoint = Endpoint::default();
+        let mut render = |playback: &mut Playback, endpoint: &mut Endpoint| {
+            let count = allocation_counter::measure(|| {
+                playback
+                    .render_with_foreign_processors(&mut output, None, None, None, endpoint)
+                    .unwrap();
+            });
+            assert_eq!(
+                (
+                    count.count_total,
+                    count.bytes_total,
+                    count.count_current,
+                    count.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        };
+        render(&mut playback, &mut endpoint);
+        render(&mut playback, &mut endpoint);
+        assert_eq!((endpoint.on, endpoint.off), (2, 2));
+        assert!(audition.note_audition_finished());
+
+        use hex_engine::computer_keyboard::LiveNoteEvent;
+        let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
         playback
             .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
             .unwrap();
-        input.trigger_note_audition().unwrap();
-        use hex_engine::computer_keyboard::LiveNoteEvent;
         let activation = input.begin_live_notes_activation_on_control().unwrap();
         let queue = input.live_notes().unwrap();
         for event in [
@@ -515,26 +540,8 @@ mod vst_audition_probe {
         ] {
             queue.publish(activation, event).unwrap();
         }
-        let mut output = [[0.0; 2]; 8];
-        let mut endpoint = Endpoint::default();
-        for _ in 0..2 {
-            let count = allocation_counter::measure(|| {
-                playback
-                    .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
-                    .unwrap();
-            });
-            assert_eq!(
-                (
-                    count.count_total,
-                    count.bytes_total,
-                    count.count_current,
-                    count.bytes_current
-                ),
-                (0, 0, 0, 0)
-            );
-        }
+        render(&mut playback, &mut endpoint);
         assert_eq!((endpoint.on, endpoint.pressures, endpoint.off), (3, 1, 3));
         assert!(!endpoint.rejected);
-        assert!(input.note_audition_finished());
     }
 }
