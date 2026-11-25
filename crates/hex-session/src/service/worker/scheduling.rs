@@ -10,46 +10,7 @@ pub(super) fn control_lanes_pending(
     seek.is_some_and(resident_seek::Lane::pending) || export.pending()
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DeferredRecoveryKind {
-    Paste,
-    TrackSwitch,
-    TimeRangeCopy,
-    SectionCopy,
-    LocatorAdd,
-}
-
-impl DeferredRecoveryKind {
-    pub(super) fn metric(self) -> &'static str {
-        match self {
-            Self::Paste => "paste_recovery_us",
-            Self::TrackSwitch => "track_switch_recovery_us",
-            Self::TimeRangeCopy | Self::SectionCopy => "duplicate_recovery_us",
-            Self::LocatorAdd => "locator_recovery_us",
-        }
-    }
-}
-
-pub(super) fn deferred_recovery_kind(request: &Request) -> Option<DeferredRecoveryKind> {
-    match request {
-        Request::PasteTimeRange { .. } | Request::InsertTimeRange { .. } => {
-            Some(DeferredRecoveryKind::Paste)
-        }
-        Request::Edit(Command::CopyTimeRangeTo { .. }) => Some(DeferredRecoveryKind::TimeRangeCopy),
-        Request::EditArrangementSection { command, .. } if is_section_copy(command) => {
-            Some(DeferredRecoveryKind::SectionCopy)
-        }
-        Request::Edit(Command::AddArrangementLocator { .. }) => {
-            Some(DeferredRecoveryKind::LocatorAdd)
-        }
-        Request::Edit(command) if is_track_switch(command) => {
-            Some(DeferredRecoveryKind::TrackSwitch)
-        }
-        _ => None,
-    }
-}
-
-fn is_track_switch(command: &Command) -> bool {
+pub(super) fn is_track_switch(command: &Command) -> bool {
     matches!(
         command,
         Command::Mute { .. }

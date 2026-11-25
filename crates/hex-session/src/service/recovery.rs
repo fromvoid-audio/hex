@@ -3,7 +3,7 @@ use super::*;
 use std::mem;
 mod checkpoint;
 mod checkpoint_worker;
-pub(super) use checkpoint::{RecoveryContext, RecoveryTracker};
+pub(super) use checkpoint::{CompletedCheckpoint, RecoveryContext, RecoveryTracker};
 pub use checkpoint::{RecoveryFailure, RecoveryRestart};
 
 /// A test-only, bounded hold of one private recovery checkpoint.
