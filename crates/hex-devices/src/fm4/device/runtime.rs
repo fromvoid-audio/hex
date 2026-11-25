@@ -310,12 +310,51 @@ struct Voice {
     age: u64,
     gate: Option<u64>,
     phase_offsets: [u64; 4],
+    effective_steps: [u64; 4],
     release_ceiling: u64,
     pressure: u8,
     pitch_offset_cents: i16,
     timbre: u8,
 }
 impl Voice {
+    fn bent_steps(
+        base_steps: [u64; 4],
+        pitch_offset_cents: i16,
+        channel_pitch_bend: i16,
+    ) -> [u64; 4] {
+        if pitch_offset_cents == 0 && channel_pitch_bend == 0 {
+            return base_steps;
+        }
+        let channel_cents = f64::from(channel_pitch_bend)
+            / if channel_pitch_bend < 0 {
+                8192.0
+            } else {
+                8191.0
+            }
+            * 200.0;
+        let total_cents = f64::from(pitch_offset_cents) + channel_cents;
+        let ratio = 2.0_f64.powf(total_cents / 1200.0);
+        base_steps.map(|step| ((step as f64) * ratio).round().max(1.0) as u64)
+    }
+
+    fn retarget_steps(&mut self, base_steps: [u64; 4], channel_pitch_bend: i16) {
+        let new_steps = Self::bent_steps(base_steps, self.pitch_offset_cents, channel_pitch_bend);
+        if new_steps == self.effective_steps {
+            return;
+        }
+        // Oscillator phase is modulo 2^64: integrate `(old_step - new_step) * age`
+        // so pitch-bend and tuning steps preserve exact phase continuity.
+        for ((offset, old_step), new_step) in self
+            .phase_offsets
+            .iter_mut()
+            .zip(self.effective_steps)
+            .zip(new_steps)
+        {
+            *offset = offset.wrapping_add(old_step.wrapping_sub(new_step).wrapping_mul(self.age));
+        }
+        self.effective_steps = new_steps;
+    }
+
     fn advance(&mut self, frames: u64) {
         if self.id == 0 {
             return;
@@ -402,11 +441,11 @@ impl Runtime {
                 velocity,
                 ..
             } => {
-                if config
-                    .steps
-                    .get(usize::from(pitch))
-                    .is_none_or(Option::is_none)
-                    || !(1..=127).contains(&velocity)
+                let Some(base_steps) = config.steps.get(usize::from(pitch)).copied().flatten()
+                else {
+                    return Err(Error::InvalidEventBatch);
+                };
+                if !(1..=127).contains(&velocity)
                     || occurrence_id == 0
                     || voices.iter().any(|voice| voice.id == occurrence_id)
                 {
@@ -423,6 +462,7 @@ impl Runtime {
                     age: 0,
                     gate: None,
                     phase_offsets: [0; 4],
+                    effective_steps: Voice::bent_steps(base_steps, 0, *channel_pitch_bend),
                     release_ceiling: config.envelope.release,
                     pressure: 0,
                     pitch_offset_cents: 0,
@@ -462,8 +502,12 @@ impl Runtime {
                 if let Some(voice) = voices
                     .iter_mut()
                     .find(|voice| voice.id == occurrence_id.get())
+                    && voice.pitch_offset_cents != cents
                 {
                     voice.pitch_offset_cents = cents;
+                    if let Some(base_steps) = config.steps[usize::from(voice.pitch)] {
+                        voice.retarget_steps(base_steps, *channel_pitch_bend);
+                    }
                 }
             }
             NativeInstrumentEvent::NoteTimbre {
@@ -489,18 +533,27 @@ impl Runtime {
                     *cc_timbre = value;
                 } else if cc == 121 {
                     *cc_timbre = 0;
-                    *channel_pitch_bend = 0;
+                    if *channel_pitch_bend != 0 {
+                        *channel_pitch_bend = 0;
+                        Self::retarget_all_voice_steps(config, voices, 0);
+                    }
                 }
             }
             NativeInstrumentEvent::PitchBend { value, .. } => {
                 if !(-8192..=8191).contains(&value) {
                     return Err(Error::InvalidEventBatch);
                 }
-                *channel_pitch_bend = value;
+                if *channel_pitch_bend != value {
+                    *channel_pitch_bend = value;
+                    Self::retarget_all_voice_steps(config, voices, value);
+                }
             }
             NativeInstrumentEvent::Expression { expression, .. } => match expression {
                 hex_lattice::NativeInstrumentExpression::PitchBend(value) => {
-                    *channel_pitch_bend = value;
+                    if *channel_pitch_bend != value {
+                        *channel_pitch_bend = value;
+                        Self::retarget_all_voice_steps(config, voices, value);
+                    }
                 }
                 hex_lattice::NativeInstrumentExpression::ModWheel(value) => {
                     *cc_timbre = value;
@@ -509,6 +562,17 @@ impl Runtime {
             },
         }
         Ok(())
+    }
+    fn retarget_all_voice_steps(
+        config: &Config,
+        voices: &mut [Voice; VOICES],
+        channel_pitch_bend: i16,
+    ) {
+        for voice in voices.iter_mut().filter(|voice| voice.id != 0) {
+            if let Some(base_steps) = config.steps[usize::from(voice.pitch)] {
+                voice.retarget_steps(base_steps, channel_pitch_bend);
+            }
+        }
     }
     fn set_controls(&mut self, levels: [f64; 4], carriers: [f64; 4]) {
         self.levels = levels;
@@ -537,6 +601,8 @@ impl Runtime {
     }
     fn inherit_voices(&mut self, previous: &Self) {
         self.voices = previous.voices;
+        self.channel_pitch_bend = previous.channel_pitch_bend;
+        self.cc_timbre = previous.cc_timbre;
         self.unclamped_pressure_target = None;
         if self.config.same_pressure_source(&previous.config) {
             self.unclamped_pressure_target =
@@ -711,23 +777,7 @@ impl Runtime {
                 if voice.id == 0 {
                     continue;
                 }
-                let Some(base_steps) = self.config.steps[usize::from(voice.pitch)] else {
-                    continue;
-                };
-                let steps = if voice.pitch_offset_cents != 0 || self.channel_pitch_bend != 0 {
-                    let channel_cents = f64::from(self.channel_pitch_bend)
-                        / if self.channel_pitch_bend < 0 {
-                            8192.0
-                        } else {
-                            8191.0
-                        }
-                        * 200.0;
-                    let total_cents = f64::from(voice.pitch_offset_cents) + channel_cents;
-                    let ratio = 2.0_f64.powf(total_cents / 1200.0);
-                    base_steps.map(|step| ((step as f64) * ratio).round().max(1.0) as u64)
-                } else {
-                    base_steps
-                };
+                let steps = voice.effective_steps;
                 let timbre_amount = voice.timbre.max(self.cc_timbre);
                 let mut envelope = self.config.envelope;
                 envelope.release = voice.release_ceiling;
@@ -1019,19 +1069,10 @@ impl MutableInstrumentRuntime for Runtime {
                 if voice.id == 0 {
                     continue;
                 }
-                let (Some(source), Some(target)) = (
-                    previous.config.steps[usize::from(voice.pitch)],
-                    self.config.steps[usize::from(voice.pitch)],
-                ) else {
+                let Some(target) = self.config.steps[usize::from(voice.pitch)] else {
                     continue;
                 };
-                for ((offset, source), target) in
-                    voice.phase_offsets.iter_mut().zip(source).zip(target)
-                {
-                    // Oscillator phase is modulo 2^64, including repeated retunes.
-                    *offset =
-                        offset.wrapping_add(source.wrapping_sub(target).wrapping_mul(voice.age));
-                }
+                voice.retarget_steps(target, self.channel_pitch_bend);
             }
             self.controls = previous.controls;
             self.set_controls(
