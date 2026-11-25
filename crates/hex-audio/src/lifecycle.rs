@@ -387,7 +387,34 @@ pub fn request_worker_open_with_reliable_action_outcomes(
     expected_sample_rate: Option<u32>,
     profile: WorkerOutputProfile,
 ) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
-    request_worker_open_kind(expected_sample_rate, profile, true)
+    request_worker_open_with_selection(
+        expected_sample_rate,
+        profile,
+        crate::output_devices::OutputDeviceSelection::default(),
+        true,
+    )
+}
+
+/// Queue a worker-owned output using an explicit output device UID and/or hardware
+/// buffer size selection on the same exclusive lifecycle lane.
+pub fn request_worker_open_with_selection(
+    expected_sample_rate: Option<u32>,
+    profile: WorkerOutputProfile,
+    selection: crate::output_devices::OutputDeviceSelection,
+    reliable: bool,
+) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
+    if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
+        return Err(RecoveryOpenError::InvalidRate);
+    }
+    let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
+    let kind = if reliable {
+        PreparedOutputKind::WorkerReliable(profile)
+    } else {
+        PreparedOutputKind::Worker(profile)
+    };
+    let waiter =
+        enqueue_open_kind_with_selection(sender, state(), expected_sample_rate, kind, selection)?;
+    Ok(WorkerRecoveryOpen { waiter })
 }
 
 fn request_worker_open_kind(
@@ -395,14 +422,15 @@ fn request_worker_open_kind(
     profile: WorkerOutputProfile,
     reliable: bool,
 ) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
-    if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
-        return Err(RecoveryOpenError::InvalidRate);
-    }
-    let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_worker_open(sender, state(), expected_sample_rate, profile, reliable)?;
-    Ok(WorkerRecoveryOpen { waiter })
+    request_worker_open_with_selection(
+        expected_sample_rate,
+        profile,
+        crate::output_devices::OutputDeviceSelection::default(),
+        reliable,
+    )
 }
 
+#[cfg(test)]
 fn enqueue_worker_open<T: Send + 'static, R: Send + 'static>(
     sender: &SyncSender<LifecycleMessage<T, R>>,
     state: &Arc<OpenState>,
@@ -533,6 +561,22 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
     expected_sample_rate: Option<u32>,
     kind: PreparedOutputKind,
 ) -> Result<OpenWaiter<T>, RecoveryOpenError> {
+    enqueue_open_kind_with_selection(
+        sender,
+        state,
+        expected_sample_rate,
+        kind,
+        crate::output_devices::OutputDeviceSelection::default(),
+    )
+}
+
+fn enqueue_open_kind_with_selection<T: Send + 'static, R: Send + 'static>(
+    sender: &SyncSender<LifecycleMessage<T, R>>,
+    state: &Arc<OpenState>,
+    expected_sample_rate: Option<u32>,
+    kind: PreparedOutputKind,
+    selection: crate::output_devices::OutputDeviceSelection,
+) -> Result<OpenWaiter<T>, RecoveryOpenError> {
     if state.in_service.load(Acquire) {
         return Err(RecoveryOpenError::Busy);
     }
@@ -558,6 +602,7 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
         id,
         expected_sample_rate,
         kind,
+        selection,
         completion,
         canceled: Arc::clone(&canceled),
         consumed: Arc::clone(&consumed),
@@ -597,6 +642,7 @@ struct OpenRequest<T> {
     id: u64,
     expected_sample_rate: Option<u32>,
     kind: PreparedOutputKind,
+    selection: crate::output_devices::OutputDeviceSelection,
     completion: SyncSender<Result<T, OutputOpenError>>,
     canceled: Arc<AtomicBool>,
     consumed: Arc<AtomicBool>,
@@ -640,10 +686,31 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     )
 }
 
+#[cfg(test)]
 fn run_lifecycle_observed<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
     mut try_open: impl FnMut(Option<u32>, PreparedOutputKind) -> Option<Result<T, OutputOpenError>>,
+    retire: impl FnMut(R),
+    status: &LifecycleStatus,
+) {
+    run_lifecycle_observed_with_selection(
+        receiver,
+        is_occupied,
+        |rate, kind, _| try_open(rate, kind),
+        retire,
+        status,
+    )
+}
+
+fn run_lifecycle_observed_with_selection<T: Send + 'static, R: Send + 'static>(
+    receiver: Receiver<LifecycleMessage<T, R>>,
+    is_occupied: impl Fn() -> bool,
+    mut try_open: impl FnMut(
+        Option<u32>,
+        PreparedOutputKind,
+        &crate::output_devices::OutputDeviceSelection,
+    ) -> Option<Result<T, OutputOpenError>>,
     mut retire: impl FnMut(R),
     status: &LifecycleStatus,
 ) {
@@ -684,9 +751,11 @@ fn run_lifecycle_observed<T: Send + 'static, R: Send + 'static>(
                     }
                 }
                 Phase::Queued => {
-                    if let Some(result) =
-                        try_open(current.request.expected_sample_rate, current.request.kind)
-                    {
+                    if let Some(result) = try_open(
+                        current.request.expected_sample_rate,
+                        current.request.kind,
+                        &current.request.selection,
+                    ) {
                         if current.request.canceled.load(Acquire) {
                             drop(result);
                             current.phase = Phase::Delivered;
@@ -779,12 +848,17 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
             thread::Builder::new()
                 .name("hex-audio-lifecycle".into())
                 .spawn(move || {
-                    run_lifecycle_observed(
+                    run_lifecycle_observed_with_selection(
                         receiver,
                         || OCCUPIED.load(Acquire),
-                        |expected_rate, kind| {
+                        |expected_rate, kind, selection| {
                             let lease = Lease::try_acquire()?;
-                            Some(crate::device::open_prepared(expected_rate, lease, kind))
+                            Some(crate::device::open_prepared_with_selection(
+                                expected_rate,
+                                selection,
+                                lease,
+                                kind,
+                            ))
                         },
                         retire_prepared_output,
                         &LIFECYCLE_STATUS,
