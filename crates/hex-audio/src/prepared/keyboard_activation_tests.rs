@@ -329,9 +329,9 @@ fn priority_stop_preserves_only_its_own_output_keyboard_epochs_without_callback_
 mod vst_audition_probe {
     use super::*;
     use hex_lattice::{
-        DevicePreparationContext, ForeignProcessorNode, ForeignProcessors, NativeDeviceDefinition,
-        NativeDeviceRegistry, PreparedForeignProcessor, PreparedProcessorFactory,
-        ProcessorChainOwner, ProcessorInstanceIdentity, StereoMatrix,
+        DevicePreparationContext, ForeignNoteKind, ForeignProcessorNode, ForeignProcessors,
+        NativeDeviceDefinition, NativeDeviceRegistry, PreparedForeignProcessor,
+        PreparedProcessorFactory, ProcessorChainOwner, ProcessorInstanceIdentity, StereoMatrix,
     };
     use hex_lattice_contract::{
         DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -411,6 +411,7 @@ mod vst_audition_probe {
     struct Endpoint {
         on: usize,
         off: usize,
+        pressures: usize,
         rejected: bool,
     }
     impl ForeignProcessors for Endpoint {
@@ -433,10 +434,10 @@ mod vst_audition_probe {
             _: Option<&dyn hex_lattice::NativeInstrumentClock>,
         ) -> Result<(), DeviceContractError> {
             for note in notes {
-                if note.on {
-                    self.on += 1;
-                } else {
-                    self.off += 1;
+                match note.kind {
+                    ForeignNoteKind::On => self.on += 1,
+                    ForeignNoteKind::Off => self.off += 1,
+                    ForeignNoteKind::PolyPressure => self.pressures += 1,
                 }
             }
             Ok(())
@@ -480,22 +481,22 @@ mod vst_audition_probe {
             )
             .unwrap(),
         );
-        let input = Arc::new(
+        let mut playback = Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap();
+        let audition = Arc::new(
             ComputerKeyboardInput::default()
                 .with_note_audition(&[(60, 37), (64, 93)], 8)
                 .unwrap(),
         );
-        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
         playback
-            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&audition))
             .unwrap();
-        input.trigger_note_audition().unwrap();
+        audition.trigger_note_audition().unwrap();
         let mut output = [[0.0; 2]; 8];
         let mut endpoint = Endpoint::default();
-        for _ in 0..2 {
+        let mut render = |playback: &mut Playback, endpoint: &mut Endpoint| {
             let count = allocation_counter::measure(|| {
                 playback
-                    .render_with_foreign_processors(&mut output, None, None, None, &mut endpoint)
+                    .render_with_foreign_processors(&mut output, None, None, None, endpoint)
                     .unwrap();
             });
             assert_eq!(
@@ -507,9 +508,41 @@ mod vst_audition_probe {
                 ),
                 (0, 0, 0, 0)
             );
-        }
+        };
+        render(&mut playback, &mut endpoint);
+        render(&mut playback, &mut endpoint);
         assert_eq!((endpoint.on, endpoint.off), (2, 2));
+        assert!(audition.note_audition_finished());
+
+        use hex_engine::computer_keyboard::LiveNoteEvent;
+        let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+        let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+        playback
+            .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+            .unwrap();
+        let activation = input.begin_live_notes_activation_on_control().unwrap();
+        let queue = input.live_notes().unwrap();
+        for event in [
+            LiveNoteEvent::NoteOn {
+                channel: 2,
+                pitch: 60,
+                velocity: 93,
+            },
+            LiveNoteEvent::PolyPressure {
+                channel: 2,
+                pitch: 60,
+                value: 64,
+            },
+            LiveNoteEvent::NoteOff {
+                channel: 2,
+                pitch: 60,
+                velocity: 41,
+            },
+        ] {
+            queue.publish(activation, event).unwrap();
+        }
+        render(&mut playback, &mut endpoint);
+        assert_eq!((endpoint.on, endpoint.pressures, endpoint.off), (3, 1, 3));
         assert!(!endpoint.rejected);
-        assert!(input.note_audition_finished());
     }
 }

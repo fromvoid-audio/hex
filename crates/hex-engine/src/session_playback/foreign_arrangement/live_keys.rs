@@ -5,7 +5,7 @@ use crate::computer_keyboard::{
     COMPUTER_KEY_COUNT, ComputerKeyboardInput, NoteSnapshot, note_audition::AuditionGate,
 };
 use crate::mutable_instrument::MutableInstrumentRuntimeError;
-use hex_lattice::ForeignNote;
+use hex_lattice::{ForeignNote, ForeignNoteKind};
 use hex_project::TrackId;
 use std::{num::NonZeroU32, sync::Arc};
 
@@ -105,8 +105,8 @@ impl Key {
             channel: 0,
             // ComputerKeyboardInput only publishes words with pitch + 1 in 1..=128.
             pitch: (self.word as u8).saturating_sub(1),
-            velocity: if on { (self.word >> 8) as u8 } else { 0 },
-            on,
+            value: if on { (self.word >> 8) as u8 } else { 0 },
+            kind: ForeignNoteKind::gate(on),
             note_id: Some(self.id),
             is_live: true,
         }
@@ -143,14 +143,18 @@ mod tests {
         input.root.set_key(0, Some((60, 100, 1))).unwrap();
         keys.stage(Some(&input), &mut next_id, &mut events).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(events[0].on && events[0].is_live && events[0].pitch == 60);
+        assert!(
+            events[0].kind == ForeignNoteKind::On && events[0].is_live && events[0].pitch == 60
+        );
         let press_id = events[0].note_id;
 
         events.clear();
         input.root.set_key(0, None).unwrap();
         keys.stage(Some(&input), &mut next_id, &mut events).unwrap();
         assert_eq!(events.len(), 1);
-        assert!(!events[0].on && events[0].is_live && events[0].pitch == 60);
+        assert!(
+            events[0].kind == ForeignNoteKind::Off && events[0].is_live && events[0].pitch == 60
+        );
         assert_eq!(events[0].note_id, press_id);
     }
 }

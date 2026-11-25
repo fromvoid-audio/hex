@@ -6,8 +6,8 @@
 //! No canonical edits, defaults, scheduler or native DSP runs here on callback.
 use crate::plugin_worker::{NativeWorker, NativeWorkerStartFailure};
 use hex_lattice::{
-    ForeignModulationSamples, ForeignNote, ForeignProcessorNode, ForeignProcessors,
-    PreparedForeignProcessor, ProcessorChainOwner, ProcessorInstanceIdentity,
+    ForeignModulationSamples, ForeignNote, ForeignNoteKind, ForeignProcessorNode,
+    ForeignProcessors, PreparedForeignProcessor, ProcessorChainOwner, ProcessorInstanceIdentity,
 };
 use hex_lattice_contract::{
     DeviceContractError, ForeignProcessorBinding as Binding, MAX_FOREIGN_AUTOMATION_TARGETS,
@@ -987,12 +987,16 @@ impl NativeEffectCallback {
         } else {
             events = InputEvents::default();
             for note in notes {
-                let status = if note.on { 0x90 } else { 0x80 };
+                let status = match note.kind {
+                    ForeignNoteKind::On => 0x90,
+                    ForeignNoteKind::Off => 0x80,
+                    ForeignNoteKind::PolyPressure => 0xa0,
+                };
                 if note.channel >= 16
                     || events
                         .push(MidiEvent {
                             frame: note.frame,
-                            bytes: [status | note.channel, note.pitch, note.velocity],
+                            bytes: [status | note.channel, note.pitch, note.value],
                             len: 3,
                             note_id: note.note_id,
                             is_live: note.is_live,

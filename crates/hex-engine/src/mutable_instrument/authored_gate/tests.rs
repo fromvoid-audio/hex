@@ -79,8 +79,8 @@ fn foreign_gates_keep_channel_and_identity_across_segment_boundaries() {
                     note.frame,
                     note.channel,
                     note.pitch,
-                    note.velocity,
-                    note.on,
+                    note.value,
+                    note.kind,
                     note.note_id.unwrap().get(),
                 ));
                 Ok(())
@@ -92,10 +92,10 @@ fn foreign_gates_keep_channel_and_identity_across_segment_boundaries() {
     assert_eq!(
         events,
         [
-            (1, 2, 60, 101, true, 70_001),
-            (3, 3, 60, 101, true, 70_002),
-            (0, 2, 60, 0, false, 70_001),
-            (2, 3, 60, 0, false, 70_002),
+            (1, 2, 60, 101, hex_lattice::ForeignNoteKind::On, 70_001),
+            (3, 3, 60, 101, hex_lattice::ForeignNoteKind::On, 70_002),
+            (0, 2, 60, 0, hex_lattice::ForeignNoteKind::Off, 70_001),
+            (2, 3, 60, 0, hex_lattice::ForeignNoteKind::Off, 70_002),
         ]
     );
 }
