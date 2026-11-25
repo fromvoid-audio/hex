@@ -734,7 +734,7 @@ impl Pending {
                     self.config.binding,
                 )?));
             }
-            if self.packet.magic() != b"HXVIRD05" {
+            if self.packet.magic() != b"HXVIRD06" {
                 return Err(Error::Protocol(
                     "missing final prepared instance acknowledgement",
                 ));

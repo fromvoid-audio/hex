@@ -55,7 +55,7 @@ pub(crate) fn control_limit(magic: &[u8]) -> usize {
         b"HXVIQF03" => 156,
         b"HXVIAR02" => 164,
         b"HXVIRR03" => 166,
-        b"HXVIRD05" => 86,
+        b"HXVIRD06" => 87,
         b"HXVICS02" => 62,
         b"HXVLCA02" => 63,
         _ => return CONTROL_LIMIT,
@@ -378,6 +378,9 @@ fn presentation_ack(r: &mut Reader<'_>, expected: PresentationPlan) -> Result<Pr
 }
 #[derive(Clone, Debug)]
 pub struct Ready {
+    /// Number of MIDI channels on the activated main event input. Zero means
+    /// the prepared instance has no active main event input.
+    pub event_input_channels: u8,
     pub initial_state: NativeDeviceState,
     /// Untrusted raw SDK report. The graph owner must reserve/validate its delay
     /// capacity before admission; no allocation is sized from it here.
@@ -426,6 +429,10 @@ impl Ready {
             1 => true,
             _ => return Err(Error::Protocol("invalid ready state presence")),
         };
+        let event_input_channels = r.byte()?;
+        if event_input_channels > 16 {
+            return Err(Error::Protocol("invalid active MIDI input channel count"));
+        }
         let count = u32::from_le_bytes(r.array()?) as usize;
         if count > hex_plugin_state::MAX_ENVELOPE_BYTES {
             return Err(Error::Protocol("ready state exceeds envelope bound"));
@@ -441,6 +448,7 @@ impl Ready {
             return Err(Error::Protocol("ready state source identity mismatch"));
         }
         Ok(Self {
+            event_input_channels,
             initial_state,
             algorithmic_latency_frames,
             tail_frames,
