@@ -411,7 +411,7 @@ mod tests {
                     ParameterValue::Float(1.0),
                 )
                 .unwrap();
-            view.device_gesture.next_request().unwrap();
+            assert!(view.pump_device_gesture());
             assert!(view.acknowledge_device_gesture(&GestureAck {
                 key,
                 phase: GesturePhase::Begin,
@@ -429,8 +429,9 @@ mod tests {
                 })
             );
             view.saving_project = true;
-            let terminal = view.device_gesture.next_request().unwrap();
-            view.device_gesture.mark_submitted();
+            assert!(view.device_gesture.next_request().is_none());
+            let (phase, sequence) = view.device_gesture.terminal().unwrap();
+            assert_eq!(phase, GesturePhase::Commit);
             assert!(view.project_open.permits_save());
             assert!(matches!(
                 view.device_gesture_barriers.front(),
@@ -440,7 +441,7 @@ mod tests {
                 &GestureAck {
                     key,
                     phase: GesturePhase::Commit,
-                    sequence: terminal.sequence(),
+                    sequence,
                     accepted: false,
                     preview_retained: true,
                     source_lost: false,

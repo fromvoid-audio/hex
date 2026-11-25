@@ -231,7 +231,9 @@ struct Packet {
     uint32_t dense_id=0,dense_steps=0;
     std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
-    size_t note_count=0;
+    struct ChannelPressure { uint16_t offset; uint8_t channel,value; };
+    std::array<ChannelPressure,hex_instance::LEGACY_INPUT_NOTE_COUNT> pressures{};
+    size_t note_count=0,pressure_count=0;
     size_t parameter_count=0;
     size_t reply_parameter_count=0,timing_change_count=0;
     bool reply_parameters_coalesced=false;
@@ -397,25 +399,34 @@ struct Packet {
         }
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
         const auto* payload=p+header_size+frames*8;
-        for (size_t n=0;n<note_count;++n) {
+        const auto event_count=note_count;
+        note_count=0;pressure_count=0;
+        uint64_t previous_offset=0;
+        for (size_t n=0;n<event_count;++n) {
             const auto* raw=payload+n*note_bytes;
             const auto offset=number(raw,2);
             const auto status=raw[3]&0xf0;
             const auto note_id=identified_notes?number(raw+8,4):0;
-            if (offset>=frames || raw[2]!=3 || (status!=0x80 && status!=0x90 && status!=0xa0) ||
+            if (offset>=frames || offset<previous_offset ||
                 raw[4]>=128 || raw[5]>=128 || raw[6]>1 || raw[7] ||
                 (dense_notes && !note_id) ||
-                note_id>static_cast<uint64_t>(std::numeric_limits<int32_t>::max()) ||
-                (n && notes[n-1].offset>static_cast<int32_t>(offset))) return -1;
+                note_id>static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) return -1;
+            previous_offset=offset;
+            if(status==0xd0) {
+                if(raw[2]!=2 || raw[5] || note_id || pressure_count>=pressures.size()) return -1;
+                pressures[pressure_count++]={static_cast<uint16_t>(offset),static_cast<uint8_t>(raw[3]&15),raw[4]};
+                continue;
+            }
+            if(raw[2]!=3 || (status!=0x80 && status!=0x90 && status!=0xa0)) return -1;
             using hex_instance::InputNoteKind;
             auto kind=InputNoteKind::Off;
             if(status==0xa0) kind=InputNoteKind::PolyPressure;
             else if(status==0x90 && raw[5]!=0) kind=InputNoteKind::On;
-            notes[n]={static_cast<int32_t>(offset),static_cast<int16_t>(raw[3]&0x0f),
+            notes[note_count++]={static_cast<int32_t>(offset),static_cast<int16_t>(raw[3]&0x0f),
                 static_cast<int16_t>(raw[4]),raw[5],kind,
                 note_id?static_cast<int32_t>(note_id):-1,raw[6]!=0};
         }
-        const auto* points=payload+note_count*note_bytes;
+        const auto* points=payload+event_count*note_bytes;
         if(!parse_parameters(points,frames)) return -1;
         if(dense_parameter) {
             const auto* raw=p+header_size+payload_bytes-dense_bytes;

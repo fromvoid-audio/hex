@@ -4282,6 +4282,29 @@ fn held_replacement_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestA
     held_recovery_allows_queued_duplicate(cx, 3);
 }
 
+// Capture the real worker receipt while recovery is held. Each test chooses
+// when the UI receives it so a repaint or audio tick cannot drain it early.
+fn section_copy_completion(service: &Service, revision: u64) -> hex_session::service::Event {
+    let deadline = crate::test_wait::hang_deadline();
+    loop {
+        match service.try_event() {
+            Ok(event) => {
+                assert!(
+                    event.request_complete && event.error.is_none(),
+                    "{:?}",
+                    event.error
+                );
+                assert_eq!(event.state.revision, revision);
+                return event;
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) if Instant::now() < deadline => {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("section copy completion unavailable: {error}"),
+        }
+    }
+}
+
 fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8) {
     use std::sync::atomic::Ordering::Acquire;
 
@@ -4394,11 +4417,10 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
         ) => *id,
         _ => panic!("expected first copied section"),
     };
+    let first_terminal = editor.read_with(&visual, |view, _| {
+        section_copy_completion(&view.service, revision + 1)
+    });
     editor.update(&mut visual, |view, cx| {
-        assert!(
-            view.service.try_event().is_err(),
-            "first terminal waits for recovery"
-        );
         assert!(view.observe_duplicate_view(first.take().unwrap()));
         assert!(view.sections.ahead.is_some());
         cx.notify();
@@ -4441,11 +4463,10 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
     } else {
         expected
     };
+    let second_terminal = editor.read_with(&visual, |view, _| {
+        section_copy_completion(&view.service, revision + 2)
+    });
     editor.update(&mut visual, |view, cx| {
-        assert!(
-            view.service.try_event().is_err(),
-            "ordered terminals still wait for recovery"
-        );
         assert!(view.observe_duplicate_view(second));
         cx.notify();
     });
@@ -4490,23 +4511,6 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
     let marker = visual.debug_bounds("arrangement-section-1").unwrap();
     gate.release()
         .expect("checkpoint must still be held after the second copy and Play");
-    let first_terminal = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "first durable terminal");
-        std::thread::yield_now();
-    };
-    let second_terminal = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "second durable terminal");
-        std::thread::yield_now();
-    };
-    assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
     editor.update(&mut visual, |view, cx| {
         view.receive(first_terminal);
         assert!(Arc::ptr_eq(
@@ -4677,6 +4681,9 @@ fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, co
             Err(error) => panic!("checkpoint gate failed: {error}"),
         }
     }
+    let terminal = editor.read_with(&visual, |view, _| {
+        section_copy_completion(&view.service, original_revision + 1)
+    });
     let copied = match observation.kind {
         hex_session::service::ArrangementEditViewKind::Duplicate(
             hex_project::Created::ArrangementSection(id),
@@ -4782,15 +4789,6 @@ fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, co
     });
     gate.release()
         .expect("checkpoint remains held until after Play");
-    let terminal = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "section terminal");
-        std::thread::yield_now();
-    };
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
     editor.update(&mut visual, |view, cx| {
         view.receive(terminal);
         assert_eq!(view.playback_start_frame(), expected);

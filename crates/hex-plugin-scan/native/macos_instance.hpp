@@ -86,13 +86,13 @@ public:
     // the caller must also retain its module rather than unload live objects.
     ~Instance() = default;
 
-    bool open(IPluginFactory* admitted_factory,const TUID class_id,bool trace_messages=false,bool editor_groups=false) {
+    bool open(IPluginFactory* admitted_factory,const TUID class_id,bool trace_messages=false,bool editor_groups=false,bool instrument=false) {
         if (![NSThread isMainThread] || used || !admitted_factory || quarantined.load())
             return false;
         used = true;
         factory = admitted_factory;
         factory->addRef();
-        host = new(std::nothrow) Host(trace_messages,editor_groups);
+        host = new(std::nothrow) Host(trace_messages,editor_groups,instrument);
         if (!host) return false;
         if (factory->createInstance(class_id, INLINE_UID_OF(IComponent),
                                     reinterpret_cast<void**>(&component)) != kResultOk || !component)

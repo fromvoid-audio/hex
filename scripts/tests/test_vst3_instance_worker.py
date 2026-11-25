@@ -492,8 +492,9 @@ class NativeInstanceTests(unittest.TestCase):
     def instrument_block(self, session, notes, frames=8):
         header = bytearray(session.packet(frames))
         struct.pack_into("<H", header, 8, len(notes))
-        events = b"".join(struct.pack("<HBBBB2x", offset, 3, status, key, velocity)
-                          for offset, status, key, velocity in notes)
+        events = b"".join(struct.pack("<HBBBB2x", offset, 2 if status >> 4 == 0xd else 3,
+                                      status, key, value)
+                          for offset, status, key, value in notes)
         session.socket.sendall(header + bytes(frames * 8) + events)
         reply = session.message()
         session.sequence += 1
@@ -515,6 +516,75 @@ class NativeInstanceTests(unittest.TestCase):
                     self.assertEqual(reply[8:10], bytes(2))
                     self.assertEqual(struct.unpack("<16f", reply[64:]), tuple(x for v in expected for x in (v, v)))
                 self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (3, 24))
+
+    def test_unmapped_channel_pressure_keeps_held_instrument_playing(self):
+        session = self.session(variant=115, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        magic, reply = self.instrument_block(session, [
+            (0, 0x92, 60, 127), (3, 0xd2, 64, 0), (6, 0x82, 60, 0),
+        ])
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<16f", reply[64:]), (0.5,) * 12 + (0.0,) * 4)
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
+    def test_channel_pressure_uses_channel_assignment_and_authored_collision_order(self):
+        session = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        notes = [(0, 3, 0x92, 60, 127), (1, 2, 0xd1, 0, 0), (3, 2, 0xd2, 64, 0),
+                 (5, 2, 0xd2, 127, 0), (7, 3, 0x82, 60, 0)]
+        authored = [(0, 7, 0.25), (5, 7, 0.75)]
+        header = bytearray(session.packet(8))
+        struct.pack_into("<HHHH", header, 4, 0x8002, 8, len(notes), len(authored))
+        events = b"".join(struct.pack("<HBBBB2x", *row) for row in notes)
+        points = b"".join(struct.pack("<H2xIdI", *row, 0) for row in authored)
+        session.socket.sendall(header + bytes(64) + events + points)
+        magic, reply = session.message()
+        self.assertEqual(magic, b"HXVB")
+        peak = 2 * 64 / 127
+        curve = [0.5, (1 + peak) / 3, (0.5 + 2 * peak) / 3, peak,
+                 (peak + 1.5) / 2, 1.5, 1.5, 0]
+        for sample, expected in zip(struct.unpack_from("<16f", reply, 64),
+                                    (v for frame in curve for v in (frame, frame))):
+            self.assertAlmostEqual(sample, expected, places=6)
+        session.sequence += 1
+        session.frames += 8
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
+    def test_controller_remap_moves_pressure_to_the_new_channel(self):
+        release = self.root / "remap-pressure"
+        with patch.dict(os.environ, {"HEX_ORIGINAL_INSTANCE_RELEASE": str(release)}):
+            session = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        magic, reply = self.instrument_block(session, [(0, 0x92, 60, 127), (0, 0xd2, 0, 0)])
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack_from("<16f", reply, 64), (0.0,) * 16)
+        release.touch()
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            # The old assignment would apply the final zero to the held note.
+            magic, reply = self.instrument_block(session, [(0, 0xd1, 127, 0), (0, 0xd2, 0, 0)])
+            self.assertEqual(magic, b"HXVB")
+            if all(v > 0 for v in struct.unpack_from("<16f", reply, 64)):
+                break
+        else:
+            self.fail("refreshed channel assignment did not reach the held instrument")
+        self.terminal(session, 0, message=session.stop())
+
+    def test_invalid_channel_pressure_refuses_before_instrument_processing(self):
+        for offset, size, value, padding, identity, count in (
+            (8, 2, 64, 0, 0, 1), (0, 3, 64, 0, 0, 1), (0, 2, 128, 0, 0, 1),
+            (0, 2, 64, 1, 0, 1), (0, 2, 64, 0, 41, 1), (0, 2, 64, 0, 0, 65),
+        ):
+            with self.subTest(row=(offset, size, value, padding, identity, count)):
+                session = self.session(variant=145, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD05")
+                header = bytearray(session.packet(8))
+                struct.pack_into("<HHH", header, 4, 3, 8, count)
+                event = struct.pack("<HBBBB2xI", offset, size, 0xd2, value, padding, identity)
+                session.socket.sendall(header + bytes(64) + event * count)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
 
     def test_instrument_poly_pressure_preserves_note_identity_and_sample_offset(self):
         for identity, live in ((41, True), (0, False)):
@@ -712,6 +782,7 @@ class NativeInstanceTests(unittest.TestCase):
     def test_midi_outside_the_active_instrument_bus_refuses_before_dsp(self):
         for channels, variant, note in [
             ((0, 2), 115, (0, 0x94, 60, 127)),  # the fixture has four MIDI channels
+            ((0, 2), 145, (0, 0xd4, 64, 0)),
             ((0, 2), 115, (0, 0xb2, 60, 127)),  # controllers are not note events
             ((2, 2), 0, (0, 0x92, 60, 127)),
         ]:
