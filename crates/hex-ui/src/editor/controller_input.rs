@@ -98,11 +98,15 @@ pub(super) struct ControllerInput {
     ports: Vec<hex_midi::Port>,
     port_selector: Option<Entity<Selector>>,
     channel_selector: Option<Entity<Selector>>,
+    mpe_zone_selector: Option<Entity<Selector>>,
+    mpe_members_selector: Option<Entity<Selector>>,
     subscriptions: Vec<gpui::Subscription>,
     selected_port: Option<hex_midi::Port>,
     all_ports: bool,
     channel: u8,
     omni: bool,
+    mpe_zone: Option<hex_preferences::MidiInputMpeZone>,
+    mpe_member_channels: u8,
     target: Option<(u64, hex_project::TrackId, hex_project::DeviceId)>,
     input: Option<Arc<LiveExpressionInput>>,
     held_notes: Option<Arc<hex_midi::HeldNoteInput>>,
@@ -129,6 +133,69 @@ pub(super) struct ControllerInput {
     previous_focus: Option<FocusHandle>,
 }
 impl ControllerInput {
+    fn effective_mpe_member_channels(&self) -> u8 {
+        if (1..=15).contains(&self.mpe_member_channels) {
+            self.mpe_member_channels
+        } else {
+            15
+        }
+    }
+    fn mpe_config(&self) -> Result<Option<hex_midi::MpeConfig>, &'static str> {
+        let Some(zone) = self.mpe_zone else {
+            return Ok(None);
+        };
+        let mpe_zone = match zone.kind {
+            hex_preferences::MidiInputMpeZoneKind::Lower => hex_midi::MpeZone::Lower {
+                member_channels: zone.member_channels,
+            },
+            hex_preferences::MidiInputMpeZoneKind::Upper => hex_midi::MpeZone::Upper {
+                member_channels: zone.member_channels,
+            },
+        };
+        hex_midi::MpeConfig::new(mpe_zone, hex_midi::DEFAULT_MPE_PITCH_BEND_SEMITONES)
+            .map(Some)
+            .ok_or("mpe member channels must be between 1 and 15")
+    }
+    fn mpe_zone_selector_index(&self) -> usize {
+        match self.mpe_zone.map(|zone| zone.kind) {
+            None => 0,
+            Some(hex_preferences::MidiInputMpeZoneKind::Lower) => 1,
+            Some(hex_preferences::MidiInputMpeZoneKind::Upper) => 2,
+        }
+    }
+    fn mpe_members_selector_index(&self) -> usize {
+        let count = self
+            .mpe_zone
+            .map(|zone| zone.member_channels)
+            .unwrap_or_else(|| self.effective_mpe_member_channels())
+            .clamp(1, 15);
+        usize::from(count - 1)
+    }
+    fn mpe_zone_summary(&self) -> Option<String> {
+        let zone = self.mpe_zone?;
+        if !(1..=15).contains(&zone.member_channels) {
+            return Some("mpe zone invalid · member channels must be 1–15".into());
+        }
+        let n = zone.member_channels;
+        match zone.kind {
+            hex_preferences::MidiInputMpeZoneKind::Lower => {
+                let end = 1 + n;
+                if n == 1 {
+                    Some("lower zone · master ch 1 · member ch 2".into())
+                } else {
+                    Some(format!("lower zone · master ch 1 · members ch 2–{end}"))
+                }
+            }
+            hex_preferences::MidiInputMpeZoneKind::Upper => {
+                let start = 16 - n;
+                if n == 1 {
+                    Some("upper zone · master ch 16 · member ch 15".into())
+                } else {
+                    Some(format!("upper zone · master ch 16 · members ch {start}–15"))
+                }
+            }
+        }
+    }
     fn has_selected_ports(&self) -> bool {
         self.selected_port.is_some() || (self.all_ports && !self.ports.is_empty())
     }
@@ -566,12 +633,43 @@ impl EditorView {
             self.controller_input.channel_selector_index(),
             theme::control_style(),
         );
-        let (Ok(port_config), Ok(channel_config)) = (port_config, channel_config) else {
+        let mpe_zone_choices = [
+            theme::text("mpe off"),
+            theme::text("mpe lower zone"),
+            theme::text("mpe upper zone"),
+        ];
+        let mpe_zone_config = SelectorConfig::new(
+            "controller-input-mpe-zone",
+            mpe_zone_choices,
+            self.controller_input.mpe_zone_selector_index(),
+            theme::control_style(),
+        );
+        let mpe_members_choices = (1_u8..=15).map(|count| {
+            if count == 1 {
+                theme::text("1 member channel")
+            } else {
+                theme::text(format!("{count} member channels"))
+            }
+        });
+        let mpe_members_config = SelectorConfig::new(
+            "controller-input-mpe-members",
+            mpe_members_choices,
+            self.controller_input.mpe_members_selector_index(),
+            theme::control_style(),
+        );
+        let (Ok(port_config), Ok(channel_config), Ok(mpe_zone_config), Ok(mpe_members_config)) = (
+            port_config,
+            channel_config,
+            mpe_zone_config,
+            mpe_members_config,
+        ) else {
             self.error = Some("controller input options exceed supported limits".into());
             return;
         };
         let port = cx.new(|cx| Selector::from_config(cx, port_config));
         let channel = cx.new(|cx| Selector::from_config(cx, channel_config));
+        let mpe_zone = cx.new(|cx| Selector::from_config(cx, mpe_zone_config));
+        let mpe_members = cx.new(|cx| Selector::from_config(cx, mpe_members_config));
         let port_subscription = cx.subscribe(&port, |view, _, event: &SelectorChanged, cx| {
             view.select_controller_port(event.index, cx)
         });
@@ -596,11 +694,69 @@ impl EditorView {
                 view.tick_controller_input(cx);
                 cx.notify();
             });
-        self.controller_input
-            .subscriptions
-            .extend([port_subscription, channel_subscription]);
+        let mpe_zone_subscription = cx
+            .subscribe(&mpe_zone, |view, _, event: &SelectorChanged, cx| {
+                view.select_controller_mpe_zone(event.index, cx)
+            });
+        let mpe_members_subscription =
+            cx.subscribe(&mpe_members, |view, _, event: &SelectorChanged, cx| {
+                view.select_controller_mpe_members(event.index, cx)
+            });
+        self.controller_input.subscriptions.extend([
+            port_subscription,
+            channel_subscription,
+            mpe_zone_subscription,
+            mpe_members_subscription,
+        ]);
         self.controller_input.port_selector = Some(port);
         self.controller_input.channel_selector = Some(channel);
+        self.controller_input.mpe_zone_selector = Some(mpe_zone);
+        self.controller_input.mpe_members_selector = Some(mpe_members);
+    }
+    fn select_controller_mpe_zone(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.controller_preferences_editable() || index > 2 {
+            self.sync_controller_selectors(cx);
+            return;
+        }
+        self.controller_input.cancel();
+        self.controller_input.step_faulted = false;
+        let members = self.controller_input.effective_mpe_member_channels();
+        let next = match index {
+            0 => None,
+            1 => Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Lower,
+                member_channels: members,
+            }),
+            2 => Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Upper,
+                member_channels: members,
+            }),
+            _ => return,
+        };
+        self.controller_input.mpe_zone = next;
+        self.controller_input.preferences.value.mpe_zone = next;
+        self.save_controller_preferences(cx);
+        self.sync_controller_selectors(cx);
+        self.tick_controller_input(cx);
+        cx.notify();
+    }
+    fn select_controller_mpe_members(&mut self, index: usize, cx: &mut Context<Self>) {
+        if !self.controller_preferences_editable() || index >= 15 {
+            self.sync_controller_selectors(cx);
+            return;
+        }
+        let members = (index + 1) as u8;
+        self.controller_input.cancel();
+        self.controller_input.step_faulted = false;
+        self.controller_input.mpe_member_channels = members;
+        if let Some(zone) = &mut self.controller_input.mpe_zone {
+            zone.member_channels = members;
+            self.controller_input.preferences.value.mpe_zone = Some(*zone);
+            self.save_controller_preferences(cx);
+        }
+        self.sync_controller_selectors(cx);
+        self.tick_controller_input(cx);
+        cx.notify();
     }
     fn sync_controller_selectors(&mut self, cx: &mut Context<Self>) {
         let index = self.controller_input.port_selector_index();
@@ -613,6 +769,18 @@ impl EditorView {
             let channel_index = self.controller_input.channel_selector_index();
             selector.update(cx, |selector, cx| {
                 let _ = selector.set_selected(channel_index, cx);
+            });
+        }
+        if let Some(selector) = &self.controller_input.mpe_zone_selector {
+            let zone_index = self.controller_input.mpe_zone_selector_index();
+            selector.update(cx, |selector, cx| {
+                let _ = selector.set_selected(zone_index, cx);
+            });
+        }
+        if let Some(selector) = &self.controller_input.mpe_members_selector {
+            let members_index = self.controller_input.mpe_members_selector_index();
+            selector.update(cx, |selector, cx| {
+                let _ = selector.set_selected(members_index, cx);
             });
         }
     }
@@ -807,6 +975,14 @@ impl EditorView {
         let Some(notes) = self.controller_input.held_notes.as_ref() else {
             return;
         };
+        let mpe_config = match self.controller_input.mpe_config() {
+            Ok(config) => config,
+            Err(error) => {
+                self.controller_input.cancel();
+                self.error = Some(error.into());
+                return;
+            }
+        };
         let activation = match note_input.begin_live_notes_activation_on_control() {
             Ok(activation) => activation,
             Err(error) => {
@@ -822,7 +998,14 @@ impl EditorView {
         self.controller_input.note_input = Some((Arc::clone(&note_input), activation));
         let sink = monitoring::sink(expression, held, note_input, activation);
         self.controller_input.connecting = true;
-        let command = if ports.len() == 1 && !self.controller_input.omni {
+        let command = if let Some(config) = mpe_config {
+            hex_midi::Command::ConnectMpe {
+                activation: self.controller_input.activation,
+                ports,
+                config,
+                sink,
+            }
+        } else if ports.len() == 1 && !self.controller_input.omni {
             hex_midi::Command::Connect {
                 activation: self.controller_input.activation,
                 port: ports.into_iter().next().unwrap_or(hex_midi::Port {
@@ -919,12 +1102,18 @@ impl EditorView {
             )])
     }
     pub(super) fn controller_input_settings(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let status = if self.controller_input.preferences.loading {
+        let status = if self.document_audio_mode
+            == hex_session::DocumentAudioMode::VerifiedStreaming
+        {
+            "unsupported (streaming)"
+        } else if self.controller_input.preferences.loading {
             "loading"
         } else if self.controller_input.preferences.saving {
             "saving"
         } else if self.controller_input.preferences.unwritable {
             "settings unavailable"
+        } else if self.controller_input.mpe_config().is_err() {
+            "invalid mpe zone"
         } else if !self.controller_input.has_selected_ports()
             && (self.controller_input.preferences.value.all_ports
                 || !self
@@ -955,11 +1144,14 @@ impl EditorView {
             }
         } else if self.controller_input.connected {
             "connected"
+        } else if self.controller_input.has_selected_ports() && self.controller_target().is_none() {
+            "no active instrument"
         } else if self.controller_input.has_selected_ports() {
             "preparing"
         } else {
             "off"
         };
+        let mpe_summary = self.controller_input.mpe_zone_summary();
         div()
             .id("midi-input-settings")
             .debug_selector(|| "midi-input-settings".into())
@@ -980,6 +1172,22 @@ impl EditorView {
             )
             .children(self.controller_input.port_selector.clone())
             .children(self.controller_input.channel_selector.clone())
+            .children(self.controller_input.mpe_zone_selector.clone())
+            .children(
+                self.controller_input
+                    .mpe_zone
+                    .is_some()
+                    .then(|| self.controller_input.mpe_members_selector.clone())
+                    .flatten(),
+            )
+            .children(mpe_summary.map(|summary| {
+                div()
+                    .id("controller-input-mpe-summary")
+                    .debug_selector(|| "controller-input-mpe-summary".into())
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text(summary))
+            }))
             .children(
                 self.controller_input
                     .preferences
@@ -1032,6 +1240,8 @@ impl EditorView {
                     let selector_open = [
                         &view.controller_input.port_selector,
                         &view.controller_input.channel_selector,
+                        &view.controller_input.mpe_zone_selector,
+                        &view.controller_input.mpe_members_selector,
                     ]
                     .into_iter()
                     .flatten()
@@ -1773,4 +1983,280 @@ fn midi_recording_reprepare_preserves_configured_hardware_when_replacing_cancell
         });
         pump(&editor, &mut visual);
     }
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn mpe_settings_to_worker_activation_persists_valid_zone_rejects_invalid_and_retires_held_notes(
+    cx: &mut gpui::TestAppContext,
+) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    use gpui::{Modifiers, point};
+
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap(),
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+
+    let worker = hex_midi::Worker::start().unwrap();
+    let handle = worker.handle();
+
+    editor.update(&mut visual, |view, cx| {
+        view.controller_input.handle = Some(handle.clone());
+        view.install_controller_selectors(
+            vec![
+                hex_midi::Port {
+                    id: 101,
+                    name: "LinnStrument".into(),
+                },
+                hex_midi::Port {
+                    id: 202,
+                    name: "Seaboard".into(),
+                },
+            ],
+            cx,
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    // Open native Settings (Cmd+,) and verify MPE zone control renders inside the panel.
+    visual.simulate_keystrokes("cmd-,");
+    visual.run_until_parked();
+    let panel = visual.debug_bounds("theme settings panel").unwrap();
+    let mpe_zone_bounds = visual.debug_bounds("controller-input-mpe-zone").unwrap();
+    assert!(mpe_zone_bounds.origin.y >= panel.origin.y);
+    assert!(
+        mpe_zone_bounds.origin.y + mpe_zone_bounds.size.height
+            <= panel.origin.y + panel.size.height
+    );
+    assert!(
+        visual
+            .debug_bounds("controller-input-mpe-members")
+            .is_none(),
+        "member-channel selector stays hidden while MPE is off"
+    );
+
+    // Select Lower Zone via rendered popup interaction!
+    let zone_click = point(
+        mpe_zone_bounds.origin.x + px(10.0),
+        mpe_zone_bounds.origin.y + px(10.0),
+    );
+    visual.simulate_mouse_down(zone_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(zone_click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let lower_option = visual
+        .debug_bounds("controller-input-mpe-zone-option-1")
+        .unwrap();
+    let lower_click = point(
+        lower_option.origin.x + px(10.0),
+        lower_option.origin.y + px(9.0),
+    );
+    visual.simulate_mouse_down(lower_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(lower_click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    // Member selector and zone summary now render cleanly; select 7 member channels (index 6).
+    let members_bounds = visual
+        .debug_bounds("controller-input-mpe-members")
+        .expect("member selector visible when Lower Zone active");
+    assert!(
+        visual
+            .debug_bounds("controller-input-mpe-summary")
+            .is_some()
+    );
+    let members_click = point(
+        members_bounds.origin.x + px(10.0),
+        members_bounds.origin.y + px(10.0),
+    );
+    visual.simulate_mouse_down(members_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(members_click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let seven_option = visual
+        .debug_bounds("controller-input-mpe-members-option-6")
+        .unwrap();
+    let seven_click = point(
+        seven_option.origin.x + px(10.0),
+        seven_option.origin.y + px(9.0),
+    );
+    visual.simulate_mouse_down(seven_click, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(seven_click, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    // Preferences persisted Lower Zone with 7 members on disk.
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.controller_input.mpe_zone,
+            Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+            })
+        );
+        let persisted = hex_preferences::load_midi_input_preferences(
+            view.controller_input.preferences.path.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            persisted.mpe_zone,
+            Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+            })
+        );
+    });
+
+    // Activate port 101 in MPE mode with prepared live-notes root -> real worker receives
+    // ConnectMpe and answers with an explicit Connection event (synthetic port unavailable),
+    // cancelling its sink cleanly rather than leaving a dangling activation.
+    let (worker_held, worker_activation) = editor.update(&mut visual, |view, cx| {
+        let live_root = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+                .with_live_notes()
+                .unwrap(),
+        );
+        view.computer_keyboard.input = Some(Arc::clone(&live_root));
+        view.computer_keyboard.prepared = true;
+        view.computer_keyboard.target = view
+            .controller_target()
+            .map(|(generation, track, _)| (generation, 0, track));
+        view.select_controller_port(1, cx);
+        view.controller_expression_prepared();
+        assert!(view.controller_input.connecting);
+        let held = Arc::clone(view.controller_input.held_notes.as_ref().unwrap());
+        (held, view.controller_input.activation)
+    });
+    let deadline = crate::test_wait::hang_deadline();
+    let worker_reply = loop {
+        match handle.try_event() {
+            Ok(hex_midi::Event::Connection { activation, result })
+                if activation == worker_activation =>
+            {
+                break result;
+            }
+            Ok(_) => {}
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                assert!(std::time::Instant::now() < deadline, "real worker reply");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(err) => panic!("unexpected worker channel error: {err:?}"),
+        }
+    };
+    assert!(
+        worker_reply.is_err(),
+        "synthetic non-hardware port must be refused cleanly by real worker"
+    );
+    assert!(
+        worker_held.is_cancelled(),
+        "refused worker activation must cancel its held-note sink"
+    );
+
+    // Detach the hardware worker handle so stale-activation, zone-switch, and device-switch
+    // retirement transitions run deterministically without racing CoreMIDI lookup.
+    editor.update(&mut visual, |view, cx| {
+        view.controller_input.handle = None;
+        view.select_controller_port(1, cx);
+    });
+    visual.run_until_parked();
+    let (first_held, first_input, first_token, first_activation) =
+        editor.update(&mut visual, |view, _| {
+            let live_root = Arc::clone(view.computer_keyboard.input.as_ref().unwrap());
+            let token = live_root.begin_live_notes_activation_on_control().unwrap();
+            let held = Arc::new(hex_midi::HeldNoteInput::default());
+            view.controller_input.held_notes = Some(Arc::clone(&held));
+            view.controller_input.note_input = Some((Arc::clone(&live_root), token));
+            view.controller_input.connected = true;
+            (held, live_root, token, view.controller_input.activation)
+        });
+
+    // Stale activation reply from an older generation cannot cancel or mark the active connection.
+    editor.update(&mut visual, |view, _| {
+        assert_eq!(
+            view.controller_input
+                .connection_event(first_activation.saturating_sub(1), Err("stale".into())),
+            None
+        );
+        assert!(!first_held.is_cancelled());
+        assert!(
+            first_input
+                .live_notes()
+                .unwrap()
+                .same_current_activation(first_token)
+        );
+    });
+
+    // Switching zone to Upper (index 2) cancels the previous activation and retires all held notes safely.
+    editor.update(&mut visual, |view, cx| {
+        view.select_controller_mpe_zone(2, cx);
+    });
+    visual.run_until_parked();
+    assert!(first_held.is_cancelled());
+    assert!(
+        !first_input
+            .live_notes()
+            .unwrap()
+            .same_current_activation(first_token)
+    );
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.controller_input.mpe_zone,
+            Some(hex_preferences::MidiInputMpeZone {
+                kind: hex_preferences::MidiInputMpeZoneKind::Upper,
+                member_channels: 7,
+            })
+        );
+        assert_eq!(
+            view.controller_input.mpe_zone_summary().as_deref(),
+            Some("upper zone · master ch 16 · members ch 9–15")
+        );
+    });
+
+    // Device switch (port 101 -> port 202) retires held notes from port 101 and updates preferences.
+    let second_held = editor.update(&mut visual, |view, cx| {
+        let held = Arc::new(hex_midi::HeldNoteInput::default());
+        view.controller_input.held_notes = Some(Arc::clone(&held));
+        view.controller_input.connected = true;
+        view.select_controller_port(2, cx);
+        held
+    });
+    visual.run_until_parked();
+    assert!(second_held.is_cancelled());
+
+    // Invalid zone (member_channels: 0) is refused explicitly before sending to worker.
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, cx| {
+        let target = view.controller_target().unwrap();
+        view.controller_input.handle = Some(handle.clone());
+        view.controller_input.target = Some(target);
+        view.controller_input.input = Some(Arc::new(LiveExpressionInput::new(
+            target.0, target.1, target.2,
+        )));
+        view.controller_input.held_notes = Some(Arc::new(hex_midi::HeldNoteInput::default()));
+        view.controller_input.mpe_zone = Some(hex_preferences::MidiInputMpeZone {
+            kind: hex_preferences::MidiInputMpeZoneKind::Lower,
+            member_channels: 0,
+        });
+        assert!(view.controller_input.mpe_config().is_err());
+        view.controller_expression_prepared();
+        assert!(!view.controller_input.connecting);
+        assert!(view.error.is_some());
+        // Turning MPE back off restores ordinary single-channel behavior cleanly.
+        view.controller_input.handle = None;
+        view.select_controller_mpe_zone(0, cx);
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.controller_input.mpe_zone, None);
+        assert_eq!(view.controller_input.mpe_config(), Ok(None));
+        let persisted = hex_preferences::load_midi_input_preferences(
+            view.controller_input.preferences.path.as_ref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted.mpe_zone, None);
+    });
 }

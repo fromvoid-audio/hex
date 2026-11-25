@@ -334,6 +334,17 @@ impl Decoder {
         let mut out = [MpeExpressionEvent::AllNotesOff; 16];
         let count = mpe.decode_message_into(slice, &mut out);
         for event in &out[..count] {
+            if self.held_fault.is_none() {
+                match self.held.observe_mpe_event(&mut self.held_channels, *event) {
+                    Ok(changed) => self.held_changed |= changed,
+                    Err(fault) => {
+                        self.held.clear();
+                        self.held_channels.fill(0);
+                        self.held_fault = Some(fault);
+                        self.held_changed = true;
+                    }
+                }
+            }
             emit(*event);
         }
         let master = ChannelFilter::Single(mpe.config().zone.master_channel());
@@ -561,6 +572,7 @@ pub fn deliver_timed_packets_with_notes_filtered<'a>(
 
 struct AggregatedState {
     decoders: Vec<Decoder>,
+    mpe_decoders: Vec<MpeDecoder>,
     current: Controllers,
     clock: MonotonicTimestampClock,
     merged_through: u64,
@@ -570,12 +582,15 @@ struct AggregatedState {
 
 /// Bounded multi-port MIDI input aggregator (up to [`MAX_AGGREGATED_PORTS`] ports).
 ///
-/// Each port retains its own isolated [`Decoder`] so running status, SysEx framing,
-/// and per-port burst overflow never bleed across physical inputs. One control-side
+/// Each port retains its own isolated [`Decoder`] (and optional [`MpeDecoder`])
+/// so running status, SysEx framing, MPE per-channel note ownership, and
+/// per-port burst overflow never bleed across physical inputs. One control-side
 /// mutex serializes merged controller snapshots, monotonic cross-port timestamps,
-/// ordered note/CC delivery, and sole-writer publication into [`HeldNoteInput`].
+/// ordered note/CC/per-note expression delivery, and sole-writer publication
+/// into [`HeldNoteInput`].
 pub struct MultiPortAggregator {
     filter: ChannelFilter,
+    mpe: Option<MpeConfig>,
     timebase: MachTimebase,
     notes: Arc<HeldNoteInput>,
     state: std::sync::Mutex<AggregatedState>,
@@ -607,10 +622,60 @@ impl MultiPortAggregator {
         }
         Ok(Self {
             filter,
+            mpe: None,
             timebase,
             notes,
             state: std::sync::Mutex::new(AggregatedState {
                 decoders,
+                mpe_decoders: Vec::new(),
+                current: Controllers::default(),
+                clock: MonotonicTimestampClock::default(),
+                merged_through: 0,
+                publish,
+                note,
+            }),
+        })
+    }
+
+    /// Construct a bounded multi-port MPE aggregator for `port_count` distinct
+    /// input ports (`1..=MAX_AGGREGATED_PORTS`) with one validated [`MpeConfig`].
+    pub fn new_mpe(
+        port_count: usize,
+        config: MpeConfig,
+        timebase: MachTimebase,
+        notes: Arc<HeldNoteInput>,
+        publish: Box<dyn Fn(Controllers) + Send>,
+        note: Box<dyn Fn(TimestampedNoteEvent) + Send>,
+    ) -> Result<Self, &'static str> {
+        if port_count == 0 || port_count > MAX_AGGREGATED_PORTS {
+            return Err("controller port count must be between 1 and 16");
+        }
+        if !config.zone.is_valid()
+            || config.pitch_bend_range_semitones == 0
+            || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+        {
+            return Err("controller mpe zone configuration is invalid");
+        }
+        let mut decoders = Vec::new();
+        decoders
+            .try_reserve_exact(port_count)
+            .map_err(|_| "could not allocate midi port decoders")?;
+        let mut mpe_decoders = Vec::new();
+        mpe_decoders
+            .try_reserve_exact(port_count)
+            .map_err(|_| "could not allocate mpe port decoders")?;
+        for _ in 0..port_count {
+            decoders.push(Decoder::default());
+            mpe_decoders.push(MpeDecoder::new(config));
+        }
+        Ok(Self {
+            filter: ChannelFilter::Omni,
+            mpe: Some(config),
+            timebase,
+            notes,
+            state: std::sync::Mutex::new(AggregatedState {
+                decoders,
+                mpe_decoders,
                 current: Controllers::default(),
                 clock: MonotonicTimestampClock::default(),
                 merged_through: 0,
@@ -638,6 +703,7 @@ impl MultiPortAggregator {
         }
         let AggregatedState {
             decoders,
+            mpe_decoders,
             current,
             clock,
             merged_through,
@@ -645,6 +711,11 @@ impl MultiPortAggregator {
             note,
         } = &mut *state;
         let decoder = &mut decoders[port_index];
+        let mut mpe_decoder = if self.mpe.is_some() {
+            mpe_decoders.get_mut(port_index)
+        } else {
+            None
+        };
         let mut remaining = CALLBACK_BYTES;
         let mut any_held_change = false;
         for (index, packet) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
@@ -662,21 +733,98 @@ impl MultiPortAggregator {
                     event,
                 });
             };
-            for byte in accepted {
-                if let Some(next) =
-                    decoder.byte_with_notes_filtered(*byte, self.filter, *current, &emit)
-                {
-                    *current = next;
-                    publish(*current);
+            if let Some(mpe) = mpe_decoder.as_deref_mut() {
+                let emit_mpe = |event: MpeExpressionEvent| {
+                    let mapped = match event {
+                        MpeExpressionEvent::NoteOn {
+                            channel,
+                            pitch,
+                            velocity,
+                        } => Some(NoteEvent::On {
+                            channel,
+                            pitch,
+                            velocity,
+                        }),
+                        MpeExpressionEvent::NoteOff {
+                            channel,
+                            pitch,
+                            velocity,
+                        } => Some(NoteEvent::Off {
+                            channel,
+                            pitch,
+                            velocity,
+                        }),
+                        MpeExpressionEvent::NotePitchBend {
+                            channel,
+                            pitch,
+                            cents,
+                        } => Some(NoteEvent::NotePitchBend {
+                            channel,
+                            pitch,
+                            cents,
+                        }),
+                        MpeExpressionEvent::NoteSlide {
+                            channel,
+                            pitch,
+                            value,
+                        } => Some(NoteEvent::NoteTimbre {
+                            channel,
+                            pitch,
+                            value,
+                        }),
+                        MpeExpressionEvent::NotePressure {
+                            channel,
+                            pitch,
+                            value,
+                        } => Some(NoteEvent::PolyPressure {
+                            channel,
+                            pitch,
+                            value,
+                        }),
+                        MpeExpressionEvent::MasterControlChange { channel, cc, value } => {
+                            Some(NoteEvent::ControlChange { channel, cc, value })
+                        }
+                        MpeExpressionEvent::AllNotesOff => Some(NoteEvent::AllNotesOff),
+                        MpeExpressionEvent::MasterPitchBend { .. }
+                        | MpeExpressionEvent::MasterPressure { .. } => None,
+                    };
+                    if let Some(note_event) = mapped {
+                        emit(note_event);
+                    }
+                };
+                for byte in accepted {
+                    if let Some(next) = decoder.byte_with_mpe(*byte, mpe, *current, &emit_mpe) {
+                        *current = next;
+                        publish(*current);
+                    }
+                    if let Some(fault) = decoder.held_note_fault() {
+                        emit(NoteEvent::InputLost(fault));
+                        self.notes.fail(fault);
+                        return;
+                    }
                 }
-                if let Some(fault) = decoder.held_note_fault() {
-                    self.notes.fail(fault);
-                    return;
+                if overflow {
+                    mpe.reset();
+                    decoder.reset(&emit);
+                    break;
                 }
-            }
-            if overflow {
-                decoder.reset(&emit);
-                break;
+            } else {
+                for byte in accepted {
+                    if let Some(next) =
+                        decoder.byte_with_notes_filtered(*byte, self.filter, *current, &emit)
+                    {
+                        *current = next;
+                        publish(*current);
+                    }
+                    if let Some(fault) = decoder.held_note_fault() {
+                        self.notes.fail(fault);
+                        return;
+                    }
+                }
+                if overflow {
+                    decoder.reset(&emit);
+                    break;
+                }
             }
             remaining -= accepted.len();
         }
@@ -743,6 +891,16 @@ pub enum Command {
         channel_filter: ChannelFilter,
         sink: Sink,
     },
+    /// Connect one or more ports (up to [`MAX_AGGREGATED_PORTS`]) using one
+    /// explicit bounded MPE zone configuration ([`MpeConfig`]). Does not
+    /// auto-negotiate MIDI RPN; invalid zone configurations are rejected and
+    /// cancel the sink.
+    ConnectMpe {
+        activation: u64,
+        ports: Vec<Port>,
+        config: MpeConfig,
+        sink: Sink,
+    },
     Disconnect {
         activation: u64,
     },
@@ -788,7 +946,9 @@ impl Handle {
             Ok(()) => Ok(()),
             Err(mpsc::TrySendError::Full(request) | mpsc::TrySendError::Disconnected(request)) => {
                 if let Request::Command(
-                    Command::Connect { sink, .. } | Command::ConnectPorts { sink, .. },
+                    Command::Connect { sink, .. }
+                    | Command::ConnectPorts { sink, .. }
+                    | Command::ConnectMpe { sink, .. },
                 ) = request
                 {
                     sink.cancel();
@@ -886,7 +1046,9 @@ fn cancel_queued(requests: &Receiver<Request>) {
     for _ in 0..=COMMAND_CAPACITY {
         match requests.try_recv() {
             Ok(Request::Command(
-                Command::Connect { sink, .. } | Command::ConnectPorts { sink, .. },
+                Command::Connect { sink, .. }
+                | Command::ConnectPorts { sink, .. }
+                | Command::ConnectMpe { sink, .. },
             )) => sink.cancel(),
             Ok(_) => {}
             Err(_) => break,
@@ -988,10 +1150,14 @@ mod native {
         }
         Ok(result)
     }
+    enum ConnectMode {
+        Channel(ChannelFilter),
+        Mpe(MpeConfig),
+    }
     fn connect_ports(
         activation: u64,
         ports: Vec<Port>,
-        filter: ChannelFilter,
+        mode: ConnectMode,
         sink: Sink,
     ) -> Result<Active, String> {
         let result = (|| {
@@ -1001,8 +1167,20 @@ mod native {
             if ports.is_empty() || ports.len() > MAX_AGGREGATED_PORTS {
                 return Err("controller port count must be between 1 and 16".into());
             }
-            if !filter.is_valid() {
-                return Err("controller channel is invalid".into());
+            match mode {
+                ConnectMode::Channel(filter) => {
+                    if !filter.is_valid() {
+                        return Err("controller channel is invalid".into());
+                    }
+                }
+                ConnectMode::Mpe(config) => {
+                    if !config.zone.is_valid()
+                        || config.pitch_bend_range_semitones == 0
+                        || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+                    {
+                        return Err("controller mpe zone configuration is invalid".into());
+                    }
+                }
             }
             let mut seen_ids = std::collections::HashSet::with_capacity(ports.len());
             let mut sources = Vec::with_capacity(ports.len());
@@ -1015,17 +1193,26 @@ mod native {
             }
             let client = Client::new("hex controller input")
                 .map_err(|status| format!("controller client failed: {status}"))?;
-            let aggregator = Arc::new(
-                MultiPortAggregator::new(
+            let aggregator = match mode {
+                ConnectMode::Channel(filter) => MultiPortAggregator::new(
                     sources.len(),
                     filter,
                     MachTimebase::host(),
                     Arc::clone(&sink.notes),
                     sink.publish,
                     sink.note,
-                )
-                .map_err(str::to_owned)?,
-            );
+                ),
+                ConnectMode::Mpe(config) => MultiPortAggregator::new_mpe(
+                    sources.len(),
+                    config,
+                    MachTimebase::host(),
+                    Arc::clone(&sink.notes),
+                    sink.publish,
+                    sink.note,
+                ),
+            }
+            .map(Arc::new)
+            .map_err(str::to_owned)?;
             let mut inputs = Vec::with_capacity(sources.len());
             for (port_index, source) in sources.iter().enumerate() {
                 let agg = Arc::clone(&aggregator);
@@ -1120,7 +1307,7 @@ mod native {
                     let result = match connect_ports(
                         activation,
                         vec![port],
-                        ChannelFilter::Single(channel),
+                        ConnectMode::Channel(ChannelFilter::Single(channel)),
                         sink,
                     ) {
                         Ok(connection) => {
@@ -1138,13 +1325,35 @@ mod native {
                     sink,
                 })) => {
                     active.take();
-                    let result = match connect_ports(activation, ports, channel_filter, sink) {
+                    let result = match connect_ports(
+                        activation,
+                        ports,
+                        ConnectMode::Channel(channel_filter),
+                        sink,
+                    ) {
                         Ok(connection) => {
                             active = Some(connection);
                             Ok(true)
                         }
                         Err(error) => Err(error),
                     };
+                    outbox.send(&events, Event::Connection { activation, result });
+                }
+                Ok(Request::Command(Command::ConnectMpe {
+                    activation,
+                    ports,
+                    config,
+                    sink,
+                })) => {
+                    active.take();
+                    let result =
+                        match connect_ports(activation, ports, ConnectMode::Mpe(config), sink) {
+                            Ok(connection) => {
+                                active = Some(connection);
+                                Ok(true)
+                            }
+                            Err(error) => Err(error),
+                        };
                     outbox.send(&events, Event::Connection { activation, result });
                 }
                 Ok(Request::Command(Command::Disconnect { activation })) => {
@@ -1232,6 +1441,9 @@ mod native {
                         activation, sink, ..
                     }
                     | Command::ConnectPorts {
+                        activation, sink, ..
+                    }
+                    | Command::ConnectMpe {
                         activation, sink, ..
                     },
                 )) => {
@@ -1971,5 +2183,198 @@ mod tests {
         let mut pitches: Vec<u8> = merged.after(0).map(|n| n.pitch).collect();
         pitches.sort_unstable();
         assert_eq!(pitches, vec![60, 64]);
+    }
+
+    #[test]
+    fn mpe_multi_port_aggregator_decodes_lower_and_upper_zones_tracks_held_notes_and_rejects_invalid_zones()
+     {
+        let held = Arc::new(HeldNoteInput::default());
+        for bad in [
+            MpeConfig {
+                zone: MpeZone::Lower { member_channels: 0 },
+                pitch_bend_range_semitones: 48,
+            },
+            MpeConfig {
+                zone: MpeZone::Upper {
+                    member_channels: 16,
+                },
+                pitch_bend_range_semitones: 48,
+            },
+            MpeConfig {
+                zone: MpeZone::Lower { member_channels: 7 },
+                pitch_bend_range_semitones: 0,
+            },
+        ] {
+            assert!(
+                MultiPortAggregator::new_mpe(
+                    1,
+                    bad,
+                    MachTimebase::NANOSECONDS,
+                    Arc::clone(&held),
+                    Box::new(|_| {}),
+                    Box::new(|_| {}),
+                )
+                .is_err()
+            );
+        }
+
+        // Upper zone with 4 members: master ch 15, members ch 11..=14.
+        let config = MpeConfig::new(MpeZone::Upper { member_channels: 4 }, 48).unwrap();
+        let delivered = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let delivered_sink = Arc::clone(&delivered);
+        let agg = MultiPortAggregator::new_mpe(
+            1,
+            config,
+            MachTimebase::NANOSECONDS,
+            Arc::clone(&held),
+            Box::new(|_| {}),
+            Box::new(move |ev| {
+                delivered_sink.lock().unwrap().push(ev);
+            }),
+        )
+        .unwrap();
+
+        // Out-of-zone ch 2 is ignored; member ch 14 plays pitch 60 with bend +4800c, timbre 99, pressure 80;
+        // master ch 15 sends mod wheel CC1 = 64.
+        agg.deliver_timed_packets(
+            0,
+            [TimedPacket {
+                timestamp_ticks: 500,
+                data: &[
+                    0x92, 55, 100, // out-of-zone -> ignored
+                    0x9e, 60, 100, // member ch 14 NoteOn
+                    0xee, 127, 127, // member ch 14 max pitch bend (+4800c)
+                    0xbe, 74, 99, // member ch 14 CC74 timbre
+                    0xde, 80, // member ch 14 channel pressure
+                    0xbf, 1, 64, // master ch 15 mod wheel
+                ],
+            }],
+        );
+        let events = delivered.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![
+                TimestampedNoteEvent {
+                    timestamp_ns: 500,
+                    event: NoteEvent::On {
+                        channel: 14,
+                        pitch: 60,
+                        velocity: 100,
+                    },
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 500,
+                    event: NoteEvent::NotePitchBend {
+                        channel: 14,
+                        pitch: 60,
+                        cents: 4800,
+                    },
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 500,
+                    event: NoteEvent::NoteTimbre {
+                        channel: 14,
+                        pitch: 60,
+                        value: 99,
+                    },
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 500,
+                    event: NoteEvent::PolyPressure {
+                        channel: 14,
+                        pitch: 60,
+                        value: 80,
+                    },
+                },
+                TimestampedNoteEvent {
+                    timestamp_ns: 500,
+                    event: NoteEvent::ControlChange {
+                        channel: 15,
+                        cc: 1,
+                        value: 64,
+                    },
+                },
+            ]
+        );
+        assert_eq!(agg.controllers().wheel, 64);
+        let HeldNotesRead::Snapshot(held_now) = held.read() else {
+            panic!("expected held snapshot");
+        };
+        assert_eq!(
+            held_now.after(0).map(|n| n.pitch).collect::<Vec<_>>(),
+            vec![60]
+        );
+
+        // MIDI Reset (0xFF) retires held notes and emits AllNotesOff.
+        agg.deliver_timed_packets(
+            0,
+            [TimedPacket {
+                timestamp_ticks: 900,
+                data: &[0xff],
+            }],
+        );
+        let HeldNotesRead::Snapshot(after_reset) = held.read() else {
+            panic!("expected snapshot after reset");
+        };
+        assert_eq!(after_reset.after(0).count(), 0);
+        assert_eq!(
+            delivered.lock().unwrap().last().unwrap().event,
+            NoteEvent::AllNotesOff
+        );
+    }
+
+    #[test]
+    fn worker_connect_mpe_rejects_invalid_zone_and_cancels_sink_safely() {
+        let worker = Worker::start().unwrap();
+        let handle = worker.handle();
+        let held = Arc::new(HeldNoteInput::default());
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cancel_flag = Arc::clone(&cancelled);
+        let check_flag = Arc::clone(&cancelled);
+        let sink = Sink {
+            publish: Box::new(|_| {}),
+            note: Box::new(|_| {}),
+            notes: Arc::clone(&held),
+            cancel: Box::new(move || cancel_flag.store(true, Ordering::SeqCst)),
+            is_cancelled: Box::new(move || check_flag.load(Ordering::SeqCst)),
+        };
+        handle
+            .send(Command::ConnectMpe {
+                activation: 9,
+                ports: vec![Port {
+                    id: u32::MAX,
+                    name: "synthetic".into(),
+                }],
+                config: MpeConfig {
+                    zone: MpeZone::Lower { member_channels: 0 },
+                    pitch_bend_range_semitones: 48,
+                },
+                sink,
+            })
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let event = loop {
+            match handle.try_event() {
+                Ok(event) => break event,
+                Err(TryRecvError::Empty) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(err) => panic!("expected connection error event: {err:?}"),
+            }
+        };
+        match event {
+            Event::Connection {
+                activation: 9,
+                result: Err(reason),
+            } => {
+                assert!(
+                    reason.contains("invalid") || reason.contains("macos"),
+                    "unexpected error: {reason}"
+                );
+            }
+            other => panic!("unexpected worker event: {other:?}"),
+        }
+        assert!(held.is_cancelled());
+        assert!(cancelled.load(Ordering::SeqCst));
     }
 }
