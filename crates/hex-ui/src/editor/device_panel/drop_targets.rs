@@ -421,12 +421,17 @@ pub(in crate::editor) fn render_device_end_target(
         .active_native_drag
         .as_ref()
         .is_some_and(|drag| {
-            let expected = match drag.source {
+            let expected = if matches!(
+                drag.source,
                 drag::NativeDeviceDragSource::Browser {
                     class: NativeDeviceClass::Instrument,
                     ..
-                } => instrument_target,
-                _ => target,
+                }
+            ) || drag.source.is_catalog_vst3_instrument()
+            {
+                instrument_target
+            } else {
+                target
             };
             drag.destination.get() == Some(expected)
         });
@@ -473,13 +478,19 @@ pub(in crate::editor) fn render_device_end_target(
                     &target_bounds,
                     target_visible_bounds.borrow().as_ref(),
                 );
-            let destination = match payload.source {
+            let destination = if matches!(
+                payload.source,
                 drag::NativeDeviceDragSource::Browser {
                     class: NativeDeviceClass::Instrument,
                     ..
-                } => Some(instrument_target),
-                _ if inside => Some(target),
-                _ => None,
+                }
+            ) || payload.source.is_catalog_vst3_instrument()
+            {
+                Some(instrument_target)
+            } else if inside {
+                Some(target)
+            } else {
+                None
             };
             let previous = payload.destination.get();
             if inside && previous != destination {

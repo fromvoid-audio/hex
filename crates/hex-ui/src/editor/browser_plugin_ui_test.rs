@@ -1952,3 +1952,104 @@ fn vst3_browser_drop_on_arrangement_header_column_gaps_and_tail_inserts_tracks(
         }
     }
 }
+
+#[gpui::test]
+fn vst3_instrument_browser_drop_on_existing_empty_track_header_lane_and_session(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    use hex_session::service::PluginEffectDestination;
+
+    for (mode, selector_prefix, select_target) in [
+        (
+            crate::editor::EditorMode::Arrangement,
+            "arrangement-track-header",
+            false,
+        ),
+        (
+            crate::editor::EditorMode::Arrangement,
+            "arrangement-lane",
+            false,
+        ),
+        (crate::editor::EditorMode::Session, "session-track", false),
+        (
+            crate::editor::EditorMode::Arrangement,
+            "device-drop-end",
+            true,
+        ),
+    ] {
+        let (handle, editor, tracks, directory, _) =
+            browser_drag_fixture_with_tracks(cx, &["selected", "target"]);
+        let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+        let mut catalog = original_plugin_catalog(module);
+        let class = &mut catalog.entries[0]
+            .last_good
+            .as_mut()
+            .unwrap()
+            .discovery
+            .as_mut()
+            .unwrap()
+            .classes[0];
+        class.class_flags = Some(0);
+        class.subcategories = Some("Instrument|Synth".into());
+        class.class_vendor = Some("Original Vendor".into());
+        class.class_version = Some("1".into());
+        class.class_sdk_version = Some("3.8".into());
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(&mut visual, |view, cx| {
+            view.selected_track = Some(if select_target { tracks[1] } else { tracks[0] });
+            if select_target {
+                view.audio_detail.clip_view_open = true;
+                view.device_panel.active = true;
+            }
+            view.mode = mode;
+            view.select_browser_source(BrowserSection::Plugins, cx);
+        });
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            visual.run_until_parked();
+            if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        editor.update(&mut visual, |view, cx| {
+            view.apply_plugin_catalog(catalog, cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let source = visual.debug_bounds("browser-vst3-row-0").unwrap().center();
+        let selector =
+            Box::leak(format!("{selector_prefix}-{}", tracks[1].value()).into_boxed_str());
+        let target = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            point(source.x + px(12.0), source.y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            let pending = view
+                .device_panel
+                .pending_plugin_effect
+                .as_ref()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "vst3 instrument drop on {selector_prefix} must enqueue insertion: {:?}",
+                        view.error
+                    )
+                });
+            assert_eq!(
+                pending.proposal.destination,
+                PluginEffectDestination::Instrument(tracks[1])
+            );
+            assert_eq!(pending.proposal.before, None);
+            assert!(view.error.is_none(), "{:?}", view.error);
+        });
+    }
+}
