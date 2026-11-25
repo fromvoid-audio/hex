@@ -98,6 +98,7 @@ fn held_locator_seek(case: HeldLocatorSeek) {
         "fixture must require a stateful seek"
     );
     let locator_terminal = h.next();
+    assert!(locator_terminal.request_complete && locator_terminal.error.is_none());
     assert!(
         matches!(locator_terminal.created, Some(Created::ArrangementLocator(id)) if id == locator.id())
     );
@@ -164,6 +165,7 @@ fn held_locator_seek(case: HeldLocatorSeek) {
         }
     }
     let seek_terminal = h.next();
+    assert!(seek_terminal.request_complete);
     assert_eq!(
         seek_terminal.error.is_some(),
         matches!(
