@@ -2,6 +2,7 @@
 #define HEX_LIFECYCLE_FIXTURE 1
 #include "macos_fixture.cpp"
 #include "pluginterfaces/vst/ivstparameterchanges.h"
+#include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
@@ -430,8 +431,10 @@ public:
         *out=static_cast<IEditController*>(this);addRef();return kResultOk;
     }
     tresult PLUGIN_API getMidiControllerAssignment(int32 bus,int16 channel,CtrlNumber cc,ParamID& id) override {
-        if(!control() || !context || bus || cc!=128) { ++observed.violations;return kInvalidArgument; }
-        if(channel!=(edits_sent?1:2)) return kResultFalse;
+        if(!control() || !context || bus) { ++observed.violations;return kInvalidArgument; }
+        const int pressure_channel=edits_sent?1:2;
+        if(!((cc==kAfterTouch && channel==pressure_channel) ||
+                (cc==kPitchBend && channel==3-pressure_channel))) return kResultFalse;
         id=parameter_id(fault);return kResultOk;
     }
     tresult PLUGIN_API initialize(FUnknown* host) override {

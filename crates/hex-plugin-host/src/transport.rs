@@ -375,7 +375,7 @@ impl MidiEvent {
             && self
                 .note_id
                 .is_none_or(|id| carries_note_identity && i32::try_from(id.get()).is_ok())
-            && (!self.is_live || carries_note_identity || status == 0xd0)
+            && (!self.is_live || carries_note_identity || matches!(status, 0xd0 | 0xe0))
     }
 }
 
