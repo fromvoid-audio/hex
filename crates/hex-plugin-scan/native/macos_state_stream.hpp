@@ -4,7 +4,7 @@
 #include <Foundation/Foundation.h>
 #include "pluginterfaces/base/ibstream.h"
 #include <algorithm>
-#include <array>
+#include <new>
 #include <atomic>
 #include <cstring>
 #include <cstdint>
@@ -17,21 +17,36 @@ class StateStream final : public Steinberg::IBStream,public Steinberg::ISizeable
     std::atomic<uint32> references{1};
     std::atomic<bool> refused{false};
     uint32_t overflow_bytes=0;
-    size_t limit=0,position=0,length=0;
+    size_t limit=0,position=0;
+    std::vector<unsigned char> bytes;
     bool read_only=false;
     bool control() { if ([NSThread isMainThread]) return true;refused.store(true);return false; }
     Steinberg::tresult invalid() { refused.store(true);return Steinberg::kInvalidArgument; }
+    // All callers validate the logical extent against limit before growing.
+    // Reserve explicitly to keep geometric growth within the combined allowance.
+    bool resize_payload(size_t size) {
+        try {
+            if (size>bytes.capacity())
+                bytes.reserve(std::max(size,std::min(limit,bytes.capacity()*2)));
+            bytes.resize(size);
+            return true;
+        } catch (const std::bad_alloc&) {
+            refused.store(true);
+            return false;
+        }
+    }
     ~StateStream() = default;
 public:
     static constexpr size_t envelope_capacity=512*1024;
     static constexpr size_t capacity=envelope_capacity-96;
-    std::array<unsigned char,capacity> bytes{};
+    const std::vector<unsigned char>& payload() const { return bytes; }
     explicit StateStream(size_t maximum):limit(std::min(maximum,capacity)) {}
     // Restore owns a fixed copied extent. Foreign code may read/seek it but
     // cannot overwrite the caller's captured state or manufacture more bytes.
     StateStream(const unsigned char* source,size_t count):read_only(true) {
         if (count>capacity || (count && !source)) { refused.store(true);return; }
-        limit=length=count;
+        limit=count;
+        if (!resize_payload(count)) return;
         if (count) std::copy_n(source,count,bytes.begin());
     }
     Steinberg::tresult PLUGIN_API queryInterface(const Steinberg::TUID iid,void** out) override {
@@ -57,14 +72,14 @@ public:
     bool exclusive() const { return references.load()==1; }
     bool valid() const { return !refused.load(); }
     uint32_t overflow() const { return overflow_bytes; }
-    size_t size() const { return length; }
+    size_t size() const { return bytes.size(); }
     bool reset_write_on_control(size_t maximum) {
         if (!control() || !valid() || !exclusive() || maximum>capacity) return false;
-        bytes.fill(0);limit=maximum;position=length=0;read_only=false;overflow_bytes=0;return true;
+        bytes.clear();limit=maximum;position=0;read_only=false;overflow_bytes=0;return true;
     }
     bool rewind_read_only_on_control() {
         if (!control() || !valid() || !exclusive()) return false;
-        read_only=true;position=0;limit=length;return true;
+        read_only=true;position=0;limit=bytes.size();return true;
     }
     bool dispose_on_control() {
         if (!control() || !exclusive()) return false;
@@ -73,7 +88,7 @@ public:
     Steinberg::tresult PLUGIN_API read(void* buffer,int32 count,int32* done) override {
         if (done) *done=0;
         if (!control() || count<0 || (count && !buffer)) return invalid();
-        const auto available=position<length?length-position:0;
+        const auto available=position<bytes.size()?bytes.size()-position:0;
         const auto amount=std::min(static_cast<size_t>(count),available);
         if (amount) std::memcpy(buffer,bytes.data()+position,amount);
         position+=amount;if (done) *done=static_cast<int32>(amount);
@@ -89,16 +104,17 @@ public:
             overflow_bytes=std::max(overflow_bytes,static_cast<uint32_t>(std::min(observed,static_cast<size_t>(std::numeric_limits<uint32_t>::max()))));
             return Steinberg::kInvalidArgument;
         }
-        if (position>length) std::fill(bytes.begin()+length,bytes.begin()+position,0);
+        const auto end=position+static_cast<size_t>(count);
+        if (end>bytes.size() && !resize_payload(end)) return Steinberg::kOutOfMemory;
         if (count) std::memcpy(bytes.data()+position,buffer,static_cast<size_t>(count));
-        position+=static_cast<size_t>(count);length=std::max(length,position);
+        position=end;
         if (done) *done=count;return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API seek(int64 offset,int32 mode,int64* result) override {
         if (!control()) return invalid();
         size_t base=0;
         if (mode==kIBSeekCur) base=position;
-        else if (mode==kIBSeekEnd) base=length;
+        else if (mode==kIBSeekEnd) base=bytes.size();
         else if (mode!=kIBSeekSet) return invalid();
         if (offset>=0) {
             if (static_cast<Steinberg::uint64>(offset)>limit-base) return invalid();
@@ -113,7 +129,7 @@ public:
         if (!control() || !result) return invalid();*result=static_cast<int64>(position);return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API getStreamSize(int64& size) override {
-        if (!control()) return invalid();size=static_cast<int64>(length);return Steinberg::kResultOk;
+        if (!control()) return invalid();size=static_cast<int64>(bytes.size());return Steinberg::kResultOk;
     }
     Steinberg::tresult PLUGIN_API setStreamSize(int64 size) override {
         if (!control() || read_only || size<0) return invalid();
@@ -132,9 +148,8 @@ public:
             return Steinberg::kInvalidArgument;
         }
         const auto target=static_cast<size_t>(requested);
-        if (target>length) std::fill(bytes.begin()+length,bytes.begin()+target,0);
-        else if (target<length) std::fill(bytes.begin()+target,bytes.begin()+length,0);
-        length=target;position=std::min(position,length);return Steinberg::kResultOk;
+        if (!resize_payload(target)) return Steinberg::kOutOfMemory;
+        position=std::min(position,target);return Steinberg::kResultOk;
     }
 };
 struct CapturedState {
