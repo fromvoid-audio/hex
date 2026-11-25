@@ -308,13 +308,11 @@ impl EditorView {
             .w(px(header_width))
             .h(px(header_height))
             .flex_shrink_0();
-        let meter_overlay = div().absolute().top_0().right(px(4.0)).children([
-            super::track_meters::render_arrangement(
-                track_id,
-                self.track_meters.reading(track_id),
-                header_height,
-            ),
-        ]);
+        let meter_overlay = div().absolute().top_0().right(px(4.0)).children([self
+            .meter_slot_or_inline(super::playback_subviews::MeterTarget::ArrangementTrack {
+                id: track_id,
+                height: header_height,
+            })]);
         div()
             .relative()
             .w(px(header_width))

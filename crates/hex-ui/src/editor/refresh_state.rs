@@ -71,6 +71,22 @@ impl AudioFrame {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct RedrawDecision {
+    /// Full root `EditorView::render` is required (structural/state transition).
+    pub root: bool,
+    /// Playback position changed (updates isolated transport readout & playheads).
+    pub position: bool,
+    /// Main output peak/clip changed (updates isolated output/main meters).
+    pub output_meter: bool,
+}
+
+impl RedrawDecision {
+    pub(super) fn any(self) -> bool {
+        self.root || self.position || self.output_meter
+    }
+}
+
 #[derive(Default)]
 pub(super) struct RedrawGate {
     rendered: Option<AudioFrame>,
@@ -78,27 +94,36 @@ pub(super) struct RedrawGate {
 }
 
 impl RedrawGate {
-    pub fn should_redraw(
+    pub(super) fn evaluate(
         &mut self,
         visible_change: bool,
         audio: Option<AudioFrame>,
         now: Instant,
-    ) -> bool {
+    ) -> RedrawDecision {
         let Some(current) = audio else {
-            return self.rendered.take().is_some() || visible_change;
+            let root = self.rendered.take().is_some() || visible_change;
+            return RedrawDecision {
+                root,
+                position: root,
+                output_meter: root,
+            };
         };
         let previous = self.rendered;
-        let mut changed = visible_change;
+        let mut decision = RedrawDecision {
+            root: visible_change,
+            position: false,
+            output_meter: false,
+        };
         if let Some(previous) = previous {
-            changed |= current.playing != previous.playing
+            decision.root |= current.playing != previous.playing
                 || current.applied_revision != previous.applied_revision
                 || current.deadline_misses != previous.deadline_misses
                 || current.render_fault != previous.render_fault
                 || current.device_fault != previous.device_fault
                 || current.shutdown_complete != previous.shutdown_complete;
-            changed |= current.position != previous.position;
+            decision.position = current.position != previous.position;
             if current.playing {
-                changed |= current.peak_left != previous.peak_left
+                decision.output_meter = current.peak_left != previous.peak_left
                     || current.peak_right != previous.peak_right
                     || current.latched_peak_left != previous.latched_peak_left
                     || current.latched_peak_right != previous.latched_peak_right
@@ -107,17 +132,29 @@ impl RedrawGate {
             let diagnostic_due = self
                 .last_redraw
                 .is_none_or(|last| now.saturating_duration_since(last) >= DIAGNOSTIC_REFRESH);
-            changed |= diagnostic_due && current.callback_us != previous.callback_us;
+            decision.root |= diagnostic_due && current.callback_us != previous.callback_us;
         }
-        if changed {
+        if decision.any() {
             self.rendered = Some(current);
-            self.last_redraw = Some(now);
+            if decision.root {
+                self.last_redraw = Some(now);
+            }
         } else if self.rendered.is_none() {
             // The initial window paint already shows this state.
             self.rendered = Some(current);
             self.last_redraw = Some(now);
         }
-        changed
+        decision
+    }
+
+    #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+    pub fn should_redraw(
+        &mut self,
+        visible_change: bool,
+        audio: Option<AudioFrame>,
+        now: Instant,
+    ) -> bool {
+        self.evaluate(visible_change, audio, now).any()
     }
 }
 

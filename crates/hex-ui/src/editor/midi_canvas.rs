@@ -209,7 +209,6 @@ impl EditorView {
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
         let draw_step = self.midi_step_preview();
-        let draw_playhead = self.midi_playhead_source_beat();
         let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
@@ -276,8 +275,21 @@ impl EditorView {
             .debug_selector(|| "midi-note-roll".into());
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
+        let playhead_slots = std::rc::Rc::clone(&self.playback_subviews.slots);
+        let playhead_raw_span = beat_span.raw();
         roll = roll.children([canvas(
-            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |bounds, window, _| {
+                if let Ok(mut slots) = playhead_slots.try_borrow_mut() {
+                    slots.piano_roll_playhead =
+                        Some(super::playback_subviews::PianoRollPlayheadSlot {
+                            bounds,
+                            beat_start,
+                            raw_span: playhead_raw_span,
+                            clip_mask: window.content_mask().bounds,
+                        });
+                }
+                window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal)
+            },
             move |bounds, hitbox, window, cx| {
                 let width = f32::from(bounds.size.width);
                 let height = f32::from(bounds.size.height);
@@ -828,21 +840,6 @@ impl EditorView {
                     );
                 }
 
-                if let Some(playhead) = draw_playhead.map(i128::from)
-                    && playhead >= beat_start
-                    && playhead < beat_start.saturating_add(i128::from(raw_span))
-                {
-                    let x = ((playhead - beat_start) as f64 / raw_span as f64) as f32 * width;
-                    quad(
-                        window,
-                        x,
-                        0.0,
-                        1.0,
-                        height,
-                        theme::color(theme::PaletteRole::Secondary),
-                    );
-                }
-
                 let rendered_context = super::midi_stroke::StrokeContext {
                     generation,
                     revision,
@@ -1367,7 +1364,8 @@ impl EditorView {
             },
         )
         .absolute()
-        .inset_0()]);
+        .inset_0()])
+        .children([self.piano_roll_playhead_element(cx)]);
         let mut panel = div()
             .h(px(self.piano_panel_height()))
             .flex_shrink_0()

@@ -221,20 +221,7 @@ impl EditorView {
                     cx,
                 )
             }))
-            .child(
-                div()
-                    .debug_selector(|| "project position".into())
-                    .px(px(4.0))
-                    // Size the short readout to its text; retain the existing
-                    // upper bound for unusually long project positions.
-                    .max_w(px(82.0))
-                    .flex_shrink_0()
-                    .line_clamp(1)
-                    .text_ellipsis()
-                    .text_xs()
-                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(self.position_label())),
-            )
+            .children([self.transport_position_element(cx)])
             .child(
                 self.control_icon_description(
                     "↻",
@@ -448,62 +435,11 @@ impl EditorView {
     }
 
     fn header_diagnostics(&self, cx: &mut Context<Self>) -> Div {
-        let description = theme::text(self.cpu_meter.description());
-        let cpu_meter = div()
-            .id("editor-cpu-meter")
-            .debug_selector(|| "editor-cpu-meter".into())
-            .w(px(68.0))
-            .h_full()
-            .relative()
-            .flex()
-            .items_center()
-            .justify_end()
-            .flex_shrink_0()
-            .text_xs()
-            .text_right()
-            .cursor_pointer()
-            .text_color(rgb(theme::color(if self.cpu_meter.warning() {
-                theme::PaletteRole::Primary
-            } else {
-                theme::PaletteRole::Muted
-            })))
-            .tooltip(move |_, cx| {
-                cx.new(|_| MiniTooltip {
-                    kind: crate::tooltips::Kind::Identification,
-                    description: description.clone(),
-                })
-                .into()
-            })
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(cx.listener(|view, _, _, cx| {
-                let misses = view.audio_status().map_or(0, |status| {
-                    status.cpu_meter.reset_peak();
-                    status
-                        .deadline_misses
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                });
-                view.cpu_meter.reset(misses);
-                cx.notify();
-            }))
-            .child(
-                div()
-                    .absolute()
-                    .bottom_0()
-                    .left_0()
-                    .h(px(2.0))
-                    .w(px(68.0 * self.cpu_meter.fraction()))
-                    .bg(rgb(theme::color(if self.cpu_meter.warning() {
-                        theme::PaletteRole::Primary
-                    } else {
-                        theme::PaletteRole::Secondary
-                    }))),
-            )
-            .child(theme::text(self.cpu_meter.label()));
         div()
             .flex()
             .items_center()
             .flex_shrink_0()
-            .children([cpu_meter])
+            .children([self.transport_cpu_meter_element(cx)])
             .child(crate::build_info::editor_label())
     }
 
@@ -714,7 +650,7 @@ impl EditorView {
             }))
     }
 
-    fn position_label(&self) -> String {
+    pub(super) fn position_label(&self) -> String {
         let frame = self.cursor_position();
         let rate = self
             .state()

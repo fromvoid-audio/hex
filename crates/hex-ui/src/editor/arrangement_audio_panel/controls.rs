@@ -130,6 +130,11 @@ impl Controls {
     pub(crate) fn has_play_start_preview(&self) -> bool {
         self.play_start_preview.is_some()
     }
+    pub(in crate::editor) fn play_start_preview_clip_id(&self) -> Option<ClipId> {
+        self.play_start_preview
+            .as_ref()
+            .map(|(window, _, _)| window.clip)
+    }
     pub(in crate::editor) fn gain_preview(
         &self,
         view: &EditorView,

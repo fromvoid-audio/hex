@@ -216,9 +216,10 @@ impl EditorView {
             cx.notify();
         }
         let spectrum_active = self.project_spectrum.take_tick_activity();
+        let playback_active = self.playback_subviews.take_tick_activity();
         let busy = self.poll_busy() || window.is_pointer_dragging();
         self.poll_cadence
-            .after_tick(changed || spectrum_active, busy)
+            .after_tick(changed || spectrum_active || playback_active, busy)
     }
 
     /// Activity that needs the 16 ms cadence even without a visible change.
