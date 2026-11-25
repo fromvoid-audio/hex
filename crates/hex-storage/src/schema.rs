@@ -40,6 +40,7 @@ pub(crate) mod long_granular;
 pub(crate) mod long_pitch;
 pub(crate) mod long_pitch_fade;
 pub(crate) mod long_reverse;
+pub(crate) mod manifest;
 pub(crate) mod midi_clip_gain;
 mod midi_clip_volume;
 pub(crate) mod midi_one_shot;

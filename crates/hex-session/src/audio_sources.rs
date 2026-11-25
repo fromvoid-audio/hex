@@ -32,10 +32,10 @@ pub enum DocumentAudioMode {
     VerifiedStreaming,
 }
 /// Largest original a verified streaming binding may reference. Streaming keeps one
-/// SHA-256 digest per 64 KiB page (2 MiB of manifest at this cap, inside the 64 MiB
-/// manifest budget) and never holds whole-file PCM, so this is far above the 64 MiB
-/// resident decode cap; classic RIFF sizes are 32-bit.
-pub const MAX_STREAMED_FILE_BYTES: u64 = u32::MAX as u64;
+/// SHA-256 digest per 64 KiB page (32 MiB of manifest at 64 GiB, inside the 64 MiB
+/// manifest budget) and never holds whole-file PCM, so RF64/BW64 sources above 4 GiB
+/// stream safely under the existing manifest reservation.
+pub const MAX_STREAMED_FILE_BYTES: u64 = 64 * 1024 * 1024 * 1024;
 /// Largest source extent a verified streaming binding may reference. Four clip
 /// domains admit 192 kHz originals in a 48 kHz project. Plain placement and playback
 /// stream any admitted extent, as do exact plain frame reversals. Processed
@@ -657,4 +657,236 @@ impl MediaBank {
 pub(crate) struct ReconstructedFileSources {
     pub reservation: SourcePlanReservation,
     pub files: BTreeMap<AssetId, VerifiedAudioFile>,
+}
+
+#[cfg(test)]
+mod multi_format_tests {
+    use super::*;
+    use crate::{DocumentAudioMode, Session};
+    use hex_media::{VerifiedWavReaderLimits, WavReaderLimits};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(1);
+
+    fn temp_dir() -> PathBuf {
+        let id = NEXT_DIR.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "hex-session-multicodec-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn rf64_fixture() -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&1_u16.to_le_bytes());
+        fmt.extend_from_slice(&2_u16.to_le_bytes());
+        fmt.extend_from_slice(&48_000_u32.to_le_bytes());
+        fmt.extend_from_slice(&(48_000_u32 * 4).to_le_bytes());
+        fmt.extend_from_slice(&4_u16.to_le_bytes());
+        fmt.extend_from_slice(&16_u16.to_le_bytes());
+        let data: Vec<u8> = [1000_i16, -1000, 2000, -2000, 3000, -3000, 4000, -4000]
+            .into_iter()
+            .flat_map(i16::to_le_bytes)
+            .collect();
+        let riff_size = (4 + 8 + 28 + 8 + fmt.len() + 8 + data.len()) as u64;
+        let mut out = Vec::new();
+        out.extend_from_slice(b"RF64");
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(b"WAVE");
+        out.extend_from_slice(b"ds64");
+        out.extend_from_slice(&28_u32.to_le_bytes());
+        out.extend_from_slice(&riff_size.to_le_bytes());
+        out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+        out.extend_from_slice(&0_u64.to_le_bytes());
+        out.extend_from_slice(&0_u32.to_le_bytes());
+        out.extend_from_slice(b"fmt ");
+        out.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        out.extend_from_slice(&fmt);
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&u32::MAX.to_le_bytes());
+        out.extend_from_slice(&data);
+        out
+    }
+
+    fn aiff_fixture() -> Vec<u8> {
+        let audio: Vec<u8> = [1000_i16, -1000, 2000, -2000, 3000, -3000, 4000, -4000]
+            .into_iter()
+            .flat_map(i16::to_be_bytes)
+            .collect();
+        let mut comm = Vec::new();
+        comm.extend_from_slice(&2_u16.to_be_bytes());
+        comm.extend_from_slice(&4_u32.to_be_bytes());
+        comm.extend_from_slice(&16_u16.to_be_bytes());
+        // 48_000 Hz in 80-bit IEEE 754 extended: exp = 16383 + 15 = 0x400E, mantissa = 48000 << 48
+        comm.extend_from_slice(&0x400E_u16.to_be_bytes());
+        comm.extend_from_slice(&(48_000_u64 << 48).to_be_bytes());
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(b"COMM");
+        chunks.extend_from_slice(&(comm.len() as u32).to_be_bytes());
+        chunks.extend_from_slice(&comm);
+        chunks.extend_from_slice(b"SSND");
+        chunks.extend_from_slice(&((8 + audio.len()) as u32).to_be_bytes());
+        chunks.extend_from_slice(&0_u32.to_be_bytes());
+        chunks.extend_from_slice(&0_u32.to_be_bytes());
+        chunks.extend_from_slice(&audio);
+        let mut out = Vec::new();
+        out.extend_from_slice(b"FORM");
+        out.extend_from_slice(&((4 + chunks.len()) as u32).to_be_bytes());
+        out.extend_from_slice(b"AIFF");
+        out.extend_from_slice(&chunks);
+        out
+    }
+
+    fn flac_fixture() -> Vec<u8> {
+        // Minimal valid 48 kHz stereo 16-bit 16-frame CONSTANT FLAC
+        let mut out = b"fLaC".to_vec();
+        out.push(0x80); // last block, STREAMINFO
+        out.extend_from_slice(&[0, 0, 34]);
+        out.extend_from_slice(&16_u16.to_be_bytes()); // min_block_size
+        out.extend_from_slice(&16_u16.to_be_bytes()); // max_block_size
+        out.extend_from_slice(&[0; 6]);
+        let sr = 48_000_u32;
+        let ch = 1_u32; // stereo (2 - 1)
+        let bps = 15_u32; // 16-bit (16 - 1)
+        let total = 16_u64;
+        out.push((sr >> 12) as u8);
+        out.push(((sr >> 4) & 0xFF) as u8);
+        out.push((((sr & 0x0F) << 4) | (ch << 1) | (bps >> 4)) as u8);
+        out.push((((bps & 0x0F) << 4) as u8) | ((total >> 32) as u8 & 0x0F));
+        out.extend_from_slice(&(total as u32).to_be_bytes());
+        out.extend_from_slice(&[0_u8; 16]);
+
+        // Frame: sync=0xFFF8, bs_code=7 (16-bit), sr_code=0, ch=1 (stereo), ss=0, frame_num=0, bs-1=15
+        let mut frame = vec![0xFF, 0xF8, 0x70, 0x10, 0x00, 0x00, 0x0F];
+        let mut crc8 = 0_u8;
+        for &b in &frame {
+            crc8 ^= b;
+            for _ in 0..8 {
+                crc8 = if crc8 & 0x80 != 0 {
+                    (crc8 << 1) ^ 0x07
+                } else {
+                    crc8 << 1
+                };
+            }
+        }
+        frame.push(crc8);
+        // Subframe 0: CONSTANT (0x00), sample = 1000
+        frame.push(0x00);
+        frame.extend_from_slice(&1000_i16.to_be_bytes());
+        // Subframe 1: CONSTANT (0x00), sample = -1000
+        frame.push(0x00);
+        frame.extend_from_slice(&(-1000_i16).to_be_bytes());
+        let mut crc16 = 0_u16;
+        for &b in &frame {
+            crc16 ^= u16::from(b) << 8;
+            for _ in 0..8 {
+                crc16 = if crc16 & 0x8000 != 0 {
+                    (crc16 << 1) ^ 0x8005
+                } else {
+                    crc16 << 1
+                };
+            }
+        }
+        frame.extend_from_slice(&crc16.to_be_bytes());
+        out.extend_from_slice(&frame);
+        out
+    }
+
+    #[test]
+    fn reservation_admits_over_4gib_rf64_sources_within_manifest_budget() {
+        assert!(MAX_STREAMED_FILE_BYTES > u64::from(u32::MAX));
+        let reservation = SourcePlanReservation {
+            reader: VerifiedWavReaderLimits::new(
+                WavReaderLimits::new(
+                    8 * 1024 * 1024 * 1024, // 8 GiB RF64 source
+                    MAX_STREAMED_SOURCE_FRAMES,
+                    32,
+                    4_096,
+                ),
+                64 * 1024 * 1024,
+            ),
+            max_retained_sources: 16,
+            max_path_bytes: 64 * 1024,
+            max_manifest_bytes: 64 * 1024 * 1024,
+        };
+        assert!(reservation.validate().is_ok());
+    }
+
+    #[test]
+    fn rf64_aiff_and_flac_verify_save_reopen_and_relink_round_trip() {
+        let dir = temp_dir();
+        let rf64_path = dir.join("clip.rf64");
+        let aiff_path = dir.join("clip.aiff");
+        let flac_path = dir.join("clip.flac");
+        std::fs::write(&rf64_path, rf64_fixture()).unwrap();
+        std::fs::write(&aiff_path, aiff_fixture()).unwrap();
+        std::fs::write(&flac_path, flac_fixture()).unwrap();
+
+        let reservation = SourcePlanReservation {
+            reader: VerifiedWavReaderLimits::new(
+                WavReaderLimits::new(
+                    MAX_STREAMED_FILE_BYTES,
+                    MAX_STREAMED_SOURCE_FRAMES,
+                    32,
+                    4096,
+                ),
+                1024 * 1024,
+            ),
+            max_retained_sources: 16,
+            max_path_bytes: 64 * 1024,
+            max_manifest_bytes: 1024 * 1024,
+        };
+
+        let mut session = Session::new_with_audio_mode(
+            48_000,
+            16,
+            0,
+            DocumentAudioMode::VerifiedStreaming,
+            Some(reservation),
+        )
+        .unwrap();
+
+        for (path, expected_frames) in [
+            (&rf64_path, 4_u64),
+            (&aiff_path, 4_u64),
+            (&flac_path, 16_u64),
+        ] {
+            let verified = session.verify_import(path.clone()).unwrap();
+            assert_eq!(verified.source_rate(), 48_000);
+            assert_eq!(verified.source_frames(), expected_frames);
+            session
+                .import_verified_revision(
+                    verified,
+                    crate::verified_import::VerifiedImportDestination::NewTrack {
+                        before: None,
+                        start: 0,
+                    },
+                    None,
+                )
+                .unwrap();
+        }
+        assert_eq!(session.project().assets().count(), 3);
+
+        // Save and reopen project referencing RF64, AIFF, and FLAC assets
+        let project_path = dir.join("multi.hex");
+        hex_storage::save_new(&project_path, session.project()).unwrap();
+        let reopened = hex_storage::load(&project_path).unwrap();
+        assert_eq!(reopened, *session.project());
+
+        // Move FLAC file and relink with preserved SHA-256 fingerprint & frame metadata
+        let moved_flac = dir.join("moved.flac");
+        let orig_fp =
+            *VerifiedAudioFile::inspect(flac_path.clone(), 48_000, reservation.reader, || false)
+                .unwrap()
+                .fingerprint();
+        std::fs::rename(&flac_path, &moved_flac).unwrap();
+        let relinked =
+            VerifiedAudioFile::inspect(moved_flac, 48_000, reservation.reader, || false).unwrap();
+        assert_eq!(*relinked.fingerprint(), orig_fp);
+        assert_eq!(relinked.source_frames(), 16);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

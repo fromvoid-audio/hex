@@ -1,11 +1,13 @@
-//! Shared RIFF/WAVE topology validation and sample conversion.
+//! Shared RIFF/WAVE and RF64/BW64 topology validation and sample conversion.
 //!
 //! Resident import supports mono/stereo at 8–192 kHz: PCM 8/16/24/32-bit,
 //! IEEE float 32/64-bit, extensible PCM/float, 8-bit A-law/mu-law and 4-bit
 //! Microsoft/IMA ADPCM. Seekable readers support the fixed-frame encodings;
-//! ADPCM remains resident-only. Unknown metadata chunks (including BWF/INFO)
-//! are skipped with bounded header work and checked payload/padding extents.
-//! RF64/BW64, big-endian RIFX and other encodings are refused explicitly.
+//! ADPCM remains resident-only. RF64/BW64 (>4 GiB WAV with mandatory `ds64`
+//! first chunk) uses checked 64-bit sizes for container and payload extents.
+//! Unknown metadata chunks (including BWF/INFO/JUNK) are skipped with bounded
+//! header work and checked payload/padding extents. Big-endian RIFX and other
+//! unsupported encodings are refused explicitly.
 //!
 //! A legacy producer defect overstates the RIFF container by exactly four bytes.
 //! Only that mismatch may use physical EOF as the scan boundary, and only a
@@ -203,6 +205,64 @@ pub(super) fn scan<R: Read + Seek>(
     }
 }
 
+const MAX_DS64_TABLE_ENTRIES: usize = 1_024;
+
+struct Ds64 {
+    riff_size: u64,
+    data_size: u64,
+    sample_count: u64,
+    table: Vec<([u8; 4], u64)>,
+}
+
+fn parse_ds64<R: Read>(reader: &mut R, chunk_size: u64) -> Result<Ds64, ImportError> {
+    if chunk_size < 28 {
+        return Err(ImportError::Invalid("ds64 chunk is shorter than 28 bytes"));
+    }
+    let mut fixed = [0_u8; 28];
+    read_exact_invalid(reader, &mut fixed, "truncated ds64 chunk")?;
+    let riff_size = u64::from_le_bytes([
+        fixed[0], fixed[1], fixed[2], fixed[3], fixed[4], fixed[5], fixed[6], fixed[7],
+    ]);
+    let data_size = u64::from_le_bytes([
+        fixed[8], fixed[9], fixed[10], fixed[11], fixed[12], fixed[13], fixed[14], fixed[15],
+    ]);
+    let sample_count = u64::from_le_bytes([
+        fixed[16], fixed[17], fixed[18], fixed[19], fixed[20], fixed[21], fixed[22], fixed[23],
+    ]);
+    let table_len = usize::try_from(u32::from_le_bytes([
+        fixed[24], fixed[25], fixed[26], fixed[27],
+    ]))
+    .map_err(|_| ImportError::Invalid("ds64 table length overflow"))?;
+    if table_len > MAX_DS64_TABLE_ENTRIES {
+        return Err(ImportError::LimitExceeded("ds64 chunk size table"));
+    }
+    let needed = 28_u64
+        .checked_add((table_len as u64).saturating_mul(12))
+        .ok_or(ImportError::Invalid("ds64 table size overflow"))?;
+    if needed > chunk_size {
+        return Err(ImportError::Invalid("truncated ds64 chunk size table"));
+    }
+    let mut table = Vec::new();
+    table
+        .try_reserve_exact(table_len)
+        .map_err(|_| ImportError::AllocationFailed)?;
+    let mut entry = [0_u8; 12];
+    for _ in 0..table_len {
+        read_exact_invalid(reader, &mut entry, "truncated ds64 chunk size table")?;
+        let id = [entry[0], entry[1], entry[2], entry[3]];
+        let size = u64::from_le_bytes([
+            entry[4], entry[5], entry[6], entry[7], entry[8], entry[9], entry[10], entry[11],
+        ]);
+        table.push((id, size));
+    }
+    Ok(Ds64 {
+        riff_size,
+        data_size,
+        sample_count,
+        table,
+    })
+}
+
 /// Like [`scan`], but returns a layout restricted to the readable whole frames
 /// of truncated or partial-frame data together with the truncation report.
 fn scan_recoverable<R: Read + Seek>(
@@ -213,31 +273,83 @@ fn scan_recoverable<R: Read + Seek>(
     reader.seek(SeekFrom::Start(0))?;
     let mut container = [0_u8; 12];
     read_exact_invalid(reader, &mut container, "truncated RIFF/WAVE header")?;
-    if &container[..4] != b"RIFF" || &container[8..12] != b"WAVE" {
+    let is_rf64 = match &container[..4] {
+        b"RIFF" => false,
+        b"RF64" | b"BW64" => true,
+        _ => return Err(ImportError::Invalid("missing RIFF/WAVE header")),
+    };
+    if &container[8..12] != b"WAVE" {
         return Err(ImportError::Invalid("missing RIFF/WAVE header"));
     }
-    let declared_riff_end = u64::from(u32::from_le_bytes([
-        container[4],
-        container[5],
-        container[6],
-        container[7],
-    ]))
-    .checked_add(8)
-    .ok_or(ImportError::Invalid("RIFF size overflow"))?;
-    if declared_riff_end < 12 {
-        return Err(ImportError::Invalid("RIFF boundary exceeds input"));
-    }
+    let header_size32 =
+        u32::from_le_bytes([container[4], container[5], container[6], container[7]]);
+
+    let mut cursor = 12_u64;
+    let mut header_count = 0_usize;
+    let mut ds64: Option<Ds64> = None;
+
+    let declared_riff_end = if is_rf64 {
+        // EBU Tech 3306 / ITU-R BS.2088: ds64 MUST be the first chunk after RF64/BW64..WAVE.
+        header_count = header_count
+            .checked_add(1)
+            .ok_or(ImportError::LimitExceeded("chunk headers"))?;
+        if header_count > header_limit {
+            return Err(ImportError::LimitExceeded("chunk headers"));
+        }
+        if 20 > file_len {
+            return Err(ImportError::Invalid("truncated ds64 chunk header"));
+        }
+        let mut ds_hdr = [0_u8; 8];
+        read_exact_invalid(reader, &mut ds_hdr, "truncated ds64 chunk header")?;
+        if &ds_hdr[..4] != b"ds64" {
+            return Err(ImportError::Invalid("RF64/BW64 requires ds64 first chunk"));
+        }
+        let ds_size = u64::from(u32::from_le_bytes([
+            ds_hdr[4], ds_hdr[5], ds_hdr[6], ds_hdr[7],
+        ]));
+        let ds_end = 20_u64
+            .checked_add(ds_size)
+            .ok_or(ImportError::Invalid("ds64 chunk size overflow"))?;
+        if ds_end > file_len {
+            return Err(ImportError::Invalid("ds64 chunk exceeds file"));
+        }
+        let parsed = parse_ds64(reader, ds_size)?;
+        let effective_riff_size = if header_size32 == u32::MAX {
+            parsed.riff_size
+        } else {
+            u64::from(header_size32)
+        };
+        let end = effective_riff_size
+            .checked_add(8)
+            .ok_or(ImportError::Invalid("RF64 size overflow"))?;
+        if end < ds_end {
+            return Err(ImportError::Invalid("RF64 boundary precedes ds64 end"));
+        }
+        cursor = ds_end
+            .checked_add(ds_size & 1)
+            .ok_or(ImportError::Invalid("ds64 padding overflow"))?;
+        ds64 = Some(parsed);
+        end
+    } else {
+        let end = u64::from(header_size32)
+            .checked_add(8)
+            .ok_or(ImportError::Invalid("RIFF size overflow"))?;
+        if end < 12 {
+            return Err(ImportError::Invalid("RIFF boundary exceeds input"));
+        }
+        end
+    };
+
     // Scan no further than physical EOF; any overrun is justified after the scan.
     let riff_end = declared_riff_end.min(file_len);
     let overrun = declared_riff_end - riff_end;
 
-    let mut cursor = 12_u64;
-    let mut header_count = 0_usize;
     let mut format_bytes = None;
     let mut data = None;
     let mut fact_frames = None;
     let mut missing_final_pad = false;
     let mut truncated_data = false;
+    let mut table_cursor = 0_usize;
     while cursor < riff_end {
         header_count = header_count
             .checked_add(1)
@@ -254,9 +366,31 @@ fn scan_recoverable<R: Read + Seek>(
         reader.seek(SeekFrom::Start(cursor))?;
         let mut header = [0_u8; 8];
         read_exact_invalid(reader, &mut header, "truncated chunk header")?;
-        let chunk_size = u64::from(u32::from_le_bytes([
-            header[4], header[5], header[6], header[7],
-        ]));
+        if is_rf64 && &header[..4] == b"ds64" {
+            return Err(ImportError::Invalid("duplicate ds64 chunk"));
+        }
+        let raw_chunk_size = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        let chunk_size = if is_rf64 && raw_chunk_size == u32::MAX {
+            let ds = ds64
+                .as_ref()
+                .ok_or(ImportError::Invalid("missing ds64 chunk"))?;
+            if &header[..4] == b"data" {
+                ds.data_size
+            } else if let Some(idx) = ds.table[table_cursor..]
+                .iter()
+                .position(|(id, _)| id == &header[..4])
+            {
+                let size = ds.table[table_cursor + idx].1;
+                table_cursor += idx + 1;
+                size
+            } else {
+                return Err(ImportError::Invalid(
+                    "missing ds64 size entry for 64-bit chunk",
+                ));
+            }
+        } else {
+            u64::from(raw_chunk_size)
+        };
         let payload_start = header_end;
         let payload_end = payload_start
             .checked_add(chunk_size)
@@ -299,7 +433,13 @@ fn scan_recoverable<R: Read + Seek>(
             }
             let mut fact = [0_u8; 4];
             read_exact_invalid(reader, &mut fact, "truncated fact chunk")?;
-            fact_frames = Some(u64::from(u32::from_le_bytes(fact)));
+            let raw_fact = u32::from_le_bytes(fact);
+            fact_frames = Some(if is_rf64 && raw_fact == u32::MAX {
+                ds64.as_ref()
+                    .map_or(u64::from(raw_fact), |ds| ds.sample_count)
+            } else {
+                u64::from(raw_fact)
+            });
         } else if &header[..4] == b"data" && data.replace((payload_start, chunk_size)).is_some() {
             return Err(ImportError::Invalid("duplicate data chunk"));
         }
@@ -319,7 +459,9 @@ fn scan_recoverable<R: Read + Seek>(
     }
     // Legacy producers overstate RIFF by exactly four bytes, and a missing final
     // pad may be counted in the RIFF size. Every other overrun is refused.
-    if overrun > 0 && !truncated_data && overrun != 4 && !(overrun == 1 && missing_final_pad) {
+    let legacy_four_byte_overrun = !is_rf64 && overrun == 4;
+    let missing_pad_overrun = overrun == 1 && missing_final_pad;
+    if overrun > 0 && !truncated_data && !legacy_four_byte_overrun && !missing_pad_overrun {
         return Err(ImportError::Invalid("RIFF boundary exceeds input"));
     }
 
