@@ -1,9 +1,10 @@
 //! Normal-mode held note creation. Preview stays view-owned until one canonical
 //! note edit on release, including source growth if needed. Existing canvas
-//! identity/geometry and grid rules bound the gesture; the dragged end is free
-//! unless cmd/control snaps it (`midi_drag::note_end_grid`). Released display
-//! transfers to midi_pending_drag's exact ordinary receipt; it never retains held
-//! input.
+//! identity/geometry and grid rules bound the gesture; the dragged end moves
+//! freely between grid lines, latches to the grid on first grid-line hit, and
+//! unsnaps while cmd/control is held (`midi_drag::note_end_grid`). Released
+//! display transfers to midi_pending_drag's exact ordinary receipt; it never
+//! retains held input.
 //! The Window left-button lease owns the second double-click press only.
 use super::{
     EditorView, midi_drag,
@@ -13,7 +14,7 @@ use super::{
 use gpui::{Context, MouseButton, MouseMoveEvent, MouseUpEvent, Window, point, px, size};
 use hex_project::{BeatTime, ClipId, Command, MidiNoteInsert};
 
-/// Immutable input identity; only duration/dragged change during a held creation.
+/// Immutable input identity; only duration/dragged/snap-latch change during a held creation.
 #[derive(Clone, Copy, PartialEq)]
 struct CaptureKey {
     context: StrokeContext,
@@ -28,6 +29,8 @@ pub(super) struct Creation {
     context: StrokeContext,
     down_x: f32,
     dragged: bool,
+    last_raw: u64,
+    snapped_to_grid: bool,
     minimum_gate: u64,
     pub(super) preview: MidiNoteInsert,
 }
@@ -120,10 +123,20 @@ impl EditorView {
             return false;
         };
         note.duration = BeatTime::from_raw(duration);
+        let b = context.bounds;
+        let down_raw = midi_drag::beat_at_point(
+            x,
+            [b.x, b.y, b.width, b.height],
+            context.view_start,
+            context.view_span,
+        )
+        .unwrap_or(note.start.raw());
         let creation = Creation {
             context,
             down_x: x,
             dragged: false,
+            last_raw: down_raw,
+            snapped_to_grid: false,
             minimum_gate,
             preview: note,
         };
@@ -308,7 +321,23 @@ impl EditorView {
         };
         let start = creation.preview.start.raw();
         let remaining = u64::MAX.saturating_sub(start);
-        let end_grid = midi_drag::note_end_grid(current.grid, current.snap_modifier);
+        if let Some(step) = current.grid.step_raw()
+            && !creation.snapped_to_grid
+            && midi_drag::hit_grid_line(
+                i128::from(creation.last_raw),
+                i128::from(raw),
+                step,
+                current.grid_origin,
+            )
+        {
+            creation.snapped_to_grid = true;
+        }
+        creation.last_raw = raw;
+        let end_grid = midi_drag::note_end_grid(
+            current.grid,
+            current.snap_modifier,
+            creation.snapped_to_grid,
+        );
         let minimum = end_grid
             .minimum_gate()
             .max(creation.minimum_gate)

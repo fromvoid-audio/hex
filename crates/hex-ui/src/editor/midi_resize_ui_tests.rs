@@ -64,15 +64,10 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
         visual.update(|window, cx| editor.update(cx, |v, _| v.midi_editor.focus.focus(window)));
-        // Trailing ends snap only while cmd is held; leading edges keep the grid.
-        let snap = if leading {
-            Modifiers::default()
-        } else {
-            Modifiers::command()
-        };
+        // Both on-grid edges snap by default; holding cmd unsnaps.
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(end, Some(MouseButton::Left), snap);
-        visual.simulate_mouse_up(end, MouseButton::Left, snap);
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
             let notes = v
@@ -211,7 +206,12 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
             );
             assert_eq!(
                 note.duration().raw(),
-                BeatTime::ONE.raw() / 64 + BeatTime::ONE.raw() / 4
+                if leading {
+                    BeatTime::ONE.raw() / 64 + BeatTime::ONE.raw() / 4
+                } else {
+                    // Crossing the 1.25 grid line latches trailing resize onto that grid line.
+                    BeatTime::ONE.raw() / 4
+                }
             );
             assert_eq!((note.pitch(), note.channel(), note.velocity()), (60, 3, 55));
             assert_eq!(v.midi_editor.selection.primary(), Some(id));
@@ -365,9 +365,8 @@ fn single_and_group_trailing_resize_grow_source_length_and_undo_atomically(
             );
         // Drag 8 beats to the right (note 0 ends at beat 11, note 1 at beat 12).
         let end = down + point(px(width * (8.0 / 16.0)), px(0.0));
-        let snap = Modifiers::command();
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_move(end, Some(MouseButton::Left), snap);
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!(
@@ -376,7 +375,7 @@ fn single_and_group_trailing_resize_grow_source_length_and_undo_atomically(
                 "held preview must not mutate canonical project"
             );
         });
-        visual.simulate_mouse_up(end, MouseButton::Left, snap);
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert!(matches!(
                 v.test_probes.last_enqueued_edit,

@@ -70,14 +70,48 @@ pub const fn effective_grid(grid: MidiGrid, invert_snap: bool) -> MidiGrid {
     }
 }
 
-/// A dragged note end (held creation or trailing resize) is free by default;
-/// the snap modifier temporarily snaps it to the grid (1/16 when the grid is
-/// off). Starts, moves and leading resizes keep `effective_grid`'s inversion.
-pub const fn note_end_grid(grid: MidiGrid, snap_modifier: bool) -> MidiGrid {
-    match (snap_modifier, grid) {
-        (false, _) => MidiGrid::Off,
-        (true, MidiGrid::Off) => MidiGrid::Sixteenth,
-        (true, grid) => grid,
+/// Whether `position` sits directly on a grid line `origin + k * step`.
+pub fn is_on_grid(position: u64, grid: MidiGrid, origin: u64) -> bool {
+    let Some(step) = grid.step_raw() else {
+        return false;
+    };
+    (i128::from(position) - i128::from(origin)).rem_euclid(i128::from(step)) == 0
+}
+
+/// Whether moving from `previous` to `current` hits or crosses any grid line
+/// `origin + k * step` (excluding remaining motionless at `previous`).
+pub fn hit_grid_line(previous: i128, current: i128, step: u64, origin: u64) -> bool {
+    if step == 0 || current == previous {
+        return false;
+    }
+    let s = i128::from(step);
+    let o = i128::from(origin);
+    let p = previous - o;
+    let c = current - o;
+    if c > p {
+        let next_grid = (p.div_euclid(s) + 1).saturating_mul(s);
+        c >= next_grid
+    } else {
+        let prev_grid = if p.rem_euclid(s) == 0 {
+            p.saturating_sub(s)
+        } else {
+            p.div_euclid(s).saturating_mul(s)
+        };
+        c <= prev_grid
+    }
+}
+
+/// A dragged note end (held creation or trailing resize) moves freely while
+/// between grid lines, latches to the grid as soon as it hits or crosses a
+/// grid line, and temporarily moves freely again while the snap modifier
+/// (Command) is held. When the grid is off, Command temporarily snaps to 1/16.
+pub const fn note_end_grid(grid: MidiGrid, snap_modifier: bool, snapped_to_grid: bool) -> MidiGrid {
+    match (grid, snap_modifier, snapped_to_grid) {
+        (MidiGrid::Off, false, _) => MidiGrid::Off,
+        (MidiGrid::Off, true, _) => MidiGrid::Sixteenth,
+        (_, true, _) => MidiGrid::Off,
+        (grid, false, true) => grid,
+        (_, false, false) => MidiGrid::Off,
     }
 }
 
@@ -194,6 +228,8 @@ pub enum GestureKind {
     },
     ResizeTrailing {
         pointer_beat_raw: u64,
+        last_end_raw: i128,
+        snapped_to_grid: bool,
     },
 }
 
@@ -225,6 +261,7 @@ pub struct NoteGesture {
     pub clip_length: u64,
     pub pitch: crate::midi_pitch_viewport::PitchViewport,
     pub grid: MidiGrid,
+    pub grid_origin: u64,
 }
 
 pub struct GestureStart {
@@ -244,6 +281,7 @@ pub struct GestureStart {
     pub clip_length: u64,
     pub pitch: crate::midi_pitch_viewport::PitchViewport,
     pub grid: MidiGrid,
+    pub grid_origin: u64,
 }
 
 #[derive(Clone, Copy)]
@@ -349,7 +387,11 @@ pub fn begin(start: GestureStart) -> Option<NoteGesture> {
             pointer_beat_raw,
             note_end,
         },
-        HitKind::ResizeTrailing => GestureKind::ResizeTrailing { pointer_beat_raw },
+        HitKind::ResizeTrailing => GestureKind::ResizeTrailing {
+            pointer_beat_raw,
+            last_end_raw: i128::from(note_end),
+            snapped_to_grid: is_on_grid(note_end, start.grid, start.grid_origin),
+        },
     };
     Some(NoteGesture {
         generation: start.generation,
@@ -369,6 +411,7 @@ pub fn begin(start: GestureStart) -> Option<NoteGesture> {
         clip_length: start.clip_length,
         pitch: start.pitch,
         grid: start.grid,
+        grid_origin: start.grid_origin,
     })
 }
 
@@ -393,23 +436,19 @@ pub fn update_with_modifier(
     let Some(pointer_pitch) = pitch_at_point(pointer_y, gesture.bounds, gesture.pitch) else {
         return false;
     };
-    let effective_grid = if matches!(gesture.kind, GestureKind::ResizeTrailing { .. }) {
-        note_end_grid(gesture.grid, invert_snap)
-    } else {
-        effective_grid(gesture.grid, invert_snap)
-    };
+    let effective_grid = effective_grid(gesture.grid, invert_snap);
     let delta_from = |anchor| quantize_delta(pointer_beat_raw - i128::from(anchor), effective_grid);
     let mut source_prefix = 0;
-    let candidate = match gesture.kind {
+    let candidate = match &mut gesture.kind {
         GestureKind::Move {
             pointer_beat_raw: down_beat,
             pointer_pitch: down_pitch,
-        } if delta_from(down_beat) == 0 && pointer_pitch == down_pitch => gesture.original,
+        } if delta_from(*down_beat) == 0 && pointer_pitch == *down_pitch => gesture.original,
         GestureKind::Move {
             pointer_beat_raw: down_beat,
             pointer_pitch: down_pitch,
         } => {
-            let delta = delta_from(down_beat);
+            let delta = delta_from(*down_beat);
             // Movement can retain material beyond the current source. The
             // canonical extent-growing update owns storage growth on commit.
             let max_start = u64::MAX - gesture.original.duration;
@@ -426,7 +465,7 @@ pub fn update_with_modifier(
             source_prefix = prefix;
             let start = (signed_start + i128::from(source_prefix)) as u64;
             let pitch = (i16::from(gesture.original.pitch) + i16::from(pointer_pitch)
-                - i16::from(down_pitch))
+                - i16::from(*down_pitch))
             .clamp(0, 127) as u8;
             NotePreview {
                 start,
@@ -437,12 +476,12 @@ pub fn update_with_modifier(
         GestureKind::ResizeLeading {
             pointer_beat_raw: down_beat,
             ..
-        } if delta_from(down_beat) == 0 => gesture.original,
+        } if delta_from(*down_beat) == 0 => gesture.original,
         GestureKind::ResizeLeading {
             pointer_beat_raw: down_beat,
             note_end,
         } => {
-            let delta = delta_from(down_beat);
+            let delta = delta_from(*down_beat);
             let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
             let max_start = note_end.saturating_sub(min_gate);
             // Leading resize can extend into negative time when the viewport
@@ -470,25 +509,41 @@ pub fn update_with_modifier(
         }
         GestureKind::ResizeTrailing {
             pointer_beat_raw: down_beat,
-        } if delta_from(down_beat) == 0 => gesture.original,
-        GestureKind::ResizeTrailing {
-            pointer_beat_raw: down_beat,
+            last_end_raw,
+            snapped_to_grid,
         } => {
-            let delta = delta_from(down_beat);
-            let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
-            let min_end = gesture.original.start.saturating_add(min_gate);
+            let raw_delta = pointer_beat_raw - i128::from(*down_beat);
             let original_end = gesture
                 .original
                 .start
                 .saturating_add(gesture.original.duration);
-            // Trailing resize can extend beyond the current source. The
-            // canonical extent-growing update owns storage growth on commit.
-            let end = (i128::from(original_end) + delta)
-                .clamp(i128::from(min_end), i128::from(u64::MAX)) as u64;
-            NotePreview {
-                start: gesture.original.start,
-                duration: end.saturating_sub(gesture.original.start),
-                pitch: gesture.original.pitch,
+            let raw_end = i128::from(original_end) + raw_delta;
+            if let Some(step) = gesture.grid.step_raw()
+                && !*snapped_to_grid
+                && hit_grid_line(*last_end_raw, raw_end, step, gesture.grid_origin)
+            {
+                *snapped_to_grid = true;
+            }
+            *last_end_raw = raw_end;
+            if raw_delta == 0 && !*snapped_to_grid {
+                gesture.original
+            } else {
+                let end_grid = note_end_grid(gesture.grid, invert_snap, *snapped_to_grid);
+                let snapped_end = snap_signed_aligned(raw_end, end_grid, gesture.grid_origin);
+                if snapped_end == i128::from(original_end) {
+                    gesture.original
+                } else {
+                    let min_gate = end_grid.minimum_gate().min(gesture.original.duration);
+                    let min_end = gesture.original.start.saturating_add(min_gate);
+                    // Trailing resize can extend beyond the current source. The
+                    // canonical extent-growing update owns storage growth on commit.
+                    let end = snapped_end.clamp(i128::from(min_end), i128::from(u64::MAX)) as u64;
+                    NotePreview {
+                        start: gesture.original.start,
+                        duration: end.saturating_sub(gesture.original.start),
+                        pitch: gesture.original.pitch,
+                    }
+                }
             }
         }
     };
@@ -629,6 +684,7 @@ mod tests {
             clip_length: CLIP_LENGTH,
             pitch: crate::midi_pitch_viewport::PitchViewport::from_rows(48, 24).unwrap(),
             grid,
+            grid_origin: 0,
         })
         .expect("valid note gesture")
     }
@@ -657,6 +713,7 @@ mod tests {
             clip_length,
             pitch: crate::midi_pitch_viewport::PitchViewport::from_rows(48, 24).unwrap(),
             grid: MidiGrid::Sixteenth,
+            grid_origin: 0,
         })
         .expect("valid note gesture")
     }
@@ -685,6 +742,7 @@ mod tests {
             clip_length: CLIP_LENGTH,
             pitch: crate::midi_pitch_viewport::PitchViewport::from_rows(48, 24).unwrap(),
             grid: MidiGrid::Sixteenth,
+            grid_origin: 0,
         })
         .expect("valid note gesture")
     }
@@ -830,9 +888,9 @@ mod tests {
 
     #[test]
     fn both_note_edges_resize_with_a_quarter_beat_minimum() {
-        // Trailing ends snap only while cmd is held.
+        // An on-grid trailing edge snaps by default.
         let mut trailing = gesture(HitKind::ResizeTrailing);
-        update_with_modifier(&mut trailing, 300.0, 335.0, true);
+        update(&mut trailing, 300.0, 335.0);
         assert_eq!(trailing.preview.start, BeatTime::ONE.raw());
         assert_eq!(trailing.preview.duration, BeatTime::ONE.raw());
 
@@ -841,7 +899,7 @@ mod tests {
         assert_eq!(leading.preview.start, BeatTime::ONE.raw() / 2);
         assert_eq!(leading.preview.duration, BeatTime::ONE.raw());
 
-        update_with_modifier(&mut trailing, 150.0, 335.0, true);
+        update(&mut trailing, 150.0, 335.0);
         assert_eq!(trailing.preview.duration, BeatTime::ONE.raw() / 4);
         update(&mut leading, 350.0, 335.0);
         assert_eq!(leading.preview.start, BeatTime::ONE.raw() * 5 / 4);
@@ -921,6 +979,7 @@ mod tests {
                 clip_length: CLIP_LENGTH,
                 pitch: crate::midi_pitch_viewport::PitchViewport::from_rows(48, 24).unwrap(),
                 grid: MidiGrid::Sixteenth,
+                grid_origin: 0,
             })
             .is_none()
         );
@@ -983,17 +1042,28 @@ mod tests {
         assert_eq!(moving.preview, original);
         assert!(is_noop(&moving));
 
-        for edge in [HitKind::ResizeLeading, HitKind::ResizeTrailing] {
-            let snap = edge == HitKind::ResizeTrailing;
-            let mut resizing = gesture_for(original, edge, [126.0, 335.0]);
-            assert!(!update_with_modifier(&mut resizing, 127.0, 335.0, snap));
-            assert_eq!(resizing.preview, original);
-            assert!(is_noop(&resizing));
-            update_with_modifier(&mut resizing, 151.0, 335.0, snap);
-            update_with_modifier(&mut resizing, 126.0, 335.0, snap);
-            assert_eq!(resizing.preview, original);
-            assert!(is_noop(&resizing));
-        }
+        let mut leading = gesture_for(original, HitKind::ResizeLeading, [126.0, 335.0]);
+        assert!(!update(&mut leading, 127.0, 335.0));
+        assert_eq!(leading.preview, original);
+        assert!(is_noop(&leading));
+        update(&mut leading, 151.0, 335.0);
+        update(&mut leading, 126.0, 335.0);
+        assert_eq!(leading.preview, original);
+        assert!(is_noop(&leading));
+
+        // An off-grid trailing edge moves freely until it hits a grid line,
+        // then latches snapped until Command is held.
+        let mut trailing = gesture_for(original, HitKind::ResizeTrailing, [126.0, 335.0]);
+        assert!(update(&mut trailing, 127.0, 335.0));
+        assert!(trailing.preview.duration > original.duration);
+        assert!(update(&mut trailing, 151.0, 335.0));
+        assert_eq!(
+            trailing.preview.start + trailing.preview.duration,
+            BeatTime::ONE.raw() / 2
+        );
+        assert!(update_with_modifier(&mut trailing, 126.0, 335.0, true));
+        assert_eq!(trailing.preview, original);
+        assert!(is_noop(&trailing));
     }
 
     #[test]
@@ -1008,7 +1078,7 @@ mod tests {
             (HitKind::ResizeTrailing, 101.0),
         ] {
             let mut resize = gesture_for(original, kind, [126.0, 335.0]);
-            update_with_modifier(&mut resize, x, 335.0, kind == HitKind::ResizeTrailing);
+            update(&mut resize, x, 335.0);
             assert_eq!(
                 resize.preview, original,
                 "a coarse-grid shrink may clamp, never grow"
@@ -1054,7 +1124,10 @@ mod tests {
         let mut trailing = gesture_for(original, HitKind::ResizeTrailing, [126.0, 335.0]);
         update(&mut trailing, 151.0, 335.0);
         assert_eq!(trailing.preview.start, original.start);
-        assert!(trailing.preview.duration >= BeatTime::ONE.raw() / 4);
+        assert_eq!(
+            trailing.preview.start + trailing.preview.duration,
+            BeatTime::ONE.raw() / 2
+        );
 
         let short_clip_length = BeatTime::ONE.raw() / 8;
         let tiny_note = NotePreview {
@@ -1069,10 +1142,7 @@ mod tests {
             short_clip_length,
         );
         update(&mut short_clip, 150.0, 335.0);
-        assert_eq!(
-            short_clip.preview.duration,
-            tiny_note.duration + BeatTime::ONE.raw() / 2
-        );
+        assert_eq!(short_clip.preview.duration, BeatTime::ONE.raw() / 2);
         assert!(short_clip.preview.duration > short_clip_length);
 
         let mut wide = gesture_for_span(
@@ -1135,6 +1205,7 @@ mod tests {
             clip_length: CLIP_LENGTH,
             pitch: crate::midi_pitch_viewport::PitchViewport::from_rows(48, 24).unwrap(),
             grid: MidiGrid::Sixteenth,
+            grid_origin: 0,
         })
         .expect("valid negative-viewport leading resize");
         assert!(update(&mut negative, 150.0, 335.0));
@@ -1274,47 +1345,144 @@ mod tests {
     }
 
     #[test]
-    fn trailing_resize_is_free_by_default_and_snaps_while_cmd_is_held() {
+    fn trailing_resize_moves_free_between_grid_lines_latches_on_grid_hit_and_unsnaps_with_cmd() {
         let beat = BeatTime::ONE.raw();
         let original = NotePreview {
             start: beat,
             duration: beat / 2,
             pitch: 60,
         };
-        let end = original.start + original.duration;
-        let pointer = [250.0, 335.0]; // clip-local beat 1.5, the note end
+        let end = original.start + original.duration; // 1.5 beats
+        let pointer = [250.0, 335.0]; // clip-local beat 1.5
         let at = |x| super::beat_at_point(x, BOUNDS, 0, 4 * beat).unwrap();
-        let free_delta = at(265.0) - at(pointer[0]); // about 0.15 beat
-        for grid in [MidiGrid::Quarter, MidiGrid::Sixteenth, MidiGrid::Off] {
-            let mut trailing = gesture_for_grid(original, HitKind::ResizeTrailing, pointer, grid);
-            assert!(update_with_modifier(
-                &mut trailing,
-                265.0,
-                pointer[1],
-                false
-            ));
-            assert_eq!(trailing.preview.start, original.start, "grid={grid:?}");
-            assert_eq!(
-                trailing.preview.start + trailing.preview.duration,
-                end + free_delta,
-                "grid={grid:?}: default end is free"
-            );
-            assert!(update_with_modifier(&mut trailing, 265.0, pointer[1], true));
-            let step = note_end_grid(grid, true).step_raw().unwrap();
-            assert_eq!(
-                trailing.preview.start + trailing.preview.duration,
-                end + (free_delta + step / 2) / step * step,
-                "grid={grid:?}: cmd snaps the end delta"
-            );
-            // Dragging far left keeps a positive gate; release of cmd frees it.
-            assert!(update_with_modifier(
-                &mut trailing,
-                100.0,
-                pointer[1],
-                false
-            ));
-            assert!(trailing.preview.duration > 0);
-        }
+        let free_delta = at(265.0) - at(pointer[0]); // +0.15 beat -> 1.65 beats
+
+        // Off-grid trailing edge (1.5 on Quarter grid): free while inside (1.0, 2.0),
+        // latches on hitting/crossing 2.0, stays snapped afterwards, and unsnaps with Cmd.
+        let mut quarter = gesture_for_grid(
+            original,
+            HitKind::ResizeTrailing,
+            pointer,
+            MidiGrid::Quarter,
+        );
+        assert!(update_with_modifier(&mut quarter, 265.0, pointer[1], false));
+        assert_eq!(
+            quarter.preview.start + quarter.preview.duration,
+            end + free_delta
+        );
+        assert!(update_with_modifier(&mut quarter, 305.0, pointer[1], false));
+        assert_eq!(quarter.preview.start + quarter.preview.duration, 2 * beat);
+        // Moving back into (1.0, 2.0) after latching stays snapped without Cmd.
+        assert!(!update_with_modifier(
+            &mut quarter,
+            265.0,
+            pointer[1],
+            false
+        ));
+        assert_eq!(quarter.preview.start + quarter.preview.duration, 2 * beat);
+        // Holding Cmd unsnaps again; releasing Cmd re-snaps.
+        assert!(update_with_modifier(&mut quarter, 265.0, pointer[1], true));
+        assert_eq!(
+            quarter.preview.start + quarter.preview.duration,
+            end + free_delta
+        );
+        assert!(update_with_modifier(&mut quarter, 365.0, pointer[1], false));
+        assert_eq!(quarter.preview.start + quarter.preview.duration, 3 * beat);
+        assert!(update_with_modifier(&mut quarter, 365.0, pointer[1], true));
+        assert_eq!(
+            quarter.preview.start + quarter.preview.duration,
+            end + (at(365.0) - at(pointer[0]))
+        );
+
+        // On-grid trailing edge (1.5 on Sixteenth grid): snaps by default, unsnaps with Cmd.
+        let mut sixteenth = gesture_for_grid(
+            original,
+            HitKind::ResizeTrailing,
+            pointer,
+            MidiGrid::Sixteenth,
+        );
+        assert!(update_with_modifier(
+            &mut sixteenth,
+            265.0,
+            pointer[1],
+            false
+        ));
+        assert_eq!(
+            sixteenth.preview.start + sixteenth.preview.duration,
+            beat * 7 / 4
+        );
+        assert!(update_with_modifier(
+            &mut sixteenth,
+            265.0,
+            pointer[1],
+            true
+        ));
+        assert_eq!(
+            sixteenth.preview.start + sixteenth.preview.duration,
+            end + free_delta
+        );
+
+        // Grid Off: free by default, Cmd snaps to 1/16.
+        let mut off = gesture_for_grid(original, HitKind::ResizeTrailing, pointer, MidiGrid::Off);
+        assert!(update_with_modifier(&mut off, 265.0, pointer[1], false));
+        assert_eq!(off.preview.start + off.preview.duration, end + free_delta);
+        assert!(update_with_modifier(&mut off, 265.0, pointer[1], true));
+        assert_eq!(off.preview.start + off.preview.duration, beat * 7 / 4);
+        assert_eq!(
+            note_end_grid(MidiGrid::Quarter, false, false),
+            MidiGrid::Off
+        );
+        assert_eq!(
+            note_end_grid(MidiGrid::Quarter, false, true),
+            MidiGrid::Quarter
+        );
+        assert_eq!(note_end_grid(MidiGrid::Quarter, true, true), MidiGrid::Off);
+        assert_eq!(
+            note_end_grid(MidiGrid::Off, true, false),
+            MidiGrid::Sixteenth
+        );
+
+        // Pure grid-hit geometry: stays false inside a cell, true on hit/cross in both directions.
+        assert!(!super::hit_grid_line(
+            i128::from(beat),
+            i128::from(beat + beat / 2),
+            beat,
+            0
+        ));
+        assert!(super::hit_grid_line(
+            i128::from(beat + beat / 2),
+            i128::from(2 * beat),
+            beat,
+            0
+        ));
+        assert!(super::hit_grid_line(
+            i128::from(beat + beat / 2),
+            i128::from(2 * beat + 1),
+            beat,
+            0
+        ));
+        assert!(!super::hit_grid_line(
+            i128::from(2 * beat),
+            i128::from(beat + beat / 2),
+            beat,
+            0
+        ));
+        assert!(super::hit_grid_line(
+            i128::from(beat + beat / 2),
+            i128::from(beat),
+            beat,
+            0
+        ));
+        assert!(super::hit_grid_line(
+            i128::from(beat + beat / 2),
+            i128::from(beat - 1),
+            beat,
+            0
+        ));
+        assert!(!super::hit_grid_line(-3, -1, 4, 0));
+        assert!(super::hit_grid_line(-3, 0, 4, 0));
+        assert!(super::hit_grid_line(-3, -4, 4, 0));
+
         // Leading resize keeps the grid by default.
         let mut leading = gesture_for_grid(
             original,
