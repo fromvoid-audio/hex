@@ -149,11 +149,11 @@ pub(in crate::editor) fn view(
         controls = controls.child(
             button(
                 "−",
-                "remove selected authored point",
+                "remove selected authored point(s)",
                 ("gain-point-remove", track_id.value()),
             )
             .on_click(cx.listener(move |view, _, _, cx| {
-                view.gain_edit(GainLaneEdit::Remove(point.beat), cx);
+                view.delete_selected_gain_points(cx);
                 cx.notify();
             })),
         );
@@ -293,29 +293,43 @@ fn plot(
 ) -> Option<gpui::Stateful<Div>> {
     let track = state.project.track(track_id)?;
     let owned = view.gain_lane.track == Some(track_id);
-    let selected = owned.then_some(view.gain_lane.selected).flatten();
+    let selected_beats = if owned {
+        view.gain_lane.effective_selected()
+    } else {
+        Vec::new()
+    };
     let draft = view.gain_lane.display_draft(track_id);
+    let group_points = view
+        .gain_lane
+        .display_group_points(track_id)
+        .map(|pts| pts.to_vec());
+    let active_marquee = view
+        .gain_lane
+        .marquee
+        .as_ref()
+        .filter(|m| m.track == track_id && (m.explicit || m.marquee.crossed_threshold()))
+        .map(|m| m.marquee);
     let generation = view.project_generation;
     let revision = state.revision;
     let preview = state.gain_preview.clone();
     let static_gain = view.live_track_gain_display(track_id, track.gain());
     let unautomated = track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty();
-    let points = track.gain_envelope();
-    let first = points.partition_point(|p| {
+    let points_source = group_points.as_deref().unwrap_or(track.gain_envelope());
+    let first = points_source.partition_point(|p| {
         state
             .project
             .tempo_map()
             .beat_to_frame(p.beat)
             .is_ok_and(|f| f < viewport.start)
     });
-    let last = points.partition_point(|p| {
+    let last = points_source.partition_point(|p| {
         state
             .project
             .tempo_map()
             .beat_to_frame(p.beat)
             .is_ok_and(|f| f <= viewport.end().unwrap_or(viewport.start))
     });
-    let points = points[first..last].to_vec();
+    let points = points_source[first..last].to_vec();
     let entity = cx.entity();
     let plot = div()
         .id(("gain-plot", track_id.value()))
@@ -424,6 +438,9 @@ fn plot(
                             }
                         }
                     }
+                    if let Some(marquee) = active_marquee {
+                        marquee.paint(bounds, theme::color(theme::PaletteRole::Primary), window);
+                    }
                     let down = entity.clone();
                     window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                         if !phase.capture()
@@ -462,7 +479,7 @@ fn plot(
                                 view.gain_lane.track = Some(track_id);
                                 view.gain_lane.plot_width = rect[2];
                                 if changed {
-                                    view.gain_lane.selected = None;
+                                    view.gain_lane.clear_selection();
                                     view.gain_lane.gain = None;
                                     view.gain_lane.error = None;
                                 }
@@ -472,7 +489,7 @@ fn plot(
                                 viewport,
                                 rect,
                                 [f32::from(event.position.x), f32::from(event.position.y)],
-                                event.modifiers.platform,
+                                event.modifiers,
                             )
                         });
                         if accepted {
@@ -486,7 +503,21 @@ fn plot(
                             return;
                         }
                         if moved.update(cx, |view, _| {
-                            if view.gain_lane.draft.is_none_or(|d| d.track != track_id) {
+                            let owns_pointer = view
+                                .gain_lane
+                                .draft
+                                .is_some_and(|d| d.track == track_id)
+                                || view
+                                    .gain_lane
+                                    .group_draft
+                                    .as_ref()
+                                    .is_some_and(|d| d.track == track_id)
+                                || view
+                                    .gain_lane
+                                    .marquee
+                                    .as_ref()
+                                    .is_some_and(|m| m.track == track_id);
+                            if !owns_pointer {
                                 return false;
                             }
                             view.move_gain_pointer(
@@ -504,17 +535,27 @@ fn plot(
                             return;
                         }
                         if up.update(cx, |view, _| {
-                            if view.gain_lane.draft.is_none_or(|draft| {
-                                draft.pointer.is_none() || draft.track != track_id
-                            }) {
+                            let owns_pointer = view
+                                .gain_lane
+                                .draft
+                                .is_some_and(|d| d.pointer.is_some() && d.track == track_id)
+                                || view
+                                    .gain_lane
+                                    .group_draft
+                                    .as_ref()
+                                    .is_some_and(|d| d.track == track_id)
+                                || view
+                                    .gain_lane
+                                    .marquee
+                                    .as_ref()
+                                    .is_some_and(|m| m.track == track_id);
+                            if !owns_pointer {
                                 return false;
                             }
-                            view.move_gain_pointer(
+                            view.finish_gain_pointer(
                                 [f32::from(event.position.x), f32::from(event.position.y)],
                                 event.modifiers.platform,
-                            );
-                            view.finish_gain_draft();
-                            true
+                            )
                         }) {
                             cx.stop_propagation();
                             window.refresh();
@@ -545,9 +586,12 @@ fn plot(
                     .border_1()
                     .border_color(rgb(theme::color(theme::PaletteRole::Surface)))
                     .bg(rgb(theme::color(
-                        if draft.is_some_and(|d| d.point.beat == p.beat) {
+                        if draft.is_some_and(|d| d.point.beat == p.beat)
+                            || (group_points.is_some()
+                                && selected_beats.binary_search(&p.beat).is_ok())
+                        {
                             theme::PaletteRole::Primary
-                        } else if Some(p.beat) == selected {
+                        } else if selected_beats.binary_search(&p.beat).is_ok() {
                             theme::PaletteRole::Secondary
                         } else {
                             theme::PaletteRole::Text
