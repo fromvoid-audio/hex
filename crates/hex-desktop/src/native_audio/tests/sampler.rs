@@ -1242,10 +1242,9 @@ fn rendered_sampler_save_open(
     visual.simulate_keystrokes("cmd-n");
     visual.run_until_parked();
     assert!(
-        visual.debug_bounds(target_selector).is_some(),
-        "first New must retain the existing explicit confirmation law"
+        !cx.has_pending_prompt(),
+        "clean saved sampler prompted on New"
     );
-    visual.simulate_keystrokes("cmd-n");
     while visual.debug_bounds(target_selector).is_some() {
         pulse(&mut visual);
         assert!(
