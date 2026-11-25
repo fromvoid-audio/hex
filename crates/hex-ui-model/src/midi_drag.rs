@@ -445,11 +445,26 @@ pub fn update_with_modifier(
             let delta = delta_from(down_beat);
             let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
             let max_start = note_end.saturating_sub(min_gate);
-            let start =
-                (i128::from(gesture.original.start) + delta).clamp(0, i128::from(max_start)) as u64;
+            // Leading resize can extend into negative time when the viewport
+            // reveals pre-origin space, matching Move's source-prefix contract.
+            let min_start = gesture.beat_start.min(0);
+            let requested = (i128::from(gesture.original.start) + delta)
+                .clamp(min_start, i128::from(max_start));
+            let Some((signed_start, prefix)) = crate::midi_viewport_grid::source_prefix(
+                requested,
+                u64::MAX - gesture.clip_length,
+                gesture.beat_start,
+                gesture.beat_span,
+                gesture.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
+            ) else {
+                return false;
+            };
+            source_prefix = prefix;
+            let start = (signed_start + i128::from(source_prefix)) as u64;
+            let rebased_end = note_end.saturating_add(source_prefix);
             NotePreview {
                 start,
-                duration: note_end.saturating_sub(start),
+                duration: rebased_end.saturating_sub(start),
                 pitch: gesture.original.pitch,
             }
         }
@@ -466,9 +481,10 @@ pub fn update_with_modifier(
                 .original
                 .start
                 .saturating_add(gesture.original.duration);
+            // Trailing resize can extend beyond the current source. The
+            // canonical extent-growing update owns storage growth on commit.
             let end = (i128::from(original_end) + delta)
-                .clamp(i128::from(min_end), i128::from(gesture.clip_length))
-                as u64;
+                .clamp(i128::from(min_end), i128::from(u64::MAX)) as u64;
             NotePreview {
                 start: gesture.original.start,
                 duration: end.saturating_sub(gesture.original.start),
@@ -1029,7 +1045,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_short_gate_resizes_to_the_quarter_beat_or_available_clip_length() {
+    fn trailing_resize_extends_past_source_length_up_to_numeric_end() {
         let original = NotePreview {
             start: BeatTime::ONE.raw() / 4,
             duration: BeatTime::ONE.raw() / 32,
@@ -1039,7 +1055,6 @@ mod tests {
         update(&mut trailing, 151.0, 335.0);
         assert_eq!(trailing.preview.start, original.start);
         assert!(trailing.preview.duration >= BeatTime::ONE.raw() / 4);
-        assert!(trailing.preview.start + trailing.preview.duration <= CLIP_LENGTH);
 
         let short_clip_length = BeatTime::ONE.raw() / 8;
         let tiny_note = NotePreview {
@@ -1054,7 +1069,87 @@ mod tests {
             short_clip_length,
         );
         update(&mut short_clip, 150.0, 335.0);
-        assert_eq!(short_clip.preview.duration, short_clip_length);
+        assert_eq!(
+            short_clip.preview.duration,
+            tiny_note.duration + BeatTime::ONE.raw() / 2
+        );
+        assert!(short_clip.preview.duration > short_clip_length);
+
+        let mut wide = gesture_for_span(
+            NotePreview {
+                start: 1,
+                duration: 1,
+                pitch: 60,
+            },
+            HitKind::ResizeTrailing,
+            [BOUNDS[0], 335.0],
+            u64::MAX,
+        );
+        wide.grid = MidiGrid::Off;
+        assert!(update(&mut wide, BOUNDS[0] + BOUNDS[2], 335.0));
+        assert_eq!(wide.preview.start, 1);
+        assert_eq!(wide.preview.duration, u64::MAX - 1);
+        assert_eq!(
+            wide.preview.start.checked_add(wide.preview.duration),
+            Some(u64::MAX)
+        );
+        assert!(wide.preview.duration > wide.clip_length);
+        assert!(update(&mut wide, BOUNDS[0], 335.0));
+        assert_eq!(wide.preview, wide.original);
+    }
+
+    #[test]
+    fn leading_resize_rebases_negative_time_only_when_viewport_reveals_pre_origin_space() {
+        let beat = BeatTime::ONE.raw();
+        let original = NotePreview {
+            start: beat,
+            duration: beat / 2,
+            pitch: 60,
+        };
+        let mut at_zero = gesture_for_grid(
+            original,
+            HitKind::ResizeLeading,
+            [250.0, 335.0],
+            MidiGrid::Off,
+        );
+        assert!(update(&mut at_zero, BOUNDS[0], 335.0));
+        assert_eq!(at_zero.source_prefix, 0);
+        assert_eq!(at_zero.preview.start, 0);
+        assert_eq!(at_zero.preview.duration, original.start + original.duration);
+
+        let (clip, note) = ids();
+        let mut negative = begin(super::GestureStart {
+            generation: 3,
+            revision: 9,
+            clip,
+            note,
+            active: true,
+            original,
+            channel: 2,
+            velocity: 91,
+            kind: HitKind::ResizeLeading,
+            pointer: [300.0, 335.0],
+            bounds: BOUNDS,
+            beat_start: -i128::from(beat),
+            beat_span: 4 * beat,
+            clip_length: CLIP_LENGTH,
+            pitch: crate::midi_pitch_viewport::PitchViewport::from_rows(48, 24).unwrap(),
+            grid: MidiGrid::Sixteenth,
+        })
+        .expect("valid negative-viewport leading resize");
+        assert!(update(&mut negative, 150.0, 335.0));
+        assert_eq!(negative.source_prefix, 4 * beat);
+        assert_eq!(
+            i128::from(negative.preview.start) - i128::from(negative.source_prefix),
+            -i128::from(beat / 2)
+        );
+        assert_eq!(
+            negative.preview.start + negative.preview.duration,
+            original.start + original.duration + negative.source_prefix
+        );
+        assert!(update(&mut negative, 300.0, 335.0));
+        assert_eq!(negative.source_prefix, 0);
+        assert_eq!(negative.preview, original);
     }
 
     #[test]

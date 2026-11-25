@@ -99,11 +99,7 @@ impl EditorView {
             || !x.is_finite()
             || note.start.raw() >= length
             || note.duration.raw() == 0
-            || note
-                .start
-                .raw()
-                .checked_add(note.duration.raw())
-                .is_none_or(|end| end > length)
+            || note.start.raw().checked_add(note.duration.raw()).is_none()
             || self.edit_pending()
             || current.is_none_or(|current| {
                 current.draw_mode || !midi_draw::same_rendered_frame(current, context)
@@ -115,7 +111,7 @@ impl EditorView {
             return false;
         };
         let Some(duration) = midi_drag::creation_gate(
-            length - note.start.raw(),
+            u64::MAX.saturating_sub(note.start.raw()),
             midi_drag::effective_grid(context.grid, modifiers.snap),
             context.view_span,
             context.bounds.width,
@@ -269,9 +265,9 @@ impl EditorView {
         else {
             return self.midi_editor.creation.take().is_some();
         };
-        let Some(length) = current.authoring_length() else {
+        if current.authoring_length().is_none() {
             return self.midi_editor.creation.take().is_some();
-        };
+        }
         let pending = self.edit_pending();
         let Some(creation) = self.midi_editor.creation.as_mut() else {
             return false;
@@ -291,7 +287,7 @@ impl EditorView {
         };
         if !creation.dragged {
             let Some(gate) = midi_drag::creation_gate(
-                length - creation.preview.start.raw(),
+                u64::MAX.saturating_sub(creation.preview.start.raw()),
                 current.effective_grid,
                 current.view_span,
                 current.bounds.width,
@@ -311,14 +307,14 @@ impl EditorView {
             return true;
         };
         let start = creation.preview.start.raw();
-        let remaining = length.saturating_sub(start);
+        let remaining = u64::MAX.saturating_sub(start);
         let end_grid = midi_drag::note_end_grid(current.grid, current.snap_modifier);
         let minimum = end_grid
             .minimum_gate()
             .max(creation.minimum_gate)
             .min(remaining);
         let end = midi_drag::snap_raw_aligned(raw, end_grid, current.grid_origin)
-            .clamp(start.saturating_add(minimum), length);
+            .clamp(start.saturating_add(minimum), u64::MAX);
         let duration = BeatTime::from_raw(end - start);
         let changed = creation.preview.duration != duration;
         creation.preview.duration = duration;

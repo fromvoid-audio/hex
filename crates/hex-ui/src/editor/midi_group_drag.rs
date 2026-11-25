@@ -89,12 +89,8 @@ pub(super) fn parameter_updates(
                     .ok()
                     .filter(|duration| *duration > 0)
                     .ok_or("group length edit exceeds note range")?;
-                if note
-                    .start
-                    .checked_add(duration)
-                    .is_none_or(|new_end| new_end > clip_length)
-                {
-                    return Err("group length edit exceeds clip bounds");
+                if note.start.checked_add(duration).is_none() {
+                    return Err("group length edit exceeds note range");
                 }
                 (duration, note.pitch, note.velocity)
             }
@@ -345,26 +341,33 @@ impl GroupGesture {
         };
         let desired_delta =
             midi_drag::quantize_delta(pointer_beat - i128::from(self.pointer_beat), grid);
-        let (desired_delta, source_prefix) = if self.kind == HitKind::Move && !self.copy {
-            let first = self
-                .originals
-                .iter()
-                .map(|note| note.start)
-                .min()
-                .unwrap_or(0);
-            let Some((start, prefix)) = super::midi_viewport_grid::source_prefix(
-                i128::from(first) + desired_delta,
-                u64::MAX - self.clip_length,
-                self.beat_start,
-                self.beat_span,
-                self.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
-            ) else {
-                return false;
+        let (desired_delta, source_prefix) =
+            if !self.copy && matches!(self.kind, HitKind::Move | HitKind::ResizeLeading) {
+                let first = self
+                    .originals
+                    .iter()
+                    .map(|note| note.start)
+                    .min()
+                    .unwrap_or(0);
+                let requested = i128::from(first) + desired_delta;
+                let requested = if self.kind == HitKind::ResizeLeading {
+                    requested.max(self.beat_start.min(0))
+                } else {
+                    requested
+                };
+                let Some((start, prefix)) = super::midi_viewport_grid::source_prefix(
+                    requested,
+                    u64::MAX - self.clip_length,
+                    self.beat_start,
+                    self.beat_span,
+                    self.grid.step_raw().unwrap_or(BeatTime::ONE.raw()),
+                ) else {
+                    return false;
+                };
+                (start - i128::from(first), prefix)
+            } else {
+                (desired_delta, 0)
             };
-            (start - i128::from(first), prefix)
-        } else {
-            (desired_delta, 0)
-        };
         let resolved = if self.kind == HitKind::Move {
             resolve_common_delta(
                 &self.originals,
@@ -375,10 +378,11 @@ impl GroupGesture {
         } else {
             resize_delta(
                 &self.originals,
-                self.clip_length,
+                u64::MAX,
                 self.kind,
                 desired_delta,
                 grid.minimum_gate(),
+                source_prefix,
             )
             .map(|delta| (delta, 0))
         };
@@ -559,7 +563,8 @@ impl GroupGesture {
                 note.pitch = (i16::from(note.pitch) + self.pitch_delta) as u8;
             }
             HitKind::ResizeLeading => {
-                note.start = (i128::from(note.start) + self.delta) as u64;
+                note.start =
+                    (i128::from(note.start) + i128::from(self.source_prefix) + self.delta) as u64;
                 note.duration = (i128::from(note.duration) - self.delta) as u64;
             }
             HitKind::ResizeTrailing => {
@@ -601,13 +606,15 @@ impl GroupGesture {
 /// One common edge delta keeps each member's opposite edge anchored. The
 /// shortest member limits shrinking; preexisting sub-grid notes never jump to
 /// a longer gate merely because a resize begins. Only explicit pointer motion
-/// changes geometry, and all results stay within the captured source.
+/// changes geometry; trailing edges may extend past the captured source and
+/// leading edges may extend into a validated `source_prefix`.
 fn resize_delta(
     originals: &[GroupNote],
     length: u64,
     kind: HitKind,
     requested: i128,
     minimum: u64,
+    source_prefix: u64,
 ) -> Result<i128, &'static str> {
     if kind == HitKind::Move || minimum == 0 {
         return Err("invalid group resize");
@@ -619,7 +626,7 @@ fn resize_delta(
     for note in originals {
         let minimum = minimum.min(note.duration);
         if kind == HitKind::ResizeLeading {
-            lower = lower.max(-i128::from(note.start));
+            lower = lower.max(-i128::from(note.start) - i128::from(source_prefix));
             upper = upper.min(i128::from(note.duration - minimum));
         } else {
             lower = lower.max(i128::from(minimum) - i128::from(note.duration));
@@ -651,23 +658,55 @@ mod tests {
         let beat = BeatTime::ONE.raw();
         let f = fixture(&[(beat / 2, beat, 60), (2 * beat, beat / 8, 64)]);
         assert_eq!(
-            resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, i128::MIN, beat / 4).unwrap(),
+            resize_delta(
+                &f.notes,
+                CLIP,
+                HitKind::ResizeLeading,
+                i128::MIN,
+                beat / 4,
+                0
+            )
+            .unwrap(),
             -i128::from(beat / 2)
         );
         assert_eq!(
-            resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, i128::MAX, beat / 4).unwrap(),
+            resize_delta(
+                &f.notes,
+                CLIP,
+                HitKind::ResizeLeading,
+                i128::MAX,
+                beat / 4,
+                0
+            )
+            .unwrap(),
             0
         );
         assert_eq!(
-            resize_delta(&f.notes, CLIP, HitKind::ResizeTrailing, i128::MIN, beat / 4).unwrap(),
+            resize_delta(
+                &f.notes,
+                CLIP,
+                HitKind::ResizeTrailing,
+                i128::MIN,
+                beat / 4,
+                0
+            )
+            .unwrap(),
             0
         );
         assert_eq!(
-            resize_delta(&f.notes, CLIP, HitKind::ResizeTrailing, i128::MAX, beat / 4).unwrap(),
-            i128::from(CLIP - 2 * beat - beat / 8)
+            resize_delta(
+                &f.notes,
+                u64::MAX,
+                HitKind::ResizeTrailing,
+                i128::MAX,
+                beat / 4,
+                0
+            )
+            .unwrap(),
+            i128::from(u64::MAX - 2 * beat - beat / 8)
         );
-        assert!(resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, 0, 0).is_err());
-        assert!(resize_delta(&[], CLIP, HitKind::ResizeLeading, 0, 1).is_err());
+        assert!(resize_delta(&f.notes, CLIP, HitKind::ResizeLeading, 0, 0, 0).is_err());
+        assert!(resize_delta(&[], CLIP, HitKind::ResizeLeading, 0, 1, 0).is_err());
         assert!(
             resize_delta(
                 &[GroupNote {
@@ -677,7 +716,8 @@ mod tests {
                 CLIP,
                 HitKind::ResizeTrailing,
                 1,
-                1
+                1,
+                0
             )
             .is_err()
         );
@@ -718,13 +758,28 @@ mod tests {
                     } else {
                         assert_eq!(resized.start, original.start);
                     }
-                    assert!(resized.duration > 0 && resized.start + resized.duration <= CLIP);
+                    assert!(resized.duration > 0);
                 }
                 assert!(drag.updates().is_ok());
                 drag.update([200.0, 315.0], false);
                 assert!(drag.is_noop());
             }
         }
+        // Trailing group resize extends past the captured clip length.
+        let wide = fixture(&[(beat, beat, 60), (3 * beat, beat, 64)]);
+        let originals = wide.notes.clone();
+        let mut drag = gesture_of_kind(
+            MidiGrid::Off,
+            wide,
+            [200.0, 315.0],
+            48,
+            HitKind::ResizeTrailing,
+        );
+        assert!(drag.update([400.0, 315.0], false));
+        let extended = drag.preview(originals[1].id).unwrap();
+        assert_eq!(extended.start, originals[1].start);
+        assert_eq!(extended.duration, originals[1].duration + 2 * beat);
+        assert!(extended.start + extended.duration > CLIP);
     }
 
     struct Fixture {
@@ -1077,14 +1132,30 @@ mod tests {
         );
 
         let end_edge = fixture(&[(beat, beat / 8, 60), (CLIP - beat / 16, beat / 16, 62)]);
+        let extended = parameter_updates(
+            &end_edge.notes,
+            CLIP,
+            GroupParameter::Duration(1),
+            beat / 16,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            extended[1].start.raw() + extended[1].duration.raw(),
+            CLIP + beat / 16
+        );
+
+        let mut overflow_notes = end_edge.notes;
+        overflow_notes[1].start = u64::MAX - beat / 16;
+        overflow_notes[1].duration = beat / 16;
         assert_eq!(
             parameter_updates(
-                &end_edge.notes,
-                CLIP,
+                &overflow_notes,
+                u64::MAX,
                 GroupParameter::Duration(1),
                 beat / 16,
             ),
-            Err("group length edit exceeds clip bounds")
+            Err("group length edit exceeds note range")
         );
 
         let velocity_edge = fixture(&[(beat, beat / 8, 60), (2 * beat, beat / 8, 62)]);
