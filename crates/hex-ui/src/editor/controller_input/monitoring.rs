@@ -18,12 +18,12 @@ pub(super) fn sink(
     let note_cancelled = Arc::clone(&note_input);
     let held_cancel = Arc::clone(&notes);
     hex_midi::Sink {
-        note: Box::new(move |event| {
+        note: Box::new(move |timed| {
             use hex_engine::computer_keyboard::LiveNoteEvent;
             let Some(input) = note_writer.live_notes() else {
                 return;
             };
-            let event = match event {
+            let event = match timed.event {
                 hex_midi::NoteEvent::On {
                     channel,
                     pitch,
@@ -51,6 +51,9 @@ pub(super) fn sink(
                     pitch,
                     value,
                 },
+                hex_midi::NoteEvent::ControlChange { channel, cc, value } => {
+                    LiveNoteEvent::ControlChange { channel, cc, value }
+                }
                 hex_midi::NoteEvent::AllNotesOff => LiveNoteEvent::AllNotesOff,
                 hex_midi::NoteEvent::InputLost(_) => {
                     let _ = input.cancel_activation(activation);
@@ -58,7 +61,10 @@ pub(super) fn sink(
                     return;
                 }
             };
-            if input.publish(activation, event).is_err() {
+            if input
+                .publish_at(activation, event, timed.timestamp_ns)
+                .is_err()
+            {
                 held_cancel.cancel();
             }
         }),
@@ -141,11 +147,17 @@ mod tests {
             Arc::clone(&input),
             activation,
         );
-        hex_midi::deliver_packets_with_notes(
+        let mut clock = hex_midi::MonotonicTimestampClock::default();
+        hex_midi::deliver_timed_packets_with_notes(
             &mut hex_midi::Decoder::default(),
             2,
             Default::default(),
-            [&[0x92, 60, 37, 60, 0][..]],
+            hex_midi::MachTimebase::APPLE_SILICON_24MHZ,
+            &mut clock,
+            [hex_midi::TimedPacket {
+                timestamp_ticks: 24_000,
+                data: &[0x92, 60, 37, 60, 0][..],
+            }],
             &held,
             sink.publish.as_ref(),
             sink.note.as_ref(),
@@ -171,10 +183,13 @@ mod tests {
         assert_eq!(project.snapshot(), before);
         let fresh = input.begin_live_notes_activation_on_control().unwrap();
         (sink.cancel)();
-        (sink.note)(hex_midi::NoteEvent::Off {
-            channel: 2,
-            pitch: 60,
-            velocity: 0,
+        (sink.note)(hex_midi::TimestampedNoteEvent {
+            timestamp_ns: 0,
+            event: hex_midi::NoteEvent::Off {
+                channel: 2,
+                pitch: 60,
+                velocity: 0,
+            },
         });
         assert!(input.live_notes().unwrap().same_current_activation(fresh));
         assert!(!input.is_cancelled());
@@ -208,11 +223,17 @@ mod unit_tests {
         let token = input.begin_live_notes_activation_on_control().unwrap();
         let held = Arc::new(hex_midi::HeldNoteInput::default());
         let sink = sink(None, Arc::clone(&held), Arc::clone(&input), token);
-        hex_midi::deliver_packets_with_notes(
+        let mut clock = hex_midi::MonotonicTimestampClock::default();
+        hex_midi::deliver_timed_packets_with_notes(
             &mut hex_midi::Decoder::default(),
             2,
             Default::default(),
-            [&[0x92, 60, 37][..]],
+            hex_midi::MachTimebase::NANOSECONDS,
+            &mut clock,
+            [hex_midi::TimedPacket {
+                timestamp_ticks: 1_000,
+                data: &[0x92, 60, 37][..],
+            }],
             &held,
             sink.publish.as_ref(),
             sink.note.as_ref(),
@@ -246,11 +267,17 @@ mod unit_tests {
         // the decoder's packet budget. The smaller host queue must reject it.
         let mut packet = vec![0x92, 60, 91, 0xa2];
         packet.extend(std::iter::repeat_n([60, 85], 512).flatten());
-        hex_midi::deliver_packets_with_notes(
+        let mut clock = hex_midi::MonotonicTimestampClock::default();
+        hex_midi::deliver_timed_packets_with_notes(
             &mut hex_midi::Decoder::default(),
             2,
             Default::default(),
-            [packet.as_slice()],
+            hex_midi::MachTimebase::NANOSECONDS,
+            &mut clock,
+            [hex_midi::TimedPacket {
+                timestamp_ticks: 1_000,
+                data: packet.as_slice(),
+            }],
             &held,
             sink.publish.as_ref(),
             sink.note.as_ref(),
