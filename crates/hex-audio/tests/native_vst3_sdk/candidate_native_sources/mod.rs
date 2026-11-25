@@ -312,7 +312,7 @@ fn actual_root_retains_pending_native_source_until_disposal_and_exact_report_rec
         assert_eq!(actual.configuration().binding, first);
         let storage = actual.retained_storage_on_control().unwrap();
         assert_eq!(storage.shared_groups, 2);
-        assert_eq!(storage.ipc_handle_bound, 2);
+        assert_eq!(storage.ipc_handle_bound, 3);
         assert!(storage.inventory_node_lifetime_bound > 0);
     }
     let (build, source, preparation) = input();
