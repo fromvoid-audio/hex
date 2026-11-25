@@ -417,7 +417,7 @@ struct Packet {
             if(status==0xb0 || status==0xd0 || status==0xe0) {
                 using namespace Steinberg::Vst;
                 const bool pressure=status==0xd0;
-                if(config.inputs || raw[2]!=(pressure?2:3) || (pressure && raw[5]) || note_id ||
+                if(raw[2]!=(pressure?2:3) || (pressure && raw[5]) || note_id ||
                         controller_count>=controllers.size()) return -1;
                 auto& point=controllers[controller_count++];
                 point.offset=static_cast<uint16_t>(offset);

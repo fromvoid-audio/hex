@@ -675,6 +675,35 @@ class NativeInstanceTests(unittest.TestCase):
                 # SDK event type, offset, pitch, noteId and kIsLive flag.
                 self.assertEqual(rows[6:11], [3, 3, 60, identity or -1, int(live)])
 
+    def test_stereo_effect_maps_controllers_at_their_offsets_and_requires_a_main_event_bus(self):
+        for variant, restored in ((165, False), (165, True), (166, False)):
+            with self.subTest(variant=variant, restored=restored):
+                state = self.startup_state(gain=1., latency=0, scroll=7) if restored else None
+                session = self.session(variant=variant, channels=(2, 2), startup_state=state)
+                self.ready(session, controller=True)
+                events = [(0, 3, 0xb2, 74, 0), (1, 3, 0xb1, 74, 127),
+                          (2, 3, 0xe1, 0, 64), (4, 2, 0xd2, 127, 0),
+                          (6, 3, 0xb2, 74, 64)]
+                header = bytearray(session.packet(8))
+                struct.pack_into("<H", header, 8, len(events))
+                pcm = (.25, -.125) * 8
+                session.socket.sendall(header + struct.pack("<16f", *pcm) +
+                                       b"".join(struct.pack("<HBBBB2x", *row) for row in events))
+                if variant == 166:
+                    self.error(session, 8)
+                    self.terminal(session, 8)
+                    self.assertEqual(self.observation()[10], 0)
+                    continue
+                magic, reply = session.message()
+                self.assertEqual(magic, b"HXVB")
+                # The channel-1 CC is unassigned. The three mapped message kinds
+                # drive one SDK gain curve over the two independent PCM channels.
+                curve = [0, .5, 1, 1.5, 2, 1.5, 1, 1]
+                self.assertEqual(struct.unpack_from("<16f", reply, 64),
+                                 tuple(v * curve[i // 2] for i, v in enumerate(pcm)))
+                session.sequence, session.frames = 1, 8
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
     def test_stereo_effect_receives_identified_notes_and_releases_held_gate_on_restore(self):
         trace = self.root / "effect-events.bin"
         with patch.dict(os.environ, {"HEX_ORIGINAL_EVENT_TRACE": str(trace)}):

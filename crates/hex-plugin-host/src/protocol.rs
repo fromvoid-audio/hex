@@ -183,11 +183,10 @@ impl Configuration {
             || block.sequence != sequence
             || sequence.checked_mul(u64::from(self.quantum)) != Some(block.first_frame)
             || block.events.as_slice().iter().any(|event| {
-                match (event.bytes[0] & 0xf0, event.len) {
-                    (0x80 | 0x90 | 0xa0, 3) => false,
-                    (0xb0 | 0xe0, 3) | (0xd0, 2) => self.input_channels != 0,
-                    _ => true,
-                }
+                !matches!(
+                    (event.bytes[0] & 0xf0, event.len),
+                    (0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0, 3) | (0xd0, 2)
+                )
             })
             || !block.pcm[..usize::from(self.quantum)]
                 .iter()
