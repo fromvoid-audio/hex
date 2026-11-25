@@ -2,7 +2,7 @@ use super::*;
 use gpui::TestAppContext;
 use hex_lattice_contract::{DeviceParameterSnapshot, ParameterId, ParameterValue};
 use hex_project::{Command, Created, Editor, Project};
-use hex_session::device_gesture::GestureRequest;
+use hex_session::device_gesture::{GestureKey, GesturePhase, GestureRequest};
 use hex_session::service::Request;
 use std::sync::Arc;
 
@@ -48,14 +48,13 @@ fn values() -> DeviceParameterSnapshot {
     ])
     .unwrap()
 }
-fn acknowledge_begin(view: &mut EditorView) {
-    let begin = view.device_gesture.next_request().unwrap();
-    view.device_gesture.mark_submitted();
+fn acknowledge_submitted_begin(view: &mut EditorView, key: GestureKey) {
+    assert!(view.device_gesture.next_request().is_none());
     assert!(
         view.device_gesture
             .acknowledge(&hex_session::device_gesture::GestureAck {
-                key: begin.key(),
-                phase: begin.phase(),
+                key,
+                phase: GesturePhase::Begin,
                 sequence: 0,
                 accepted: true,
                 preview_retained: false,
@@ -117,12 +116,13 @@ fn snapshot_overlay_requires_exact_device_parameter_generation(cx: &mut TestAppC
 fn snapshot_removal_cancels_without_cached_scalar_controls(cx: &mut TestAppContext) {
     let (editor, device, other) = fixture(cx);
     editor.update(cx, |view, _| {
-        view.device_gesture
+        let key = view
+            .device_gesture
             .begin_snapshot(view.project_generation, device, values())
             .unwrap();
         view.device_panel.controls.clear();
         retire_invalid_owner(view, &HashSet::from([other]));
-        acknowledge_begin(view);
+        acknowledge_submitted_begin(view, key);
         assert!(matches!(
             view.device_gesture.next_request(),
             Some(GestureRequest::Cancel { .. })
@@ -136,14 +136,14 @@ fn snapshot_save_barrier_finalizes_full_values_and_refusal_preserves_overlay(
 ) {
     let (editor, device, _) = fixture(cx);
     editor.update(cx, |view, _| {
-        view.device_gesture.begin_snapshot(view.project_generation, device, values()).unwrap();
+        let key = view.device_gesture.begin_snapshot(view.project_generation, device, values()).unwrap();
         for _ in 0..super::super::super::UI_REQUEST_CAPACITY { view.device_gesture_barriers.push_back(Request::Undo); }
         assert!(!view.enqueue_device_barrier(Request::SaveCurrent));
         assert!(!view.device_gesture.has_pending_terminal());
         view.device_gesture_barriers.clear();
         assert!(view.enqueue_device_barrier(Request::SaveCurrent));
         assert!(view.device_gesture.has_pending_terminal());
-        acknowledge_begin(view);
+        acknowledge_submitted_begin(view, key);
         assert!(matches!(view.device_gesture.next_request(), Some(GestureRequest::CommitSnapshot { snapshot, .. }) if snapshot == values()));
         assert!(matches!(view.device_gesture_barriers.front(), Some(Request::SaveCurrent)));
     });
