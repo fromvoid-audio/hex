@@ -390,15 +390,16 @@ fn live_capture_poll_binds_current_exchange_and_rejects_partial_or_stale_state()
 }
 
 #[test]
-fn stopped_restore_changes_only_instrument_quiescence_version() {
+fn stopped_restore_requests_gate_release_independently_of_audio_inputs() {
     let mut config = config();
     let ordinary = quiesce(&config, 3).unwrap();
-    assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), ordinary);
-    config.input_channels = 0;
-    assert_eq!(quiesce(&config, 3).unwrap(), ordinary);
     let mut release = ordinary;
     release[4..6].copy_from_slice(&2_u16.to_le_bytes());
-    assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), release);
+    for channels in 0..=2 {
+        config.input_channels = channels;
+        assert_eq!(quiesce(&config, 3).unwrap(), ordinary);
+        assert_eq!(quiesce_for_stopped_restore(&config, 3).unwrap(), release);
+    }
     assert!(quiesce_for_stopped_restore(&config, u64::MAX).is_err());
 }
 
@@ -668,7 +669,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
             is_live: false,
         })
         .unwrap();
-    assert!(config.validate_block(&event, 0).is_err());
+    config.validate_block(&event, 0).unwrap();
     let mut instrument = config.clone();
     instrument.input_channels = 0;
     assert!(
@@ -728,6 +729,7 @@ fn instrument_expression_preserves_message_width_and_note_identity_on_the_wire()
         ..pressure
     };
     block.events.push(pressure).unwrap();
+    effect.validate_block(&block, 0).unwrap();
     block.events.push(channel_pressure).unwrap();
     let bend = MidiEvent {
         bytes: [0xe1, 9, 64],
