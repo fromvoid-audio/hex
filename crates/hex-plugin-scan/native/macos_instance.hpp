@@ -365,10 +365,17 @@ private:
             captured.component=true;captured.component_bytes=static_cast<uint32>(component_stream->size());
         } else if (first!=kNotImplemented && first!=kResultFalse) return CaptureResult::Refused;
         if (controller) {
-            if (initial && !restored && captured.component) {
-                if (!sync_controller_component_state(component_stream)) return CaptureResult::Refused;
-                if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
-                    host->refusal_flags()) return CaptureResult::Refused;
+            if (initial) {
+                const bool sync_component=!restored && captured.component;
+                if (sync_component && !sync_controller_component_state(component_stream))
+                    return CaptureResult::Refused;
+                // Restored controller values were read before bus negotiation. Publish
+                // effect assignments only after the main event input is active.
+                const bool effect_midi=configuration_.input_channels && !silent_input_ && event_input_channels_;
+                if (effect_midi) host->set_effect_midi_channels_on_control(static_cast<int16>(event_input_channels_));
+                if ((sync_component || effect_midi) &&
+                    (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
+                     host->refusal_flags())) return CaptureResult::Refused;
             }
             if(initial) controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
             if (!controller_stream || (!initial && !controller_stream->reset_write_on_control(StateStream::capacity-captured.component_bytes))) return CaptureResult::Refused;

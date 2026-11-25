@@ -425,7 +425,7 @@ public:
     uint32 PLUGIN_API release() override { const auto value=--refs;if(!value)delete this;return value; }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!iid || !out) return kInvalidArgument;*out=nullptr;
-        if(fault==authored_instrument_variant && same(iid,INLINE_UID_OF(IMidiMapping))) {
+        if((fault==authored_instrument_variant || fault==midi_effect_variant) && same(iid,INLINE_UID_OF(IMidiMapping))) {
             *out=static_cast<IMidiMapping*>(this);addRef();return kResultOk;
         }
         if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IEditController))) return kNoInterface;
