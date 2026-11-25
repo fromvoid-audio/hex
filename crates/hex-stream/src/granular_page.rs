@@ -6,7 +6,7 @@ use crate::{
 };
 use hex_engine::{Frame, STREAM_PAGE_FRAMES, StreamedSourceMetadata};
 use hex_media::{ResamplePlan, VerifiedWavReader};
-use hex_warp::{Error, SequentialGranular, SequentialGranularConfig};
+use hex_warp::{Error, SequentialGranularConfig, SequentialWarp, SequentialWarpConfig};
 
 /// A failure retains the pending page buffer until it is explicitly reclaimed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,26 +92,46 @@ impl VerifiedGranularPages {
         cache_budget: usize,
         cancel: &mut dyn FnMut() -> bool,
     ) -> Result<Self, GranularPageError> {
+        Self::new_warp(
+            reference,
+            SequentialWarpConfig::Granular(config),
+            cache_entries,
+            cache_budget,
+            cancel,
+        )
+    }
+
+    pub fn new_warp(
+        reference: VerifiedReferenceChannel,
+        config: SequentialWarpConfig,
+        cache_entries: usize,
+        cache_budget: usize,
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<Self, GranularPageError> {
         let region = reference
             .region()
             .ok_or(GranularPageError::InvalidRequest)?;
-        if config.sample_rate != reference.metadata().project_rate()
-            || config.reference_channel != reference.channel()
+        if config.sample_rate() != reference.metadata().project_rate() {
+            return Err(GranularPageError::InvalidRequest);
+        }
+        if let SequentialWarpConfig::Granular(ref g) = config
+            && g.reference_channel != reference.channel()
         {
             return Err(GranularPageError::InvalidRequest);
         }
         let metadata = reference
             .metadata()
-            .with_granular(
+            .with_warped(
                 region,
-                &config.map,
-                config.mode,
-                config.pitch_cents,
-                config.resampler,
+                config.map(),
+                config.mode(),
+                config.pitch_cents(),
+                config.resampler(),
+                config.attacks(),
             )
             .map_err(|_| GranularPageError::InvalidRequest)?;
-        let renderer = SequentialGranular::new(config, cancel)?;
-        let cursor = VerifiedGranularCursor::new(renderer, reference)?;
+        let renderer = SequentialWarp::new(config, cancel)?;
+        let cursor = VerifiedGranularCursor::new_warp(renderer, reference)?;
         let cache = VerifiedGranularCheckpointCache::new(&cursor, cache_entries, cache_budget)?;
         Ok(Self {
             metadata,

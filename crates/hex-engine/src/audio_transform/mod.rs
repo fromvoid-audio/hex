@@ -164,16 +164,46 @@ pub struct StreamedGranularRoot {
     mode: hex_warp::Mode,
     pitch_cents: i16,
     law: hex_warp::Resampler,
+    attacks: Vec<u64>,
 }
 impl StreamedGranularRoot {
+    /// Construct a validated streamed warp root for Tones, Texture, Beats, Complex, or ComplexPro.
+    pub fn new_warped(
+        raw: &crate::StreamedSourceMetadata,
+        region: hex_warp::SourceRegion,
+        map: hex_warp::TimeMap,
+        mode: hex_warp::Mode,
+        pitch_cents: i16,
+        law: hex_warp::Resampler,
+        attacks: Vec<u64>,
+    ) -> Result<Self, Invalid> {
+        let metadata = raw.with_warped(&region, &map, mode, pitch_cents, law, &attacks)?;
+        Ok(Self {
+            metadata,
+            region,
+            map,
+            mode,
+            pitch_cents,
+            law,
+            attacks,
+        })
+    }
     pub fn metadata(&self) -> &crate::StreamedSourceMetadata {
         &self.metadata
     }
-    /// Actual retained map and envelope payload, excluding this inline value.
+    pub fn attacks(&self) -> &[u64] {
+        &self.attacks
+    }
+    /// Actual retained map, envelope, and attack payload, excluding this inline value.
     pub fn backing_bytes(&self) -> Option<usize> {
         self.region
             .backing_bytes()?
-            .checked_add(self.map.backing_bytes()?)
+            .checked_add(self.map.backing_bytes()?)?
+            .checked_add(
+                self.attacks
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<u64>())?,
+            )
     }
     /// Move the exact projected inputs to their eventual control-side owner.
     pub fn into_parts(
@@ -193,6 +223,28 @@ impl StreamedGranularRoot {
             self.mode,
             self.pitch_cents,
             self.law,
+        )
+    }
+    /// Move all projected warp inputs including optional explicit beat attacks.
+    pub fn into_warped_parts(
+        self,
+    ) -> (
+        crate::StreamedSourceMetadata,
+        hex_warp::SourceRegion,
+        hex_warp::TimeMap,
+        hex_warp::Mode,
+        i16,
+        hex_warp::Resampler,
+        Vec<u64>,
+    ) {
+        (
+            self.metadata,
+            self.region,
+            self.map,
+            self.mode,
+            self.pitch_cents,
+            self.law,
+            self.attacks,
         )
     }
 }
@@ -261,6 +313,7 @@ pub fn streamed_granular_root(
         mode,
         pitch_cents: domain.pitch_cents,
         law,
+        attacks: Vec::new(),
     })
 }
 

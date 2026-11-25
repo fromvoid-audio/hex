@@ -519,6 +519,58 @@ impl Bandlimited {
             Some((start, end)),
         )
     }
+
+    pub(super) fn try_sample_with<E>(
+        &self,
+        position_q32: i128,
+        mut frame: impl FnMut(i128) -> Result<[f64; 2], E>,
+    ) -> Result<[f64; 2], E> {
+        let integer = position_q32.div_euclid(Q32);
+        let fraction = position_q32.rem_euclid(Q32);
+        if fraction == 0 && self.rate <= 1.0 {
+            return frame(integer);
+        }
+        let scaled = fraction * PHASES as i128;
+        let phase = (scaled / Q32) as usize;
+        let mut result = [0.0; 2];
+        match self.resampler {
+            Resampler::V1 => {
+                for tap in 0..TAPS {
+                    let sample = frame(integer + tap as i128 - (TAPS / 2 - 1) as i128)?;
+                    let coefficient = self.coefficients[phase * TAPS + tap];
+                    result[0] += sample[0] * coefficient;
+                    result[1] += sample[1] * coefficient;
+                }
+            }
+            Resampler::V2 => {
+                let taps = self.taps;
+                let blend = (scaled % Q32) as f64 / Q32 as f64;
+                let low = &self.coefficients[phase * taps..(phase + 1) * taps];
+                let high = &self.coefficients[(phase + 1) * taps..(phase + 2) * taps];
+                let first = integer - (taps / 2 - 1) as i128;
+                for (tap, (&a, &b)) in low.iter().zip(high).enumerate() {
+                    let sample = frame(first + tap as i128)?;
+                    let coefficient = a + (b - a) * blend;
+                    result[0] += sample[0] * coefficient;
+                    result[1] += sample[1] * coefficient;
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    pub(super) fn try_sample_segment<E>(
+        &self,
+        position: f64,
+        start: i128,
+        end: i128,
+        mut frame: impl FnMut(i128) -> Result<[f64; 2], E>,
+    ) -> Result<[f64; 2], E> {
+        let end = end.max(start);
+        self.try_sample_with((position * Q32 as f64).round() as i128, |at| {
+            frame(at.clamp(start, end))
+        })
+    }
 }
 pub(super) fn render(
     request: &Request<'_>,

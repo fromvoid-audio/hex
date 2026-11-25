@@ -35,6 +35,18 @@ impl VerifiedReferenceChannel {
         }
     }
 
+    /// Bind a validated raw source and region for warp modes that compute stereo
+    /// reference decisions dynamically (`Beats`, `Complex`, `ComplexPro`).
+    pub fn for_warp_region(
+        metadata: StreamedSourceMetadata,
+        region: hex_warp::SourceRegion,
+    ) -> Result<Self, StreamFailureKind> {
+        if !metadata.key().is_raw() || region.source_frames() != metadata.playback_frames() {
+            return Err(StreamFailureKind::UnknownSource);
+        }
+        Ok(Self::with_region(metadata, 0, region))
+    }
+
     /// The selected stereo channel: zero for left, one for right.
     pub fn channel(&self) -> usize {
         self.channel

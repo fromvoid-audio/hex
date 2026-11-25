@@ -1,12 +1,12 @@
 //! Bounded control-side replay from verified granular checkpoints.
 use crate::{
     StreamFailureKind, VerifiedGranularBuffers, VerifiedGranularStepError,
-    VerifiedReferenceChannel, advance_verified_granular_on_control, reference::validate_source,
+    VerifiedReferenceChannel, advance_verified_warp_on_control, reference::validate_source,
     worker::map_import_error,
 };
 use hex_engine::Frame;
 use hex_media::{ResamplePlan, VerifiedWavReader};
-use hex_warp::{Error, GranularCheckpoint, SequentialGranular};
+use hex_warp::{Error, GranularCheckpoint, SequentialGranular, SequentialWarp, WarpCheckpoint};
 
 /// Largest permitted distance between a checkpoint and its target.
 pub const MAX_GRANULAR_PREROLL_FRAMES: u64 = 1_048_576;
@@ -28,19 +28,29 @@ pub enum GranularSeekProgress {
 /// All operations are control-side; they may block and must not run on an audio
 /// callback or the sole worker supplying active playback pages.
 pub struct VerifiedGranularCursor {
-    renderer: SequentialGranular,
+    renderer: SequentialWarp,
     reference: VerifiedReferenceChannel,
     seeking: Option<u64>,
 }
 impl VerifiedGranularCursor {
-    /// Bind a fresh renderer to its matching project-rate reference channel.
+    /// Bind a fresh granular renderer to its matching project-rate reference channel.
     pub fn new(
         renderer: SequentialGranular,
         reference: VerifiedReferenceChannel,
     ) -> Result<Self, Error> {
+        Self::new_warp(SequentialWarp::from_granular(renderer), reference)
+    }
+
+    /// Bind any fresh sequential warp renderer (`Tones`, `Texture`, `Beats`, `Complex`,
+    /// or `ComplexPro`) to its matching project-rate verified source facts.
+    pub fn new_warp(
+        renderer: SequentialWarp,
+        reference: VerifiedReferenceChannel,
+    ) -> Result<Self, Error> {
+        let (rate, required_channel) = renderer.source_parameters();
         if !renderer.is_pristine()
-            || renderer.source_parameters()
-                != (reference.metadata().project_rate(), reference.channel())
+            || rate != reference.metadata().project_rate()
+            || required_channel.is_some_and(|ch| ch != reference.channel())
         {
             return Err(Error::Invalid("incompatible granular cursor source"));
         }
@@ -80,7 +90,7 @@ impl VerifiedGranularCursor {
                 .map_or(Some(0), |region| region.backing_bytes())?,
         )
     }
-    pub(crate) fn owns_checkpoint(&self, checkpoint: &GranularCheckpoint) -> bool {
+    pub(crate) fn owns_checkpoint(&self, checkpoint: &WarpCheckpoint) -> bool {
         self.renderer.owns_checkpoint(checkpoint)
     }
     pub(crate) fn is_pristine(&self) -> bool {
@@ -102,10 +112,7 @@ impl VerifiedGranularCursor {
             )?;
         hex_warp::MAX_SCRATCH_BYTES.checked_sub(used)
     }
-    pub(crate) fn refresh_checkpoint(
-        &self,
-        checkpoint: &mut GranularCheckpoint,
-    ) -> Result<(), Error> {
+    pub(crate) fn refresh_checkpoint(&self, checkpoint: &mut WarpCheckpoint) -> Result<(), Error> {
         if self.seeking.is_some() {
             return Err(Error::Invalid("granular seek is pending"));
         }
@@ -114,12 +121,16 @@ impl VerifiedGranularCursor {
 
     /// Capture at a normal output boundary; checkpoint storage is caller-owned.
     pub fn checkpoint(&self, budget: usize) -> Result<GranularCheckpoint, Error> {
+        self.warp_checkpoint(budget)?.into_granular()
+    }
+    /// Capture a mode-typed checkpoint for any sequential warp mode.
+    pub fn warp_checkpoint(&self, budget: usize) -> Result<WarpCheckpoint, Error> {
         if self.seeking.is_some() {
             return Err(Error::Invalid("granular seek is pending"));
         }
         self.renderer.checkpoint(budget)
     }
-    /// Advance one verified grain during ordinary sequential output.
+    /// Advance one verified step during ordinary sequential output.
     pub fn advance(
         &mut self,
         reader: &mut VerifiedWavReader,
@@ -130,7 +141,7 @@ impl VerifiedGranularCursor {
         if self.seeking.is_some() {
             return Err(Error::Invalid("granular seek is pending").into());
         }
-        advance_verified_granular_on_control(
+        advance_verified_warp_on_control(
             &mut self.renderer,
             &self.reference,
             reader,
@@ -147,14 +158,54 @@ impl VerifiedGranularCursor {
         self.renderer.drain(output)
     }
 
-    /// Restore a supplied instance-bound checkpoint and begin bounded replay.
-    /// The caller chooses/adopts checkpoints and supplies a maximum allowed
-    /// preroll distance, capped by `MAX_GRANULAR_PREROLL_FRAMES`. Reader facts
-    /// and one live verified source frame are checked before state mutation.
-    /// This does not establish a whole-file snapshot or verify unread pages.
+    /// Restore a supplied instance-bound granular checkpoint and begin bounded replay.
     pub fn begin_seek(
         &mut self,
         checkpoint: &GranularCheckpoint,
+        target: u64,
+        max_preroll_frames: u64,
+        reader: &mut VerifiedWavReader,
+        plan: &ResamplePlan,
+        mut cancelled: impl FnMut() -> bool,
+    ) -> Result<GranularSeekProgress, VerifiedGranularStepError> {
+        let distance = target
+            .checked_sub(checkpoint.position())
+            .ok_or(Error::Invalid("granular target precedes checkpoint"))?;
+        if target > self.renderer.total_frames()
+            || max_preroll_frames > MAX_GRANULAR_PREROLL_FRAMES
+            || distance > max_preroll_frames
+        {
+            return Err(Error::Invalid("granular seek exceeds bounded preroll").into());
+        }
+        validate_source(self.reference.metadata(), reader, plan)
+            .map_err(VerifiedGranularStepError::Source)?;
+        let mut probe = [[0.0; 2]; 1];
+        let read = reader
+            .read_frames_into_with_cancel(0, &mut probe, &mut cancelled)
+            .map_err(map_import_error)
+            .map_err(VerifiedGranularStepError::Source)?;
+        if read != 1 {
+            return Err(VerifiedGranularStepError::Source(
+                StreamFailureKind::SourceChanged,
+            ));
+        }
+        self.renderer.restore_granular(checkpoint)?;
+        if distance == 0 {
+            self.seeking = None;
+            Ok(GranularSeekProgress::Reached { position: target })
+        } else {
+            self.seeking = Some(target);
+            Ok(GranularSeekProgress::Pending {
+                position: self.renderer.position(),
+            })
+        }
+    }
+
+    /// Restore a mode-typed warp checkpoint (`Tones`/`Texture`/`Beats`/`Complex`/`ComplexPro`)
+    /// and begin bounded replay.
+    pub fn begin_seek_warp(
+        &mut self,
+        checkpoint: &WarpCheckpoint,
         target: u64,
         max_preroll_frames: u64,
         reader: &mut VerifiedWavReader,
@@ -239,7 +290,7 @@ impl VerifiedGranularCursor {
                 if steps == max_steps {
                     break;
                 }
-                advance_verified_granular_on_control(
+                advance_verified_warp_on_control(
                     &mut self.renderer,
                     &self.reference,
                     reader,

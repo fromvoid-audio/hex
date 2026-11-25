@@ -6,7 +6,10 @@ use crate::{
 };
 use hex_engine::{Frame, StreamedSourceMetadata, audio_transform::StreamedGranularRoot};
 use hex_media::{ResamplePlan, VerifiedWavReader};
-use hex_warp::SequentialGranularConfig;
+use hex_warp::{
+    Mode, SequentialBeatsConfig, SequentialGranularConfig, SequentialSpectralConfig,
+    SequentialWarpConfig,
+};
 
 mod preparation;
 pub use preparation::GranularSourcePreparationLimits;
@@ -163,34 +166,78 @@ impl VerifiedGranularSource {
             return Err(GranularSourceError::ScratchLimit);
         }
         validate_source(&raw, &reader, &plan).map_err(GranularSourceError::Source)?;
-        let (expected, region, map, mode, pitch_cents, law) = root.into_parts();
+        let (expected, region, map, mode, pitch_cents, law, attacks) = root.into_warped_parts();
         let derived = raw
-            .with_granular(&region, &map, mode, pitch_cents, law)
+            .with_warped(&region, &map, mode, pitch_cents, law, &attacks)
             .map_err(|_| GranularSourceError::InvalidSource)?;
         if expected != derived {
             return Err(GranularSourceError::InvalidSource);
         }
-        let reference = scan_verified_granular_region_on_control(
-            &raw,
-            region,
-            &mut reader,
-            &plan,
-            &mut buffers.source,
-            &mut buffers.cache,
-            &mut cancelled,
-        )
-        .map_err(GranularSourceError::Step)?;
-        let channel = reference.channel();
-        let pages = VerifiedGranularPages::new(
+        let (reference, warp_config) = match mode {
+            Mode::Tones { .. } | Mode::Texture { .. } => {
+                let reference = scan_verified_granular_region_on_control(
+                    &raw,
+                    region,
+                    &mut reader,
+                    &plan,
+                    &mut buffers.source,
+                    &mut buffers.cache,
+                    &mut cancelled,
+                )
+                .map_err(GranularSourceError::Step)?;
+                let channel = reference.channel();
+                (
+                    reference,
+                    SequentialWarpConfig::Granular(SequentialGranularConfig {
+                        map,
+                        sample_rate: raw.project_rate(),
+                        mode,
+                        pitch_cents,
+                        resampler: law,
+                        reference_channel: channel,
+                    }),
+                )
+            }
+            Mode::Beats { .. } => {
+                let region_length = region.length();
+                let looping = region.looping();
+                let reference =
+                    crate::VerifiedReferenceChannel::for_warp_region(raw.clone(), region)
+                        .map_err(GranularSourceError::Source)?;
+                (
+                    reference,
+                    SequentialWarpConfig::Beats(SequentialBeatsConfig {
+                        map,
+                        sample_rate: raw.project_rate(),
+                        mode,
+                        pitch_cents,
+                        resampler: law,
+                        region_length,
+                        looping,
+                        attacks,
+                    }),
+                )
+            }
+            Mode::Complex | Mode::ComplexPro { .. } => {
+                let reference =
+                    crate::VerifiedReferenceChannel::for_warp_region(raw.clone(), region)
+                        .map_err(GranularSourceError::Source)?;
+                (
+                    reference,
+                    SequentialWarpConfig::Spectral(SequentialSpectralConfig {
+                        map,
+                        sample_rate: raw.project_rate(),
+                        mode,
+                        pitch_cents,
+                        resampler: law,
+                    }),
+                )
+            }
+            _ => return Err(GranularSourceError::InvalidSource),
+        };
+        let pages = VerifiedGranularPages::new_warp(
             reference,
-            SequentialGranularConfig {
-                map,
-                sample_rate: raw.project_rate(),
-                mode,
-                pitch_cents,
-                resampler: law,
-                reference_channel: channel,
-            },
+            warp_config,
             checkpoint_entries,
             checkpoint_budget,
             &mut cancelled,
