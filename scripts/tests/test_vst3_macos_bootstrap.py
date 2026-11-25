@@ -161,6 +161,18 @@ class NativeBootstrapTests(unittest.TestCase):
                 self.assertEqual(observed[10], 2 if scenario == 10 else 0)
                 self.assertEqual(observed[4], 1)  # Float64/local validation never calls arrangements
 
+    def test_double_only_processor_accepts_float_bridge_blocks_and_parameter_flush(self):
+        value, observed = self.processing(32)
+        self.assertEqual(value["configuration"], 0)
+        self.assertEqual(observed[7:11], [2, 2, 4, 2])
+
+    def test_double_only_crossed_buffers_instrument_inactive_buses_and_output_validation(self):
+        for scenario in range(33, 39):
+            with self.subTest(scenario=scenario):
+                value, observed = self.processing(scenario)
+                self.assertEqual(value["configuration"], 0)
+                self.assertEqual(observed[7:11], [1, 1, 1 if scenario == 38 else 3, 0])
+
     def test_failed_candidate_configuration_preserves_running_instance(self):
         for scenario in (13, 14):
             with self.subTest(scenario=scenario):

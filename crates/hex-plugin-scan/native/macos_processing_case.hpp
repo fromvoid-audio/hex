@@ -40,8 +40,12 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
     auto observe=reinterpret_cast<int(*)(int*,int)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexProcessingObservation")));
     if (!configure || !observe || !factory) return false;
     auto& e=processing_evidence;
-    const int scenario=e.scenario;
-    const int mode=scenario==3?1:(scenario==11?2:0);
+    // Repeat the existing PCM oracles with a processor that refuses float32.
+    constexpr std::array double_cases{10,5,3,8,9,19,26};
+    const bool double_only=e.scenario>=32;
+    const int scenario=double_only?double_cases.at(e.scenario-32):e.scenario;
+    const int mode=double_only?(scenario==3?4:3):(scenario==3?1:(scenario==11?2:0));
+    const bool flush_scenario=scenario==10;
     int fault=0;
     switch (scenario) {
         case 15:fault=2;break;case 16:fault=5;break;case 17:fault=6;break;case 18:fault=7;break;
@@ -104,7 +108,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
                 instance.flush_stopped(flush)==FlushResult::InvalidState;
             stopped=true;return;
         }
-        if (scenario==10) {
+        if (flush_scenario) {
             flush.numSamples=1;
             e.descriptors=instance.flush_stopped(flush)==FlushResult::InvalidData && e.descriptors;
             flush.numSamples=0;
@@ -114,7 +118,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
             e.descriptors=e.descriptors && e.flush==static_cast<int>(FlushResult::Applied);
         }
         started=instance.start_processing();e.pcm=started;
-        if (scenario==10) e.descriptors=e.descriptors && instance.flush_stopped(flush)==FlushResult::InvalidState;
+        if (flush_scenario) e.descriptors=e.descriptors && instance.flush_stopped(flush)==FlushResult::InvalidState;
         for (int block=0;block<3 && e.pcm;++block) {
             left.fill(0.75f);right.fill(-0.5f);out_left.fill(1234);out_right.fill(1234);
             in[0]=left.data();in[1]=right.data();out[0]=out_left.data();out[1]=out_right.data();
@@ -123,8 +127,8 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
             if (scenario==5) { out[0]=in[1];out[1]=in[0]; }
             if (scenario==6) { in[1]=in[0];out[0]=out[1]=in[0]; }
             if (scenario==7) { left.fill(0);right.fill(0);input.silenceFlags=(uint64_t(1)<<setup.input_channels)-1; }
-            if (scenario==8) in[0]=in[1]=nullptr;
-            if (scenario==9) out[0]=out[1]=nullptr;
+            if (scenario==8 && !double_only) in[0]=in[1]=nullptr;
+            if (scenario==9 && !double_only) out[0]=out[1]=nullptr;
             data.numSamples=block==0?1:(block==1?7:setup.maximum_frames);
             if (scenario==23) { data.numInputs=0;data.inputs=nullptr;data.numOutputs=0;data.outputs=nullptr; }
             if (scenario==12 && !block) {
@@ -139,6 +143,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
                 out[0]=out_left.data();data.numSamples=1;
             }
             const bool processed=instance.process(data);
+            if (double_only && scenario==9) e.descriptors=e.descriptors && out_left[0]==1234 && out_right[0]==1234;
             if (scenario==20 || scenario==22 || scenario==26) {
                 e.pcm=!processed && !instance.process(data);break; // no foreign replay after failure
             }
@@ -158,7 +163,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
                 e.pcm=processed;
             }
             const float scale=block==0?0.5f:(block==1?0.625f:0.75f);
-            const float gain=scenario==10?0.25f:1.0f;
+            const float gain=flush_scenario?0.25f:1.0f;
             for (int channel=0;channel<setup.output_channels && setup.output_enabled;++channel) {
                 const float source=scenario==3?0.25f:((scenario==7 || scenario==8)?0.0f:
                     (channel && setup.input_channels==2 && scenario!=6?-0.5f:0.75f));
@@ -174,7 +179,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
             std::unique_lock<std::mutex> lock(mutex);reached=true;changed.notify_all();changed.wait(lock,[&]{return resume;});
         }
         if (started) stopped=instance.stop_processing();
-        if (scenario==10 && stopped) {
+        if (flush_scenario && stopped) {
             flush.inputParameterChanges=&half;
             e.descriptors=instance.flush_stopped(flush)==FlushResult::Applied && e.descriptors;
             flush.inputParameterChanges=nullptr;
