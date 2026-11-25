@@ -791,6 +791,20 @@ pub trait ForeignProcessors {
             Err(DeviceContractError::ForeignProcessingUnavailable)
         }
     }
+    /// Stage main stereo audio alongside an aligned external stereo sidechain
+    /// key segment (for VST3 `kAux` sidechain input buses). Endpoints without
+    /// sidechain transport fall back to ordinary parameter/PCM staging.
+    fn process_segment_with_sidechain(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        _sidechain: &[StereoFrame],
+        parameters: &[ForeignParameterPoint],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.process_segment_with_parameters(node, frame_offset, frames, parameters, clock)
+    }
     /// Read an accepted drain observation from this exact retained endpoint.
     /// Pending zeros must not advance the proof; pending renewed input must
     /// invalidate it. Missing/unknown/revoked endpoints return false. This query

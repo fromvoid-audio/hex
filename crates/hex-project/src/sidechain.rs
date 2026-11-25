@@ -28,7 +28,10 @@ impl Project {
         let effect = self
             .device(device)
             .ok_or(Invalid("device no longer exists"))?;
-        if effect.state().type_id() != DeviceTypeId::from_static("hex.compressor") {
+        let device_type = effect.state().type_id();
+        if device_type != DeviceTypeId::from_static("hex.compressor")
+            && device_type != hex_lattice_contract::VST3_DEVICE_TYPE_ID
+        {
             return Err(Invalid("device does not support a sidechain"));
         }
         if self
@@ -278,6 +281,76 @@ mod tests {
         assert_eq!(
             editor.project().device(device).unwrap().state(),
             &utility_state
+        );
+    }
+
+    #[test]
+    fn vst3_effect_supports_sidechain_routing_with_cycle_detection_and_undo() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(source) = editor
+            .execute(Command::AddTrack {
+                name: "kick".into(),
+            })
+            .unwrap()
+        else {
+            panic!("source track")
+        };
+        let Created::Track(dest) = editor
+            .execute(Command::AddTrack {
+                name: "synth".into(),
+            })
+            .unwrap()
+        else {
+            panic!("dest track")
+        };
+        let vst3_state = hex_lattice_contract::NativeDeviceState::new(
+            hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+            1,
+            vec![1, 2, 3, 4],
+        )
+        .unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertDevice {
+                track: dest,
+                before: None,
+                state: vst3_state,
+            })
+            .unwrap()
+        else {
+            panic!("vst3 device")
+        };
+        editor
+            .execute(Command::SetSidechain {
+                device,
+                source: Some(source),
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().sidechains(),
+            &[SidechainRoute { device, source }]
+        );
+        assert!(
+            editor
+                .project()
+                .eligible_sidechain_sources(device)
+                .unwrap()
+                .contains(&source)
+        );
+        // Self-sidechain cycle must still refuse.
+        assert!(
+            editor
+                .execute(Command::SetSidechain {
+                    device,
+                    source: Some(dest),
+                })
+                .is_err()
+        );
+        assert!(editor.undo());
+        assert!(editor.project().sidechains().is_empty());
+        assert!(editor.redo());
+        assert_eq!(
+            editor.project().sidechains(),
+            &[SidechainRoute { device, source }]
         );
     }
 }

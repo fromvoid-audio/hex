@@ -8,6 +8,7 @@ pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
 pub(crate) const EDITOR_TOUCH_BIT: u16 = 0x2000;
 pub(crate) const EDITOR_GROUP_TOUCH_BIT: u16 = 0x1000;
 pub(crate) const SDK_TIMING_BIT: u16 = 0x0400;
+pub(crate) const SIDECHAIN_PCM_BIT: u16 = 0x0200;
 const EDITOR_RESTORE_BYTES: usize = 24;
 const EDITOR_POINT_BYTES: usize = 32;
 

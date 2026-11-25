@@ -125,6 +125,7 @@ fn dispatch_stage(
             range.start,
             block,
             hex_lattice::StageProcessContext::new(offset, clock, output_clock)
+                .with_foreign(foreign)
                 .with_transient(transient)
                 .with_external(external),
             &mut observe,

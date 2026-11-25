@@ -300,13 +300,13 @@ impl NativeRuntimeChain {
 
     /// Run one exact effect stage with its admitted key in the ordinary
     /// begin/commit/rollback transaction. Main and key are borrowed only for
-    /// this call. A stereo key requires a stateful native identity-matrix stage.
-    /// The caller rolls back the complete block on any stage refusal.
+    /// this call. A stereo key requires a stateful native or foreign identity-matrix
+    /// stage. The caller rolls back the complete block on any stage refusal.
     pub fn process_auxiliary_stage_with_context(
         &mut self,
         stage: usize,
         block: StereoAuxiliaryBlock<'_>,
-        mut context: StageProcessContext<'_>,
+        context: StageProcessContext<'_>,
         observer: &mut impl FnMut(
             ProcessorChainOwner,
             u64,
@@ -320,7 +320,6 @@ impl NativeRuntimeChain {
             .checked_add(1)
             .ok_or(DeviceContractError::InvalidDescriptor)?;
         let (main, key) = block.into_parts();
-        context.foreign = None;
         self.process_tapped(stage..end, main, Some(key), context, observer)
     }
 
@@ -765,7 +764,7 @@ impl NativeRuntimeChain {
             .map(|segment| segment as &dyn ExternalParameterAutomation);
         let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
         if key.is_some()
-            && (is_foreign || !entry.runtime.is_stateful() || !entry.matrix.is_identity())
+            && ((!is_foreign && !entry.runtime.is_stateful()) || !entry.matrix.is_identity())
         {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
@@ -797,20 +796,7 @@ impl NativeRuntimeChain {
             }
         }
         let mut foreign_applies_output_gain = false;
-        if let Some(key) = key {
-            if !entry.bypassed && !modulates_input {
-                entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
-            }
-            Self::process_native_provider(
-                entry,
-                frames,
-                Some(key),
-                clock,
-                output_clock,
-                input,
-                external,
-            )?;
-        } else if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
+        if let RuntimeOwnership::Foreign(runtime) = &mut entry.runtime {
             let configuration = entry
                 .configuration
                 .as_deref()
@@ -852,7 +838,16 @@ impl NativeRuntimeChain {
             } else {
                 clock
             };
-            if let Some(modulation) = &mut runtime.modulation {
+            if let Some(key) = key {
+                foreign.process_segment_with_sidechain(
+                    node,
+                    frame_offset,
+                    frames,
+                    key,
+                    &[],
+                    clock,
+                )?;
+            } else if let Some(modulation) = &mut runtime.modulation {
                 modulation.process_effect_segment(
                     node,
                     frame_offset,
@@ -867,6 +862,19 @@ impl NativeRuntimeChain {
             runtime.scratch_drained =
                 matches!(runtime.prepared.output_tail(), OutputTail::Finite { .. })
                     && foreign.committed_tail_is_drained(node);
+        } else if let Some(key) = key {
+            if !entry.bypassed && !modulates_input {
+                entry.scratch_matrix_ramp.apply_block(entry.matrix, frames);
+            }
+            Self::process_native_provider(
+                entry,
+                frames,
+                Some(key),
+                clock,
+                output_clock,
+                input,
+                external,
+            )?;
         } else if entry.bypassed {
             if entry.runtime.is_stateful() || entry.modulation.is_some() {
                 if entry.matrix.is_identity() {

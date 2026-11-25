@@ -78,6 +78,7 @@ impl NativeEffectEntry {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
+        sidechain: Option<&[[f32; 2]]>,
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
@@ -90,10 +91,9 @@ impl NativeEffectEntry {
             }
             self.staged = true;
         }
-        match self
-            .callback
-            .stage_segment(node, offset, frames, parameters, notes, clock, lane)
-        {
+        match self.callback.stage_segment(
+            node, offset, frames, sidechain, parameters, notes, clock, lane,
+        ) {
             // Staging refusal already revoked this epoch and left aligned dry.
             Err(DeviceContractError::ForeignProcessingFailed) => {
                 self.staged = false;
@@ -309,6 +309,7 @@ impl NativeEffectCallbacks {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
+        sidechain: Option<&[[f32; 2]]>,
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
@@ -320,8 +321,9 @@ impl NativeEffectCallbacks {
                 .ok()
         });
         let result = match (self.cycle.extent(), selected) {
-            (Some(extent), Some(index)) => self.entries[index]
-                .process(extent, node, offset, frames, parameters, notes, clock, lane),
+            (Some(extent), Some(index)) => self.entries[index].process(
+                extent, node, offset, frames, sidechain, parameters, notes, clock, lane,
+            ),
             _ => Err(DeviceContractError::ForeignProcessingUnavailable),
         };
         if result.is_err() {
@@ -363,7 +365,27 @@ impl ForeignProcessors for NativeEffectCallbacks {
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        self.stage_segment(node, offset, frames, parameters, notes, clock, None)
+        self.stage_segment(node, offset, frames, None, parameters, notes, clock, None)
+    }
+    fn process_segment_with_sidechain(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        sidechain: &[[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.stage_segment(
+            node,
+            offset,
+            frames,
+            Some(sidechain),
+            parameters,
+            &[],
+            clock,
+            None,
+        )
     }
     fn process_segment_with_modulation(
         &mut self,
@@ -373,7 +395,7 @@ impl ForeignProcessors for NativeEffectCallbacks {
         lane: ForeignModulationSamples<'_>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        self.stage_segment(node, offset, frames, &[], &[], clock, Some(lane))
+        self.stage_segment(node, offset, frames, None, &[], &[], clock, Some(lane))
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         !self.cycle.revoked()

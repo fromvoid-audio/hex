@@ -896,22 +896,34 @@ impl Prepared {
             _ => None,
         }
     }
+    /// Bind an optional aligned stereo sidechain key slice for one worker
+    /// exchange without allocating or mutating sticky state.
+    pub fn with_sidechain_on_worker<'a>(
+        &'a mut self,
+        sidechain: Option<&'a [[f32; 2]]>,
+    ) -> SidechainExchange<'a> {
+        SidechainExchange {
+            instance: self,
+            sidechain,
+        }
+    }
+
     /// Only on the existing joining transport worker. A failed operation
     /// permanently faults this lease; no foreign DSP retry/replay is possible.
     pub fn exchange_on_worker(&mut self, block: Block) -> Result<Block> {
-        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None, None)
             .map(|reply| reply.block)
     }
 
     /// Return the original PCM reply and its helper-side diagnostic timing.
     pub fn exchange_timed_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
-        self.exchange_on_worker_with_metadata(block, None, None, false, None, None)
+        self.exchange_on_worker_with_metadata(block, None, None, false, None, None, None)
     }
 
     /// Opt this exchange into facts about the effective editor input. This
     /// does not drain or acknowledge the ordered editor receipt reader.
     pub fn exchange_editor_on_worker(&mut self, block: Block) -> Result<protocol::EditorPcm> {
-        self.exchange_on_worker_with_metadata(block, None, None, true, None, None)
+        self.exchange_on_worker_with_metadata(block, None, None, true, None, None, None)
     }
     /// Apply an eligible unlaned editor touch with the original normalized base.
     /// The caller must bind this plan to the actual canonical source.
@@ -919,6 +931,14 @@ impl Prepared {
         &mut self,
         block: Block,
         plan: protocol::EditorTouchPlan,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_editor_touch_with_sidechain(block, plan, None)
+    }
+    fn exchange_editor_touch_with_sidechain(
+        &mut self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         if !self.has_armed_authored_parameter(plan.parameter) || plan.reading {
             return Err(Error::Protocol(
@@ -932,6 +952,7 @@ impl Prepared {
             true,
             Some(EditorTouchMode::Single(plan)),
             None,
+            sidechain,
         )
     }
 
@@ -943,7 +964,7 @@ impl Prepared {
         block: Block,
         metadata: &AuthoredParameterMetadata,
     ) -> Result<Block> {
-        self.exchange_authored_with_manual_on_worker(block, metadata, None, false, None)
+        self.exchange_authored_with_manual_on_worker(block, metadata, None, false, None, None)
             .map(|reply| reply.block)
     }
 
@@ -958,8 +979,16 @@ impl Prepared {
         if !metadata.matches(self) {
             return Err(Error::Protocol("authored parameter source differs"));
         }
-        self.exchange_on_worker_with_metadata(block, Some(metadata), None, false, None, Some(dense))
-            .map(|reply| reply.block)
+        self.exchange_on_worker_with_metadata(
+            block,
+            Some(metadata),
+            None,
+            false,
+            None,
+            Some(dense),
+            None,
+        )
+        .map(|reply| reply.block)
     }
 
     /// The prepared callback sidecar uses the metadata retained by its own
@@ -970,6 +999,22 @@ impl Prepared {
         dense: crate::transport::DenseParameterLane<'_>,
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_dense_with_sidechain(
+            block,
+            dense,
+            manual_parameter,
+            observe_editor,
+            None,
+        )
+    }
+    fn exchange_armed_dense_with_sidechain(
+        &mut self,
+        block: Block,
+        dense: crate::transport::DenseParameterLane<'_>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         let metadata = self
             .authored_parameter_metadata
@@ -983,6 +1028,7 @@ impl Prepared {
                 observe_editor,
                 None,
                 Some(dense),
+                sidechain,
             )
         } else {
             Err(Error::Protocol("authored parameter source differs"))
@@ -991,6 +1037,7 @@ impl Prepared {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exchange_authored_with_manual_on_worker(
         &mut self,
         block: Block,
@@ -998,6 +1045,7 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
         editor_touch: Option<EditorTouchMode<'_>>,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         if !metadata.matches(self) {
             return Err(Error::Protocol("authored parameter source differs"));
@@ -1009,6 +1057,7 @@ impl Prepared {
             observe_editor,
             editor_touch,
             None,
+            sidechain,
         )
     }
     /// Retain the exact capability observation with the lease that will run
@@ -1045,7 +1094,7 @@ impl Prepared {
         block: Block,
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<Block> {
-        self.exchange_armed_with_mode(block, manual_parameter, false, None)
+        self.exchange_armed_with_mode(block, manual_parameter, false, None, None)
             .map(|reply| reply.block)
     }
 
@@ -1055,7 +1104,7 @@ impl Prepared {
         block: Block,
         manual_parameter: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
-        self.exchange_armed_with_mode(block, manual_parameter, true, None)
+        self.exchange_armed_with_mode(block, manual_parameter, true, None, None)
     }
 
     /// Return the original authored PCM reply and its helper-side diagnostic timing.
@@ -1064,7 +1113,7 @@ impl Prepared {
         block: Block,
         manual: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
-        self.exchange_armed_with_mode(block, manual, false, None)
+        self.exchange_armed_with_mode(block, manual, false, None, None)
     }
 
     /// A scoped editor gesture may temporarily replace one authored parameter.
@@ -1074,6 +1123,15 @@ impl Prepared {
         block: Block,
         plan: protocol::EditorTouchPlan,
         manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_authored_with_editor_touch_and_sidechain(block, plan, manual, None)
+    }
+    fn exchange_armed_authored_with_editor_touch_and_sidechain(
+        &mut self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+        manual: Option<crate::transport::ParameterPoint>,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         if !self.has_armed_authored_parameter(plan.parameter)
             || manual.is_some_and(|point| point.id == plan.parameter)
@@ -1095,7 +1153,13 @@ impl Prepared {
                 "editor touch cannot reserve its exact restoration",
             ));
         }
-        self.exchange_armed_with_mode(block, manual, true, Some(EditorTouchMode::Single(plan)))
+        self.exchange_armed_with_mode(
+            block,
+            manual,
+            true,
+            Some(EditorTouchMode::Single(plan)),
+            sidechain,
+        )
     }
 
     /// Exact grouped unlaned takeover on the original prepared SDK worker.
@@ -1115,6 +1179,7 @@ impl Prepared {
             true,
             Some(EditorTouchMode::Group(plan)),
             None,
+            None,
         )
     }
 
@@ -1125,8 +1190,25 @@ impl Prepared {
         plan: &protocol::EditorTouchPlanSet,
         manual: Option<crate::transport::ParameterPoint>,
     ) -> Result<protocol::EditorPcm> {
+        self.exchange_armed_authored_with_editor_group_touch_and_sidechain(
+            block, plan, manual, None,
+        )
+    }
+    fn exchange_armed_authored_with_editor_group_touch_and_sidechain(
+        &mut self,
+        block: Block,
+        plan: &protocol::EditorTouchPlanSet,
+        manual: Option<crate::transport::ParameterPoint>,
+        sidechain: Option<&[[f32; 2]]>,
+    ) -> Result<protocol::EditorPcm> {
         self.validate_editor_group(&block, plan, manual)?;
-        self.exchange_armed_with_mode(block, manual, true, Some(EditorTouchMode::Group(plan)))
+        self.exchange_armed_with_mode(
+            block,
+            manual,
+            true,
+            Some(EditorTouchMode::Group(plan)),
+            sidechain,
+        )
     }
 
     fn validate_editor_group(
@@ -1175,6 +1257,7 @@ impl Prepared {
         manual_parameter: Option<crate::transport::ParameterPoint>,
         observe_editor: bool,
         editor_touch: Option<EditorTouchMode<'_>>,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         let metadata = self
             .authored_parameter_metadata
@@ -1188,11 +1271,13 @@ impl Prepared {
             manual_parameter,
             observe_editor,
             editor_touch,
+            sidechain,
         );
         self.authored_parameter_metadata = Some(metadata);
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn exchange_on_worker_with_metadata(
         &mut self,
         block: Block,
@@ -1201,6 +1286,7 @@ impl Prepared {
         observe_editor: bool,
         editor_touch: Option<EditorTouchMode<'_>>,
         dense: Option<crate::transport::DenseParameterLane<'_>>,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         if self.faulted || self.retired.is_some() {
             return Err(Error::Protocol("instance lease is retired or faulted"));
@@ -1212,6 +1298,7 @@ impl Prepared {
             observe_editor,
             editor_touch,
             dense,
+            sidechain,
         );
         if result.is_err() {
             self.faulted = true;
@@ -1222,6 +1309,7 @@ impl Prepared {
         }
         result
     }
+    #[allow(clippy::too_many_arguments)]
     fn exchange(
         &mut self,
         block: Block,
@@ -1230,10 +1318,17 @@ impl Prepared {
         observe_editor: bool,
         editor_touch: Option<EditorTouchMode<'_>>,
         dense: Option<crate::transport::DenseParameterLane<'_>>,
+        sidechain: Option<&[[f32; 2]]>,
     ) -> Result<protocol::EditorPcm> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
         self.config.validate_block(&block, self.sequence)?;
+        if let Some(aux) = sidechain
+            && (aux.len() != usize::from(block.frames)
+                || !aux.iter().flatten().all(|sample| sample.is_finite()))
+        {
+            return Err(Error::Protocol("sidechain key samples refused"));
+        }
         let next = self
             .sequence
             .checked_add(1)
@@ -1259,6 +1354,21 @@ impl Prepared {
             (None, Some(_)) => return Err(Error::Protocol("dense parameter metadata is missing")),
         }
         .map_err(Error::Io)?;
+        if let Some(aux) = sidechain {
+            let sidechain_bytes = aux.len() * 8;
+            let end = length + sidechain_bytes;
+            let dst = bytes
+                .get_mut(length..end)
+                .ok_or(Error::Protocol("sidechain packet extent exceeds its bound"))?;
+            let mut at = 0;
+            for frame in aux {
+                dst[at..at + 4].copy_from_slice(&frame[0].to_le_bytes());
+                dst[at + 4..at + 8].copy_from_slice(&frame[1].to_le_bytes());
+                at += 8;
+            }
+            length = end;
+            bytes[5] |= (protocol::SIDECHAIN_PCM_BIT >> 8) as u8;
+        }
         if let Some(plan) = editor_touch {
             let mut append = |plan: &[u8], bit: u16| -> Result<()> {
                 let end = length + plan.len();
@@ -1426,6 +1536,104 @@ impl Prepared {
         Ok(retired)
     }
 }
+/// Scoped worker-lane exchange handle carrying an optional aligned stereo
+/// sidechain key slice for one PCM exchange.
+pub struct SidechainExchange<'a> {
+    instance: &'a mut Prepared,
+    sidechain: Option<&'a [[f32; 2]]>,
+}
+impl SidechainExchange<'_> {
+    pub fn exchange_timed_on_worker(self, block: Block) -> Result<protocol::EditorPcm> {
+        self.instance.exchange_on_worker_with_metadata(
+            block,
+            None,
+            None,
+            false,
+            None,
+            None,
+            self.sidechain,
+        )
+    }
+    pub fn exchange_editor_on_worker(self, block: Block) -> Result<protocol::EditorPcm> {
+        self.instance.exchange_on_worker_with_metadata(
+            block,
+            None,
+            None,
+            true,
+            None,
+            None,
+            self.sidechain,
+        )
+    }
+    pub fn exchange_editor_touch_on_worker(
+        self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+    ) -> Result<protocol::EditorPcm> {
+        self.instance
+            .exchange_editor_touch_with_sidechain(block, plan, self.sidechain)
+    }
+    pub fn exchange_armed_dense_on_worker(
+        self,
+        block: Block,
+        dense: crate::transport::DenseParameterLane<'_>,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+        observe_editor: bool,
+    ) -> Result<protocol::EditorPcm> {
+        self.instance.exchange_armed_dense_with_sidechain(
+            block,
+            dense,
+            manual_parameter,
+            observe_editor,
+            self.sidechain,
+        )
+    }
+    pub fn exchange_armed_authored_with_editor_on_worker(
+        self,
+        block: Block,
+        manual_parameter: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.instance
+            .exchange_armed_with_mode(block, manual_parameter, true, None, self.sidechain)
+    }
+    pub fn exchange_armed_authored_timed_on_worker(
+        self,
+        block: Block,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.instance
+            .exchange_armed_with_mode(block, manual, false, None, self.sidechain)
+    }
+    pub fn exchange_armed_authored_with_editor_touch_on_worker(
+        self,
+        block: Block,
+        plan: protocol::EditorTouchPlan,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.instance
+            .exchange_armed_authored_with_editor_touch_and_sidechain(
+                block,
+                plan,
+                manual,
+                self.sidechain,
+            )
+    }
+    pub fn exchange_armed_authored_with_editor_group_touch_on_worker(
+        self,
+        block: Block,
+        plan: &protocol::EditorTouchPlanSet,
+        manual: Option<crate::transport::ParameterPoint>,
+    ) -> Result<protocol::EditorPcm> {
+        self.instance
+            .exchange_armed_authored_with_editor_group_touch_and_sidechain(
+                block,
+                plan,
+                manual,
+                self.sidechain,
+            )
+    }
+}
+
 struct Lease {
     child: ChildCustody,
     channel: Channel,

@@ -877,7 +877,28 @@ impl ForeignProcessors for NativeEffectCallback {
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        self.stage_segment(node, offset, frames, parameters, notes, clock, None)
+        self.stage_segment(node, offset, frames, None, parameters, notes, clock, None)
+    }
+
+    fn process_segment_with_sidechain(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        sidechain: &[[f32; 2]],
+        parameters: &[hex_lattice_contract::ForeignParameterPoint],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.stage_segment(
+            node,
+            offset,
+            frames,
+            Some(sidechain),
+            parameters,
+            &[],
+            clock,
+            None,
+        )
     }
 
     fn process_segment_with_modulation(
@@ -888,7 +909,7 @@ impl ForeignProcessors for NativeEffectCallback {
         lane: ForeignModulationSamples<'_>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
-        self.stage_segment(node, offset, frames, &[], &[], clock, Some(lane))
+        self.stage_segment(node, offset, frames, None, &[], &[], clock, Some(lane))
     }
 
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
@@ -911,6 +932,7 @@ impl NativeEffectCallback {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
+        sidechain: Option<&[[f32; 2]]>,
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
@@ -924,6 +946,7 @@ impl NativeEffectCallback {
                     || !parameters.is_empty()
             })
             || (!notes.is_empty() && !self.configuration.prepared.is_instrument_profile())
+            || sidechain.is_some_and(|key| key.len() != frames.len())
             || frames.len() > MAX_FRAMES
             || !node.input_gain.is_finite()
             || node.input_gain < 0.0
@@ -954,6 +977,7 @@ impl NativeEffectCallback {
                     node,
                     offset + start,
                     &mut frames[start..end],
+                    sidechain.map(|key| &key[start..end]),
                     &[],
                     &[],
                     Some(&shifted),
@@ -967,7 +991,9 @@ impl NativeEffectCallback {
                     .unwrap_or(frames.len());
             }
         }
-        self.stage_segment_contiguous(node, offset, frames, parameters, notes, clock, lane)
+        self.stage_segment_contiguous(
+            node, offset, frames, sidechain, parameters, notes, clock, lane,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -976,6 +1002,7 @@ impl NativeEffectCallback {
         node: ForeignProcessorNode<'_>,
         offset: usize,
         frames: &mut [[f32; 2]],
+        sidechain: Option<&[[f32; 2]]>,
         parameters: &[hex_lattice_contract::ForeignParameterPoint],
         notes: &[ForeignNote],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
@@ -1066,6 +1093,7 @@ impl NativeEffectCallback {
         let result = self.transport.stage_effect_pcm_segment(
             offset,
             input,
+            sidechain,
             events,
             parameters,
             frames,
