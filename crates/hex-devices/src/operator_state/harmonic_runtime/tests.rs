@@ -318,8 +318,7 @@ fn first_filter_activation_uses_prepared_target_coefficients_and_dry_source() {
     let target = FilterTrajectory::new(settings, 48000).unwrap();
     let mut actual = FilterTrajectory::inactive(48000);
     actual.retarget(target);
-    let mut expected = target.target;
-    expected.wet = 0.0;
+    let expected = target.target.with_dry();
     assert_eq!(actual.frame(), expected);
     assert_eq!(actual.target, target.target);
     assert!(actual.armed);

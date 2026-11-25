@@ -27,13 +27,15 @@ pub struct Halfband2xKernel<const TAPS: usize, const HISTORY: usize> {
 impl<const TAPS: usize, const HISTORY: usize> Halfband2xKernel<TAPS, HISTORY> {
     /// Design the odd-length Blackman-windowed sinc halfband kernel on control.
     ///
-    /// Panics at compile/debug time if `TAPS` is even or `HISTORY != TAPS.div_ceil(2)`.
+    /// Enforces at compile time that `TAPS` is odd >= 3 and `HISTORY == TAPS.div_ceil(2)`.
     pub fn blackman() -> Self {
-        assert!(TAPS >= 3 && TAPS % 2 == 1, "halfband TAPS must be odd >= 3");
-        assert!(
-            HISTORY == TAPS.div_ceil(2),
-            "halfband HISTORY must equal TAPS.div_ceil(2)"
-        );
+        const {
+            assert!(TAPS >= 3 && TAPS % 2 == 1, "halfband TAPS must be odd >= 3");
+            assert!(
+                HISTORY == TAPS.div_ceil(2),
+                "halfband HISTORY must equal TAPS.div_ceil(2)"
+            );
+        }
         let centre = (TAPS - 1) as f64 * 0.5;
         let mut taps = std::array::from_fn(|n| {
             let offset = n as f64 - centre;
@@ -293,10 +295,20 @@ impl<const TAPS: usize, const HISTORY: usize> Halfband2xStereo<TAPS, HISTORY> {
         dry: &mut [f32],
         kernel: &Halfband2xKernel<TAPS, HISTORY>,
     ) {
+        const {
+            assert!(TAPS >= 3 && TAPS % 2 == 1, "halfband TAPS must be odd >= 3");
+            assert!(
+                HISTORY == TAPS.div_ceil(2),
+                "halfband HISTORY must equal TAPS.div_ceil(2)"
+            );
+            assert!(
+                HISTORY - 1 <= 64,
+                "halfband HISTORY exceeds stack scratch bound"
+            );
+        }
         let n = input.len();
         let pad = HISTORY - 1;
         let mut src = [0.0_f32; HALFBAND_BLOCK_CHUNK + 64];
-        debug_assert!(pad + n <= src.len());
         src[..pad].copy_from_slice(&hist[..pad]);
         src[pad..pad + n].copy_from_slice(input);
         // Delayed dry is `HISTORY - 1` samples older = `src[0..n]`.
@@ -366,6 +378,17 @@ impl<const TAPS: usize, const HISTORY: usize> Halfband2xStereo<TAPS, HISTORY> {
         out: &mut [f32],
         kernel: &Halfband2xKernel<TAPS, HISTORY>,
     ) {
+        const {
+            assert!(TAPS >= 3 && TAPS % 2 == 1, "halfband TAPS must be odd >= 3");
+            assert!(
+                HISTORY == TAPS.div_ceil(2),
+                "halfband HISTORY must equal TAPS.div_ceil(2)"
+            );
+            assert!(
+                (TAPS - 1) / 2 <= 64,
+                "halfband TAPS exceeds stack scratch bound"
+            );
+        }
         let n = out.len();
         let pad = TAPS - 1;
         let mut even_buf = [0.0_f32; HALFBAND_BLOCK_CHUNK + 64];

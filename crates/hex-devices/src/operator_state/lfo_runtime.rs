@@ -345,8 +345,7 @@ impl<const N: usize> Runtime<N> {
             if let Some(old) = other.filter.as_deref() {
                 *bank = *old;
             } else {
-                bank.from = bank.target;
-                bank.from.wet = 0.0;
+                bank.from = bank.target.with_dry();
                 bank.elapsed = 0;
             }
             bank.parameters = parameters;
@@ -502,8 +501,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
             }
         }
         if let Some(bank) = self.filter.as_deref_mut() {
-            bank.from = bank.target;
-            bank.from.wet = 0.0;
+            bank.from = bank.target.with_dry();
             bank.elapsed = 0;
         }
     }
@@ -638,7 +636,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                 };
                 let (sample, previous) = if let (Some(bank), Some(filter)) = (
                     self.filter.as_deref_mut(),
-                    filter_frame.filter(|frame| frame.wet != 0.0),
+                    filter_frame.filter(|frame| frame.wet() != 0.0),
                 ) {
                     configuration.sample_filtered_carriers(
                         self.factory.table,
@@ -806,8 +804,7 @@ impl<const N: usize> MutableInstrumentRuntime for Runtime<N> {
                 });
             }
             if let Some(bank) = self.filter.as_deref_mut() {
-                bank.from = bank.target;
-                bank.from.wet = 0.0;
+                bank.from = bank.target.with_dry();
                 bank.elapsed = 0;
                 bank.parameters =
                     old.filter_parameter_boundary()

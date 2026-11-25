@@ -1,6 +1,7 @@
 //! Sample-stepped stereo peak envelope for reusable audio-driven modulation.
 //! The caller supplies the signal and owns clock, routing and transactions.
 use crate::StereoFrame;
+use crate::denormal::flush_quiet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct InvalidEnvelopeFollower;
@@ -60,7 +61,7 @@ impl EnvelopeFollower {
             } else {
                 self.release
             };
-            self.envelope += (peak - self.envelope) * coefficient;
+            self.envelope = flush_quiet(self.envelope + (peak - self.envelope) * coefficient);
             *sample = self.envelope as f32;
         }
         Ok(())
@@ -131,5 +132,23 @@ mod tests {
         follower.reset();
         follower.render(&[[0.0; 2]], &mut output[..1]).unwrap();
         assert_eq!(output[0], 0.0);
+    }
+
+    #[test]
+    fn silence_decay_flushes_subnormals_to_exact_zero() {
+        let mut follower = EnvelopeFollower::new(48_000, 0.0, 0.001).unwrap();
+        let mut out = [0.0_f32; 256];
+        follower.render(&[[1.0, 1.0]], &mut out[..1]).unwrap();
+        assert_eq!(out[0], 1.0);
+        // After ~40 time constants of silence (~2000 samples), the envelope
+        // crosses below the quiet threshold and must flush to exact 0.0 rather
+        // than lingering in subnormals.
+        let silence = [[0.0_f32; 2]; 256];
+        for _ in 0..10 {
+            follower.render(&silence, &mut out).unwrap();
+        }
+        assert_eq!(follower.envelope, 0.0);
+        assert_eq!(out[255], 0.0);
+        assert!(!follower.envelope.is_subnormal());
     }
 }

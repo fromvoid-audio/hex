@@ -863,8 +863,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.seed_ledger();
             self.enforce_polyphony();
         }
-        self.filter.from = self.filter.target;
-        self.filter.from.wet = 0.0;
+        self.filter.from = self.filter.target.with_dry();
         self.filter.elapsed = 0;
     }
 
@@ -981,7 +980,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.seed_ledger();
             self.enforce_polyphony();
         }
-        self.filter.from.wet = 0.0;
+        self.filter.from = self.filter.from.with_dry();
         self.filter.elapsed = 0;
         self.source = spectrum;
         self.frames = ((u64::from(self.factory.rate) * 5 + 500) / 1000) as u32;

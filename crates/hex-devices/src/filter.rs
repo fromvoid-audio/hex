@@ -471,8 +471,7 @@ pub fn response(
 ) -> Result<[[f32; 2]; 129], DeviceContractError> {
     let prepared = FilterDefinition::prepare_owned(state, rate, &[])?;
     let upper = 20_000.0_f64.min(f64::from(rate) * 0.45);
-    let mut frame = prepared.frame;
-    frame.wet = 1.0;
+    let frame = prepared.frame.with_full_wet();
     let compact = crate::operator_filter::Prepared { frame, rate };
     Ok(std::array::from_fn(|index| {
         let x = index as f64 / 128.0;

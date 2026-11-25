@@ -202,7 +202,8 @@ impl Oversampler8x {
     /// Process one base-rate sample through 8x polyphase interpolation, `drive`,
     /// first-order ADAA shaping, and symmetric 8x decimation. Executes the exact
     /// same tap accumulation order as [`Self::process_block`], guaranteeing
-    /// bit-identical output across arbitrary block partitions.
+    /// bit-identical output across arbitrary block partitions while avoiding the
+    /// full 64-frame chunk stack buffers.
     #[inline(always)]
     pub fn process_sample(
         &mut self,
@@ -211,9 +212,96 @@ impl Oversampler8x {
         kernel: &KaiserOversample8xKernel,
         shaper: &impl AdaaShaper,
     ) -> f64 {
-        let mut single = [input as f32];
-        self.process_chunk(&mut single, drive, kernel, shaper);
-        f64::from(single[0])
+        let cleaned = flush_quiet_f32(input as f32);
+        if cleaned == 0.0 && self.zero_run >= OVERSAMPLE_8X_DRAIN_FRAMES {
+            return 0.0;
+        }
+        if cleaned == 0.0 {
+            self.zero_run = self
+                .zero_run
+                .saturating_add(1)
+                .min(OVERSAMPLE_8X_DRAIN_FRAMES);
+        } else {
+            self.zero_run = 0;
+        }
+
+        if self.previous_tag != shaper.tag() {
+            self.previous_tag = shaper.tag();
+            self.previous_antiderivative = shaper.antiderivative(self.previous);
+        }
+
+        // Compact single-sample base-rate window: [11 history | 1 new sample] (48 bytes).
+        let mut src = [0.0_f32; OVERSAMPLE_8X_PHASE_TAPS];
+        src[..PHASE_HIST].copy_from_slice(&self.in_hist);
+        src[PHASE_HIST] = cleaned;
+        self.in_hist.copy_from_slice(&src[1..]);
+
+        let interp_table = &kernel.interp_by_lag_f32;
+        let s0 = src[0];
+        let r0 = &interp_table[0];
+        let mut up = [
+            s0 * r0[0],
+            s0 * r0[1],
+            s0 * r0[2],
+            s0 * r0[3],
+            s0 * r0[4],
+            s0 * r0[5],
+            s0 * r0[6],
+            s0 * r0[7],
+        ];
+        for lag in 1..OVERSAMPLE_8X_PHASE_TAPS {
+            let s = src[lag];
+            let row = &interp_table[lag];
+            for p in 0..OVERSAMPLE_8X_FACTOR {
+                up[p] += s * row[p];
+            }
+        }
+
+        // Compact single-sample 8x window: [95 history | 8 new samples] (412 bytes).
+        let mut shaped_buf = [0.0_f32; SHAPED_HIST + OVERSAMPLE_8X_FACTOR];
+        shaped_buf[..SHAPED_HIST].copy_from_slice(&self.shaped_hist);
+        let scale = OVERSAMPLE_8X_FACTOR as f64 * drive;
+        let mut prev = self.previous;
+        let mut prev_ad = self.previous_antiderivative;
+        for (dst, &sample_up) in shaped_buf[SHAPED_HIST..].iter_mut().zip(&up) {
+            let driven = flush_quiet(f64::from(sample_up) * scale);
+            let ad = shaper.antiderivative(driven);
+            let out = flush_quiet(adaa_step(shaper, driven, ad, prev, prev_ad));
+            prev = driven;
+            prev_ad = ad;
+            *dst = out as f32;
+        }
+        self.previous = prev;
+        self.previous_antiderivative = prev_ad;
+        self.shaped_hist
+            .copy_from_slice(&shaped_buf[OVERSAMPLE_8X_FACTOR..]);
+
+        // Exact same 4-wide symmetric decimation order as `process_chunk`.
+        let half_taps = &kernel.half_taps_f32;
+        let w =
+            &shaped_buf[OVERSAMPLE_8X_FACTOR - 1..OVERSAMPLE_8X_FACTOR - 1 + OVERSAMPLE_8X_TAPS];
+        let mut acc = [0.0_f32; 4];
+        let mut k = 0;
+        while k < HALF_TAPS {
+            let r = OVERSAMPLE_8X_TAPS - 4 - k;
+            let f = &w[k..k + 4];
+            let b = &w[r..r + 4];
+            let t = &half_taps[k..k + 4];
+            acc[0] += (f[0] + b[3]) * t[0];
+            acc[1] += (f[1] + b[2]) * t[1];
+            acc[2] += (f[2] + b[1]) * t[2];
+            acc[3] += (f[3] + b[0]) * t[3];
+            k += 4;
+        }
+        let decimated = (acc[0] + acc[1]) + (acc[2] + acc[3]);
+
+        if self.zero_run >= OVERSAMPLE_8X_DRAIN_FRAMES {
+            self.in_hist = [0.0; PHASE_HIST];
+            self.shaped_hist = [0.0; SHAPED_HIST];
+            self.previous = 0.0;
+            self.previous_antiderivative = 0.0;
+        }
+        f64::from(decimated)
     }
 
     /// Process a contiguous single-channel `f32` slice in place using stack chunks

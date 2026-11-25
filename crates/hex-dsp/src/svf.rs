@@ -149,7 +149,7 @@ pub struct SvfFrame {
     g: f64,
     k: f64,
     weights: [f64; 3],
-    pub wet: f64,
+    wet: f64,
     cascade: f64,
 }
 
@@ -248,15 +248,51 @@ impl SvfFrame {
         self.weights
     }
 
+    pub const fn wet(self) -> f64 {
+        self.wet
+    }
+
+    pub const fn with_dry(self) -> Self {
+        Self { wet: 0.0, ..self }
+    }
+
+    pub const fn with_full_wet(self) -> Self {
+        Self { wet: 1.0, ..self }
+    }
+
+    pub fn with_wet(self, wet: f64) -> Result<Self, InvalidSvf> {
+        if !(0.0..=1.0).contains(&wet) {
+            return Err(InvalidSvf);
+        }
+        Ok(Self { wet, ..self })
+    }
+
+    pub fn set_wet(&mut self, wet: f64) -> Result<(), InvalidSvf> {
+        if !(0.0..=1.0).contains(&wet) {
+            return Err(InvalidSvf);
+        }
+        self.wet = wet;
+        Ok(())
+    }
+
     pub const fn cascade(self) -> f64 {
         self.cascade
     }
 
     /// Shift the prewarped cutoff by `octaves`, clamped to `[20 Hz, 0.45 * rate]`.
+    /// Returns `self` unchanged if `rate == 0` or `octaves` is non-finite.
     pub fn with_cutoff_offset(self, octaves: f64, rate: u32) -> Self {
-        let minimum = PI * 20.0 / f64::from(rate);
+        if rate == 0 || !octaves.is_finite() {
+            return self;
+        }
         let maximum = PI * 0.45;
-        let angle = (self.g.atan() * octaves.exp2()).clamp(minimum, maximum);
+        let minimum = (PI * 20.0 / f64::from(rate)).min(maximum);
+        let shifted = self.g.atan() * octaves.exp2();
+        let angle = if shifted.is_finite() {
+            shifted.clamp(minimum, maximum)
+        } else {
+            maximum
+        };
         Self {
             g: angle.tan(),
             ..self
@@ -287,16 +323,29 @@ impl SvfFrame {
         if self.wet == 0.0 {
             return 1.0;
         }
+        if sample_rate == 0
+            || !frequency_hz.is_finite()
+            || frequency_hz < 0.0
+            || frequency_hz >= f64::from(sample_rate) * 0.5
+            || !self.g.is_finite()
+            || self.g <= 0.0
+        {
+            return 0.0;
+        }
         let s = (PI * frequency_hz / f64::from(sample_rate)).tan() / self.g;
         let [low, band, high] = self.weights;
         let numerator = (low - high * s * s).powi(2) + (band * s).powi(2);
         let denominator = (1.0 - s * s).powi(2) + (self.k * s).powi(2);
+        if !denominator.is_finite() || denominator <= f64::MIN_POSITIVE {
+            return 0.0;
+        }
         let squared = numerator / denominator;
-        if self.cascade == 0.0 {
+        let filtered = if self.cascade == 0.0 {
             squared.sqrt()
         } else {
             squared
-        }
+        };
+        if filtered.is_finite() { filtered } else { 0.0 }
     }
 }
 
@@ -404,5 +453,35 @@ mod tests {
         assert!(SvfFrame::new(1_000.0, 48_000, SvfMode::LowPass, 1.5, 0.0, 1.0, 0.0).is_err());
         assert!(SvfSectionF32::new(-1.0, 1.0).is_err());
         assert!(SvfSectionF32::new(0.1, 0.0).is_err());
+    }
+
+    #[test]
+    fn svf_frame_guards_low_rates_zero_g_and_wet_validation() {
+        let frame = SvfFrame::new(1_000.0, 48_000, SvfMode::LowPass, 0.25, 0.0, 1.0, 0.0).unwrap();
+        // Low / zero rates and extreme/NaN octave shifts must never panic or yield NaN.
+        for rate in [0_u32, 1, 20, 44, 45, 48_000] {
+            for octaves in [-10.0, 0.0, 10.0, 2_000.0, f64::NAN, f64::INFINITY] {
+                let shifted = frame.with_cutoff_offset(octaves, rate);
+                assert!(shifted.g().is_finite() && shifted.g() >= 0.0);
+            }
+        }
+        // Zero g or zero/invalid sample_rate in magnitude_at_hz must never divide by zero or return NaN.
+        let zero_g_wet = SvfFrame::dry().with_full_wet();
+        assert_eq!(zero_g_wet.magnitude_at_hz(1_000.0, 48_000), 0.0);
+        assert_eq!(frame.magnitude_at_hz(1_000.0, 0), 0.0);
+        assert_eq!(frame.magnitude_at_hz(f64::NAN, 48_000), 0.0);
+        assert_eq!(frame.magnitude_at_hz(-10.0, 48_000), 0.0);
+        assert_eq!(frame.magnitude_at_hz(24_000.0, 48_000), 0.0);
+
+        // Wet setter enforces 0..=1.
+        let mut mutable = frame;
+        assert!(mutable.with_wet(-0.1).is_err());
+        assert!(mutable.with_wet(1.1).is_err());
+        assert!(mutable.with_wet(f64::NAN).is_err());
+        assert!(mutable.set_wet(2.0).is_err());
+        assert_eq!(mutable.wet(), 1.0);
+        mutable.set_wet(0.5).unwrap();
+        assert_eq!(mutable.wet(), 0.5);
+        assert_eq!(mutable.with_dry().wet(), 0.0);
     }
 }

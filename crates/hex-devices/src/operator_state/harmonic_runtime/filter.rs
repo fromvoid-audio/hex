@@ -56,7 +56,7 @@ impl Trajectory {
     pub fn retarget(&mut self, target: Self) {
         if !self.armed && target.armed {
             *self = target;
-            self.from.wet = 0.0;
+            self.from = self.from.with_dry();
             self.elapsed = 0;
             return;
         }

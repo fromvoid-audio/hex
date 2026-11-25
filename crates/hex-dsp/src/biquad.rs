@@ -400,8 +400,12 @@ impl BiquadCoefficients {
     }
 
     /// Linearly advance each coefficient by `(target - current) / divisor`.
+    /// Leaves coefficients unchanged if `divisor` is non-finite or `<= 0.0`.
     #[inline]
     pub fn step_toward(&mut self, target: Self, divisor: f64) {
+        if !divisor.is_finite() || divisor <= 0.0 {
+            return;
+        }
         self.b0 += (target.b0 - self.b0) / divisor;
         self.b1 += (target.b1 - self.b1) / divisor;
         self.b2 += (target.b2 - self.b2) / divisor;
@@ -731,5 +735,23 @@ mod tests {
             let _ = hp.process_paired_flush(0.0);
         }
         assert!(hp.is_quiet());
+    }
+
+    #[test]
+    fn step_toward_ignores_non_positive_or_non_finite_divisor() {
+        let initial = BiquadCoefficients::low_pass(1_000.0, 48_000.0, 0.707).unwrap();
+        let target = BiquadCoefficients::low_pass(4_000.0, 48_000.0, 0.707).unwrap();
+        for bad in [0.0, -0.0, -4.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut coeffs = initial;
+            coeffs.step_toward(target, bad);
+            assert_eq!(
+                coeffs, initial,
+                "bad divisor {bad} must not mutate or inject NaN"
+            );
+        }
+        // Valid divisor still steps cleanly toward target.
+        let mut coeffs = initial;
+        coeffs.step_toward(target, 1.0);
+        assert_eq!(coeffs, target);
     }
 }
