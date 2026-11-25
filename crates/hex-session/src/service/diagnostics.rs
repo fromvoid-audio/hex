@@ -808,7 +808,7 @@ mod tests {
 
     #[test]
     fn event_pressure_retains_each_canonical_outcome_and_its_diagnostic_identity() {
-        let service = Service::new(48_000, 8, 0).unwrap();
+        let service = Service::new(48_000, 128, 0).unwrap();
         let stages = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&stages);
         service
@@ -816,9 +816,10 @@ mod tests {
                 sink.lock().unwrap().push((event.request, event.stage));
             })))
             .unwrap();
+        let total = crate::service::EVENT_CAPACITY + 4;
         let deadline = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
         let mut admitted = 0;
-        while admitted < 8 {
+        while admitted < total {
             assert!(
                 std::time::Instant::now() < deadline,
                 "request queue did not progress"
@@ -843,7 +844,7 @@ mod tests {
             );
             crate::test_wait::pause();
         }
-        for revision in 0..=8 {
+        for revision in 0..=(total as u64) {
             let event = service
                 .events
                 .recv_timeout(crate::test_wait::HANG_BOUND)
@@ -862,8 +863,57 @@ mod tests {
                     .map(|s| s.request_id)
             })
             .collect();
-        assert_eq!(received.len(), 8);
+        assert_eq!(received.len(), total);
         assert!(received.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn rapid_edit_burst_invokes_wake_callback_without_outcome_backpressure() {
+        let service = Service::new(48_000, 64, 0).unwrap();
+        let wakes = Arc::new(AtomicU64::new(0));
+        let wake_counter = Arc::clone(&wakes);
+        service.set_wake_callback(Some(Arc::new(move || {
+            wake_counter.fetch_add(1, Ordering::AcqRel);
+        })));
+        let _initial = service
+            .events
+            .recv_timeout(crate::test_wait::HANG_BOUND)
+            .unwrap();
+        let backpressure = Arc::new(AtomicU64::new(0));
+        let bp_counter = Arc::clone(&backpressure);
+        service
+            .set_diagnostic_observer(Arc::new(DiagnosticObserver::new(move |event| {
+                if event.stage == DiagnosticStage::OutcomeBackpressure {
+                    bp_counter.fetch_add(1, Ordering::Relaxed);
+                }
+            })))
+            .unwrap();
+        let wakes_before = wakes.load(Ordering::Acquire);
+        let burst = 24_usize;
+        for index in 0..burst {
+            service
+                .submit(Request::Edit(Command::AddTrack {
+                    name: format!("track {index}"),
+                }))
+                .unwrap();
+        }
+        for revision in 1..=(burst as u64) {
+            let event = service
+                .events
+                .recv_timeout(crate::test_wait::HANG_BOUND)
+                .unwrap();
+            assert_eq!(event.state.revision, revision);
+            assert!(event.error.is_none());
+        }
+        assert_eq!(
+            backpressure.load(Ordering::Relaxed),
+            0,
+            "rapid edit burst within EVENT_CAPACITY must not hit event backpressure"
+        );
+        assert!(
+            wakes.load(Ordering::Acquire) >= wakes_before + burst as u64,
+            "wake callback must fire for every queued event"
+        );
     }
 
     #[test]

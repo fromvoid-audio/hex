@@ -658,9 +658,13 @@ fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Conte
             return;
         };
         if event.phase == BarEditorPhase::Commit {
-            let _ = view.device_gesture.finish_snapshot(values);
+            if view.device_gesture.finish_snapshot(values).is_ok() {
+                view.pump_device_gesture();
+            }
         } else {
-            let _ = view.device_gesture.change_snapshot(values);
+            if view.device_gesture.change_snapshot(values).is_ok() {
+                view.pump_device_gesture();
+            }
             if let Some(control) = view.device_panel.operator_harmonics.get_mut(&key) {
                 control.stroke = Some(stroke);
             } else {

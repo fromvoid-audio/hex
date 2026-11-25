@@ -1578,9 +1578,9 @@ fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
         gpui::TouchPhase::Started,
         false,
     );
-    // Submit the actual first-node Begin to the real Service; retain its actual
+    // The first-node Begin was pumped inline to the real Service; retain its actual
     // acknowledgement instead of calling tick/receive. Virtual time is unadvanced.
-    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+    editor.read_with(cx, |view, _| assert_eq!(view.worker_requests_pending, 1));
     let held = editor.read_with(cx, |view, _| receive_service_event(&view.service));
     assert!(held.error.is_none());
     assert!(held.gesture_ack.as_ref().is_some_and(|ack| ack.accepted));
@@ -1629,7 +1629,7 @@ fn four_review_two_cuts_preserve_second_burst_while_real_first_ack_is_held(
 }
 
 fn held_real_scroll_begin(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) -> Event {
-    editor.update(cx, |view, _| assert!(view.pump_device_gesture()));
+    editor.read_with(cx, |view, _| assert_eq!(view.worker_requests_pending, 1));
     let event = editor.read_with(cx, |view, _| receive_service_event(&view.service));
     assert!(event.error.is_none());
     assert!(event.gesture_ack.as_ref().is_some_and(
@@ -1923,7 +1923,7 @@ fn four_review_real_worker_refusal_and_context_changes_never_replay_stale_queue(
         editor.update(cx, |v, _| {
             v.service.submit(request).unwrap();
             v.receive(held);
-            assert!(v.pump_device_gesture());
+            assert_eq!(v.worker_requests_pending, 1);
         });
         let changed = editor.read_with(cx, |v, _| receive_service_event(&v.service));
         assert!(

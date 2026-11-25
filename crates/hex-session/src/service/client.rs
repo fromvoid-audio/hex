@@ -4,6 +4,42 @@ use super::*;
 #[cfg(test)]
 pub(super) type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 
+/// Optional control-side wake callback notified whenever the session worker
+/// (or its export/seek lanes) enqueues an `Event` or status observation.
+/// Never invoked from the audio callback.
+pub type WakeCallback = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone, Default)]
+pub(super) struct WakeHook {
+    installed: Arc<AtomicBool>,
+    callback: Arc<std::sync::Mutex<Option<WakeCallback>>>,
+}
+
+impl WakeHook {
+    pub(super) fn set(&self, callback: Option<WakeCallback>) {
+        let mut slot = self
+            .callback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.installed.store(callback.is_some(), Ordering::Release);
+        *slot = callback;
+    }
+
+    pub(super) fn wake(&self) {
+        if !self.installed.load(Ordering::Acquire) {
+            return;
+        }
+        let callback = self
+            .callback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if let Some(callback) = callback {
+            callback();
+        }
+    }
+}
+
 /// UI-owned endpoints. `shutdown` stops and joins the session worker, which
 /// joins the export worker it owns; dropping calls it with a short bound.
 pub struct Service {
@@ -13,6 +49,7 @@ pub struct Service {
     pub(super) requests: Option<request_cancellation::Sender>,
     pub(super) clip_audition: Arc<clip_audition::Mailbox>,
     pub(super) events: diagnostics::EventReceiver,
+    pub(super) wake_hook: WakeHook,
     pub(super) track_switch_views: track_switch_views::Receiver,
     pub(super) arrangement_edit_views: arrangement_edit_views::Receiver,
     pub(super) diagnostics: Arc<diagnostics::Hooks>,
@@ -314,6 +351,7 @@ impl Service {
         } else {
             None
         };
+        let wake_hook = WakeHook::default();
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (seek_results_tx, seek_results_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (arrangement_seek, resident_seek) = if audio
@@ -322,7 +360,10 @@ impl Service {
         {
             (
                 None,
-                Some(resident_seek::Lane::new(arrangement_seek, seek_results_tx)),
+                Some(
+                    resident_seek::Lane::new(arrangement_seek, seek_results_tx)
+                        .with_wake(wake_hook.clone()),
+                ),
             )
         } else {
             (Some(arrangement_seek), None)
@@ -334,7 +375,9 @@ impl Service {
         let worker_document_intent = Arc::clone(&document_intent);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (track_switch_view_tx, track_switch_views) = track_switch_views::channel();
+        let track_switch_view_tx = track_switch_view_tx.with_wake(wake_hook.clone());
         let (arrangement_edit_view_tx, arrangement_edit_views) = arrangement_edit_views::channel();
+        let arrangement_edit_view_tx = arrangement_edit_view_tx.with_wake(wake_hook.clone());
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
@@ -345,6 +388,7 @@ impl Service {
         #[cfg(test)]
         let worker_test_hook = Arc::clone(&export_test_hook);
         let export_shutdown = Arc::clone(&shutdown);
+        let export_wake_hook = wake_hook.clone();
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
@@ -355,6 +399,7 @@ impl Service {
                     exporter,
                     finished_tx,
                     export_shutdown,
+                    export_wake_hook,
                     #[cfg(test)]
                     worker_test_hook,
                 )
@@ -365,6 +410,7 @@ impl Service {
         let worker_startup_failure = Arc::clone(&startup_failure);
         let events_closed = Arc::new(AtomicBool::new(false));
         let worker_events_closed = Arc::clone(&events_closed);
+        let worker_wake_hook = wake_hook.clone();
         let clip_audition = Arc::new(clip_audition::Mailbox::default());
         let worker_clip_audition = Arc::clone(&clip_audition);
         let worker = thread::Builder::new()
@@ -381,7 +427,8 @@ impl Service {
                     audio,
                     worker_diagnostics,
                 )
-                .with_events_closed(worker_events_closed);
+                .with_events_closed(worker_events_closed)
+                .with_wake_hook(worker_wake_hook);
                 let session = match session {
                     Some(session) => session,
                     None => {
@@ -474,6 +521,7 @@ impl Service {
             clip_audition,
             diagnostics: Arc::clone(&diagnostics),
             events: diagnostics::EventReceiver::with_closed(event_rx, diagnostics, events_closed),
+            wake_hook,
             track_switch_views,
             arrangement_edit_views,
             export_events: export_event_rx,
@@ -487,6 +535,17 @@ impl Service {
             startup_failure,
             worker: Some(worker),
         })
+    }
+
+    /// Install or replace an optional control-side wake callback invoked whenever
+    /// the session worker (or its export/seek lanes) enqueues an `Event` or status
+    /// observation. Never called from the audio callback.
+    pub fn set_wake_callback(&self, callback: Option<WakeCallback>) {
+        let installed = callback.is_some();
+        self.wake_hook.set(callback);
+        if installed {
+            self.wake_hook.wake();
+        }
     }
 
     /// Construction failure recorded before the initial-state sender disconnects.

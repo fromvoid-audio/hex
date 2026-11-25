@@ -118,7 +118,18 @@ fn effect_bus_old_or_unmatched_ack_cannot_rebind_add_or_consume_generic_fifo(
         v.change_device_gesture(ParameterValue::Float(0.5)).unwrap();
         assert!(v.enqueue_device_barrier(addition(v)));
         assert!(v.enqueue_device_barrier(Request::Undo));
-        assert!(v.pump_device_gesture());
+        assert_eq!(v.worker_requests_pending, 1);
+    });
+    // `change_device_gesture` pumped `Change` inline; receive its ACK so the
+    // queued `Commit` terminal is pumped inline next.
+    let change = editor.update(&mut visual, |v, _| receive_service_event(&v.service));
+    assert_eq!(
+        change.gesture_ack.as_ref().map(|ack| ack.phase),
+        Some(hex_session::device_gesture::GesturePhase::Change)
+    );
+    editor.update(&mut visual, |v, _| {
+        v.receive(change);
+        assert_eq!(v.worker_requests_pending, 1);
     });
     let event = editor.update(&mut visual, |v, _| receive_service_event(&v.service));
     let actual = event
@@ -180,10 +191,16 @@ fn effect_bus_interposed_canonical_edit_refuses_add_before_terminal_release(
         v.change_device_gesture(ParameterValue::Float(0.5)).unwrap();
         assert!(v.enqueue_device_barrier(addition(v)));
         assert!(v.enqueue_device_barrier(Request::Undo));
-        // A canonical edit arriving through Service is not this local terminal.
+        // A canonical edit arriving through Service before the local Commit terminal.
         v.service
             .submit(Request::Edit(Command::MasterGain { gain: 0.75 }))
             .unwrap();
+        let change = receive_service_event(&v.service);
+        assert_eq!(
+            change.gesture_ack.as_ref().map(|ack| ack.phase),
+            Some(hex_session::device_gesture::GesturePhase::Change)
+        );
+        v.receive(change);
         receive_service_event(&v.service)
     });
     assert!(event.error.is_none(), "{:?}", event.error);
@@ -228,9 +245,6 @@ fn effect_bus_project_replacement_aba_never_revives_old_destination_identity(
     let (editor, mut visual, device) = main_window(cx);
     begin(&editor, &mut visual, device);
     let generation = editor.read_with(&visual, |v, _| v.project_generation);
-    editor.update(&mut visual, |v, _| {
-        assert!(v.enqueue_device_barrier(addition(v)))
-    });
     for transition in 0..2 {
         let event = editor.update(&mut visual, |v, _| {
             v.service
@@ -239,11 +253,20 @@ fn effect_bus_project_replacement_aba_never_revives_old_destination_identity(
                     reservation: None,
                 })
                 .unwrap();
+            if transition == 0 {
+                assert!(v.enqueue_device_barrier(addition(v)));
+            }
             receive_service_event(&v.service)
         });
         assert!(event.project_replaced);
         editor.update(&mut visual, |v, _| {
             v.receive(event);
+            if transition == 0 {
+                // Drain the stale Commit refusal queued behind NewWithAudioMode.
+                let stale = receive_service_event(&v.service);
+                assert!(stale.gesture_ack.as_ref().is_some_and(|ack| !ack.accepted));
+                v.receive(stale);
+            }
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {

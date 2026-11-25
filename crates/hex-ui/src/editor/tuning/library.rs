@@ -190,11 +190,12 @@ impl EditorView {
                     Some("device edit queue full · retry the library action".into());
                 return;
             }
-            if !self.device_gesture.has_pending_terminal()
-                && let Err(error) = self.device_gesture.finish_current()
-            {
-                self.tuning.error = Some(error.into());
-                return;
+            if !self.device_gesture.has_pending_terminal() {
+                if let Err(error) = self.device_gesture.finish_current() {
+                    self.tuning.error = Some(error.into());
+                    return;
+                }
+                self.pump_device_gesture();
             }
             if self.tuning.client.snapshot().is_some() {
                 let _ = self.tuning.client.cancel();

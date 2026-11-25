@@ -436,6 +436,7 @@ impl WorkerLoop {
             core,
             ..
         } = self;
+        let export_wake = events.wake_hook_clone();
         let WorkerLoopCore {
             session,
             document_intent,
@@ -684,7 +685,9 @@ impl WorkerLoop {
                         }
                     }),
                 );
-                pending_export_events.flush(export_events);
+                if pending_export_events.flush(export_events) {
+                    export_wake.wake();
+                }
                 audio_sink::ControlPoll {
                     pending: control_lanes_pending(resident_seek.as_ref(), export_lane)
                         || plugin_recording.pending()

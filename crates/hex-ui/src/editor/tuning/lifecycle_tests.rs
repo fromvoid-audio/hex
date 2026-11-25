@@ -382,14 +382,14 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
                 ParameterValue::Float(0.0),
             )
             .unwrap();
-            assert!(view.pump_device_gesture());
+            assert_eq!(view.worker_requests_pending, 1);
         });
         let begun = next(&editor, cx);
         editor.update(cx, |view, _| {
             view.receive(begun);
             view.change_device_gesture(ParameterValue::Float(0.2))
                 .unwrap();
-            assert!(view.pump_device_gesture());
+            assert_eq!(view.worker_requests_pending, 1);
         });
         let changed = next(&editor, cx);
         editor.update(cx, |view, _| {

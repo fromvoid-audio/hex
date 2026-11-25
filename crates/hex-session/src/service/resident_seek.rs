@@ -109,6 +109,7 @@ pub(crate) struct Lane {
     worker: Option<ArrangementSeekWorker>,
     active: [Option<Active>; MAX_RESIDENT_SEEK_JOBS],
     results: SyncSender<ResidentArrangementSeekResult>,
+    wake_hook: super::client::WakeHook,
     next_job: u64,
     rejected: Option<ResidentArrangementSeekResult>,
 }
@@ -131,17 +132,22 @@ impl Lane {
             worker: Some(worker),
             active: std::array::from_fn(|_| None),
             results,
+            wake_hook: super::client::WakeHook::default(),
             next_job: 1,
             rejected: None,
         }
     }
+    pub(super) fn with_wake(mut self, wake_hook: super::client::WakeHook) -> Self {
+        self.wake_hook = wake_hook;
+        self
+    }
     pub(super) fn reject(&mut self, intent: &ResidentArrangementSeekIntent, error: String) {
         // Service reserves one completion slot before admitting each request. Full is therefore
         // unreachable through that endpoint; retain a defensive result instead of losing it.
-        if let Err(TrySendError::Full(result)) =
-            self.results.try_send(completion(intent, Err(error)))
-        {
-            self.rejected = Some(result);
+        match self.results.try_send(completion(intent, Err(error))) {
+            Ok(()) => self.wake_hook.wake(),
+            Err(TrySendError::Full(result)) => self.rejected = Some(result),
+            Err(TrySendError::Disconnected(_)) => {}
         }
     }
     pub(super) fn allowance(&self) -> Result<usize, String> {
@@ -373,10 +379,12 @@ impl Lane {
         let Some(worker) = self.worker.as_ref() else {
             return;
         };
-        if let Some(result) = self.rejected.take()
-            && let Err(TrySendError::Full(result)) = self.results.try_send(result)
-        {
-            self.rejected = Some(result);
+        if let Some(result) = self.rejected.take() {
+            match self.results.try_send(result) {
+                Ok(()) => self.wake_hook.wake(),
+                Err(TrySendError::Full(result)) => self.rejected = Some(result),
+                Err(TrySendError::Disconnected(_)) => {}
+            }
         }
         while let Some(id) = worker.try_resident_completion() {
             if let Some(job) = self.active.iter_mut().flatten().find(|job| job.job == id) {
@@ -485,6 +493,7 @@ impl Lane {
                 match self.results.try_send(result) {
                     Ok(()) => {
                         *slot = None;
+                        self.wake_hook.wake();
                     }
                     Err(TrySendError::Full(result)) => {
                         if let Some(job) = slot.as_mut() {

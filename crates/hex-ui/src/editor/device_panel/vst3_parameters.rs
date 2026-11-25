@@ -2855,6 +2855,7 @@ fn knob_event(
     if event.phase == NumericEventPhase::Begin {
         let key = view.begin_vst3_parameter_gesture(origin)?;
         *drag = Some((event.gesture.clone(), key));
+        view.pump_device_gesture();
         return Ok(());
     }
     if event.phase == NumericEventPhase::Commit
@@ -2863,7 +2864,9 @@ fn knob_event(
     {
         let key = view.begin_vst3_parameter_gesture(origin)?;
         *drag = Some((None, key));
-        return view.device_gesture.finish_plugin(value);
+        view.device_gesture.finish_plugin(value)?;
+        view.pump_device_gesture();
+        return Ok(());
     }
     let Some((pointer, key)) = drag.as_ref() else {
         return Ok(());
@@ -2876,12 +2879,16 @@ fn knob_event(
     {
         return Ok(());
     }
-    match event.phase {
+    let result = match event.phase {
         NumericEventPhase::Change => view.device_gesture.change_plugin(value).map(|_| ()),
         NumericEventPhase::Commit => view.device_gesture.finish_plugin(value),
         NumericEventPhase::Cancel => view.device_gesture.cancel(),
         NumericEventPhase::Begin => Ok(()),
+    };
+    if result.is_ok() {
+        view.pump_device_gesture();
     }
+    result
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

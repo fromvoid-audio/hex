@@ -1098,10 +1098,15 @@ fn retained_paste_terminals_survive_a_full_event_queue() {
         })))
         .unwrap();
     // Copying an empty selection fails without changing the clipboard or project.
-    service.submit(Request::CopyClips(Vec::new())).unwrap();
-    service.submit(Request::CopyClips(Vec::new())).unwrap();
-    let until = Instant::now() + Duration::from_secs(1);
-    while queued.load(Ordering::Relaxed) < 2 {
+    let fill = crate::service::EVENT_CAPACITY;
+    let until = Instant::now() + Duration::from_secs(2);
+    for _ in 0..fill {
+        while service.submit(Request::CopyClips(Vec::new())).is_err() {
+            assert!(Instant::now() < until, "request queue did not progress");
+            std::thread::yield_now();
+        }
+    }
+    while queued.load(Ordering::Relaxed) < fill as u64 {
         assert!(Instant::now() < until, "event queue did not fill");
         std::thread::yield_now();
     }
@@ -1126,9 +1131,10 @@ fn retained_paste_terminals_survive_a_full_event_queue() {
             frame: 96_000,
         })
         .unwrap();
-    // Drain the two prefilled CopyClips events so immediate paste ACKs flow without losing order.
-    let _first_copy = next(&service);
-    let _second_copy = next(&service);
+    // Drain the prefilled CopyClips events so immediate paste ACKs flow without losing order.
+    for _ in 0..fill {
+        let _copy = next(&service);
+    }
     let first = next(&service);
     let second = next(&service);
     release.send(()).unwrap();
