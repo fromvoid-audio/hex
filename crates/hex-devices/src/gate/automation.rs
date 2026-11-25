@@ -102,32 +102,22 @@ impl GateRuntime {
             hold_frames,
             release_frames,
             open,
-            gain,
             hold_elapsed,
-            ramp_target,
-            ramp_step,
-            ramp_remaining,
+            gain_ramp,
         } = self;
         base.check_inline();
         controls.check_inline(GateSettings::check_inline);
         settings.check_inline();
         let _: &bool = open;
-        let _: [&f64; 6] = [
-            threshold,
-            return_level,
-            floor_gain,
-            gain,
-            ramp_target,
-            ramp_step,
-        ];
-        let _: [&u32; 6] = [
+        let _: [&f64; 3] = [threshold, return_level, floor_gain];
+        let _: [&u32; 5] = [
             sample_rate,
             attack_frames,
             hold_frames,
             release_frames,
             hold_elapsed,
-            ramp_remaining,
         ];
+        let _: &hex_dsp::LinearRamp = gain_ramp;
     }
 
     pub(super) fn install_settings(&mut self, settings: GateSettings) {
@@ -140,9 +130,13 @@ impl GateRuntime {
         let attack_changed = self.settings.attack_ms != previous.attack_ms;
         let release_changed = self.settings.release_ms != previous.release_ms;
         let floor_changed = self.settings.floor_db != previous.floor_db;
-        if self.open && attack_changed && self.ramp_remaining > 0 && self.ramp_target == 1.0 {
+        if self.open
+            && attack_changed
+            && self.gain_ramp.is_active()
+            && self.gain_ramp.target() == 1.0
+        {
             self.start_ramp(1.0, self.attack_frames);
-        } else if !self.open && (floor_changed || (release_changed && self.ramp_remaining > 0)) {
+        } else if !self.open && (floor_changed || (release_changed && self.gain_ramp.is_active())) {
             self.start_ramp(self.floor_gain, self.release_frames);
         }
     }

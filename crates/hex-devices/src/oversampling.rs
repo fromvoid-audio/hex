@@ -28,7 +28,6 @@ const BETA: f64 = 10.0;
 /// Below this oversampled step, ADAA uses the midpoint value to avoid
 /// cancellation in the antiderivative difference.
 const ADAA_EPSILON: f64 = 1.0e-5;
-const FLOOR: f64 = 1.0e-20;
 
 /// A memoryless odd transfer with a closed-form antiderivative.
 pub(crate) trait Shaper {
@@ -88,7 +87,7 @@ fn bessel_i0(x: f64) -> f64 {
 }
 
 fn quiet(value: f64) -> f64 {
-    if value.abs() < FLOOR { 0.0 } else { value }
+    hex_dsp::flush_quiet(value)
 }
 
 /// First-order ADAA between the previous and current argument, given both

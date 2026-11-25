@@ -62,10 +62,7 @@ impl OverdriveRuntime {
         let Self {
             base_targets,
             controls,
-            targets,
-            current,
-            step,
-            remaining,
+            ramps,
             rate,
             channels,
             envelope,
@@ -79,9 +76,8 @@ impl OverdriveRuntime {
         controls.check_inline(|Settings(values)| {
             let _: &[f32; 6] = values;
         });
-        let _: (&[f64; 6], &[f64; 6], &[f64; 6], &[f64; 6]) =
-            (base_targets, targets, current, step);
-        let _: (&u32, &u32, &u32, &usize) = (remaining, rate, silent_frames, delay_index);
+        let _: (&[f64; 6], &[hex_dsp::LinearRamp; 6]) = (base_targets, ramps);
+        let _: (&u32, &u32, &usize) = (rate, silent_frames, delay_index);
         let _: (&[f64; 2], &f64, &f64, &Kernel, &[[f64; 3]; LATENCY_FRAMES]) =
             (envelope, attack, release, kernel, delay);
         for Channel {
@@ -106,7 +102,7 @@ impl OverdriveRuntime {
         };
         let settings = next.effective();
         let old = self.controls.effective();
-        let mut target = self.targets;
+        let mut target = self.ramps.map(hex_dsp::LinearRamp::target);
         if settings.0[..2] != old.0[..2] {
             let [hp, lp] = band_poles(settings, self.rate);
             target[0] = hp;
@@ -124,15 +120,14 @@ impl OverdriveRuntime {
         target[4] = f64::from(settings.0[4]);
         target[5] = f64::from(settings.0[5]);
         self.controls.install(next);
-        if target != self.targets {
-            self.targets = target;
-            self.remaining = (self.rate / 200).max(1);
-            for (step, (&target, &current)) in self
-                .step
-                .iter_mut()
-                .zip(self.targets.iter().zip(&self.current))
-            {
-                *step = (target - current) / f64::from(self.remaining);
+        if target
+            .iter()
+            .zip(&self.ramps)
+            .any(|(&value, ramp)| value != ramp.target())
+        {
+            let frames = (self.rate / 200).max(1);
+            for (ramp, value) in self.ramps.iter_mut().zip(target) {
+                ramp.retarget(value, frames);
             }
         }
         Ok(())

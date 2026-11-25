@@ -34,7 +34,6 @@ const MAX_HZ: f32 = 20_000.0;
 const MAX_GAIN_DB: f32 = 24.0;
 const MIN_Q: f32 = 0.1;
 const MAX_Q: f32 = 18.0;
-const HISTORY_FLOOR: f64 = 1.0e-30;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 
@@ -400,24 +399,7 @@ impl NativeDeviceDefinition for Eq8Definition {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Coefficients {
-    b0: f64,
-    b1: f64,
-    b2: f64,
-    a1: f64,
-    a2: f64,
-}
-
-impl Coefficients {
-    const IDENTITY: Self = Self {
-        b0: 1.0,
-        b1: 0.0,
-        b2: 0.0,
-        a1: 0.0,
-        a2: 0.0,
-    };
-}
+type Coefficients = hex_dsp::BiquadCoefficients;
 
 type BandStages = [Coefficients; 4];
 type CoefficientBank = [BandStages; BAND_COUNT];
@@ -991,11 +973,7 @@ impl Eq8Runtime {
             .effective_target(self.automated_target.as_ref(), self.canonical_mode);
         for (current, target) in self.coefficients.iter_mut().zip(targets) {
             for (current, target) in current.iter_mut().flatten().zip(target.iter().flatten()) {
-                current.b0 += (target.b0 - current.b0) / divisor;
-                current.b1 += (target.b1 - current.b1) / divisor;
-                current.b2 += (target.b2 - current.b2) / divisor;
-                current.a1 += (target.a1 - current.a1) / divisor;
-                current.a2 += (target.a2 - current.a2) / divisor;
+                current.step_toward(*target, divisor);
             }
         }
         self.smooth_remaining -= 1;
@@ -1048,13 +1026,11 @@ impl Eq8Runtime {
 
 fn process_band(mut input: f64, coefficients: &BandStages, history: &mut [[f64; 2]; 4]) -> f64 {
     for stage in 0..4 {
-        let coefficients = coefficients[stage];
-        let stage_history = &mut history[stage];
-        let output = coefficients.b0 * input + stage_history[0];
-        stage_history[0] =
-            quiet(coefficients.b1 * input - coefficients.a1 * output + stage_history[1]);
-        stage_history[1] = quiet(coefficients.b2 * input - coefficients.a2 * output);
-        input = quiet(output);
+        input = coefficients[stage].process_tdf2_with_floor(
+            input,
+            &mut history[stage],
+            hex_dsp::POWER_FLOOR,
+        );
     }
     input
 }
@@ -1182,11 +1158,7 @@ impl NativeProcessorAudition for Eq8Runtime {
 }
 
 fn quiet(value: f64) -> f64 {
-    if value.abs() < HISTORY_FLOOR {
-        0.0
-    } else {
-        value
-    }
+    hex_dsp::flush_below(value, hex_dsp::POWER_FLOOR)
 }
 
 fn finite_f32(value: f64) -> f32 {
@@ -1198,176 +1170,52 @@ fn finite_f32(value: f64) -> f32 {
 }
 
 fn response_magnitude(coefficients: Coefficients, frequency_hz: f64, sample_rate: f64) -> f64 {
-    let angle = std::f64::consts::TAU * frequency_hz / sample_rate;
-    let (sin, cos) = angle.sin_cos();
-    let (sin2, cos2) = (2.0 * angle).sin_cos();
-    let real_numerator = coefficients.b0 + coefficients.b1 * cos + coefficients.b2 * cos2;
-    let imaginary_numerator = -coefficients.b1 * sin - coefficients.b2 * sin2;
-    let real_denominator = 1.0 + coefficients.a1 * cos + coefficients.a2 * cos2;
-    let imaginary_denominator = -coefficients.a1 * sin - coefficients.a2 * sin2;
-    let numerator = real_numerator.hypot(imaginary_numerator);
-    let denominator = real_denominator.hypot(imaginary_denominator);
-    if denominator > f64::MIN_POSITIVE {
-        numerator / denominator
-    } else {
-        f64::MAX
-    }
+    coefficients.magnitude_at_omega(std::f64::consts::TAU * frequency_hz / sample_rate)
 }
 
 fn design_band(band: Band, sample_rate: u32) -> Result<BandStages, DeviceContractError> {
-    let nyquist = f64::from(sample_rate) * 0.5;
+    let rate = f64::from(sample_rate);
+    let nyquist = rate * 0.5;
     let frequency = f64::from(band.frequency_hz).min(nyquist * 0.98);
     if frequency <= 0.0 || !frequency.is_finite() {
         return Err(DeviceContractError::InvalidParameterValue);
     }
-    let omega = std::f64::consts::TAU * frequency / f64::from(sample_rate);
-    let cosine = omega.cos();
-    let sine = omega.sin();
     let q = f64::from(band.q);
+    let gain_db = f64::from(band.gain_db);
     let mut stages = [Coefficients::IDENTITY; 4];
+    let map_err = |_| DeviceContractError::InvalidParameterValue;
     match band.kind {
-        0 => stages[0] = peaking(cosine, sine, q, f64::from(band.gain_db))?,
-        1 => stages[0] = shelf(cosine, sine, q, f64::from(band.gain_db), true)?,
-        2 => stages[0] = shelf(cosine, sine, q, f64::from(band.gain_db), false)?,
-        3 => stages[0] = pass_filter(cosine, sine, q, true)?,
+        0 => stages[0] = Coefficients::peaking(frequency, rate, q, gain_db).map_err(map_err)?,
+        1 => {
+            stages[0] =
+                Coefficients::low_shelf_slope(frequency, rate, q, gain_db).map_err(map_err)?
+        }
+        2 => {
+            stages[0] =
+                Coefficients::high_shelf_slope(frequency, rate, q, gain_db).map_err(map_err)?
+        }
+        3 => stages[0] = Coefficients::high_pass(frequency, rate, q).map_err(map_err)?,
         4 => {
             let mut section_qs = [0.509_795_6, 0.601_344_9, 0.899_976_2, 2.562_915_4];
             section_qs[3] *= q / f64::from(std::f32::consts::FRAC_1_SQRT_2);
             for (stage, section_q) in section_qs.into_iter().enumerate() {
-                stages[stage] = pass_filter(cosine, sine, section_q, true)?;
+                stages[stage] =
+                    Coefficients::high_pass(frequency, rate, section_q).map_err(map_err)?;
             }
         }
-        5 => stages[0] = pass_filter(cosine, sine, q, false)?,
+        5 => stages[0] = Coefficients::low_pass(frequency, rate, q).map_err(map_err)?,
         6 => {
             let mut section_qs = [0.509_795_6, 0.601_344_9, 0.899_976_2, 2.562_915_4];
             section_qs[3] *= q / f64::from(std::f32::consts::FRAC_1_SQRT_2);
             for (stage, section_q) in section_qs.into_iter().enumerate() {
-                stages[stage] = pass_filter(cosine, sine, section_q, false)?
+                stages[stage] =
+                    Coefficients::low_pass(frequency, rate, section_q).map_err(map_err)?;
             }
         }
-        7 => stages[0] = notch(cosine, sine, q)?,
+        7 => stages[0] = Coefficients::notch(frequency, rate, q).map_err(map_err)?,
         _ => return Err(DeviceContractError::InvalidParameterValue),
     }
     Ok(stages)
-}
-
-fn normalized(
-    b0: f64,
-    b1: f64,
-    b2: f64,
-    a0: f64,
-    a1: f64,
-    a2: f64,
-) -> Result<Coefficients, DeviceContractError> {
-    if !a0.is_finite() || a0.abs() < f64::MIN_POSITIVE {
-        return Err(DeviceContractError::InvalidParameterValue);
-    }
-    let result = Coefficients {
-        b0: b0 / a0,
-        b1: b1 / a0,
-        b2: b2 / a0,
-        a1: a1 / a0,
-        a2: a2 / a0,
-    };
-    if [result.b0, result.b1, result.b2, result.a1, result.a2]
-        .iter()
-        .all(|v| v.is_finite())
-    {
-        Ok(result)
-    } else {
-        Err(DeviceContractError::InvalidParameterValue)
-    }
-}
-
-fn pass_filter(
-    cosine: f64,
-    sine: f64,
-    q: f64,
-    high_pass: bool,
-) -> Result<Coefficients, DeviceContractError> {
-    let alpha = sine / (2.0 * q);
-    if high_pass {
-        normalized(
-            (1.0 + cosine) * 0.5,
-            -(1.0 + cosine),
-            (1.0 + cosine) * 0.5,
-            1.0 + alpha,
-            -2.0 * cosine,
-            1.0 - alpha,
-        )
-    } else {
-        normalized(
-            (1.0 - cosine) * 0.5,
-            1.0 - cosine,
-            (1.0 - cosine) * 0.5,
-            1.0 + alpha,
-            -2.0 * cosine,
-            1.0 - alpha,
-        )
-    }
-}
-
-fn peaking(
-    cosine: f64,
-    sine: f64,
-    q: f64,
-    gain_db: f64,
-) -> Result<Coefficients, DeviceContractError> {
-    let a = 10.0_f64.powf(gain_db / 40.0);
-    let alpha = sine / (2.0 * q);
-    normalized(
-        1.0 + alpha * a,
-        -2.0 * cosine,
-        1.0 - alpha * a,
-        1.0 + alpha / a,
-        -2.0 * cosine,
-        1.0 - alpha / a,
-    )
-}
-
-fn notch(cosine: f64, sine: f64, q: f64) -> Result<Coefficients, DeviceContractError> {
-    let alpha = sine / (2.0 * q);
-    normalized(
-        1.0,
-        -2.0 * cosine,
-        1.0,
-        1.0 + alpha,
-        -2.0 * cosine,
-        1.0 - alpha,
-    )
-}
-
-fn shelf(
-    cosine: f64,
-    sine: f64,
-    slope: f64,
-    gain_db: f64,
-    low: bool,
-) -> Result<Coefficients, DeviceContractError> {
-    let a = 10.0_f64.powf(gain_db / 40.0);
-    let alpha = sine * 0.5 * (((a + 1.0 / a) * (1.0 / slope - 1.0)) + 2.0).sqrt();
-    let two = 2.0 * a.sqrt() * alpha;
-    let beta = 2.0 * a.sqrt() * alpha;
-    let (b0, b1, b2, a0, a1, a2) = if low {
-        (
-            a * ((a + 1.0) - (a - 1.0) * cosine + two),
-            2.0 * a * ((a - 1.0) - (a + 1.0) * cosine),
-            a * ((a + 1.0) - (a - 1.0) * cosine - two),
-            (a + 1.0) + (a - 1.0) * cosine + beta,
-            -2.0 * ((a - 1.0) + (a + 1.0) * cosine),
-            (a + 1.0) + (a - 1.0) * cosine - beta,
-        )
-    } else {
-        (
-            a * ((a + 1.0) + (a - 1.0) * cosine + two),
-            -2.0 * a * ((a - 1.0) + (a + 1.0) * cosine),
-            a * ((a + 1.0) + (a - 1.0) * cosine - two),
-            (a + 1.0) - (a - 1.0) * cosine + beta,
-            2.0 * ((a - 1.0) - (a + 1.0) * cosine),
-            (a + 1.0) - (a - 1.0) * cosine - beta,
-        )
-    };
-    normalized(b0, b1, b2, a0, a1, a2)
 }
 
 pub static EQ8_DEFINITION: Eq8Definition = Eq8Definition;
