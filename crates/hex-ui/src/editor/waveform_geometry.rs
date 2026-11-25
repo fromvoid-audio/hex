@@ -86,16 +86,429 @@ impl std::ops::Deref for WaveformViewCache {
     }
 }
 
-/// UI-owned LRU of ready-to-paint waveform geometry. Entries retain their source
-/// Arc, so pointer identity cannot be reused while an entry is resident.
+/// UI-owned O(1) indexed LRU of ready-to-paint waveform geometry. Entries retain
+/// their source Arc, so pointer identity cannot be reused while an entry is resident.
 #[derive(Default)]
 pub(super) struct WaveformGeometryCache {
-    entries: VecDeque<WaveformGeometryEntry>,
+    entries: GeometryLru,
     columns: usize,
     coarse_entry_counts: HashMap<CoarseEntryKey, usize>,
     overrange: OverrangeCache,
     #[cfg(all(test, feature = "ui-test-support"))]
     painted: VecDeque<WaveformPaintSample>,
+}
+
+enum SlotBucket {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+struct GeometryLruNode {
+    entry: WaveformGeometryEntry,
+    hash: u64,
+    prev: Option<usize>,
+    next: Option<usize>,
+}
+
+/// Arena-backed doubly-linked LRU with a 64-bit hash bucket index for O(1)
+/// lookup, promotion, invalidation, and front eviction without unsafe code.
+#[derive(Default)]
+struct GeometryLru {
+    nodes: Vec<Option<GeometryLruNode>>,
+    free: Vec<usize>,
+    head: Option<usize>,
+    tail: Option<usize>,
+    len: usize,
+    index: HashMap<u64, SlotBucket>,
+    stretch_slot: Option<usize>,
+}
+
+#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+struct GeometryLruIter<'a> {
+    nodes: &'a [Option<GeometryLruNode>],
+    current: Option<usize>,
+    remaining: usize,
+}
+
+#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+impl<'a> Iterator for GeometryLruIter<'a> {
+    type Item = &'a WaveformGeometryEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let slot = self.current?;
+        let node = self.nodes.get(slot)?.as_ref()?;
+        self.current = node.next;
+        self.remaining -= 1;
+        Some(&node.entry)
+    }
+}
+
+impl GeometryLru {
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+    fn iter(&self) -> GeometryLruIter<'_> {
+        GeometryLruIter {
+            nodes: &self.nodes,
+            current: self.head,
+            remaining: self.len,
+        }
+    }
+
+    fn find_slot_with_hash(
+        &self,
+        hash: u64,
+        key: &WaveformGeometryKey,
+        source: &Arc<CachedWaveform>,
+    ) -> Option<usize> {
+        let matches = |slot: usize| {
+            self.nodes
+                .get(slot)
+                .and_then(Option::as_ref)
+                .is_some_and(|node| {
+                    Arc::ptr_eq(&node.entry.source, source) && &node.entry.key == key
+                })
+        };
+        match self.index.get(&hash)? {
+            SlotBucket::One(slot) => matches(*slot).then_some(*slot),
+            SlotBucket::Many(slots) => slots.iter().copied().find(|&slot| matches(slot)),
+        }
+    }
+
+    fn find_slot(&self, key: &WaveformGeometryKey, source: &Arc<CachedWaveform>) -> Option<usize> {
+        self.find_slot_with_hash(geometry_entry_hash(key, source), key, source)
+    }
+
+    fn geometry_at(&self, slot: usize) -> Option<Arc<WaveformGeometry>> {
+        self.nodes
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map(|node| Arc::clone(&node.entry.geometry))
+    }
+
+    fn move_to_back(&mut self, slot: usize) {
+        if self.tail == Some(slot) {
+            return;
+        }
+        let Some((prev, next)) = self
+            .nodes
+            .get(slot)
+            .and_then(Option::as_ref)
+            .map(|node| (node.prev, node.next))
+        else {
+            return;
+        };
+        if let Some(prev_slot) = prev {
+            if let Some(prev_node) = self.nodes.get_mut(prev_slot).and_then(Option::as_mut) {
+                prev_node.next = next;
+            }
+        } else {
+            self.head = next;
+        }
+        if let Some(next_slot) = next {
+            if let Some(next_node) = self.nodes.get_mut(next_slot).and_then(Option::as_mut) {
+                next_node.prev = prev;
+            }
+        } else {
+            self.tail = prev;
+        }
+        let old_tail = self.tail;
+        if let Some(node) = self.nodes.get_mut(slot).and_then(Option::as_mut) {
+            node.prev = old_tail;
+            node.next = None;
+        }
+        if let Some(tail_slot) = old_tail {
+            if let Some(tail_node) = self.nodes.get_mut(tail_slot).and_then(Option::as_mut) {
+                tail_node.next = Some(slot);
+            }
+        } else {
+            self.head = Some(slot);
+        }
+        self.tail = Some(slot);
+    }
+
+    fn insert_index(&mut self, hash: u64, slot: usize) {
+        match self.index.get_mut(&hash) {
+            None => {
+                self.index.insert(hash, SlotBucket::One(slot));
+            }
+            Some(bucket) => match bucket {
+                SlotBucket::One(existing) => {
+                    let existing = *existing;
+                    *bucket = SlotBucket::Many(vec![existing, slot]);
+                }
+                SlotBucket::Many(slots) => slots.push(slot),
+            },
+        }
+    }
+
+    fn remove_index(&mut self, hash: u64, slot: usize) {
+        let remove_key = match self.index.get_mut(&hash) {
+            None => false,
+            Some(SlotBucket::One(existing)) => *existing == slot,
+            Some(bucket @ SlotBucket::Many(_)) => {
+                let SlotBucket::Many(slots) = bucket else {
+                    return;
+                };
+                slots.retain(|&candidate| candidate != slot);
+                if slots.is_empty() {
+                    true
+                } else if slots.len() == 1 {
+                    let only = slots[0];
+                    *bucket = SlotBucket::One(only);
+                    false
+                } else {
+                    false
+                }
+            }
+        };
+        if remove_key {
+            self.index.remove(&hash);
+        }
+    }
+
+    fn push_back_with_hash(&mut self, entry: WaveformGeometryEntry, hash: u64) {
+        let is_stretch = matches!(entry.key.mapping, WaveformMappingKey::Stretch(_));
+        let slot = if let Some(slot) = self.free.pop() {
+            slot
+        } else {
+            let slot = self.nodes.len();
+            self.nodes.push(None);
+            slot
+        };
+        let old_tail = self.tail;
+        if let Some(slot_ref) = self.nodes.get_mut(slot) {
+            *slot_ref = Some(GeometryLruNode {
+                entry,
+                hash,
+                prev: old_tail,
+                next: None,
+            });
+        }
+        if let Some(tail_slot) = old_tail {
+            if let Some(tail_node) = self.nodes.get_mut(tail_slot).and_then(Option::as_mut) {
+                tail_node.next = Some(slot);
+            }
+        } else {
+            self.head = Some(slot);
+        }
+        self.tail = Some(slot);
+        self.len = self.len.saturating_add(1);
+        self.insert_index(hash, slot);
+        if is_stretch {
+            self.stretch_slot = Some(slot);
+        }
+    }
+
+    fn push_back(&mut self, entry: WaveformGeometryEntry) {
+        let hash = geometry_entry_hash(&entry.key, &entry.source);
+        self.push_back_with_hash(entry, hash);
+    }
+
+    fn remove_slot(&mut self, slot: usize) -> Option<WaveformGeometryEntry> {
+        let node = self.nodes.get_mut(slot)?.take()?;
+        if let Some(prev_slot) = node.prev {
+            if let Some(prev_node) = self.nodes.get_mut(prev_slot).and_then(Option::as_mut) {
+                prev_node.next = node.next;
+            }
+        } else {
+            self.head = node.next;
+        }
+        if let Some(next_slot) = node.next {
+            if let Some(next_node) = self.nodes.get_mut(next_slot).and_then(Option::as_mut) {
+                next_node.prev = node.prev;
+            }
+        } else {
+            self.tail = node.prev;
+        }
+        self.len = self.len.saturating_sub(1);
+        self.remove_index(node.hash, slot);
+        if self.stretch_slot == Some(slot) {
+            self.stretch_slot = None;
+        }
+        self.free.push(slot);
+        Some(node.entry)
+    }
+
+    fn pop_front(&mut self) -> Option<WaveformGeometryEntry> {
+        let slot = self.head?;
+        self.remove_slot(slot)
+    }
+
+    fn remove_stretch(&mut self) -> Option<WaveformGeometryEntry> {
+        let slot = self.stretch_slot.take()?;
+        self.remove_slot(slot)
+    }
+
+    fn clear(&mut self) {
+        self.nodes.clear();
+        self.free.clear();
+        self.head = None;
+        self.tail = None;
+        self.len = 0;
+        self.index.clear();
+        self.stretch_slot = None;
+    }
+}
+
+#[inline]
+fn mix_u64(hash: &mut u64, value: u64) {
+    *hash ^= value;
+    *hash = hash.wrapping_mul(0x1000_0000_01b3);
+}
+
+/// Deterministic 64-bit bucket hash strictly consistent with
+/// `Arc::ptr_eq(source) && key == other_key` (any collision is resolved exactly
+/// inside `SlotBucket::Many`).
+fn geometry_entry_hash(key: &WaveformGeometryKey, source: &Arc<CachedWaveform>) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    mix_u64(&mut hash, Arc::as_ptr(source) as usize as u64);
+    #[cfg(test)]
+    mix_u64(&mut hash, u64::from(key.reference_stereo));
+    mix_u64(
+        &mut hash,
+        match key.amplitude_scale {
+            WaveformAmplitudeScale::Linear => 0,
+            WaveformAmplitudeScale::Decibel => 1,
+        },
+    );
+    mix_u64(&mut hash, u64::from(key.height));
+    mix_u64(&mut hash, u64::from(key.scale));
+    match &key.placement {
+        WaveformPlacementKey::Window {
+            visible_start,
+            visible_end,
+            origin_x,
+            origin_y,
+            width,
+            grid,
+        } => {
+            mix_u64(&mut hash, 1);
+            mix_u64(&mut hash, *visible_start);
+            mix_u64(&mut hash, *visible_end);
+            mix_u64(&mut hash, u64::from(*origin_x));
+            mix_u64(&mut hash, u64::from(*origin_y));
+            mix_u64(&mut hash, u64::from(*width));
+            if let Some(grid) = grid {
+                mix_u64(&mut hash, 1);
+                for value in grid {
+                    mix_u64(&mut hash, *value);
+                }
+            } else {
+                mix_u64(&mut hash, 0);
+            }
+        }
+        WaveformPlacementKey::Coarse {
+            first_frame,
+            frames_per_bin,
+            bins,
+            pixel_pitch,
+            detail_budget,
+        } => {
+            mix_u64(&mut hash, 2);
+            mix_u64(&mut hash, *first_frame);
+            mix_u64(&mut hash, *frames_per_bin);
+            mix_u64(&mut hash, *bins as u64);
+            mix_u64(&mut hash, u64::from(*pixel_pitch));
+            mix_u64(&mut hash, *detail_budget as u64);
+        }
+    }
+    match &key.mapping {
+        WaveformMappingKey::PreparedFade(fade) => {
+            mix_u64(&mut hash, 1);
+            mix_u64(&mut hash, fade.timeline_origin);
+            mix_u64(&mut hash, fade.root_offset);
+        }
+        WaveformMappingKey::PreparedMusicalFade(fade) => {
+            mix_u64(&mut hash, 2);
+            mix_u64(&mut hash, fade.start());
+        }
+        WaveformMappingKey::Frame(frame_key, clock) => {
+            mix_u64(&mut hash, 3);
+            mix_u64(&mut hash, frame_key.start);
+            match clock {
+                waveform_frame::Clock::Arrangement => mix_u64(&mut hash, 0),
+                waveform_frame::Clock::Event(id) => {
+                    mix_u64(&mut hash, 1);
+                    mix_u64(&mut hash, *id);
+                }
+            }
+        }
+        WaveformMappingKey::MusicalEventFade(_, event) => {
+            mix_u64(&mut hash, 4);
+            mix_u64(&mut hash, u64::from(event.is_some()));
+        }
+        WaveformMappingKey::MusicalEvent(_) => {
+            mix_u64(&mut hash, 5);
+        }
+        WaveformMappingKey::Stretch(_) => {
+            mix_u64(&mut hash, 6);
+        }
+        WaveformMappingKey::Loop(_) => {
+            mix_u64(&mut hash, 7);
+        }
+        WaveformMappingKey::Prepared {
+            timeline_origin,
+            root_offset,
+            gain,
+        } => {
+            mix_u64(&mut hash, 8);
+            mix_u64(&mut hash, *timeline_origin);
+            mix_u64(&mut hash, *root_offset);
+            mix_u64(&mut hash, *gain as i64 as u64);
+        }
+        WaveformMappingKey::GainedSource {
+            timeline_origin,
+            gain,
+            detail,
+        } => {
+            mix_u64(&mut hash, 9);
+            mix_u64(&mut hash, *timeline_origin);
+            mix_u64(&mut hash, u64::from(*gain));
+            mix_u64(&mut hash, u64::from(*detail));
+        }
+        WaveformMappingKey::Clip {
+            id,
+            transformed,
+            start,
+            duration,
+            source_offset,
+            source_length,
+            source_phase,
+            looping,
+            timeline_origin,
+            gain,
+            fade,
+        } => {
+            mix_u64(&mut hash, 10);
+            mix_u64(&mut hash, id.unwrap_or(u64::MAX));
+            mix_u64(&mut hash, u64::from(*transformed));
+            mix_u64(&mut hash, *start);
+            mix_u64(&mut hash, *duration);
+            mix_u64(&mut hash, *source_offset);
+            mix_u64(&mut hash, *source_length);
+            mix_u64(&mut hash, *source_phase);
+            mix_u64(&mut hash, u64::from(*looping));
+            mix_u64(&mut hash, *timeline_origin);
+            mix_u64(&mut hash, u64::from(*gain));
+            mix_u64(&mut hash, u64::from(fade.is_some()));
+        }
+        WaveformMappingKey::Source { timeline_origin } => {
+            mix_u64(&mut hash, 11);
+            mix_u64(&mut hash, *timeline_origin);
+        }
+    }
+    hash
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -528,31 +941,23 @@ impl WaveformGeometryCache {
         key: &WaveformGeometryKey,
         source: &Arc<CachedWaveform>,
     ) -> Option<Arc<WaveformGeometry>> {
-        // The index can reject absent signatures only; resident hits still
-        // require exact source and complete geometry-key equality below.
+        // The coarse index can reject absent signatures immediately; resident
+        // hits use the O(1) hash-indexed LRU and verify exact key/source identity.
         if coarse_entry_key(key, source)
             .is_some_and(|coarse_key| !self.coarse_entry_counts.contains_key(&coarse_key))
         {
             return None;
         }
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| Arc::ptr_eq(&entry.source, source) && &entry.key == key)?;
-        let entry = self.entries.remove(index)?;
-        let geometry = Arc::clone(&entry.geometry);
-        self.entries.push_back(entry);
-        Some(geometry)
+        let slot = self.entries.find_slot(key, source)?;
+        self.entries.move_to_back(slot);
+        self.entries.geometry_at(slot)
     }
 
     fn invalidate(&mut self, key: &WaveformGeometryKey, source: &Arc<CachedWaveform>) {
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|entry| Arc::ptr_eq(&entry.source, source) && &entry.key == key)
-            && let Some(entry) = self.entries.remove(index)
+        if let Some(slot) = self.entries.find_slot(key, source)
+            && let Some(entry) = self.entries.remove_slot(slot)
         {
-            self.columns -= entry.columns;
+            self.columns = self.columns.saturating_sub(entry.columns);
             self.remove_coarse_entry(coarse_entry_key(&entry.key, &entry.source));
         }
     }
@@ -570,15 +975,11 @@ impl WaveformGeometryCache {
         // Only one transient stretch snapshot is retained. Ordinary entries keep
         // their existing budget; pointer motion cannot retain a history of
         // copied marker/event metadata for every previous preview position.
-        if matches!(key.mapping, WaveformMappingKey::Stretch(_)) {
-            self.entries.retain(|entry| {
-                if matches!(entry.key.mapping, WaveformMappingKey::Stretch(_)) {
-                    self.columns = self.columns.saturating_sub(entry.columns);
-                    false
-                } else {
-                    true
-                }
-            });
+        if matches!(key.mapping, WaveformMappingKey::Stretch(_))
+            && let Some(removed) = self.entries.remove_stretch()
+        {
+            self.columns = self.columns.saturating_sub(removed.columns);
+            self.remove_coarse_entry(coarse_entry_key(&removed.key, &removed.source));
         }
         while self.entries.len() >= MAX_CACHED_WAVEFORM_ENTRIES
             || self.columns.saturating_add(columns) > MAX_CACHED_WAVEFORM_COLUMNS
@@ -2301,7 +2702,7 @@ mod tests {
         assert!(faded_bottom[99].y < neutral_bottom[99].y);
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn key(origin: u64, bounds: Bounds<Pixels>) -> WaveformGeometryKey {
         waveform_geometry_key(
             &WaveformMapping::Source {
@@ -2314,7 +2715,7 @@ mod tests {
         )
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn coarse_key(clip_id: u64, first_frame: u64) -> WaveformGeometryKey {
         WaveformGeometryKey {
             reference_stereo: reference_stereo(),
@@ -2363,7 +2764,7 @@ mod tests {
         assert_eq!(current, key(0, bounds()));
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn geometry(
         source: &CachedWaveform,
         origin: u64,
@@ -3597,6 +3998,223 @@ mod tests {
         assert_eq!(column_bounded.entries.len(), 16);
         assert_eq!(column_bounded.columns, MAX_CACHED_WAVEFORM_COLUMNS);
         assert!(column_bounded.get(&key(0, extent), &source).is_none());
+    }
+
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    fn indexed_lru_matches_reference_eviction_order_invalidation_and_column_budget() {
+        let source = waveform();
+        let other_source = waveform();
+        let extent = bounds();
+        let geom_a = geometry(&source, 0, extent);
+        let geom_b = geometry(&source, 1, extent);
+
+        // Step-by-step oracle comparing WaveformGeometryCache against a VecDeque LRU.
+        let mut cache = WaveformGeometryCache::default();
+        let mut oracle: VecDeque<(WaveformGeometryKey, Arc<CachedWaveform>, usize)> =
+            VecDeque::new();
+        let mut oracle_columns = 0usize;
+
+        let check_invariants =
+            |cache: &WaveformGeometryCache,
+             oracle: &VecDeque<(WaveformGeometryKey, Arc<CachedWaveform>, usize)>,
+             oracle_columns: usize| {
+                assert_eq!(cache.entries.len(), oracle.len());
+                assert_eq!(cache.columns, oracle_columns);
+                let actual_order: Vec<_> = cache
+                    .entries
+                    .iter()
+                    .map(|entry| (&entry.key, Arc::as_ptr(&entry.source), entry.columns))
+                    .collect();
+                let expected_order: Vec<_> = oracle
+                    .iter()
+                    .map(|(k, s, c)| (k, Arc::as_ptr(s), *c))
+                    .collect();
+                assert_eq!(actual_order, expected_order);
+            };
+
+        // 1. Insert 600 entries (> MAX_CACHED_WAVEFORM_ENTRIES = 512) with periodic gets & invalidations.
+        for i in 0..600_u64 {
+            let k = if i % 3 == 0 {
+                coarse_key(i, i * 128)
+            } else {
+                key(i, extent)
+            };
+            let s = if i % 5 == 0 {
+                Arc::clone(&other_source)
+            } else {
+                Arc::clone(&source)
+            };
+            let g = if i % 2 == 0 {
+                Arc::clone(&geom_a)
+            } else {
+                Arc::clone(&geom_b)
+            };
+            let cols = 64 + ((i as usize % 7) * 32);
+
+            cache.insert(k.clone(), Arc::clone(&s), g, cols);
+            while oracle.len() >= MAX_CACHED_WAVEFORM_ENTRIES
+                || oracle_columns.saturating_add(cols) > MAX_CACHED_WAVEFORM_COLUMNS
+            {
+                if let Some((_, _, old_cols)) = oracle.pop_front() {
+                    oracle_columns -= old_cols;
+                }
+            }
+            oracle_columns += cols;
+            oracle.push_back((k, s, cols));
+
+            // Promote oldest, middle, and newest entries periodically.
+            if i % 17 == 5 && !oracle.is_empty() {
+                for probe_idx in [0, oracle.len() / 2, oracle.len() - 1] {
+                    let (pk, ps, _) = oracle[probe_idx].clone();
+                    assert!(cache.get(&pk, &ps).is_some());
+                    let pos = oracle
+                        .iter()
+                        .position(|(ok, os, _)| ok == &pk && Arc::ptr_eq(os, &ps))
+                        .unwrap();
+                    let moved = oracle.remove(pos).unwrap();
+                    oracle.push_back(moved);
+                }
+            }
+            // Invalidate head/middle/tail entries periodically.
+            if i % 29 == 11 && oracle.len() >= 3 {
+                let (ik, isrc, _) = oracle[oracle.len() / 2].clone();
+                cache.invalidate(&ik, &isrc);
+                let pos = oracle
+                    .iter()
+                    .position(|(ok, os, _)| ok == &ik && Arc::ptr_eq(os, &isrc))
+                    .unwrap();
+                let (_, _, removed_cols) = oracle.remove(pos).unwrap();
+                oracle_columns -= removed_cols;
+                assert!(cache.get(&ik, &isrc).is_none());
+            }
+            // Miss lookup must not disturb LRU order.
+            assert!(cache.get(&key(999_999 + i, extent), &source).is_none());
+            check_invariants(&cache, &oracle, oracle_columns);
+        }
+
+        // 2. Column-budget eviction strictly enforces MAX_CACHED_WAVEFORM_COLUMNS (65,536).
+        let big_cols = MAX_CACHED_WAVEFORM_COLUMNS / 4; // 16,384
+        for i in 0..6_u64 {
+            let k = key(10_000 + i, extent);
+            cache.insert(
+                k.clone(),
+                Arc::clone(&source),
+                Arc::clone(&geom_a),
+                big_cols,
+            );
+            while oracle.len() >= MAX_CACHED_WAVEFORM_ENTRIES
+                || oracle_columns.saturating_add(big_cols) > MAX_CACHED_WAVEFORM_COLUMNS
+            {
+                if let Some((_, _, old_cols)) = oracle.pop_front() {
+                    oracle_columns -= old_cols;
+                }
+            }
+            oracle_columns += big_cols;
+            oracle.push_back((k, Arc::clone(&source), big_cols));
+            check_invariants(&cache, &oracle, oracle_columns);
+        }
+        assert_eq!(cache.entries.len(), 4);
+        assert_eq!(cache.columns, MAX_CACHED_WAVEFORM_COLUMNS);
+
+        // Promoting the oldest of the 4 entries protects it from the next eviction.
+        let promoted = key(10_002, extent);
+        assert!(cache.get(&promoted, &source).is_some());
+        cache.insert(
+            key(10_006, extent),
+            Arc::clone(&source),
+            Arc::clone(&geom_a),
+            big_cols,
+        );
+        assert!(cache.get(&promoted, &source).is_some());
+        assert!(cache.get(&key(10_003, extent), &source).is_none());
+    }
+
+    #[cfg(all(test, feature = "ui-unit-tier"))]
+    #[test]
+    fn indexed_lru_handles_hash_collisions_and_dense_512_entry_lookups() {
+        let source = waveform();
+        let extent = bounds();
+        let geom_a = geometry(&source, 0, extent);
+        let geom_b = geometry(&source, 1, extent);
+        let geom_c = geometry(&source, 2, extent);
+
+        // Forced hash collision in GeometryLru: all three share the same bucket hash.
+        let mut lru = GeometryLru::default();
+        let k0 = key(100, extent);
+        let k1 = key(101, extent);
+        let k2 = key(102, extent);
+        let forced_hash = 0xdead_beef_cafe_babe_u64;
+        for (k, g) in [
+            (k0.clone(), Arc::clone(&geom_a)),
+            (k1.clone(), Arc::clone(&geom_b)),
+            (k2.clone(), Arc::clone(&geom_c)),
+        ] {
+            lru.push_back_with_hash(
+                WaveformGeometryEntry {
+                    key: k,
+                    source: Arc::clone(&source),
+                    geometry: g,
+                    columns: 16,
+                },
+                forced_hash,
+            );
+        }
+        assert_eq!(lru.len(), 3);
+        // Exact match distinguishes colliding keys without false hits.
+        let s1 = lru.find_slot_with_hash(forced_hash, &k1, &source).unwrap();
+        assert!(Arc::ptr_eq(&lru.geometry_at(s1).unwrap(), &geom_b));
+        lru.move_to_back(s1);
+        assert!(
+            lru.find_slot_with_hash(forced_hash, &key(999, extent), &source)
+                .is_none()
+        );
+        // Removing middle & head shrinks Many -> One -> removed cleanly.
+        let removed_mid = lru.remove_slot(s1).unwrap();
+        assert_eq!(removed_mid.key, k1);
+        let popped = lru.pop_front().unwrap();
+        assert_eq!(popped.key, k0);
+        assert!(matches!(
+            lru.index.get(&forced_hash),
+            Some(SlotBucket::One(_))
+        ));
+        let last = lru.pop_front().unwrap();
+        assert_eq!(last.key, k2);
+        assert!(lru.is_empty());
+        assert!(lru.index.is_empty());
+
+        // Dense 512-entry Arrangement working set: worst-case LRU-head lookup pattern
+        // (10,240 hits across 512 entries) completes in O(1) per lookup with 100% hit rate.
+        let mut dense = WaveformGeometryCache::default();
+        let keys: Vec<_> = (0..MAX_CACHED_WAVEFORM_ENTRIES as u64)
+            .map(|i| coarse_key(i, i * 256))
+            .collect();
+        for k in &keys {
+            dense.insert(k.clone(), Arc::clone(&source), Arc::clone(&geom_a), 64);
+        }
+        assert_eq!(dense.entries.len(), MAX_CACHED_WAVEFORM_ENTRIES);
+        assert_eq!(dense.columns, MAX_CACHED_WAVEFORM_ENTRIES * 64);
+        // Every entry hashes into its own single-slot bucket (no bucket bloat).
+        assert_eq!(dense.entries.index.len(), MAX_CACHED_WAVEFORM_ENTRIES);
+        let started = Instant::now();
+        for _round in 0..20 {
+            for k in &keys {
+                let hit = dense.get(k, &source).expect("dense 512-entry hit");
+                assert!(Arc::ptr_eq(&hit, &geom_a));
+            }
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "10,240 indexed LRU lookups on 512 entries took {elapsed:?}"
+        );
+        // Accessing all 512 keys in order preserves exact 0..512 LRU-to-MRU order.
+        let final_order: Vec<_> = dense
+            .entries
+            .iter()
+            .map(|entry| entry.key.clone())
+            .collect();
+        assert_eq!(final_order, keys);
     }
 
     #[cfg(all(test, not(feature = "ui-test-support")))]
