@@ -50,7 +50,9 @@ fn check_consecutive_track_mutes(conflict: bool) {
             name: "track".into(),
         }))
         .unwrap();
-    let track = next(&service).state.project.tracks()[0].id();
+    let added = next(&service);
+    wait_for_journal(&path, &added.state.project);
+    let track = added.state.project.tracks()[0].id();
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -61,6 +63,7 @@ fn check_consecutive_track_mutes(conflict: bool) {
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first_terminal = next(&service);
     let first = service.try_track_switch_view().unwrap();
     assert!(
         first
@@ -77,23 +80,15 @@ fn check_consecutive_track_mutes(conflict: bool) {
     service
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
-    let until = Instant::now() + Duration::from_millis(180);
-    let second = loop {
-        if let Ok(view) = service.try_track_switch_view() {
-            break Some(view);
-        }
-        if Instant::now() >= until {
-            break None;
-        }
-        std::thread::yield_now();
-    };
+    let second_terminal = next(&service);
+    let second = service
+        .try_track_switch_view()
+        .expect("second mute must commit while the first checkpoint is held");
     let until = Instant::now() + Duration::from_millis(180);
     let source_applied = loop {
-        if let Some(view) = second.as_ref()
-            && sources.lock().unwrap().iter().any(|(context, states)| {
-                context.editor_revision == view.revision && states == &[false]
-            })
-        {
+        if sources.lock().unwrap().iter().any(|(context, states)| {
+            context.editor_revision == second.revision && states == &[false]
+        }) {
             break true;
         }
         if Instant::now() >= until {
@@ -102,7 +97,6 @@ fn check_consecutive_track_mutes(conflict: bool) {
         std::thread::yield_now();
     };
     release.send(()).unwrap();
-    let second = second.expect("second mute must commit while the first checkpoint is held");
     assert_eq!(second.previous_revision, first.revision);
     assert!(
         !second
@@ -116,26 +110,34 @@ fn check_consecutive_track_mutes(conflict: bool) {
         source_applied,
         "second mute's canonical audio source must be acknowledged before release"
     );
-    let first_terminal = next(&service);
-    let second_terminal = next(&service);
     assert_eq!(first_terminal.state.revision, first.revision);
     assert_eq!(second_terminal.state.revision, second.revision);
     if conflict {
-        assert!(
-            first_terminal.recovery_failure.is_some() && second_terminal.recovery_failure.is_some()
-        );
+        let failure = wait_for_recovery_failure(&service);
+        assert!(!failure.request_complete && failure.recovery_failure.is_some());
         assert_eq!(std::fs::read(&path).unwrap(), foreign);
     } else {
         assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *second_terminal.state.project
-        );
+        wait_for_journal(&path, &second_terminal.state.project);
     }
     service.submit(Request::Undo).unwrap();
-    assert!(next(&service).state.project.track(track).unwrap().muted());
+    assert!(
+        next_complete(&service)
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .muted()
+    );
     service.submit(Request::Undo).unwrap();
-    assert!(!next(&service).state.project.track(track).unwrap().muted());
+    assert!(
+        !next_complete(&service)
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .muted()
+    );
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -173,6 +175,7 @@ fn check_mute_custody_on_exit(close_consumer: bool) {
         }))
         .unwrap();
     let initial = Arc::clone(&next(&service).state.project);
+    wait_for_journal(&path, &initial);
     let track = initial.tracks()[0].id();
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -233,14 +236,14 @@ fn check_mute_custody_on_exit(close_consumer: bool) {
 }
 
 #[test]
-fn paste_waits_for_pending_track_switch_checkpoint() {
+fn paste_does_not_wait_for_pending_track_switch_checkpoint() {
     use std::time::Duration;
     let directory =
         std::env::temp_dir().join(format!("hex-mute-paste-fence-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -251,22 +254,13 @@ fn paste_waits_for_pending_track_switch_checkpoint() {
         .submit(Request::Edit(Command::ToggleMute(track)))
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first = next(&service);
     service
         .submit(Request::PasteTimeRange {
             track,
             frame: 48_000,
         })
         .unwrap();
-    assert!(matches!(
-        service.events.recv_timeout(Duration::from_millis(50)),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-    ));
-    assert!(matches!(
-        service.try_arrangement_edit_view(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
-    release.send(()).unwrap();
-    let first = next(&service);
     let second = next(&service);
     assert!(first.error.is_none() && second.error.is_none());
     assert!(first.state.project.track(track).unwrap().muted());
@@ -280,16 +274,14 @@ fn paste_waits_for_pending_track_switch_checkpoint() {
             .len(),
         2
     );
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *second.state.project
-    );
+    release.send(()).unwrap();
+    wait_for_journal(&path, &second.state.project);
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
-fn track_switch_view_precedes_recovery_terminal_without_claiming_durability() {
+fn track_switch_view_and_ack_precede_checkpoint_without_blocking() {
     let directory =
         std::env::temp_dir().join(format!("hex-track-switch-recovery-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
@@ -316,12 +308,15 @@ fn track_switch_view_precedes_recovery_terminal_without_claiming_durability() {
         ))
         .unwrap();
     next(&service);
+    let mut last = None;
     for name in ["first", "second"] {
         service
             .submit(Request::Edit(Command::AddTrack { name: name.into() }))
             .unwrap();
-        next(&service);
+        last = Some(next(&service));
     }
+    let last = last.unwrap();
+    wait_for_journal(&path, &last.state.project);
     let original = hex_storage::load_journal(&path).unwrap();
     let first = original.tracks()[0].id();
     let second = original.tracks()[1].id();
@@ -351,6 +346,7 @@ fn track_switch_view_precedes_recovery_terminal_without_claiming_durability() {
         entered
             .recv_timeout(std::time::Duration::from_millis(500))
             .unwrap();
+        let complete = next(&service);
         let visible = service
             .try_track_switch_view()
             .expect("committed track switches");
@@ -364,16 +360,11 @@ fn track_switch_view_precedes_recovery_terminal_without_claiming_durability() {
             expected
         );
         assert_eq!(hex_storage::load_journal(&path).unwrap(), preceding);
-        assert!(matches!(
-            service.try_event(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        release.send(()).unwrap();
-        let complete = next(&service);
         assert!(complete.request_complete && complete.error.is_none());
         assert_eq!(visible.revision, complete.state.revision);
+        release.send(()).unwrap();
+        wait_for_journal(&path, &complete.state.project);
         preceding = hex_storage::load_journal(&path).unwrap();
-        assert_eq!(preceding, *complete.state.project);
     }
     service.submit(Request::Undo).unwrap();
     let undone = next(&service);
@@ -415,7 +406,7 @@ fn consecutive_section_copies_preserve_conflicting_recovery_bytes() {
 }
 
 fn check_consecutive_section_copies(conflict: bool, variant: u8) {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
     let directory = std::env::temp_dir().join(format!(
         "hex-section-copy-stage-{}-{conflict}-{variant}",
         std::process::id()
@@ -453,6 +444,7 @@ fn check_consecutive_section_copies(conflict: bool, variant: u8) {
         })
         .unwrap();
     let before = next(&service);
+    wait_for_journal(&path, &before.state.project);
     let Some(Created::ArrangementSection(target)) = before.created else {
         panic!("target")
     };
@@ -496,6 +488,7 @@ fn check_consecutive_section_copies(conflict: bool, variant: u8) {
         })
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first_terminal = next(&service);
     let first = service.try_arrangement_edit_view().unwrap();
     let first_state = first.state.upgrade().unwrap();
     assert_eq!(first_state.revision, initial_revision + 1);
@@ -503,58 +496,47 @@ fn check_consecutive_section_copies(conflict: bool, variant: u8) {
         std::fs::write(&path, b"another writer's journal").unwrap();
     }
     service.submit(duplicate(initial_revision + 1)).unwrap();
-    let until = Instant::now() + Duration::from_millis(180);
-    let second_state = loop {
-        if let Ok(view) = service.try_arrangement_edit_view()
-            && let Some(state) = view.state.upgrade()
-            && state.revision == initial_revision + 2
-        {
-            break Some(state);
-        }
-        if Instant::now() >= until {
-            break None;
-        }
-        std::thread::yield_now();
-    };
-    assert!(matches!(
-        service.try_event(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
+    let second_terminal = next(&service);
+    let second_view = service
+        .try_arrangement_edit_view()
+        .expect("second section copy must commit before checkpoint release");
+    let second_state = second_view.state.upgrade().unwrap();
     release.send(()).unwrap();
-    let second_state =
-        second_state.expect("second section copy must commit before checkpoint release");
     let final_count = if variant == 3 { 3 } else { 4 };
     assert_eq!(
         second_state.project.arrangement_sections().len(),
         final_count
     );
-    let first_terminal = next(&service);
-    let second_terminal = next(&service);
     assert_eq!(first_terminal.state.revision, initial_revision + 1);
     assert_eq!(second_terminal.state.revision, initial_revision + 2);
     if conflict {
-        assert!(first_terminal.recovery_failure.is_some());
-        assert!(second_terminal.recovery_failure.is_some());
+        let failure = wait_for_recovery_failure(&service);
+        assert!(!failure.request_complete && failure.recovery_failure.is_some());
         assert_eq!(std::fs::read(&path).unwrap(), b"another writer's journal");
     } else {
         assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *second_terminal.state.project
-        );
+        wait_for_journal(&path, &second_terminal.state.project);
     }
     service.submit(duplicate(initial_revision)).unwrap();
-    let stale = next(&service);
+    let stale = next_complete(&service);
     assert!(stale.error.is_some());
     assert_eq!(stale.state.revision, initial_revision + 2);
     service.submit(Request::Undo).unwrap();
     assert_eq!(
-        next(&service).state.project.arrangement_sections().len(),
+        next_complete(&service)
+            .state
+            .project
+            .arrangement_sections()
+            .len(),
         final_count - 1
     );
     service.submit(Request::Redo).unwrap();
     assert_eq!(
-        next(&service).state.project.arrangement_sections().len(),
+        next_complete(&service)
+            .state
+            .project
+            .arrangement_sections()
+            .len(),
         final_count
     );
     service.shutdown(Duration::from_secs(2)).unwrap();
@@ -563,7 +545,7 @@ fn check_consecutive_section_copies(conflict: bool, variant: u8) {
 }
 
 #[test]
-fn section_copy_view_precedes_the_durable_terminal() {
+fn section_copy_and_undo_ack_immediately_and_coalesce_journal() {
     let directory = std::env::temp_dir().join(format!(
         "hex-section-copy-checkpoint-{}",
         std::process::id()
@@ -585,6 +567,7 @@ fn section_copy_view_precedes_the_durable_terminal() {
         })
         .unwrap();
     let before = next(&service);
+    wait_for_journal(&path, &before.state.project);
     let Some(Created::ArrangementSection(section)) = before.created else {
         panic!("section");
     };
@@ -607,6 +590,7 @@ fn section_copy_view_precedes_the_durable_terminal() {
     entered
         .recv_timeout(std::time::Duration::from_millis(500))
         .unwrap();
+    let committed = next(&service);
     let display = service
         .try_arrangement_edit_view()
         .expect("committed section before checkpoint");
@@ -619,25 +603,13 @@ fn section_copy_view_precedes_the_durable_terminal() {
         hex_storage::load_journal(&path).unwrap(),
         *before.state.project
     );
-    assert!(matches!(
-        service.try_event(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
-    // Undo is a different operation and must stay behind journal custody.
-    service.submit(Request::Undo).unwrap();
-    assert!(matches!(
-        service.try_event(),
-        Err(std::sync::mpsc::TryRecvError::Empty)
-    ));
-    release.send(()).unwrap();
-    let committed = next(&service);
     assert!(committed.request_complete && committed.error.is_none());
     assert!(Arc::ptr_eq(&visible, &committed.state));
+    // Undo does not block on the held checkpoint and coalesces the latest state.
+    service.submit(Request::Undo).unwrap();
     let undone_event = next(&service);
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *undone_event.state.project
-    );
+    release.send(()).unwrap();
+    wait_for_journal(&path, &undone_event.state.project);
     let mut undone = undone_event.state.project.snapshot();
     let before = before.state.project.snapshot();
     undone.next_id = before.next_id;
@@ -673,7 +645,7 @@ fn unread_paste_views_coalesce_while_first_checkpoint_is_held() {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = mpsc::sync_channel(1);
     let (release, release_rx) = mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -726,10 +698,7 @@ fn unread_paste_views_coalesce_while_first_checkpoint_is_held() {
     assert!(first.error.is_none() && second.error.is_none());
     assert_eq!(first.state.revision, observation.previous_revision);
     assert_eq!(second.state.revision, state.revision);
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *second.state.project
-    );
+    wait_for_journal(&path, &second.state.project);
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
 }
@@ -759,7 +728,7 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = mpsc::sync_channel(1);
     let (release, release_rx) = mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -773,6 +742,7 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
         })
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let first_terminal = next(&service);
     let first = service.try_arrangement_edit_view().unwrap();
     let first_state = first.state.upgrade().unwrap();
     assert_eq!(
@@ -789,17 +759,10 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
             frame: 96_000,
         })
         .unwrap();
-    let until = Instant::now() + Duration::from_millis(180);
-    let second = loop {
-        if let Ok(view) = service.try_arrangement_edit_view() {
-            break Some(view);
-        }
-        if Instant::now() >= until {
-            break None;
-        }
-        std::thread::yield_now();
-    };
-    let second = second.expect("second paste must commit while the first checkpoint is held");
+    let second_terminal = next(&service);
+    let second = service
+        .try_arrangement_edit_view()
+        .expect("second paste must commit while the first checkpoint is held");
     assert_eq!(second.previous_revision, first_state.revision);
     let second_state = second.state.upgrade().unwrap();
     assert_eq!(
@@ -831,24 +794,19 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
         saw_second_source,
         "second paste must update the audio source while the first checkpoint is held"
     );
-    let first_terminal = next(&service);
-    let second_terminal = next(&service);
     if conflict {
-        assert!(first_terminal.error.is_some());
-        assert!(first_terminal.recovery_failure.is_some());
-        assert!(second_terminal.recovery_failure.is_some());
+        let failure = wait_for_recovery_failure(&service);
+        assert!(!failure.request_complete && failure.error.is_some());
+        assert!(failure.recovery_failure.is_some());
         assert_eq!(std::fs::read(&path).unwrap(), foreign);
     } else {
         assert!(first_terminal.error.is_none() && second_terminal.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *second_terminal.state.project
-        );
+        wait_for_journal(&path, &second_terminal.state.project);
     }
     assert_eq!(second_terminal.state.revision, second_state.revision);
     service.submit(Request::Undo).unwrap();
     assert_eq!(
-        next(&service)
+        next_complete(&service)
             .state
             .project
             .track(track)
@@ -859,7 +817,7 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
     );
     service.submit(Request::Undo).unwrap();
     assert_eq!(
-        next(&service)
+        next_complete(&service)
             .state
             .project
             .track(track)
@@ -869,7 +827,7 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
         1
     );
     service.submit(Request::Redo).unwrap();
-    let first_redo = next(&service);
+    let first_redo = next_complete(&service);
     assert_eq!(
         first_redo
             .state
@@ -881,7 +839,7 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
         2
     );
     service.submit(Request::Redo).unwrap();
-    let second_redo = next(&service);
+    let second_redo = next_complete(&service);
     assert_eq!(
         second_redo
             .state
@@ -896,10 +854,7 @@ fn consecutive_pastes_with_checkpoint_conflict(conflict: bool) {
         assert!(second_redo.recovery_failure.is_some());
         assert_eq!(std::fs::read(&path).unwrap(), foreign);
     } else {
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *second_redo.state.project
-        );
+        wait_for_journal(&path, &second_redo.state.project);
     }
     service.shutdown(Duration::from_secs(2)).unwrap();
     drop(service);
@@ -912,7 +867,7 @@ fn new_project_waits_for_an_in_flight_paste_checkpoint() {
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -928,8 +883,11 @@ fn new_project_waits_for_an_in_flight_paste_checkpoint() {
     entered
         .recv_timeout(std::time::Duration::from_millis(500))
         .unwrap();
+    let paste = next(&service);
+    assert!(paste.error.is_none());
     let view = service.try_arrangement_edit_view().unwrap();
     let pasted = view.state.upgrade().unwrap();
+    assert_eq!(paste.state.revision, pasted.revision);
     service
         .submit(Request::NewWithAudioMode {
             mode: DocumentAudioMode::Resident,
@@ -941,9 +899,6 @@ fn new_project_waits_for_an_in_flight_paste_checkpoint() {
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
     release.send(()).unwrap();
-    let paste = next(&service);
-    assert!(paste.error.is_none());
-    assert_eq!(paste.state.revision, pasted.revision);
     let replacement = next(&service);
     assert!(replacement.error.is_none());
     assert!(replacement.project_replaced);
@@ -977,7 +932,7 @@ fn project_replacement_follows_both_committed_pastes_without_stale_source() {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -1053,13 +1008,13 @@ fn project_replacement_follows_both_committed_pastes_without_stale_source() {
 }
 
 #[test]
-fn third_paste_waits_for_the_single_pending_checkpoint_slot() {
-    use std::time::{Duration, Instant};
+fn third_paste_coalesces_without_waiting_for_in_flight_checkpoint() {
+    use std::time::Duration;
     let directory = std::env::temp_dir().join(format!("hex-paste-full-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -1073,40 +1028,24 @@ fn third_paste_waits_for_the_single_pending_checkpoint_slot() {
         })
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
-    let first = service.try_arrangement_edit_view().unwrap();
-    let first_revision = first.state.upgrade().unwrap().revision;
+    let first = next(&service);
+    let first_view = service.try_arrangement_edit_view().unwrap();
+    let first_revision = first_view.state.upgrade().unwrap().revision;
     service
         .submit(Request::PasteTimeRange {
             track,
             frame: 96_000,
         })
         .unwrap();
-    let until = Instant::now() + Duration::from_millis(180);
-    let second = loop {
-        if let Ok(view) = service.try_arrangement_edit_view() {
-            break view;
-        }
-        assert!(Instant::now() < until, "second paste did not commit");
-        std::thread::yield_now();
-    };
-    let second_revision = second.state.upgrade().unwrap().revision;
+    let second = next(&service);
+    let second_view = service.try_arrangement_edit_view().unwrap();
+    let second_revision = second_view.state.upgrade().unwrap().revision;
     service
         .submit(Request::PasteTimeRange {
             track,
             frame: 144_000,
         })
         .unwrap();
-    let until = Instant::now() + Duration::from_millis(60);
-    while Instant::now() < until {
-        assert!(matches!(
-            service.try_arrangement_edit_view(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        std::thread::yield_now();
-    }
-    release.send(()).unwrap();
-    let first = next(&service);
-    let second = next(&service);
     let third = next(&service);
     assert!(first.error.is_none() && second.error.is_none() && third.error.is_none());
     assert_eq!(first.state.revision, first_revision);
@@ -1116,10 +1055,8 @@ fn third_paste_waits_for_the_single_pending_checkpoint_slot() {
         third.state.project.track(track).unwrap().midi_clips().len(),
         4
     );
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *third.state.project
-    );
+    release.send(()).unwrap();
+    wait_for_journal(&path, &third.state.project);
     for remaining in [3, 2, 1] {
         service.submit(Request::Undo).unwrap();
         assert_eq!(
@@ -1146,7 +1083,7 @@ fn retained_paste_terminals_survive_a_full_event_queue() {
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let queued = Arc::new(AtomicU64::new(0));
     let observed = Arc::clone(&queued);
     service
@@ -1189,29 +1126,18 @@ fn retained_paste_terminals_survive_a_full_event_queue() {
             frame: 96_000,
         })
         .unwrap();
-    let until = Instant::now() + Duration::from_millis(180);
-    let second = loop {
-        if let Ok(view) = service.try_arrangement_edit_view() {
-            break view;
-        }
-        assert!(Instant::now() < until, "second paste did not commit");
-        std::thread::yield_now();
-    };
-    let second_revision = second.state.upgrade().unwrap().revision;
-    release.send(()).unwrap();
+    // Drain the two prefilled CopyClips events so immediate paste ACKs flow without losing order.
     let _first_copy = next(&service);
     let _second_copy = next(&service);
     let first = next(&service);
     let second = next(&service);
+    release.send(()).unwrap();
     assert!(first.error.is_none() && second.error.is_none());
     assert_eq!(
         (first.state.revision, second.state.revision),
-        (first_revision, second_revision)
+        (first_revision, first_revision + 1)
     );
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *second.state.project
-    );
+    wait_for_journal(&path, &second.state.project);
     service.shutdown(Duration::from_secs(2)).unwrap();
     drop(service);
     std::fs::remove_dir_all(directory).unwrap();
@@ -1245,7 +1171,7 @@ fn check_second_paste_custody_on_exit(close_consumer: bool) {
         Box::new(SourceSink(Arc::clone(&sources))),
     )
     .unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -1348,7 +1274,7 @@ fn check_paste_fence(fence: PasteFence) {
         hex_storage::save_new(&target, &other).unwrap();
     }
     let mut service = Service::with_recovery(48_000, 16, 8_000_000, journal.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &journal);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -1362,8 +1288,11 @@ fn check_paste_fence(fence: PasteFence) {
         })
         .unwrap();
     entered.recv_timeout(Duration::from_millis(500)).unwrap();
+    let paste = next(&service);
+    assert!(paste.error.is_none());
     let view = service.try_arrangement_edit_view().unwrap();
     let pasted = view.state.upgrade().unwrap();
+    assert_eq!(paste.state.revision, pasted.revision);
     let request = match fence {
         PasteFence::Save => Request::SaveNew(target.clone()),
         PasteFence::Open => Request::Open(target.clone()),
@@ -1386,9 +1315,6 @@ fn check_paste_fence(fence: PasteFence) {
         std::thread::yield_now();
     }
     release.send(()).unwrap();
-    let paste = next(&service);
-    assert!(paste.error.is_none());
-    assert_eq!(paste.state.revision, pasted.revision);
     let terminal = next(&service);
     match fence {
         PasteFence::Save => {
@@ -1424,7 +1350,7 @@ fn shutdown_retains_an_in_flight_paste_checkpoint_until_publication() {
     std::fs::create_dir(&directory).unwrap();
     let path = directory.join("untitled.hex-journal");
     let mut service = Service::with_recovery(48_000, 16, 8_000_000, path.clone()).unwrap();
-    let track = prepare_paste(&service);
+    let track = prepare_paste(&service, &path);
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
     CHECKPOINT_GATE
@@ -1455,7 +1381,7 @@ fn shutdown_retains_an_in_flight_paste_checkpoint_until_publication() {
 }
 
 #[test]
-fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
+fn paste_view_and_ack_precede_checkpoint_for_single_clip_and_multi_clip_insert() {
     use hex_project::BeatTime;
     use std::sync::mpsc::{self, TryRecvError};
     use std::time::Duration;
@@ -1516,6 +1442,7 @@ fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
         originals.push(id);
         before = placed.state;
     }
+    wait_for_journal(&path, &before.project);
     let beat_frames = before
         .project
         .tempo_map()
@@ -1547,6 +1474,7 @@ fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
         service.submit(request).unwrap();
         entered.recv_timeout(Duration::from_millis(500)).unwrap();
 
+        let terminal = next(&service);
         let display = service.try_arrangement_edit_view().unwrap();
         assert!(matches!(display.kind, ArrangementEditViewKind::Paste));
         assert_eq!(display.project_generation, 0);
@@ -1568,16 +1496,11 @@ fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
             }
         );
         assert_eq!(hex_storage::load_journal(&path).unwrap(), *before.project);
-        assert!(matches!(service.try_event(), Err(TryRecvError::Empty)));
-        release.send(()).unwrap();
-
-        let terminal = next(&service);
         assert!(terminal.request_complete && terminal.error.is_none());
         assert!(Arc::ptr_eq(&committed, &terminal.state));
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *committed.project
-        );
+        release.send(()).unwrap();
+        wait_for_journal(&path, &committed.project);
+
         service.submit(Request::Undo).unwrap();
         let undone = next(&service);
         assert!(undone.error.is_none());
@@ -1592,6 +1515,7 @@ fn paste_view_precedes_checkpoint_for_single_clip_and_multi_clip_insert() {
             redone.state.project.track(track).unwrap().midi_clips(),
             clips
         );
+        wait_for_journal(&path, &redone.state.project);
         before = redone.state;
     }
     let rows = diagnostics.lock().unwrap();
@@ -1672,9 +1596,11 @@ fn midi_note_update_reports_only_its_recovery_maintenance() {
             velocity: 100,
         }))
         .unwrap();
-    let Some(Created::Note(other)) = next(&service).created else {
+    let second_note = next(&service);
+    let Some(Created::Note(other)) = second_note.created else {
         panic!("second note")
     };
+    wait_for_journal(&path, &second_note.state.project);
     let update = |start| MidiNoteUpdate {
         note,
         start,
@@ -1714,17 +1640,10 @@ fn midi_note_update_reports_only_its_recovery_maintenance() {
             .push((path.clone(), entered_tx, release_rx));
         service.submit(Request::Edit(command)).unwrap();
         entered.recv_timeout(Duration::from_millis(500)).unwrap();
-        assert!(matches!(
-            service.try_event(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        release.send(()).unwrap();
         let terminal = next(&service);
         assert!(terminal.request_complete && terminal.error.is_none());
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *terminal.state.project
-        );
+        release.send(()).unwrap();
+        wait_for_journal(&path, &terminal.state.project);
     }
     service
         .submit(Request::Edit(Command::UpdateMidiNote {
@@ -1770,7 +1689,7 @@ fn midi_note_update_reports_only_its_recovery_maintenance() {
 }
 
 #[test]
-fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() {
+fn duplicate_view_and_ack_precede_checkpoint_while_preserving_journal_custody() {
     let directory =
         std::env::temp_dir().join(format!("hex-duplicate-checkpoint-{}", std::process::id()));
     std::fs::create_dir(&directory).unwrap();
@@ -1804,6 +1723,7 @@ fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() 
         }))
         .unwrap();
     let placed = next(&service);
+    wait_for_journal(&path, &placed.state.project);
     let mut clip = placed.state.project.tracks()[0].midi_clips()[0].id();
     let mut revision = placed.state.revision;
     for alias in [false, true] {
@@ -1830,6 +1750,7 @@ fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() 
         entered
             .recv_timeout(std::time::Duration::from_millis(500))
             .unwrap();
+        let terminal = next(&service);
         let display = service.try_arrangement_edit_view().unwrap();
         assert_eq!(display.project_generation, 0);
         assert_eq!(display.previous_revision, revision);
@@ -1841,18 +1762,10 @@ fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() 
                 .len(),
             if alias { 2 } else { 1 }
         );
-        assert!(matches!(
-            service.try_event(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
-        release.send(()).unwrap();
-        let terminal = next(&service);
         assert!(terminal.request_complete && terminal.error.is_none());
         assert!(Arc::ptr_eq(&observed, &terminal.state));
-        assert_eq!(
-            hex_storage::load_journal(&path).unwrap(),
-            *terminal.state.project
-        );
+        release.send(()).unwrap();
+        wait_for_journal(&path, &terminal.state.project);
         let Some(Created::Clips { first, last }) = terminal.created else {
             panic!("created duplicate");
         };
@@ -1877,10 +1790,7 @@ fn duplicate_view_precedes_checkpoint_but_the_terminal_keeps_recovery_custody() 
     let range_terminal = next(&service);
     assert!(range_terminal.request_complete && range_terminal.error.is_none());
     assert_eq!(range_terminal.state.revision, revision + 1);
-    assert_eq!(
-        hex_storage::load_journal(&path).unwrap(),
-        *range_terminal.state.project
-    );
+    wait_for_journal(&path, &range_terminal.state.project);
 
     service.submit(Request::Undo).unwrap();
     let unrelated = next(&service);

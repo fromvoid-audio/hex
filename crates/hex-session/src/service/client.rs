@@ -363,6 +363,8 @@ impl Service {
         let worker_shutdown = Arc::clone(&shutdown);
         let startup_failure = Arc::new(std::sync::OnceLock::new());
         let worker_startup_failure = Arc::clone(&startup_failure);
+        let events_closed = Arc::new(AtomicBool::new(false));
+        let worker_events_closed = Arc::clone(&events_closed);
         let clip_audition = Arc::new(clip_audition::Mailbox::default());
         let worker_clip_audition = Arc::clone(&clip_audition);
         let worker = thread::Builder::new()
@@ -378,7 +380,8 @@ impl Service {
                     Arc::clone(&worker_shutdown),
                     audio,
                     worker_diagnostics,
-                );
+                )
+                .with_events_closed(worker_events_closed);
                 let session = match session {
                     Some(session) => session,
                     None => {
@@ -470,7 +473,7 @@ impl Service {
             )),
             clip_audition,
             diagnostics: Arc::clone(&diagnostics),
-            events: diagnostics::EventReceiver::new(event_rx, diagnostics),
+            events: diagnostics::EventReceiver::with_closed(event_rx, diagnostics, events_closed),
             track_switch_views,
             arrangement_edit_views,
             export_events: export_event_rx,

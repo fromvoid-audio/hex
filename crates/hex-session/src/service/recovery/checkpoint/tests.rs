@@ -91,7 +91,55 @@ fn next(service: &Service) -> Event {
     }
 }
 
-fn prepare_paste(service: &Service) -> hex_project::TrackId {
+fn next_complete(service: &Service) -> Event {
+    let until = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+    loop {
+        let remaining = until.saturating_duration_since(std::time::Instant::now());
+        assert!(!remaining.is_zero(), "next_complete: worker event absent");
+        let event = service
+            .events
+            .recv_timeout(remaining)
+            .expect("next_complete: worker event absent");
+        if event.request_complete {
+            return event;
+        }
+    }
+}
+
+fn wait_for_journal(path: &Path, expected: &Project) {
+    let until = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+    loop {
+        if hex_storage::load_journal(path).ok().as_ref() == Some(expected) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "journal at {} did not reach expected project state",
+            path.display()
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn wait_for_recovery_failure(service: &Service) -> Event {
+    let until = std::time::Instant::now() + crate::test_wait::HANG_BOUND;
+    loop {
+        let remaining = until.saturating_duration_since(std::time::Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "recovery failure event did not arrive"
+        );
+        let event = service
+            .events
+            .recv_timeout(remaining)
+            .expect("worker event absent while waiting for recovery failure");
+        if event.recovery_failure.is_some() {
+            return event;
+        }
+    }
+}
+
+fn prepare_paste(service: &Service, path: &Path) -> hex_project::TrackId {
     next(service);
     service
         .submit(Request::Edit(Command::AddTrack {
@@ -110,6 +158,7 @@ fn prepare_paste(service: &Service) -> hex_project::TrackId {
     let clip = original.state.project.track(track).unwrap().midi_clips()[0].id();
     service.submit(Request::CopyClips(vec![clip])).unwrap();
     assert!(next(service).error.is_none());
+    wait_for_journal(path, &original.state.project);
     track
 }
 

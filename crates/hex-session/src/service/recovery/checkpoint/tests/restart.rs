@@ -18,6 +18,7 @@ fn track_switch_observation_does_not_hide_a_recovery_conflict() {
         }))
         .unwrap();
     let added = next(&service);
+    wait_for_journal(&path, &added.state.project);
     let track = added.state.project.tracks()[0].id();
     let (entered_tx, entered) = std::sync::mpsc::sync_channel(1);
     let (release, release_rx) = std::sync::mpsc::sync_channel(1);
@@ -40,12 +41,15 @@ fn track_switch_observation_does_not_hide_a_recovery_conflict() {
             .iter()
             .any(|switch| switch.track == track && switch.soloed)
     );
+    let terminal = next(&service);
+    assert!(terminal.request_complete && terminal.error.is_none());
+    assert!(terminal.state.project.track(track).unwrap().soloed());
     std::fs::write(&path, b"other writer").unwrap();
     release.send(()).unwrap();
-    let terminal = next(&service);
-    assert!(terminal.request_complete && terminal.error.is_some());
-    assert!(terminal.recovery_failure.is_some());
-    assert!(terminal.state.project.track(track).unwrap().soloed());
+    let failure = wait_for_recovery_failure(&service);
+    assert!(!failure.request_complete && failure.error.is_some());
+    assert!(failure.recovery_failure.is_some());
+    assert!(failure.state.project.track(track).unwrap().soloed());
     assert_eq!(std::fs::read(&path).unwrap(), b"other writer");
     service.shutdown(std::time::Duration::from_secs(2)).unwrap();
     drop(service);
@@ -93,16 +97,18 @@ fn unread_track_switch_observation_never_blocks_later_terminals() {
 fn unavailable_slot_is_persistent_and_confirmed_restart_preserves_history_save_and_recovery() {
     let fixture = Fixture::new();
     let first = fixture.edit("first");
+    assert!(first.error.is_none());
+    assert!(first.state.unsaved && first.state.can_undo);
+    assert_eq!(first.state.project.tracks().len(), 1);
+    let failure_event = wait_for_recovery_failure(&fixture.service);
     assert!(
-        first
+        failure_event
             .error
             .as_ref()
             .unwrap()
             .contains("unsupported older project schema")
     );
-    assert!(first.state.unsaved && first.state.can_undo);
-    assert_eq!(first.state.project.tracks().len(), 1);
-    let failure = first.recovery_failure.as_ref().unwrap();
+    let failure = failure_event.recovery_failure.as_ref().unwrap();
     assert!(failure.can_restart());
     let second = fixture.edit("second");
     assert!(
@@ -141,19 +147,13 @@ fn unavailable_slot_is_persistent_and_confirmed_restart_preserves_history_save_a
     let subsequent = fixture.edit("after restart");
     assert!(subsequent.error.is_none() && subsequent.recovery_failure.is_none());
     assert_eq!(subsequent.state.project.tracks().len(), 3);
-    assert_eq!(
-        hex_storage::load_journal(&fixture.path).unwrap().snapshot(),
-        subsequent.state.project.snapshot()
-    );
+    wait_for_journal(&fixture.path, &subsequent.state.project);
     for (request, count) in [(Request::Undo, 2), (Request::Redo, 3)] {
         fixture.service.submit(request).unwrap();
         let event = next(&fixture.service);
         assert!(event.error.is_none() && event.recovery_failure.is_none());
         assert_eq!(event.state.project.tracks().len(), count);
-        assert_eq!(
-            hex_storage::load_journal(&fixture.path).unwrap().snapshot(),
-            event.state.project.snapshot()
-        );
+        wait_for_journal(&fixture.path, &event.state.project);
     }
     let saved = fixture.directory.join("working.hex");
     fixture
@@ -173,8 +173,9 @@ fn unavailable_slot_is_persistent_and_confirmed_restart_preserves_history_save_a
 #[test]
 fn stale_revision_generation_and_failure_cannot_replace_the_captured_slot() {
     let fixture = Fixture::new();
-    let first = fixture.edit("first");
-    let stale = intent(&first);
+    let _first = fixture.edit("first");
+    let first_failure = wait_for_recovery_failure(&fixture.service);
+    let stale = intent(&first_failure);
     let current = fixture.edit("second");
     let before = current.state.project.snapshot();
     for request in [

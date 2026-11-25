@@ -27,6 +27,29 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     }
 }
 
+fn pump_recovery_failure(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+    let until = crate::test_wait::hang_deadline();
+    loop {
+        let ready = editor.update(&mut *visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            view.worker_requests_pending == 0
+                && view.pending_requests.is_empty()
+                && view.recovery_failure.is_some()
+        });
+        visual.run_until_parked();
+        if ready {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "async recovery failure event did not arrive"
+        );
+        std::thread::yield_now();
+    }
+}
+
 fn unsupported_journal(path: &std::path::Path) -> Vec<u8> {
     // The real bounded journal envelope binds the unchanged basename and stores
     // a little-endian generation after the unsupported project-version payload.
@@ -86,7 +109,7 @@ fn unavailable_recovery_cancel_preserves_old_journal_and_confirm_starts_current_
             name: "working".into()
         })))
     });
-    pump(&editor, &mut visual);
+    pump_recovery_failure(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
         assert!(view.state.as_ref().unwrap().unsaved);
@@ -205,7 +228,7 @@ fn recovery_confirmation_rejects_changed_project_foreign_bytes_and_io_failure(
                 name: "working".into()
             })))
         });
-        pump(&editor, &mut visual);
+        pump_recovery_failure(&editor, &mut visual);
         let action = visual
             .debug_bounds("restart-automatic-recovery")
             .unwrap()
