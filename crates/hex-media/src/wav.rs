@@ -593,7 +593,11 @@ fn prepare_decode<'a>(
     cancel: &AtomicBool,
 ) -> Result<PreparedDecode<'a>, ImportError> {
     let mut cursor = Cursor::new(bytes);
-    let (layout, truncation) = scan_recoverable(&mut cursor, bytes.len() as u64, usize::MAX)?;
+    let (layout, truncation) = scan_recoverable(
+        &mut cursor,
+        bytes.len() as u64,
+        crate::MAX_RESIDENT_HEADER_COUNT,
+    )?;
     let frame_count =
         usize::try_from(layout.frames).map_err(|_| ImportError::LimitExceeded("decoded frames"))?;
     if frame_count > max_frames {

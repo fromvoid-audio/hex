@@ -39,13 +39,29 @@ pub(super) struct FlacLayout {
     pub(super) seektable: Vec<FlacSeekPoint>,
 }
 
-/// Cached position of the most recently decoded FLAC frame so sequential
-/// streaming reads continue in O(1) without rescanning from frame 0.
-#[derive(Clone, Copy, Debug, Default)]
+/// Cached position and reusable decode buffers for streaming FLAC reads so
+/// sequential reads continue in O(1) without rescanning from frame 0 or
+/// re-allocating scratch buffers per window.
+#[derive(Debug, Default)]
 pub(super) struct FlacStreamCursor {
     pub(super) next_sample: u64,
     pub(super) next_offset: u64,
     pub(super) valid: bool,
+    scratch: Option<FlacScratch>,
+}
+
+impl FlacStreamCursor {
+    fn scratch_mut(&mut self, max_block_size: usize) -> Result<&mut FlacScratch, ImportError> {
+        let needed = max_block_size.min(MAX_BLOCK_SIZE);
+        let needs_alloc = self
+            .scratch
+            .as_ref()
+            .is_none_or(|scratch| scratch.ch0.len() < needed || scratch.ch1.len() < needed);
+        if needs_alloc {
+            self.scratch = Some(FlacScratch::new(max_block_size)?);
+        }
+        self.scratch.as_mut().ok_or(ImportError::AllocationFailed)
+    }
 }
 
 /// Scans `fLaC` header, mandatory `STREAMINFO`, and optional `SEEKTABLE`.
@@ -64,6 +80,7 @@ pub(super) fn scan<R: Read + Seek>(
     let mut cursor = 4_u64;
     let mut block_count = 0_usize;
     let mut streaminfo: Option<(u16, u16, u32, u16, u16, u64)> = None;
+    let mut seen_seektable = false;
     let mut seektable = Vec::new();
 
     loop {
@@ -143,6 +160,10 @@ pub(super) fn scan<R: Read + Seek>(
         } else if block_type == 0 {
             return Err(ImportError::Invalid("duplicate FLAC STREAMINFO block"));
         } else if block_type == 3 {
+            if seen_seektable {
+                return Err(ImportError::Invalid("duplicate FLAC SEEKTABLE block"));
+            }
+            seen_seektable = true;
             if !length.is_multiple_of(18) {
                 return Err(ImportError::Invalid("invalid FLAC SEEKTABLE length"));
             }
@@ -153,6 +174,8 @@ pub(super) fn scan<R: Read + Seek>(
                 .try_reserve(read_count)
                 .map_err(|_| ImportError::AllocationFailed)?;
             let mut prev_sample: Option<u64> = None;
+            let mut prev_offset: Option<u64> = None;
+            let mut seen_placeholder = false;
             let mut entry = [0_u8; 18];
             for _ in 0..read_count {
                 read_exact_invalid(reader, &mut entry, "truncated FLAC SEEKTABLE")?;
@@ -161,17 +184,26 @@ pub(super) fn scan<R: Read + Seek>(
                 ]);
                 if sample_number == u64::MAX {
                     // Placeholder seekpoint; all subsequent seekpoints must also be placeholders.
+                    seen_placeholder = true;
                     continue;
+                }
+                if seen_placeholder {
+                    return Err(ImportError::Invalid(
+                        "misordered FLAC SEEKTABLE placeholder",
+                    ));
                 }
                 let stream_offset = u64::from_be_bytes([
                     entry[8], entry[9], entry[10], entry[11], entry[12], entry[13], entry[14],
                     entry[15],
                 ]);
                 let frame_samples = u16::from_be_bytes([entry[16], entry[17]]);
-                if prev_sample.is_some_and(|prev| sample_number <= prev) {
+                if prev_sample.is_some_and(|prev| sample_number <= prev)
+                    || prev_offset.is_some_and(|prev| stream_offset < prev)
+                {
                     return Err(ImportError::Invalid("unsorted FLAC SEEKTABLE"));
                 }
                 prev_sample = Some(sample_number);
+                prev_offset = Some(stream_offset);
                 seektable.push(FlacSeekPoint {
                     sample_number,
                     stream_offset,
@@ -212,7 +244,11 @@ pub(super) fn decode(
     cancel: &AtomicBool,
 ) -> Result<(Audio, u32, usize), ImportError> {
     let mut cursor = Cursor::new(bytes);
-    let layout = scan(&mut cursor, bytes.len() as u64, usize::MAX)?;
+    let layout = scan(
+        &mut cursor,
+        bytes.len() as u64,
+        crate::MAX_RESIDENT_HEADER_COUNT,
+    )?;
     let frame_count = usize::try_from(layout.total_samples)
         .map_err(|_| ImportError::LimitExceeded("decoded frames"))?;
     if frame_count > max_frames {
@@ -315,7 +351,6 @@ pub(super) fn read_window<R: Read + Seek>(
         pos_offset = stream_cursor.next_offset;
     }
 
-    let mut scratch = FlacScratch::new(usize::from(layout.max_block_size))?;
     let mut written = 0_usize;
 
     while written < decode_count {
@@ -327,35 +362,53 @@ pub(super) fn read_window<R: Read + Seek>(
         }
         reader.seek(SeekFrom::Start(pos_offset))?;
         let mut bit_reader = StreamBitReader::new(reader, file_len - pos_offset);
-        let frame_info = decode_frame_into(&mut bit_reader, layout, &mut scratch)?;
+        let frame_info = {
+            let scratch = stream_cursor.scratch_mut(usize::from(layout.max_block_size))?;
+            decode_frame_into(&mut bit_reader, layout, scratch)?
+        };
         let consumed = bit_reader.bytes_consumed();
         if consumed == 0 || frame_info.block_size == 0 {
             return Err(ImportError::Invalid("invalid zero-length FLAC frame"));
         }
         let frame_start = frame_info.sample_number.unwrap_or(pos_sample);
+        let expected_pos = start_frame
+            .checked_add(written as u64)
+            .ok_or(ImportError::Invalid("requested frame range overflow"))?;
+        if frame_start > expected_pos {
+            stream_cursor.valid = false;
+            return Err(ImportError::Invalid("FLAC frame stream has sample gap"));
+        }
         let frame_end = frame_start
             .checked_add(frame_info.block_size as u64)
             .ok_or(ImportError::Invalid("FLAC sample position overflow"))?;
+        if frame_end <= pos_sample {
+            stream_cursor.valid = false;
+            return Err(ImportError::Invalid(
+                "FLAC frame sample position did not advance",
+            ));
+        }
         if frame_end > layout.total_samples {
+            stream_cursor.valid = false;
             return Err(ImportError::Invalid("FLAC frame exceeds STREAMINFO"));
         }
         let next_offset = pos_offset
             .checked_add(consumed)
             .ok_or(ImportError::Invalid("FLAC offset overflow"))?;
 
-        if frame_end > start_frame && frame_start < target_end {
-            let copy_start = start_frame.max(frame_start);
+        if frame_end > expected_pos && frame_start < target_end {
+            let copy_start = expected_pos;
             let copy_end = target_end.min(frame_end);
             let local_start = (copy_start - frame_start) as usize;
             let local_len = (copy_end - copy_start) as usize;
-            let dst_start = (copy_start - start_frame) as usize;
+            let dst_start = written;
+            let scratch = stream_cursor.scratch_mut(usize::from(layout.max_block_size))?;
             scratch.write_stereo_f32(
                 &mut output[dst_start..dst_start + local_len],
                 local_start,
                 layout.channels,
                 frame_info.bits_per_sample,
             );
-            written = written.max(dst_start + local_len);
+            written += local_len;
         }
 
         pos_sample = frame_end;
@@ -369,6 +422,11 @@ pub(super) fn read_window<R: Read + Seek>(
         }
     }
 
+    if written != decode_count {
+        stream_cursor.valid = false;
+        return Err(ImportError::Invalid("truncated FLAC audio stream"));
+    }
+
     Ok(decode_count)
 }
 
@@ -376,6 +434,7 @@ pub(super) fn read_window<R: Read + Seek>(
 // Core RFC 9639 Frame & Subframe Decoder
 // ---------------------------------------------------------------------------
 
+#[derive(Debug)]
 struct FlacScratch {
     ch0: Vec<i64>,
     ch1: Vec<i64>,
@@ -736,7 +795,7 @@ fn decode_frame_into(
             ((hi << 8) | lo) + 1
         }
         8..=15 => 256 << (bs_code - 8),
-        _ => unreachable!(),
+        _ => return Err(ImportError::Invalid("invalid FLAC block size code")),
     };
     if block_size == 0 || block_size > usize::from(layout.max_block_size) {
         return Err(ImportError::Invalid("FLAC block size exceeds STREAMINFO"));
@@ -840,12 +899,10 @@ fn decode_frame_into(
                 frame_bps + 1,
                 &mut scratch.ch1[..block_size],
             )?;
-            for i in 0..block_size {
-                let side = scratch.ch1[i];
-                let mid = (scratch.ch0[i] << 1) | (side & 1);
-                scratch.ch0[i] = (mid + side) >> 1;
-                scratch.ch1[i] = (mid - side) >> 1;
-            }
+            reconstruct_mid_side(
+                &mut scratch.ch0[..block_size],
+                &mut scratch.ch1[..block_size],
+            );
         }
         _ => {
             return Err(ImportError::Invalid("unsupported FLAC channel assignment"));
@@ -874,6 +931,15 @@ fn decode_frame_into(
         bits_per_sample: frame_bps,
         sample_number,
     })
+}
+
+fn reconstruct_mid_side(ch0: &mut [i64], ch1: &mut [i64]) {
+    for (left_mid, right_side) in ch0.iter_mut().zip(ch1.iter_mut()) {
+        let side = *right_side;
+        let mid = left_mid.wrapping_shl(1) | (side & 1);
+        *left_mid = mid.wrapping_add(side) >> 1;
+        *right_side = mid.wrapping_sub(side) >> 1;
+    }
 }
 
 fn decode_subframe(
@@ -1089,28 +1155,54 @@ fn read_utf8_u64(bits: &mut impl BitSource) -> Result<u64, ImportError> {
     Ok(val)
 }
 
-fn update_crc8(mut crc: u8, byte: u8) -> u8 {
-    crc ^= byte;
-    for _ in 0..8 {
-        crc = if (crc & 0x80) != 0 {
-            (crc << 1) ^ 0x07
-        } else {
-            crc << 1
-        };
+const CRC8_TABLE: [u8; 256] = {
+    let mut table = [0_u8; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = i as u8;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if (crc & 0x80) != 0 {
+                (crc << 1) ^ 0x07
+            } else {
+                crc << 1
+            };
+            bit += 1;
+        }
+        table[i] = crc;
+        i += 1;
     }
-    crc
+    table
+};
+
+const CRC16_TABLE: [u16; 256] = {
+    let mut table = [0_u16; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut crc = (i as u16) << 8;
+        let mut bit = 0;
+        while bit < 8 {
+            crc = if (crc & 0x8000) != 0 {
+                (crc << 1) ^ 0x8005
+            } else {
+                crc << 1
+            };
+            bit += 1;
+        }
+        table[i] = crc;
+        i += 1;
+    }
+    table
+};
+
+#[inline]
+fn update_crc8(crc: u8, byte: u8) -> u8 {
+    CRC8_TABLE[usize::from(crc ^ byte)]
 }
 
-fn update_crc16(mut crc: u16, byte: u8) -> u16 {
-    crc ^= u16::from(byte) << 8;
-    for _ in 0..8 {
-        crc = if (crc & 0x8000) != 0 {
-            (crc << 1) ^ 0x8005
-        } else {
-            crc << 1
-        };
-    }
-    crc
+#[inline]
+fn update_crc16(crc: u16, byte: u8) -> u16 {
+    (crc << 8) ^ CRC16_TABLE[usize::from(((crc >> 8) as u8) ^ byte)]
 }
 
 fn read_exact_invalid<R: Read>(
@@ -1171,6 +1263,11 @@ impl<W: Write> FlacStreamWriter<W> {
         if bits_per_sample != 16 && bits_per_sample != 24 {
             return Err(ImportError::Invalid(
                 "FLAC encoder supports 16-bit or 24-bit PCM",
+            ));
+        }
+        if total_samples == 0 {
+            return Err(ImportError::Invalid(
+                "FLAC encoder requires at least one sample",
             ));
         }
         if total_samples >= (1_u64 << 36) {
@@ -1854,5 +1951,249 @@ mod writer_tests {
         assert!(FlacStreamWriter::new(Vec::new(), 1_000, 2, 16, 10).is_err());
         assert!(FlacStreamWriter::new(Vec::new(), 48_000, 3, 16, 10).is_err());
         assert!(FlacStreamWriter::new(Vec::new(), 48_000, 2, 32, 10).is_err());
+        assert!(FlacStreamWriter::new(Vec::new(), 48_000, 2, 16, 0).is_err());
+    }
+
+    #[test]
+    fn mid_side_reconstruction_wraps_without_overflow_panic() {
+        let mut ch0 = [i64::MAX, i64::MIN, i64::MAX / 2, 100];
+        let mut ch1 = [i64::MAX, i64::MIN, i64::MAX, -5];
+        reconstruct_mid_side(&mut ch0, &mut ch1);
+        // Normal pair (mid=100, side=-5) -> left=98, right=103 (mid*2 + (-5) = 195 ->? wait: (200|1)=201, (201-5)>>1=98, (201+5)>>1=103)
+        assert_eq!(ch0[3], 98);
+        assert_eq!(ch1[3], 103);
+    }
+
+    #[test]
+    fn crc_lookup_tables_match_bitwise_reference() {
+        fn ref_crc8(mut crc: u8, byte: u8) -> u8 {
+            crc ^= byte;
+            for _ in 0..8 {
+                crc = if (crc & 0x80) != 0 {
+                    (crc << 1) ^ 0x07
+                } else {
+                    crc << 1
+                };
+            }
+            crc
+        }
+        fn ref_crc16(mut crc: u16, byte: u8) -> u16 {
+            crc ^= u16::from(byte) << 8;
+            for _ in 0..8 {
+                crc = if (crc & 0x8000) != 0 {
+                    (crc << 1) ^ 0x8005
+                } else {
+                    crc << 1
+                };
+            }
+            crc
+        }
+        let mut c8_lut = 0_u8;
+        let mut c8_ref = 0_u8;
+        let mut c16_lut = 0_u16;
+        let mut c16_ref = 0_u16;
+        for byte in 0..=255_u8 {
+            c8_lut = update_crc8(c8_lut, byte);
+            c8_ref = ref_crc8(c8_ref, byte);
+            assert_eq!(c8_lut, c8_ref);
+            c16_lut = update_crc16(c16_lut, byte);
+            c16_ref = ref_crc16(c16_ref, byte);
+            assert_eq!(c16_lut, c16_ref);
+        }
+    }
+
+    #[test]
+    fn read_window_rejects_frame_gap_and_reuses_scratch() {
+        // Build a valid 2-frame variable-blocksize FLAC stream with a sample gap (0..16, then 32..48).
+        let samples = vec![vec![1000_i32; 48], vec![-1000_i32; 48]];
+        let mut flac = Vec::new();
+        flac.extend_from_slice(b"fLaC");
+        // Last metadata block (STREAMINFO, 34 bytes), total_samples = 48.
+        flac.extend_from_slice(&[0x80, 0, 0, 34]);
+        let mut si = [0_u8; 34];
+        si[0..2].copy_from_slice(&16_u16.to_be_bytes());
+        si[2..4].copy_from_slice(&16_u16.to_be_bytes());
+        let sr = 48_000_u32;
+        let ch = 1_u32; // stereo - 1
+        let bps = 15_u32; // 16 - 1
+        si[10] = (sr >> 12) as u8;
+        si[11] = ((sr >> 4) & 0xFF) as u8;
+        si[12] = (((sr & 0x0F) << 4) | (ch << 1) | (bps >> 4)) as u8;
+        si[13] = ((bps & 0x0F) << 4) as u8;
+        si[14..18].copy_from_slice(&48_u32.to_be_bytes());
+        flac.extend_from_slice(&si);
+        let frame0 = encode_test_frame(48_000, 2, 16, 16, 0, 0, true, &samples, 0, false);
+        let frame1_gap = encode_test_frame(48_000, 2, 16, 16, 1, 32, true, &samples, 32, false);
+        flac.extend_from_slice(&frame0);
+        flac.extend_from_slice(&frame1_gap);
+
+        let mut cursor = Cursor::new(flac.as_slice());
+        let layout = scan(
+            &mut cursor,
+            flac.len() as u64,
+            crate::MAX_RESIDENT_HEADER_COUNT,
+        )
+        .unwrap();
+        let mut stream_cursor = FlacStreamCursor::default();
+        let mut out = [[99.0_f32; 2]; 20];
+        let err = read_window(
+            &mut cursor,
+            &layout,
+            &mut stream_cursor,
+            flac.len() as u64,
+            16,
+            &mut out,
+            || false,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            ImportError::Invalid("FLAC frame stream has sample gap")
+        ));
+
+        // Verify scratch buffer reuse across consecutive valid streaming reads.
+        let mut valid = Vec::new();
+        let mut writer = FlacStreamWriter::new(&mut valid, 48_000, 2, 16, 64).unwrap();
+        writer.write_stereo_frames(&[[100, -100]; 64]).unwrap();
+        writer.finish().unwrap();
+        let mut cursor = Cursor::new(valid.as_slice());
+        let layout = scan(
+            &mut cursor,
+            valid.len() as u64,
+            crate::MAX_RESIDENT_HEADER_COUNT,
+        )
+        .unwrap();
+        let mut stream_cursor = FlacStreamCursor::default();
+        let mut buf = [[0.0_f32; 2]; 16];
+        read_window(
+            &mut cursor,
+            &layout,
+            &mut stream_cursor,
+            valid.len() as u64,
+            0,
+            &mut buf,
+            || false,
+        )
+        .unwrap();
+        let ptr_ch0 = stream_cursor.scratch.as_ref().unwrap().ch0.as_ptr();
+        let ptr_ch1 = stream_cursor.scratch.as_ref().unwrap().ch1.as_ptr();
+        read_window(
+            &mut cursor,
+            &layout,
+            &mut stream_cursor,
+            valid.len() as u64,
+            16,
+            &mut buf,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(
+            stream_cursor.scratch.as_ref().unwrap().ch0.as_ptr(),
+            ptr_ch0
+        );
+        assert_eq!(
+            stream_cursor.scratch.as_ref().unwrap().ch1.as_ptr(),
+            ptr_ch1
+        );
+    }
+
+    #[test]
+    fn scan_rejects_duplicate_and_misordered_seektable_and_metadata_storms() {
+        let mut si = [0_u8; 34];
+        si[0..2].copy_from_slice(&16_u16.to_be_bytes());
+        si[2..4].copy_from_slice(&16_u16.to_be_bytes());
+        let sr = 48_000_u32;
+        let bps = 15_u32;
+        si[10] = (sr >> 12) as u8;
+        si[11] = ((sr >> 4) & 0xFF) as u8;
+        si[12] = (((sr & 0x0F) << 4) | (bps >> 4)) as u8;
+        si[13] = ((bps & 0x0F) << 4) as u8;
+        si[14..18].copy_from_slice(&64_u32.to_be_bytes());
+
+        // 1. Duplicate SEEKTABLE blocks.
+        let mut dup = Vec::new();
+        dup.extend_from_slice(b"fLaC");
+        dup.extend_from_slice(&[0x00, 0, 0, 34]);
+        dup.extend_from_slice(&si);
+        dup.extend_from_slice(&[0x03, 0, 0, 18]);
+        dup.extend_from_slice(&[0_u8; 18]);
+        dup.extend_from_slice(&[0x83, 0, 0, 18]);
+        dup.extend_from_slice(&[0_u8; 18]);
+        dup.push(0xFF);
+        assert!(matches!(
+            scan(
+                &mut Cursor::new(&dup),
+                dup.len() as u64,
+                crate::MAX_RESIDENT_HEADER_COUNT
+            ),
+            Err(ImportError::Invalid("duplicate FLAC SEEKTABLE block"))
+        ));
+
+        // 2. Placeholder before real seekpoint.
+        let mut misordered = Vec::new();
+        misordered.extend_from_slice(b"fLaC");
+        misordered.extend_from_slice(&[0x00, 0, 0, 34]);
+        misordered.extend_from_slice(&si);
+        misordered.extend_from_slice(&[0x83, 0, 0, 36]);
+        misordered.extend_from_slice(&u64::MAX.to_be_bytes());
+        misordered.extend_from_slice(&[0_u8; 10]);
+        misordered.extend_from_slice(&0_u64.to_be_bytes());
+        misordered.extend_from_slice(&[0_u8; 10]);
+        misordered.push(0xFF);
+        assert!(matches!(
+            scan(
+                &mut Cursor::new(&misordered),
+                misordered.len() as u64,
+                crate::MAX_RESIDENT_HEADER_COUNT
+            ),
+            Err(ImportError::Invalid(
+                "misordered FLAC SEEKTABLE placeholder"
+            ))
+        ));
+
+        // 3. Empty FLAC metadata storm rejected by resident decode.
+        let mut storm_flac = Vec::new();
+        storm_flac.extend_from_slice(b"fLaC");
+        storm_flac.extend_from_slice(&[0x00, 0, 0, 34]);
+        storm_flac.extend_from_slice(&si);
+        for _ in 0..=crate::MAX_RESIDENT_HEADER_COUNT {
+            storm_flac.extend_from_slice(&[0x01, 0, 0, 0]); // empty PADDING block
+        }
+        storm_flac.extend_from_slice(&[0x81, 0, 0, 0]);
+        storm_flac.push(0xFF);
+        assert!(matches!(
+            decode_audio(&storm_flac, Limits::new(1024 * 1024, 1024)),
+            Err(ImportError::LimitExceeded("chunk headers"))
+        ));
+
+        // 4. Empty WAV JUNK chunk storm rejected by resident decode.
+        let mut storm_wav = Vec::new();
+        let chunk_count = crate::MAX_RESIDENT_HEADER_COUNT + 2;
+        let payload_len = (4 + chunk_count * 8) as u32;
+        storm_wav.extend_from_slice(b"RIFF");
+        storm_wav.extend_from_slice(&payload_len.to_le_bytes());
+        storm_wav.extend_from_slice(b"WAVE");
+        for _ in 0..chunk_count {
+            storm_wav.extend_from_slice(b"JUNK");
+            storm_wav.extend_from_slice(&0_u32.to_le_bytes());
+        }
+        assert!(matches!(
+            decode_audio(&storm_wav, Limits::new(1024 * 1024, 1024)),
+            Err(ImportError::LimitExceeded("chunk headers"))
+        ));
+
+        // 5. Empty AIFF ANNO chunk storm rejected by resident decode.
+        let mut storm_aiff = Vec::new();
+        storm_aiff.extend_from_slice(b"FORM");
+        storm_aiff.extend_from_slice(&payload_len.to_be_bytes());
+        storm_aiff.extend_from_slice(b"AIFF");
+        for _ in 0..chunk_count {
+            storm_aiff.extend_from_slice(b"ANNO");
+            storm_aiff.extend_from_slice(&0_u32.to_be_bytes());
+        }
+        assert!(matches!(
+            decode_audio(&storm_aiff, Limits::new(1024 * 1024, 1024)),
+            Err(ImportError::LimitExceeded("chunk headers"))
+        ));
     }
 }
