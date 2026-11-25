@@ -528,8 +528,29 @@ pub(in crate::editor) mod native {
 
     #[gpui::test]
     fn unrelated_edit_preserves_numeric_gain_text_and_valid_commit(cx: &mut TestAppContext) {
-        let (handle, entity, track) = window(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
+        cx.update(super::super::super::bind_editor_keys);
+        let (project, track, _) = project();
+        let mut expected = project.track(track).unwrap().gain_envelope().to_vec();
+        let mut fixture = super::super::super::worker_ui_fixture::open(
+            cx,
+            vec![
+                Command::AddTrack {
+                    name: "first".into(),
+                },
+                Command::ReplaceTrackGainEnvelope {
+                    track,
+                    points: expected.clone(),
+                },
+            ],
+        );
+        let entity = fixture.editor.clone();
+        entity.update(cx, |view, cx| {
+            view.clip_view_open = false;
+            view.gain_lane.track = Some(track);
+            view.gain_lane.selected = Some(BeatTime::from_raw(2));
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(fixture.handle, cx);
         visual.run_until_parked();
         let position = visual
             .debug_bounds("gain-point-value-value")
@@ -598,6 +619,10 @@ pub(in crate::editor) mod native {
                     Some("finish or cancel the numeric draft before editing")
                 );
             }
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "invalid draft must reject independent edits"
+            );
             view.begin_device_gesture(
                 hex_session::device_gesture::GestureTarget::TrackGain { track },
                 hex_lattice_contract::ParameterValue::Float(1.0),
@@ -606,7 +631,10 @@ pub(in crate::editor) mod native {
             assert!(!view.enqueue_device_barrier(Request::Undo));
             assert!(view.device_gesture_barriers.is_empty());
             assert!(!view.device_gesture.has_pending_terminal());
-            view.device_gesture.reset();
+            assert_eq!(
+                view.worker_requests_pending, 1,
+                "only the gesture Begin was admitted"
+            );
             assert_eq!(
                 view.gain_lane
                     .gain
@@ -617,8 +645,28 @@ pub(in crate::editor) mod native {
                     .display_text(),
                 "invalid"
             );
-            assert_eq!(view.worker_requests_pending, 0);
+            view.cancel_device_gesture().unwrap();
         });
+        let mut settle = |visual: &mut VisualTestContext| {
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+                if entity.update(visual, |view, cx| {
+                    view.tick(cx);
+                    view.worker_requests_pending == 0
+                        && !view.device_gesture_pending()
+                        && view.gain_lane.pending.is_none()
+                }) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "editor did not settle"
+                );
+                std::thread::yield_now();
+            }
+        };
+        settle(&mut visual);
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("75");
         visual.simulate_keystrokes("enter");
@@ -628,6 +676,21 @@ pub(in crate::editor) mod native {
             assert_eq!(view.worker_requests_pending, 1);
             assert!(view.gain_lane.pending.is_some());
         });
+        expected[1].gain = 0.75;
+        settle(&mut visual);
+        entity.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .gain_envelope(),
+                expected
+            );
+        });
+        fixture.finish(cx);
     }
     #[gpui::test]
     fn header_a_opens_selected_lane_and_retains_operable_rows(cx: &mut TestAppContext) {
