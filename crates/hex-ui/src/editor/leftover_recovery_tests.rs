@@ -23,7 +23,7 @@ fn dir() -> Dir {
     std::fs::create_dir_all(&path).unwrap();
     Dir(path)
 }
-/// A crashed service leaves its untitled journal after one edit.
+/// A published untitled journal left by a previous editing session.
 fn leave_untitled_journal(slot: &std::path::Path) -> Vec<u8> {
     let crashed = Service::with_recovery(48_000, 8, 128, slot.to_path_buf()).unwrap();
     let deadline = crate::test_wait::hang_deadline();
@@ -45,7 +45,30 @@ fn leave_untitled_journal(slot: &std::path::Path) -> Vec<u8> {
         .unwrap();
     let edited = next();
     assert!(edited.error.is_none(), "{:?}", edited.error);
-    std::fs::read(slot).unwrap()
+    assert!(
+        edited
+            .state
+            .project
+            .tracks()
+            .iter()
+            .any(|track| track.name() == "unsaved")
+    );
+    loop {
+        match hex_storage::load_journal(slot) {
+            Ok(project) => {
+                assert_eq!(&project, edited.state.project.as_ref());
+                return std::fs::read(slot).unwrap();
+            }
+            Err(hex_storage::StorageError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("could not read the published recovery journal: {error}"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "untitled journal publication"
+        );
+        std::thread::yield_now();
+    }
 }
 
 #[test]
