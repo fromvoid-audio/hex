@@ -170,7 +170,7 @@ impl EqRuntime {
             || self.pristine
             || arrangement_changed
             || discontinuity
-            || (automated && position % CADENCE == 0)
+            || (automated && position % self.configuration.cadence == 0)
     }
 
     /// Returns the exclusive end offset `> start` of the contiguous slice
@@ -189,7 +189,10 @@ impl EqRuntime {
         for offset in (start + 1)..end {
             let (current_frame, position, arrangement_changed, discontinuity) =
                 Self::frame_clock_state(clock, offset, sim_last_frame, sim_fallback);
-            if arrangement_changed || discontinuity || (automated && position % CADENCE == 0) {
+            if arrangement_changed
+                || discontinuity
+                || (automated && position % self.configuration.cadence == 0)
+            {
                 return offset;
             }
             sim_last_frame = current_frame;

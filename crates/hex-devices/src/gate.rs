@@ -516,11 +516,16 @@ impl GateRuntime {
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame) {
-        let left = f64::from(frame[0]);
-        let right = f64::from(frame[1]);
-        if !left.is_finite() || !right.is_finite() {
-            return;
-        }
+        let left = if frame[0].is_finite() {
+            f64::from(frame[0])
+        } else {
+            0.0
+        };
+        let right = if frame[1].is_finite() {
+            f64::from(frame[1])
+        } else {
+            0.0
+        };
         let peak = left.abs().max(right.abs());
         if peak >= self.threshold {
             if !self.open {

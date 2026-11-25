@@ -135,6 +135,7 @@ const MAIN_DIGESTS: [u64; 5] = [
     0x1dfb_4011_052c_be3a,
     0x9e7e_3b6b_b397_0a38,
     0x5278_814f_c3ab_6dbc,
-    0xb6ed_ad94_7e69_0335,
-    0x8787_212b_a83d_6f15,
+    // Non-48 kHz rates updated for rate-scaled audition crossfade (#13492).
+    0x6150_8d55_9a5f_052a,
+    0xe24d_fd09_9f4b_1d0e,
 ];

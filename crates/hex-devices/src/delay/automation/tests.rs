@@ -702,6 +702,116 @@ fn dense_lfo_choices_preserve_partitioning_rollback_fallback_and_history() {
         lfo_render(fresh.as_mut(), &input, &mut lfo_values(ids, false), 13)
     );
 }
+
+#[test]
+fn changing_feedback_mid_ramp_does_not_stretch_independent_filter_frequency_ramp() {
+    struct SteppedValues {
+        ids: [ParameterId; 2],
+        step_feedback_at: Option<usize>,
+    }
+    impl NativeParameterAutomation for SteppedValues {
+        fn parameter_ids(&self) -> &[ParameterId] {
+            &self.ids
+        }
+        fn value_at(&self, id: ParameterId, offset: usize) -> Option<ParameterValue> {
+            if id == FEEDBACK {
+                let fb = if self.step_feedback_at.is_some_and(|at| offset >= at) {
+                    0.75
+                } else {
+                    0.2
+                };
+                Some(ParameterValue::Float(fb))
+            } else if id == FREQUENCY {
+                Some(ParameterValue::Float(3_000.0))
+            } else {
+                None
+            }
+        }
+    }
+
+    let base = filtered(400.0, 2.0);
+    let ids = [FEEDBACK, FREQUENCY];
+    let rate = 8_000;
+    // Ramp length is rate.div_ceil(100) = 80 frames.
+    // Step FEEDBACK at frame 40 (halfway through FREQUENCY's 80-frame ramp).
+    // With independent per-parameter ramps, FREQUENCY finishes at frame 80
+    // regardless of FEEDBACK changing at frame 40.
+    let mut a = runtime(&base, rate, Some(&ids));
+    let mut b = runtime(&base, rate, Some(&ids));
+    let input = signal(160);
+    let mut out_a = input.clone();
+    let mut out_b = input;
+
+    a.begin_block();
+    a.process_block_with_automation(
+        &mut out_a,
+        None,
+        &SteppedValues {
+            ids,
+            step_feedback_at: Some(40),
+        },
+        &R,
+    )
+    .unwrap();
+    a.commit_block();
+
+    b.begin_block();
+    b.process_block_with_automation(
+        &mut out_b,
+        None,
+        &SteppedValues {
+            ids,
+            step_feedback_at: None,
+        },
+        &R,
+    )
+    .unwrap();
+    b.commit_block();
+
+    // After 160 frames (> 80 + 40), both runtimes must have finished all ramps.
+    let (a_freq, _) = a
+        .as_any()
+        .downcast_ref::<crate::delay::runtime::Runtime>()
+        .unwrap()
+        .committed_frequency_and_feedback();
+    let (b_freq, _) = b
+        .as_any()
+        .downcast_ref::<crate::delay::runtime::Runtime>()
+        .unwrap()
+        .committed_frequency_and_feedback();
+    assert_eq!(a_freq, 3_000.0);
+    assert_eq!(b_freq, 3_000.0);
+
+    // Even better: check at frame 80 (exact end of FREQUENCY's 80-frame ramp) while
+    // FEEDBACK's ramp (started at frame 40) still has 40 frames remaining!
+    let mut c = runtime(&base, rate, Some(&ids));
+    let mut out_c = signal(80);
+    c.begin_block();
+    c.process_block_with_automation(
+        &mut out_c,
+        None,
+        &SteppedValues {
+            ids,
+            step_feedback_at: Some(40),
+        },
+        &R,
+    )
+    .unwrap();
+    c.commit_block();
+    let (c_freq, c_fb) = c
+        .as_any()
+        .downcast_ref::<crate::delay::runtime::Runtime>()
+        .unwrap()
+        .committed_frequency_and_feedback();
+    assert_eq!(
+        c_freq, 3_000.0,
+        "FREQUENCY must complete its 80-frame ramp on time even when FEEDBACK stepped at frame 40"
+    );
+    assert!(
+        c_fb > 0.2 && c_fb < 0.75,
+        "FEEDBACK must still be mid-ramp at frame 80 ({c_fb})"
+    );
+}
 #[test]
 #[ignore = "release-only targeted delivery microbenchmark"]
 fn delay_mix_delivery_cost() {

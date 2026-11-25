@@ -401,9 +401,10 @@ fn bypass_advances_history_bitwise_and_invalid_frames_do_not_poison_it() {
     let mut invalid_then_valid = runtime(&state, 8_000);
     let mut valid_only = runtime(&state, 8_000);
     let mut invalid = [[f32::NAN, f32::INFINITY]];
+    let mut silence = [[0.0, 0.0]];
     invalid_then_valid.process_block(&mut invalid, &hex_lattice::EMPTY_DEVICE_RESOURCES);
-    assert!(invalid[0][0].is_nan());
-    assert_eq!(invalid[0][1], f32::INFINITY);
+    valid_only.process_block(&mut silence, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(invalid, [[0.0, 0.0]]);
     let mut a = [[0.4, -0.2]];
     let mut b = a;
     invalid_then_valid.process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);

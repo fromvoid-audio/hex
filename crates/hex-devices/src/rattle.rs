@@ -231,6 +231,17 @@ impl RattleDefinition {
             hex_dsp::OnePoleSmoother::from_coefficient(f64::from(settings.drive), smoothing)
                 .and_then(|s| s.with_snap_epsilon(1.0e-6))
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        // Paul Kellet 3-pole pink-noise approximation scaled from its 44.1 kHz
+        // reference to the actual 2x oversampled rate, preserving corner
+        // frequencies and per-branch DC gain across 16–384 kHz.
+        const PINK_REF_RATE: f64 = 44_100.0;
+        const PINK_REF_POLES: [f64; 3] = [0.997_65, 0.963, 0.57];
+        const PINK_REF_GAINS: [f64; 3] = [0.099_046, 0.296_516, 1.052_691];
+        let pink_ratio = PINK_REF_RATE / fast_rate;
+        let pink_poles = PINK_REF_POLES.map(|p| p.powf(pink_ratio));
+        let pink_gains = std::array::from_fn(|i| {
+            PINK_REF_GAINS[i] * (1.0 - pink_poles[i]) / (1.0 - PINK_REF_POLES[i])
+        });
         Ok(PreparedRattle {
             settings,
             sample_rate,
@@ -245,6 +256,8 @@ impl RattleDefinition {
                 attack,
                 release,
                 slew_per_hz: std::f64::consts::TAU / fast_rate,
+                pink_poles,
+                pink_gains,
                 silence_frames: LATENCY_FRAMES + sample_rate / 4,
             },
         })
@@ -313,6 +326,8 @@ struct Coefficients {
     attack: f64,
     release: f64,
     slew_per_hz: f64,
+    pink_poles: [f64; 3],
+    pink_gains: [f64; 3],
     silence_frames: u32,
 }
 
@@ -484,12 +499,13 @@ impl Channel {
         f64::from(x) / 2_147_483_648.0 - 1.0
     }
 
-    /// Three-pole approximation of a -3 db/octave spectrum, roughly unit peak.
-    fn pink(&mut self) -> f64 {
+    /// Three-pole approximation of a -3 db/octave spectrum, roughly unit peak,
+    /// using poles scaled to the 2x oversampled rate in `Coefficients`.
+    fn pink(&mut self, c: &Coefficients) -> f64 {
         let white = self.white();
-        self.pink[0] = quiet(0.997_65 * self.pink[0] + 0.099_046 * white);
-        self.pink[1] = quiet(0.963 * self.pink[1] + 0.296_516 * white);
-        self.pink[2] = quiet(0.57 * self.pink[2] + 1.052_691 * white);
+        for i in 0..3 {
+            self.pink[i] = quiet(c.pink_poles[i] * self.pink[i] + c.pink_gains[i] * white);
+        }
         (self.pink[0] + self.pink[1] + self.pink[2] + 0.184_8 * white) * 0.2
     }
 
@@ -515,7 +531,7 @@ impl Channel {
             c.release
         };
         self.envelope = quiet(level + pole * (self.envelope - level));
-        let gritty = split + shape.grit * self.envelope * self.pink();
+        let gritty = split + shape.grit * self.envelope * self.pink(c);
         let step = (gritty - self.slew).clamp(-shape.slew_step, shape.slew_step);
         self.slew = quiet(self.slew + step);
         let bounded = self.slew.tanh();

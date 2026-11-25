@@ -577,12 +577,23 @@ impl CompressorRuntime {
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame, key: StereoFrame, bypassed: bool) {
-        let left = f64::from(frame[0]);
-        let right = f64::from(frame[1]);
-        if !left.is_finite() || !right.is_finite() {
-            return;
-        }
-        let [key_left, key_right] = key.map(f64::from);
+        let left = if frame[0].is_finite() {
+            f64::from(frame[0])
+        } else {
+            0.0
+        };
+        let right = if frame[1].is_finite() {
+            f64::from(frame[1])
+        } else {
+            0.0
+        };
+        let [key_left, key_right] = key.map(|sample| {
+            if sample.is_finite() {
+                f64::from(sample)
+            } else {
+                0.0
+            }
+        });
         let peak = key_left.abs().max(key_right.abs());
         // Independent mean-square histories stay warm even while Peak is selected.
         for (energy, input) in self.energy.iter_mut().zip([key_left, key_right]) {
@@ -608,7 +619,8 @@ impl CompressorRuntime {
         } else {
             self.release_alpha
         };
-        self.envelope = coefficient * self.envelope + (1.0 - coefficient) * detector;
+        self.envelope =
+            hex_dsp::flush_quiet(coefficient * self.envelope + (1.0 - coefficient) * detector);
         let level_db = if self.envelope > 0.0 {
             20.0 * self.envelope.log10()
         } else {
@@ -621,9 +633,12 @@ impl CompressorRuntime {
             f64::from(self.settings.knee_db),
         );
         let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
-        self.gain_db = self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db;
-        self.reduction_db =
-            self.gain_alpha * self.reduction_db + (1.0 - self.gain_alpha) * reduction_db;
+        self.gain_db = hex_dsp::flush_subnormal(
+            self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db,
+        );
+        self.reduction_db = hex_dsp::flush_quiet(
+            self.gain_alpha * self.reduction_db + (1.0 - self.gain_alpha) * reduction_db,
+        );
         if !bypassed {
             let peak_reduction = self.meter.reduction_db[0].max(-self.reduction_db as f32);
             self.meter.reduction_db = [peak_reduction; 2];
@@ -632,7 +647,12 @@ impl CompressorRuntime {
         // A finite 5 ms ramp reaches exact endpoints, independently of block
         // partitions. Detector/gain history advances even at fully dry output.
         let mix = self.mix_ramp.advance_by_remaining();
-        if bypassed || mix == 0.0 {
+        if bypassed {
+            return;
+        }
+        if mix == 0.0 {
+            frame[0] = left as f32;
+            frame[1] = right as f32;
             return;
         }
         let gain = 10.0_f64.powf(self.gain_db / 20.0);
