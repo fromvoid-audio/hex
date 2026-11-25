@@ -410,6 +410,25 @@ impl ForeignProcessors for WithPrograms<'_> {
         )
     }
 
+    fn process_segment_with_modulations(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        lanes: &[ForeignModulationSamples<'_>],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        self.inner.process_segment_with_modulations(
+            self.programs.attach(node)?,
+            offset,
+            frames,
+            lanes,
+            notes,
+            clock,
+        )
+    }
+
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)
     }
@@ -457,28 +476,35 @@ impl Program {
         tempo: &TempoMap,
         profile: QuantumProfile,
     ) -> Result<Option<Self>, Invalid> {
-        let Some(raw_id) = source.dense_parameter else {
+        if source.dense_parameters.is_empty() {
             return Self::prepare(lanes, source.class, source.parameters, tempo, profile);
-        };
-        if source.parameters.len() > MAX_TARGETS
+        }
+        if source.dense_parameters.len() > hex_lattice::MAX_FOREIGN_MODULATION_TARGETS
+            || source
+                .dense_parameters
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || source.parameters.len() > MAX_TARGETS
             || source
                 .parameters
                 .windows(2)
                 .any(|pair| pair[0].id >= pair[1].id)
-            || !source
-                .parameters
-                .iter()
-                .any(|parameter| parameter.id == raw_id && parameter.steps == 0)
-            || lanes.iter().any(|lane| {
-                lane.is_reading()
-                    && lane.target == (DeviceAutomationTarget::Vst3 { parameter: raw_id })
+            || source.dense_parameters.iter().any(|&raw_id| {
+                !source
+                    .parameters
+                    .iter()
+                    .any(|parameter| parameter.id == raw_id && parameter.steps == 0)
+                    || lanes.iter().any(|lane| {
+                        lane.is_reading()
+                            && lane.target == (DeviceAutomationTarget::Vst3 { parameter: raw_id })
+                    })
             })
         {
             return Err(Invalid(
                 "dense vst3 modulation conflicts with the authored queue",
             ));
         }
-        // The dense lane already supplies the raw ID at every sample. Other
+        // Dense lanes already supply their raw IDs at every sample. Other
         // metadata keeps its original sparse authored or static-base path.
         let mut sparse = [ParameterCapability {
             id: 0,
@@ -486,11 +512,12 @@ impl Program {
             normalized_base_bits: 0,
         }; MAX_TARGETS];
         let mut count = 0;
-        for &parameter in source
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.id != raw_id)
-        {
+        for &parameter in source.parameters.iter().filter(|parameter| {
+            source
+                .dense_parameters
+                .binary_search(&parameter.id)
+                .is_err()
+        }) {
             sparse[count] = parameter;
             count += 1;
         }

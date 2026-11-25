@@ -367,7 +367,7 @@ pub(crate) fn contains_colors(project: &Project) -> bool {
             .any(|source| source.color != ElementColor::default())
     })
 }
-const AUDIO_RATE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.audio-rate");
+const AUDIO_RATE: DeviceTypeId = hex_lattice_contract::modulator::AUDIO_RATE;
 
 /// Only the newly playable FM4 bank requires a new reader floor. Prior codecs
 /// could already retain opaque banks on other instruments without playing them.
@@ -397,7 +397,7 @@ pub(crate) fn contains_operator_modulation(project: &Project) -> bool {
     })
 }
 
-const STEPS: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.steps");
+const STEPS: DeviceTypeId = hex_lattice_contract::modulator::STEPS;
 
 pub(crate) fn contains_steps(project: &Project) -> bool {
     contains_source(project, STEPS)
@@ -415,48 +415,39 @@ pub(crate) fn contains_arrangement_steps(project: &Project) -> bool {
 }
 
 pub(crate) fn contains_adsr(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.adsr"))
+    contains_source(project, hex_lattice_contract::modulator::ADSR)
 }
 
 pub(crate) fn contains_ahd_release(project: &Project) -> bool {
-    contains_source(
-        project,
-        DeviceTypeId::from_static("hex.modulator.ahd-release"),
-    )
+    contains_source(project, hex_lattice_contract::modulator::AHD_RELEASE)
 }
 
 pub(crate) fn contains_ramp(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.ramp"))
+    contains_source(project, hex_lattice_contract::modulator::RAMP)
 }
 
 pub(crate) fn contains_note_counter(project: &Project) -> bool {
-    contains_source(
-        project,
-        DeviceTypeId::from_static("hex.modulator.note-counter"),
-    )
+    contains_source(project, hex_lattice_contract::modulator::NOTE_COUNTER)
 }
 
 pub(crate) fn contains_mix(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.mix"))
+    contains_source(project, hex_lattice_contract::modulator::MIX)
 }
 
 pub(crate) fn contains_buttons(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.buttons"))
+    contains_source(project, hex_lattice_contract::modulator::BUTTONS)
 }
 
 pub(crate) fn contains_math(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.math"))
+    contains_source(project, hex_lattice_contract::modulator::MATH)
 }
 
 pub(crate) fn contains_macro_four(project: &Project) -> bool {
-    contains_source(
-        project,
-        DeviceTypeId::from_static("hex.modulator.macro-four"),
-    )
+    contains_source(project, hex_lattice_contract::modulator::MACRO_FOUR)
 }
 
 pub(crate) fn contains_button(project: &Project) -> bool {
-    contains_source(project, DeviceTypeId::from_static("hex.modulator.button"))
+    contains_source(project, hex_lattice_contract::modulator::BUTTON)
 }
 
 fn contains_source(project: &Project, device_type: DeviceTypeId) -> bool {
@@ -470,7 +461,7 @@ fn contains_source(project: &Project, device_type: DeviceTypeId) -> bool {
 }
 
 pub(crate) fn contains_note_pressure(project: &Project) -> bool {
-    const PRESSURE: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.note-pressure");
+    const PRESSURE: DeviceTypeId = hex_lattice_contract::modulator::NOTE_PRESSURE;
     fm4_banks(project).any(|bank| {
         bank.sources()
             .iter()
@@ -492,7 +483,7 @@ pub(crate) fn contains_audio_rate(project: &Project) -> bool {
     contains_source(project, AUDIO_RATE)
 }
 
-const LFO: DeviceTypeId = DeviceTypeId::from_static("hex.modulator.lfo");
+const LFO: DeviceTypeId = hex_lattice_contract::modulator::LFO;
 
 /// The existing route DTO already carries the provider and parameter IDs.
 /// The destination uses distinct reader floors for each timing mode. Both

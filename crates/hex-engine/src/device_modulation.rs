@@ -1,15 +1,13 @@
 //! Translate a saved device bank into a bounded device-local render declaration.
 //! Control preparation resolves stable IDs and validates real factory bindings.
 //! Prepared declarations borrow no project data and never enter project history.
-use hex_devices::modulation::{
-    adsr, ahd_release, audio_rate, button, buttons, envelope_follower, lfo, macro_four,
-    macro_value, math, mix, note_counter, note_pressure, ramp, random_hold, steps,
-};
+use hex_devices::modulation::{macro_four, note_pressure};
 use hex_lattice::{
-    ForeignModulationRoute, HostGainModulationRoute, MAX_MODULATION_SOURCES, ModulationRoute,
-    ModulationTarget, PreparedForeignModulation, PreparedModulation, PreparedModulationSource,
-    PreparedModulationState, PreparedMutableInstrumentRuntime, PreparedProcessorFactory,
-    SourceModulationParameter, SourceModulationRoute,
+    ForeignModulationTarget, ForeignTargetModulationRoute, HostGainModulationRoute,
+    MAX_FOREIGN_MODULATION_TARGETS, MAX_MODULATION_SOURCES, ModulationRoute, ModulationTarget,
+    ModulatorPreparationContext, PreparedForeignModulation, PreparedModulation,
+    PreparedModulationSource, PreparedModulationState, PreparedMutableInstrumentRuntime,
+    PreparedProcessorFactory, SourceModulationRoute,
 };
 use hex_lattice_contract::{
     DeviceAutomationTarget, HostGain, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor,
@@ -424,12 +422,19 @@ pub(super) fn prepare_voice_pressure(
     }))
 }
 
-/// The first native effect reservation owns exactly one continuous raw ID.
-pub fn foreign_modulation_target(device: &Device) -> Result<Option<(u32, [u8; 16])>, Invalid> {
+/// Sorted continuous raw VST3 parameter IDs and their consistent VST3 class ID.
+pub type ForeignModulationTargets = (Vec<u32>, [u8; 16]);
+
+/// Collect up to `MAX_FOREIGN_MODULATION_TARGETS` (16) unique sorted continuous
+/// raw VST3 parameter IDs modulated on `device`, verifying one consistent class ID.
+pub fn foreign_modulation_targets(
+    device: &Device,
+) -> Result<Option<ForeignModulationTargets>, Invalid> {
     if device.state().type_id() != VST3_DEVICE_TYPE_ID {
         return Ok(None);
     }
-    let mut selected = None;
+    let mut selected_class: Option<[u8; 16]> = None;
+    let mut ids = Vec::new();
     for route in device.modulation().routes() {
         let ModulationDestination::Device {
             device_type,
@@ -446,22 +451,37 @@ pub fn foreign_modulation_target(device: &Device) -> Result<Option<(u32, [u8; 16
                 "vst3 modulation requires a raw parameter assignment",
             ));
         };
-        if selected
-            .replace((parameter, class))
-            .is_some_and(|old| old != (parameter, class))
-        {
-            return Err(Invalid(
-                "this vst3 effect reserves one modulation parameter",
-            ));
+        if let Some(existing) = selected_class {
+            if existing != class {
+                return Err(Invalid("vst3 modulation class mismatch"));
+            }
+        } else {
+            selected_class = Some(class);
+        }
+        if !ids.contains(&parameter) {
+            if ids.len() >= MAX_FOREIGN_MODULATION_TARGETS {
+                return Err(Invalid(
+                    "this vst3 device exceeds the 16-parameter modulation limit",
+                ));
+            }
+            ids.push(parameter);
         }
     }
-    Ok(selected)
+    ids.sort_unstable();
+    Ok(selected_class.map(|class| (ids, class)))
+}
+
+/// Primary modulated raw VST3 parameter ID when present (backwards-compatible
+/// helper returning the first target of `foreign_modulation_targets`).
+pub fn foreign_modulation_target(device: &Device) -> Result<Option<(u32, [u8; 16])>, Invalid> {
+    Ok(foreign_modulation_targets(device)?
+        .and_then(|(ids, class)| ids.first().copied().map(|id| (id, class))))
 }
 
 pub(super) struct EffectModulation {
     sources: Vec<PreparedModulationSource>,
-    foreign_target: Option<(u32, [u8; 16])>,
-    foreign_routes: Vec<ForeignModulationRoute>,
+    foreign_targets: Option<(Vec<u32>, [u8; 16])>,
+    foreign_routes: Vec<ForeignTargetModulationRoute>,
     routes: Vec<ModulationRoute>,
     host_input_routes: Vec<HostGainModulationRoute>,
     host_output_routes: Vec<HostGainModulationRoute>,
@@ -519,10 +539,9 @@ impl EffectModulation {
         if bank.is_empty() {
             return Ok(None);
         }
-        let foreign_target = foreign_modulation_target(device)?;
-        if instrument_events && foreign_target.is_some() {
-            return Err(Invalid("vst3 instrument modulation is unsupported"));
-        }
+        let registry = hex_devices::native_modulator_registry()
+            .map_err(|_| Invalid("modulator registry is unavailable"))?;
+        let foreign_targets = foreign_modulation_targets(device)?;
         let invalid_source = |_| Invalid("modulator state or rate is unsupported");
         let (fallback_bpm, maximum_bpm) = project.map_or((120.0, 120.0), |project| {
             let tempo_map = project.tempo_map();
@@ -546,87 +565,40 @@ impl EffectModulation {
         let output_count = ordered
             .iter()
             .filter(|slot| slot.enabled)
-            .map(|slot| source_output_count(slot.state.type_id()))
+            .map(|slot| {
+                registry
+                    .output_count(slot.state.type_id())
+                    .unwrap_or_else(|| source_output_count(slot.state.type_id()))
+            })
             .sum::<usize>();
         if output_count > MAX_MODULATION_SOURCES {
             return Err(Invalid("device modulator output capacity reached"));
         }
+        let prep_context = ModulatorPreparationContext {
+            sample_rate,
+            fallback_bpm,
+            maximum_bpm,
+            instrument_events,
+        };
         let mut sources = reserved(output_count)?;
         let mut outputs = reserved(output_count)?;
+        let mut slot_outputs = Vec::new();
         for source in ordered {
-            let mut retain = |output, prepared| {
+            slot_outputs.clear();
+            registry
+                .prepare_outputs(source.id, &source.state, prep_context, &mut slot_outputs)
+                .map_err(invalid_source)?;
+            for prepared in slot_outputs.drain(..) {
+                if prepared.source.reads_note_events() && !instrument_events {
+                    return Err(Invalid("this modulator requires instrument note events"));
+                }
                 if source.enabled {
-                    outputs.push((source.id, output));
-                    sources.push(prepared);
+                    outputs.push((source.id, prepared.output));
+                    sources.push(prepared.source);
                 }
-            };
-            if source.state.type_id() == macro_four::TYPE_ID {
-                let settings =
-                    macro_four::Settings::decode(&source.state).map_err(invalid_source)?;
-                for parameter in macro_four::VALUE_PARAMETERS {
-                    let output = macro_four::output_for_parameter(parameter)
-                        .ok_or(Invalid("macro-4 output is unsupported"))?;
-                    let prepared = settings
-                        .prepare(source.id, sample_rate, output)
-                        .map_err(invalid_source)?;
-                    retain(output, prepared);
-                }
-                continue;
             }
-            if source.state.type_id() == buttons::TYPE_ID {
-                let settings = buttons::Settings::decode(&source.state).map_err(invalid_source)?;
-                for number in 1..=buttons::OUTPUT_COUNT as u32 {
-                    let output = ModulationOutputId::new(number).map_err(invalid_source)?;
-                    let prepared = settings
-                        .prepare(source.id, sample_rate, output)
-                        .map_err(invalid_source)?;
-                    retain(output, prepared);
-                }
-                continue;
-            }
-            let prepared = match source.state.type_id() {
-                lfo::TYPE_ID => lfo::Settings::decode(&source.state).and_then(|settings| {
-                    settings.prepare(source.id, sample_rate, fallback_bpm, maximum_bpm)
-                }),
-                audio_rate::TYPE_ID => audio_rate::prepare(&source.state, source.id, sample_rate),
-                button::TYPE_ID => button::prepare(&source.state, source.id, sample_rate),
-                envelope_follower::TYPE_ID => envelope_follower::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                macro_value::TYPE_ID => macro_value::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                math::TYPE_ID => math::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                mix::TYPE_ID => mix::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                note_counter::TYPE_ID => note_counter::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                ramp::TYPE_ID => ramp::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                ahd_release::TYPE_ID => ahd_release::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                adsr::TYPE_ID => adsr::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                steps::TYPE_ID => {
-                    let settings =
-                        steps::Settings::decode(&source.state).map_err(invalid_source)?;
-                    if instrument_events
-                        && matches!(settings.timing, steps::Timing::Arrangement { .. })
-                    {
-                        return Err(Invalid("arrangement-synced steps requires a native effect"));
-                    }
-                    settings.prepare(source.id, sample_rate)
-                }
-                random_hold::TYPE_ID => random_hold::Settings::decode(&source.state)
-                    .and_then(|settings| settings.prepare(source.id, sample_rate)),
-                _ => return Err(Invalid("modulator state or rate is unsupported")),
-            }
-            .map_err(invalid_source)?;
-            if prepared.reads_note_events() && !instrument_events {
-                return Err(Invalid("this modulator requires instrument note events"));
-            }
-            retain(ModulationOutputId::MAIN, prepared);
         }
-        if sources.is_empty() && foreign_target.is_none() {
+        if sources.is_empty() && foreign_targets.is_none() {
             return Ok(None);
         }
 
@@ -648,7 +620,7 @@ impl EffectModulation {
         let host_output_count = host_route_count(DeviceAutomationTarget::HostOutputGain);
         let provider_count =
             bank.routes().len() - source_route_count - host_input_count - host_output_count;
-        let (native_count, foreign_count) = if foreign_target.is_some() {
+        let (native_count, foreign_count) = if foreign_targets.is_some() {
             (0, provider_count)
         } else {
             (provider_count, 0)
@@ -674,7 +646,7 @@ impl EffectModulation {
             let range = [route.range.start.get(), route.range.end.get()];
             if range != [-1.0, 1.0]
                 && bank.sources().iter().any(|slot| {
-                    slot.id == route.source && button::uses_identity_range(slot.state.type_id())
+                    slot.id == route.source && registry.uses_identity_range(slot.state.type_id())
                 })
             {
                 return Err(Invalid("button assignments use the original on/off values"));
@@ -684,8 +656,12 @@ impl EffectModulation {
                     device_type: VST3_DEVICE_TYPE_ID,
                     target: DeviceAutomationTarget::Vst3 { parameter },
                     vst3_class: Some(class),
-                } if foreign_target == Some((parameter, class)) => {
-                    foreign_routes.push(ForeignModulationRoute {
+                } if foreign_targets.as_ref().is_some_and(|(ids, target_class)| {
+                    *target_class == class && ids.binary_search(&parameter).is_ok()
+                }) =>
+                {
+                    foreign_routes.push(ForeignTargetModulationRoute {
+                        target: parameter,
                         source,
                         amount,
                         range,
@@ -725,37 +701,14 @@ impl EffectModulation {
                     module_type,
                     parameter,
                 } => {
-                    let output = if module_type == macro_four::TYPE_ID {
-                        macro_four::output_for_parameter(parameter)
-                            .ok_or(Invalid("macro-4 control is unsupported"))?
-                    } else {
-                        ModulationOutputId::MAIN
-                    };
+                    let (output, _) = registry
+                        .resolve_target_parameter(module_type, parameter, None)
+                        .ok_or(Invalid("modulation destination is unsupported"))?;
                     let target = outputs.binary_search(&(target, output)).ok();
                     let target_source = target.and_then(|index| sources.get(index));
-                    let parameter = match (module_type, parameter) {
-                        (macro_four::TYPE_ID, _)
-                        | (macro_value::TYPE_ID, macro_value::VALUE_PARAMETER) => {
-                            SourceModulationParameter::MacroValue
-                        }
-                        (math::TYPE_ID, math::INPUT_A) => SourceModulationParameter::MathA,
-                        (math::TYPE_ID, math::INPUT_B) => SourceModulationParameter::MathB,
-                        (mix::TYPE_ID, mix::INPUT_A) => SourceModulationParameter::MixA,
-                        (mix::TYPE_ID, mix::INPUT_B) => SourceModulationParameter::MixB,
-                        (mix::TYPE_ID, mix::BLEND) => SourceModulationParameter::MixBlend,
-                        (lfo::TYPE_ID, lfo::RATE_PARAMETER) => {
-                            if target_source.is_some_and(|source| {
-                                source.supports_modulation_parameter(
-                                    SourceModulationParameter::TempoLfoRate,
-                                )
-                            }) {
-                                SourceModulationParameter::TempoLfoRate
-                            } else {
-                                SourceModulationParameter::FreeLfoRate
-                            }
-                        }
-                        _ => return Err(Invalid("modulation destination is unsupported")),
-                    };
+                    let (_, parameter) = registry
+                        .resolve_target_parameter(module_type, parameter, target_source)
+                        .ok_or(Invalid("modulation destination is unsupported"))?;
                     if let Some(target) = target {
                         if !target_source
                             .is_some_and(|source| source.supports_modulation_parameter(parameter))
@@ -778,7 +731,7 @@ impl EffectModulation {
         parameters.dedup();
         Ok(Some(Self {
             sources,
-            foreign_target,
+            foreign_targets,
             foreign_routes,
             routes,
             host_input_routes,
@@ -866,13 +819,10 @@ impl EffectModulation {
         processor: hex_lattice::PreparedForeignProcessor,
         sample_rate: u32,
     ) -> Result<Option<PreparedModulationState>, Invalid> {
-        let Some((raw_id, class)) = self.foreign_target else {
+        let Some((raw_ids, class)) = self.foreign_targets else {
             return Ok(None);
         };
         let mismatch = || Invalid("vst3 modulation requires the exact reserved continuous source");
-        if processor.is_instrument_profile() {
-            return Err(mismatch());
-        }
         let source = crate::foreign_automation::candidate::exact_source(
             device,
             identity,
@@ -882,24 +832,34 @@ impl EffectModulation {
         )
         .map_err(|_| mismatch())?
         .ok_or_else(mismatch)?;
-        if source.class != class || source.dense_parameter != Some(raw_id) {
+        if source.class != class || raw_ids.is_empty() {
             return Err(mismatch());
         }
-        let index = source
-            .parameters
-            .binary_search_by_key(&raw_id, |parameter| parameter.id)
-            .map_err(|_| mismatch())?;
-        let parameter = source.parameters[index];
-        if parameter.steps != 0 {
-            return Err(mismatch());
+        let mut targets = reserved(raw_ids.len())?;
+        for raw_id in raw_ids {
+            if source.dense_parameters.binary_search(&raw_id).is_err() {
+                return Err(mismatch());
+            }
+            let index = source
+                .parameters
+                .binary_search_by_key(&raw_id, |parameter| parameter.id)
+                .map_err(|_| mismatch())?;
+            let parameter = source.parameters[index];
+            if parameter.steps != 0 {
+                return Err(mismatch());
+            }
+            targets.push(ForeignModulationTarget {
+                raw_id,
+                normalized_base: f64::from_bits(parameter.normalized_base_bits),
+            });
         }
-        PreparedForeignModulation::new(
-            raw_id,
-            f64::from_bits(parameter.normalized_base_bits),
-            self.sources,
+        PreparedForeignModulation::new_multi(
+            &targets,
             &self.foreign_routes,
+            self.sources,
             &self.source_routes,
             CHUNK_FRAMES,
+            processor.is_instrument_profile(),
         )
         .and_then(|prepared| prepared.into_effect_modulation(source.binding))
         .map(Some)
@@ -912,7 +872,7 @@ impl EffectModulation {
         metadata: &dyn NativeDeviceMetadata,
         factory: Option<&PreparedProcessorFactory>,
     ) -> Result<PreparedModulationState, Invalid> {
-        if self.foreign_target.is_some()
+        if self.foreign_targets.is_some()
             || matches!(factory, Some(PreparedProcessorFactory::Foreign(_)))
         {
             return Err(Invalid(
@@ -1050,11 +1010,10 @@ impl EffectModulation {
 }
 
 fn source_output_count(device_type: hex_lattice_contract::DeviceTypeId) -> usize {
-    match device_type {
-        macro_four::TYPE_ID => macro_four::VALUE_PARAMETERS.len(),
-        buttons::TYPE_ID => buttons::OUTPUT_COUNT,
-        _ => 1,
-    }
+    hex_devices::native_modulator_registry()
+        .ok()
+        .and_then(|registry| registry.output_count(device_type))
+        .unwrap_or(1)
 }
 
 fn reserved<T>(count: usize) -> Result<Vec<T>, Invalid> {

@@ -105,6 +105,9 @@ pub fn native_instrument_registry()
     hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_NATIVE_INSTRUMENTS)
 }
 
+/// The immutable catalog of all 16 built-in native modulators.
+pub use modulation::registry::native_modulator_registry;
+
 /// Prepare the original sine configuration for callers that still use the
 /// narrow legacy MIDI-template helper. New runtime compilation resolves the
 /// track's generic instrument state through `native_instrument_registry`.

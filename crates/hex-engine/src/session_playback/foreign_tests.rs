@@ -692,7 +692,7 @@ fn foreign_export_applies_authored_parameter_values_to_audio(linear: bool) {
             class,
             sample_rate: 48_000,
             quantum_frames: 8,
-            dense_parameter: None,
+            dense_parameters: &[],
             parameters: &[hex_lattice::ForeignParameterCapability {
                 id: 7,
                 steps: 0,

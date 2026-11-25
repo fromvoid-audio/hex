@@ -612,7 +612,7 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
                 effect.program_revision,
             )
             .map(|mut source| {
-                source.dense_parameter = effect.dense_raw_id;
+                source.dense_parameters = effect.dense_raw_id.as_slice();
                 source
             }))
     }
