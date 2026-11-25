@@ -123,14 +123,14 @@ struct GeometryLru {
     stretch_slot: Option<usize>,
 }
 
-#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+#[cfg(test)]
 struct GeometryLruIter<'a> {
     nodes: &'a [Option<GeometryLruNode>],
     current: Option<usize>,
     remaining: usize,
 }
 
-#[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+#[cfg(test)]
 impl<'a> Iterator for GeometryLruIter<'a> {
     type Item = &'a WaveformGeometryEntry;
 
@@ -156,7 +156,7 @@ impl GeometryLru {
         self.len == 0
     }
 
-    #[cfg(all(test, any(feature = "ui-unit-tier", feature = "ui-test-support")))]
+    #[cfg(test)]
     fn iter(&self) -> GeometryLruIter<'_> {
         GeometryLruIter {
             nodes: &self.nodes,
