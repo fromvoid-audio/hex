@@ -125,7 +125,7 @@ impl Channel {
                     let magic = &out.bytes[..8];
                     if ![
                         b"HXVIFA04",
-                        b"HXVIRD05",
+                        b"HXVIRD06",
                         b"HXVIQF03",
                         b"HXVIAR02",
                         b"HXVIRR03",
@@ -396,7 +396,7 @@ mod tests {
     }
     #[test]
     fn hostile_frames_refuse_before_unbounded_reads_or_allocation() {
-        let mut oversized = b"HXVIRD05".to_vec();
+        let mut oversized = b"HXVIRD06".to_vec();
         oversized.extend(u32::MAX.to_le_bytes());
         let mut events = vec![0; 64];
         events[..4].copy_from_slice(b"HXVB");
