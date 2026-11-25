@@ -88,7 +88,7 @@ pub fn oscillator_identity_color(index: usize) -> Option<u32> {
     [0xe2cf25, 0x22bcb5, 0x6374e8, 0xf18428].get(index).copied()
 }
 
-#[cfg(all(test, feature = "ui-unit-tier"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -229,7 +229,7 @@ pub fn device_identity_style(index: usize, enabled: bool, selected: bool) -> Con
     style
 }
 
-#[cfg(all(test, feature = "ui-unit-tier"))]
+#[cfg(test)]
 mod action_tests {
     use super::*;
 

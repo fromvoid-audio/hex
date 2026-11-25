@@ -7,7 +7,7 @@ impl Drop for RestoreTheme {
     }
 }
 
-#[cfg(all(test, not(feature = "ui-test-support")))]
+#[cfg(test)]
 mod unit_tests {
     use super::*;
 

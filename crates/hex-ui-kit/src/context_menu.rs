@@ -347,7 +347,7 @@ impl gpui::Render for MenuTooltip {
     }
 }
 
-#[cfg(all(test, not(feature = "ui-test-support")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]

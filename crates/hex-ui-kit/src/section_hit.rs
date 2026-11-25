@@ -57,7 +57,7 @@ pub fn hit<K: Copy, T: Copy + PartialEq>(
     None
 }
 
-#[cfg(all(test, feature = "ui-unit-tier"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
