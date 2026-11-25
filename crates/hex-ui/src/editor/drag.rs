@@ -498,6 +498,10 @@ impl super::EditorView {
             });
         }
         self.active_native_device_drag = None;
+        drag.group.borrow_mut().source_project = self
+            .state
+            .as_ref()
+            .map(|s| std::sync::Arc::clone(&s.project));
         self.active_clip_drag = Some(drag.clone());
         self.active_browser_audio_drag = None;
     }
@@ -610,7 +614,7 @@ impl super::EditorView {
         let target = hex_session::service::ArrangementMoveAudition {
             context: hex_engine::AudioSourceContext {
                 project_generation: drag.project_generation,
-                editor_revision: drag.revision,
+                editor_revision: drag.effective_revision(),
             },
             gesture: audition.gesture,
             sequence,
@@ -643,6 +647,20 @@ impl super::EditorView {
         {
             self.service.finish_arrangement_move_audition();
         }
+    }
+
+    /// Revision-advancing requests must settle before `MoveExistingClips` is
+    /// dispatched because the worker checks `captured_revision == worker.revision`.
+    /// Same-revision worker work (such as tuning audition) does not need deferral.
+    pub(super) fn clip_move_must_defer(&self) -> bool {
+        self.pending_requests.len() < super::UI_REQUEST_CAPACITY
+            && (!self.pending_requests.is_empty()
+                || self.duplicate_intent.is_pending()
+                || self.sections.pending()
+                || self.pending_track_clipboard.is_some()
+                || self.track_reorder_active()
+                || self.pending_midi_drag.is_some()
+                || self.gain_lane.pending.is_some())
     }
 
     pub(super) fn drop_clip_to_new_track(
@@ -689,11 +707,7 @@ impl super::EditorView {
             self.clear_clip_drag(drag.project_generation, drag.clip);
             return;
         };
-        if self.opening_project
-            || self.close_prompt_open
-            || self.worker_requests_pending != 0
-            || !self.pending_requests.is_empty()
-        {
+        if self.edit_blocked_outside_request_queue() || self.pending_clip_move_active() {
             self.error = Some("clip move canceled · project work pending".into());
             self.clear_clip_drag(drag.project_generation, drag.clip);
             cx.notify();
@@ -744,6 +758,22 @@ impl super::EditorView {
             self.clear_clip_drag(drag.project_generation, drag.clip);
             return;
         };
+        let defer = self.clip_move_must_defer();
+        self.finish_held_clip_move_audition();
+        if defer {
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new_deferred(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                    copy_intent,
+                )
+            });
+            cx.notify();
+            return;
+        }
+        let revision = drag.effective_revision();
         self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
             super::pending_clip_move::Pending::new(
                 drag,
@@ -753,10 +783,9 @@ impl super::EditorView {
             )
         });
         let before_pending = self.worker_requests_pending;
-        self.finish_held_clip_move_audition();
         if self.enqueue(Request::MoveExistingClips {
             project_generation: drag.project_generation,
-            revision: drag.revision,
+            revision,
             command,
         }) {
             if let Some(mut intent) = copy_intent {
@@ -1444,7 +1473,7 @@ impl super::EditorView {
             .painted_track_insertion_target(pointer.0, pointer.1)
             .is_some()
         {
-            if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
+            if self.edit_blocked_outside_request_queue() || self.pending_clip_move_active() {
                 self.error = Some("clip move canceled · project work pending".into());
                 clear(self);
                 cx.notify();
@@ -1551,6 +1580,22 @@ impl super::EditorView {
         drag.preview.set(Some(preview));
         let source = std::sync::Arc::clone(&state.project);
         self.sync_held_clip_move_audition();
+        let defer = self.clip_move_must_defer();
+        self.finish_held_clip_move_audition();
+        if defer {
+            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+                super::pending_clip_move::Pending::new_deferred(
+                    drag,
+                    command.clone(),
+                    source,
+                    self.selection_intent_epoch,
+                    copy_intent,
+                )
+            });
+            cx.notify();
+            return;
+        }
+        let revision = drag.effective_revision();
         self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
             super::pending_clip_move::Pending::new(
                 drag,
@@ -1560,10 +1605,9 @@ impl super::EditorView {
             )
         });
         let before_pending = self.worker_requests_pending;
-        self.finish_held_clip_move_audition();
         if self.enqueue(Request::MoveExistingClips {
             project_generation: drag.project_generation,
-            revision: drag.revision,
+            revision,
             command,
         }) {
             if let Some(mut intent) = copy_intent {

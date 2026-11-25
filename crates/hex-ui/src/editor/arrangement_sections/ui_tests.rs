@@ -2062,6 +2062,7 @@ fn reorder_pending_keeps_completed_frames_until_its_exact_terminal(cx: &mut Test
             cut_clipboard: None,
             cut_cursor: None,
             receipt,
+            deferred_submission: false,
         });
         v.worker_requests_pending = 2;
     });
@@ -3821,6 +3822,7 @@ fn consecutive_keyboard_section_copies_keep_both_receipts_and_latest_rows(cx: &m
             cut_cursor: None,
             receipt: Receipt::new(primary.generation),
             selection_intent_epoch: primary.selection_intent_epoch,
+            deferred_submission: false,
         });
         assert!(view.refuse_section(&Request::EditArrangementSection {
             project_generation: view.project_generation,
@@ -5399,5 +5401,113 @@ fn off_target_clip_release_does_not_block_section_loop_scope(cx: &mut TestAppCon
             v.last_enqueued_edit,
             Some(Command::SetLoopRegion { .. })
         ));
+    });
+}
+
+#[gpui::test]
+fn section_copy_then_immediate_pointer_edit_succeeds_without_refusal_or_flicker(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, ids) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    // Select section 0 (beats 0..4) and trigger Cmd+D section copy without settling yet.
+    let section_a = editor.read_with(cx, |v, _| position(v, 2));
+    visual.simulate_mouse_down(section_a, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(section_a, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-d");
+
+    editor.read_with(cx, |v, _| {
+        assert!(v.sections.pending.is_some(), "section copy is in flight");
+        assert_eq!(v.worker_requests_pending, 1);
+        assert!(
+            v.section_pointer_available(),
+            "section pointer gestures must stay available during section copy"
+        );
+        assert!(
+            v.drag_available(),
+            "clip dragging must stay available during section copy"
+        );
+        assert!(
+            !v.track_gain_edit_blocked(),
+            "track volume must stay available during section copy"
+        );
+        assert_eq!(v.error, None);
+    });
+
+    // Immediately drag section 0's trailing edge (beat 4 -> beat 6) with Option+Cmd
+    // (marker-only resize) BEFORE the section copy terminal arrives.
+    let edge = editor.read_with(cx, |v, _| {
+        let p = position(v, 4);
+        point(p.x - px(2.0), p.y)
+    });
+    let target = editor.read_with(cx, |v, _| position(v, 6));
+    let marker_only = Modifiers {
+        alt: true,
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(edge, MouseButton::Left, marker_only);
+    visual.simulate_mouse_move(target, Some(MouseButton::Left), marker_only);
+    visual.run_until_parked();
+    let held_end = editor.read_with(cx, |v, _| {
+        v.sections
+            .gesture
+            .as_ref()
+            .and_then(|g| g.display.markers.iter().find(|m| m.id == Some(ids[0])))
+            .map(|m| m.end)
+    });
+    assert_eq!(
+        held_end,
+        Some(BeatTime::from_quarters(6).unwrap()),
+        "pointer drag during pending section copy must preview new edge"
+    );
+
+    visual.simulate_mouse_up(target, MouseButton::Left, marker_only);
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| {
+        assert_eq!(
+            v.error, None,
+            "section pointer edit during section copy must not show SECTION_BUSY refusal"
+        );
+        assert!(
+            v.sections.queued.is_some(),
+            "released section edit must queue behind the in-flight copy"
+        );
+        let queued_end = v
+            .sections
+            .queued
+            .as_ref()
+            .and_then(|q| q.display.as_ref())
+            .and_then(|d| d.markers.iter().find(|m| m.id == Some(ids[0])))
+            .map(|m| m.end);
+        assert_eq!(
+            queued_end,
+            Some(BeatTime::from_quarters(6).unwrap()),
+            "queued pointer edit must keep its frozen display without release flicker"
+        );
+    });
+
+    // Settle both the section copy and the queued resize edit.
+    settle(&editor, &mut visual);
+    editor.read_with(cx, |v, _| {
+        assert_eq!(v.error, None);
+        assert!(v.sections.pending.is_none());
+        assert!(v.sections.queued.is_none());
+        let project = &v.state.as_ref().unwrap().project;
+        assert_eq!(
+            project.arrangement_sections().len(),
+            3,
+            "section copy must commit canonically"
+        );
+        let first = project.arrangement_section(ids[0]).unwrap();
+        assert_eq!(
+            first.end(),
+            BeatTime::from_quarters(6).unwrap(),
+            "immediate follow-up resize must commit canonically"
+        );
     });
 }

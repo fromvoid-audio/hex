@@ -737,7 +737,7 @@ impl EditorView {
                             Some("automation owns gain · edit or clear the gain lane")
                         } else if let Some(reason) = gain_recovery_blocker(view) {
                             Some(reason)
-                        } else if view.edit_pending()
+                        } else if view.track_gain_edit_blocked()
                             || view.pending_restart_request.is_some()
                             || view.track_gain_controls.pending_recovery.is_some()
                         {
@@ -979,7 +979,7 @@ impl EditorView {
                             && !explicit_gain)
                             || view.gain_recorder.blocks_edits()
                             || view.midi_recorder.blocks_edits()
-                            || view.edit_pending()
+                            || view.mixer_edit_blocked()
                             || view.pending_restart_request.is_some()
                             || view.track_gain_controls.pending_recovery.is_some())
                     {

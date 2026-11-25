@@ -16,11 +16,34 @@ impl EditorView {
         let coverage = coverage.filter(|_| {
             self.sections.ahead.is_none()
                 && self.sections.pending.is_none()
+                && self.sections.queued.is_none()
                 && self.sections.gesture.is_none()
                 && self.sections.name.is_none()
         });
         let canonical;
-        let (display, preview_state, drag_gesture) = if let Some(p) = self
+        let (display, preview_state, drag_gesture) = if let Some(g) = self
+            .sections
+            .gesture
+            .as_ref()
+            .filter(|g| self.section_current(g))
+        {
+            (&g.display, None, Some(g))
+        } else if let Some(queued_display) = self
+            .sections
+            .queued
+            .as_ref()
+            .filter(|q| q.generation == self.project_generation)
+            .and_then(|q| q.display.as_ref())
+        {
+            (
+                queued_display,
+                self.sections
+                    .pending
+                    .as_ref()
+                    .and_then(|p| p.layout.as_deref()),
+                None,
+            )
+        } else if let Some(p) = self
             .sections
             .ahead
             .as_ref()
@@ -28,13 +51,6 @@ impl EditorView {
             .or(self.sections.pending.as_ref())
         {
             (&p.display, p.layout.as_deref(), None)
-        } else if let Some(g) = self
-            .sections
-            .gesture
-            .as_ref()
-            .filter(|g| self.section_current(g))
-        {
-            (&g.display, None, Some(g))
         } else {
             canonical = Display {
                 markers: state

@@ -274,10 +274,8 @@ impl EditorView {
         !self.track_resize_active()
             && !self.track_reorder_active()
             && self.clip_name_edit.is_none()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && self.worker_requests_pending == 0
-            && self.pending_requests.is_empty()
+            && !self.edit_blocked_outside_request_queue()
+            && !self.pending_clip_move_active()
     }
 
     pub(in crate::editor) fn floating_clip_drag_ghost(&self, scale: f32) -> Option<Div> {

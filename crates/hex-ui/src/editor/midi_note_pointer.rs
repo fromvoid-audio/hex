@@ -62,7 +62,7 @@ impl EditorView {
             pitch: self.piano_pitch,
             grid: self.midi_snap_grid,
             bounds,
-            pending: self.edit_pending(),
+            pending: self.midi_canvas_edit_blocked(),
         })
     }
     /// Compare only the immutable held snapshot. Current-state validation belongs
@@ -72,7 +72,7 @@ impl EditorView {
         if let Some(g) = &self.midi_group_gesture {
             let c = g.captured_context();
             return c.generation == f.generation
-                && c.revision == f.revision
+                && c.revision >= f.revision
                 && c.clip == Some(f.clip)
                 && c.beat_start == f.view_start
                 && c.beat_span == f.view_span
@@ -85,11 +85,12 @@ impl EditorView {
         self.midi_note_gesture.as_ref().is_some_and(|g| {
             g.note == key.note
                 && kind(g.kind) == key.kind
+                && g.revision >= f.revision
                 && midi_drag::is_current(
                     g,
                     GestureContext {
                         generation: f.generation,
-                        revision: f.revision,
+                        revision: g.revision,
                         selected_clip: Some(f.clip),
                         selected_note: Some(key.note),
                         pending: false,

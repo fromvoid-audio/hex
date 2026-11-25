@@ -202,11 +202,8 @@ impl EditorView {
 
         let canvas_scene = std::sync::Arc::clone(&scene);
         let draw_selected = selected_ids;
-        let draw_preview =
-            displayed_note.map(|gesture| (gesture.note, gesture.preview, gesture.source_prefix));
-        let draw_group = self
-            .displayed_midi_group_gesture()
-            .map(|gesture| (gesture.shared_originals(), gesture.clone()));
+        let draw_previews = self.displayed_midi_single_previews();
+        let draw_groups = self.displayed_midi_group_previews();
         let draw_stroke = self.displayed_midi_stroke_preview();
         let draw_creation = self.displayed_midi_creation();
         let draw_marquee = self.midi_marquee.clone();
@@ -253,9 +250,9 @@ impl EditorView {
                 })
         });
         let hover_allowed = self.context_menu.is_none()
-            && !self.edit_pending()
-            && draw_preview.is_none()
-            && draw_group.is_none()
+            && !self.midi_canvas_edit_blocked()
+            && draw_previews.is_empty()
+            && draw_groups.is_empty()
             && draw_stroke.is_none()
             && draw_creation.is_none()
             && draw_marquee.is_none()
@@ -513,8 +510,8 @@ impl EditorView {
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&note.id).is_ok())
-                        || draw_preview.is_some_and(|(id, _, _)| id == note.id)
-                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                        || draw_previews.iter().any(|(id, _, _)| *id == note.id)
+                        || draw_groups.iter().any(|(originals, gesture)| {
                             !gesture.is_copy()
                                 && originals
                                     .binary_search_by_key(&note.id, |item| item.id)
@@ -555,11 +552,13 @@ impl EditorView {
                     }
                 }
                 for id in draw_selected.iter().copied() {
-                    if draw_preview.is_some_and(|(preview_id, _, _)| preview_id == id)
+                    if draw_previews
+                        .iter()
+                        .any(|(preview_id, _, _)| *preview_id == id)
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&id).is_ok())
-                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                        || draw_groups.iter().any(|(originals, gesture)| {
                             !gesture.is_copy()
                                 && originals.binary_search_by_key(&id, |item| item.id).is_ok()
                         })
@@ -638,26 +637,30 @@ impl EditorView {
                         }
                     }
                 }
-                if let Some((id, item, prefix)) = draw_preview
-                    && let Some(note) = canvas_scene.rebased_preview_geometry(id, item, prefix)
-                    && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
-                {
-                    let (y, note_height) = note_band(note.y);
-                    let ends = (note.leading_edge_visible, note.trailing_edge_visible);
-                    let color = rgb(theme::color(
-                        if canvas_scene.note(id).is_some_and(|n| !n.active) {
-                            theme::PaletteRole::Muted
-                        } else {
-                            theme::PaletteRole::Primary
-                        },
-                    ));
-                    if let Some(body) = note_quad(x, y, right - x, note_height, ends, color.into())
+                for &(id, item, prefix) in &draw_previews {
+                    if let Some(note) = canvas_scene.rebased_preview_geometry(id, item, prefix)
+                        && let Some((x, right)) = super::midi_scene::pixel_bounds(note, width)
                     {
-                        window.paint_quad(body);
+                        let (y, note_height) = note_band(note.y);
+                        let ends = (note.leading_edge_visible, note.trailing_edge_visible);
+                        let color = rgb(theme::color(
+                            if canvas_scene.note(id).is_some_and(|n| !n.active) {
+                                theme::PaletteRole::Muted
+                            } else if draw_selected.binary_search(&id).is_ok() {
+                                theme::PaletteRole::Primary
+                            } else {
+                                theme::PaletteRole::Secondary
+                            },
+                        ));
+                        if let Some(body) =
+                            note_quad(x, y, right - x, note_height, ends, color.into())
+                        {
+                            window.paint_quad(body);
+                        }
                     }
                 }
 
-                if let Some((originals, gesture)) = &draw_group {
+                for (originals, gesture) in &draw_groups {
                     for (index, original) in originals.iter().enumerate() {
                         let Some(mut preview) = gesture.preview(original.id) else {
                             continue;
@@ -953,13 +956,22 @@ impl EditorView {
                         if event.button != MouseButton::Left {
                             return;
                         }
+                        let Some(current_revision) = view
+                            .state
+                            .as_ref()
+                            .filter(|s| s.project.midi_source(clip_id).is_some())
+                            .map(|s| s.revision)
+                        else {
+                            return;
+                        };
                         if view.project_generation != generation
-                            || view.state.as_ref().is_none_or(|s| s.revision != revision)
                             || view.detail_clip_id() != Some(clip_id)
-                            || view.edit_pending()
+                            || view.midi_canvas_edit_blocked()
                         {
                             return;
                         }
+                        let mut rendered_context = rendered_context;
+                        rendered_context.revision = current_revision;
                         if view.time_selection_key_held {
                             view.cancel_all_midi_marquees();
                             view.midi_focus.focus(window);
@@ -978,9 +990,58 @@ impl EditorView {
                         view.cancel_all_midi_marquees();
                         view.midi_focus.focus(window);
                         let mut hit_cycle = view.midi_hit_cycle;
-                        let hit = event_scene
-                            .hit(x, y, width, height, &mut hit_cycle)
-                            .and_then(|id| event_scene.note(id));
+                        // Check pending moved note previews first so clicking a
+                        // note immediately after moving it (single or group) hits
+                        // its displayed preview rather than its stale canonical position.
+                        let pending_hit = view
+                            .displayed_midi_single_previews()
+                            .into_iter()
+                            .rev()
+                            .find_map(|(id, preview, prefix)| {
+                                let geom =
+                                    event_scene.rebased_preview_geometry(id, preview, prefix)?;
+                                let (left, right) = super::midi_scene::pixel_bounds(geom, width)?;
+                                let top = geom.y * height;
+                                let bottom = top + row_height;
+                                (x >= left && x <= right && y >= top && y <= bottom).then_some(geom)
+                            })
+                            .or_else(|| {
+                                view.displayed_midi_group_previews()
+                                    .into_iter()
+                                    .rev()
+                                    .filter(|(_, group)| !group.is_copy())
+                                    .find_map(|(originals, group)| {
+                                        let prefix = group.source_prefix();
+                                        originals.iter().find_map(|orig| {
+                                            let preview = group.preview(orig.id)?;
+                                            let geom = event_scene.rebased_preview_geometry(
+                                                orig.id,
+                                                NotePreview {
+                                                    start: preview.start,
+                                                    duration: preview.duration,
+                                                    pitch: preview.pitch,
+                                                },
+                                                prefix,
+                                            )?;
+                                            let (left, right) =
+                                                super::midi_scene::pixel_bounds(geom, width)?;
+                                            let top = geom.y * height;
+                                            let bottom = top + row_height;
+                                            (x >= left && x <= right && y >= top && y <= bottom)
+                                                .then_some(geom)
+                                        })
+                                    })
+                            });
+                        let hit = pending_hit.or_else(|| {
+                            event_scene
+                                .hit(x, y, width, height, &mut hit_cycle)
+                                .and_then(|id| {
+                                    if view.displayed_midi_note_override(clip_id, id).is_some() {
+                                        return None;
+                                    }
+                                    event_scene.note(id)
+                                })
+                        });
                         if view.midi_draw_mode {
                             view.clear_midi_time_selection();
                             if event.click_count != 1 {
@@ -1063,12 +1124,25 @@ impl EditorView {
                                     if !view.midi_selection.contains(selected_note.id()) {
                                         continue;
                                     }
+                                    let (start, duration, pitch) = view
+                                        .displayed_midi_note_override(clip_id, selected_note.id())
+                                        .filter(|(_, prefix)| *prefix == 0)
+                                        .map_or(
+                                            (
+                                                selected_note.start().raw(),
+                                                selected_note.duration().raw(),
+                                                selected_note.pitch(),
+                                            ),
+                                            |(preview, _)| {
+                                                (preview.start, preview.duration, preview.pitch)
+                                            },
+                                        );
                                     originals.push(super::midi_group_drag::GroupNote {
                                         id: selected_note.id(),
                                         active: selected_note.active(),
-                                        start: selected_note.start().raw(),
-                                        duration: selected_note.duration().raw(),
-                                        pitch: selected_note.pitch(),
+                                        start,
+                                        duration,
+                                        pitch,
                                         channel: selected_note.channel(),
                                         velocity: selected_note.velocity(),
                                     });
@@ -1083,7 +1157,7 @@ impl EditorView {
                                         copy: event.modifiers.alt,
                                         kind,
                                         generation,
-                                        revision,
+                                        revision: current_revision,
                                         clip: clip_id,
                                         selection_epoch: view.midi_selection.epoch(),
                                         originals,
@@ -1115,16 +1189,24 @@ impl EditorView {
                                 view_cx.notify();
                                 return;
                             }
+                            let (start, duration, note_pitch) = view
+                                .displayed_midi_note_override(clip_id, note.id)
+                                .filter(|(_, prefix)| *prefix == 0)
+                                .map_or((note.start, note.duration, note.pitch), |(preview, _)| {
+                                    (preview.start, preview.duration, preview.pitch)
+                                });
+                            let effective_clip_len =
+                                clip_len.raw().max(start.saturating_add(duration));
                             let gesture = Some(midi_drag::GestureStart {
                                 generation,
-                                revision,
+                                revision: current_revision,
                                 clip: clip_id,
                                 note: note.id,
                                 active: note.active,
                                 original: NotePreview {
-                                    start: note.start,
-                                    duration: note.duration,
-                                    pitch: note.pitch,
+                                    start,
+                                    duration,
+                                    pitch: note_pitch,
                                 },
                                 channel: note.channel,
                                 velocity: note.velocity,
@@ -1133,7 +1215,7 @@ impl EditorView {
                                 bounds: gesture_bounds,
                                 beat_start,
                                 beat_span: beat_span.raw(),
-                                clip_length: clip_len.raw(),
+                                clip_length: effective_clip_len,
                                 pitch,
                                 grid,
                             })
@@ -1263,7 +1345,7 @@ impl EditorView {
                             && view.project_generation == generation
                             && view.state.as_ref().is_some_and(|s| s.revision == revision)
                             && view.detail_clip_id() == Some(clip_id)
-                            && !view.edit_pending()
+                            && !view.midi_canvas_edit_blocked()
                         {
                             hover_scene.hover(
                                 f32::from(event.position.x - bounds.origin.x),
