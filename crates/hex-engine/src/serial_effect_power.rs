@@ -175,4 +175,152 @@ mod tests {
         ];
         assert!(flags(&reordered).is_err());
     }
+
+    #[test]
+    fn depth_eight_serial_chain_plays_back_and_parent_bypass_preserves_child_switches() {
+        use crate::{
+            PreparedRevision, SineTable,
+            session_playback::{SessionPlayback, SessionPlaybackCommand},
+        };
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
+        use hex_project::{BeatTime, Created};
+        use std::{collections::BTreeMap, sync::Arc};
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "nested".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(2).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                pitch: 60,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(1).unwrap(),
+                velocity: 100,
+                channel: 0,
+            })
+            .unwrap();
+
+        let render = |project: &Project| {
+            let revision = Arc::new(
+                PreparedRevision::prepare(
+                    project,
+                    &BTreeMap::new(),
+                    Arc::new(SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let mut playback = SessionPlayback::new(revision).unwrap();
+            playback.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut frames = [[0.0_f32; 2]; 256];
+            playback.render(&mut frames).unwrap();
+            frames
+        };
+
+        let dry = render(editor.project());
+        assert!(dry.iter().flatten().any(|s| s.abs() > 1e-3));
+
+        // Build a depth-8 (`MAX_SERIAL_DEVICE_DEPTH`) nested `hex.utility` chain,
+        // each stage attenuating by 0.5x linear gain.
+        let half_gain = hex_devices::utility::UTILITY_DEFINITION
+            .patch_parameter(
+                &hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+                ParameterId::from_static(1),
+                ParameterValue::Float(0.5),
+            )
+            .unwrap();
+        let Created::Device(root) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: half_gain.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("root");
+        };
+        let mut chain_ids = vec![root];
+        for _ in 1..MAX_SERIAL_DEVICE_DEPTH {
+            let parent = *chain_ids.last().unwrap();
+            let Created::Device(child) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent,
+                    state: half_gain.clone(),
+                })
+                .unwrap()
+            else {
+                panic!("child");
+            };
+            chain_ids.push(child);
+        }
+        assert_eq!(chain_ids.len(), MAX_SERIAL_DEVICE_DEPTH);
+        // Exceeding MAX_SERIAL_DEVICE_DEPTH (depth 9) must refuse cleanly.
+        assert!(
+            editor
+                .execute(Command::InsertNestedDevice {
+                    parent: *chain_ids.last().unwrap(),
+                    state: half_gain.clone(),
+                })
+                .is_err()
+        );
+
+        // Bypass level-3 child individually: levels 3..8 are effectively bypassed,
+        // leaving 3 active 0.5x stages (levels 0, 1, 2 -> 0.125x total).
+        let level3 = chain_ids[3];
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: level3,
+                bypassed: true,
+            })
+            .unwrap();
+        let active_with_child_bypassed = render(editor.project());
+        for (wet, dry_sample) in active_with_child_bypassed.iter().zip(dry.iter()) {
+            assert!(
+                (wet[0] - dry_sample[0] * 0.125).abs() < 1e-4,
+                "expected 3 active 0.5x stages (0.125x), got wet={} dry={}",
+                wet[0],
+                dry_sample[0]
+            );
+        }
+
+        // Bypassing the root passes dry input around the entire depth-8 suffix
+        // while preserving every individual child power switch.
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: root,
+                bypassed: true,
+            })
+            .unwrap();
+        let root_bypassed = render(editor.project());
+        assert_eq!(root_bypassed, dry);
+        assert!(editor.project().device(level3).unwrap().bypassed());
+        assert!(!editor.project().device(chain_ids[4]).unwrap().bypassed());
+
+        // Re-enabling root via Undo restores exact PCM and keeps level3 bypassed.
+        assert!(editor.undo());
+        assert_eq!(render(editor.project()), active_with_child_bypassed);
+        assert!(editor.project().device(level3).unwrap().bypassed());
+        assert!(!editor.project().device(chain_ids[4]).unwrap().bypassed());
+    }
 }

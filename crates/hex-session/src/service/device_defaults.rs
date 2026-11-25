@@ -52,6 +52,7 @@ pub(super) fn initialize(
 ) -> Result<Command, String> {
     let state = match &mut command {
         Command::InsertDevice { state, .. }
+        | Command::InsertNestedDevice { state, .. }
         | Command::InsertInstrument { state, .. }
         | Command::LoadInstrument { state, .. }
         | Command::InsertMainDevice { state, .. }

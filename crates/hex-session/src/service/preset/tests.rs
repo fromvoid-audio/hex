@@ -1335,3 +1335,253 @@ fn stale_preset_and_default_requests_preflight_fail_without_committing_active_ge
         ParameterValue::Float(4.0)
     );
 }
+
+#[test]
+fn full_unit_preset_and_fresh_default_live_playback_undo_redo_and_malformed_refusal() {
+    use hex_engine::{
+        PreparedRevision, SineTable,
+        session_playback::{SessionPlayback, SessionPlaybackCommand},
+    };
+    use hex_lattice_contract::{DeviceAutomationTarget, ParameterId, ParameterValue};
+    use hex_project::{
+        BeatTime, Created, DeviceModulation, DeviceModulationRoute, ElementColor, ModulationAmount,
+        ModulationDestination, ModulationOutputId, ModulationRange, ModulationRouteId,
+        ModulationSourceId, Modulator,
+    };
+    use std::{collections::BTreeMap, sync::Arc};
+
+    let render = |project: &hex_project::Project| {
+        let revision = Arc::new(
+            PreparedRevision::prepare(project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let mut playback = SessionPlayback::new(revision).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        let mut frames = [[0.0_f32; 2]; 128];
+        playback.render(&mut frames).unwrap();
+        frames
+    };
+
+    let dir = Directory::new();
+    let class = NativeDeviceClass::Effect;
+    let (mut service, first, root) = fixture(class, "hex.utility");
+    service
+        .set_device_defaults_directory(dir.0.clone())
+        .unwrap();
+    service
+        .submit(Request::Edit(Command::SetDeviceBypass {
+            device: root,
+            bypassed: false,
+        }))
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    let track = first.state.project.tracks()[0].id();
+    let base = first.state.project.device(root).unwrap().state().clone();
+
+    // Give the track a playable MIDI note so live playback reflects the full unit.
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(2).unwrap(),
+        }))
+        .unwrap();
+    let Created::Clip(clip) = event(&service).created.unwrap() else {
+        panic!("clip");
+    };
+    service
+        .submit(Request::Edit(Command::AddMidiNote {
+            clip,
+            pitch: 60,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(1).unwrap(),
+            velocity: 100,
+            channel: 0,
+        }))
+        .unwrap();
+    let before_unit_authored = event(&service);
+    let baseline_pcm = render(&before_unit_authored.state.project);
+    assert!(baseline_pcm.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Build a nested full unit: root (0.5x gain + macro modulator) -> child (0.5x) -> grandchild (bypassed).
+    let half_gain = hex_engine::patch_native_device_parameter_for_class(
+        class,
+        &base,
+        ParameterId::from_static(1),
+        ParameterValue::Float(0.5),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device: root,
+            state: half_gain.clone(),
+        }))
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: root,
+            state: half_gain.clone(),
+        }))
+        .unwrap();
+    let Created::Device(child) = event(&service).created.unwrap() else {
+        panic!("child");
+    };
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: child,
+            state: half_gain,
+        }))
+        .unwrap();
+    let Created::Device(grandchild) = event(&service).created.unwrap() else {
+        panic!("grandchild");
+    };
+    service
+        .submit(Request::Edit(Command::SetDeviceBypass {
+            device: grandchild,
+            bypassed: true,
+        }))
+        .unwrap();
+    let with_children = event(&service);
+    let next = with_children.state.project.next_identity();
+    let slot = ModulationSourceId::new(next).unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceModulation {
+            device: root,
+            modulation: DeviceModulation::new(
+                vec![Modulator {
+                    id: slot,
+                    color: ElementColor::Cyan,
+                    enabled: true,
+                    state: hex_engine::macro_modulator::Settings { value: 0.5 }
+                        .encode()
+                        .unwrap(),
+                }],
+                vec![DeviceModulationRoute {
+                    id: ModulationRouteId::new(next + 1).unwrap(),
+                    source: slot,
+                    output: ModulationOutputId::MAIN,
+                    destination: ModulationDestination::Device {
+                        device_type: base.type_id(),
+                        target: DeviceAutomationTarget::Parameter(ParameterId::from_static(1)),
+                        vst3_class: None,
+                    },
+                    amount: ModulationAmount::new(0.1).unwrap(),
+                    range: ModulationRange::default(),
+                    enabled: true,
+                }],
+            )
+            .unwrap(),
+        }))
+        .unwrap();
+    let authored = event(&service);
+    assert!(authored.error.is_none(), "{:?}", authored.error);
+    let unit_pcm = render(&authored.state.project);
+    assert_ne!(unit_pcm, baseline_pcm);
+
+    // Save schema-3 full-unit preset and per-type default.
+    let preset_path = dir.0.join("FullNestedUnit.hex-device-preset.json");
+    let target_owner = owner(&authored, root, class);
+    service
+        .submit(Request::SaveDeviceUnitPreset {
+            owner: target_owner,
+            path: preset_path.clone(),
+        })
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    service
+        .submit(Request::SaveDeviceUnitDefault {
+            owner: target_owner,
+            root: dir.0.clone(),
+        })
+        .unwrap();
+    assert!(event(&service).error.is_none());
+
+    // Remove the nested unit from track, add a fresh factory utility, then load the full-unit preset atomically.
+    service
+        .submit(Request::Edit(Command::RemoveDevice(root)))
+        .unwrap();
+    assert!(event(&service).error.is_none());
+    service
+        .submit(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: base.clone(),
+        }))
+        .unwrap();
+    let clean_target = event(&service);
+    let Created::Device(target) = clean_target.created.unwrap() else {
+        panic!("target");
+    };
+    assert_eq!(render(&clean_target.state.project), baseline_pcm);
+
+    // Malformed schema-3 preset must refuse without mutating project or audio.
+    let bad_path = dir.0.join("Malformed.hex-device-preset.json");
+    let mut raw: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&preset_path).unwrap()).unwrap();
+    raw["schema"] = serde_json::json!(4);
+    std::fs::write(&bad_path, serde_json::to_vec(&raw).unwrap()).unwrap();
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&clean_target, target, class),
+            path: bad_path,
+        })
+        .unwrap();
+    let refused = event(&service);
+    assert!(refused.error.is_some());
+    assert_eq!(refused.state.project, clean_target.state.project);
+
+    // Valid schema-3 preset loads parent, macro, nested children, and grandchild bypass in one Undo/Redo step.
+    service
+        .submit(Request::LoadDevicePreset {
+            owner: owner(&clean_target, target, class),
+            path: preset_path,
+        })
+        .unwrap();
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    assert_eq!(render(&loaded.state.project), unit_pcm);
+    let loaded_child = loaded
+        .state
+        .project
+        .devices()
+        .find(|d| d.parent() == Some(target))
+        .unwrap();
+    let loaded_grandchild = loaded
+        .state
+        .project
+        .devices()
+        .find(|d| d.parent() == Some(loaded_child.id()))
+        .unwrap();
+    assert!(loaded_grandchild.bypassed());
+    assert!(!loaded_child.bypassed());
+
+    // Single Undo restores pre-load PCM and removes restored children; Redo restores exact unit PCM.
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(undone.error.is_none());
+    assert_eq!(render(&undone.state.project), baseline_pcm);
+    assert!(
+        undone
+            .state
+            .project
+            .devices()
+            .all(|d| d.parent() != Some(target))
+    );
+    service.submit(Request::Redo).unwrap();
+    let redone = event(&service);
+    assert!(redone.error.is_none());
+    assert_eq!(render(&redone.state.project), unit_pcm);
+
+    // Fresh nested catalog construction via device_defaults::initialize honors saved default.
+    let nested_cmd = crate::service::device_defaults::initialize(
+        Command::InsertNestedDevice {
+            parent: target,
+            state: base,
+        },
+        class,
+        Some(&dir.0),
+    )
+    .unwrap();
+    assert!(matches!(nested_cmd, Command::InitializeDevice(_)));
+}
