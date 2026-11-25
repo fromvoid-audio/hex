@@ -27,6 +27,7 @@ impl Prepared {
         limit: usize,
     ) -> Option<crate::native::PreparedStorage> {
         if self.parameter_page.is_some()
+            || self.has_pending_control_controller_on_control()
             || limit == 0
             || limit > usize::from(MAX_CONTROLLER_PARAMETERS)
         {
@@ -159,9 +160,18 @@ impl Prepared {
             return Err(Error::Protocol("authored parameter capacity is full"));
         }
         query.validate()?;
-        self.begin_controller_request_on_worker(ControllerRequest::SelectedParameters {
-            first: query.first,
-        })?;
+        if self
+            .control
+            .as_deref()
+            .is_some_and(ControlClient::has_pending_controller_request)
+        {
+            return Err(Error::Protocol("controller page is still pending"));
+        }
+        let until = end_after(self.limits.startup)?;
+        self.begin_controller_request_on_audio_channel(
+            ControllerRequest::SelectedParameters { first: query.first },
+            until,
+        )?;
         let page = self.parameter_page.as_mut().ok_or(Error::Protocol(
             "authored parameter query admission disappeared",
         ))?;

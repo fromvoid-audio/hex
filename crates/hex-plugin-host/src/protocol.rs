@@ -21,7 +21,8 @@ pub use edits::{
     EditorPcm, EditorPerform, EditorPerforms, EditorRestoration, EditorRestorations,
     EditorTouchPlan, EditorTouchPlanSet, EditorTouchTarget, MAX_PARAMETER_EDITS, ParameterEdit,
     ParameterEditKind, ParameterEdits, RecoveryEdits, edit_request, idle_editor_edit_request,
-    parameter_edits, recovery_edit_request, recovery_edits,
+    parameter_edits, parameter_edits_at_least, recovery_edit_request, recovery_edits,
+    recovery_edits_at_least,
 };
 pub use parameter_page::{
     ControllerParameter, ControllerRequest, EditorAdmissionState, EditorSealState,

@@ -159,6 +159,7 @@ impl NativeWorker {
         self.reaper
             .join_on_control()
             .map_err(|_| "native stopped edit worker failed")?;
+        self.restore_control_client_into_joined_state();
         self.read_joined_idle_edits()
     }
 
@@ -194,12 +195,16 @@ impl NativeWorker {
         if state.native_error.is_some() || state.edits.result.is_some() {
             return Err("native stopped edit source failed");
         }
-        if state.capture.is_in_flight() || state.controller.is_in_flight() {
-            return Err("native stopped control operation is busy");
-        }
         let Some(Processor::Native(instance)) = state.processor.as_mut() else {
             return Err("native stopped edit source failed");
         };
+        if state.capture.is_in_flight()
+            || state.controller.is_in_flight()
+            || instance.has_pending_control_capture_on_control()
+            || instance.has_pending_control_controller_on_control()
+        {
+            return Err("native stopped control operation is busy");
+        }
         match instance.service_idle_editor_edits_on_worker() {
             Ok(result) => Ok(result),
             Err(error) => {
@@ -247,6 +252,7 @@ impl NativeWorker {
             return Err("native preparation is busy");
         }
         let joined = self.reaper.join_on_control();
+        self.restore_control_client_into_joined_state();
         let mut slot = self
             .reaper
             .completed
@@ -351,6 +357,48 @@ impl NativeWorker {
         if !self.transport_is_live_on_control() || !self.retains_original_source_on_control() {
             return Err("native edit source is not live");
         }
+        if !flush_idle && self.control_client.is_some() {
+            {
+                let mut slot = self
+                    .reaper
+                    .completed
+                    .capture
+                    .try_lock()
+                    .map_err(|_| "native edit observation is busy")?;
+                if (slot.edits_pending || slot.edits_result.is_some())
+                    && slot.recovery_edits != recovery
+                {
+                    return Err("native edit observation mode differs");
+                }
+                if let Some(result) = slot.edits_result.take() {
+                    return Ok(Some(result));
+                }
+                if slot.edits_pending {
+                    return Ok(None);
+                }
+            }
+            let result = if let Some(client) = self.control_client.as_mut() {
+                if recovery {
+                    client.poll_recovery_edits_on_control()
+                } else {
+                    client
+                        .poll_parameter_edits_on_control()
+                        .map(|edits| RecoveryEdits {
+                            edits,
+                            pending_latency_restart: None,
+                        })
+                }
+            } else {
+                return Err("native edit source is not live");
+            };
+            return match result {
+                Ok(edits) => Ok(Some(edits)),
+                Err(error) => {
+                    self.record_control_failure("edits", error);
+                    Err("native edit source is not live")
+                }
+            };
+        }
         let mut slot = self
             .reaper
             .completed
@@ -368,6 +416,8 @@ impl NativeWorker {
             slot.recovery_edits = recovery;
             slot.flush_idle_edits = flush_idle;
             self.reaper.completed.edits_requested.store(true, Release);
+            drop(slot);
+            self.reaper.wake_worker();
         }
         Ok(None)
     }

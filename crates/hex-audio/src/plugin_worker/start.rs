@@ -169,6 +169,7 @@ impl NativeWorker {
     ) -> Result<hex_plugin_host::native::Quiescent, NativeWorkerStartFailure> {
         let mismatch = !callback.matches_control(&self.reaper.control);
         let joined = self.reaper.join_on_control();
+        self.restore_control_client_into_joined_state();
         let mut cause = if mismatch {
             Some(Error::Protocol("native quiescence callback differs"))
         } else if self.retirement_requested {
@@ -315,6 +316,7 @@ impl NativeWorker {
         };
         let cancellation = instance.cancellation_on_control();
         let offline = instance.is_offline_on_control();
+        let control_client = instance.take_control_client_on_control();
         match spawn_processor_with(
             control,
             worker,
@@ -331,10 +333,18 @@ impl NativeWorker {
                     editor_edits_sealed: false,
                     grouped_editor_callbacks,
                     source_storage: Some(source_storage),
+                    control_client,
+                    control_error: None,
                 },
                 callback,
             )),
-            Err(SpawnFailure { error, reaper }) => {
+            Err(SpawnFailure { error, mut reaper }) => {
+                if let Some(client) = control_client
+                    && let Some(state) = reaper.worker.as_mut()
+                    && let Some(Processor::Native(instance)) = state.processor.as_mut()
+                {
+                    instance.restore_control_client_on_control(client);
+                }
                 cancellation.cancel_on_control();
                 Err(NativeWorkerStartFailure {
                     cause: Error::IoAt("native transport worker", error),

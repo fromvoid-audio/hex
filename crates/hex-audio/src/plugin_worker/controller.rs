@@ -41,6 +41,7 @@ pub(super) struct Slot {
     requested: bool,
     complete: bool,
     stopped: bool,
+    via_control_channel: bool,
     reply: Reply,
 }
 pub(super) struct Work {
@@ -72,6 +73,9 @@ impl Work {
     }
     pub(super) fn between_polls(&self) -> bool {
         self.is_in_flight() && Instant::now() < self.poll_after
+    }
+    pub(super) fn next_poll_after(&self) -> Option<Instant> {
+        self.is_in_flight().then_some(self.poll_after)
     }
 }
 
@@ -170,14 +174,14 @@ impl NativeWorker {
             }
             self.service_stopped_controller()?;
         }
-        let mut slot = self
+        let mut mailbox = self
             .reaper
             .completed
             .capture
             .try_lock()
             .map_err(|_| "native controller mailbox is busy")?;
         if query.kind() == Kind::GuardedWrite
-            && (slot.capture_pending() || slot.parameter_change.pending())
+            && (mailbox.capture_pending() || mailbox.parameter_change.pending())
         {
             return Err("native guarded editor write is busy");
         }
@@ -185,24 +189,24 @@ impl NativeWorker {
         // completes. An admission terminal can change the same helper's
         // continued editor behavior, so its original token must consume it.
         if stopped
-            && slot.controller.requested
-            && slot.controller.complete
-            && !slot.controller.stopped
-            && !slot.controller.changes_editor_admission()
+            && mailbox.controller.requested
+            && mailbox.controller.complete
+            && !mailbox.controller.stopped
+            && !mailbox.controller.changes_editor_admission()
         {
-            slot.controller.requested = false;
+            mailbox.controller.requested = false;
         }
-        if slot.controller.requested {
+        if mailbox.controller.requested {
             return Err("native controller query is already pending");
         }
-        let ordinal = slot
+        let ordinal = mailbox
             .controller
             .ordinal
             .checked_add(1)
             .ok_or("native controller ordinal exhausted")?;
         let guarded = if let Operation::Guarded(write) = query {
             if let Some(previous) = write.previous
-                && slot
+                && mailbox
                     .parameter_change
                     .guarded_write_readback(previous)
                     .is_none()
@@ -211,7 +215,7 @@ impl NativeWorker {
             }
             // Supersede both control-side sequenced facts and any callback
             // permit from earlier non-guarded writes before accepting input.
-            let next = slot.parameter_change.next_ordinal()?;
+            let next = mailbox.parameter_change.next_ordinal()?;
             let admission = self
                 .reaper
                 .control
@@ -222,25 +226,45 @@ impl NativeWorker {
                     Fault::Exhausted => "native parameter input ordinal exhausted",
                     _ => "native parameter input generation differs",
                 })?;
-            slot.parameter_change.supersede_with_guarded_write(next);
+            mailbox.parameter_change.supersede_with_guarded_write(next);
             Some((next, admission))
         } else {
             None
         };
-        let slot = &mut slot.controller;
-        slot.ordinal = ordinal;
-        slot.query = query;
-        slot.requested = true;
-        slot.complete = false;
-        slot.stopped = stopped;
+        let direct_control = if !stopped
+            && let Operation::Observe(request) = query
+            && self.control_client.is_some()
+        {
+            Some(request)
+        } else {
+            None
+        };
+        mailbox.controller.ordinal = ordinal;
+        mailbox.controller.query = query;
+        mailbox.controller.requested = true;
+        mailbox.controller.complete = false;
+        mailbox.controller.stopped = stopped;
+        mailbox.controller.via_control_channel = direct_control.is_some();
         let parameter_ordinal = guarded.map(|(ordinal, admission)| {
             admission.publish();
             ordinal
         });
-        self.reaper
-            .completed
-            .controller_requested
-            .store(true, Release);
+        drop(mailbox);
+        if let Some(request) = direct_control {
+            if let Some(client) = self.control_client.as_mut()
+                && let Err(error) = client.begin_controller_request_on_control(request)
+            {
+                self.record_control_failure("control", error);
+            }
+        } else {
+            self.reaper
+                .completed
+                .controller_requested
+                .store(true, Release);
+            if !stopped {
+                self.reaper.wake_worker();
+            }
+        }
         Ok(NativeWorkerControllerQuery {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
@@ -297,7 +321,7 @@ impl NativeWorker {
         {
             return Err("native controller source differs");
         }
-        let changes_editor_admission = {
+        let (changes_editor_admission, via_control_channel) = {
             let slot = match self.reaper.completed.capture.try_lock() {
                 Ok(slot) => slot,
                 Err(TryLockError::WouldBlock) => {
@@ -308,9 +332,73 @@ impl NativeWorker {
             if !slot.controller.matches(request) {
                 return Err("native controller operation differs");
             }
-            slot.controller.changes_editor_admission()
+            (
+                slot.controller.changes_editor_admission(),
+                slot.controller.via_control_channel,
+            )
         };
         let live = self.transport_is_live_on_control();
+        if via_control_channel && !request.stopped && (live || changes_editor_admission) {
+            let progress = if let Some(client) = self.control_client.as_mut() {
+                client.poll_parameter_page_on_control()
+            } else if let Some(state) = self.reaper.worker.as_mut()
+                && let Some(Processor::Native(instance)) = state.processor.as_mut()
+            {
+                instance.poll_parameter_page_on_worker()
+            } else {
+                return Ok(Poll::Failed);
+            };
+            let reply = match progress {
+                Ok(ParameterPageProgress::Pending) => return Ok(Poll::Pending),
+                Ok(ParameterPageProgress::Editor(editor)) => Reply {
+                    editor: Some(editor),
+                    ..Reply::default()
+                },
+                Ok(ParameterPageProgress::EditorSeal(seal)) => Reply {
+                    editor_seal: Some(seal),
+                    ..Reply::default()
+                },
+                Ok(ParameterPageProgress::EditorFrontier(frontier)) => Reply {
+                    editor_frontier: Some(frontier),
+                    ..Reply::default()
+                },
+                Ok(ParameterPageProgress::EditorAdmission(admission)) => Reply {
+                    editor_admission: Some(admission),
+                    ..Reply::default()
+                },
+                Ok(ParameterPageProgress::Page(page)) => Reply {
+                    page: *page,
+                    ..Reply::default()
+                },
+                Ok(ParameterPageProgress::Conversion(conversion)) => Reply {
+                    conversion: Some(*conversion),
+                    ..Reply::default()
+                },
+                Ok(ParameterPageProgress::Changed { revision, total }) => {
+                    let mut page = ParameterPage::default();
+                    page.revision = revision;
+                    page.total = total;
+                    Reply {
+                        page,
+                        changed: true,
+                        ..Reply::default()
+                    }
+                }
+                Err(error) => {
+                    self.record_control_failure("control", error);
+                    return Ok(Poll::Failed);
+                }
+            };
+            let mut mailbox = self
+                .reaper
+                .completed
+                .capture
+                .lock()
+                .map_err(|_| "native controller mailbox failed")?;
+            mailbox.controller.requested = false;
+            mailbox.controller.via_control_channel = false;
+            return Ok(Poll::Ready(reply));
+        }
         if request.stopped || (!live && changes_editor_admission) {
             match self.service_stopped_controller() {
                 Ok(()) => {}
@@ -367,6 +455,7 @@ impl NativeWorker {
         self.reaper
             .join_on_control()
             .map_err(|_| "native stopped controller worker failed")?;
+        self.restore_control_client_into_joined_state();
         let state = self
             .reaper
             .worker
@@ -374,6 +463,35 @@ impl NativeWorker {
             .ok_or("native stopped controller owner missing")?;
         if state.native_error.is_some() || !matches!(state.processor, Some(Processor::Native(_))) {
             return Err("native stopped controller source failed");
+        }
+        let preserve_admission_on_control =
+            self.reaper.completed.capture.try_lock().is_ok_and(|slot| {
+                slot.controller.requested
+                    && slot.controller.via_control_channel
+                    && slot.controller.changes_editor_admission()
+            });
+        if !state.controller.is_in_flight()
+            && !preserve_admission_on_control
+            && let Some(Processor::Native(instance)) = state.processor.as_mut()
+            && instance.has_pending_control_controller_on_control()
+        {
+            match instance.poll_parameter_page_on_worker() {
+                Ok(ParameterPageProgress::Pending) => return Err("native preparation is busy"),
+                Ok(_) => {
+                    if let Ok(mut mailbox) = self.reaper.completed.capture.try_lock()
+                        && mailbox.controller.via_control_channel
+                        && !mailbox.controller.stopped
+                        && !mailbox.controller.changes_editor_admission()
+                    {
+                        mailbox.controller.requested = false;
+                        mailbox.controller.via_control_channel = false;
+                    }
+                }
+                Err(error) => {
+                    state.native_error = Some(error);
+                    return Err("native stopped controller query failed");
+                }
+            }
         }
         if let Err(error) = state.advance_controller(&self.reaper.completed) {
             state.native_error = Some(error);
@@ -508,7 +626,7 @@ impl State {
                     }
                     return self.advance_parameter_edits_selected(signal, Some(read));
                 }
-                3 if signal.parameter_change_requested.load(Acquire) => {
+                3 if signal.idle_parameter_change_requested.load(Acquire) => {
                     before_non_routine_control();
                     self.control_turn = 0;
                     return self.advance_idle_parameter_change(signal);

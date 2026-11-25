@@ -23,6 +23,9 @@ pub(super) struct Conversion {
 }
 
 impl Conversion {
+    pub(super) fn binding(&self) -> Binding {
+        self.query.source
+    }
     pub(super) fn output_closed(&mut self) {
         self.output_closed = true;
         self.failure
@@ -57,7 +60,7 @@ impl Plugins {
         query: PluginParameterConversionQuery,
     ) -> Result<(), String> {
         if self.parameter_conversion.is_some()
-            || self.editor.is_some()
+            || self.editor_holds(query.source)
             || self.restore.is_some()
             || self.parameter_gesture.is_some()
         {

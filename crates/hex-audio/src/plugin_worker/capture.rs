@@ -52,6 +52,7 @@ pub(super) struct Slot {
     ordinal: u64,
     phase: Phase,
     mode: Mode,
+    via_control_channel: bool,
     terminal: Option<Result<NativeDeviceState, StateCaptureRefusal>>,
 }
 impl Default for Slot {
@@ -67,6 +68,7 @@ impl Default for Slot {
             ordinal: 0,
             phase: Phase::Idle,
             mode: Mode::Live,
+            via_control_channel: false,
             terminal: None,
         }
     }
@@ -120,6 +122,9 @@ impl Work {
     }
     pub(super) fn is_in_flight(&self) -> bool {
         self.ordinal.is_some() && self.result.is_none()
+    }
+    pub(super) fn next_poll_after(&self) -> Option<Instant> {
+        self.is_in_flight().then_some(self.poll_after)
     }
 }
 
@@ -347,10 +352,32 @@ impl NativeWorker {
             .ordinal
             .checked_add(1)
             .ok_or("native capture ordinal exhausted")?;
+        let direct_control = mode == Mode::Live && self.control_client.is_some();
         slot.ordinal = ordinal;
         slot.phase = Phase::Requested;
         slot.mode = mode;
-        self.reaper.completed.capture_requested.store(true, Release);
+        slot.via_control_channel = direct_control;
+        drop(slot);
+        if direct_control {
+            if let Some(client) = self.control_client.as_mut() {
+                match client.begin_state_capture_on_control() {
+                    Ok(()) => {}
+                    Err(Error::CaptureRefused(refusal)) => {
+                        if let Ok(mut slot) = self.reaper.completed.capture.try_lock() {
+                            let _ = slot.complete(ordinal, Err(refusal));
+                        }
+                    }
+                    Err(error) => {
+                        self.record_control_failure("capture", error);
+                    }
+                }
+            }
+        } else {
+            self.reaper.completed.capture_requested.store(true, Release);
+            if mode == Mode::Live {
+                self.reaper.wake_worker();
+            }
+        }
         Ok(NativeWorkerCapture {
             source: Arc::downgrade(&self.reaper.completed),
             binding: self.binding,
@@ -502,6 +529,60 @@ impl NativeWorker {
         }
         if request.mode == Mode::Live && !self.transport_is_live_on_control() {
             return Ok(NativeWorkerCaptureProgress::Failed);
+        }
+        if request.mode == Mode::Live && slot.via_control_channel && slot.phase == Phase::Requested
+        {
+            drop(slot);
+            let outcome = match self.control_client.as_mut() {
+                Some(client) => match client.poll_state_capture_on_control() {
+                    Ok(Some(state)) => {
+                        if state.type_id() != hex_plugin_state::TYPE_ID
+                            || state.state_version() != hex_plugin_state::STATE_VERSION
+                            || state.payload().len() > MAX_RETAINED_PAYLOAD_BYTES
+                        {
+                            self.record_control_failure(
+                                "capture",
+                                Error::Protocol("native captured state profile differs"),
+                            );
+                            return Ok(NativeWorkerCaptureProgress::Failed);
+                        }
+                        Some(Ok(state))
+                    }
+                    Ok(None) => None,
+                    Err(Error::CaptureRefused(refusal)) => Some(Err(refusal)),
+                    Err(error) => {
+                        self.record_control_failure("capture", error);
+                        return Ok(NativeWorkerCaptureProgress::Failed);
+                    }
+                },
+                None => return Ok(NativeWorkerCaptureProgress::Failed),
+            };
+            let Some(outcome) = outcome else {
+                return Ok(NativeWorkerCaptureProgress::Pending);
+            };
+            let mut slot = self
+                .reaper
+                .completed
+                .capture
+                .lock()
+                .map_err(|_| "native capture mailbox failed")?;
+            if slot.ordinal != request.ordinal || slot.phase == Phase::Idle {
+                return Err("native capture operation differs");
+            }
+            slot.phase = Phase::Idle;
+            slot.via_control_channel = false;
+            let superseded = request
+                .after
+                .as_ref()
+                .is_some_and(|input| !input.current(&slot.parameter_change));
+            drop(slot);
+            if superseded {
+                return Err("native sequenced capture was superseded");
+            }
+            return match outcome {
+                Ok(captured) => Ok(NativeWorkerCaptureProgress::Captured(captured)),
+                Err(refusal) => Ok(NativeWorkerCaptureProgress::Refused(refusal)),
+            };
         }
         // Return ownership outside the shared slot. The next exact operation
         // can start after this terminal has been consumed.

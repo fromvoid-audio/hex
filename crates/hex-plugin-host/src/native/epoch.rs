@@ -174,10 +174,20 @@ impl Prepared {
     ) -> std::result::Result<Quiescent, PreparationFailure> {
         let result = (|| {
             self.require_live_epoch()?;
-            if self.live_capture.is_some() {
+            if self.live_capture.is_some()
+                || self
+                    .control
+                    .as_deref()
+                    .is_some_and(ControlClient::has_pending_live_capture)
+            {
                 return Err(Error::Protocol("native capture is still pending"));
             }
-            if self.parameter_page.is_some() {
+            if self.parameter_page.is_some()
+                || self
+                    .control
+                    .as_deref()
+                    .is_some_and(ControlClient::has_pending_controller_request)
+            {
                 return Err(Error::Protocol("controller page is still pending"));
             }
             let until = end_after(self.limits.startup)?;
@@ -511,7 +521,9 @@ impl Quiescent {
                 return Err(Error::Cancelled);
             }
             self.instance.require_live_epoch()?;
-            if self.instance.parameter_page.is_some() {
+            if self.instance.parameter_page.is_some()
+                || self.instance.has_pending_control_controller_on_control()
+            {
                 return Err(Error::Protocol("controller page is still pending"));
             }
             presentation.expected(self.facts.presentation_available)?;
@@ -559,6 +571,9 @@ impl Quiescent {
         })();
         match result {
             Ok((config, applied)) => {
+                if let Some(control) = self.instance.control.as_mut() {
+                    control.sync_after_resume(config.binding, self.instance.sequence);
+                }
                 self.instance.config = config;
                 self.instance.ready.algorithmic_latency_frames =
                     self.facts.algorithmic_latency_frames;

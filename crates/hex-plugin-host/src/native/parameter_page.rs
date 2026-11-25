@@ -30,6 +30,25 @@ impl Prepared {
         query: ControllerRequest,
         until: Instant,
     ) -> Result<()> {
+        if self.parameter_page.is_some() {
+            return Err(Error::Protocol("controller page is still pending"));
+        }
+        if let Some(control) = self.control.as_mut() {
+            let result = control.begin_controller_request_until(query, until);
+            if control.is_faulted() {
+                self.faulted = true;
+                self.lease.cancel_native();
+            }
+            return result;
+        }
+        self.begin_controller_request_on_audio_channel(query, until)
+    }
+
+    fn begin_controller_request_on_audio_channel(
+        &mut self,
+        query: ControllerRequest,
+        until: Instant,
+    ) -> Result<()> {
         query.validate()?;
         self.require_live_epoch()?;
         if self.parameter_page.is_some() {
@@ -69,6 +88,14 @@ impl Prepared {
             .is_some_and(|page| page.authored.is_some())
         {
             return Err(Error::Protocol("authored parameter extension is pending"));
+        }
+        if let Some(control) = self.control.as_mut() {
+            let result = control.poll_parameter_page_on_control();
+            if control.is_faulted() {
+                self.faulted = true;
+                self.lease.cancel_native();
+            }
+            return result;
         }
         self.poll_parameter_page()
     }
@@ -145,9 +172,11 @@ impl Prepared {
 impl Quiescent {
     /// Same original stopped reader; querying never invents process/flush work.
     pub fn begin_parameter_page_on_control(&mut self, query: ParameterPageQuery) -> Result<()> {
-        self.instance.begin_parameter_page_on_worker(query)
+        let until = end_after(self.instance.limits.startup)?;
+        self.instance
+            .begin_controller_request_on_audio_channel(query.into(), until)
     }
     pub fn poll_parameter_page_on_control(&mut self) -> Result<ParameterPageProgress> {
-        self.instance.poll_parameter_page_on_worker()
+        self.instance.poll_parameter_page()
     }
 }

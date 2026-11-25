@@ -23,6 +23,26 @@ impl State {
                 thread::sleep(Duration::from_millis(1));
             }
         }
+        if let Some(Processor::Native(instance)) = self.processor.as_mut() {
+            while instance.has_pending_control_capture_on_control()
+                || instance.has_pending_control_controller_on_control()
+            {
+                if instance.has_pending_control_capture_on_control() {
+                    match instance.poll_state_capture_on_worker() {
+                        Ok(Some(_)) | Ok(None) | Err(Error::CaptureRefused(_)) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+                if instance.has_pending_control_controller_on_control() {
+                    let _ = instance.poll_parameter_page_on_worker()?;
+                }
+                if instance.has_pending_control_capture_on_control()
+                    || instance.has_pending_control_controller_on_control()
+                {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -81,6 +101,7 @@ impl NativeWorker {
         self.reaper
             .join_on_control()
             .map_err(|_| "native stopped capture worker failed")?;
+        self.restore_control_client_into_joined_state();
         let state = self
             .reaper
             .worker
@@ -88,6 +109,27 @@ impl NativeWorker {
             .ok_or("native stopped capture owner is missing")?;
         if state.native_error.is_some() || !matches!(state.processor, Some(Processor::Native(_))) {
             return Err("native stopped capture source failed");
+        }
+        if !state.capture.is_in_flight()
+            && let Some(Processor::Native(instance)) = state.processor.as_mut()
+            && instance.has_pending_control_capture_on_control()
+        {
+            match instance.poll_state_capture_on_worker() {
+                Ok(None) => return Err("native preparation is busy"),
+                Ok(Some(_)) | Err(Error::CaptureRefused(_)) => {
+                    if let Ok(mut slot) = self.reaper.completed.capture.try_lock()
+                        && slot.mode == Mode::Live
+                        && slot.via_control_channel
+                    {
+                        slot.phase = Phase::Idle;
+                        slot.via_control_channel = false;
+                    }
+                }
+                Err(error) => {
+                    state.native_error = Some(error);
+                    return Err("native stopped capture failed");
+                }
+            }
         }
         // The stopped capture now drives the original transport's control
         // lane. Finish an already admitted edit read before capturing, while

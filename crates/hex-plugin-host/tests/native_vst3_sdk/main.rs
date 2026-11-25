@@ -156,8 +156,8 @@ fn actual_guarded_client_prepares_persistent_pcm_and_normal_direct_reap() {
     .unwrap();
     let initial_storage = instance.retained_storage_on_control().unwrap();
     assert_eq!(initial_storage.shared_groups, 3);
-    assert_eq!(initial_storage.shared_handle_bound, 3);
-    assert_eq!(initial_storage.ipc_handle_bound, 2);
+    assert_eq!(initial_storage.shared_handle_bound, 5);
+    assert_eq!(initial_storage.ipc_handle_bound, 3);
     assert_eq!(initial_storage.native_child_lifetime_bound, 1);
     let original_capacity = instance.config.bundle.capacity();
     instance.config.bundle.reserve_exact(1024);
@@ -1535,17 +1535,26 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
     let storage = instance.retained_storage_on_control().unwrap();
     assert!(storage.data_bytes <= bound.max_prepared_data_bytes);
+    let control_paths = instance
+        .control
+        .as_ref()
+        .map_or(0, |control| control.storage_bytes().unwrap() - crate::protocol::PACKET_LIMIT);
     assert_eq!(
         storage.data_bytes,
         pending_storage.data_bytes - provenance_bytes
             + instance.ready.initial_state.payload().len()
+            + control_paths
     );
-    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (4, 4));
+    assert_eq!((storage.shared_groups, storage.shared_handle_bound), (4, 6));
     assert_eq!(
         storage.data_bytes,
         instance.config.bundle.capacity()
             + instance.config.executable.capacity()
             + crate::protocol::PACKET_LIMIT
+            + instance
+                .control
+                .as_ref()
+                .map_or(0, |control| control.storage_bytes().unwrap())
             + instance.ready.initial_state.payload().len()
             + saved.payload().len()
             + std::mem::size_of::<UnixStream>()
