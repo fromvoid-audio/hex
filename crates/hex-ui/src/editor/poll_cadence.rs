@@ -199,7 +199,7 @@ impl EditorView {
         self.wake_poll();
     }
 
-    fn poll_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Duration {
+    pub(super) fn poll_tick(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Duration {
         // Clear any pending wake latch before draining service events so an event
         // enqueued during or after this tick still wakes the next WakeOrTimer wait.
         self.poll_cadence.signal.take();
