@@ -216,6 +216,7 @@ mod tests {
                 pressure: 77,
                 bend: 200,
                 wheel: 13,
+                ..Controllers::default()
             },
             [&[0xb2, 121, 0][..]],
             &input,

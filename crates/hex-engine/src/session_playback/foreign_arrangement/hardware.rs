@@ -46,6 +46,7 @@ struct Gate {
     channel: u8,
     pitch: u8,
     id: NonZeroU32,
+    sustained: bool,
 }
 
 impl Gate {
@@ -68,6 +69,7 @@ pub(super) struct Gates {
     notes: [Option<Gate>; NOTE_BUDGET],
     held: usize,
     remaining: usize,
+    sustain_channels: u16,
 }
 
 impl Default for Gates {
@@ -77,6 +79,7 @@ impl Default for Gates {
             notes: [None; NOTE_BUDGET],
             held: 0,
             remaining: NOTE_BUDGET,
+            sustain_channels: 0,
         }
     }
 }
@@ -102,6 +105,7 @@ impl Gates {
         if self.held > self.remaining {
             return false;
         }
+        self.sustain_channels = 0;
         self.remaining -= self.held;
         self.held = 0;
         for gate in &mut self.notes {
@@ -153,6 +157,38 @@ impl Gates {
                 pitch,
                 value,
             } => (channel, pitch, value, ForeignNoteKind::PolyPressure),
+            LiveNoteEvent::ControlChange { channel, cc, value } => {
+                if cc == 64 && value >= 64 {
+                    self.sustain_channels |= 1_u16 << channel;
+                    batch.consumed += 1;
+                    return Ok(());
+                }
+                if (cc == 64 && value < 64) || cc == 121 {
+                    let sustained_count = self
+                        .notes
+                        .iter()
+                        .flatten()
+                        .filter(|gate| gate.channel == channel && gate.sustained)
+                        .count();
+                    if sustained_count > self.remaining {
+                        return Ok(());
+                    }
+                    self.sustain_channels &= !(1_u16 << channel);
+                    self.remaining -= sustained_count;
+                    self.held -= sustained_count;
+                    for slot in &mut self.notes {
+                        if slot.is_some_and(|gate| gate.channel == channel && gate.sustained)
+                            && let Some(gate) = slot.take()
+                        {
+                            events.push(gate.event(ForeignNoteKind::Off, 0));
+                        }
+                    }
+                    batch.consumed += 1;
+                    return Ok(());
+                }
+                batch.consumed += 1;
+                return Ok(());
+            }
             LiveNoteEvent::AllNotesOff => {
                 if self.release_all(events) {
                     batch.consumed += 1;
@@ -175,6 +211,13 @@ impl Gates {
             return Ok(());
         }
         let on = kind == ForeignNoteKind::On;
+        if !on && (self.sustain_channels & (1_u16 << channel)) != 0 {
+            if let Some(gate) = previous.and_then(|index| self.notes[index].as_mut()) {
+                gate.sustained = true;
+            }
+            batch.consumed += 1;
+            return Ok(());
+        }
         let cost = usize::from(previous.is_some()) + usize::from(on);
         if cost > self.remaining {
             return Ok(());
@@ -195,6 +238,7 @@ impl Gates {
                 channel,
                 pitch,
                 id: next_note_id(next_id)?,
+                sustained: false,
             };
             *slot = Some(gate);
             self.held += 1;
@@ -325,5 +369,159 @@ mod tests {
             events.iter().map(|event| event.note_id).collect::<Vec<_>>(),
             expected[1..]
         );
+    }
+
+    #[test]
+    fn sustain_pedal_holds_hosted_vst3_gates_across_note_off_until_pedal_release() {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "vst3-sustain".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected a MIDI track");
+        };
+        let input = Input {
+            track,
+            root: Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap()),
+            detached: false,
+        };
+        let queue = input.root.live_notes().unwrap();
+        let activation = input.root.begin_live_notes_activation_on_control().unwrap();
+
+        // Hold pitch 60 and 64 on ch 0, press CC64 sustain, release pitch 60, send CC11 expression.
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::NoteOn {
+                    channel: 0,
+                    pitch: 60,
+                    velocity: 100,
+                },
+                1_000,
+            )
+            .unwrap();
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::NoteOn {
+                    channel: 0,
+                    pitch: 64,
+                    velocity: 90,
+                },
+                2_000,
+            )
+            .unwrap();
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 64,
+                    value: 127,
+                },
+                3_000,
+            )
+            .unwrap();
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::NoteOff {
+                    channel: 0,
+                    pitch: 60,
+                    velocity: 0,
+                },
+                4_000,
+            )
+            .unwrap();
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 11,
+                    value: 80,
+                },
+                5_000,
+            )
+            .unwrap();
+
+        let mut gates = Gates::default();
+        let mut batch = Batch::default();
+        let mut events = Vec::with_capacity(NOTE_BUDGET);
+        let mut id = 0;
+        batch.begin(Some(&input));
+        for _ in 0..5 {
+            gates
+                .stage(Some(&input), &mut batch, &mut id, &mut events)
+                .unwrap();
+        }
+        batch.commit(Some(&input));
+
+        // Only the two NoteOns should have fired; NoteOff for 60 is held by CC64.
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|e| e.kind == ForeignNoteKind::On));
+        let id_60 = events[0].note_id;
+        let id_64 = events[1].note_id;
+        assert!(gates.held());
+
+        // Release CC64 sustain pedal: pitch 60 releases, while still-held pitch 64 stays sounding.
+        events.clear();
+        gates.reset_budget();
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 64,
+                    value: 0,
+                },
+                6_000,
+            )
+            .unwrap();
+        batch.begin(Some(&input));
+        gates
+            .stage(Some(&input), &mut batch, &mut id, &mut events)
+            .unwrap();
+        batch.commit(Some(&input));
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            (events[0].kind, events[0].pitch, events[0].note_id),
+            (ForeignNoteKind::Off, 60, id_60)
+        );
+        assert!(gates.held());
+
+        // Now release pitch 64 normally without sustain.
+        events.clear();
+        gates.reset_budget();
+        queue
+            .publish_at(
+                activation,
+                LiveNoteEvent::NoteOff {
+                    channel: 0,
+                    pitch: 64,
+                    velocity: 32,
+                },
+                7_000,
+            )
+            .unwrap();
+        batch.begin(Some(&input));
+        gates
+            .stage(Some(&input), &mut batch, &mut id, &mut events)
+            .unwrap();
+        batch.commit(Some(&input));
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            (
+                events[0].kind,
+                events[0].pitch,
+                events[0].value,
+                events[0].note_id
+            ),
+            (ForeignNoteKind::Off, 64, 32, id_64)
+        );
+        assert!(!gates.held());
     }
 }

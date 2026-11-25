@@ -220,6 +220,7 @@ impl ComputerKeyboardRuntime {
             gate: None,
             id: next,
             muted_source_onset: false,
+            sustained: false,
         });
         self.scratch_next_id = next;
         events[*len] = NativeInstrumentEvent::NoteOn {
@@ -243,6 +244,29 @@ impl ComputerKeyboardRuntime {
                 && voice.gate.is_none()
                 && source.is_none_or(|source| source == voice.source)
             {
+                voice.sustained = false;
+                voice.gate = Some(voice.age);
+                events[*len] = NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: voice.id,
+                };
+                *len += 1;
+            }
+        }
+    }
+
+    fn release_sustained_hardware(
+        &mut self,
+        channel: u8,
+        events: &mut [NativeInstrumentEvent; 259],
+        len: &mut usize,
+    ) {
+        for voice in self.scratch.iter_mut().flatten() {
+            if matches!(voice.source, VoiceSource::Hardware { channel: ch, .. } if ch == channel)
+                && voice.sustained
+                && voice.gate.is_none()
+            {
+                voice.sustained = false;
                 voice.gate = Some(voice.age);
                 events[*len] = NativeInstrumentEvent::NoteOff {
                     frame_offset: 0,
@@ -261,11 +285,35 @@ impl ComputerKeyboardRuntime {
     ) -> Result<(), Invalid> {
         let (channel, pitch, velocity) = match event {
             LiveNoteEvent::AllNotesOff => {
+                self.scratch_hardware_sustain = 0;
                 self.release_hardware(None, events, len);
                 return Ok(());
             }
             LiveNoteEvent::NoteOff { channel, pitch, .. } => {
+                if (self.scratch_hardware_sustain & (1_u16 << channel)) != 0 {
+                    let source = VoiceSource::Hardware { channel, pitch };
+                    for voice in self.scratch.iter_mut().flatten() {
+                        if voice.source == source && voice.gate.is_none() {
+                            voice.sustained = true;
+                        }
+                    }
+                    return Ok(());
+                }
                 self.release_hardware(Some(VoiceSource::Hardware { channel, pitch }), events, len);
+                return Ok(());
+            }
+            LiveNoteEvent::ControlChange { channel, cc, value } => {
+                if cc == 64 {
+                    if value >= 64 {
+                        self.scratch_hardware_sustain |= 1_u16 << channel;
+                    } else {
+                        self.scratch_hardware_sustain &= !(1_u16 << channel);
+                        self.release_sustained_hardware(channel, events, len);
+                    }
+                } else if cc == 121 {
+                    self.scratch_hardware_sustain &= !(1_u16 << channel);
+                    self.release_sustained_hardware(channel, events, len);
+                }
                 return Ok(());
             }
             LiveNoteEvent::NoteOn {
@@ -348,6 +396,7 @@ impl ComputerKeyboardRuntime {
             gate: None,
             id: self.scratch_next_id,
             muted_source_onset: false,
+            sustained: false,
         });
         events[*len] = NativeInstrumentEvent::NoteOn {
             frame_offset: 0,
