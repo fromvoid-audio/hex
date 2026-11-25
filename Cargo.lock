@@ -2819,6 +2819,7 @@ dependencies = [
 name = "hex-storage"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "fs2",
  "hex-lattice-contract",
  "hex-plugin-state",

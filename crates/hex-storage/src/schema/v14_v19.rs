@@ -189,22 +189,7 @@ impl DocumentV14 {
                     .devices()
                     .iter()
                     .map(|device| {
-                        let state = device.state();
-                        Ok(DeviceDtoV14 {
-                            id: device.id().value(),
-                            bypassed: device.bypassed(),
-                            type_id: state
-                                .type_id()
-                                .as_str()
-                                .map_err(|_| {
-                                    StorageError::Invalid("invalid native device type id")
-                                })?
-                                .to_owned(),
-                            state_version: state.state_version(),
-                            payload: state.payload().to_vec(),
-                            input_gain_millidb: state.input_gain_millidb(),
-                            output_gain_millidb: state.output_gain_millidb(),
-                        })
+                        device_to_dto(device.id().value(), device.bypassed(), device.state())
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Ok(TrackV14 {
@@ -664,6 +649,11 @@ pub(super) fn device_to_dto(
     bypassed: bool,
     state: &hex_lattice_contract::NativeDeviceState,
 ) -> Result<DeviceDtoV14, StorageError> {
+    if state.payload().len() > hex_lattice_contract::MAX_VST3_DEVICE_STATE_BYTES {
+        return Err(StorageError::Invalid(
+            "invalid native device state envelope",
+        ));
+    }
     Ok(DeviceDtoV14 {
         id,
         bypassed,
@@ -682,6 +672,11 @@ pub(super) fn device_to_dto(
 pub(super) fn device_dto_into_snapshot(
     device: DeviceDtoV14,
 ) -> Result<DeviceSnapshot, StorageError> {
+    if device.payload.len() > hex_lattice_contract::MAX_VST3_DEVICE_STATE_BYTES {
+        return Err(StorageError::Invalid(
+            "invalid native device state envelope",
+        ));
+    }
     let type_id = hex_lattice_contract::DeviceTypeId::new(&device.type_id)
         .map_err(|_| StorageError::Invalid("invalid native device type id"))?;
     let state =

@@ -531,3 +531,16 @@ fn duplicating_a_slot_reserves_new_ids_and_copies_only_its_assignments() {
     .unwrap();
     assert!(full.duplicate_source(full.sources()[0].id, 100).is_err());
 }
+
+#[test]
+fn modulator_slots_retain_their_historical_envelope_limit() {
+    use hex_lattice_contract::{MAX_VST3_DEVICE_STATE_BYTES, VST3_DEVICE_TYPE_ID};
+    let mut slot = source(1);
+    for size in [MAX_VST3_DEVICE_STATE_BYTES, MAX_VST3_DEVICE_STATE_BYTES + 1] {
+        slot.state = NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![3; size]).unwrap();
+        assert_eq!(
+            DeviceModulation::new(vec![slot.clone()], vec![]).is_ok(),
+            size == MAX_VST3_DEVICE_STATE_BYTES
+        );
+    }
+}
