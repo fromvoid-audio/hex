@@ -1180,6 +1180,10 @@ impl EditorView {
                                         view.midi_editor.group_gesture = None;
                                         return;
                                     }
+                                    let effective_clip_len =
+                                        originals.iter().fold(clip_len.raw(), |len, note| {
+                                            len.max(note.start.saturating_add(note.duration))
+                                        });
                                     view.midi_editor.note_gesture = None;
                                     let gesture = super::midi_group_drag::GroupGesture::begin(
                                         super::midi_group_drag::GroupStart {
@@ -1198,7 +1202,7 @@ impl EditorView {
                                             beat_start,
                                             beat_span: beat_span.raw(),
                                             pitch,
-                                            clip_length: clip_len.raw(),
+                                            clip_length: effective_clip_len,
                                             grid,
                                         },
                                     );
@@ -1334,7 +1338,7 @@ impl EditorView {
                             };
                             let local = local_beat.raw();
                             let duration = midi_drag::default_gate_raw(
-                                authoring_length.raw().saturating_sub(local),
+                                u64::MAX.saturating_sub(local),
                                 effective_grid,
                             );
                             if local >= authoring_length.raw() || duration == 0 {

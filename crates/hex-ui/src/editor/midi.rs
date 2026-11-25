@@ -598,10 +598,23 @@ impl EditorView {
             self.error = Some("selected midi notes changed · edit canceled".into());
             return;
         }
-        self.enqueue(Request::Edit(Command::UpdateMidiNotes {
-            clip: clip_id,
-            notes: updates,
-        }));
+        let command = if updates.iter().any(|note| {
+            note.start
+                .raw()
+                .checked_add(note.duration.raw())
+                .is_none_or(|end| end > clip_length)
+        }) {
+            Command::UpdateMidiNotesWithSourceExtent {
+                clip: clip_id,
+                notes: updates,
+            }
+        } else {
+            Command::UpdateMidiNotes {
+                clip: clip_id,
+                notes: updates,
+            }
+        };
+        self.enqueue(Request::Edit(command));
     }
 
     pub(super) fn edit_pending(&self) -> bool {
@@ -720,10 +733,7 @@ impl EditorView {
                         .saturating_sub(step)
                         .max(self.midi_editor.snap_grid.minimum_gate().min(duration))
                 } else {
-                    let available = self
-                        .midi_clip()
-                        .map_or(0, |clip| clip.source_length().raw().saturating_sub(start));
-                    duration.saturating_add(step).min(available)
+                    duration.saturating_add(step).min(u64::MAX - start)
                 }
             }
             NoteField::Velocity(delta) => {
@@ -741,7 +751,7 @@ impl EditorView {
             return;
         };
         let grows_source = end > clip.source_length().raw();
-        if grows_source && !matches!(field, NoteField::Onset(_)) {
+        if grows_source && !matches!(field, NoteField::Onset(_) | NoteField::Duration(_)) {
             self.error = Some("edit would move the note outside its clip".into());
             return;
         }

@@ -311,3 +311,103 @@ fn group_leading_resize_paints_and_commits_the_same_destructive_prefix(cx: &mut 
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
 }
+
+#[gpui::test]
+fn single_and_group_trailing_resize_grow_source_length_and_undo_atomically(
+    cx: &mut TestAppContext,
+) {
+    for group in [false, true] {
+        let (mut visual, editor, _environment, clip) = fixture(cx);
+        let beat = BeatTime::ONE.raw();
+        editor.update(&mut visual, |v, _| {
+            assert!(
+                v.enqueue(Request::Edit(Command::AddMidiNotes {
+                    clip,
+                    notes: [(60, 1, 2), (64, 2, 2)]
+                        .into_iter()
+                        .map(|(pitch, start, duration)| MidiNoteInsert {
+                            active: true,
+                            start: BeatTime::from_quarters(start).unwrap(),
+                            duration: BeatTime::from_quarters(duration).unwrap(),
+                            pitch,
+                            channel: 2,
+                            velocity: 93,
+                        })
+                        .collect(),
+                }))
+            );
+        });
+        pump(&editor, &mut visual);
+        let before = editor.update(&mut visual, |v, cx| {
+            let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
+            if group {
+                v.midi_editor
+                    .selection
+                    .select_all(source.notes().iter().map(|n| n.id()))
+                    .unwrap();
+            } else {
+                v.midi_editor.selection.set_single(source.notes()[0].id());
+            }
+            // Zoom out to 16 beats on a 4-beat clip so trailing resize can drag past beat 4.
+            v.midi_editor.piano_beat_span = BeatTime::from_quarters(16).unwrap();
+            cx.notify();
+            v.state.as_ref().unwrap().project.snapshot()
+        });
+        visual.run_until_parked();
+        let roll = visual.debug_bounds("midi-note-roll").unwrap();
+        let width = f32::from(roll.size.width) - 2.0;
+        let height = f32::from(roll.size.height) - 2.0;
+        // Note 0 (pitch 60, row 11 of 48..72) spans beats 1..3 inside a 16-beat view.
+        let down = roll.origin
+            + point(
+                px(1.0 + width * (3.0 / 16.0) - 1.0),
+                px(1.0 + height * 11.5 / 24.0),
+            );
+        // Drag 8 beats to the right (note 0 ends at beat 11, note 1 at beat 12).
+        let end = down + point(px(width * (8.0 / 16.0)), px(0.0));
+        let snap = Modifiers::command();
+        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), snap);
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.snapshot(),
+                before,
+                "held preview must not mutate canonical project"
+            );
+        });
+        visual.simulate_mouse_up(end, MouseButton::Left, snap);
+        editor.read_with(&visual, |v, _| {
+            assert!(matches!(
+                v.test_probes.last_enqueued_edit,
+                Some(Command::UpdateMidiNotesWithSourceExtent { .. })
+            ));
+        });
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |v, _| {
+            let project = &v.state.as_ref().unwrap().project;
+            let source = project.midi_source(clip).unwrap();
+            let expected_length = if group { 12 } else { 11 };
+            assert_eq!(source.source_length().raw(), expected_length * beat);
+            assert_eq!(project.midi_clip(clip).unwrap().length().raw(), 4 * beat);
+            assert_eq!(source.notes()[0].start().raw(), beat);
+            assert_eq!(source.notes()[0].duration().raw(), 10 * beat);
+            assert_eq!(source.notes()[1].start().raw(), 2 * beat);
+            assert_eq!(
+                source.notes()[1].duration().raw(),
+                if group { 10 * beat } else { 2 * beat }
+            );
+            project.snapshot()
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
+        });
+    }
+}
