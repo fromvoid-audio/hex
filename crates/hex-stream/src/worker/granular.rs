@@ -14,6 +14,7 @@ pub struct GranularRuntimeData {
     pub worker: GranularWorkerData,
     pub metadata: AllocationData,
     pub loans: AllocationData,
+    pub deferred_keys: AllocationData,
 }
 impl GranularRuntimeData {
     pub(crate) fn requested(
@@ -27,6 +28,7 @@ impl GranularRuntimeData {
             worker: GranularWorkerControl::data_bound(bank, config.page_buffers)?,
             metadata: AllocationData::of::<StreamedSourceMetadata>(bank.metadata().len()),
             loans: AllocationData::of::<Loan>(config.page_buffers),
+            deferred_keys: AllocationData::of::<ResourcePageKey>(config.request_capacity),
         };
         data.bytes()
             .ok_or(StreamRuntimeError::InvalidConfiguration)?;
@@ -37,6 +39,7 @@ impl GranularRuntimeData {
             self.worker.bytes()?,
             self.metadata.bytes()?,
             self.loans.bytes()?,
+            self.deferred_keys.bytes()?,
         ])
     }
 }
@@ -51,6 +54,7 @@ pub(crate) struct PreparedGranular {
     allowance: GranularWorkerAllowance,
     metadata: Vec<StreamedSourceMetadata>,
     loans: Vec<Loan>,
+    deferred: VecDeque<ResourcePageKey>,
     loan_limit: usize,
     data: GranularRuntimeData,
     #[cfg(feature = "test-support")]
@@ -82,10 +86,15 @@ impl PreparedGranular {
         loans
             .try_reserve_exact(config.page_buffers)
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        let mut deferred = VecDeque::new();
+        deferred
+            .try_reserve_exact(config.request_capacity)
+            .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         let data = GranularRuntimeData {
             worker,
             metadata: AllocationData::of::<StreamedSourceMetadata>(metadata.capacity()),
             loans: AllocationData::of::<Loan>(loans.capacity()),
+            deferred_keys: AllocationData::of::<ResourcePageKey>(deferred.capacity()),
         };
         if data
             .bytes()
@@ -102,6 +111,7 @@ impl PreparedGranular {
             allowance,
             metadata,
             loans,
+            deferred,
             loan_limit: 1,
             data,
             #[cfg(feature = "test-support")]
@@ -131,6 +141,7 @@ impl PreparedGranular {
             control,
             metadata: self.metadata,
             loans: self.loans,
+            deferred: self.deferred,
             loan_limit: self.loan_limit,
             data: self.data,
             fault: false,
@@ -141,6 +152,7 @@ pub(crate) struct GranularRouting {
     control: GranularWorkerControl,
     metadata: Vec<StreamedSourceMetadata>,
     loans: Vec<Loan>,
+    deferred: VecDeque<ResourcePageKey>,
     loan_limit: usize,
     data: GranularRuntimeData,
     fault: bool,
@@ -154,6 +166,20 @@ impl GranularRouting {
     }
     pub(crate) fn faulted(&self) -> bool {
         self.fault || self.control.worker_finished()
+    }
+    pub(crate) fn can_submit(&self) -> bool {
+        !self.faulted() && self.loans.len() < self.loan_limit
+    }
+    pub(crate) fn push_deferred(&mut self, key: ResourcePageKey) -> bool {
+        if self.deferred.len() < self.deferred.capacity() {
+            self.deferred.push_back(key);
+            true
+        } else {
+            false
+        }
+    }
+    pub(crate) fn pop_deferred(&mut self) -> Option<ResourcePageKey> {
+        self.deferred.pop_front()
     }
     pub(crate) fn contains(&self, key: hex_engine::StreamSourceKey) -> bool {
         self.metadata

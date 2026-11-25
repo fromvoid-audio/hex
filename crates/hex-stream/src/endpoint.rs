@@ -1251,13 +1251,15 @@ impl MediaPages for Endpoint {
             source: key.into(),
             page_index,
         };
-        if let Some(slot) = self.cache_lookup(key)
-            && let CacheSlot::Occupied { page, .. } = &self.cache[slot]
-        {
-            return Some(BorrowedMediaPage {
-                page_index,
-                frames: &page.frames[..page.valid_frames],
-            });
+        if let Some(slot) = self.cache_lookup(key) {
+            let next_stamp = self.next_access_stamp();
+            if let CacheSlot::Occupied { page, stamp, .. } = &mut self.cache[slot] {
+                *stamp = next_stamp;
+                return Some(BorrowedMediaPage {
+                    page_index,
+                    frames: &page.frames[..page.valid_frames],
+                });
+            }
         }
         self.misses = self.misses.saturating_add(1);
         None
@@ -1286,15 +1288,17 @@ impl MediaPages for Endpoint {
             source: key.into(),
             page_index,
         };
-        if let Some(slot) = self.cache_lookup(resource)
-            && let CacheSlot::Occupied { page, .. } = &self.cache[slot]
-        {
-            return Some(BorrowedScalarPage {
-                key,
-                page_index,
-                values: &page.scalar_values[..page.valid_frames],
-                coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
-            });
+        if let Some(slot) = self.cache_lookup(resource) {
+            let next_stamp = self.next_access_stamp();
+            if let CacheSlot::Occupied { page, stamp, .. } = &mut self.cache[slot] {
+                *stamp = next_stamp;
+                return Some(BorrowedScalarPage {
+                    key,
+                    page_index,
+                    values: &page.scalar_values[..page.valid_frames],
+                    coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
+                });
+            }
         }
         self.misses = self.misses.saturating_add(1);
         None
@@ -2281,5 +2285,98 @@ mod tests {
         assert_eq!(observed.count_current, 0);
         assert_eq!(observed.bytes_total, 8);
         assert_eq!(observed.bytes_current, 0);
+    }
+
+    #[test]
+    fn lru_eviction_keeps_recently_read_page_over_newer_unused_page() {
+        let source = source();
+        let (request_tx, _requests) = RingBuffer::new(8);
+        let (mut ready, ready_rx) = RingBuffer::new(4);
+        let (return_tx, _returns) = RingBuffer::new(8);
+        let (_failures, failure_rx) = RingBuffer::new(4);
+        let mut endpoint = Endpoint::new(
+            3,
+            8,
+            vec![source.into()],
+            EndpointQueues {
+                request_tx,
+                ready_rx,
+                return_tx,
+                failure_rx,
+            },
+        )
+        .expect("pcm endpoint");
+        let make_page = |page_index: u64| {
+            let mut buf = PageBuffer::new().expect("page buffer");
+            buf.key = Some(ResourcePageKey {
+                source: source.into(),
+                page_index,
+            });
+            buf.valid_frames = 16;
+            buf
+        };
+        assert!(ready.push(make_page(0)).is_ok());
+        assert!(ready.push(make_page(1)).is_ok());
+        assert_eq!(endpoint.pump_ready(2), 2);
+        assert!(endpoint.page(source, 0).is_some());
+        assert!(endpoint.page(source, 1).is_some());
+
+        // Re-reading page 0 must refresh its LRU access stamp ahead of page 1.
+        assert!(endpoint.page(source, 0).is_some());
+        assert!(endpoint.page(source, 0).is_some());
+
+        // Inserting page 2 with cache capacity 2 must evict unused page 1, not page 0.
+        assert!(ready.push(make_page(2)).is_ok());
+        assert_eq!(endpoint.pump_ready(1), 1);
+        assert!(
+            endpoint.page(source, 0).is_some(),
+            "frequently read page 0 must outlive newer unused page 1"
+        );
+        assert!(
+            endpoint.page(source, 1).is_none(),
+            "least-recently-used page 1 should have been evicted"
+        );
+        assert!(endpoint.page(source, 2).is_some());
+
+        // Verify scalar_page also updates LRU stamps on hits.
+        let scalar_source = ScalarSourceKey::new(73, 1, 1).expect("scalar source");
+        let (request_tx, _requests) = RingBuffer::new(8);
+        let (mut scalar_ready, ready_rx) = RingBuffer::new(4);
+        let (return_tx, _returns) = RingBuffer::new(8);
+        let (_failures, failure_rx) = RingBuffer::new(4);
+        let mut scalar_ep = Endpoint::new(
+            3,
+            8,
+            vec![scalar_source.into()],
+            EndpointQueues {
+                request_tx,
+                ready_rx,
+                return_tx,
+                failure_rx,
+            },
+        )
+        .expect("scalar endpoint");
+        let make_scalar_page = |page_index: u64| {
+            let mut buf = PageBuffer::new().expect("scalar page buffer");
+            buf.key = Some(ResourcePageKey {
+                source: scalar_source.into(),
+                page_index,
+            });
+            buf.scalar_values = vec![0.0; 16].into_boxed_slice();
+            buf.scalar_coverage = vec![0u64; 1].into_boxed_slice();
+            buf.valid_frames = 16;
+            buf
+        };
+        assert!(scalar_ready.push(make_scalar_page(10)).is_ok());
+        assert!(scalar_ready.push(make_scalar_page(11)).is_ok());
+        assert_eq!(scalar_ep.pump_ready(2), 2);
+        assert!(scalar_ep.scalar_page(scalar_source, 10).is_some());
+        assert!(scalar_ep.scalar_page(scalar_source, 11).is_some());
+        assert!(scalar_ep.scalar_page(scalar_source, 10).is_some());
+        assert!(scalar_ready.push(make_scalar_page(12)).is_ok());
+        assert_eq!(scalar_ep.pump_ready(1), 1);
+        assert!(scalar_ep.scalar_page(scalar_source, 10).is_some());
+        assert!(scalar_ep.scalar_page(scalar_source, 11).is_none());
+        assert!(scalar_ep.scalar_page(scalar_source, 12).is_some());
     }
 }

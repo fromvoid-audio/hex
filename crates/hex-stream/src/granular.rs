@@ -334,9 +334,9 @@ struct Source<'a, 'c> {
     cancel: &'c RefCell<&'c mut dyn FnMut() -> bool>,
 }
 impl Source<'_, '_> {
-    fn load(&mut self, position: u64) -> Result<Frame, VerifiedGranularStepError> {
+    fn load_slot(&mut self, position: u64) -> Result<(usize, usize), VerifiedGranularStepError> {
         self.clock = self.clock.saturating_add(1);
-        if let Some((index, (start, _))) =
+        if let Some((index, (start, count))) =
             self.valid[..self.slots]
                 .iter()
                 .enumerate()
@@ -351,9 +351,14 @@ impl Source<'_, '_> {
             let offset = usize::try_from(position - start).map_err(|_| {
                 VerifiedGranularStepError::Source(StreamFailureKind::CapacityExhausted)
             })?;
-            return self.cache.get(index * self.slot + offset).copied().ok_or(
-                VerifiedGranularStepError::Source(StreamFailureKind::CapacityExhausted),
-            );
+            let avail = count.saturating_sub(offset);
+            let cache_offset = index * self.slot + offset;
+            if cache_offset + avail <= self.cache.len() {
+                return Ok((cache_offset, avail));
+            }
+            return Err(VerifiedGranularStepError::Source(
+                StreamFailureKind::CapacityExhausted,
+            ));
         }
         if check_cancel(self.cancel) {
             return Err(VerifiedGranularStepError::Source(
@@ -413,8 +418,20 @@ impl Source<'_, '_> {
         self.ages[index] = self.clock;
         let at = usize::try_from(position - start)
             .map_err(|_| VerifiedGranularStepError::Source(StreamFailureKind::CapacityExhausted))?;
-        output
-            .get(at)
+        let avail = count.saturating_sub(at);
+        if offset + at + avail <= self.cache.len() {
+            Ok((offset + at, avail))
+        } else {
+            Err(VerifiedGranularStepError::Source(
+                StreamFailureKind::CapacityExhausted,
+            ))
+        }
+    }
+
+    fn load(&mut self, position: u64) -> Result<Frame, VerifiedGranularStepError> {
+        let (cache_offset, _) = self.load_slot(position)?;
+        self.cache
+            .get(cache_offset)
             .copied()
             .ok_or(VerifiedGranularStepError::Source(
                 StreamFailureKind::CapacityExhausted,
@@ -447,11 +464,122 @@ impl GranularSource for Source<'_, '_> {
         Ok(self.load(at)?.map(|value| f64::from(value) * gain))
     }
     fn window(&mut self, start: i128, output: &mut [[f64; 2]]) -> Result<(), Self::Error> {
-        for (index, frame) in output.iter_mut().enumerate() {
-            let position = start
-                .checked_add(index as i128)
-                .ok_or(Error::Invalid("granular source position overflow"))?;
-            *frame = self.frame(position)?;
+        if output.is_empty() {
+            return Ok(());
+        }
+        // Validate end position upfront to match sample-by-sample overflow behavior.
+        start
+            .checked_add((output.len() - 1) as i128)
+            .ok_or(Error::Invalid("granular source position overflow"))?;
+        let mut cursor = 0usize;
+        while cursor < output.len() {
+            let prev_bucket = self.checks / 1024;
+            let pos = start + cursor as i128;
+            let remaining = output.len() - cursor;
+            if let Some(region) = self.region {
+                let shifted = pos
+                    .checked_add(i128::from(region.phase()))
+                    .ok_or(Error::Invalid("source region position overflow"))?;
+                let length = region.length();
+                let local = if region.looping() {
+                    match (i64::try_from(shifted), i64::try_from(length)) {
+                        (Ok(p), Ok(l)) => p.rem_euclid(l) as u64,
+                        _ => shifted.rem_euclid(i128::from(length)) as u64,
+                    }
+                } else if shifted < 0 {
+                    let zeros =
+                        usize::try_from((-shifted).min(remaining as i128)).unwrap_or(remaining);
+                    output[cursor..cursor + zeros].fill([0.0; 2]);
+                    self.checks = self.checks.wrapping_add(zeros);
+                    if self.checks / 1024 != prev_bucket && check_cancel(self.cancel) {
+                        return Err(VerifiedGranularStepError::Source(
+                            StreamFailureKind::Cancelled,
+                        ));
+                    }
+                    cursor += zeros;
+                    continue;
+                } else if shifted >= i128::from(length) {
+                    output[cursor..].fill([0.0; 2]);
+                    self.checks = self.checks.wrapping_add(remaining);
+                    if self.checks / 1024 != prev_bucket && check_cancel(self.cancel) {
+                        return Err(VerifiedGranularStepError::Source(
+                            StreamFailureKind::Cancelled,
+                        ));
+                    }
+                    break;
+                } else {
+                    shifted as u64
+                };
+                let region_rem = usize::try_from(length - local).unwrap_or(remaining);
+                let source_idx = region
+                    .start()
+                    .checked_add(local)
+                    .ok_or(Error::Invalid("source region index overflow"))?;
+                let (cache_off, avail) = self.load_slot(source_idx)?;
+                let run = remaining.min(region_rem).min(avail).min(1024);
+                self.checks = self.checks.wrapping_add(run);
+                if self.checks / 1024 != prev_bucket && check_cancel(self.cancel) {
+                    return Err(VerifiedGranularStepError::Source(
+                        StreamFailureKind::Cancelled,
+                    ));
+                }
+                let src_slice = &self.cache[cache_off..cache_off + run];
+                let dst_slice = &mut output[cursor..cursor + run];
+                let envelope = region.envelope();
+                if envelope.is_empty() {
+                    for (dst, &src) in dst_slice.iter_mut().zip(src_slice) {
+                        *dst = [f64::from(src[0]), f64::from(src[1])];
+                    }
+                } else {
+                    for (k, (dst, &src)) in dst_slice.iter_mut().zip(src_slice).enumerate() {
+                        let gain = region.gain_at(source_idx + k as u64);
+                        *dst = [f64::from(src[0]) * gain, f64::from(src[1]) * gain];
+                    }
+                }
+                cursor += run;
+            } else {
+                let total_frames = self.plan.output_frames();
+                if pos < 0 {
+                    let zeros = usize::try_from((-pos).min(remaining as i128)).unwrap_or(remaining);
+                    output[cursor..cursor + zeros].fill([0.0; 2]);
+                    self.checks = self.checks.wrapping_add(zeros);
+                    if self.checks / 1024 != prev_bucket && check_cancel(self.cancel) {
+                        return Err(VerifiedGranularStepError::Source(
+                            StreamFailureKind::Cancelled,
+                        ));
+                    }
+                    cursor += zeros;
+                    continue;
+                }
+                let Ok(at) = u64::try_from(pos) else {
+                    output[cursor..].fill([0.0; 2]);
+                    break;
+                };
+                if at >= total_frames {
+                    output[cursor..].fill([0.0; 2]);
+                    self.checks = self.checks.wrapping_add(remaining);
+                    if self.checks / 1024 != prev_bucket && check_cancel(self.cancel) {
+                        return Err(VerifiedGranularStepError::Source(
+                            StreamFailureKind::Cancelled,
+                        ));
+                    }
+                    break;
+                }
+                let (cache_off, avail) = self.load_slot(at)?;
+                let run = remaining.min(avail).min(1024);
+                self.checks = self.checks.wrapping_add(run);
+                if self.checks / 1024 != prev_bucket && check_cancel(self.cancel) {
+                    return Err(VerifiedGranularStepError::Source(
+                        StreamFailureKind::Cancelled,
+                    ));
+                }
+                let src_slice = &self.cache[cache_off..cache_off + run];
+                let dst_slice = &mut output[cursor..cursor + run];
+                for (dst, &src) in dst_slice.iter_mut().zip(src_slice) {
+                    *dst = [f64::from(src[0]), f64::from(src[1])];
+                }
+                cursor += run;
+            }
         }
         Ok(())
     }

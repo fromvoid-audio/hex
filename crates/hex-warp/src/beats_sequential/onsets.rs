@@ -321,12 +321,24 @@ impl OnsetScanner {
                 .min(u64::from((self.sample_rate / 200).max(1)))
                 .max(1);
             let mut slow = 0.0;
-            for i in 0..warmup {
-                if i % 1024 == 0 && cancel() {
+            let mut i = 0u64;
+            while i < warmup {
+                if cancel() {
                     return Err(Error::Cancelled.into());
                 }
-                let x = source.frame(i128::from(i))?;
-                slow += (x[0] * x[0] + x[1] * x[1]) / warmup as f64;
+                let rem = (warmup - i) as usize;
+                if !scratch.is_empty() {
+                    let chunk = rem.min(scratch.len()).min(1024);
+                    source.window(i128::from(i), &mut scratch[..chunk])?;
+                    for &x in &scratch[..chunk] {
+                        slow += (x[0] * x[0] + x[1] * x[1]) / warmup as f64;
+                    }
+                    i += chunk as u64;
+                } else {
+                    let x = source.frame(i128::from(i))?;
+                    slow += (x[0] * x[0] + x[1] * x[1]) / warmup as f64;
+                    i += 1;
+                }
             }
             self.energy_slow = slow;
             self.energy_warmup_done = true;
@@ -341,24 +353,46 @@ impl OnsetScanner {
             let coefficient = 1.0 - (-1.0 / (f64::from(self.sample_rate) * 0.020)).exp();
             let mut i = self.energy_pos;
             while i < chunk_end {
-                if (i - self.energy_pos).is_multiple_of(1024) && cancel() {
+                if cancel() {
                     return Err(Error::Cancelled.into());
                 }
-                let x = source.frame(i128::from(i))?;
-                let energy = x[0] * x[0] + x[1] * x[1];
-                if self
-                    .energy_last
-                    .is_none_or(|last| i >= last + self.separation)
-                    && energy > 1e-12
-                    && energy > self.energy_slow * 8.0
-                {
-                    if i != 0 {
-                        self.insert_raw(i).map_err(S::Error::from)?;
+                if !scratch.is_empty() {
+                    let chunk = ((chunk_end - i) as usize).min(scratch.len()).min(1024);
+                    source.window(i128::from(i), &mut scratch[..chunk])?;
+                    for (offset, &x) in scratch[..chunk].iter().enumerate() {
+                        let at = i + offset as u64;
+                        let energy = x[0] * x[0] + x[1] * x[1];
+                        if self
+                            .energy_last
+                            .is_none_or(|last| at >= last + self.separation)
+                            && energy > 1e-12
+                            && energy > self.energy_slow * 8.0
+                        {
+                            if at != 0 {
+                                self.insert_raw(at).map_err(S::Error::from)?;
+                            }
+                            self.energy_last = Some(at);
+                        }
+                        self.energy_slow += (energy - self.energy_slow) * coefficient;
                     }
-                    self.energy_last = Some(i);
+                    i += chunk as u64;
+                } else {
+                    let x = source.frame(i128::from(i))?;
+                    let energy = x[0] * x[0] + x[1] * x[1];
+                    if self
+                        .energy_last
+                        .is_none_or(|last| i >= last + self.separation)
+                        && energy > 1e-12
+                        && energy > self.energy_slow * 8.0
+                    {
+                        if i != 0 {
+                            self.insert_raw(i).map_err(S::Error::from)?;
+                        }
+                        self.energy_last = Some(i);
+                    }
+                    self.energy_slow += (energy - self.energy_slow) * coefficient;
+                    i += 1;
                 }
-                self.energy_slow += (energy - self.energy_slow) * coefficient;
-                i += 1;
             }
             self.energy_pos = chunk_end;
             if self.energy_pos < required_energy {
@@ -444,13 +478,21 @@ impl OnsetScanner {
         let use_scratch = scratch.len() >= self.n;
         if use_scratch {
             let slice = &mut scratch[..self.n];
-            for (i, slot) in slice.iter_mut().enumerate() {
-                let at = i128::from(center) + i as i128 - self.half as i128;
-                *slot = if at >= 0 && at < i128::from(self.region_length) {
-                    source.frame(at)?
-                } else {
-                    [0.0; 2]
-                };
+            let window_start = i128::from(center) - self.half as i128;
+            let window_end = window_start + self.n as i128;
+            let region_end = i128::from(self.region_length);
+            let valid_start = window_start.max(0).min(window_end);
+            let valid_end = window_end.min(region_end).max(valid_start);
+            let lead_zeros = (valid_start - window_start) as usize;
+            let valid_len = (valid_end - valid_start) as usize;
+            if lead_zeros > 0 {
+                slice[..lead_zeros].fill([0.0; 2]);
+            }
+            if valid_len > 0 {
+                source.window(valid_start, &mut slice[lead_zeros..lead_zeros + valid_len])?;
+            }
+            if lead_zeros + valid_len < self.n {
+                slice[lead_zeros + valid_len..].fill([0.0; 2]);
             }
         }
         let mut increase = [0.0; 4];

@@ -71,6 +71,10 @@ impl SourceRegion {
     pub fn envelope(&self) -> &[GainPoint] {
         &self.envelope
     }
+    /// Evaluate this region's linear gain envelope at an absolute source frame.
+    pub fn gain_at(&self, source_frame: u64) -> f64 {
+        source_gain(&self.envelope, source_frame)
+    }
     pub fn length(&self) -> u64 {
         self.length
     }
