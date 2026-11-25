@@ -46,8 +46,8 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
             })
             .unwrap();
     }
-    let prepared = EQ_DEFINITION
-        .prepare_processor(
+    let hex_lattice::PreparedProcessorFactory::Owned(prepared) = EQ_DEFINITION
+        .prepare_runtime_factory(
             &settings.encode().unwrap(),
             &hex_lattice::DevicePreparationContext {
                 sample_rate: 48000,
@@ -56,23 +56,30 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
             },
         )
         .unwrap()
-        .unwrap();
-    let mut a = prepared.create_runtime();
-    let mut b = prepared.create_runtime();
+        .unwrap()
+    else {
+        panic!("eq should prepare as OwnedProcessorRuntime");
+    };
+    let mut a = prepared.create_runtime().unwrap();
+    let mut b = prepared.create_runtime().unwrap();
     let mut frames = [[0.001, -0.001]; 1024];
     let clock = Clock;
     let measurement = allocation_counter::measure(|| {
+        a.begin_block();
         a.process_block_with_clock(
             &mut frames,
             Some(&clock),
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
         );
-        b.copy_history_from(a.as_ref());
+        a.commit_block();
+        b.inherit_from(a.as_ref());
+        b.begin_block();
         b.process_bypassed_block_with_clock(
             &mut frames,
             Some(&clock),
             &hex_lattice::EMPTY_DEVICE_RESOURCES,
         );
+        b.rollback_block();
         b.reset();
         a.reset();
     });
@@ -90,7 +97,7 @@ fn max_density_eq_processing_bypass_history_copy_and_reset_allocate_and_free_not
 #[test]
 fn combined_eq_retarget_and_bypass_handoff_does_not_allocate_or_free() {
     use hex_lattice::{
-        NativeRuntimeChain, PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+        NativeRuntimeChain, PreparedRuntimeInstance, ProcessorChainOwner, StereoMatrix,
     };
     use std::sync::Arc;
     let make = |gain, bypassed| {
@@ -103,7 +110,7 @@ fn combined_eq_retarget_and_bypass_handoff_does_not_allocate_or_free() {
             .unwrap();
         let state = settings.encode().unwrap();
         let prepared = EQ_DEFINITION
-            .prepare_processor(
+            .prepare_runtime_factory(
                 &state,
                 &hex_lattice::DevicePreparationContext {
                     sample_rate: 48_000,
@@ -113,7 +120,9 @@ fn combined_eq_retarget_and_bypass_handoff_does_not_allocate_or_free() {
             )
             .unwrap()
             .unwrap();
-        NativeRuntimeChain::new(vec![PreparedProcessorInstance {
+        NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+            modulation: None,
+            automation: Default::default(),
             meter: Default::default(),
             owner: ProcessorChainOwner::Track(1),
             device_id: 1,
@@ -122,7 +131,7 @@ fn combined_eq_retarget_and_bypass_handoff_does_not_allocate_or_free() {
             bypassed,
             sample_rate: 48_000,
             configuration: Some(Arc::new(state)),
-            definition: Some(Arc::from(prepared)),
+            definition: Some(prepared),
         }])
         .unwrap()
     };

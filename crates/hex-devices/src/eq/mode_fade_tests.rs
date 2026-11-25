@@ -2,9 +2,9 @@
 //! outgoing routing, its audition, node deletion, the single-branch capacity
 //! and its busy refusal.
 use super::*;
-use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeProcessorRuntime};
+use hex_lattice::{EMPTY_DEVICE_RESOURCES, OwnedProcessorRuntime};
 
-type Runtime = Box<dyn NativeProcessorRuntime>;
+type Runtime = Box<dyn OwnedProcessorRuntime>;
 
 /// `count` +12 dB bells (and a -6 dB bell in bank 3) in `mode`.
 fn state(mode: u8, count: u64) -> EqState {
@@ -53,9 +53,9 @@ fn process(runtime: &mut Runtime, frames: &mut [StereoFrame], block: usize) {
 /// One legacy-twin block: a fresh runtime copies the live one, processes and
 /// becomes live.
 fn handoff_block(prepared: &runtime::PreparedEq, live: &mut Runtime, frames: &mut [StereoFrame]) {
-    let mut next = prepared.create_runtime();
-    assert!(next.can_copy_history_from(live.as_ref()));
-    next.copy_history_from(live.as_ref());
+    let mut next = prepared.create_runtime().unwrap();
+    assert!(next.can_inherit_from(live.as_ref()));
+    next.inherit_from(live.as_ref());
     next.process_block(frames, &EMPTY_DEVICE_RESOURCES);
     *live = next;
 }
@@ -74,20 +74,20 @@ fn assert_switch_is_continuous(
     let warm = rate as usize / 10;
     let length = 4 * rate as usize / 100;
     let mut input: Vec<_> = (0..warm + length).map(|n| sine(rate, n)).collect();
-    let mut old = old_prepared.create_runtime();
+    let mut old = old_prepared.create_runtime().unwrap();
     prepare_old(&mut old);
     process(&mut old, &mut input[..warm], block);
-    let mut new = new_prepared.create_runtime();
+    let mut new = new_prepared.create_runtime().unwrap();
     assert!(!new.transition_busy_from(old.as_ref()));
-    assert!(new.can_copy_history_from(old.as_ref()));
+    assert!(new.can_inherit_from(old.as_ref()));
     assert!(new.can_retarget_parameters_from(old.as_ref()));
-    new.copy_history_from(old.as_ref());
-    let mut reference = new_prepared.create_runtime();
+    new.inherit_from(old.as_ref());
+    let mut reference = new_prepared.create_runtime().unwrap();
     let mut expected = input[warm..].to_vec();
     process(&mut reference, &mut expected, block);
     let fade = fade_frames(rate);
     process(&mut new, &mut input[warm..warm + fade - 1], block);
-    assert!(!new.is_quiescent(), "{rate} Hz block {block}");
+    assert!(!new.committed_is_quiescent(), "{rate} Hz block {block}");
     process(&mut new, &mut input[warm + fade - 1..], block);
     // The crossfade ends exactly on the new routing from empty history.
     assert_eq!(input[warm + fade..], expected[fade..], "{rate} Hz");
@@ -157,11 +157,11 @@ fn repeated_mode_switch_defers_while_fading_and_stays_continuous() {
         left_right_state.mode = 1;
         let left_right = prepared(&left_right_state, rate);
         let mut prefix: Vec<_> = (0..warm).map(|n| sine(rate, n)).collect();
-        let mut warmed = stereo.create_runtime();
+        let mut warmed = stereo.create_runtime().unwrap();
         process(&mut warmed, &mut prefix, 64);
         let render = |block: usize| {
-            let mut live = stereo.create_runtime();
-            live.copy_history_from(warmed.as_ref());
+            let mut live = stereo.create_runtime().unwrap();
+            live.inherit_from(warmed.as_ref());
             let mut frames: Vec<_> = (warm..warm + 6 * fade).map(|n| sine(rate, n)).collect();
             let mut switched_again = None;
             let mut offset = 0;
@@ -169,24 +169,25 @@ fn repeated_mode_switch_defers_while_fading_and_stays_continuous() {
                 let end = (offset + block).min(frames.len());
                 let chunk = &mut frames[offset..end];
                 if offset == 0 {
-                    let mut next = mid_side.create_runtime();
+                    let mut next = mid_side.create_runtime().unwrap();
                     assert!(!next.transition_busy_from(live.as_ref()));
-                    next.copy_history_from(live.as_ref());
+                    next.inherit_from(live.as_ref());
                     next.process_block(chunk, &EMPTY_DEVICE_RESOURCES);
                     live = next;
                 } else if switched_again.is_none() {
-                    let mut candidate = left_right.create_runtime();
+                    let mut candidate = left_right.create_runtime().unwrap();
                     if candidate.transition_busy_from(live.as_ref()) {
                         assert!(offset < fade, "{rate} Hz block {block} offset {offset}");
-                        assert!(!live.is_quiescent());
+                        assert!(!live.committed_is_quiescent());
                         assert!(
                             !mid_side
                                 .create_runtime()
+                                .unwrap()
                                 .transition_busy_from(live.as_ref())
                         );
                         handoff_block(&mid_side, &mut live, chunk);
                     } else {
-                        candidate.copy_history_from(live.as_ref());
+                        candidate.inherit_from(live.as_ref());
                         candidate.process_block(chunk, &EMPTY_DEVICE_RESOURCES);
                         live = candidate;
                         switched_again = Some(offset);
@@ -232,41 +233,45 @@ fn mode_fade_is_never_quiescent_and_reset_clears_it() {
         ..EqState::default()
     };
     let flat_mid_side = prepared(&flat_mid_side_state, rate);
-    let old = flat_mid_side.create_runtime();
-    assert!(old.is_quiescent());
-    let mut live = flat_stereo.create_runtime();
-    live.copy_history_from(old.as_ref());
-    assert!(!live.is_quiescent());
+    let old = flat_mid_side.create_runtime().unwrap();
+    assert!(old.committed_is_quiescent());
+    let mut live = flat_stereo.create_runtime().unwrap();
+    live.inherit_from(old.as_ref());
+    assert!(!live.committed_is_quiescent());
     live.process_block(
         &mut vec![[0.0; 2]; fade_frames(rate) - 1],
         &EMPTY_DEVICE_RESOURCES,
     );
-    assert!(!live.is_quiescent());
-    let mut copy = flat_stereo.create_runtime();
-    copy.copy_history_from(live.as_ref());
-    assert!(!copy.is_quiescent());
+    assert!(!live.committed_is_quiescent());
+    let mut copy = flat_stereo.create_runtime().unwrap();
+    copy.inherit_from(live.as_ref());
+    assert!(!copy.committed_is_quiescent());
     assert!(
         flat_mid_side
             .create_runtime()
+            .unwrap()
             .transition_busy_from(copy.as_ref())
     );
     copy.reset();
-    assert!(copy.is_quiescent());
+    assert!(copy.committed_is_quiescent());
     assert!(
         !flat_mid_side
             .create_runtime()
+            .unwrap()
             .transition_busy_from(copy.as_ref())
     );
     assert!(
         flat_mid_side
             .create_runtime()
+            .unwrap()
             .transition_busy_from(live.as_ref())
     );
     live.process_block(&mut [[0.0; 2]], &EMPTY_DEVICE_RESOURCES);
-    assert!(live.is_quiescent());
+    assert!(live.committed_is_quiescent());
     assert!(
         !flat_mid_side
             .create_runtime()
+            .unwrap()
             .transition_busy_from(live.as_ref())
     );
 }
@@ -309,7 +314,7 @@ fn mapped_output_gain_scales_both_sides_of_the_mode_fade_on_the_same_sample() {
     let factory = runtime::PreparedEq::automated(state(0, 2), RATE, &[MODE, OUTPUT_GAIN]).unwrap();
     let mut pcm: Vec<_> = (0..389).map(|index| sine(RATE, index)).collect();
     let mut unity = pcm.clone();
-    let mut reference = factory.create_runtime();
+    let mut reference = factory.create_runtime().unwrap();
     reference
         .process_block_with_automation(
             &mut unity,
@@ -318,7 +323,7 @@ fn mapped_output_gain_scales_both_sides_of_the_mode_fade_on_the_same_sample() {
             &EMPTY_DEVICE_RESOURCES,
         )
         .unwrap();
-    let mut mapped = factory.create_runtime();
+    let mut mapped = factory.create_runtime().unwrap();
     mapped
         .process_block_with_automation(
             &mut pcm,

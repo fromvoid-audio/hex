@@ -178,7 +178,9 @@ fn eq8_gain_modulation_matches_the_sample_targets_and_provider_smoother() {
 fn eq8_band_modulation_matches_independent_per_frame_filter_targets() {
     use hex_devices::eq8::{EQ8_TYPE_ID, Eq8Definition};
     use hex_devices::modulation::lfo::{Rate, Settings, Waveform};
-    use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, PreparedNativeProcessor};
+    use hex_lattice::{
+        EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, PreparedOwnedProcessorRuntime,
+    };
     use hex_lattice_contract::ParameterId;
     use hex_project::{
         DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
@@ -312,11 +314,15 @@ fn eq8_band_modulation_matches_independent_per_frame_filter_targets() {
     });
     let audio = Audio::new(RATE, dry.to_vec()).unwrap();
     let mut expected = dry;
-    Eq8Definition::prepare_owned(&state, RATE, &IDS)
+    let mut expected_rt = Eq8Definition::prepare_owned(&state, RATE, &IDS)
         .unwrap()
         .create_runtime()
+        .unwrap();
+    expected_rt.begin_block();
+    expected_rt
         .process_block_with_automation(&mut expected, None, &BandFrames, &EMPTY_DEVICE_RESOURCES)
         .unwrap();
+    expected_rt.commit_block();
     let project = editor.project();
     assert_eq!(project.device(device).unwrap().state(), &state);
     assert_ne!(expected, dry);
@@ -336,7 +342,9 @@ fn eq8_band_modulation_matches_independent_per_frame_filter_targets() {
 fn eq8_discrete_modulation_matches_enable_kind_and_mode_frames_in_both_graphs() {
     use hex_devices::eq8::{EQ8_TYPE_ID, Eq8Definition};
     use hex_devices::modulation::lfo::{Rate, Settings, Waveform};
-    use hex_lattice::{EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, PreparedNativeProcessor};
+    use hex_lattice::{
+        EMPTY_DEVICE_RESOURCES, NativeParameterAutomation, PreparedOwnedProcessorRuntime,
+    };
     use hex_lattice_contract::ParameterId;
     use hex_project::{
         DeviceModulation, DeviceModulationRoute, ModulationAmount, ModulationDestination,
@@ -447,9 +455,12 @@ fn eq8_discrete_modulation_matches_enable_kind_and_mode_frames_in_both_graphs() 
     });
     let audio = Audio::new(RATE, dry.to_vec()).unwrap();
     let mut expected = dry;
-    Eq8Definition::prepare_owned(&state, RATE, &IDS)
+    let mut expected_rt = Eq8Definition::prepare_owned(&state, RATE, &IDS)
         .unwrap()
         .create_runtime()
+        .unwrap();
+    expected_rt.begin_block();
+    expected_rt
         .process_block_with_automation(
             &mut expected,
             None,
@@ -457,6 +468,7 @@ fn eq8_discrete_modulation_matches_enable_kind_and_mode_frames_in_both_graphs() 
             &EMPTY_DEVICE_RESOURCES,
         )
         .unwrap();
+    expected_rt.commit_block();
     let project = editor.project();
     assert_eq!(project.device(device).unwrap().state(), &state);
     assert_ne!(expected, dry);

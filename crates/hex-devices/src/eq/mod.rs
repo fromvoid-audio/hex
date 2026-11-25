@@ -217,7 +217,7 @@ impl EqDefinition {
         state: &NativeDeviceState,
         sample_rate: u32,
         parameters: &[ParameterId],
-    ) -> Result<Arc<dyn PreparedNativeProcessor>, DeviceContractError> {
+    ) -> Result<Arc<dyn hex_lattice::PreparedOwnedProcessorRuntime>, DeviceContractError> {
         state.require_asset_free_processing()?;
         Ok(Arc::new(runtime::PreparedEq::automated(
             EqState::decode(state)?,
@@ -260,7 +260,7 @@ impl NativeDeviceDefinition for EqDefinition {
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
         Ok(hex_lattice::PreparedRuntimeDevice {
             matrix: StereoMatrix::identity(),
-            processor: Some(hex_lattice::PreparedProcessorFactory::Legacy(
+            processor: Some(hex_lattice::PreparedProcessorFactory::Owned(
                 Self::prepare_automation_component(state, context.sample_rate, parameters)?,
             )),
         })
@@ -279,13 +279,22 @@ impl NativeDeviceDefinition for EqDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedNativeProcessor>>, DeviceContractError> {
+        let _ = EqState::decode(state)?;
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
-    ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
-        let sample_rate = context.sample_rate;
-        Ok(Some(Box::new(runtime::PreparedEq::new(
-            EqState::decode(state)?,
-            sample_rate,
-        )?)))
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(hex_lattice::PreparedProcessorFactory::Owned(
+            Arc::new(runtime::PreparedEq::new(
+                EqState::decode(state)?,
+                context.sample_rate,
+            )?),
+        )))
     }
 }
 

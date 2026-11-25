@@ -68,7 +68,7 @@ fn render(mode: u8, rate: u32) -> u64 {
         index: 1 + 3 * u32::from(lane_bank(lane)) + slot,
         lane,
     };
-    let mut live = first.create_runtime();
+    let mut live = first.create_runtime().unwrap();
     let mut frames = noise(6_000);
     let mut offset = 0;
     for (block_index, size) in [1_usize, 7, 64, 128, 113].into_iter().cycle().enumerate() {
@@ -77,9 +77,9 @@ fn render(mode: u8, rate: u32) -> u64 {
         }
         let end = (offset + size).min(frames.len());
         let prepared = if offset < 2_000 { &first } else { &second };
-        let mut next = prepared.create_runtime();
-        assert!(next.can_copy_history_from(live.as_ref()));
-        next.copy_history_from(live.as_ref());
+        let mut next = prepared.create_runtime().unwrap();
+        assert!(next.can_inherit_from(live.as_ref()));
+        next.inherit_from(live.as_ref());
         let selection = match block_index {
             20 => Some(Some(audition(0, 0))),
             45 => Some(Some(audition(1, 1))),

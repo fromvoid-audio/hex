@@ -1,6 +1,6 @@
 //! Control-side queries of the actual prepared EQ API; no reference/parity claim.
 use hex_devices::eq8::{EQ8_DEFINITION, parameter};
-use hex_lattice::{NativeDeviceDefinition, PreparedNativeProcessor};
+use hex_lattice::{NativeDeviceDefinition, PreparedProcessorFactory};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use std::{error::Error, fmt::Write, process::Command};
 
@@ -81,7 +81,7 @@ impl Query {
             probes,
         })
     }
-    fn prepared(&self) -> Result<Box<dyn PreparedNativeProcessor>> {
+    fn prepared(&self) -> Result<PreparedProcessorFactory> {
         let mut state = EQ8_DEFINITION.default_state()?;
         for (id, value) in [
             (parameter::MODE, ParameterValue::Choice(self.mode as u32)),
@@ -110,7 +110,7 @@ impl Query {
             state = EQ8_DEFINITION.patch_parameter(&state, id, value)?;
         }
         EQ8_DEFINITION
-            .prepare_processor(
+            .prepare_runtime_factory(
                 &state,
                 &hex_lattice::DevicePreparationContext {
                     sample_rate: self.rate,

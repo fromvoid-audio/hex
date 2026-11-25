@@ -51,9 +51,13 @@ fn cold_held_each_node_field_matches_canonical_at_rate_and_mode_endpoints() {
                 let parameter = id.parameter(field).unwrap();
                 let mut actual = PreparedEq::automated(settings.clone(), rate, &[parameter])
                     .unwrap()
-                    .create_runtime();
+                    .create_runtime()
+                    .unwrap();
                 settings.node_mut(id).unwrap().set(field, target).unwrap();
-                let mut reference = PreparedEq::new(settings, rate).unwrap().create_runtime();
+                let mut reference = PreparedEq::new(settings, rate)
+                    .unwrap()
+                    .create_runtime()
+                    .unwrap();
                 let input: Vec<_> = (0..257)
                     .map(|i| [(i as f32 * 0.17).sin(), (i as f32 * 0.31).sin() * 0.4])
                     .collect();
@@ -109,7 +113,7 @@ fn moving_nodes_and_base_match_canonical_handoffs_independent_of_partition() {
     let (state, id) = fixture();
     let input = vec![[0.5, -0.25]; 513];
     let mut expected = input.clone();
-    let mut previous: Option<Box<dyn NativeProcessorRuntime>> = None;
+    let mut previous: Option<Box<dyn OwnedProcessorRuntime>> = None;
     for (i, block) in expected.chunks_mut(64).enumerate() {
         let mut next = state.clone();
         next.nodes[0].gain_db = match i {
@@ -117,16 +121,19 @@ fn moving_nodes_and_base_match_canonical_handoffs_independent_of_partition() {
             2..5 => 6.0,
             _ => -3.0,
         };
-        let mut runtime = PreparedEq::new(next, 48000).unwrap().create_runtime();
+        let mut runtime = PreparedEq::new(next, 48000)
+            .unwrap()
+            .create_runtime()
+            .unwrap();
         if let Some(old) = previous.as_ref() {
-            runtime.copy_history_from(old.as_ref());
+            runtime.inherit_from(old.as_ref());
         }
         runtime.process_block(block, &R);
         previous = Some(runtime);
     }
     let factory = PreparedEq::automated(state, 48000, &[id]).unwrap();
     for width in [1, 17, 513] {
-        let mut runtime = factory.create_runtime();
+        let mut runtime = factory.create_runtime().unwrap();
         let mut actual = input.clone();
         for (i, block) in actual.chunks_mut(width).enumerate() {
             runtime
@@ -149,7 +156,7 @@ fn moving_nodes_and_base_match_canonical_handoffs_independent_of_partition() {
 fn late_invalid_values_retry_history_bypass_and_reset_preserve_observable_state() {
     let (state, id) = fixture();
     let factory = PreparedEq::automated(state, 48000, &[id]).unwrap();
-    let mut primary = factory.create_runtime();
+    let mut primary = factory.create_runtime().unwrap();
     primary
         .process_block_with_automation(
             &mut [[0.5, -0.25]; 64],
@@ -167,8 +174,8 @@ fn late_invalid_values_retry_history_bypass_and_reset_preserve_observable_state(
         ParameterValue::Float(24.1),
         ParameterValue::Bool(true),
     ] {
-        let mut scratch = factory.create_runtime();
-        scratch.copy_history_from(primary.as_ref());
+        let mut scratch = factory.create_runtime().unwrap();
+        scratch.inherit_from(primary.as_ref());
         assert!(
             scratch
                 .process_block_with_automation(
@@ -183,7 +190,7 @@ fn late_invalid_values_retry_history_bypass_and_reset_preserve_observable_state(
                 )
                 .is_err()
         );
-        scratch.copy_history_from(primary.as_ref());
+        scratch.inherit_from(primary.as_ref());
         let mut actual = [[0.5, -0.25]; 32];
         let mut expected = actual;
         let values = Moving {
@@ -199,8 +206,8 @@ fn late_invalid_values_retry_history_bypass_and_reset_preserve_observable_state(
             .unwrap();
         assert_eq!(actual, expected);
     }
-    let mut bypass = factory.create_runtime();
-    bypass.copy_history_from(primary.as_ref());
+    let mut bypass = factory.create_runtime().unwrap();
+    bypass.inherit_from(primary.as_ref());
     let mut dry = [[0.5, -0.25]; 37];
     let mut ignored = dry;
     let base = Held {
@@ -224,7 +231,7 @@ fn late_invalid_values_retry_history_bypass_and_reset_preserve_observable_state(
         .unwrap();
     assert_eq!(a, b);
     bypass.reset();
-    let mut fresh = factory.create_runtime();
+    let mut fresh = factory.create_runtime().unwrap();
     bypass
         .process_block_with_automation(&mut a, None, &base, &R)
         .unwrap();
@@ -255,7 +262,7 @@ fn exact_node_grants_refuse_unknown_reserved_legacy_and_ungranted_values() {
         Some(descriptor(NodeId::new(7).unwrap(), NodeParameter::Gain).unwrap())
     );
     assert!(!factory.supports_parameter_automation(OUTPUT_GAIN));
-    let mut runtime = factory.create_runtime();
+    let mut runtime = factory.create_runtime().unwrap();
     let mut input = [[0.5, -0.25]; 32];
     assert!(
         runtime
@@ -343,10 +350,14 @@ fn shared_fields_override_legacy_lanes_while_ungranted_lanes_keep_clock_and_seek
         if let Some(value) = value {
             canonical.nodes[0].set(NodeParameter::Gain, value).unwrap();
         }
-        let mut expected = PreparedEq::new(canonical, 48000).unwrap().create_runtime();
+        let mut expected = PreparedEq::new(canonical, 48000)
+            .unwrap()
+            .create_runtime()
+            .unwrap();
         let mut actual = PreparedEq::automated(state.clone(), 48000, &[id])
             .unwrap()
-            .create_runtime();
+            .create_runtime()
+            .unwrap();
         for start in [0, 17, 34, 1000, 1017] {
             let mut a = [[0.5, -0.25]; 17];
             let mut b = a;
@@ -392,8 +403,8 @@ fn borrowed_bulk_values_are_used_and_bulk_failure_is_reported() {
     }
     let (state, id) = fixture();
     let factory = PreparedEq::automated(state, 48000, &[id]).unwrap();
-    let mut actual = factory.create_runtime();
-    let mut reference = factory.create_runtime();
+    let mut actual = factory.create_runtime().unwrap();
+    let mut reference = factory.create_runtime().unwrap();
     let mut a = [[0.5, -0.25]; 32];
     let mut b = a;
     actual
@@ -460,7 +471,7 @@ fn effective_kind_and_bank_history_survive_equivalent_and_shadowed_base_retarget
             id: [id],
             value: Some(ParameterValue::Choice(bank)),
         };
-        let mut source = factory.create_runtime();
+        let mut source = factory.create_runtime().unwrap();
         source
             .process_block_with_automation(&mut [[0.5, -0.25]; 32], None, &values, &R)
             .unwrap();
@@ -469,10 +480,11 @@ fn effective_kind_and_bank_history_survive_equivalent_and_shadowed_base_retarget
             next.nodes[0].bank = canonical_bank;
             let mut candidate = PreparedEq::automated(next, 48000, &[id])
                 .unwrap()
-                .create_runtime();
-            candidate.copy_history_from(source.as_ref());
-            let mut uninterrupted = factory.create_runtime();
-            uninterrupted.copy_history_from(source.as_ref());
+                .create_runtime()
+                .unwrap();
+            candidate.inherit_from(source.as_ref());
+            let mut uninterrupted = factory.create_runtime().unwrap();
+            uninterrupted.inherit_from(source.as_ref());
             let mut actual = [[0.5, -0.25]; 64];
             let mut expected = actual;
             candidate
@@ -496,7 +508,7 @@ fn effective_kind_and_bank_history_survive_equivalent_and_shadowed_base_retarget
         id: [id],
         value: Some(ParameterValue::Choice(5)),
     };
-    let mut source = factory.create_runtime();
+    let mut source = factory.create_runtime().unwrap();
     source
         .process_block_with_automation(&mut [[0.5, -0.25]; 32], None, &values, &R)
         .unwrap();
@@ -504,10 +516,11 @@ fn effective_kind_and_bank_history_survive_equivalent_and_shadowed_base_retarget
     next.nodes[0].kind = NodeKind::LowCut;
     let mut candidate = PreparedEq::automated(next, 48000, &[id])
         .unwrap()
-        .create_runtime();
-    candidate.copy_history_from(source.as_ref());
-    let mut uninterrupted = factory.create_runtime();
-    uninterrupted.copy_history_from(source.as_ref());
+        .create_runtime()
+        .unwrap();
+    candidate.inherit_from(source.as_ref());
+    let mut uninterrupted = factory.create_runtime().unwrap();
+    uninterrupted.inherit_from(source.as_ref());
     let mut actual = [[0.5, -0.25]; 64];
     let mut expected = actual;
     candidate
@@ -530,13 +543,13 @@ fn genuine_bank_changes_reset_history_and_kind_changes_keep_canonical_ramps() {
     state.mode = 1;
     state.nodes[0].bank = 1;
     let factory = PreparedEq::new(state.clone(), 48000).unwrap();
-    let mut source = factory.create_runtime();
+    let mut source = factory.create_runtime().unwrap();
     source.process_block(&mut [[0.5, -0.25]; 32], &R);
     state.nodes[0].bank = 2;
     let factory = PreparedEq::new(state, 48000).unwrap();
-    let mut candidate = factory.create_runtime();
-    candidate.copy_history_from(source.as_ref());
-    let mut fresh = factory.create_runtime();
+    let mut candidate = factory.create_runtime().unwrap();
+    candidate.inherit_from(source.as_ref());
+    let mut fresh = factory.create_runtime().unwrap();
     let mut actual = [[0.5, -0.25]; 64];
     let mut expected = actual;
     candidate.process_block(&mut actual, &R);
@@ -547,16 +560,21 @@ fn genuine_bank_changes_reset_history_and_kind_changes_keep_canonical_ramps() {
     let id = state.nodes[0].id.parameter(NodeParameter::Kind).unwrap();
     let mut source = PreparedEq::new(state.clone(), 48000)
         .unwrap()
-        .create_runtime();
+        .create_runtime()
+        .unwrap();
     source.process_block(&mut [[0.5, -0.25]; 32], &R);
     let mut candidate = PreparedEq::automated(state.clone(), 48000, &[id])
         .unwrap()
-        .create_runtime();
-    candidate.copy_history_from(source.as_ref());
+        .create_runtime()
+        .unwrap();
+    candidate.inherit_from(source.as_ref());
     let mut canonical = state;
     canonical.nodes[0].kind = NodeKind::Notch;
-    let mut reference = PreparedEq::new(canonical, 48000).unwrap().create_runtime();
-    reference.copy_history_from(source.as_ref());
+    let mut reference = PreparedEq::new(canonical, 48000)
+        .unwrap()
+        .create_runtime()
+        .unwrap();
+    reference.inherit_from(source.as_ref());
     let mut actual = [[0.5, -0.25]; 64];
     let mut expected = actual;
     candidate

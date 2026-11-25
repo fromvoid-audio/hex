@@ -479,7 +479,7 @@ mod source_card;
 use apply::*;
 use overlays::*;
 pub(super) use overlays::{target_overlay, vst3_destination, vst3_target_overlay};
-pub(super) use panel::{panel, vst3_panel};
+pub(super) use panel::{macro_panel, panel, vst3_macro_panel, vst3_panel};
 pub(super) use source_card::{
     SOURCE_EFFECT_CARD_WIDTH, source_effect_card, source_utility_gain_available,
 };

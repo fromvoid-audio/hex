@@ -1194,7 +1194,7 @@ pub(in crate::editor) fn render_effect(
         ),
         _ if device.state().type_id().as_str() == Ok("hex.vst3") => {
             let body = vst3_status_body(view, device, cx);
-            hex_widgets::device_frame_with_modulators(
+            hex_widgets::device_frame_with_panels(
                 device_drag_title(
                     view,
                     cx,
@@ -1206,6 +1206,7 @@ pub(in crate::editor) fn render_effect(
                 leading,
                 header_actions,
                 body,
+                modulators::vst3_macro_panel(view, cx, device),
                 modulators::vst3_panel(view, cx, device),
             )
         }
@@ -1273,7 +1274,7 @@ pub(in crate::editor) fn render_effect(
                     device_view,
                 )
             };
-            hex_widgets::device_frame_with_modulators(
+            hex_widgets::device_frame_with_panels(
                 device_drag_title(
                     view,
                     cx,
@@ -1285,6 +1286,7 @@ pub(in crate::editor) fn render_effect(
                 leading,
                 header_actions,
                 body,
+                modulators::macro_panel(view, cx, device, device_view, true),
                 modulators::panel(view, cx, device, device_view, true),
             )
         }
@@ -1326,13 +1328,13 @@ pub(in crate::editor) fn render_effect(
     let selector = format!("effect-device-{}", device_id.value());
     let card_width = device_card_width(view, NativeDeviceClass::Effect, device);
     let rendered = div()
-        .w(px(card_width - device_meter::WIDTH))
+        .min_w(px(card_width - device_meter::WIDTH))
         .flex_shrink_0()
         .child(rendered);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(card_width))
+        .min_w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
@@ -1561,9 +1563,11 @@ pub(in crate::editor) fn render_instrument(
             .child(overview)
             .child(controls)
             .child(details);
+        let macros = modulation_view
+            .and_then(|metadata| modulators::macro_panel(view, cx, device, metadata, false));
         let modulation = modulation_view
             .and_then(|metadata| modulators::panel(view, cx, device, metadata, false));
-        hex_widgets::device_frame_with_modulators(
+        hex_widgets::device_frame_with_panels(
             device_drag_title(
                 view,
                 cx,
@@ -1575,6 +1579,7 @@ pub(in crate::editor) fn render_instrument(
             leading,
             header_actions,
             body,
+            macros,
             modulation,
         )
     } else {
@@ -1582,8 +1587,9 @@ pub(in crate::editor) fn render_instrument(
             Ok(device_view) => {
                 if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
                     let body = operator_panel::render_body(view, cx, device_id, device_view);
+                    let macros = modulators::macro_panel(view, cx, device, device_view, false);
                     let modulation = modulators::panel(view, cx, device, device_view, false);
-                    hex_widgets::device_frame_with_modulators(
+                    hex_widgets::device_frame_with_panels(
                         device_drag_title(
                             view,
                             cx,
@@ -1595,6 +1601,7 @@ pub(in crate::editor) fn render_instrument(
                         leading,
                         header_actions,
                         body,
+                        macros,
                         modulation,
                     )
                 } else {
@@ -1609,15 +1616,19 @@ pub(in crate::editor) fn render_instrument(
                         },
                         device_view,
                     );
-                    let modulation = (device_view.type_id.as_str() == Ok("hex.instrument.fm4")
+                    let fm4_source = device_view.type_id.as_str() == Ok("hex.instrument.fm4")
                         && view
                             .state
                             .as_ref()
                             .and_then(|state| state.project.track(track))
-                            .is_some_and(hex_project::Track::receives_source_audio))
-                    .then(|| modulators::panel(view, cx, device, device_view, false))
-                    .flatten();
-                    hex_widgets::device_frame_with_modulators(
+                            .is_some_and(hex_project::Track::receives_source_audio);
+                    let macros = fm4_source
+                        .then(|| modulators::macro_panel(view, cx, device, device_view, false))
+                        .flatten();
+                    let modulation = fm4_source
+                        .then(|| modulators::panel(view, cx, device, device_view, false))
+                        .flatten();
+                    hex_widgets::device_frame_with_panels(
                         device_drag_title(
                             view,
                             cx,
@@ -1629,6 +1640,7 @@ pub(in crate::editor) fn render_instrument(
                         leading,
                         header_actions,
                         body,
+                        macros,
                         modulation,
                     )
                 }
@@ -1677,13 +1689,13 @@ pub(in crate::editor) fn render_instrument(
     let selector = format!("instrument-device-{}", device_id.value());
     let card_width = device_card_width(view, NativeDeviceClass::Instrument, device);
     let rendered = div()
-        .w(px(card_width - device_meter::WIDTH))
+        .min_w(px(card_width - device_meter::WIDTH))
         .flex_shrink_0()
         .child(rendered);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(card_width))
+        .min_w(px(card_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_shrink_0()
