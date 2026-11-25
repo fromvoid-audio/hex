@@ -914,6 +914,7 @@ pub enum Request {
         revision: u64,
         binding: Arc<crate::midi_recording::MidiTakeBinding>,
         notes: Arc<[crate::midi_recording::RecordedMidiNote]>,
+        expressions: Arc<[crate::midi_recording::RecordedNoteExpression]>,
         stop_frame: u64,
     },
     DeviceAutomationTake {

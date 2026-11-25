@@ -1266,12 +1266,27 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("place_midi_clip_with_notes"; ["track" => track.value(), "start_beats_q32" => start.raw(), "length_beats_q32" => length.raw(), "notes_count" => notes.len()]; omitted="")
         }
+        Command::PlaceMidiClipWithExpressiveNotes {
+            track,
+            start,
+            length,
+            notes,
+        } => {
+            describe!("place_midi_clip_with_expressive_notes"; ["track" => track.value(), "start_beats_q32" => start.raw(), "length_beats_q32" => length.raw(), "notes_count" => notes.len()]; omitted="")
+        }
         Command::ExtendMidiClipWithNotes {
             clip,
             length,
             notes,
         } => {
             describe!("extend_midi_clip_with_notes"; ["clip" => clip.value(), "length_beats_q32" => length.raw(), "notes_count" => notes.len()]; omitted="")
+        }
+        Command::ExtendMidiClipWithExpressiveNotes {
+            clip,
+            length,
+            notes,
+        } => {
+            describe!("extend_midi_clip_with_expressive_notes"; ["clip" => clip.value(), "length_beats_q32" => length.raw(), "notes_count" => notes.len()]; omitted="")
         }
         Command::TrimMidiClipEdge { clip, beat, .. } => {
             describe!("trim_midi_clip_edge"; ["clip" => clip.value(), "beat_beats_q32" => beat.raw()]; omitted="edge")
@@ -1314,6 +1329,9 @@ pub(super) fn command(value: &Command) -> Description {
         }
         Command::AddMidiNotes { clip, notes } => {
             describe!("add_midi_notes"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")
+        }
+        Command::AddMidiNotesWithExpression { clip, notes } => {
+            describe!("add_midi_notes_with_expression"; ["clip" => clip.value(), "notes_count" => notes.len()]; omitted="")
         }
         Command::EditMidiNotes {
             clip,

@@ -3,7 +3,9 @@
 use super::*;
 use hex_audio::midi_recording::{Receipt, Target};
 use hex_engine::midi_capture::MidiCaptureBinding;
-use hex_session::midi_recording::{MidiTake, MidiTakeBinding, RecordedMidiNote};
+use hex_session::midi_recording::{
+    MidiTake, MidiTakeBinding, RecordedMidiNote, RecordedNoteExpression,
+};
 use std::sync::{Arc, atomic::Ordering::Acquire};
 
 #[cfg(feature = "ui-test-support")]
@@ -37,6 +39,7 @@ pub(super) struct Recorder {
     target: Option<Target>,
     take: Option<MidiTake>,
     notes: Option<Arc<[RecordedMidiNote]>>,
+    expressions: Option<Arc<[RecordedNoteExpression]>>,
     stop_frame: Option<u64>,
 }
 impl Recorder {
@@ -384,6 +387,13 @@ impl EditorView {
         else {
             return;
         };
+        let expressions = self
+            .midi_editor
+            .recorder
+            .expressions
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(|| Arc::from([]));
         // Keep immutable notes and binding until this request's own terminal,
         // including queue refusal and delayed service preparation.
         let request = Request::CommitMidiTake {
@@ -392,6 +402,7 @@ impl EditorView {
             revision: self.midi_editor.recorder.revision,
             binding,
             notes,
+            expressions,
             stop_frame,
         };
         self.midi_editor.recorder.commit_serial = request_id;
@@ -618,6 +629,12 @@ impl EditorView {
                                 .take
                                 .as_ref()
                                 .map(|take| Arc::from(take.notes()));
+                            self.midi_editor.recorder.expressions = self
+                                .midi_editor
+                                .recorder
+                                .take
+                                .as_ref()
+                                .map(|take| Arc::from(take.note_expressions()));
                             self.midi_editor.recorder.mode = Mode::Ready;
                             self.commit_midi_take();
                         }

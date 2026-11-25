@@ -1261,3 +1261,349 @@ fn console_midi_take_maps_linear_and_looping_passes_quantizes_overwrites_and_rep
             && n.duration() == BeatTime::from_ratio(3, 2).unwrap()
     }));
 }
+
+#[test]
+fn per_note_expression_take_pairs_distinct_overlapping_notes_commits_replays_and_refuses_invalid() {
+    use hex_engine::computer_keyboard::ComputerKeyboardInput;
+    use hex_engine::midi_capture::{
+        AcceptedMidiNote, MidiCaptureClock, MidiCaptureEvent, MidiCaptureSource,
+    };
+
+    let (project, track, arr_clip) = fixture();
+    let mut editor = Editor::new(project, 16).unwrap();
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "mpe".into() })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(sess_clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "console".into(),
+            source_length: beat(4),
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+
+    let hw_input = ComputerKeyboardInput::default()
+        .with_live_notes()
+        .unwrap()
+        .with_recording_support()
+        .unwrap();
+    let keys_act = hw_input.begin_ordered_keys_on_control().unwrap();
+    let hw = hw_input
+        .live_notes()
+        .unwrap()
+        .current_activation_on_control()
+        .unwrap();
+    let src_ch2 = MidiCaptureSource::Hardware {
+        activation: hw,
+        channel: 2,
+    };
+    let src_ch3 = MidiCaptureSource::Hardware {
+        activation: hw,
+        channel: 3,
+    };
+
+    // Assemble one take on Arrangement clip (frames 8_000..16_000 = beats 2..4) with two overlapping
+    // notes on different MPE member channels carrying completely distinct PitchBend/Timbre/Pressure!
+    let origin = MidiCaptureClock {
+        content_frame: 8_000,
+        performance_frame: 8_000,
+        loop_pass: 0,
+    };
+    let mut take = MidiTake::new(8_000, 16_000, origin).unwrap();
+    let push = |take: &mut MidiTake, source, occ, frame, event| {
+        take.push(
+            AcceptedMidiNote {
+                source,
+                occurrence_id: occ,
+                performance_frame: frame,
+                event,
+            },
+            frame,
+        )
+        .unwrap();
+    };
+    // Note 1 (occ 10, ch 2, pitch 60): 9_000..14_000
+    // Note 2 (occ 11, ch 3, pitch 64): 9_500..12_500 (finishes BEFORE Note 1!)
+    push(
+        &mut take,
+        src_ch2,
+        10,
+        9_000,
+        MidiCaptureEvent::On {
+            pitch: 60,
+            velocity: 100,
+        },
+    );
+    push(
+        &mut take,
+        src_ch2,
+        10,
+        9_000,
+        MidiCaptureEvent::PitchBend { cents: 200 },
+    );
+    push(
+        &mut take,
+        src_ch2,
+        10,
+        9_000,
+        MidiCaptureEvent::Timbre { value: 90 },
+    );
+    push(
+        &mut take,
+        src_ch2,
+        10,
+        9_000,
+        MidiCaptureEvent::Pressure { value: 80 },
+    );
+    push(
+        &mut take,
+        src_ch3,
+        11,
+        9_500,
+        MidiCaptureEvent::On {
+            pitch: 64,
+            velocity: 105,
+        },
+    );
+    push(
+        &mut take,
+        src_ch3,
+        11,
+        9_500,
+        MidiCaptureEvent::PitchBend { cents: -300 },
+    );
+    push(
+        &mut take,
+        src_ch3,
+        11,
+        9_500,
+        MidiCaptureEvent::Timbre { value: 30 },
+    );
+    push(
+        &mut take,
+        src_ch3,
+        11,
+        9_500,
+        MidiCaptureEvent::Pressure { value: 110 },
+    );
+    // Time-varying update on Note 1 at frame 11_000
+    push(
+        &mut take,
+        src_ch2,
+        10,
+        11_000,
+        MidiCaptureEvent::PitchBend { cents: 450 },
+    );
+    // Release Note 2 first, then Note 1
+    push(&mut take, src_ch3, 11, 12_500, MidiCaptureEvent::Off);
+    push(&mut take, src_ch2, 10, 14_000, MidiCaptureEvent::Off);
+    let stop_frame = take
+        .finish(MidiCaptureClock {
+            content_frame: 15_000,
+            performance_frame: 15_000,
+            loop_pass: 0,
+        })
+        .unwrap();
+    assert_eq!(take.notes().len(), 2);
+    assert_eq!(take.note_expressions().len(), 2);
+    // Notes sorted by start_frame -> index 0 is pitch 60 (occ 10), index 1 is pitch 64 (occ 11)!
+    assert_eq!(take.notes()[0].pitch, 60);
+    assert_eq!(take.note_expressions()[0].initial.pitch_offset_cents, 200);
+    assert_eq!(take.note_expressions()[0].points.len(), 2);
+    assert_eq!(take.note_expressions()[0].points[1].pitch_offset_cents, 450);
+    assert_eq!(take.notes()[1].pitch, 64);
+    assert_eq!(take.note_expressions()[1].initial.pitch_offset_cents, -300);
+    assert_eq!(take.note_expressions()[1].initial.timbre, 30);
+    assert_eq!(take.note_expressions()[1].initial.pressure, 110);
+
+    // Commit to Arrangement clip in one history step + verify save/reopen + single Undo/Redo!
+    let before = editor.project().snapshot();
+    let arr_binding = MidiTakeBinding::capture(editor.project(), track, arr_clip).unwrap();
+    let cmd = finish_take_with_expression(
+        editor.project(),
+        &arr_binding,
+        take.notes(),
+        take.note_expressions(),
+        stop_frame,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(matches!(cmd, Command::AddMidiNotesWithExpression { .. }));
+    editor.execute(cmd).unwrap();
+    let arr_notes = editor.project().midi_clip(arr_clip).unwrap().notes();
+    assert_eq!(arr_notes.len(), 2);
+    let n60 = arr_notes.iter().find(|n| n.pitch() == 60).unwrap();
+    let n64 = arr_notes.iter().find(|n| n.pitch() == 64).unwrap();
+    assert_eq!(
+        n60.expression(),
+        hex_project::NoteExpression {
+            pitch_offset_cents: 200,
+            timbre: 90,
+            pressure: 80,
+        }
+    );
+    assert_eq!(n60.expression_points().len(), 2);
+    assert_eq!(n60.expression_points()[1].pitch_offset_cents, 450);
+    assert_eq!(
+        n64.expression(),
+        hex_project::NoteExpression {
+            pitch_offset_cents: -300,
+            timbre: 30,
+            pressure: 110,
+        }
+    );
+    // Deterministic playback render from prepared revision succeeds cleanly.
+    let rev = std::sync::Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            std::sync::Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = hex_engine::SessionPlayback::new(rev).unwrap();
+    playback
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut pcm = vec![[0.0; 2]; 16_000];
+    playback.render(&mut pcm).unwrap();
+    let peak = pcm[9_200..12_000]
+        .iter()
+        .map(|f| f[0].abs())
+        .fold(0.0_f32, f32::max);
+    assert!(peak > 0.05);
+
+    // Save/reopen round trip preserves both expression and expression_points!
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
+    assert!(editor.undo());
+    let mut restored = before;
+    restored.next_id = after.next_id;
+    assert_eq!(editor.project().snapshot(), restored);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+
+    // Also commit expressive take to existing Console MIDI clip!
+    let sess_binding = MidiTakeBinding::capture_session_clip(
+        editor.project(),
+        track,
+        sess_clip,
+        hex_engine::SessionMidiOrigin::launch(beat(2)),
+        None,
+        8_000,
+    )
+    .unwrap();
+    let sess_cmd = finish_take_with_expression(
+        editor.project(),
+        &sess_binding,
+        take.notes(),
+        take.note_expressions(),
+        stop_frame,
+    )
+    .unwrap()
+    .unwrap();
+    editor.execute(sess_cmd).unwrap();
+    let sess_notes = editor
+        .project()
+        .session_midi_clip(sess_clip)
+        .unwrap()
+        .source()
+        .notes();
+    assert_eq!(sess_notes.len(), 2);
+    assert_eq!(
+        sess_notes
+            .iter()
+            .find(|n| n.pitch() == 60)
+            .unwrap()
+            .expression()
+            .pitch_offset_cents,
+        200
+    );
+    assert_eq!(
+        sess_notes
+            .iter()
+            .find(|n| n.pitch() == 64)
+            .unwrap()
+            .expression()
+            .pitch_offset_cents,
+        -300
+    );
+
+    // Refusal cases: invalid pitch bend, computer-keyboard expression, and >64 points must refuse and fault take!
+    let mut bad_bend = MidiTake::new(8_000, 16_000, origin).unwrap();
+    assert!(
+        bad_bend
+            .push(
+                AcceptedMidiNote {
+                    source: src_ch2,
+                    occurrence_id: 1,
+                    performance_frame: 8_100,
+                    event: MidiCaptureEvent::PitchBend { cents: 5_000 },
+                },
+                8_100,
+            )
+            .is_err()
+    );
+    let mut bad_source = MidiTake::new(8_000, 16_000, origin).unwrap();
+    assert!(
+        bad_source
+            .push(
+                AcceptedMidiNote {
+                    source: MidiCaptureSource::Computer {
+                        activation: keys_act,
+                        key: 0,
+                        press_token: 1,
+                    },
+                    occurrence_id: 1,
+                    performance_frame: 8_100,
+                    event: MidiCaptureEvent::Timbre { value: 64 },
+                },
+                8_100,
+            )
+            .is_err()
+    );
+    let mut overflow_pts = MidiTake::new(8_000, 16_000, origin).unwrap();
+    push(
+        &mut overflow_pts,
+        src_ch2,
+        1,
+        8_000,
+        MidiCaptureEvent::On {
+            pitch: 60,
+            velocity: 100,
+        },
+    );
+    for i in 0..hex_project::MAX_NOTE_EXPRESSION_POINTS {
+        push(
+            &mut overflow_pts,
+            src_ch2,
+            1,
+            8_001 + i as u64,
+            MidiCaptureEvent::Timbre {
+                value: (i % 128) as u8,
+            },
+        );
+    }
+    assert!(
+        overflow_pts
+            .push(
+                AcceptedMidiNote {
+                    source: src_ch2,
+                    occurrence_id: 1,
+                    performance_frame: 8_001 + hex_project::MAX_NOTE_EXPRESSION_POINTS as u64,
+                    event: MidiCaptureEvent::Timbre { value: 1 },
+                },
+                8_001 + hex_project::MAX_NOTE_EXPRESSION_POINTS as u64,
+            )
+            .is_err()
+    );
+}

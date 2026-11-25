@@ -262,6 +262,12 @@ impl Plan {
                 source_length: None,
                 edit: Notes::authoring(source.next_id, notes.len(), 0),
             },
+            Command::AddMidiNotesWithExpression { clip, notes } => Kind::Notes {
+                volume_range: None,
+                location: location(*clip)?,
+                source_length: None,
+                edit: Notes::authoring(source.next_id, notes.len(), 0),
+            },
             Command::EditMidiNotesWithSourceExtent {
                 clip,
                 remove,

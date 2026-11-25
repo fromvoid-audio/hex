@@ -991,3 +991,217 @@ fn console_midi_clip_recording_delivers_zero_alloc_receipts_and_aborts_on_route_
         "expected RouteChanged abort, got: {seen2:?}"
     );
 }
+
+#[test]
+fn per_note_expression_recording_delivers_distinct_occurrences_at_zero_callback_allocations() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "mpe".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap();
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let input = Arc::new(
+        control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_live_notes()
+            .unwrap()
+            .with_recording_support()
+            .unwrap(),
+    );
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    graph
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 2,
+        editor_revision: 4,
+    };
+    let revision = control
+        .publish_with_admission_and_source_on_control(
+            graph,
+            prepared::PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 16], 2));
+
+    let live = input.live_notes().unwrap();
+    let hw = live.current_activation_on_control().unwrap();
+    let keys = input.begin_ordered_keys_on_control().unwrap();
+    let actual = control.status.recording_source().unwrap();
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let target = Target {
+        capture: hex_engine::midi_capture::MidiCaptureBinding {
+            take_id: 1,
+            track,
+            device,
+            sample_rate: 48_000,
+            output_epoch: input.output_epoch_on_control().unwrap(),
+            keys,
+            hardware: Some(hw),
+            first_frame: 0,
+            end_frame: 96_000,
+            loop_region: None,
+            route: hex_engine::midi_capture::MidiCaptureRoute::Arrangement,
+        },
+        project_generation: 2,
+        canonical_revision: 4,
+        audio_revision: revision,
+        output_identity: actual.output_identity,
+        transport_epoch: control.status.transport_epoch.load(Acquire),
+    };
+    control.midi_recording.begin(target).unwrap();
+    use hex_engine::computer_keyboard::LiveNoteEvent;
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 3,
+            pitch: 64,
+            velocity: 105,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 2,
+            pitch: 60,
+            cents: 200,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 2,
+            pitch: 60,
+            value: 90,
+        },
+        LiveNoteEvent::PolyPressure {
+            channel: 2,
+            pitch: 60,
+            value: 80,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 3,
+            pitch: 64,
+            cents: -300,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 3,
+            pitch: 64,
+            value: 30,
+        },
+        LiveNoteEvent::PolyPressure {
+            channel: 3,
+            pitch: 64,
+            value: 110,
+        },
+    ] {
+        live.publish(hw, ev).unwrap();
+    }
+    // `deliver` wraps the callback render inside `counted(|| ...)` verifying zero total/net allocations!
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+    for ev in [
+        LiveNoteEvent::NoteOff {
+            channel: 2,
+            pitch: 60,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 3,
+            pitch: 64,
+            velocity: 0,
+        },
+    ] {
+        live.publish(hw, ev).unwrap();
+    }
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+    control.midi_recording.finish();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 16], 2));
+
+    let seen = receipts(&mut control);
+    assert!(matches!(seen.first(), Some(Receipt::Armed { .. })));
+    assert!(matches!(seen.last(), Some(Receipt::Finished { .. })));
+    let note_receipts: Vec<_> = seen
+        .iter()
+        .filter_map(|r| match r {
+            Receipt::Note { note, .. } => Some(*note),
+            _ => None,
+        })
+        .collect();
+    let on_60 = note_receipts
+        .iter()
+        .find(|n| {
+            matches!(
+                n.event,
+                hex_engine::midi_capture::MidiCaptureEvent::On { pitch: 60, .. }
+            )
+        })
+        .unwrap();
+    let on_64 = note_receipts
+        .iter()
+        .find(|n| {
+            matches!(
+                n.event,
+                hex_engine::midi_capture::MidiCaptureEvent::On { pitch: 64, .. }
+            )
+        })
+        .unwrap();
+    assert_ne!(on_60.occurrence_id, on_64.occurrence_id);
+    assert!(note_receipts.iter().any(|n| {
+        n.occurrence_id == on_60.occurrence_id
+            && n.event == hex_engine::midi_capture::MidiCaptureEvent::PitchBend { cents: 200 }
+    }));
+    assert!(note_receipts.iter().any(|n| {
+        n.occurrence_id == on_64.occurrence_id
+            && n.event == hex_engine::midi_capture::MidiCaptureEvent::PitchBend { cents: -300 }
+    }));
+    assert!(note_receipts.iter().any(|n| {
+        n.occurrence_id == on_60.occurrence_id
+            && n.event == hex_engine::midi_capture::MidiCaptureEvent::Off
+    }));
+    assert!(note_receipts.iter().any(|n| {
+        n.occurrence_id == on_64.occurrence_id
+            && n.event == hex_engine::midi_capture::MidiCaptureEvent::Off
+    }));
+}

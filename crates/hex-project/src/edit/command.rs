@@ -1264,12 +1264,28 @@ pub enum Command {
         length: crate::BeatTime,
         notes: Vec<MidiNoteInsert>,
     },
+    /// Atomically place a new Arrangement MIDI clip and author expressive recorded
+    /// notes (with per-note `NoteExpression` and bounded `NoteExpressionPoint`s)
+    /// in one history step, cutting any overlapped clips on the target track.
+    PlaceMidiClipWithExpressiveNotes {
+        track: TrackId,
+        start: crate::BeatTime,
+        length: crate::BeatTime,
+        notes: Vec<MidiExpressiveNoteInsert>,
+    },
     /// Atomically extend a non-looping forward MIDI clip (and its source extent if
     /// needed) and author recorded notes in one history step.
     ExtendMidiClipWithNotes {
         clip: ClipId,
         length: crate::BeatTime,
         notes: Vec<MidiNoteInsert>,
+    },
+    /// Atomically extend a non-looping forward MIDI clip (and its source extent if
+    /// needed) and author expressive recorded notes in one history step.
+    ExtendMidiClipWithExpressiveNotes {
+        clip: ClipId,
+        length: crate::BeatTime,
+        notes: Vec<MidiExpressiveNoteInsert>,
     },
     /// Resize a MIDI Arrangement edge without deleting authored source notes.
     TrimMidiClipEdge {
@@ -1345,6 +1361,13 @@ pub enum Command {
     AddMidiNotes {
         clip: ClipId,
         notes: Vec<MidiNoteInsert>,
+    },
+    /// Author a bounded batch of MIDI notes with per-note expression and
+    /// expression-curve points into an existing Arrangement or Console MIDI clip
+    /// in one atomic history step.
+    AddMidiNotesWithExpression {
+        clip: ClipId,
+        notes: Vec<MidiExpressiveNoteInsert>,
     },
     /// Atomically remove and author notes in one MIDI source as one history step.
     /// Insertions use the same destructive same-pitch rule as `AddMidiNotes`.
@@ -1480,6 +1503,18 @@ pub struct MidiNoteInsert {
     pub pitch: u8,
     pub channel: u8,
     pub velocity: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MidiExpressiveNoteInsert {
+    pub active: bool,
+    pub start: crate::BeatTime,
+    pub duration: crate::BeatTime,
+    pub pitch: u8,
+    pub channel: u8,
+    pub velocity: u8,
+    pub expression: crate::NoteExpression,
+    pub expression_points: Vec<crate::NoteExpressionPoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

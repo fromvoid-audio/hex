@@ -1428,6 +1428,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             revision: expected_revision,
             binding,
             notes,
+            expressions,
             stop_frame,
             ..
         } => {
@@ -1440,10 +1441,11 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.outcome.error =
                     Some("midi take refused · device edit is still applying".into());
             } else {
-                match crate::midi_recording::finish_take(
+                match crate::midi_recording::finish_take_with_expression(
                     ctx.worker.session.project(),
                     &binding,
                     &notes,
+                    &expressions,
                     stop_frame,
                 ) {
                     Ok(Some(command)) => {

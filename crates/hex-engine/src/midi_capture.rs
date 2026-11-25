@@ -146,8 +146,23 @@ pub enum MidiCaptureSource {
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MidiCaptureEvent {
-    On { pitch: u8, velocity: u8 },
+    On {
+        pitch: u8,
+        velocity: u8,
+    },
     Off,
+    /// Per-note pitch offset in cents (`-4800..=4800`) bound to an active note occurrence.
+    PitchBend {
+        cents: i16,
+    },
+    /// Per-note timbre / slide (`0..=127`) bound to an active note occurrence.
+    Timbre {
+        value: u8,
+    },
+    /// Per-note polyphonic pressure (`0..=127`) bound to an active note occurrence.
+    Pressure {
+        value: u8,
+    },
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AcceptedMidiNote {

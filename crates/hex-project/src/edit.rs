@@ -9,7 +9,7 @@ pub(crate) use clip::{
 };
 pub use command::{
     Command, Created, InstrumentAssetOwner, InstrumentLoadDestination, InstrumentLoadPlacement,
-    MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+    MidiExpressiveNoteInsert, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
 };
 pub(crate) use track::{insert_track_before, insert_track_before_with_gain, name_valid, new_track};
 
@@ -90,7 +90,9 @@ impl Project {
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::PlaceMidiClipWithNotes { .. }
+            | Command::PlaceMidiClipWithExpressiveNotes { .. }
             | Command::ExtendMidiClipWithNotes { .. }
+            | Command::ExtendMidiClipWithExpressiveNotes { .. }
             | Command::SetMidiClipSource { .. }
             | Command::ResizeMidiClipView { .. }
             | Command::TrimMidiClipEdge { .. }
@@ -100,6 +102,7 @@ impl Project {
             | Command::SetMidiNoteExpression { .. }
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
+            | Command::AddMidiNotesWithExpression { .. }
             | Command::EditMidiNotes { .. }
             | Command::EditMidiNotesWithSourceExtent { .. }
             | Command::DuplicateMidiSourceRange { .. }
