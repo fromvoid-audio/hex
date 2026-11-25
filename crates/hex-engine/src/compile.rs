@@ -678,32 +678,7 @@ fn compile_project_inner<'a>(
     crate::gain_envelope::validate_project(snapshot)?;
     validate_source_midi_roots(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
-    crate::midi_compile::count_project_occurrences(snapshot)?;
-    // Fanout is real work: bound expanded destination occurrences before note-bank allocation.
-    let mut routed_occurrences = 0usize;
-    for track in snapshot.tracks() {
-        let root = snapshot.midi_source_track(track.id());
-        let source = snapshot
-            .track(root)
-            .ok_or(Invalid("midi source root is missing"))?;
-        for clip in source.midi_clips().iter().filter(|clip| clip.active()) {
-            for note in clip.notes().iter().filter(|note| note.active()) {
-                let n = clip
-                    .source_playback()
-                    .map_err(|error| Invalid(error.0))?
-                    .note_occurrences(note.start(), note.duration())
-                    .map_err(|error| Invalid(error.0))?
-                    .count();
-                routed_occurrences = routed_occurrences
-                    .checked_add(
-                        usize::try_from(n)
-                            .map_err(|_| Invalid("routed midi occurrence overflow"))?,
-                    )
-                    .filter(|n| *n <= crate::midi_compile::MAX_COMPILED_MIDI_OCCURRENCES)
-                    .ok_or(Invalid("routed midi occurrence limit reached"))?;
-            }
-        }
-    }
+    crate::midi_compile::validate_arrangement_occurrences(snapshot)?;
     let shared_contexts = match shared_contexts {
         Some(contexts) => contexts,
         None => crate::shared_analytic::SharedAnalyticContextTable::prepare_scoped(
