@@ -66,6 +66,10 @@ impl Project {
     pub fn clip_alias(&self, clip: ClipId) -> Option<AliasSourceId> {
         self.aliases.members.get(&clip).copied()
     }
+    /// Copy only the alias inventory for storage adapters without snapshotting the whole project.
+    pub fn clip_aliases_snapshot(&self) -> ClipAliasesSnapshot {
+        self.aliases.snapshot()
+    }
 }
 impl ClipAliases {
     pub(crate) fn snapshot(&self) -> ClipAliasesSnapshot {

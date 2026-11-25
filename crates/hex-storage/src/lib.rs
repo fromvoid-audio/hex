@@ -83,7 +83,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LARGE_VST3_STATE_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = CAPABILITY_MANIFEST_SCHEMA_VERSION;
+/// Schema126 consolidates multi-feature projects into a single-pass canonical
+/// layout with an explicit sorted capability manifest header. Schema125 is
+/// already frozen as [`LARGE_VST3_STATE_SCHEMA_VERSION`].
+pub const CAPABILITY_MANIFEST_SCHEMA_VERSION: u32 = 126;
 /// Schema125 keeps large opaque VST3 envelopes outside the predecessor document.
 pub const LARGE_VST3_STATE_SCHEMA_VERSION: u32 = 125;
 /// Schema124 adds event-owned marker forks over an unchanged live source clock.
@@ -284,6 +288,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::manifest::requires_manifest_schema(project) {
+        return CAPABILITY_MANIFEST_SCHEMA_VERSION;
+    }
     if schema::large_vst3_state::contains(project) {
         return LARGE_VST3_STATE_SCHEMA_VERSION;
     }
@@ -582,8 +589,43 @@ impl From<serde_json::Error> for StorageError {
 /// There is no blanket byte ceiling; typed model limits still apply. Owned output growth is fallible,
 /// but the codec materializes metadata and is not a streaming or OOM-proof reader.
 /// Nonempty serial units use schema80; flat projects retain their prior layout.
+/// Deterministic, strictly sorted capability manifest required by `project`.
+pub fn capabilities_for(project: &Project) -> Vec<&'static str> {
+    schema::manifest::capabilities_for(project)
+}
+
+/// Encode `project` directly as a single-pass unified schema 126 capability-manifest document.
+pub fn encode_capability_manifest(project: &Project) -> Result<Vec<u8>, StorageError> {
+    schema::manifest::encode(project)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static FORCE_STACKED_LEGACY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn encode_stacked_legacy(project: &Project) -> Result<Vec<u8>, StorageError> {
+    struct Reset(bool);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            FORCE_STACKED_LEGACY.with(|flag| flag.set(self.0));
+        }
+    }
+    let previous = FORCE_STACKED_LEGACY.with(|flag| flag.replace(true));
+    let _reset = Reset(previous);
+    encode(project)
+}
+
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
     use schema::long_granular::{self, LongWarpSchema};
+    #[cfg(test)]
+    let force_stacked = FORCE_STACKED_LEGACY.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let force_stacked = false;
+    if !force_stacked && schema::manifest::requires_manifest_schema(project) {
+        return schema::manifest::encode(project);
+    }
     if schema::large_vst3_state::contains(project) {
         return schema::large_vst3_state::encode(project);
     }
@@ -876,6 +918,13 @@ fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
 }
 
 fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageError> {
+    encode_document_with_capacity(document, 0)
+}
+
+fn encode_document_with_capacity(
+    document: &impl serde::Serialize,
+    initial_capacity: usize,
+) -> Result<Vec<u8>, StorageError> {
     struct Output(Vec<u8>);
     impl io::Write for Output {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -887,7 +936,12 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
             Ok(())
         }
     }
-    let mut output = Output(Vec::new());
+    let mut buffer = Vec::new();
+    let reserve = initial_capacity.min(MAX_PROJECT_DOCUMENT_BYTES);
+    if reserve > 0 {
+        buffer.try_reserve(reserve).map_err(io::Error::other)?;
+    }
+    let mut output = Output(buffer);
     serde_json::to_writer(&mut output, document)?;
     if output.0.len() > MAX_PROJECT_DOCUMENT_BYTES {
         return Err(StorageError::Invalid(
@@ -968,6 +1022,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
     if header.format != "hex-project" {
         return Err(StorageError::Invalid("unsupported project format"));
+    }
+    if header.version == CAPABILITY_MANIFEST_SCHEMA_VERSION && !inside_envelope {
+        return schema::manifest::decode(bytes);
     }
     if header.version == LARGE_VST3_STATE_SCHEMA_VERSION && !inside_envelope {
         return schema::large_vst3_state::decode(bytes);
