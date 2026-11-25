@@ -114,7 +114,7 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
         });
         visual.run_until_parked();
         let ready = editor.read_with(cx, |view, _| {
-            !view.opening_project
+            !view.persistence.opening_project
                 && !view.edit_pending()
                 && view
                     .state

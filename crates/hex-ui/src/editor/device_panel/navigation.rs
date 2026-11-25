@@ -36,8 +36,8 @@ impl Gesture {
 
 fn current(view: &EditorView, window: &Window, cx: &App) -> bool {
     let navigation = &view.device_panel.navigation;
-    view.clip_view_open
-        && view.device_panel_active
+    view.audio_detail.clip_view_open
+        && view.device_panel.active
         && navigation.identity
             == view
                 .device_panel
@@ -112,12 +112,13 @@ pub(in crate::editor) fn bottom_bar(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
-    let open = view.clip_view_open && view.device_panel_active;
+    let open = view.audio_detail.clip_view_open && view.device_panel.active;
     // While open, the finalized device owner is authoritative (a draft can defer a switch).
     let owner = if open {
         view.device_panel.owner
     } else {
-        view.focused_return
+        view.session_grid
+            .focused_return
             .map(DevicePanelOwner::Return)
             .or_else(|| view.selected_track.map(DevicePanelOwner::Track))
             .or_else(|| {
@@ -312,13 +313,13 @@ pub(in crate::editor) fn capture_pointer_down(
     cx: &mut Context<EditorView>,
 ) {
     if view.context_menu.is_some()
-        || view.theme_settings.open
-        || view.tuning.open
+        || view.settings.theme.open
+        || view.settings.tuning.open
         || super::picker_is_open(view)
     {
         return;
     }
-    let open = view.clip_view_open && view.device_panel_active;
+    let open = view.audio_detail.clip_view_open && view.device_panel.active;
     if open
         && event.button == MouseButton::Left
         && view

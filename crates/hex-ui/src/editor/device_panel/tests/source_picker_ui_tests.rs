@@ -110,12 +110,12 @@ fn source_picker_preserves_sampler_numeric_draft(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("invalid");
     editor.read_with(&visual, |view, _| {
-        assert!(view.sampler_parameter.numeric_draft_active())
+        assert!(view.device_panel.sampler_parameter.numeric_draft_active())
     });
     visual.simulate_click(button.center(), Modifiers::default());
     editor.read_with(&visual, |view, cx| {
         assert!(view.context_menu.is_none());
-        assert!(view.sampler_parameter.numeric_draft_active());
+        assert!(view.device_panel.sampler_parameter.numeric_draft_active());
         assert_eq!(
             crate::editor::sampler_parameter::tests::sampler_text(view, cx),
             "invalid"
@@ -158,7 +158,7 @@ fn source_picker_preserves_sampler_numeric_draft(cx: &mut TestAppContext) {
         .update(|window, cx| editor.update(cx, |view, cx| jump.clone().perform(view, window, cx)));
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.selected_track(), Some(track));
-        assert!(view.sampler_parameter.numeric_draft_active());
+        assert!(view.device_panel.sampler_parameter.numeric_draft_active());
         assert_eq!(
             crate::editor::sampler_parameter::tests::sampler_text(view, cx),
             "invalid"
@@ -387,14 +387,14 @@ fn source_picker_refuses_pending_gesture_and_stale_choice(cx: &mut TestAppContex
     });
     visual.simulate_keystrokes("enter");
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     editor.update(&mut visual, |view, _| {
         view.cancel_device_gesture().unwrap();
     });
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     visual.run_until_parked();
     visual.simulate_click(button.center(), Modifiers::default());
@@ -661,13 +661,13 @@ fn bound_source_picker_reassigns_unlinks_and_preserves_history(cx: &mut TestAppC
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             choice.clone().perform(view, window, cx);
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
             assert_eq!(view.state.as_ref().unwrap().project, original);
         })
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -856,13 +856,13 @@ fn bound_source_picker_explicitly_changes_receiver_and_undoes(cx: &mut TestAppCo
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             choice.clone().perform(view, window, cx);
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
             assert_eq!(view.state.as_ref().unwrap().project, original);
         })
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -1228,13 +1228,13 @@ fn source_manager_lists_and_deletes_without_assigning(cx: &mut TestAppContext) {
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             action.clone().perform(view, window, cx);
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
             assert_eq!(view.state.as_ref().unwrap().project, original);
         })
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -1405,12 +1405,12 @@ fn source_manager_creates_an_unassigned_instrument_from_empty_project(cx: &mut T
         editor.update(cx, |view, cx| {
             action.clone().perform(view, window, cx);
             assert_eq!(view.state.as_ref().unwrap().project, original);
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
         })
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
@@ -1533,12 +1533,12 @@ fn source_manager_renames_without_losing_draft_or_binding(cx: &mut TestAppContex
         editor.update(cx, |view, cx| {
             rename.perform(view, window, cx);
             assert!(!super::super::source_naming(view));
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
         })
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     visual.simulate_keystrokes("down");
     visual.simulate_keystrokes("enter");
@@ -1549,7 +1549,7 @@ fn source_manager_renames_without_losing_draft_or_binding(cx: &mut TestAppContex
         editor.update(cx, |view, cx| {
             view.save_project(cx);
             assert!(super::super::source_naming(view));
-            assert!(!view.saving_project);
+            assert!(!view.persistence.saving_project);
             view.open_dialog(hex_session::DocumentAudioMode::Resident, window, cx);
             assert!(super::super::source_naming(view));
             view.request_quit(window, cx);
@@ -1938,7 +1938,7 @@ fn source_picker_keeps_released_device_preview_until_terminal_ack(cx: &mut TestA
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(matches!(
-            view.device_gesture.terminal(),
+            view.device_panel.gesture.terminal(),
             Some((hex_session::device_gesture::GesturePhase::Commit, _))
         ));
     });
@@ -1951,7 +1951,7 @@ fn source_picker_keeps_released_device_preview_until_terminal_ack(cx: &mut TestA
         assert_eq!(visual.debug_bounds(selector).unwrap(), preview);
         editor.read_with(&visual, |view, _| {
             assert!(view.context_menu.is_none());
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
             assert_eq!(
                 view.state
                     .as_ref()
@@ -1966,7 +1966,7 @@ fn source_picker_keeps_released_device_preview_until_terminal_ack(cx: &mut TestA
         });
     }
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && !view.edit_pending()
             && view
                 .state
@@ -2098,7 +2098,7 @@ fn bus_panels_keep_project_source_manager_reachable(cx: &mut TestAppContext) {
     for owner in [DevicePanelOwner::Main, DevicePanelOwner::Return(return_id)] {
         editor.update(&mut visual, |view, cx| {
             view.selected_track = None;
-            view.focused_return = match owner {
+            view.session_grid.focused_return = match owner {
                 DevicePanelOwner::Return(id) => Some(id),
                 _ => None,
             };
@@ -2113,7 +2113,7 @@ fn bus_panels_keep_project_source_manager_reachable(cx: &mut TestAppContext) {
         let selection = editor.read_with(&visual, |view, _| {
             (
                 view.selected_track,
-                view.focused_return,
+                view.session_grid.focused_return,
                 view.device_panel.main_selected,
                 view.track_selection.clone(),
             )
@@ -2154,7 +2154,7 @@ fn bus_panels_keep_project_source_manager_reachable(cx: &mut TestAppContext) {
             assert_eq!(
                 (
                     view.selected_track,
-                    view.focused_return,
+                    view.session_grid.focused_return,
                     view.device_panel.main_selected,
                     view.track_selection.clone()
                 ),
@@ -2168,7 +2168,7 @@ fn bus_panels_keep_project_source_manager_reachable(cx: &mut TestAppContext) {
         });
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
-                view.focused_return = None;
+                view.session_grid.focused_return = None;
                 view.device_panel.main_selected = None;
                 view.selected_track = Some(track);
                 assert!(!super::super::source_manager::focus_from_workspace(
@@ -2249,7 +2249,7 @@ fn source_manager_navigates_linked_tracks_without_assignment(cx: &mut TestAppCon
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
@@ -2369,7 +2369,7 @@ fn source_picker_adds_first_utility(cx: &mut TestAppContext, from_contributor: b
         editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
     });
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         assert!(
             view.state
                 .as_ref()
@@ -2383,7 +2383,7 @@ fn source_picker_adds_first_utility(cx: &mut TestAppContext, from_contributor: b
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -2603,7 +2603,7 @@ fn source_picker_removes_sole_utility(cx: &mut TestAppContext, from_contributor:
         editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
     });
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         assert_eq!(
             view.state
                 .as_ref()
@@ -2618,7 +2618,7 @@ fn source_picker_removes_sole_utility(cx: &mut TestAppContext, from_contributor:
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -2798,7 +2798,7 @@ fn source_picker_appends_utility(cx: &mut TestAppContext, from_contributor: bool
         editor.update(cx, |view, cx| choice.clone().perform(view, window, cx))
     });
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         assert_eq!(
             view.state
                 .as_ref()
@@ -2812,7 +2812,7 @@ fn source_picker_appends_utility(cx: &mut TestAppContext, from_contributor: bool
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -3274,7 +3274,7 @@ fn source_picker_moves_shared_utility(cx: &mut TestAppContext, earlier: bool) {
     });
     editor.update(&mut visual, |view, _| view.cancel_device_gesture().unwrap());
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none() && !view.edit_pending()
+        view.device_panel.gesture.snapshot().is_none() && !view.edit_pending()
     });
     editor.update(&mut visual, |view, cx| {
         view.context_menu = None;
@@ -3410,7 +3410,8 @@ pub(in crate::editor) fn open_unassigned_source(
     visual.run_until_parked();
     editor.update(&mut *visual, |view, _| {
         let tuning = view.state.as_ref().unwrap().project.tuning();
-        view.tuning
+        view.settings
+            .tuning
             .client
             .begin(view.project_generation, tuning)
             .unwrap();
@@ -3419,9 +3420,9 @@ pub(in crate::editor) fn open_unassigned_source(
         .update(|window, cx| editor.update(cx, |view, cx| edit.clone().perform(view, window, cx)));
     editor.update(&mut *visual, |view, _| {
         assert!(view.device_panel.source_manager.source_view.is_none());
-        assert!(view.tuning.client.snapshot().is_some());
+        assert!(view.settings.tuning.client.snapshot().is_some());
         assert!(view.error.is_some());
-        view.tuning.client.reset();
+        view.settings.tuning.client.reset();
         view.error = None;
     });
     visual
@@ -3517,7 +3518,7 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
         })
     });
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none())
+        assert!(view.device_panel.gesture.snapshot().is_none())
     });
     editor.update(&mut visual, |view, _| view.selected_track = Some(receiver));
     let generation = editor.read_with(&visual, |view, _| view.project_generation);
@@ -3532,7 +3533,7 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
         })
     });
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none())
+        assert!(view.device_panel.gesture.snapshot().is_none())
     });
     editor.update(&mut visual, |view, _| view.project_generation = generation);
     enter_typed_value(&mut visual, device, parameter, "2");
@@ -3551,7 +3552,7 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
                 view.device_panel.owner,
                 Some(DevicePanelOwner::Source(source))
             );
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
             let Some(ParameterControl::Float { entity, .. }) = view
                 .device_panel
                 .controls
@@ -3581,7 +3582,7 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
                 view.device_panel.owner,
                 Some(DevicePanelOwner::Source(source))
             );
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
             let Some(ParameterControl::Float { entity, .. }) = view
                 .device_panel
                 .controls
@@ -3593,7 +3594,7 @@ fn source_manager_edits_unassigned_fm_without_track_authority(cx: &mut TestAppCo
         });
     }
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
     });
     visual.run_until_parked();
     let value = |view: &EditorView| {
@@ -3787,7 +3788,7 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
         assert!(super::super::finalize_controls(view, cx))
     });
     let old_control = editor.read_with(&visual, |view, _| {
-        assert_eq!(view.device_gesture.snapshot().unwrap().key, key);
+        assert_eq!(view.device_panel.gesture.snapshot().unwrap().key, key);
         let Some(ParameterControl::Float { entity, .. }) = view
             .device_panel
             .controls
@@ -3809,7 +3810,7 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
                 view.device_panel.owner,
                 Some(DevicePanelOwner::Source(source))
             );
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
             let Some(ParameterControl::Float { entity, .. }) = view
                 .device_panel
                 .controls
@@ -3833,7 +3834,7 @@ fn source_manager_retires_preview_with_replaced_instrument_event(cx: &mut TestAp
         })
     });
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert_eq!(
             view.device_panel.owner,
             Some(DevicePanelOwner::Track(receiver))
@@ -3991,7 +3992,7 @@ fn source_manager_edits_unassigned_operator_with_its_specialized_panel(cx: &mut 
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
             let Some(ParameterControl::Float { entity, .. }) = view
                 .device_panel
                 .controls
@@ -4003,7 +4004,7 @@ fn source_manager_edits_unassigned_operator_with_its_specialized_panel(cx: &mut 
         });
     }
     settle(&editor, &mut visual, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
     });
     let value = |view: &EditorView| {
         hex_engine::native_device_parameter_for_class(
@@ -4139,8 +4140,8 @@ fn unassigned_sampler_parameter_target_refuses_stale_source_context(cx: &mut Tes
         view.device_panel.owner = Some(DevicePanelOwner::Source(source));
         view.device_panel.source_manager.source_view =
             Some((generation, source, Some(DevicePanelOwner::Track(selected))));
-        view.clip_view_open = true;
-        view.device_panel_active = true;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = true;
         let target = crate::editor::sampler_parameter::Target::new(
             generation,
             unbound.state.revision,
@@ -4155,9 +4156,9 @@ fn unassigned_sampler_parameter_target_refuses_stale_source_context(cx: &mut Tes
         view.project_generation += 1;
         assert!(!target.current(view));
         view.project_generation = generation;
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         assert!(!target.current(view));
-        view.clip_view_open = true;
+        view.audio_detail.clip_view_open = true;
         for state in [&bound.state, &replaced.state, &removed.state] {
             view.state = Some(Arc::clone(state));
             let fresh = crate::editor::sampler_parameter::Target::new(

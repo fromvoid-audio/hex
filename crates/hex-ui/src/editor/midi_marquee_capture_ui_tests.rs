@@ -17,10 +17,13 @@ fn range(
             let origin = b.origin + point(px(1.), px(1.));
             let width = b.size.width - px(2.);
             let height = b.size.height - px(2.);
-            let row = height / f32::from(v.piano_pitch.test_row_count());
+            let row = height / f32::from(v.midi_editor.piano_pitch.test_row_count());
             let top = row
                 * f32::from(
-                    v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count() - 1 - 64,
+                    v.midi_editor.piano_pitch.first_test_pitch()
+                        + v.midi_editor.piano_pitch.test_row_count()
+                        - 1
+                        - 64,
                 );
             (
                 origin + point(width * (0.85 / 4.), top - px(1.)),
@@ -37,9 +40,9 @@ fn shift() -> Modifiers {
 }
 fn held(v: &EditorView, velocity: bool) -> bool {
     if velocity {
-        v.midi_velocity.marquee.is_some()
+        v.midi_editor.velocity.marquee.is_some()
     } else {
-        v.midi_marquee.is_some()
+        v.midi_editor.marquee.is_some()
     }
 }
 fn selected_handles(visual: &mut VisualTestContext) -> usize {
@@ -64,7 +67,7 @@ fn marquees_own_input_and_keep_live_selection_through_completed_paints_and_relea
         let (mut visual, editor, _environment, _clip) = setup(cx);
         let actions = host(&mut visual, &editor, false);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let baseline = editor.read_with(&visual, |v, _| v.midi_selection.ids().to_vec());
+        let baseline = editor.read_with(&visual, |v, _| v.midi_editor.selection.ids().to_vec());
         let (down, end) = range(&editor, &mut visual, velocity);
         let outside = point(px(640.), px(10.));
         visual.simulate_mouse_down(down, MouseButton::Left, shift());
@@ -88,21 +91,21 @@ fn marquees_own_input_and_keep_live_selection_through_completed_paints_and_relea
             repaint(&editor, &mut visual);
             let n = editor.read_with(&visual, |v, _| {
                 assert!(held(v, velocity));
-                assert!(v.midi_selection.contains(baseline[0]));
+                assert!(v.midi_editor.selection.contains(baseline[0]));
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-                v.midi_selection.len()
+                v.midi_editor.selection.len()
             });
             assert_eq!(n, if velocity { 3 } else { 2 });
             assert_eq!(selected_handles(&mut visual), n);
         }
-        let selected = editor.read_with(&visual, |v, _| v.midi_selection.ids().to_vec());
+        let selected = editor.read_with(&visual, |v, _| v.midi_editor.selection.ids().to_vec());
         visual.simulate_mouse_up(end, MouseButton::Left, shift());
         visual.simulate_mouse_up(outside, MouseButton::Right, shift());
         for _ in 0..3 {
             repaint(&editor, &mut visual);
             editor.read_with(&visual, |v, _| {
                 assert!(!held(v, velocity));
-                assert_eq!(v.midi_selection.ids(), selected);
+                assert_eq!(v.midi_editor.selection.ids(), selected);
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
             assert!(!visual.update(|w, _| w.is_pointer_dragging()));
@@ -137,7 +140,7 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
             let actions = host(&mut visual, &editor, false);
             let before =
                 editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-            let baseline = editor.read_with(&visual, |v, _| v.midi_selection.ids().to_vec());
+            let baseline = editor.read_with(&visual, |v, _| v.midi_editor.selection.ids().to_vec());
             let newer = editor.read_with(&visual, |v, _| {
                 v.state
                     .as_ref()
@@ -156,7 +159,10 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
             visual.simulate_mouse_down(down, MouseButton::Left, shift());
             visual.simulate_mouse_move(end, Some(MouseButton::Left), shift());
             repaint(&editor, &mut visual);
-            assert!(editor.read_with(&visual, |v, _| v.midi_selection.len() > baseline.len()));
+            assert!(
+                editor.read_with(&visual, |v, _| v.midi_editor.selection.len()
+                    > baseline.len())
+            );
             match loss {
                 "button" => visual.simulate_mouse_move(outside, None, shift()),
                 "escape" => visual.simulate_keystrokes("escape"),
@@ -184,30 +190,30 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
                     );
                 }),
                 "newer-selection" => editor.update(&mut visual, |v, cx| {
-                    v.midi_selection.set_single(newer);
+                    v.midi_editor.selection.set_single(newer);
                     cx.notify();
                 }),
                 "generation" => editor.update(&mut visual, |v, cx| {
                     v.project_generation += 1;
-                    v.midi_selection.set_single(newer);
+                    v.midi_editor.selection.set_single(newer);
                     cx.notify();
                 }),
                 "source" => editor.update(&mut visual, |v, cx| {
                     v.selected_clip = None;
-                    v.midi_selection.set_single(newer);
+                    v.midi_editor.selection.set_single(newer);
                     cx.notify();
                 }),
                 "viewport" => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_span = BeatTime::from_quarters(8).unwrap();
+                    v.midi_editor.piano_beat_span = BeatTime::from_quarters(8).unwrap();
                     cx.notify();
                 }),
                 "bounds" => visual.simulate_resize(gpui::size(px(1400.), px(900.))),
                 "collapsed" => editor.update(&mut visual, |v, cx| {
-                    v.midi_velocity.open = false;
+                    v.midi_editor.velocity.open = false;
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "window" => visual.deactivate_window(),
@@ -225,9 +231,9 @@ fn marquee_loss_restores_owned_baseline_but_preserves_newer_selection(cx: &mut T
             editor.read_with(&visual, |v, _| {
                 assert!(!held(v, velocity), "velocity={velocity}/{loss}");
                 if matches!(loss, "newer-selection" | "generation" | "source") {
-                    assert_eq!(v.midi_selection.ids(), [newer]);
+                    assert_eq!(v.midi_editor.selection.ids(), [newer]);
                 } else {
-                    assert_eq!(v.midi_selection.ids(), baseline);
+                    assert_eq!(v.midi_editor.selection.ids(), baseline);
                 }
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });

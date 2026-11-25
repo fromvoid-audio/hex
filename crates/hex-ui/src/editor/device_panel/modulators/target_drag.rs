@@ -37,8 +37,8 @@ struct Origin {
 
 impl Origin {
     fn current(self, view: &EditorView) -> bool {
-        view.clip_view_open
-            && view.device_panel_active
+        view.audio_detail.clip_view_open
+            && view.device_panel.active
             && self.generation == view.project_generation
             && self.owner == view.device_panel.owner
             && self.mode == view.mode

@@ -332,7 +332,7 @@ fn group_escape_and_actual_gpui_capture_loss_never_commit_any_member(cx: &mut Te
             assert!(v.active_clip_drag.is_none());
             assert_eq!(v.selected_clip_ids(), clips);
             assert_eq!(v.worker_requests_pending, 0);
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
@@ -384,10 +384,10 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
             }
             assert_eq!(project.clip(clips[0]).unwrap().name(), "independent rename");
             if hold_ack {
-                assert!(matches!(&v.last_enqueued_edit, Some(Command::MoveClipsWithOverwrite { clips: selected, .. }) if selected == &clips));
+                assert!(matches!(&v.test_probes.last_enqueued_edit, Some(Command::MoveClipsWithOverwrite { clips: selected, .. }) if selected == &clips));
                 assert!(v.error.as_ref().unwrap().contains("project changed"));
             } else {
-                assert!(matches!(&v.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"));
+                assert!(matches!(&v.test_probes.last_enqueued_edit, Some(Command::EditClips { clips: selected, edit: hex_project::ClipEdit::Rename { name } }) if selected == &clips && name == "independent rename"));
             }
         });
     }
@@ -643,7 +643,7 @@ fn group_outside_lane_clears_all_previews_and_restores_originals(cx: &mut TestAp
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert_eq!(v.worker_requests_pending, 0);
         assert!(
-            v.last_enqueued_edit.is_none(),
+            v.test_probes.last_enqueued_edit.is_none(),
             "outside release cannot commit old landing"
         );
     });
@@ -943,11 +943,11 @@ fn prove_fixture_catalog_custody(cx: &mut TestAppContext, unwind: bool) {
                 .all(|asset| asset.path().starts_with(&root))
         );
         assert_eq!(
-            view.recent_projects.test_path(),
+            view.settings.recent_projects.test_path(),
             root.join("config/recent-projects.json")
         );
         assert_eq!(
-            view.theme_settings.test_path(),
+            view.settings.theme.test_path(),
             root.join("config/theme.json")
         );
         // These are the exact four paths resolved by the injected constructor;
@@ -1526,7 +1526,7 @@ fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContex
     });
     assert!(visual.update(|_, app| app.has_active_drag()));
     editor.update(&mut visual, |view, cx| {
-        view.last_enqueued_edit = None;
+        view.test_probes.last_enqueued_edit = None;
         view.set_mode(super::super::EditorMode::Session);
         cx.notify();
     });
@@ -1539,7 +1539,9 @@ fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContex
         .center();
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-    let submitted = editor.read_with(&visual, |view, _| view.last_enqueued_edit.clone());
+    let submitted = editor.read_with(&visual, |view, _| {
+        view.test_probes.last_enqueued_edit.clone()
+    });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         let state = view.state.as_ref().unwrap();
@@ -1651,7 +1653,7 @@ fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &m
                 )
             });
         editor.update(&mut visual, |view, cx| {
-            view.last_enqueued_edit = None;
+            view.test_probes.last_enqueued_edit = None;
             view.set_mode(super::super::EditorMode::Session);
             cx.notify();
         });
@@ -1671,7 +1673,7 @@ fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &m
         editor.read_with(&visual, |view, _| {
             let state = view.state.as_ref().unwrap();
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "insert={insert} stale={stale}"
             );
             assert_eq!(state.project.snapshot(), before);
@@ -1758,7 +1760,7 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
             view.active_clip_drag.as_ref().unwrap().group.borrow().ids,
             vec![clips[1]]
         );
-        view.last_enqueued_edit = None;
+        view.test_probes.last_enqueued_edit = None;
         view.set_mode(super::super::EditorMode::Session);
         cx.notify();
     });
@@ -1773,7 +1775,7 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     let after = editor.read_with(&visual, |view, _| {
-        assert!(matches!(view.last_enqueued_edit,
+        assert!(matches!(view.test_probes.last_enqueued_edit,
             Some(Command::CopyArrangementAudioClipToSession { source, scene: target })
                 if source == clips[1] && target == scene));
         let project = &view.state.as_ref().unwrap().project;
@@ -1787,7 +1789,7 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
         assert_eq!(copied.source_end(), 48_000);
         assert_eq!(project.tracks()[0].clips().len(), 3);
         // Existing Created::SessionClip completion selects its Console cell.
-        assert_eq!(view.selected_cell, Some((track, scene)));
+        assert_eq!(view.session_grid.selected_cell, Some((track, scene)));
         assert!(view.selected_clip_ids().is_empty());
         assert!(view.active_clip_drag.is_none());
         assert_eq!(view.worker_requests_pending, 0);

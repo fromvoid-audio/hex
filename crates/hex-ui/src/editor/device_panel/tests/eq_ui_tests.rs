@@ -69,8 +69,8 @@ fn read(view: &EditorView, device: DeviceId) -> EqState {
 fn settled(view: &EditorView) -> bool {
     view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.device_gesture_barriers.is_empty()
-        && view.device_gesture.snapshot().is_none()
+        && view.device_panel.gesture_barriers.is_empty()
+        && view.device_panel.gesture.snapshot().is_none()
 }
 // Seed already-authored data through the canonical command, as in an opened project.
 // This is fixture setup, not a reachable EQ-local editing route.
@@ -337,10 +337,10 @@ fn eq_held_node_creation_clears_when_worker_retires_the_gesture(cx: &mut TestApp
     let position = plot(&mut visual, device, 0.5, 0.5);
     eq_double_click_down(&mut visual, position);
     pump_until(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_some()
+        view.worker_requests_pending == 0 && view.device_panel.gesture.snapshot().is_some()
     });
     let mut retired = editor.read_with(cx, |view, _| {
-        let key = view.device_gesture.snapshot().unwrap().key;
+        let key = view.device_panel.gesture.snapshot().unwrap().key;
         view.service
             .submit(Request::device_gesture(GestureRequest::Cancel { key }))
             .unwrap();
@@ -363,7 +363,7 @@ fn eq_held_node_creation_clears_when_worker_retires_the_gesture(cx: &mut TestApp
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         assert!(eq_panel::selection_for_test(view, device).0.is_some());
         assert!(read(view, device).nodes.is_empty());
     });
@@ -373,7 +373,7 @@ fn eq_held_node_creation_clears_when_worker_retires_the_gesture(cx: &mut TestApp
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert_eq!(eq_panel::selection_for_test(view, device).0, None);
         assert!(read(view, device).nodes.is_empty());
     });
@@ -592,14 +592,14 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
             let project = &view.state.as_ref().unwrap().project;
             let entry = if owner == CreationOwner::Main {
                 assert!(view.selected_track.is_none());
-                assert!(view.focused_return.is_none());
+                assert!(view.session_grid.focused_return.is_none());
                 assert_eq!(
                     view.device_panel.main_selected,
                     Some(view.project_generation)
                 );
                 &project.main_devices()[0]
             } else {
-                assert_eq!(view.focused_return, Some(return_id));
+                assert_eq!(view.session_grid.focused_return, Some(return_id));
                 assert_eq!(view.selected_track, Some(track));
                 &project.return_tracks()[0].devices()[0]
             };
@@ -642,7 +642,7 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
                 "held creation cannot commit canonical state"
             );
             assert!(
-                v.device_gesture.snapshot().is_some(),
+                v.device_panel.gesture.snapshot().is_some(),
                 "held creation owns its keyed preview"
             );
         });
@@ -748,7 +748,7 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
             if owner == CreationOwner::Main {
                 assert_eq!(project.return_tracks(), sentinel.project.return_tracks());
                 assert!(view.selected_track.is_none());
-                assert!(view.focused_return.is_none());
+                assert!(view.session_grid.focused_return.is_none());
                 assert_eq!(
                     view.device_panel.main_selected,
                     Some(view.project_generation)
@@ -756,7 +756,7 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
             } else {
                 assert_eq!(project.main_devices(), sentinel.project.main_devices());
                 assert_eq!(
-                    view.focused_return,
+                    view.session_grid.focused_return,
                     Some(sentinel.project.return_tracks()[0].id())
                 );
                 assert_eq!(view.selected_track, Some(track));
@@ -825,7 +825,7 @@ fn creation_cancellation(cx: &mut TestAppContext, origin: [f32; 2]) {
     editor.update(cx, |view, _| view.worker_requests_pending = 1);
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.terminal().is_some())
+        assert!(view.device_panel.gesture.terminal().is_some())
     });
     editor.update(cx, |view, _| view.worker_requests_pending = 0);
     pump_until(&editor, cx, |view| {

@@ -66,10 +66,10 @@ fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut Te
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.pending_session_ticket = Some((first, view.project_generation));
+        view.session_grid.pending_session_ticket = Some((first, view.project_generation));
         view.pending_metronome_ticket = Some(second);
         view.tick(cx);
-        assert_eq!(view.pending_session_ticket, None);
+        assert_eq!(view.session_grid.pending_session_ticket, None);
         assert_eq!(view.pending_metronome_ticket, None);
         assert_eq!(view.status.as_str(), "session request rejected");
         let error = view.error.as_ref().expect("rejections displayed");
@@ -210,9 +210,9 @@ fn callback_rejection_remains_visible_when_output_is_faulted(cx: &mut TestAppCon
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.pending_session_ticket = Some((ticket, view.project_generation));
+        view.session_grid.pending_session_ticket = Some((ticket, view.project_generation));
         view.tick(cx);
-        assert_eq!(view.pending_session_ticket, None);
+        assert_eq!(view.session_grid.pending_session_ticket, None);
         let error = view.error.as_ref().expect("fault and rejection displayed");
         assert!(
             error.contains("session") && error.contains("audio"),

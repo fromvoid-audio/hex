@@ -47,8 +47,8 @@ fn open(cx: &mut TestAppContext, start_edge: bool) -> Fixture {
         let clip = track.clips()[0].id();
         v.selected_track = Some(track.id());
         v.selected_clip = Some(clip);
-        v.clip_view_open = true;
-        v.device_panel_active = false;
+        v.audio_detail.clip_view_open = true;
+        v.device_panel.active = false;
         cx.notify();
         clip
     });
@@ -58,7 +58,7 @@ fn open(cx: &mut TestAppContext, start_edge: bool) -> Fixture {
             editor: editor.clone(),
             actions: actions.clone(),
         });
-        editor.read(cx).audio_event_focus.focus(w);
+        editor.read(cx).audio_detail.focus.focus(w);
     });
     visual.run_until_parked();
     let start = visual
@@ -169,6 +169,7 @@ fn narrow_audio_scope_prioritizes_body_at_center_and_keeps_distinguishable_edges
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
             let g = v
+                .audio_detail
                 .clip_loop
                 .audio_gesture
                 .as_ref()
@@ -218,7 +219,12 @@ fn narrow_audio_scope_prioritizes_body_at_center_and_keeps_distinguishable_edges
             visual.simulate_mouse_down(start_handle, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |v, _| {
                 assert_eq!(
-                    v.clip_loop.audio_gesture.as_ref().unwrap().handle,
+                    v.audio_detail
+                        .clip_loop
+                        .audio_gesture
+                        .as_ref()
+                        .unwrap()
+                        .handle,
                     Handle::Start,
                     "start edge should remain distinguishable at width {drawn_px:.2} px"
                 );
@@ -248,7 +254,12 @@ fn narrow_audio_scope_prioritizes_body_at_center_and_keeps_distinguishable_edges
             visual.simulate_mouse_down(end_handle, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |v, _| {
                 assert_eq!(
-                    v.clip_loop.audio_gesture.as_ref().unwrap().handle,
+                    v.audio_detail
+                        .clip_loop
+                        .audio_gesture
+                        .as_ref()
+                        .unwrap()
+                        .handle,
                     Handle::End,
                     "end edge should remain distinguishable at width {drawn_px:.2} px"
                 );
@@ -341,7 +352,7 @@ fn returning_audio_scope_edge_inside_tolerance_restores_preview_and_skips_commit
                 );
                 visual.run_until_parked();
                 editor.read_with(&visual, |v, _| {
-                    let g = v.clip_loop.audio_gesture.as_ref().unwrap();
+                    let g = v.audio_detail.clip_loop.audio_gesture.as_ref().unwrap();
                     assert_ne!(g.preview, (0, 96_000));
                 });
 
@@ -349,7 +360,7 @@ fn returning_audio_scope_edge_inside_tolerance_restores_preview_and_skips_commit
                 visual.simulate_mouse_move(returned, MouseButton::Left, Modifiers::default());
                 visual.run_until_parked();
                 editor.read_with(&visual, |v, _| {
-                    let g = v.clip_loop.audio_gesture.as_ref().unwrap();
+                    let g = v.audio_detail.clip_loop.audio_gesture.as_ref().unwrap();
                     assert_eq!(g.preview, (0, 96_000));
                 });
 
@@ -430,7 +441,7 @@ fn assert_scope_body(cx: &mut TestAppContext, looping: bool) {
             assert!(f32::from(held.size.width - original.size.width).abs() <= 1.0);
         }
         editor.read_with(&visual, |v, _| {
-            let g = v.clip_loop.audio_gesture.as_ref().unwrap();
+            let g = v.audio_detail.clip_loop.audio_gesture.as_ref().unwrap();
             assert_eq!(g.preview, (48_000, 96_000));
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -536,7 +547,7 @@ fn assert_audio_loop_receipt(cx: &mut TestAppContext, start_edge: bool) {
     );
     let preview = editor.read_with(&visual, |v, _| {
         assert!(v.audio_loop_grid().is_off());
-        let gesture = v.clip_loop.audio_gesture.as_ref().unwrap();
+        let gesture = v.audio_detail.clip_loop.audio_gesture.as_ref().unwrap();
         assert_ne!(
             gesture.preview,
             (gesture.root.view_start, gesture.root.view_end)
@@ -700,11 +711,11 @@ fn assert_audio_loop_loss(cx: &mut TestAppContext, start_edge: bool, loss: Loss)
             cx.notify();
         }),
         Loss::Hidden => editor.update(&mut visual, |v, cx| {
-            v.clip_view_open = false;
+            v.audio_detail.clip_view_open = false;
             cx.notify();
         }),
         Loss::Source => editor.update(&mut visual, |v, cx| {
-            v.audio_event_editor.source_view = true;
+            v.audio_detail.event.source_view = true;
             cx.notify();
         }),
         Loss::Focus => visual.update(|w, cx| {

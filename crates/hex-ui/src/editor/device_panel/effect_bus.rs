@@ -81,16 +81,16 @@ pub(in crate::editor) fn select_main(
     if view.state.is_none() || !finalize_controls(view, cx) {
         return;
     }
-    view.focused_return = None;
+    view.session_grid.focused_return = None;
     view.selected_track = None;
     view.track_selection = Default::default();
     view.selected_clip = None;
-    view.detail_context = None;
-    view.selected_cell = None;
-    view.selected_scene = None;
+    view.audio_detail.detail_context = None;
+    view.session_grid.selected_cell = None;
+    view.session_grid.selected_scene = None;
     view.device_panel.main_selected = Some(view.project_generation);
-    view.clip_view_open = true;
-    view.device_panel_active = true;
+    view.audio_detail.clip_view_open = true;
+    view.device_panel.active = true;
     view.focus.focus(window);
     cx.notify();
 }
@@ -127,7 +127,8 @@ pub(super) fn selected_track_owner(
     view: &EditorView,
     state: &ViewState,
 ) -> Option<DevicePanelOwner> {
-    view.focused_return
+    view.session_grid
+        .focused_return
         .filter(|id| state.project.return_tracks().iter().any(|r| r.id() == *id))
         .map(DevicePanelOwner::Return)
         .or_else(|| {

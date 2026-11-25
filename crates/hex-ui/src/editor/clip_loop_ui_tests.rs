@@ -204,7 +204,8 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert!(v.time_selection_gesture.is_none());
             if midi {
                 assert!(matches!(
-                    *v.active_midi_trim_drag
+                    *v.midi_editor
+                        .active_trim_drag
                         .as_ref()
                         .expect("held loop")
                         .preview
@@ -296,12 +297,12 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert!(if midi {
                 matches!(
-                    v.last_enqueued_edit,
+                    v.test_probes.last_enqueued_edit,
                     Some(Command::ResizeMidiClipView { .. })
                 )
             } else {
                 matches!(
-                    v.last_enqueued_edit,
+                    v.test_probes.last_enqueued_edit,
                     Some(Command::ResizeAudioClipView { .. })
                 )
             });
@@ -476,7 +477,7 @@ fn clip_loop_first_boundary_keeps_outer_extent_and_escape_does_not_commit(cx: &m
         f.editor.read_with(&f.visual, |v, _| {
             assert!(
                 v.active_trim_drag.is_none()
-                    && v.active_midi_trim_drag.is_none()
+                    && v.midi_editor.active_trim_drag.is_none()
                     && v.pending_trim.is_none()
             );
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -512,8 +513,9 @@ fn clip_loop_no_motion_stale_and_refused_capture_leave_no_edit(cx: &mut TestAppC
             let before = f.editor.read_with(&f.visual, |v, _| {
                 v.state.as_ref().unwrap().project.snapshot()
             });
-            f.editor
-                .update(&mut f.visual, |v, _| v.last_enqueued_edit = None);
+            f.editor.update(&mut f.visual, |v, _| {
+                v.test_probes.last_enqueued_edit = None
+            });
             let target = drag(
                 &mut f,
                 "outer",
@@ -522,7 +524,7 @@ fn clip_loop_no_motion_stale_and_refused_capture_leave_no_edit(cx: &mut TestAppC
             );
             f.editor.update(&mut f.visual, |v, _| match case {
                 1 => v.project_generation += 1,
-                2 => v.close_prompt_open = true,
+                2 => v.persistence.close_prompt_open = true,
                 _ => {}
             });
             f.visual
@@ -532,10 +534,10 @@ fn clip_loop_no_motion_stale_and_refused_capture_leave_no_edit(cx: &mut TestAppC
                 assert!(
                     v.pending_trim.is_none()
                         && v.active_trim_drag.is_none()
-                        && v.active_midi_trim_drag.is_none(),
+                        && v.midi_editor.active_trim_drag.is_none(),
                     "midi={midi} case={case}"
                 );
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
                 assert_eq!(v.worker_requests_pending, 0);
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
@@ -774,7 +776,7 @@ fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppCon
             f.editor.read_with(&f.visual, |v, _| {
                 assert!(
                     v.active_trim_drag.is_none()
-                        && v.active_midi_trim_drag.is_none()
+                        && v.midi_editor.active_trim_drag.is_none()
                         && v.pending_trim.is_none()
                 );
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -814,7 +816,8 @@ fn edge_mode(
             .as_ref()
             .map(|d| (d.loop_kind, d.repeat.get(), d.stretch_modifier.get()))
             .or_else(|| {
-                v.active_midi_trim_drag
+                v.midi_editor
+                    .active_trim_drag
                     .as_ref()
                     .map(|d| (d.loop_kind, d.repeat.get(), d.stretch_modifier.get()))
             });
@@ -922,7 +925,7 @@ fn option_drag_on_the_header_edge_repeats_with_one_undo(cx: &mut TestAppContext)
         f.visual.run_until_parked();
         let edit = f
             .editor
-            .read_with(&f.visual, |v, _| v.last_enqueued_edit.clone());
+            .read_with(&f.visual, |v, _| v.test_probes.last_enqueued_edit.clone());
         assert!(
             matches!(
                 edit,
@@ -1016,7 +1019,7 @@ fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
         f.visual.run_until_parked();
         let edit = f
             .editor
-            .read_with(&f.visual, |v, _| v.last_enqueued_edit.clone());
+            .read_with(&f.visual, |v, _| v.test_probes.last_enqueued_edit.clone());
         let Some(Command::ResizeAudioClipView {
             clip: edited,
             operation: hex_project::AudioViewResizeOperation::RepeatOuterEnd { project_frame },
@@ -1123,7 +1126,7 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                 view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none()
             );
             assert!(if midi {
-                view.active_midi_trim_drag.is_some()
+                view.midi_editor.active_trim_drag.is_some()
             } else {
                 view.active_trim_drag.is_some()
             });

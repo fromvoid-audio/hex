@@ -80,8 +80,8 @@ fn rejected_power_toggle_retires_its_pending_display(cx: &mut TestAppContext) {
     editor.update(cx, |view, cx| {
         let _ = receive_service_event(&view.service);
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -308,7 +308,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
     let before = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_id);
+        view.session_grid.focused_return = Some(return_id);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -330,7 +330,7 @@ fn shared_header_return_order_bypass_remove_and_history_keep_owner(cx: &mut Test
     assert_power_paint(&mut visual, device, false);
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.selected_device, Some(device));
-        assert!(view.active_native_device_drag.is_none());
+        assert!(view.device_panel.active_native_drag.is_none());
         assert_eq!(
             view.state.as_ref().unwrap().project.track(track),
             before.track(track)
@@ -390,7 +390,7 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
         assert_power_paint(&mut visual, device, false);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.device_panel.selected_device, Some(device));
-            assert!(view.active_native_device_drag.is_none());
+            assert!(view.device_panel.active_native_drag.is_none());
             let other = if device == effect { instrument } else { effect };
             assert!(
                 !view

@@ -18,7 +18,9 @@ fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
             if view.tick(cx) {
                 cx.notify();
             }
-            view.state.is_some() && view.worker_requests_pending == 0 && view.audio_batch.is_none()
+            view.state.is_some()
+                && view.worker_requests_pending == 0
+                && view.persistence.audio_batch.is_none()
         });
         if done {
             return;
@@ -116,7 +118,7 @@ fn fixture(
         });
         view.browser.section = BrowserSection::Place(directory);
         view.mode = EditorMode::Session;
-        view.selected_cell = Some((track, scene));
+        view.session_grid.selected_cell = Some((track, scene));
         cx.notify();
         (track, scene, path)
     });
@@ -133,7 +135,7 @@ fn project_sample_drag_reuses_asset_in_console(cx: &mut TestAppContext) {
             view.tick(cx);
         });
         visual.run_until_parked();
-        let ready = editor.read_with(&visual, |view, _| !view.audio_import_settings.is_loading());
+        let ready = editor.read_with(&visual, |view, _| !view.settings.audio_import.is_loading());
         if ready {
             break;
         }
@@ -231,7 +233,7 @@ fn console_browser_drop_real_empty_cell_retires_ghost_and_imports_audio(cx: &mut
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.active_browser_audio_drag.is_some(),
+            view.browser.active_audio_drag.is_some(),
             "actual browser drag began"
         )
     });
@@ -239,7 +241,7 @@ fn console_browser_drop_real_empty_cell_retires_ghost_and_imports_audio(cx: &mut
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.active_browser_audio_drag.is_none(),
+            view.browser.active_audio_drag.is_none(),
             "Console release must retire the browser ghost"
         )
     });
@@ -277,7 +279,8 @@ fn begin_browser(
     );
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
-        view.active_browser_audio_drag
+        view.browser
+            .active_audio_drag
             .clone()
             .expect("real browser payload")
     })
@@ -416,8 +419,8 @@ fn console_occupied_failure_then_replace_preserves_old_and_one_undo(cx: &mut Tes
     let drag = begin_browser(&mut visual, &editor);
     // Selecting another cell/scene cannot redirect the actual drop hit surface.
     editor.update(cx, |view, _| {
-        view.selected_cell = None;
-        view.selected_scene = None;
+        view.session_grid.selected_cell = None;
+        view.session_grid.selected_scene = None;
     });
     release(&mut visual, target);
     assert_retired(&drag);
@@ -509,9 +512,9 @@ fn console_browser_cancel_outside_refusal_and_stale_scan_retire_only_owned_paylo
             }
             1 => release(&mut visual, point(px(8.0), px(8.0))),
             2 => {
-                editor.update(cx, |view, _| view.save_dialog_open = true);
+                editor.update(cx, |view, _| view.persistence.save_dialog_open = true);
                 visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-                editor.update(cx, |view, _| view.save_dialog_open = false);
+                editor.update(cx, |view, _| view.persistence.save_dialog_open = false);
             }
             _ => {
                 editor.update(cx, |view, _| view.browser.scans.generation += 1);
@@ -521,7 +524,7 @@ fn console_browser_cancel_outside_refusal_and_stale_scan_retire_only_owned_paylo
         assert_retired(&drag);
         receive_worker(&editor, cx);
         editor.read_with(cx, |view, _| {
-            assert!(view.active_browser_audio_drag.is_none(), "case {case}")
+            assert!(view.browser.active_audio_drag.is_none(), "case {case}")
         });
         assert_eq!(
             *project(&editor, cx),
@@ -536,7 +539,7 @@ fn console_browser_cancel_outside_refusal_and_stale_scan_retire_only_owned_paylo
     editor.update(cx, |view, _| view.clear_browser_audio_drag(&old));
     editor.read_with(cx, |view, _| {
         assert!(std::rc::Rc::ptr_eq(
-            &view.active_browser_audio_drag.as_ref().unwrap().destination,
+            &view.browser.active_audio_drag.as_ref().unwrap().destination,
             &fresh.destination
         ))
     });
@@ -769,7 +772,7 @@ fn console_browser_window_deactivation_cancels_ghost_without_late_import(cx: &mu
     visual.update(|window, _| assert!(!window.is_window_active(), "actual inactive transition"));
     editor.read_with(cx, |view, _| {
         assert!(
-            view.active_browser_audio_drag.is_none(),
+            view.browser.active_audio_drag.is_none(),
             "window cancellation must retire Console Browser capture"
         )
     });
@@ -822,7 +825,7 @@ fn begin_arrangement_clip_in_console(
 ) -> VisualTestContext {
     editor.update(cx, |view, cx| {
         view.set_mode(EditorMode::Arrangement);
-        view.last_enqueued_edit = None;
+        view.test_probes.last_enqueued_edit = None;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -875,7 +878,7 @@ fn drop_actual_arrangement_midi(
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     let submitted = editor.read_with(&visual, |view, _| {
         assert!(view.active_clip_drag.is_none(), "drop retires the visible clip ghost");
-        matches!(view.last_enqueued_edit, Some(Command::CopyArrangementMidiToSession { source: id, scene: target }) if id == source && target == scene)
+        matches!(view.test_probes.last_enqueued_edit, Some(Command::CopyArrangementMidiToSession { source: id, scene: target }) if id == source && target == scene)
     });
     assert!(
         !visual.update(|_, app| app.has_active_drag()),
@@ -1119,7 +1122,7 @@ fn console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_sour
         );
     }
     editor.update(cx, |view, cx| {
-        view.session_track_start = 3;
+        view.session_grid.track_start = 3;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1164,7 +1167,8 @@ fn console_column_paged_narrow_target_uses_painted_anchor_and_rejects_stale_sour
             .iter()
             .position(|candidate| candidate.id() == scene)
             .expect("original scene retained");
-        view.session_scene_scroll
+        view.session_grid
+            .scene_scroll
             .scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
         cx.notify();
     });
@@ -1190,7 +1194,9 @@ fn console_clip_new_track_refuses_unavailable_defaults_but_existing_cell_still_w
         let before = project(&editor, cx);
         let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
         editor.update(&mut visual, |view, _| {
-            view.track_defaults.set_test_state(0.5, loading, false)
+            view.settings
+                .track_defaults
+                .set_test_state(0.5, loading, false)
         });
         let at = bounds(
             &mut visual,
@@ -1228,7 +1234,9 @@ fn console_column_real_arrangement_midi_copies_source_with_one_history_step(
     let before = project(&editor, cx);
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
     editor.update(&mut visual, |view, _| {
-        view.track_defaults.set_test_state(0.5, false, true);
+        view.settings
+            .track_defaults
+            .set_test_state(0.5, false, true);
         view.error = Some("previous preference error".into());
     });
     let at = bounds(
@@ -1239,7 +1247,9 @@ fn console_column_real_arrangement_midi_copies_source_with_one_history_step(
     release(&mut visual, at);
     editor.read_with(&visual, |view, _| assert!(view.error.is_none()));
     editor.update(&mut visual, |view, _| {
-        view.track_defaults.set_test_state(0.25, false, true)
+        view.settings
+            .track_defaults
+            .set_test_state(0.25, false, true)
     });
     editor.read_with(&visual, |view, _| assert!(view.active_clip_drag.is_none()));
     receive_worker(&editor, cx);
@@ -1291,7 +1301,7 @@ fn console_column_browser_devices_create_only_explicit_device_and_one_atomic_tra
         );
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.active_native_device_drag.is_some())
+            assert!(view.device_panel.active_native_drag.is_some())
         });
         let target = if effect {
             "console-column-header-tail".to_string()
@@ -1326,7 +1336,7 @@ fn console_column_browser_devices_create_only_explicit_device_and_one_atomic_tra
         assert!(proposed.contains(&cancel.center()));
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, before);
-            assert!(view.active_native_device_drag.is_none())
+            assert!(view.device_panel.active_native_drag.is_none())
         });
         receive_worker(&editor, cx);
         visual.run_until_parked();
@@ -1404,7 +1414,9 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
     });
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
     editor.update(&mut visual, |view, _| {
-        view.track_defaults.set_test_state(0.5, false, true)
+        view.settings
+            .track_defaults
+            .set_test_state(0.5, false, true)
     });
     let at = bounds(
         &mut visual,
@@ -1413,7 +1425,9 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
     .center();
     release(&mut visual, at);
     editor.update(&mut visual, |view, _| {
-        view.track_defaults.set_test_state(0.25, false, true)
+        view.settings
+            .track_defaults
+            .set_test_state(0.25, false, true)
     });
     receive_worker(&editor, cx);
     let after = project(&editor, cx);
@@ -1683,8 +1697,8 @@ fn released_sample_drop_keeps_target_through_delayed_worker_repaints(cx: &mut Te
         }
         visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
         let terminal = editor.update(&mut visual, |view, cx| {
-            assert!(view.active_browser_audio_drag.is_none());
-            assert!(view.pending_sample_drop.is_some());
+            assert!(view.browser.active_audio_drag.is_none());
+            assert!(view.browser.pending_sample_drop.is_some());
             let deadline = crate::test_wait::hang_deadline();
             loop {
                 if let Ok(event) = view.service.try_event() {
@@ -1709,7 +1723,7 @@ fn released_sample_drop_keeps_target_through_delayed_worker_repaints(cx: &mut Te
         }
         editor.update(&mut visual, |view, cx| {
             view.receive(terminal);
-            assert!(view.pending_sample_drop.is_none());
+            assert!(view.browser.pending_sample_drop.is_none());
             let project = &view.state.as_ref().unwrap().project;
             if mode == EditorMode::Arrangement {
                 assert_eq!(project.track(track).unwrap().clips().len(), 1);
@@ -1777,7 +1791,7 @@ fn new_track_sample_drop_round_trip(cx: &mut TestAppContext, auto_warp: bool, em
     assert_eq!(line.is_none(), empty);
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     let terminal = editor.update(&mut visual, |view, cx| {
-        assert!(view.pending_sample_drop.is_some());
+        assert!(view.browser.pending_sample_drop.is_some());
         let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = view.service.try_event() {
@@ -1799,7 +1813,7 @@ fn new_track_sample_drop_round_trip(cx: &mut TestAppContext, auto_warp: bool, em
     assert_eq!(visual.debug_bounds("track-insert-preview"), line);
     let target_track = editor.update(&mut visual, |view, cx| {
         view.receive(terminal);
-        assert!(view.pending_sample_drop.is_none());
+        assert!(view.browser.pending_sample_drop.is_none());
         let tracks = view.state.as_ref().unwrap().project.tracks();
         assert_eq!(tracks.len(), if empty { 1 } else { 2 });
         let target_track = tracks[0].id();
@@ -1816,7 +1830,7 @@ fn new_track_sample_drop_round_trip(cx: &mut TestAppContext, auto_warp: bool, em
     release(&mut visual, lane.center());
     receive_worker(&editor, cx);
     editor.read_with(cx, |view, _| {
-        assert!(view.pending_sample_drop.is_none());
+        assert!(view.browser.pending_sample_drop.is_none());
         assert_eq!(
             view.state
                 .as_ref()

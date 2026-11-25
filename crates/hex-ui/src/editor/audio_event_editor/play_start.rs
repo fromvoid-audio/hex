@@ -9,7 +9,7 @@ use gpui::{
 
 impl EditorView {
     pub(in crate::editor) fn held_audio_play_start_position(&self) -> Option<u64> {
-        let gesture = self.audio_event_editor.gesture.as_ref()?;
+        let gesture = self.audio_detail.event.gesture.as_ref()?;
         if !self.event_context_current() {
             return None;
         }
@@ -20,14 +20,15 @@ impl EditorView {
     }
     pub(super) fn audio_play_start_position(&self) -> Option<u64> {
         if let Some(Kind::PlayStart { position, .. }) =
-            self.audio_event_editor.gesture.as_ref().map(|g| g.kind)
+            self.audio_detail.event.gesture.as_ref().map(|g| g.kind)
         {
             return Some(position);
         }
         let state = self.state.as_ref()?;
         let id = self.detail_clip_id()?;
         let clip = self
-            .audio_clip_controls
+            .audio_detail
+            .clip_controls
             .play_start_preview_clip(self, id)
             .or_else(|| self.pending_clip_loop_audio(id))
             .or_else(|| state.project.clip(id))?;
@@ -45,7 +46,7 @@ impl EditorView {
         platform: bool,
     ) -> Option<u64> {
         let tempo = self.state.as_ref()?.project.tempo_map();
-        let width = f64::from(f32::from(self.audio_event_editor.bounds?.size.width));
+        let width = f64::from(f32::from(self.audio_detail.event.bounds?.size.width));
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return None;
         }
@@ -100,12 +101,12 @@ impl EditorView {
         if !f32::from(event.position.x).is_finite()
             || !f32::from(event.position.y).is_finite()
             || self.time_selection_key_held
-            || self.audio_event_editor.source_view
+            || self.audio_detail.event.source_view
             || !self.event_context_current()
             || self.edit_pending()
             || self.recovery.generation().is_some()
-            || self.audio_event_editor.pending.is_some()
-            || self.audio_event_editor.gesture.is_some()
+            || self.audio_detail.event.pending.is_some()
+            || self.audio_detail.event.gesture.is_some()
             || cx.has_active_drag()
         {
             return;
@@ -138,8 +139,8 @@ impl EditorView {
         if !self.capture_audio_event_pointer(kind, window, cx) {
             return;
         }
-        self.audio_event_focus.focus(window);
-        self.audio_event_editor.gesture = Some(Gesture {
+        self.audio_detail.focus.focus(window);
+        self.audio_detail.event.gesture = Some(Gesture {
             anchor: position,
             pointer_x: f32::from(event.position.x),
             origin_x: f32::from(event.position.x),
@@ -180,8 +181,8 @@ impl EditorView {
         let end = root.root_frame_at(editor_bounds(&root).1, tempo).ok()?;
         let viewport = self.event_root_window(&root)?;
         Some(Camera {
-            prior: self.audio_event_editor.viewport,
-            prior_negative: self.audio_event_editor.negative_pan,
+            prior: self.audio_detail.event.viewport,
+            prior_negative: self.audio_detail.event.negative_pan,
             root: viewport,
             bounds: (first, end),
             position,
@@ -200,7 +201,7 @@ impl EditorView {
         project: &hex_project::Project,
     ) {
         if generation != self.project_generation
-            || self.audio_event_editor.owner != Some((clip, generation))
+            || self.audio_detail.event.owner != Some((clip, generation))
         {
             return;
         }
@@ -224,9 +225,10 @@ impl EditorView {
             return;
         };
         let start = i128::from(frame) - i128::from(camera.offset) - i128::from(first);
-        self.audio_event_editor
+        self.audio_detail
+            .event
             .install_frame_space(&root, (first, end));
-        self.audio_event_editor.viewport = if camera.prior.is_none()
+        self.audio_detail.event.viewport = if camera.prior.is_none()
             && camera.bounds == (first, end)
             && i128::from(frame) - i128::from(camera.offset) == camera.root.start
         {
@@ -237,13 +239,13 @@ impl EditorView {
                 length: camera.root.length,
             })
         };
-        self.audio_event_editor.negative_pan = if self.audio_event_editor.viewport.is_none() {
+        self.audio_detail.event.negative_pan = if self.audio_detail.event.viewport.is_none() {
             camera.prior_negative
         } else {
             u64::try_from((-start).max(0)).unwrap_or(u64::MAX)
         };
-        self.audio_event_editor.canonical_start = Some((camera.position, frame));
-        self.audio_event_editor.start_grip =
+        self.audio_detail.event.canonical_start = Some((camera.position, frame));
+        self.audio_detail.event.start_grip =
             Some((camera.position, camera.offset, camera.root.length));
     }
 }
@@ -278,20 +280,22 @@ impl EditorView {
         )
         .is_ok();
         let active = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .gesture
             .as_ref()
             .is_some_and(|g| matches!(g.kind, Kind::PlayStart { .. }));
         let selection_mode = self.time_selection_key_held;
         let inward = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .bounds
             .is_some_and(|bounds| f32::from(bounds.size.width) * (1.0 - fraction) < 10.0);
         let handle_left = if inward { -10.0 } else { -3.0 };
         let hovered = editable
             && !selection_mode
             && !window.is_pointer_dragging()
-            && self.audio_event_editor.bounds.is_some_and(|bounds| {
+            && self.audio_detail.event.bounds.is_some_and(|bounds| {
                 let x = bounds.left() + bounds.size.width * fraction;
                 let pointer = window.mouse_position();
                 pointer.x >= x + px(handle_left)

@@ -224,7 +224,8 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         view.playback_candidates.clear();
         view.applied_project_revision = None;
         let key = view
-            .device_gesture
+            .device_panel
+            .gesture
             .begin(
                 context.project_generation,
                 hex_session::device_gesture::GestureTarget::TrackGain {
@@ -233,9 +234,10 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
                 hex_session::device_gesture::ParameterValue::Float(1.0),
             )
             .unwrap();
-        view.device_gesture.next_request().unwrap();
+        view.device_panel.gesture.next_request().unwrap();
         assert!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .acknowledge(&hex_session::device_gesture::GestureAck {
                     preview_retained: false,
                     source_lost: false,
@@ -252,7 +254,7 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             sequence: 0,
             canonical_revision: canonical.revision,
         };
-        view.resident_device_preview = Some(hex_session::service::DevicePreview {
+        view.device_panel.resident_preview = Some(hex_session::service::DevicePreview {
             identity,
             state: Arc::clone(&canonical),
         });
@@ -478,8 +480,8 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
 
         // A real metadata-only comparison retains the old source context. A subsequent
         // runtime publication uses the current authored revision and must not wait forever.
-        view.device_gesture.reset();
-        view.resident_device_preview = None;
+        view.device_panel.gesture.reset();
+        view.device_panel.resident_preview = None;
         let device = canonical.project.tracks()[0].instrument().unwrap();
         view.service
             .submit(Request::CompareDevice {
@@ -708,7 +710,7 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
         );
         assert!(view.playback_candidates.is_empty());
         assert_eq!(view.audio_admission, before);
-        view.resident_device_preview = Some(hex_session::service::DevicePreview {
+        view.device_panel.resident_preview = Some(hex_session::service::DevicePreview {
             identity,
             state: Arc::clone(&preview),
         });

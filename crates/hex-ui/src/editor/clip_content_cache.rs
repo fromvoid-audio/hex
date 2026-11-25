@@ -106,6 +106,10 @@ struct ClipContents {
     key: ContentKey,
     epoch: u64,
     fresh_last: bool,
+    /// GPUI bakes an active drag's window cursor style into any cached view
+    /// painted during the drag; invalidate once after the drag ends so stale
+    /// drag cursors cannot replay into idle frames.
+    painted_with_active_drag: bool,
     #[cfg(test)]
     builds: usize,
 }
@@ -115,6 +119,7 @@ impl Render for ClipContents {
         {
             self.builds += 1;
         }
+        self.painted_with_active_drag = cx.has_active_drag();
         self.parent
             .update(cx, |view, cx| {
                 if view.project_generation != self.key.generation
@@ -212,13 +217,13 @@ fn browser_drag_affects_track(drag: &super::drag::BrowserAudioDrag, track_id: Tr
 impl EditorView {
     /// Global UI states that prevent reusing cached `ClipContents` scenes on any track.
     fn clip_content_cache_globally_allowed(&self) -> bool {
-        !self.opening_project
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
+        !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
             && self.context_menu.is_none()
             && self.loop_rail_gesture.is_none()
-            && !self.theme_settings.open
+            && !self.settings.theme.open
     }
 
     /// True when `track` has no active or in-flight preview that mutates its
@@ -244,7 +249,7 @@ impl EditorView {
         {
             return false;
         }
-        if let Some(drag) = self.active_browser_audio_drag.as_ref()
+        if let Some(drag) = self.browser.active_audio_drag.as_ref()
             && browser_drag_affects_track(drag, track_id)
         {
             return false;
@@ -263,7 +268,7 @@ impl EditorView {
         if self.clip_gain.affects_track(track, &self.clip_selection) {
             return false;
         }
-        if let Some((clip, _, _)) = self.audio_clip_controls.gain_preview(self)
+        if let Some((clip, _, _)) = self.audio_detail.clip_controls.gain_preview(self)
             && (track_contains_clip(track, clip)
                 || (self.clip_selection.contains(clip)
                     && track
@@ -273,7 +278,7 @@ impl EditorView {
         {
             return false;
         }
-        if let Some(clip) = self.audio_clip_controls.play_start_preview_clip_id()
+        if let Some(clip) = self.audio_detail.clip_controls.play_start_preview_clip_id()
             && track_contains_clip(track, clip)
         {
             return false;
@@ -308,7 +313,8 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|pending| pending.track == track_id)
             || self
-                .active_midi_trim_drag
+                .midi_editor
+                .active_trim_drag
                 .as_ref()
                 .is_some_and(|drag| drag.source_track == track_id)
         {
@@ -406,10 +412,12 @@ impl EditorView {
             || self
                 .held_arrangement_event_clip()
                 .is_some_and(|clip| track.clips().iter().any(|candidate| candidate.id() == clip));
+        let has_active_drag = cx.has_active_drag();
         let entity = if let Some(entity) = self.clip_content_cache.entries.get(&track.id()).cloned()
         {
             entity.update(cx, |content, _| {
-                if content.key != key || fresh || content.fresh_last {
+                let stale_drag_cursor = content.painted_with_active_drag && !has_active_drag;
+                if content.key != key || fresh || content.fresh_last || stale_drag_cursor {
                     content.key = key;
                     content.epoch = content.epoch.wrapping_add(1);
                 }
@@ -423,6 +431,7 @@ impl EditorView {
                 key,
                 epoch: 0,
                 fresh_last: fresh,
+                painted_with_active_drag: has_active_drag,
                 #[cfg(test)]
                 builds: 0,
             });

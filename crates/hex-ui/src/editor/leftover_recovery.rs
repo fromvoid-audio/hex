@@ -61,13 +61,13 @@ impl EditorView {
     /// After a recovery, its open must also have finished.
     fn leftover_offer_ready(&self, generation: Option<u64>) -> bool {
         self.state.is_some()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && !self.save_dialog_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
             && (generation.is_some()
                 || (self.pending_requests.is_empty()
                     && self.worker_requests_pending == 0
-                    && self.missing_media.is_none()))
+                    && self.settings.missing_media.is_none()))
     }
 
     pub(super) fn reconcile_leftover_recovery(

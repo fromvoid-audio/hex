@@ -55,7 +55,7 @@ impl EditorView {
         };
         let projected = self.pending_console_reorder_page().or_else(|| {
             (!self.pending_empty_tracks.is_empty() || self.proposed_plugin_track().is_some())
-                .then(|| self.session_track_page(&state.project, self.session_visible_columns))
+                .then(|| self.session_track_page(&state.project, self.session_grid.visible_columns))
         });
         if let Some(page) = projected {
             return page.columns.iter().any(|column| {
@@ -70,8 +70,8 @@ impl EditorView {
         let indices = &self.arrangement_focus.projection.console_indices;
         let range = visible_track_range(
             indices.len(),
-            self.session_track_start,
-            self.session_visible_columns,
+            self.session_grid.track_start,
+            self.session_grid.visible_columns,
         );
         indices[range].iter().any(|&index| {
             state
@@ -377,7 +377,7 @@ mod tests {
             .center();
         visual.simulate_click(previous, Modifiers::default());
         editor.update(&mut visual, |view, cx| {
-            view.session_track_start = 0;
+            view.session_grid.track_start = 0;
             cx.notify();
         });
         visual.run_until_parked();
@@ -522,12 +522,12 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert!(view.selected_track.is_none());
-            assert!(view.focused_return.is_none());
+            assert!(view.session_grid.focused_return.is_none());
             assert_eq!(
                 view.device_panel.main_selected,
                 Some(view.project_generation)
             );
-            assert!(view.device_panel_active && view.clip_view_open);
+            assert!(view.device_panel.active && view.audio_detail.clip_view_open);
         });
     }
 }

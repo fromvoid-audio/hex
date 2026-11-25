@@ -35,18 +35,18 @@ impl EditorView {
         if self.active_clip_drag.is_none() {
             return false;
         }
-        if !self.drag_bounce_held {
-            self.drag_bounce_held = true;
+        if !self.persistence.drag_bounce_held {
+            self.persistence.drag_bounce_held = true;
             self.status = DRAG_BOUNCE_HINT.into();
         }
         true
     }
 
     pub(super) fn drag_bounce_key_up(&mut self, event: &KeyUpEvent) -> bool {
-        if event.keystroke.key != "b" || !self.drag_bounce_held {
+        if event.keystroke.key != "b" || !self.persistence.drag_bounce_held {
             return false;
         }
-        self.drag_bounce_held = false;
+        self.persistence.drag_bounce_held = false;
         if self.status == DRAG_BOUNCE_HINT {
             self.status.clear();
         }
@@ -54,11 +54,13 @@ impl EditorView {
     }
 
     pub(super) fn pending_bounce_drag(&self) -> Option<&ClipDrag> {
-        self.pending_bounce_drop
+        self.persistence
+            .pending_bounce_drop
             .as_ref()
             .filter(|p| {
                 p.drag.project_generation == self.project_generation
                     && self
+                        .persistence
                         .bounce_control
                         .as_ref()
                         .is_some_and(|active| active.same_job(&p.control))
@@ -107,9 +109,9 @@ impl EditorView {
         active.copy_modifier.set(true);
         active.preview.set(Some(preview));
         self.start_arrangement_bounce(target, false, BounceAdoption::Drop(drop));
-        match self.bounce_control.clone() {
+        match self.persistence.bounce_control.clone() {
             Some(control) => {
-                self.pending_bounce_drop = Some(PendingBounceDrop {
+                self.persistence.pending_bounce_drop = Some(PendingBounceDrop {
                     drag: active,
                     control,
                     cursor_epoch: self.selection_intent_epoch,
@@ -132,11 +134,11 @@ impl EditorView {
             || self.track_name.is_editing()
             || self.clip_name_edit.is_some()
             || self.context_menu.is_some()
-            || self.changelog.is_open()
-            || self.theme_settings.open
-            || self.tuning.open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.settings.changelog.is_open()
+            || self.settings.theme.open
+            || self.settings.tuning.open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return;
         }
@@ -194,26 +196,26 @@ impl EditorView {
         if self.edit_pending()
             || self.arrangement_pan.is_some()
             || self.time_range_move_gesture.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.track_resize_active()
             || self.loop_rail_gesture.is_some()
-            || self.device_gesture.snapshot().is_some()
+            || self.device_panel.gesture.snapshot().is_some()
             || self.time_selection_gesture.is_some()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.sections.held()
             || self.section_install_pending()
             || self.scrub_active()
-            || self.bounce_control.is_some()
-            || self.midi_note_gesture.is_some()
-            || self.midi_group_gesture.is_some()
-            || self.midi_stroke.is_some()
-            || self.midi_ruler.held()
-            || self.midi_time_selection.gesture.is_some()
-            || self.audio_event_editor.gesture.is_some()
+            || self.persistence.bounce_control.is_some()
+            || self.midi_editor.note_gesture.is_some()
+            || self.midi_editor.group_gesture.is_some()
+            || self.midi_editor.stroke.is_some()
+            || self.midi_editor.ruler.held()
+            || self.midi_editor.time_selection.gesture.is_some()
+            || self.audio_detail.event.gesture.is_some()
             || self.clip_loop_held()
         {
             self.error = Some("finish or cancel the current edit before bouncing".into());
@@ -239,24 +241,25 @@ impl EditorView {
             adoption,
             control: control.clone(),
         }) {
-            self.bounce_fraction = 0.0;
-            self.bounce_control = Some(control);
+            self.persistence.bounce_fraction = 0.0;
+            self.persistence.bounce_control = Some(control);
             self.status = "bouncing audio · escape cancels".into();
         }
     }
 
     pub(super) fn poll_bounce_progress(&mut self) -> bool {
         let fraction = self
+            .persistence
             .bounce_control
             .as_ref()
             .map_or(0.0, hex_session::service::ExportControl::bounce_fraction);
-        let changed = self.bounce_fraction != fraction;
-        self.bounce_fraction = fraction;
+        let changed = self.persistence.bounce_fraction != fraction;
+        self.persistence.bounce_fraction = fraction;
         changed
     }
 
     pub(super) fn cancel_bounce(&mut self) -> bool {
-        if let Some(control) = &self.bounce_control
+        if let Some(control) = &self.persistence.bounce_control
             && control.cancel()
         {
             self.status = "cancelling bounce".into();
@@ -267,11 +270,11 @@ impl EditorView {
 
     /// A refused or disconnected job has no terminal to release its UI.
     pub(super) fn abandon_bounce(&mut self) -> bool {
-        let Some(control) = self.bounce_control.take() else {
+        let Some(control) = self.persistence.bounce_control.take() else {
             return false;
         };
         control.cancel();
-        if let Some(drop) = self.pending_bounce_drop.take() {
+        if let Some(drop) = self.persistence.pending_bounce_drop.take() {
             drop.drag.retire();
         }
         true
@@ -289,7 +292,7 @@ mod tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         let job = hex_session::service::ExportControl::default();
         editor.update(cx, |view, cx| {
-            view.bounce_control = Some(job.clone());
+            view.persistence.bounce_control = Some(job.clone());
             cx.notify();
         });
         visual.run_until_parked();
@@ -514,7 +517,7 @@ mod tests {
                     .path()
                     .starts_with(std::fs::canonicalize(files.root()).unwrap())
             );
-            assert!(v.bounce_control.is_none());
+            assert!(v.persistence.bounce_control.is_none());
         });
         visual.simulate_keystrokes("cmd-z");
         pump(&editor, &mut visual);
@@ -527,7 +530,7 @@ mod tests {
             assert_eq!(p.tracks().len(), original.tracks.len() + 1);
             assert!(!p.clip(audio).unwrap().active());
             assert!(p.tracks()[1].clips()[0].active());
-            assert!(v.bounce_control.is_none());
+            assert!(v.persistence.bounce_control.is_none());
             p.snapshot()
         });
         visual.simulate_keystrokes("cmd-z");
@@ -592,10 +595,10 @@ mod tests {
         visual.simulate_keystrokes("b");
         visual.run_until_parked();
         let start = editor.read_with(&visual, |v, _| {
-            assert!(v.drag_bounce_held);
+            assert!(v.persistence.drag_bounce_held);
             assert_eq!(v.status, super::DRAG_BOUNCE_HINT);
             assert!(
-                v.bounce_control.is_none(),
+                v.persistence.bounce_control.is_none(),
                 "b never bounces the selection mid-drag"
             );
             let preview = v.active_clip_drag.as_ref().unwrap().preview.get();
@@ -609,7 +612,7 @@ mod tests {
         // at the destination and the source remains where it was.
         editor.read_with(&visual, |v, _| {
             assert!(v.pending_bounce_drag().is_some());
-            assert!(v.active_clip_drag.is_none() && !v.drag_bounce_held);
+            assert!(v.active_clip_drag.is_none() && !v.persistence.drag_bounce_held);
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.snapshot().tracks, original.tracks);
         });
@@ -631,7 +634,10 @@ mod tests {
         pump(&editor, &mut visual);
         let dropped = editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            assert!(v.pending_bounce_drop.is_none() && v.bounce_control.is_none());
+            assert!(
+                v.persistence.pending_bounce_drop.is_none()
+                    && v.persistence.bounce_control.is_none()
+            );
             let cursor = v.edit_cursor.expect("cursor at the adopted bounce");
             assert_eq!((cursor.track, cursor.frame), (Some(target_track), start));
             let p = &v.state.as_ref().unwrap().project;
@@ -675,14 +681,17 @@ mod tests {
         visual.simulate_keystrokes("b");
         b_up(&mut visual);
         editor.read_with(&visual, |v, _| {
-            assert!(!v.drag_bounce_held);
+            assert!(!v.persistence.drag_bounce_held);
             assert!(v.status.is_empty());
         });
         visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            assert!(v.pending_bounce_drop.is_none() && v.bounce_control.is_none());
+            assert!(
+                v.persistence.pending_bounce_drop.is_none()
+                    && v.persistence.bounce_control.is_none()
+            );
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.tracks().len(), tracks);
             assert!(p.tracks()[0].clips().is_empty(), "the source moved");
@@ -713,7 +722,7 @@ mod tests {
             visual.simulate_keystrokes(key);
             pump(&editor, &mut visual);
         }
-        visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+        visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window)));
         visual.run_until_parked();
         for key in ["b", "cmd-b"] {
             visual.simulate_keystrokes(key);
@@ -732,7 +741,7 @@ mod tests {
         visual.run_until_parked();
         editor.update(&mut visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().revision, before);
-            assert!(v.bounce_control.is_none());
+            assert!(v.persistence.bounce_control.is_none());
             v.computer_keyboard.enabled = true;
         });
         for key in ["b", "cmd-b"] {
@@ -797,7 +806,7 @@ mod tests {
             let source = &p.tracks()[0].clips()[0];
             assert_eq!((source.start(), source.duration()), (0, 48_000));
             assert!(source.active());
-            assert!(v.bounce_control.is_none());
+            assert!(v.persistence.bounce_control.is_none());
         });
     }
     #[gpui::test]

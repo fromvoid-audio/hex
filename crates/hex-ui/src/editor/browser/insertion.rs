@@ -144,16 +144,16 @@ impl EditorView {
         &mut self,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.pending_browser_insertions.is_empty()
-            || self.browser_insertion_flight.is_some()
-            || self.audio_batch.is_some()
+        if self.browser.pending_insertions.is_empty()
+            || self.browser.insertion_flight.is_some()
+            || self.persistence.audio_batch.is_some()
             || self.worker_requests_pending != 0
             || self.mode != EditorMode::Arrangement
             || self.browser_insertion_hard_busy(cx)
         {
             return false;
         }
-        let Some(next) = self.pending_browser_insertions.pop_front() else {
+        let Some(next) = self.browser.pending_insertions.pop_front() else {
             return false;
         };
         self.submit_browser_insertion(next);
@@ -233,18 +233,18 @@ impl EditorView {
         };
         // Install custody before enqueue so immediate admission and UI FIFO retries
         // both stamp the same request. A refused entry leaves later taps intact.
-        self.browser_insertion_flight = Some(flight);
+        self.browser.insertion_flight = Some(flight);
         if !self.enqueue_captured_audio_import(request) {
-            self.browser_insertion_flight = None;
+            self.browser.insertion_flight = None;
             return;
         }
-        match &self.browser_insertion_flight {
+        match &self.browser.insertion_flight {
             Some(BrowserInsertionFlight::AudioFile(control)) => {
-                self.audio_batch = Some(Arc::clone(control));
+                self.persistence.audio_batch = Some(Arc::clone(control));
                 if routed_audition && self.browser.playback_output.is_some() {
                     self.cancel_browser_sample_playback();
                 }
-                self.audio_batch_progress = None;
+                self.persistence.audio_batch_progress = None;
                 self.poll_audio_batch();
             }
             Some(BrowserInsertionFlight::ProjectSample { .. }) => {
@@ -255,18 +255,18 @@ impl EditorView {
     }
 
     fn browser_insertion_hard_busy(&self, cx: &gpui::App) -> bool {
-        self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
-            || self.device_gesture.snapshot().is_some()
-            || self.device_gesture.has_pending_terminal()
-            || !self.device_gesture_barriers.is_empty()
+        self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
+            || self.device_panel.gesture.snapshot().is_some()
+            || self.device_panel.gesture.has_pending_terminal()
+            || !self.device_panel.gesture_barriers.is_empty()
             || self.device_panel.has_pending_draft(cx)
             || !self.pending_requests.is_empty()
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.audio_recorder.pending_commit_path.is_some()
     }
 
@@ -282,17 +282,18 @@ impl EditorView {
             return Err("sample insertion refused · arrangement is busy".into());
         }
         let queued =
-            self.browser_insertion_flight.is_some() || !self.pending_browser_insertions.is_empty();
+            self.browser.insertion_flight.is_some() || !self.browser.pending_insertions.is_empty();
         if queued {
-            if self.pending_browser_insertions.len() >= MAX_PENDING_BROWSER_INSERTIONS
+            if self.browser.pending_insertions.len() >= MAX_PENDING_BROWSER_INSERTIONS
                 || self
+                    .persistence
                     .audio_batch
                     .as_ref()
                     .is_some_and(|control| control.progress().cancellation_requested)
             {
                 return Err("sample insertion refused · arrangement is busy".into());
             }
-        } else if self.audio_batch.is_some() || self.worker_requests_pending != 0 {
+        } else if self.persistence.audio_batch.is_some() || self.worker_requests_pending != 0 {
             return Err("sample insertion refused · arrangement is busy".into());
         }
         let state = self
@@ -321,14 +322,14 @@ impl EditorView {
         let insertion = PendingBrowserInsertion {
             project_generation: self.project_generation,
             source,
-            warp: self.audio_import_settings.arrangement_policy()?,
+            warp: self.settings.audio_import.arrangement_policy()?,
             track,
             start,
             audition_timing,
         };
         self.error = None;
         if queued {
-            self.pending_browser_insertions.push_back(insertion);
+            self.browser.pending_insertions.push_back(insertion);
             self.wake_poll();
         } else {
             self.submit_browser_insertion(insertion);

@@ -200,7 +200,8 @@ pub(in crate::editor) fn render_device_card_target(
         replace_vst3,
     } = geometry;
     let active = view
-        .active_native_device_drag
+        .device_panel
+        .active_native_drag
         .as_ref()
         .and_then(|drag| drag.destination.get());
     let active_left = active.is_some_and(|target| {
@@ -415,16 +416,20 @@ pub(in crate::editor) fn render_device_end_target(
         before: first,
         replace: None,
     };
-    let active = view.active_native_device_drag.as_ref().is_some_and(|drag| {
-        let expected = match drag.source {
-            drag::NativeDeviceDragSource::Browser {
-                class: NativeDeviceClass::Instrument,
-                ..
-            } => instrument_target,
-            _ => target,
-        };
-        drag.destination.get() == Some(expected)
-    });
+    let active = view
+        .device_panel
+        .active_native_drag
+        .as_ref()
+        .is_some_and(|drag| {
+            let expected = match drag.source {
+                drag::NativeDeviceDragSource::Browser {
+                    class: NativeDeviceClass::Instrument,
+                    ..
+                } => instrument_target,
+                _ => target,
+            };
+            drag.destination.get() == Some(expected)
+        });
     let entity = cx.entity();
     let target_visible_bounds = visible_chain_bounds.clone();
     let selector = format!("device-drop-end-{}", target.track.value());
@@ -817,7 +822,8 @@ impl EditorView {
         };
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
         let owns_drag = self
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .is_some_and(|active| std::rc::Rc::ptr_eq(&active.destination, &drag.destination));
         let current = owns_drag
@@ -847,11 +853,11 @@ impl EditorView {
             cx.notify();
             return;
         }
-        if self.export_pending
+        if self.persistence.export_pending
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
-            || self.device_gesture.snapshot().is_some()
+            || !self.device_panel.gesture_barriers.is_empty()
+            || self.device_panel.gesture.snapshot().is_some()
             || self.device_panel.has_pending_draft(cx)
         {
             let _ = finalize_controls(self, cx);
@@ -977,7 +983,8 @@ impl EditorView {
     ) {
         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
         let owns_drag = self
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .is_some_and(|active| {
                 active.project_generation == drag.project_generation
@@ -995,13 +1002,13 @@ impl EditorView {
             return;
         }
 
-        let pending_edit = self.opening_project
-            || self.close_prompt_open
-            || self.export_pending
+        let pending_edit = self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.export_pending
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
-            || self.device_gesture.snapshot().is_some()
+            || !self.device_panel.gesture_barriers.is_empty()
+            || self.device_panel.gesture.snapshot().is_some()
             || self.device_panel.has_pending_draft(cx);
         if pending_edit {
             let _ = finalize_controls(self, cx);

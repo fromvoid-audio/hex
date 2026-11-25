@@ -122,7 +122,7 @@ impl EditorView {
             return;
         };
         let needed = self.browser.preview_selected.as_ref() == Some(&in_flight.key)
-            || self.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+            || self.browser.active_audio_drag.as_ref().is_some_and(|drag| {
                 drag.path == in_flight.key.path && drag.sample_rate == in_flight.key.sample_rate
             });
         if !needed {
@@ -188,7 +188,8 @@ impl EditorView {
             }
         }
         if let Some(active) = self
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .clone()
             .filter(|drag| drag.path == request.key.path)
         {

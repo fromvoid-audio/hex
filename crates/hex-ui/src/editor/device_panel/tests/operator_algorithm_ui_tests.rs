@@ -271,11 +271,11 @@ fn algorithms_replace_the_matrix_and_commit_one_canonical_history_edit(cx: &mut 
             .clone()
     });
     visual.update(|window, _| focus.focus(window));
-    editor.update(cx, |view, _| view.last_transport_command = None);
+    editor.update(cx, |view, _| view.test_probes.last_transport_command = None);
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(0)),
             "Space controls transport while an algorithm is focused"
         );

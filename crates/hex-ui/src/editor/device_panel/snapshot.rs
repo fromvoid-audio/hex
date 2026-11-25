@@ -2,10 +2,10 @@
 use super::{DeviceId, EditorView, GestureTarget, HashSet};
 
 pub(super) fn retire_invalid_owner(view: &mut EditorView, alive: &HashSet<DeviceId>) {
-    if view.device_gesture.snapshot().is_some_and(|snapshot| {
+    if view.device_panel.gesture.snapshot().is_some_and(|snapshot| {
         matches!(snapshot.target, GestureTarget::DeviceParameterSnapshot { device } | GestureTarget::EqNodeCreation { device }
             if !alive.contains(&device) || snapshot.key.generation != view.project_generation)
-    }) && !view.device_gesture.has_pending_terminal()
+    }) && !view.device_panel.gesture.has_pending_terminal()
     {
         let _ = view.cancel_device_gesture();
     }

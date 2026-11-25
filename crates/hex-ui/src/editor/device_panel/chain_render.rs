@@ -59,7 +59,7 @@ pub(in crate::editor) fn view(
             |inventory| Arc::clone(&inventory.devices),
         );
     operator_panel::preview::retire_removed(view, cx, alive_operator.as_ref());
-    if view.selected_track.is_some() || view.focused_return.is_some() {
+    if view.selected_track.is_some() || view.session_grid.focused_return.is_some() {
         view.device_panel.main_selected = None;
     }
     if let Some((generation, source, anchor)) = view.device_panel.source_manager.source_view
@@ -95,7 +95,7 @@ pub(in crate::editor) fn view(
                 // an owner while its view is focused. Cancel its drafts before
                 // switching; never commit an edit against a stale device ID.
                 cancel_all_controls(view, cx);
-                if view.device_gesture.snapshot().is_some() {
+                if view.device_panel.gesture.snapshot().is_some() {
                     let _ = view.cancel_device_gesture();
                     view.device_panel.message = Some("canceling removed device edit".into());
                     return empty_panel("canceling removed device edit");
@@ -103,7 +103,7 @@ pub(in crate::editor) fn view(
             } else if !finalize_controls(view, cx) {
                 view.device_panel.message = Some("finish the active device value first".into());
                 return render_owner(view, window, cx, &state, previous);
-            } else if view.device_gesture.snapshot().is_some() {
+            } else if view.device_panel.gesture.snapshot().is_some() {
                 view.device_panel.message = Some("finishing device edit".into());
                 return render_owner(view, window, cx, &state, previous);
             }
@@ -427,7 +427,8 @@ pub(in crate::editor) fn render_track(
         },
     ));
     let active_target = view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
     snapshot::retire_invalid_owner(view, &alive);
@@ -675,7 +676,7 @@ pub(in crate::editor) fn render_track(
         .collect();
     eq_panel::sync_visible_spectra(view, &spectrum_identities);
     let first_device = device_ids.first().copied();
-    let sample_drop = view.active_browser_audio_drag.as_ref().is_some_and(|drag| {
+    let sample_drop = view.browser.active_audio_drag.as_ref().is_some_and(|drag| {
         view.browser_sampler_drop_track(drag, Some(track_id), cx)
             .is_ok()
     });
@@ -749,7 +750,8 @@ pub(in crate::editor) fn render_track(
                 replace_vst3: class == NativeDeviceClass::Effect
                     && device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
                     && view
-                        .active_native_device_drag
+                        .device_panel
+                        .active_native_drag
                         .as_ref()
                         .is_some_and(|drag| drag.source.is_catalog_vst3_effect())
                     && is_track_vst3_replacement_leaf(track, device.id()),
@@ -980,7 +982,7 @@ pub(in crate::editor) fn audible_vst3_processor(
 /// preset data or private module paths.
 pub(in crate::editor) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mut String) {
     use std::fmt::Write as _;
-    if !view.clip_view_open || !view.device_panel_active {
+    if !view.audio_detail.clip_view_open || !view.device_panel.active {
         return;
     }
     let Some(DevicePanelOwner::Track(id)) = displayed_owner(view) else {
@@ -1019,7 +1021,7 @@ pub(in crate::editor) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mu
             .as_ref()
             .map(|view| view.audio_revision)
     );
-    if view.degraded_plugins.contains(device.value()) {
+    if view.device_panel.degraded_plugins.contains(device.value()) {
         snapshot.push_str(" vst3_panel=degraded");
     } else {
         match audible_vst3_processor(view, device) {
@@ -1041,7 +1043,11 @@ pub(in crate::editor) fn vst3_status_body(
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     let device_id = device.id();
-    if view.degraded_plugins.contains(device_id.value()) {
+    if view
+        .device_panel
+        .degraded_plugins
+        .contains(device_id.value())
+    {
         return vst3_degraded_body(view, device_id, cx);
     }
     let availability = audible_vst3_processor(view, device_id);
@@ -1096,11 +1102,12 @@ pub(in crate::editor) fn vst3_degraded_body(
 ) -> Stateful<Div> {
     let selector = format!("device-vst3-degraded-{}", device_id.value());
     let reason = view
+        .device_panel
         .degraded_plugins
         .reason(device_id.value())
         .unwrap_or(crate::editor_backend::DEFAULT_DEGRADED_PLUGIN_REASON)
         .to_owned();
-    let reloading = view.reloading_plugins.contains(&device_id);
+    let reloading = view.device_panel.reloading_plugins.contains(&device_id);
     let selected = view.device_panel.is_selected(device_id);
     let reload_button = actions::segment_button(
         format!("device-vst3-reload-{}", device_id.value()),

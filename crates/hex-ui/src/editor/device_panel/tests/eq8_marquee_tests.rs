@@ -47,8 +47,8 @@ fn idle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     pump_until(editor, cx, |v| {
         v.worker_requests_pending == 0
             && v.pending_requests.is_empty()
-            && v.device_gesture.snapshot().is_none()
-            && v.device_gesture_barriers.is_empty()
+            && v.device_panel.gesture.snapshot().is_none()
+            && v.device_panel.gesture_barriers.is_empty()
     });
 }
 fn geometry(
@@ -145,7 +145,7 @@ fn eq8_marquee_group_move_and_disable_each_commit_one_undo(cx: &mut TestAppConte
     visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |v, _| {
-        let snapshot = v.device_gesture.snapshot().unwrap();
+        let snapshot = v.device_panel.gesture.snapshot().unwrap();
         assert_eq!(
             snapshot.target,
             hex_session::device_gesture::GestureTarget::DeviceParameterSnapshot { device }
@@ -179,7 +179,7 @@ fn eq8_marquee_group_move_and_disable_each_commit_one_undo(cx: &mut TestAppConte
         visual.run_until_parked();
         assert_eq!(geometry(&editor, cx, device).1, frozen);
         editor.read_with(cx, |v, _| {
-            assert!(v.device_gesture.has_pending_terminal());
+            assert!(v.device_panel.gesture.has_pending_terminal());
             assert_eq!(
                 v.state
                     .as_ref()

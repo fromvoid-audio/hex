@@ -112,7 +112,7 @@ fn fixture(
     let ret = state.project.return_tracks()[0].devices()[0].id();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     (handle, editor, device, bus, ret, Release(gate))
@@ -120,8 +120,8 @@ fn fixture(
 fn settled(view: &EditorView) -> bool {
     view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.device_gesture_barriers.is_empty()
-        && view.device_gesture.snapshot().is_none()
+        && view.device_panel.gesture_barriers.is_empty()
+        && view.device_panel.gesture.snapshot().is_none()
 }
 fn name(device: DeviceId, id: ParameterId, suffix: &str) -> &'static str {
     Box::leak(
@@ -161,7 +161,7 @@ fn delay_reference_panel_groups_fit_with_expanded_lfo_on_track_and_return(cx: &m
         visual.run_until_parked();
         for (device, owner) in [(device, None), (ret, Some(bus))] {
             editor.update(cx, |view, cx| {
-                view.focused_return = owner;
+                view.session_grid.focused_return = owner;
                 view.device_panel
                     .chain_window
                     .scroll
@@ -334,7 +334,7 @@ fn delay_filter_xy_release_keeps_final_display_across_three_repaints_until_real_
         Modifiers::default(),
     );
     visual.run_until_parked();
-    pump_until(&editor, cx, |v| v.device_gesture.snapshot().is_some());
+    pump_until(&editor, cx, |v| v.device_panel.gesture.snapshot().is_some());
     gate.arm();
     visual.simulate_mouse_up(
         point_at([0.7, 0.5]),
@@ -342,7 +342,7 @@ fn delay_filter_xy_release_keeps_final_display_across_three_repaints_until_real_
         Modifiers::default(),
     );
     pump_until(&editor, cx, |v| {
-        v.device_gesture.has_pending_terminal() && gate.0.reached.load(Ordering::Acquire)
+        v.device_panel.gesture.has_pending_terminal() && gate.0.reached.load(Ordering::Acquire)
     });
     let final_position = graph.read_with(cx, |g, _| g.node_position(1).unwrap());
     assert_ne!(final_position, position);
@@ -417,7 +417,7 @@ fn delay_filter_refused_begin_retires_capture_without_moving_another_gesture(
         )
         .unwrap()
     });
-    let key = editor.read_with(cx, |v, _| v.device_gesture.snapshot().unwrap().key);
+    let key = editor.read_with(cx, |v, _| v.device_panel.gesture.snapshot().unwrap().key);
     let point_at = |p: [f32; 2]| {
         point(
             plot.left() + plot.size.width * p[0],
@@ -442,7 +442,7 @@ fn delay_filter_refused_begin_retires_capture_without_moving_another_gesture(
     );
     assert!(!graph.read_with(cx, |g, _| g.is_dragging()));
     editor.update(cx, |v, _| {
-        assert_eq!(v.device_gesture.snapshot().unwrap().key, key);
+        assert_eq!(v.device_panel.gesture.snapshot().unwrap().key, key);
         v.cancel_device_gesture().unwrap();
     });
     pump_until(&editor, cx, settled);
@@ -462,7 +462,7 @@ fn delay_catalog_growth_keeps_scrolling_choices_searchable_on_all_owners(cx: &mu
             Some(EffectBusOwner::Main),
         ] {
             editor.update(cx, |v, cx| {
-                v.focused_return = match owner {
+                v.session_grid.focused_return = match owner {
                     Some(EffectBusOwner::Return(id)) => Some(id),
                     _ => None,
                 };
@@ -556,7 +556,7 @@ fn delay_catalog_growth_keeps_scrolling_choices_searchable_on_all_owners(cx: &mu
                     count(v),
                     before + 1,
                     "{width}/{owner:?}: add={:?} message={:?} open={}",
-                    v.last_enqueued_native_device_add,
+                    v.test_probes.last_enqueued_native_device_add,
                     v.device_panel.message,
                     v.device_panel.add_menu_open
                 );
@@ -609,7 +609,7 @@ fn delay_graph_mid_drag_undo_releases_pointer_capture_without_stale_pending_or_e
         Modifiers::default(),
     );
     visual.run_until_parked();
-    pump_until(&editor, cx, |v| v.device_gesture.snapshot().is_some());
+    pump_until(&editor, cx, |v| v.device_panel.gesture.snapshot().is_some());
 
     let frozen_pending = editor.read_with(cx, |v, _| v.device_panel.pending_values.clone());
     assert!(
@@ -624,7 +624,7 @@ fn delay_graph_mid_drag_undo_releases_pointer_capture_without_stale_pending_or_e
     });
     visual.run_until_parked();
     pump_until(&editor, cx, |v| {
-        v.device_gesture.has_pending_terminal() && gate.0.reached.load(Ordering::Acquire)
+        v.device_panel.gesture.has_pending_terminal() && gate.0.reached.load(Ordering::Acquire)
     });
 
     // While the mouse button is still held and Commit is in flight, stale MouseMove
@@ -656,8 +656,8 @@ fn delay_graph_mid_drag_undo_releases_pointer_capture_without_stale_pending_or_e
 
     gate.release();
     pump_until(&editor, cx, |v| {
-        v.device_gesture.snapshot().is_none()
-            && v.device_gesture_barriers.is_empty()
+        v.device_panel.gesture.snapshot().is_none()
+            && v.device_panel.gesture_barriers.is_empty()
             && v.worker_requests_pending == 0
     });
     editor.read_with(cx, |v, _| {

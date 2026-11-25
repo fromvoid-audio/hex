@@ -30,13 +30,17 @@ pub(super) struct PendingRead {
 impl EditorView {
     fn automation_read_project(&self) -> Option<&std::sync::Arc<Project>> {
         let state = self.state.as_ref()?;
-        if let Some(active) = self.device_gesture.snapshot()
-            && let Some(preview) = self.resident_device_preview.as_ref().filter(|preview| {
-                preview.identity.key == active.key
-                    && preview.identity.sequence <= active.sequence
-                    && preview.identity.project_generation == self.project_generation
-                    && preview.identity.canonical_revision == state.revision
-            })
+        if let Some(active) = self.device_panel.gesture.snapshot()
+            && let Some(preview) = self
+                .device_panel
+                .resident_preview
+                .as_ref()
+                .filter(|preview| {
+                    preview.identity.key == active.key
+                        && preview.identity.sequence <= active.sequence
+                        && preview.identity.project_generation == self.project_generation
+                        && preview.identity.canonical_revision == state.revision
+                })
         {
             return Some(&preview.state.project);
         }

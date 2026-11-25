@@ -48,7 +48,7 @@ fn verified_send_entry_and_owner_finalization_keep_single_edit_history(cx: &mut 
     );
     let return_track = add_return(&editor, cx);
     editor.update(cx, |view, cx| {
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -84,7 +84,7 @@ fn verified_send_entry_and_owner_finalization_keep_single_edit_history(cx: &mut 
     }
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().revision, initial_revision + 2);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(
             view.audible_playback.is_none(),
             "no resident preview fallback"
@@ -123,7 +123,7 @@ fn verified_send_refuses_held_preview_and_busy_entry_restoring_canonical(cx: &mu
     );
     let return_track = add_return(&editor, cx);
     editor.update(cx, |view, cx| {
-        view.send_menu_track = Some(track);
+        view.session_grid.send_menu_track = Some(track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -148,7 +148,7 @@ fn verified_send_refuses_held_preview_and_busy_entry_restoring_canonical(cx: &mu
                 .as_deref()
                 .is_some_and(|s| s.contains("resident"))
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(view.audible_playback.is_none());
         assert_eq!(gain(view, track, return_track), 0.0);
     });
@@ -225,8 +225,8 @@ fn console_send_entry_uses_the_shared_actor_binding(cx: &mut TestAppContext) {
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(gain(view, other, return_track), 0.0);
-        assert!(view.send_menu_track.is_none());
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.session_grid.send_menu_track.is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&editor, cx, |view| {

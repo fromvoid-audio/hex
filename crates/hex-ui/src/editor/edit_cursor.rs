@@ -185,48 +185,48 @@ impl EditorView {
             && self.context_menu.is_none()
             && !super::device_panel::picker_is_open(self)
             && !super::device_panel::source_naming(self)
-            && !(self.clip_view_open
-                && self.device_panel_active
+            && !(self.audio_detail.clip_view_open
+                && self.device_panel.active
                 && self.device_panel.add_menu_is_open(self.state.as_deref()))
-            && self.send_menu_track.is_none()
+            && self.session_grid.send_menu_track.is_none()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.sections.held()
             && !self.locators.naming()
-            && !self.changelog.is_open()
+            && !self.settings.changelog.is_open()
             && !self.project_tempo_editing(cx)
             && !self.gain_numeric_editing(cx)
             && !self.clip_numeric_editing(cx)
-            && !self.sampler_parameter.numeric_draft_active()
+            && !self.device_panel.sampler_parameter.numeric_draft_active()
             && !self.track_gain_controls.has_pending_draft(cx)
             && super::device_panel::pending_send(self, cx).is_none()
-            && !self.opening_project
-            && !self.project_open.busy()
-            && self.pending_open_path.is_none()
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.preset_dialog_open
-            && !self.theme_settings.open
-            && !self.tuning.open
+            && !self.persistence.opening_project
+            && !self.persistence.project_open.busy()
+            && self.persistence.pending_open_path.is_none()
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.device_panel.preset_dialog_open
+            && !self.settings.theme.open
+            && !self.settings.tuning.open
             && !self.controller_input_is_open()
-            && self.missing_media.is_none()
+            && self.settings.missing_media.is_none()
             && !self.update_preparing()
             && self.pointer_down.is_none()
             && !self.gain_lane.pointer_is_active()
             && !self.automation_view.devices.pointer_active()
-            && !self.project_spectrum.resize_is_active()
-            && !self.clip_detail_resize.is_active()
+            && !self.device_panel.project_spectrum.resize_is_active()
+            && !self.audio_detail.detail_resize.is_active()
             && !self.device_panel.navigation.is_active()
             && self.time_selection_gesture.is_none()
             && self.time_range_move_gesture.is_none()
             && self.arrangement_pan.is_none()
             && self.active_clip_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
-            && self.active_native_device_drag.is_none()
+            && self.browser.active_audio_drag.is_none()
+            && self.device_panel.active_native_drag.is_none()
             && self.active_trim_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
+            && self.midi_editor.active_trim_drag.is_none()
             && self.active_fade_drag.is_none()
             && self.clip_paint_gesture.is_none()
             && self.loop_rail_gesture.is_none()
@@ -258,24 +258,24 @@ impl EditorView {
             && self.context_menu.is_none()
             && !super::device_panel::picker_is_open(self)
             && !super::device_panel::source_naming(self)
-            && !(self.clip_view_open
-                && self.device_panel_active
+            && !(self.audio_detail.clip_view_open
+                && self.device_panel.active
                 && self.device_panel.add_menu_is_open(self.state.as_deref()))
-            && self.send_menu_track.is_none()
+            && self.session_grid.send_menu_track.is_none()
             && !self.locators.naming()
             && !self.sections.held()
-            && !self.opening_project
-            && !self.project_open.busy()
-            && self.pending_open_path.is_none()
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.preset_dialog_open
-            && !self.theme_settings.open
-            && !self.tuning.open
-            && !self.changelog.is_open()
+            && !self.persistence.opening_project
+            && !self.persistence.project_open.busy()
+            && self.persistence.pending_open_path.is_none()
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.device_panel.preset_dialog_open
+            && !self.settings.theme.open
+            && !self.settings.tuning.open
+            && !self.settings.changelog.is_open()
             && !self.controller_input_is_open()
-            && self.missing_media.is_none()
+            && self.settings.missing_media.is_none()
             && !self.update_preparing()
             && drag.generation == self.project_generation
             && self
@@ -635,8 +635,8 @@ impl EditorView {
             return false;
         }
         self.context_menu.is_none()
-            && !self.opening_project
-            && !self.close_prompt_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
             && self.mode == EditorMode::Arrangement
     }
 
@@ -676,8 +676,8 @@ impl EditorView {
     /// naturally restores the original cursor. A later choice or lock wins.
     pub(super) fn install_drop_cursor(&mut self, cursor: DropCursor, moved_clip: Option<ClipId>) {
         if self.mode != EditorMode::Arrangement
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || self.project_generation != cursor.generation
             || self.selection_intent_epoch != Some(cursor.epoch)
             || self
@@ -745,10 +745,10 @@ impl EditorView {
             || self.track_resize_active()
             || self.track_reorder_active()
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.clip_paint_gesture.is_some()
             || cx.has_active_drag()
@@ -811,12 +811,12 @@ impl EditorView {
             lock_drag_canceled |= self.cancel_locked_play_start_drag();
         }
         if self.context_menu.is_some()
-            || self.close_prompt_open
+            || self.persistence.close_prompt_open
             || (self.mode != EditorMode::Arrangement
                 && (self.time_selection_gesture.is_some()
                     || self.time_range_move_gesture.is_some()))
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return self.cancel_time_selection_gesture() || lock_drag_canceled;
         }
@@ -1182,7 +1182,7 @@ impl EditorView {
         }
         // Ordinary track headers belong to the same arranger editing scope.
         let arranger_focused = self.focus.is_focused(window) || self.track_header_focused(window);
-        if (!arranger_focused && !self.midi_focus.is_focused(window))
+        if (!arranger_focused && !self.midi_editor.focus.is_focused(window))
             || !self.arrangement_view_change_available(cx)
             || self.device_panel.has_pending_draft(cx)
             || (arranger_focused && self.automation_view.enabled)

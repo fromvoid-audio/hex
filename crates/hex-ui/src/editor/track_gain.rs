@@ -415,7 +415,8 @@ fn binding_target(
     track: TrackId,
     lease: &device_panel::NumericGestureLease,
 ) -> GestureTarget {
-    view.device_gesture
+    view.device_panel
+        .gesture
         .snapshot()
         .filter(|active| {
             Some(device_panel::NumericGestureKey::Canonical(active.key)) == lease.get()
@@ -447,7 +448,8 @@ fn dispatch_track_gain(
             if group.len() > 1 {
                 view.begin_track_gains_gesture(group)?;
                 lease.set(
-                    view.device_gesture
+                    view.device_panel
+                        .gesture
                         .snapshot()
                         .map(|active| device_panel::NumericGestureKey::Canonical(active.key)),
                 );
@@ -460,13 +462,14 @@ fn dispatch_track_gain(
 }
 
 fn gain_recovery_blocker(view: &mut EditorView) -> Option<&'static str> {
-    if view.device_gesture.is_recovery_pending()
+    if view.device_panel.gesture.is_recovery_pending()
         && view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .is_some_and(|active| active.target.is_mixer_gain())
     {
-        if !view.device_gesture.has_pending_terminal() {
+        if !view.device_panel.gesture.has_pending_terminal() {
             let _ = view.cancel_device_gesture();
             view.wake_poll();
         }
@@ -638,7 +641,7 @@ impl EditorView {
         let still_queued = self
             .pending_requests
             .iter()
-            .chain(self.device_gesture_barriers.iter())
+            .chain(self.device_panel.gesture_barriers.iter())
             .chain(
                 self.recovery
                     .deferred_edit
@@ -725,7 +728,7 @@ impl EditorView {
                     if event.phase == NumericEventPhase::Begin {
                         // Gesture pumping bypasses ordinary edit admission while recording.
                         let reason = if view.gain_recorder.blocks_edits()
-                            || view.midi_recorder.blocks_edits()
+                            || view.midi_editor.recorder.blocks_edits()
                         {
                             Some("finish gain recording before changing track volume")
                         } else if view
@@ -822,14 +825,15 @@ impl EditorView {
             .track_gain_controls
             .displayed_track_gain(self.project_generation, id)
             .or_else(|| {
-                self.device_gesture
+                self.device_panel
+                    .gesture
                     .preview_track_gain(self.project_generation, id)
             });
         let enabled = !automated(track)
             && !self.gain_recorder.blocks_edits()
-            && !self.midi_recorder.blocks_edits()
-            && !self.opening_project
-            && !self.close_prompt_open;
+            && !self.midi_editor.recorder.blocks_edits()
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open;
         let binding = &self.track_gain_controls.bindings[&id];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
@@ -966,7 +970,7 @@ impl EditorView {
                     if event.phase == NumericEventPhase::Begin
                         && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
                         && !view.gain_recorder.blocks_edits()
-                        && !view.midi_recorder.blocks_edits()
+                        && !view.midi_editor.recorder.blocks_edits()
                         && let Some(reason) = gain_recovery_blocker(view)
                     {
                         view.error = Some(reason.into());
@@ -978,7 +982,7 @@ impl EditorView {
                         && ((view.document_audio_mode != hex_session::DocumentAudioMode::Resident
                             && !explicit_gain)
                             || view.gain_recorder.blocks_edits()
-                            || view.midi_recorder.blocks_edits()
+                            || view.midi_editor.recorder.blocks_edits()
                             || view.mixer_edit_blocked()
                             || view.pending_restart_request.is_some()
                             || view.track_gain_controls.pending_recovery.is_some())
@@ -1035,7 +1039,7 @@ impl EditorView {
                                 };
                                 if view.edit_pending()
                                     || view.gain_recorder.blocks_edits()
-                                    || view.midi_recorder.blocks_edits()
+                                    || view.midi_editor.recorder.blocks_edits()
                                     || !view.enqueue_device_barrier(
                                         hex_session::service::Request::Edit(command),
                                     )
@@ -1083,7 +1087,8 @@ impl EditorView {
             .track_gain_controls
             .displayed_mixer_value(self.project_generation, key)
             .or_else(|| {
-                self.device_gesture
+                self.device_panel
+                    .gesture
                     .snapshot()
                     .filter(|active| active.target == target)
                     .and_then(|active| match active.value {
@@ -1094,9 +1099,9 @@ impl EditorView {
         let enabled = (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             || key.supports_atomic_gain())
             && !self.gain_recorder.blocks_edits()
-            && !self.midi_recorder.blocks_edits()
-            && !self.opening_project
-            && !self.close_prompt_open;
+            && !self.midi_editor.recorder.blocks_edits()
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open;
         let binding = &self.track_gain_controls.mixer[&key];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);

@@ -137,19 +137,25 @@ impl EditorView {
             return;
         }
         let count = self
+            .session_grid
             .console_returns
             .end
-            .saturating_sub(self.console_returns.start)
+            .saturating_sub(self.session_grid.console_returns.start)
             .max(1);
-        if index < self.console_returns.start {
-            self.console_returns.start = index;
+        if index < self.session_grid.console_returns.start {
+            self.session_grid.console_returns.start = index;
         }
-        if index >= self.console_returns.end {
-            self.console_returns.start = index + 1 - count;
+        if index >= self.session_grid.console_returns.end {
+            self.session_grid.console_returns.start = index + 1 - count;
         }
         // Keep the desired range coherent between key events, including
         // several presses before the next page has painted.
-        self.console_returns.end = self.console_returns.start.saturating_add(count).min(total);
+        self.session_grid.console_returns.end = self
+            .session_grid
+            .console_returns
+            .start
+            .saturating_add(count)
+            .min(total);
         self.header_name_focus(super::track_name::Target::Return(id), cx)
             .focus(window);
         cx.notify();
@@ -199,11 +205,11 @@ impl EditorView {
                         cx.stop_propagation();
                         if enabled
                             && frame.current(view, window)
-                            && view.console_returns.current(&captured)
+                            && view.session_grid.console_returns.current(&captured)
                             && !view.track_reorder_active()
                             && view.track_view_change_available(cx)
                         {
-                            view.console_returns.start = destination;
+                            view.session_grid.console_returns.start = destination;
                         }
                         cx.notify();
                     })),
@@ -241,7 +247,7 @@ impl EditorView {
         {
             let id = track.id();
             let captured = page.clone();
-            let selected = self.focused_return == Some(id);
+            let selected = self.session_grid.focused_return == Some(id);
             let context_page = page.clone();
             let header = div()
                 .id(("console-return-header", id.value()))
@@ -277,7 +283,9 @@ impl EditorView {
                     cx,
                 ))
                 .on_click(cx.listener(move |view, _, window, cx| {
-                    if frame.current(view, window) && view.console_returns.current(&captured) {
+                    if frame.current(view, window)
+                        && view.session_grid.console_returns.current(&captured)
+                    {
                         view.focus_return_details(id, window, cx);
                         cx.notify();
                     }
@@ -287,7 +295,7 @@ impl EditorView {
                     cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
                         cx.stop_propagation();
                         if frame.current(view, window)
-                            && view.console_returns.current(&context_page)
+                            && view.session_grid.console_returns.current(&context_page)
                         {
                             view.open_return_name_context_menu(event.position, id, window, cx);
                         }
@@ -314,7 +322,9 @@ impl EditorView {
             .border_color(rgb(theme::control_style().border))
             .on_click(cx.listener(move |view, _, window, cx| {
                 cx.stop_propagation();
-                if frame.current(view, window) && view.console_returns.current(&captured) {
+                if frame.current(view, window)
+                    && view.session_grid.console_returns.current(&captured)
+                {
                     super::device_panel::enqueue_return_edit(
                         view,
                         hex_project::Command::ReturnMute {
@@ -491,7 +501,7 @@ mod ui_tests {
         let mut seen = std::collections::BTreeSet::new();
         for page_index in 0..8 {
             let range = editor.read_with(&visual, |view, _| {
-                let start = view.console_returns.start;
+                let start = view.session_grid.console_returns.start;
                 start..(start + 2).min(16)
             });
             assert_eq!(
@@ -549,7 +559,7 @@ mod ui_tests {
         visual.simulate_click(header.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.focused_return, Some(ids[14]))
+            assert_eq!(view.session_grid.focused_return, Some(ids[14]))
         });
         visual.simulate_mouse_down(
             header.center(),
@@ -578,7 +588,9 @@ mod ui_tests {
         let next = visual.debug_bounds("console-return-next").unwrap().center();
         visual.simulate_click(next, Modifiers::default());
         visual.run_until_parked();
-        editor.read_with(&visual, |view, _| assert_eq!(view.console_returns.start, 0));
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.session_grid.console_returns.start, 0)
+        });
         visual.simulate_resize(size(px(640.0), px(800.0)));
         visual.run_until_parked();
         assert!(
@@ -607,7 +619,9 @@ mod ui_tests {
         let next = visual.debug_bounds("console-return-next").unwrap().center();
         visual.simulate_click(next, Modifiers::default());
         visual.run_until_parked();
-        editor.read_with(&visual, |view, _| assert_eq!(view.console_returns.start, 2));
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.session_grid.console_returns.start, 2)
+        });
     }
     #[gpui::test]
     fn console_return_controls_use_the_existing_actor_and_history(cx: &mut TestAppContext) {
@@ -729,7 +743,9 @@ mod ui_tests {
         for &id in ids.iter().skip(1) {
             visual.simulate_keystrokes("right");
             visual.run_until_parked();
-            editor.read_with(&visual, |view, _| assert_eq!(view.focused_return, Some(id)));
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.session_grid.focused_return, Some(id))
+            });
             assert!(
                 visual
                     .debug_bounds(selector("console-return-header", id, ""))
@@ -739,13 +755,13 @@ mod ui_tests {
         visual.simulate_keystrokes("right");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.focused_return, Some(ids[15]))
+            assert_eq!(view.session_grid.focused_return, Some(ids[15]))
         });
         for index in (0..15).rev() {
             visual.simulate_keystrokes("left");
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {
-                assert_eq!(view.focused_return, Some(ids[index]))
+                assert_eq!(view.session_grid.focused_return, Some(ids[index]))
             });
             assert!(
                 visual
@@ -756,7 +772,7 @@ mod ui_tests {
         visual.simulate_keystrokes("left");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.focused_return, Some(ids[0]))
+            assert_eq!(view.session_grid.focused_return, Some(ids[0]))
         });
         // Repeated keys crossing an unpainted page must preserve the header's
         // keyboard context rather than falling through to clip navigation.
@@ -766,14 +782,17 @@ mod ui_tests {
         visual.simulate_keystrokes("right");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.focused_return, Some(ids[3]));
+            assert_eq!(view.session_grid.focused_return, Some(ids[3]));
             assert_eq!(
-                (view.console_returns.start, view.console_returns.end),
+                (
+                    view.session_grid.console_returns.start,
+                    view.session_grid.console_returns.end
+                ),
                 (2, 4)
             );
             assert_eq!(view.selected_track, selected);
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
 
@@ -797,7 +816,7 @@ mod ui_tests {
         visual.simulate_keystrokes("left");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.focused_return, Some(ids[1]));
+            assert_eq!(view.session_grid.focused_return, Some(ids[1]));
             assert_eq!(
                 view.track_name.pending_return(view.project_generation),
                 Some(ids[1])
@@ -816,7 +835,7 @@ mod ui_tests {
         visual.simulate_keystrokes("left");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.focused_return, Some(ids[0]))
+            assert_eq!(view.session_grid.focused_return, Some(ids[0]))
         });
         let field = visual
             .debug_bounds(selector("return-volume", ids[0], "-value"))
@@ -828,7 +847,7 @@ mod ui_tests {
         visual.simulate_keystrokes("right");
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
-            assert_eq!(view.focused_return, Some(ids[0]));
+            assert_eq!(view.session_grid.focused_return, Some(ids[0]));
             assert_eq!(
                 view.track_gain_controls
                     .pending_return_gain(view.project_generation, cx),
@@ -932,7 +951,7 @@ mod ui_tests {
                 && view.state.as_ref().unwrap().project.return_tracks()[0].name() == "delay bus"
         });
         editor.read_with(cx, |view, _| {
-            assert!(matches!(view.last_enqueued_edit.as_ref(), Some(Command::RenameReturnTrack { return_track, name }) if *return_track == id && name == "delay bus"));
+            assert!(matches!(view.test_probes.last_enqueued_edit.as_ref(), Some(Command::RenameReturnTrack { return_track, name }) if *return_track == id && name == "delay bus"));
             assert_eq!(view.state.as_ref().unwrap().project.tracks().iter().map(|t| (t.id(), t.name().to_owned())).collect::<Vec<_>>(), tracks);
         });
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));

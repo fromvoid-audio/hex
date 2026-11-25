@@ -20,11 +20,11 @@ impl EditorView {
         if self.mode != super::EditorMode::Arrangement {
             return None;
         }
-        let track_id = self.send_menu_track?;
+        let track_id = self.session_grid.send_menu_track?;
         let state = self.state.as_ref().cloned()?;
         let Some(track) = state.project.track(track_id).cloned() else {
             super::device_panel::retire_removed_send_controls(self, cx);
-            self.send_menu_track = None;
+            self.session_grid.send_menu_track = None;
             self.focus.focus(window);
             cx.notify();
             return None;
@@ -36,7 +36,7 @@ impl EditorView {
             .position(|candidate| candidate.id() == track_id)
         else {
             super::device_panel::retire_removed_send_controls(self, cx);
-            self.send_menu_track = None;
+            self.session_grid.send_menu_track = None;
             self.focus.focus(window);
             cx.notify();
             return None;
@@ -45,7 +45,7 @@ impl EditorView {
             // A section selection change can hide an open menu's track. Finalize
             // through its existing owner before retiring that input surface.
             if super::device_panel::finalize_send_controls_for_track(self, cx, track_id) {
-                self.send_menu_track = None;
+                self.session_grid.send_menu_track = None;
                 self.focus.focus(window);
             }
             cx.notify();
@@ -64,7 +64,7 @@ impl EditorView {
         let row_is_visible = expected_bottom > body.top && expected_top < body_bottom;
         if !row_is_visible {
             if super::device_panel::finalize_send_controls_for_track(self, cx, track_id) {
-                self.send_menu_track = None;
+                self.session_grid.send_menu_track = None;
                 self.focus.focus(window);
             } else {
                 self.track_scroll
@@ -145,7 +145,7 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
         for track in returns {
             let id = track.id();
-            let selected = self.focused_return == Some(id);
+            let selected = self.session_grid.focused_return == Some(id);
             let muted = track.muted();
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
             let gain_control = div()

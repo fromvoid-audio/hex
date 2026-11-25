@@ -83,7 +83,7 @@ impl EditorView {
     }
 
     pub(super) fn queue_normal_start(&mut self, start: Start) {
-        self.playback_settings.pending = None;
+        self.settings.playback.pending = None;
         self.deferred_toggle_play = None;
         self.deferred_metadata_seek = None;
         let source = match &start {
@@ -122,8 +122,8 @@ impl EditorView {
             if self.paused_republish_waiting_for_current() {
                 self.tick_paused_republish();
             }
-            if !self.playback_settings.loading && self.paused_republish_blocks_play() {
-                let note_chase = self.playback_settings.policy();
+            if !self.settings.playback.loading && self.paused_republish_blocks_play() {
+                let note_chase = self.settings.playback.policy();
                 self.deferred_play = Some((
                     hex_engine::PlaybackAction::Transport(
                         hex_engine::PlaybackCommand::PlayFromWithNoteChase {
@@ -157,16 +157,16 @@ impl EditorView {
             generation: self.project_generation,
             revision: self.state.as_ref().map_or(0, |state| state.revision),
             source,
-            note_chase: (!self.playback_settings.loading).then(|| self.playback_settings.policy()),
+            note_chase: (!self.settings.playback.loading).then(|| self.settings.playback.policy()),
             start,
         };
         self.deferred_play = None;
-        if self.playback_settings.loading {
+        if self.settings.playback.loading {
             if matches!(pending.source, StartSource::Applied(_)) {
                 self.cancel_section_launch_wait();
                 self.invalidate_prepared_seek();
             }
-            self.playback_settings.pending = Some(pending);
+            self.settings.playback.pending = Some(pending);
             self.status = "loading playback settings · playback starts when ready".into();
             self.wake_poll();
         } else {
@@ -238,8 +238,8 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|state| state.revision == pending.revision)
-            && !self.opening_project
-            && !self.close_prompt_open;
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open;
         if !current {
             self.error =
                 Some("playback target changed while settings loaded · retry playback".into());
@@ -247,7 +247,7 @@ impl EditorView {
         }
         let note_chase = *pending
             .note_chase
-            .get_or_insert_with(|| self.playback_settings.policy());
+            .get_or_insert_with(|| self.settings.playback.policy());
         let source = match pending.source {
             StartSource::Applied(source)
                 if self.start_source_is_current(&pending.start, source) =>
@@ -255,7 +255,7 @@ impl EditorView {
                 source
             }
             StartSource::Recovery(generation) if self.recovery.generation() == Some(generation) => {
-                self.playback_settings.pending = Some(pending);
+                self.settings.playback.pending = Some(pending);
                 self.status = "restarting audio output · playback starts when ready".into();
                 return;
             }
@@ -306,7 +306,7 @@ impl EditorView {
 
     /// The existing recovery owner transfers only its exact completed generation's witness.
     pub(super) fn normal_start_recovery_completed(&mut self, generation: u64) {
-        let Some(mut pending) = self.playback_settings.pending.take() else {
+        let Some(mut pending) = self.settings.playback.pending.take() else {
             return;
         };
         match pending.source {
@@ -316,7 +316,7 @@ impl EditorView {
                 return;
             }
             StartSource::Applied(_) => {
-                self.playback_settings.pending = Some(pending);
+                self.settings.playback.pending = Some(pending);
                 return;
             }
         }
@@ -325,20 +325,20 @@ impl EditorView {
             return;
         };
         pending.source = StartSource::Applied(source);
-        if self.playback_settings.loading {
-            self.playback_settings.pending = Some(pending);
+        if self.settings.playback.loading {
+            self.settings.playback.pending = Some(pending);
         } else {
             self.dispatch_normal_start(pending);
         }
     }
 
     pub(super) fn start_playback_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.playback_settings.path.clone() else {
-            self.playback_settings.loading = false;
-            self.playback_settings.writable = false;
-            self.playback_settings.error =
+        let Some(path) = self.settings.playback.path.clone() else {
+            self.settings.playback.loading = false;
+            self.settings.playback.writable = false;
+            self.settings.playback.error =
                 Some("playback settings unavailable · home directory is unset".into());
-            if let Some(pending) = self.playback_settings.pending.take() {
+            if let Some(pending) = self.settings.playback.pending.take() {
                 self.dispatch_normal_start(pending);
             }
             return;
@@ -356,24 +356,24 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.playback_settings.loading = false;
+                view.settings.playback.loading = false;
                 match result {
                     Ok(preferences) => {
-                        view.playback_settings.preferences = preferences;
-                        if let Some(pending) = view.playback_settings.pending.take() {
+                        view.settings.playback.preferences = preferences;
+                        if let Some(pending) = view.settings.playback.pending.take() {
                             view.dispatch_normal_start(pending);
                         }
                     }
                     Err(error) => {
-                        view.playback_settings.writable = false;
-                        view.playback_settings.pending = None;
+                        view.settings.playback.writable = false;
+                        view.settings.playback.pending = None;
                         let error = format!(
                             "could not load playback settings · {}",
                             hex_session::service::text::lowercase_outside_verbatim(
                                 &error.to_string()
                             )
                         );
-                        view.playback_settings.error = Some(error.clone());
+                        view.settings.playback.error = Some(error.clone());
                         view.error = Some(error.into());
                     }
                 }
@@ -384,22 +384,22 @@ impl EditorView {
     }
 
     pub(super) fn live_mode_enabled(&self) -> bool {
-        self.playback_settings.preferences.live_mode
+        self.settings.playback.preferences.live_mode
     }
 
     /// Serialize an explicit preference edit; the active policy changes only on success.
     pub(super) fn save_note_chase(&mut self, enabled: bool, cx: &mut Context<Self>) {
         let preferences = PlaybackPreferences {
             note_chase: enabled,
-            ..self.playback_settings.preferences
+            ..self.settings.playback.preferences
         };
         self.save_playback_preferences_change(preferences, cx);
     }
 
     pub(super) fn toggle_live_mode(&mut self, cx: &mut Context<Self>) {
         let preferences = PlaybackPreferences {
-            live_mode: !self.playback_settings.preferences.live_mode,
-            ..self.playback_settings.preferences
+            live_mode: !self.settings.playback.preferences.live_mode,
+            ..self.settings.playback.preferences
         };
         self.save_playback_preferences_change(preferences, cx);
     }
@@ -409,7 +409,7 @@ impl EditorView {
         preferences: PlaybackPreferences,
         cx: &mut Context<Self>,
     ) {
-        let state = &mut self.playback_settings;
+        let state = &mut self.settings.playback;
         if state.loading || state.saving || !state.writable {
             return;
         }
@@ -433,9 +433,9 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.playback_settings.saving = false;
+                view.settings.playback.saving = false;
                 match result {
-                    Ok(()) => view.playback_settings.preferences = preferences,
+                    Ok(()) => view.settings.playback.preferences = preferences,
                     Err(error) => {
                         let error = format!(
                             "could not save playback settings · {}",
@@ -443,7 +443,7 @@ impl EditorView {
                                 &error.to_string()
                             )
                         );
-                        view.playback_settings.error = Some(error.clone());
+                        view.settings.playback.error = Some(error.clone());
                         view.error = Some(error.into());
                     }
                 }
@@ -455,7 +455,7 @@ impl EditorView {
     }
 
     pub(super) fn live_mode_settings_row(&self, cx: &mut Context<Self>) -> Div {
-        let state = &self.playback_settings;
+        let state = &self.settings.playback;
         let style = super::device_panel::control_style();
         let enabled = !state.loading && !state.saving && state.writable;
         let label = if state.loading {

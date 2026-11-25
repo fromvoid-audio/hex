@@ -97,8 +97,8 @@ fn vst3_knob_release_after_refresh_unblocks_automation(cx: &mut gpui::TestAppCon
         view.selected_track = Some(track);
         view.device_panel.owner = Some(DevicePanelOwner::Track(track));
         view.device_panel.selected_device = Some(device);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         ensure_panel(view, device, cx);
         install_row(view);
         cx.notify();
@@ -114,7 +114,8 @@ fn vst3_knob_release_after_refresh_unblocks_automation(cx: &mut gpui::TestAppCon
     visual.simulate_mouse_move(release, MouseButton::Left, mods);
     let key = editor.update(&mut visual, |view, _| {
         let key = view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .expect("admitted pointer")
             .key;
@@ -133,20 +134,23 @@ fn vst3_knob_release_after_refresh_unblocks_automation(cx: &mut gpui::TestAppCon
             reason: None,
         };
         assert!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .acknowledge(&acknowledge(GesturePhase::Begin, 0))
         );
         let terminal = view
-            .device_gesture
+            .device_panel
+            .gesture
             .next_request()
             .expect("mouse release must finish the edit");
         assert_eq!(
             (terminal.key(), terminal.phase()),
             (key, GesturePhase::Commit)
         );
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.mark_submitted();
         assert!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .acknowledge(&acknowledge(GesturePhase::Commit, terminal.sequence()))
         );
         view.worker_requests_pending = 0;
@@ -233,8 +237,8 @@ fn typed_value_case(
         view.selected_track = Some(track);
         view.device_panel.owner = Some(DevicePanelOwner::Track(track));
         view.device_panel.selected_device = Some(device);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         ensure_panel(view, device, cx);
         let panel = view
             .device_panel
@@ -307,7 +311,7 @@ fn typed_value_case(
                 0.75,
                 "pending text edit must remain visible"
             );
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
         });
     }
     if refresh_before_ack {
@@ -358,23 +362,23 @@ fn typed_value_case(
     editor.update(&mut visual, |view, cx| {
         let panel = &view.device_panel.vst3_parameters.panels[&device];
         assert_eq!(current_context(view), Some(panel.query.context), "current context");
-        let snapshot = view.device_gesture.snapshot().expect("typed value began a gesture");
-        assert!(view.device_gesture.has_pending_terminal(), "typed value must finish its admitted gesture");
+        let snapshot = view.device_panel.gesture.snapshot().expect("typed value began a gesture");
+        assert!(view.device_panel.gesture.has_pending_terminal(), "typed value must finish its admitted gesture");
         assert_eq!(snapshot.plugin_value.unwrap().normalized(), 0.75);
-        assert!(view.device_gesture.acknowledge(&GestureAck {
+        assert!(view.device_panel.gesture.acknowledge(&GestureAck {
             key: snapshot.key, phase: GesturePhase::Begin, sequence: 0, accepted: true,
             preview_retained: false, source_lost: false, reason: None,
         }));
-        let terminal = view.device_gesture.next_request().expect("typed value terminal");
+        let terminal = view.device_panel.gesture.next_request().expect("typed value terminal");
         assert!(matches!(terminal, hex_session::device_gesture::GestureRequest::CommitPlugin { key, value, .. } if key == snapshot.key && value.normalized() == 0.75));
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.mark_submitted();
         let mut wrong_key = snapshot.key;
         wrong_key.token += 1;
-        assert!(!view.device_gesture.acknowledge(&GestureAck {
+        assert!(!view.device_panel.gesture.acknowledge(&GestureAck {
             key: wrong_key, phase: GesturePhase::Commit, sequence: terminal.sequence(), accepted: true,
             preview_retained: false, source_lost: false, reason: None,
         }));
-        assert!(view.device_gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.has_pending_terminal());
         assert!(view.acknowledge_device_gesture(&GestureAck {
             key: snapshot.key, phase: GesturePhase::Commit, sequence: terminal.sequence(), accepted,
             preview_retained: false, source_lost: false, reason: None,
@@ -405,7 +409,7 @@ fn typed_value_case(
                 .read(cx);
             assert!(!control.is_interacting());
             assert_eq!(control.value(), 0.6);
-            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.device_panel.gesture.snapshot().is_none());
         });
         editor.update(&mut visual, |view, cx| {
             view.stopped_playback_restore =
@@ -499,8 +503,8 @@ fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_
         view.selected_track = Some(track);
         view.device_panel.owner = Some(DevicePanelOwner::Track(track));
         view.device_panel.selected_device = Some(device);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         ensure_panel(view, device, cx);
         let panel = view
             .device_panel
@@ -646,12 +650,12 @@ fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_
             let origin = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
                 .origin
                 .get();
-            view.device_gesture.begin_plugin(origin).unwrap();
+            view.device_panel.gesture.begin_plugin(origin).unwrap();
             assert!(
                 super::super::super::chain_window::must_mount(view, device, Some(window), cx),
                 "active GestureTarget::PluginParameter must keep card mounted offscreen"
             );
-            view.device_gesture.reset();
+            view.device_panel.gesture.reset();
         });
     });
 }

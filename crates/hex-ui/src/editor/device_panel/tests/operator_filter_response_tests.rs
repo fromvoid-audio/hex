@@ -159,8 +159,8 @@ fn filter_curve_keeps_released_parameter_preview_across_completed_repaints(
     );
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -191,7 +191,7 @@ fn filter_curve_keeps_released_parameter_preview_across_completed_repaints(
                 operator_parameter_value(view.state.as_ref().unwrap(), track, device, 20005),
                 ParameterValue::Float(1000.0)
             );
-            assert!(view.device_gesture.has_pending_terminal());
+            assert!(view.device_panel.gesture.has_pending_terminal());
         });
     }
 }

@@ -176,7 +176,8 @@ pub fn return_send_numeric_control(
         return_track,
     };
     let active = view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .filter(|snapshot| snapshot.target == target)
         .and_then(|snapshot| match snapshot.value {
@@ -186,9 +187,9 @@ pub fn return_send_numeric_control(
     control.entity.update(cx, |numeric, cx| {
         numeric.set_enabled(
             !view.gain_recorder.blocks_edits()
-                && !view.midi_recorder.blocks_edits()
-                && !view.opening_project
-                && !view.close_prompt_open,
+                && !view.midi_editor.recorder.blocks_edits()
+                && !view.persistence.opening_project
+                && !view.persistence.close_prompt_open,
             cx,
         );
         let _ = numeric.set_external_style(control_style(), cx);
@@ -225,7 +226,8 @@ pub fn finalize_send_controls_for_track(
     track: TrackId,
 ) -> bool {
     let active_target = view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
     let mut keys: Vec<_> = view
@@ -259,9 +261,15 @@ pub fn finalize_send_controls_for_track(
             Ok(finalized) => finalized,
             Err(error) => {
                 entity.update(cx, |control, cx| control.cancel(cx));
-                if view.device_gesture.snapshot().is_some_and(|snapshot| {
-                    snapshot.target == target && !view.device_gesture.has_pending_terminal()
-                }) {
+                if view
+                    .device_panel
+                    .gesture
+                    .snapshot()
+                    .is_some_and(|snapshot| {
+                        snapshot.target == target
+                            && !view.device_panel.gesture.has_pending_terminal()
+                    })
+                {
                     let _ = view.cancel_device_gesture();
                 }
                 view.error = Some(format!(
@@ -274,10 +282,11 @@ pub fn finalize_send_controls_for_track(
             continue;
         };
         let active_matches = view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .is_some_and(|snapshot| snapshot.target == target)
-            && !view.device_gesture.has_pending_terminal();
+            && !view.device_panel.gesture.has_pending_terminal();
         if (finalized.previous != finalized.value || active_matches)
             && let Err(error) = commit_owned_numeric_edit(view, target, &finalized)
         {

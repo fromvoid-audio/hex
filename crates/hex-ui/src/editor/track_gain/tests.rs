@@ -285,7 +285,8 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
                     .unwrap()
                     .render_fault
                     .store(true, std::sync::atomic::Ordering::Release);
-                view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![119]);
+                view.device_panel.degraded_plugins =
+                    crate::editor_backend::DegradedDevices::new(vec![119]);
                 cx.notify();
             });
             editor
@@ -305,7 +306,7 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
     visual.simulate_mouse_move(mid, MouseButton::Left, Modifiers::default());
     let (recovery, earlier) = editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(view.deferred_play.is_some());
         assert_eq!(
             view.worker_requests_pending, 1,
@@ -410,7 +411,7 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.degraded_plugins = Default::default();
+        view.device_panel.degraded_plugins = Default::default();
         view.applied_project_revision = Some(revision);
         assert!(view.recovery.opened(recovery));
         assert!(view.recovery.restored(recovery));
@@ -582,7 +583,8 @@ fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut Test
                     .unwrap()
                     .render_fault
                     .store(true, std::sync::atomic::Ordering::Release);
-                view.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![42]);
+                view.device_panel.degraded_plugins =
+                    crate::editor_backend::DegradedDevices::new(vec![42]);
                 cx.notify();
             });
             editor
@@ -639,7 +641,7 @@ fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut Test
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.degraded_plugins = Default::default();
+        view.device_panel.degraded_plugins = Default::default();
         view.applied_project_revision = Some(revision);
         assert!(view.recovery.opened(recovery));
         assert!(view.recovery.restored(recovery));
@@ -687,7 +689,7 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -711,7 +713,7 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     let committed = editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -729,7 +731,7 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -763,7 +765,7 @@ fn verified_track_volume_drag_uses_actor_and_keeps_return_gain_explicit(cx: &mut
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     let held = editor.read_with(cx, |view, _| {
         assert_eq!(view.selected_track, Some(other));
@@ -772,7 +774,7 @@ fn verified_track_volume_drag_uses_actor_and_keeps_return_gain_explicit(cx: &mut
         assert_eq!(state.project.track(track).unwrap().gain(), 0.5);
         assert_eq!(state.project.track(other).unwrap().gain(), 1.5);
         let hex_session::device_gesture::ParameterValue::Float(value) =
-            view.device_gesture.snapshot().unwrap().value
+            view.device_panel.gesture.snapshot().unwrap().value
         else {
             panic!("gain");
         };
@@ -800,7 +802,7 @@ fn verified_track_volume_drag_uses_actor_and_keeps_return_gain_explicit(cx: &mut
         });
     }
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
@@ -890,7 +892,7 @@ fn header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag(
     visual.simulate_input("0 db");
     visual.simulate_keystrokes("enter");
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.worker_requests_pending == 0
             && view
                 .state
@@ -938,7 +940,7 @@ fn header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag(
         point(rail.right(), rail.center().y),
     );
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.track(track).unwrap().gain(), 1.0);
         assert_eq!(project.track(other).unwrap().gain(), 1.5);
@@ -1093,10 +1095,10 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
             }
             editor.read_with(&visual, |view, _| {
                 assert!(!view.track_resize_active());
-                assert!(view.device_gesture.snapshot().is_none());
+                assert!(view.device_panel.gesture.snapshot().is_none());
                 assert!(view.active_clip_drag.is_none());
                 assert!(
-                    view.last_enqueued_edit.is_none(),
+                    view.test_probes.last_enqueued_edit.is_none(),
                     "resizing must not change canonical gain"
                 );
             });
@@ -1186,7 +1188,7 @@ fn automation_readout_owns_gain(
             (after.can_undo, after.can_redo),
             (before.can_undo, before.can_redo)
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert_eq!(view.worker_requests_pending, 0);
         assert!(view.pending_requests.is_empty());
     });
@@ -1321,7 +1323,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
     drag(&mut visual, start, end);
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -1338,7 +1340,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_none()
+        view.worker_requests_pending == 0 && view.device_panel.gesture.snapshot().is_none()
     });
     assert_eq!(
         editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone()),
@@ -1350,7 +1352,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
     visual.simulate_keystrokes("enter");
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && view
                 .state
                 .as_ref()
@@ -1423,7 +1425,7 @@ fn return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_tra
     let expected = 10.0_f32.powf(-12.0 / 20.0);
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
                 < 1e-6
     });
@@ -1493,9 +1495,9 @@ fn header_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(
         owner.assert_owned(view);
         [
             view.browser.test_preferences_path().to_owned(),
-            view.recent_projects.test_path().to_owned(),
-            view.theme_settings.test_path().to_owned(),
-            view.project_directory.test_path().to_owned(),
+            view.settings.recent_projects.test_path().to_owned(),
+            view.settings.theme.test_path().to_owned(),
+            view.settings.project_directory.test_path().to_owned(),
         ]
     });
     for (path, name) in paths.iter().zip([
@@ -1577,7 +1579,7 @@ fn header_pan_vertical_drag_direction_fine_bounds_and_atomic_history(cx: &mut Te
         visual.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
         visual.simulate_mouse_up(end, MouseButton::Left, modifiers);
         pump(&editor, cx, |view| {
-            view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_none()
+            view.worker_requests_pending == 0 && view.device_panel.gesture.snapshot().is_none()
         });
         let after = editor.read_with(cx, |view, _| {
             let project = &view.state.as_ref().unwrap().project;
@@ -1756,7 +1758,7 @@ fn lower_header_controls_keep_their_actions_without_selecting_background_track(
         visual.simulate_click(sends, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.send_menu_track, Some(track));
+            assert_eq!(view.session_grid.send_menu_track, Some(track));
             assert_eq!(view.selected_track_ids(), [other]);
         });
         visual.simulate_click(sends, Modifiers::default());
@@ -1768,7 +1770,7 @@ fn lower_header_controls_keep_their_actions_without_selecting_background_track(
         let start = point(rail.left() + px(10.0), rail.center().y);
         drag(&mut visual, start, point(start.x, start.y - px(24.0)));
         pump(&editor, cx, |view| {
-            view.device_gesture.snapshot().is_none()
+            view.device_panel.gesture.snapshot().is_none()
                 && view.worker_requests_pending == 0
                 && view
                     .state
@@ -1864,8 +1866,8 @@ fn unrelated_gain_does_not_dim_audio_detail_controls(cx: &mut TestAppContext) {
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             assert!(view.set_selected_clip(source, audio, window, cx));
-            view.clip_view_open = true;
-            view.device_panel_active = false;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = false;
             cx.notify();
         })
     });
@@ -1883,7 +1885,7 @@ fn unrelated_gain_does_not_dim_audio_detail_controls(cx: &mut TestAppContext) {
         Modifiers::default(),
     );
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     for _ in 0..3 {
         visual.update(|window, cx| {
@@ -2035,11 +2037,11 @@ fn console_selected_group_uses_shared_gain_gesture_and_meter(cx: &mut TestAppCon
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     let held = editor.read_with(cx, |view, _| {
         let hex_session::device_gesture::ParameterValue::Float(value) =
-            view.device_gesture.snapshot().unwrap().value
+            view.device_panel.gesture.snapshot().unwrap().value
         else {
             panic!("gain")
         };
@@ -2090,7 +2092,7 @@ fn console_selected_group_uses_shared_gain_gesture_and_meter(cx: &mut TestAppCon
         });
     }
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().unwrap();
@@ -2445,12 +2447,12 @@ fn selected_relative_case(cx: &mut TestAppContext, mode: hex_session::DocumentAu
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     visual.run_until_parked();
     let (held, expected_other) = editor.read_with(cx, |view, cx| {
         let hex_session::device_gesture::ParameterValue::Float(held) =
-            view.device_gesture.snapshot().unwrap().value
+            view.device_panel.gesture.snapshot().unwrap().value
         else {
             panic!("gain")
         };
@@ -2499,7 +2501,7 @@ fn selected_relative_case(cx: &mut TestAppContext, mode: hex_session::DocumentAu
         });
     }
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -2553,11 +2555,11 @@ fn console_group_gain_freezes_membership_and_escape_restores_every_member(cx: &m
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     let held = editor.read_with(cx, |view, _| {
         let hex_session::device_gesture::ParameterValue::Float(gain) =
-            view.device_gesture.snapshot().unwrap().value
+            view.device_panel.gesture.snapshot().unwrap().value
         else {
             panic!("gain")
         };
@@ -2575,7 +2577,8 @@ fn console_group_gain_freezes_membership_and_escape_restores_every_member(cx: &m
     );
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .preview_track_gain(view.project_generation, other),
             Some((held * 3.0).min(2.0)),
             "membership stays frozen after selection changes"
@@ -2588,7 +2591,7 @@ fn console_group_gain_freezes_membership_and_escape_restores_every_member(cx: &m
         visual.run_until_parked();
     }
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -2638,7 +2641,7 @@ fn stale_selected_gain_begin_refuses_the_whole_group_without_an_extra_undo(
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none()
+        view.device_panel.gesture.snapshot().is_none()
             && view.worker_requests_pending == 0
             && view
                 .state
@@ -2734,17 +2737,17 @@ fn dragging_a_silent_selected_anchor_preserves_other_selected_gains(cx: &mut Tes
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_some() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_some() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.device_gesture.snapshot().unwrap().target,
+            view.device_panel.gesture.snapshot().unwrap().target,
             GestureTarget::TrackGain { track }
         )
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -2782,7 +2785,7 @@ fn main_slider_edits_and_cancels_one_canonical_owner_in_both_views(cx: &mut Test
         visual.simulate_keystrokes("enter");
         let expected = 10.0_f32.powf(db as f32 / 20.0);
         pump(&editor, cx, |view| {
-            view.device_gesture.snapshot().is_none()
+            view.device_panel.gesture.snapshot().is_none()
                 && view.worker_requests_pending == 0
                 && (view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5
         });
@@ -2817,7 +2820,8 @@ fn main_slider_edits_and_cancels_one_canonical_owner_in_both_views(cx: &mut Test
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         pump(&editor, cx, |view| {
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .snapshot()
                 .is_some_and(|s| s.target == GestureTarget::MainGain)
                 && view.worker_requests_pending == 0
@@ -2831,7 +2835,7 @@ fn main_slider_edits_and_cancels_one_canonical_owner_in_both_views(cx: &mut Test
         visual.simulate_keystrokes("escape");
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         pump(&editor, cx, |view| {
-            view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+            view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
         });
         editor.read_with(cx, |view, _| {
             assert!((view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5)
@@ -2862,7 +2866,7 @@ fn verified_main_slider_keeps_explicit_entry_and_finalization_without_held_previ
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(
             view.audible_playback.is_none(),
             "no resident preview fallback"
@@ -2881,7 +2885,7 @@ fn verified_main_slider_keeps_explicit_entry_and_finalization_without_held_previ
                 .as_deref()
                 .is_some_and(|s| s.contains("resident"))
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!((view.state.as_ref().unwrap().project.master_gain() - expected).abs() < 1e-5);
     });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
@@ -2971,7 +2975,7 @@ fn verified_return_slider_keeps_atomic_history_and_reverts_refused_edits(cx: &mu
                 < 1e-5
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(view.audible_playback.is_none(), "no resident fallback");
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.master_gain(), 1.0);
@@ -3003,7 +3007,7 @@ fn verified_return_slider_keeps_atomic_history_and_reverts_refused_edits(cx: &mu
                 .as_deref()
                 .is_some_and(|s| s.contains("resident"))
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(
             (view.state.as_ref().unwrap().project.return_tracks()[0].gain() - expected).abs()
                 < 1e-5
@@ -3132,7 +3136,7 @@ fn clip_duplicate_then_immediate_volume_drag_succeeds_without_refusal_banner(
             "volume drag during in-flight clip duplicate must not show refusal banner"
         );
         assert!(
-            view.device_gesture.snapshot().is_some() || view.worker_requests_pending >= 1,
+            view.device_panel.gesture.snapshot().is_some() || view.worker_requests_pending >= 1,
             "volume gesture must be admitted behind clip duplication"
         );
     });
@@ -3141,7 +3145,7 @@ fn clip_duplicate_then_immediate_volume_drag_succeeds_without_refusal_banner(
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && !view.duplicate_intent.is_pending()
     });
     editor.read_with(cx, |view, _| {

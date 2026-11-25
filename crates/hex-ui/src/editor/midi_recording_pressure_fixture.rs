@@ -69,7 +69,7 @@ pub(crate) fn exercise(
         view.receive(event);
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.clip_view_open = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -149,13 +149,14 @@ pub(crate) fn exercise(
         view.computer_keyboard.prepared = true;
         view.computer_keyboard.request_id = 42;
         view.computer_keyboard.input = Some(Arc::clone(&input));
-        view.midi_recorder.mode = Mode::Preparing;
-        view.midi_recorder.binding = Some(Arc::new(
+        view.midi_editor.recorder.mode = Mode::Preparing;
+        view.midi_editor.recorder.binding = Some(Arc::new(
             MidiTakeBinding::capture(&project, track, clip).unwrap(),
         ));
-        view.midi_recorder.generation = generation;
-        view.midi_recorder.revision = revision;
-        view.midi_recorder.output_identity = view.audio.as_ref().unwrap().control.output_identity();
+        view.midi_editor.recorder.generation = generation;
+        view.midi_editor.recorder.revision = revision;
+        view.midi_editor.recorder.output_identity =
+            view.audio.as_ref().unwrap().control.output_identity();
         view.midi_recording_published(context, Some(42), new_revision);
         assert_eq!(
             view.audio
@@ -198,7 +199,7 @@ pub(crate) fn exercise(
         }
     }
     let next_target = editor.update(&mut visual, |view, _| {
-        let mut next = view.midi_recorder.target.unwrap();
+        let mut next = view.midi_editor.recorder.target.unwrap();
         next.capture.take_id += 1;
         assert!(
             view.audio
@@ -215,16 +216,16 @@ pub(crate) fn exercise(
     editor.update(&mut visual, |view, _| {
         let before = view.state.as_ref().unwrap().project.snapshot();
         assert!(view.tick_midi_recording());
-        assert!(view.midi_recorder.mode == Mode::Interrupted);
-        assert!(view.midi_recorder.blocks_edits());
-        assert!(view.midi_recorder.pending_commit.is_none());
+        assert!(view.midi_editor.recorder.mode == Mode::Interrupted);
+        assert!(view.midi_editor.recorder.blocks_edits());
+        assert!(view.midi_editor.recorder.pending_commit.is_none());
         assert!(
             view.error
                 .as_ref()
                 .unwrap()
                 .contains("recording events arrived faster than they could be saved")
         );
-        let notes = view.midi_recorder.take.as_ref().unwrap().notes();
+        let notes = view.midi_editor.recorder.take.as_ref().unwrap().notes();
         assert_eq!(notes.len(), 512);
         let first = notes[0].start_frame;
         for (index, note) in notes.iter().enumerate() {
@@ -239,7 +240,7 @@ pub(crate) fn exercise(
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(view.audio.as_ref().unwrap().control.midi_target().is_none());
         view.discard_midi_take();
-        assert!(!view.midi_recorder.blocks_edits());
+        assert!(!view.midi_editor.recorder.blocks_edits());
         view.audio
             .as_mut()
             .unwrap()
@@ -251,7 +252,7 @@ pub(crate) fn exercise(
     render(&mut frames[..1], &mut host[..2]).unwrap();
     editor.update(&mut visual, |view, _| {
         assert!(view.tick_midi_recording());
-        assert!(!view.midi_recorder.blocks_edits());
+        assert!(!view.midi_editor.recorder.blocks_edits());
         assert_eq!(view.state.as_ref().unwrap().revision, revision);
         assert_eq!(
             view.state.as_ref().unwrap().project.as_ref(),

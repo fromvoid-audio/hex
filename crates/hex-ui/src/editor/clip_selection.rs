@@ -147,11 +147,11 @@ impl EditorView {
         self.clip_selection.scope = Some((self.project_generation, state.revision));
         self.selected_track = Some(track);
         self.selected_clip = Some(clip);
-        self.midi_selection.clear();
-        self.midi_note_gesture = None;
-        self.midi_group_gesture = None;
-        self.piano_beat_start = 0;
-        self.midi_hit_cycle = None;
+        self.midi_editor.selection.clear();
+        self.midi_editor.note_gesture = None;
+        self.midi_editor.group_gesture = None;
+        self.midi_editor.piano_beat_start = 0;
+        self.midi_editor.hit_cycle = None;
         true
     }
     pub(super) fn clip_cut_submitted(&mut self) {
@@ -404,7 +404,7 @@ mod tests {
         );
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             assert!(view.active_clip_drag.is_none() && view.time_selection_gesture.is_none());
         });
     }

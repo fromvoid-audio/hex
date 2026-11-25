@@ -41,7 +41,7 @@ impl EditorView {
             self.cancel_new_preparation();
         }
         let clip_cut_completed = self.observe_clip_cuts(&event);
-        self.document_format_upgrade_required = event.document_format_upgrade_required;
+        self.persistence.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         self.observe_automation_close(&event);
         let sampler_edit_complete = event.sampler_edit_complete;
@@ -67,10 +67,11 @@ impl EditorView {
         }
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
-        let gain_control_preview = self.audio_clip_controls.has_gain_preview();
-        let play_start_control_preview = self.audio_clip_controls.has_play_start_preview();
+        let gain_control_preview = self.audio_detail.clip_controls.has_gain_preview();
+        let play_start_control_preview = self.audio_detail.clip_controls.has_play_start_preview();
         if self
-            .audio_clip_controls
+            .audio_detail
+            .clip_controls
             .observe(self.project_generation, &event)
         {
             if gain_control_preview {
@@ -93,7 +94,8 @@ impl EditorView {
         self.truncated_import
             .observe(self.project_generation, &event);
         self.section_request_complete(&event);
-        self.project_rate_settings
+        self.settings
+            .project_rate
             .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
@@ -126,8 +128,8 @@ impl EditorView {
             self.time_selection_key_held = false;
             self.section_loop_key = Default::default();
             self.clear_device_confirmation_on_project_replace();
-            self.pending_plugin_effect.take();
-            self.failed_plugin_proposal.take();
+            self.device_panel.pending_plugin_effect.take();
+            self.device_panel.failed_plugin_proposal.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
@@ -161,7 +163,7 @@ impl EditorView {
             self.pending_audio_commands.clear();
             self.pending_seek_ticket = None;
             self.pending_metronome_ticket = None;
-            self.pending_session_ticket = None;
+            self.session_grid.pending_session_ticket = None;
             self.playback_candidates.clear();
             self.audible_playback = None;
             self.deferred_toggle_play = None;
@@ -176,7 +178,7 @@ impl EditorView {
         }
         if event.project_replaced {
             self.stopped_playback_restore = None;
-            self.pending_browser_insertions.clear();
+            self.browser.pending_insertions.clear();
         }
         if event.request_complete
             && event.computer_keyboard_complete.is_none()
@@ -190,7 +192,8 @@ impl EditorView {
             .audio_batch_complete
             .as_ref()
             .is_some_and(|completed| {
-                self.audio_batch
+                self.persistence
+                    .audio_batch
                     .as_ref()
                     .is_some_and(|active| Arc::ptr_eq(active, completed))
             })
@@ -200,17 +203,19 @@ impl EditorView {
             } else {
                 self.audio_recorder.pending_commit_path = None;
             }
-            self.audio_batch = None;
-            self.audio_batch_progress = None;
+            self.persistence.audio_batch = None;
+            self.persistence.audio_batch_progress = None;
         }
         self.reconcile_group_selection(&event);
         let bounce_drop_cursor = if event.bounce_complete.as_ref().is_some_and(|completed| {
-            self.bounce_control
+            self.persistence
+                .bounce_control
                 .as_ref()
                 .is_some_and(|active| active.same_job(completed))
         }) {
-            self.bounce_control = None;
-            self.pending_bounce_drop
+            self.persistence.bounce_control = None;
+            self.persistence
+                .pending_bounce_drop
                 .take()
                 .and_then(|p| p.complete(&event))
         } else {
@@ -221,21 +226,22 @@ impl EditorView {
         }
         // A bounce drop's ghost retires with its job's terminal, in the same
         // receive that installs the adopted (or unchanged, refused) state.
-        if self.bounce_control.is_none() {
-            self.pending_bounce_drop = None;
+        if self.persistence.bounce_control.is_none() {
+            self.persistence.pending_bounce_drop = None;
         }
         if event.save_complete {
-            self.saving_project = false;
+            self.persistence.saving_project = false;
         }
         if event.request_complete && !event.plugin_parameter_observation {
             self.worker_requests_pending = self.worker_requests_pending.saturating_sub(1);
         }
         if self
-            .browser_insertion_flight
+            .browser
+            .insertion_flight
             .as_mut()
             .is_some_and(|flight| flight.finished(self.project_generation, &event))
         {
-            self.browser_insertion_flight = None;
+            self.browser.insertion_flight = None;
         }
         if let Some(input) = &event.live_expression_complete {
             if self
@@ -251,12 +257,12 @@ impl EditorView {
             }
         }
         if event.open_complete {
-            self.opening_project = false;
-            self.pending_open_path = None;
-            self.pending_open_mode = None;
+            self.persistence.opening_project = false;
+            self.persistence.pending_open_path = None;
+            self.persistence.pending_open_mode = None;
             self.duplicate_intent.cancel_chain();
             if !event.project_replaced || event.error.is_some() {
-                self.requested_audio_mode = None;
+                self.persistence.requested_audio_mode = None;
             }
         }
         if event
@@ -266,9 +272,10 @@ impl EditorView {
             return None;
         }
         if let Some(input) = event.tuning_audition_complete.as_ref() {
-            let current = self.tuning.open
+            let current = self.settings.tuning.open
                 && input.project_generation == self.project_generation
                 && self
+                    .settings
                     .tuning
                     .audition_input
                     .as_ref()
@@ -281,11 +288,11 @@ impl EditorView {
                 input.cancel();
                 return None;
             }
-            self.tuning.audition_preparing = false;
+            self.settings.tuning.audition_preparing = false;
             if input.is_cancelled() {
                 self.cancel_tuning_audition();
                 if let Some(error) = event.error {
-                    self.tuning.error = Some(error.clone());
+                    self.settings.tuning.error = Some(error.clone());
                     self.error = Some(error.into());
                 }
                 return None;
@@ -360,7 +367,7 @@ impl EditorView {
         // its next completion is the exact response for this bounded intent.
         let scene_duplicate_intent =
             if event.request_complete && !event.gesture_request && !event.tuning_gesture_request {
-                self.pending_scene_duplicate.take()
+                self.session_grid.pending_scene_duplicate.take()
             } else {
                 None
             };
@@ -380,7 +387,7 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|previous| previous.revision != revision)
         {
-            self.resident_device_preview = None;
+            self.device_panel.resident_preview = None;
             self.resident_tuning_preview = None;
             self.invalidate_prepared_seek();
             self.cancel_active_browser_audio_drag();
@@ -390,7 +397,7 @@ impl EditorView {
         let resize_owns_viewport = retired_trim.is_some()
             || self.pending_trim.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some();
+            || self.midi_editor.active_trim_drag.is_some();
         self.reconcile_arranger_navigation(
             &event_state,
             event.project_replaced,
@@ -513,19 +520,20 @@ impl EditorView {
             self.loop_state_installed(event.error.is_none());
         }
         if event.project_replaced {
-            self.playback_settings.pending = None;
+            self.settings.playback.pending = None;
             self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
-            self.midi_hit_cycle = None;
-            self.midi_scene_cache.clear();
+            self.midi_editor.hit_cycle = None;
+            self.midi_editor.scene_cache.clear();
             if let Ok(mut cache) = self.waveform_geometry_cache.try_borrow_mut() {
                 cache.clear();
             }
-            self.piano_beat_start = 0;
-            self.piano_beat_span =
+            self.midi_editor.piano_beat_start = 0;
+            self.midi_editor.piano_beat_span =
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());
             self.project_generation = self.project_generation.saturating_add(1);
             self.document_audio_mode = self
+                .persistence
                 .requested_audio_mode
                 .take()
                 .or_else(|| {
@@ -590,7 +598,7 @@ impl EditorView {
                     result => result.close(),
                 }
             }
-            self.device_gesture.reset();
+            self.device_panel.gesture.reset();
             self.refuse_device_gesture_barriers("device load canceled · project replaced");
             self.edit_cursor = None;
             self.clip_drop_cursor_epoch = None;
@@ -617,9 +625,9 @@ impl EditorView {
             self.pending_playback = None;
             self.pending_resident_publication = None;
             self.clear_route_telemetry();
-            self.degraded_plugins = Default::default();
-            self.reloading_plugins.clear();
-            self.plugin_editor_windows.clear();
+            self.device_panel.degraded_plugins = Default::default();
+            self.device_panel.reloading_plugins.clear();
+            self.device_panel.plugin_editor_windows.clear();
             self.drag_lanes.clear();
             self.track_drop_lanes.clear();
             self.drag_lane_epochs.clear();
@@ -634,21 +642,21 @@ impl EditorView {
             self.stop_transport(false);
             self.viewport = None;
             self.duplicate_intent.reject();
-            self.pending_scene_duplicate = None;
+            self.session_grid.pending_scene_duplicate = None;
             self.selected_track = None;
             self.device_panel.main_selected = None;
             self.track_selection = crate::editor::selection::TrackSelection::default();
             self.selected_clip = None;
-            self.selected_scene = None;
-            self.selected_cell = None;
-            self.session_copy_source = None;
-            self.session_track_start = 0;
-            self.midi_selection.clear();
+            self.session_grid.selected_scene = None;
+            self.session_grid.selected_cell = None;
+            self.session_grid.copy_source = None;
+            self.session_grid.track_start = 0;
+            self.midi_editor.selection.clear();
             self.arrangement_focus.reset();
             self.reconcile_arrangement_focus();
         } else if let Some(state) = self.state.clone() {
             let previous_clip = self.detail_clip_id();
-            if self.session_copy_source.is_some_and(|clip| {
+            if self.session_grid.copy_source.is_some_and(|clip| {
                 state.project.midi_clip(clip).is_none()
                     && !state
                         .project
@@ -656,10 +664,10 @@ impl EditorView {
                         .iter()
                         .any(|track| track.clips().iter().any(|item| item.id() == clip))
             }) {
-                self.session_copy_source = None;
+                self.session_grid.copy_source = None;
             }
             self.track_selection.reconcile(&state.project);
-            if self.selected_track.is_some() || self.focused_return.is_some() {
+            if self.selected_track.is_some() || self.session_grid.focused_return.is_some() {
                 self.device_panel.main_selected = None;
             }
             if self.device_panel.main_selected != Some(self.project_generation) {
@@ -699,33 +707,38 @@ impl EditorView {
                 })
             {
                 self.selected_track = Some(cell.track());
-                self.selected_scene = Some(cell.scene());
-                self.selected_cell = Some((cell.track(), cell.scene()));
+                self.session_grid.selected_scene = Some(cell.scene());
+                self.session_grid.selected_cell = Some((cell.track(), cell.scene()));
             }
             if self
+                .session_grid
                 .selected_scene
                 .is_some_and(|scene| !state.project.scenes().iter().any(|item| item.id() == scene))
             {
-                self.selected_scene = None;
+                self.session_grid.selected_scene = None;
             }
-            if self.selected_cell.is_some_and(|(track, scene)| {
-                state.project.track(track).is_none()
-                    || !state.project.scenes().iter().any(|item| item.id() == scene)
-            }) {
-                self.selected_cell = None;
+            if self
+                .session_grid
+                .selected_cell
+                .is_some_and(|(track, scene)| {
+                    state.project.track(track).is_none()
+                        || !state.project.scenes().iter().any(|item| item.id() == scene)
+                })
+            {
+                self.session_grid.selected_cell = None;
             }
             if self.detail_clip_id() != previous_clip {
                 self.cancel_midi_note_gesture();
-                self.midi_hit_cycle = None;
-                self.midi_selection.clear();
-                self.piano_beat_start = 0;
+                self.midi_editor.hit_cycle = None;
+                self.midi_editor.selection.clear();
+                self.midi_editor.piano_beat_start = 0;
                 if let Some(length) = self
                     .detail_clip_id()
                     .and_then(|clip| state.project.midi_source(clip))
                     .map(|source| source.source_length().raw())
                 {
-                    self.piano_beat_span = hex_project::BeatTime::from_raw(
-                        self.piano_beat_span.raw().min(length.max(1)),
+                    self.midi_editor.piano_beat_span = hex_project::BeatTime::from_raw(
+                        self.midi_editor.piano_beat_span.raw().min(length.max(1)),
                     );
                 }
             }
@@ -736,33 +749,34 @@ impl EditorView {
                 // Source markers and Arrangement duration may change independently.
                 // Preserve manual navigation across ACKs within the bounded authoring domain.
                 let source_length = clip.source_length().raw();
-                self.piano_beat_span = hex_project::BeatTime::from_raw(
-                    self.piano_beat_span
+                self.midi_editor.piano_beat_span = hex_project::BeatTime::from_raw(
+                    self.midi_editor
+                        .piano_beat_span
                         .raw()
                         .min(crate::editor::midi_scene::zoom_limit(source_length))
                         .max(1),
                 );
-                self.piano_beat_start = crate::editor::midi_scene::clamp_start(
-                    self.piano_beat_start,
-                    self.piano_beat_span.raw(),
+                self.midi_editor.piano_beat_start = crate::editor::midi_scene::clamp_start(
+                    self.midi_editor.piano_beat_start,
+                    self.midi_editor.piano_beat_span.raw(),
                 );
                 let valid = clip.notes().iter().map(|note| note.id());
-                match self.midi_selection.retain_valid(valid) {
+                match self.midi_editor.selection.retain_valid(valid) {
                     Ok(true) => {
-                        self.midi_note_gesture = None;
-                        self.midi_group_gesture = None;
+                        self.midi_editor.note_gesture = None;
+                        self.midi_editor.group_gesture = None;
                     }
                     Ok(false) => {}
                     Err(error) => {
-                        self.midi_selection.clear();
-                        self.midi_note_gesture = None;
-                        self.midi_group_gesture = None;
+                        self.midi_editor.selection.clear();
+                        self.midi_editor.note_gesture = None;
+                        self.midi_editor.group_gesture = None;
                         self.error = Some(error.into());
                     }
                 }
-            } else if self.midi_selection.clear() {
-                self.midi_note_gesture = None;
-                self.midi_group_gesture = None;
+            } else if self.midi_editor.selection.clear() {
+                self.midi_editor.note_gesture = None;
+                self.midi_editor.group_gesture = None;
             }
         }
         self.audio_admission
@@ -780,11 +794,11 @@ impl EditorView {
                 if intent.select_on_completion
                     && intent.project_generation == self.project_generation
                     && self.mode == crate::editor::EditorMode::Session
-                    && !self.opening_project
-                    && !self.close_prompt_open
+                    && !self.persistence.opening_project
+                    && !self.persistence.close_prompt_open
                     && self.recovery.generation().is_none()
-                    && self.selected_scene == Some(intent.source_scene)
-                    && self.selected_cell.is_none()
+                    && self.session_grid.selected_scene == Some(intent.source_scene)
+                    && self.session_grid.selected_cell.is_none()
                 {
                     self.select_session_scene(scene);
                 }
@@ -811,18 +825,18 @@ impl EditorView {
                 && clip_drop
                     .as_ref()
                     .is_some_and(|(cursor, moved)| cursor.track == track && moved.is_some());
-            self.focused_return = None;
+            self.session_grid.focused_return = None;
             self.device_panel.main_selected = None;
             if let Some(state) = &self.state {
                 self.track_selection
                     .select(&state.project, track, false, false);
             }
-            self.midi_note_gesture = None;
-            self.midi_group_gesture = None;
+            self.midi_editor.note_gesture = None;
+            self.midi_editor.group_gesture = None;
             self.selected_track = Some(track);
             if !moved_selection {
                 self.selected_clip = None;
-                self.midi_selection.clear();
+                self.midi_editor.selection.clear();
             }
             self.reconcile_arrangement_focus();
             self.arrangement_focus.reveal_created_track(track);
@@ -839,14 +853,14 @@ impl EditorView {
                     .map(|track| track.id())
             });
             if let Some(track) = track {
-                self.midi_note_gesture = None;
-                self.midi_group_gesture = None;
+                self.midi_editor.note_gesture = None;
+                self.midi_editor.group_gesture = None;
                 self.selected_track = Some(track);
                 self.selected_clip = Some(clip);
                 self.clip_selection.only(track, clip);
-                self.piano_beat_start = 0;
-                self.midi_hit_cycle = None;
-                self.midi_selection.clear();
+                self.midi_editor.piano_beat_start = 0;
+                self.midi_editor.hit_cycle = None;
+                self.midi_editor.selection.clear();
             }
         } else if let Some(hex_project::Created::SessionClip(clip)) = event.created {
             let owner = self.state.as_ref().and_then(|state| {
@@ -871,8 +885,9 @@ impl EditorView {
             }
         }
         if let Some(ack) = event.tuning_gesture_ack.as_ref() {
-            let key = self.tuning.client.snapshot().map(|s| s.key);
+            let key = self.settings.tuning.client.snapshot().map(|s| s.key);
             let matched = self
+                .settings
                 .tuning
                 .client
                 .acknowledge_with_snapshot(ack, event.active_tuning_gesture);
@@ -895,22 +910,22 @@ impl EditorView {
                 && event.active_tuning_gesture.is_none()
                 && key == Some(ack.key)
             {
-                self.tuning.client.reset();
+                self.settings.tuning.client.reset();
             }
             if let Some(reason) = ack.reason.as_ref() {
-                self.tuning.error = Some(reason.clone());
+                self.settings.tuning.error = Some(reason.clone());
             }
         }
         if event.project_replaced {
-            self.tuning.client.reset();
+            self.settings.tuning.client.reset();
         }
         // Canonical publication remains independent of audio availability.
         // Active or rejected transient gestures retain their applied table.
         if event.tuning_preview.is_none()
             && event.active_tuning_gesture.is_none()
-            && self.tuning.client.snapshot().is_none()
+            && self.settings.tuning.client.snapshot().is_none()
         {
-            self.tuning.broadcast.observe(
+            self.settings.tuning.broadcast.observe(
                 self.project_generation,
                 revision,
                 event_state.project.tuning(),
@@ -921,13 +936,17 @@ impl EditorView {
         }
         if event.active_device_gesture.is_none()
             && let Some(ack) = event.gesture_ack.as_ref()
-            && self.device_gesture.snapshot().is_some_and(|snapshot| {
-                snapshot.key == ack.key
-                    && matches!(
-                        snapshot.target,
-                        hex_session::device_gesture::GestureTarget::PluginParameter { .. }
-                    )
-            })
+            && self
+                .device_panel
+                .gesture
+                .snapshot()
+                .is_some_and(|snapshot| {
+                    snapshot.key == ack.key
+                        && matches!(
+                            snapshot.target,
+                            hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                        )
+                })
         {
             self.probe_failed_plugin_automation();
         }
@@ -954,16 +973,19 @@ impl EditorView {
             event.project_replaced,
             event.active_device_gesture.is_some(),
             event.gesture_ack.as_ref(),
-            self.device_gesture.snapshot().map(|snapshot| snapshot.key),
-        ) && self.device_gesture.snapshot().is_some()
+            self.device_panel
+                .gesture
+                .snapshot()
+                .map(|snapshot| snapshot.key),
+        ) && self.device_panel.gesture.snapshot().is_some()
         {
             self.refuse_deferred_tuning_writes();
             if crate::editor::device_gesture::retire_failed_tuning_library_barriers(
-                &mut self.device_gesture_barriers,
+                &mut self.device_panel.gesture_barriers,
             ) {
-                self.tuning.library_pending = None;
+                self.settings.tuning.library_pending = None;
             }
-            if let Some(snapshot) = self.device_gesture.snapshot() {
+            if let Some(snapshot) = self.device_panel.gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
             if event.project_replaced {
@@ -971,10 +993,10 @@ impl EditorView {
             } else {
                 self.refuse_catalog_barriers("device load canceled · device edit was retired");
             }
-            self.device_gesture.reset();
+            self.device_panel.gesture.reset();
             crate::editor::device_gesture::retire_deferred(
                 &mut self.pending_requests,
-                &mut self.device_gesture_barriers,
+                &mut self.device_panel.gesture_barriers,
                 event.project_replaced,
             );
         }
@@ -987,7 +1009,7 @@ impl EditorView {
             preview.identity.project_generation == self.project_generation
                 && preview.identity.canonical_revision == revision
         }) {
-            self.resident_device_preview = Some(hex_session::service::DevicePreview {
+            self.device_panel.resident_preview = Some(hex_session::service::DevicePreview {
                 identity: preview.identity,
                 state: Arc::clone(&preview.state),
             });
@@ -1115,7 +1137,7 @@ impl EditorView {
             self.error = Some(error.into());
         }
         if let Some(message) = playback_capability {
-            self.session_capability_message = message.clone();
+            self.session_grid.capability_message = message.clone();
             if let Some(message) = message {
                 self.error = Some(message.into());
             }
@@ -1130,10 +1152,10 @@ impl EditorView {
             && !event.gesture_request
             && !event.tuning_gesture_request
             && self.mode == crate::editor::EditorMode::Session
-            && self.selected_cell.is_none()
-            && self.selected_scene.is_some()
+            && self.session_grid.selected_cell.is_none()
+            && self.session_grid.selected_scene.is_some()
         {
-            self.reveal_session_position(None, self.selected_scene);
+            self.reveal_session_position(None, self.session_grid.selected_scene);
         }
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
@@ -1155,13 +1177,13 @@ impl EditorView {
         if let Some(path) = &successfully_opened_path {
             self.check_leftover_recovery(Some(path.clone()));
         }
-        if !self.reloading_plugins.is_empty()
+        if !self.device_panel.reloading_plugins.is_empty()
             && self.worker_requests_pending == 0
             && !self
                 .queued_requests()
                 .any(|request| matches!(request, Request::ReloadPlugin { .. }))
         {
-            self.reloading_plugins.clear();
+            self.device_panel.reloading_plugins.clear();
         }
         self.start_ahead_time_duplicate();
         self.continue_time_duplicate(time_duplicate_repeats);

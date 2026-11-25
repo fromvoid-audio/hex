@@ -84,7 +84,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
     };
     let (track_frame, _) = assert_limiter_bounds(&mut visual, device);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -92,7 +92,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
     assert_eq!(return_frame.size, track_frame.size);
 
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -129,7 +129,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     visual.run_until_parked();
     let start = bounds(&mut visual, "2-slider-thumb").center();
@@ -140,7 +140,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         let state = view
@@ -189,8 +189,8 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     editor.read_with(cx, |view, _| {
         let current = view
@@ -316,7 +316,7 @@ fn limiter_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut
             ParameterValue::Float(100.0),
             "disabled manual release ignores the drag"
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
 }
 
@@ -345,8 +345,8 @@ fn limiter_ceiling_keeps_released_triangle_and_readout_during_delayed_ack(cx: &m
     );
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);

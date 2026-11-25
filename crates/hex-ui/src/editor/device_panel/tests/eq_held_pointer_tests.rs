@@ -71,8 +71,8 @@ fn held_node_window(cx: &mut TestAppContext) -> Fixture {
     editor.update(cx, |view, cx| {
         assert!(Arc::ptr_eq(&environment, &view.test_environment));
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = false;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = false;
         view.mode = crate::editor::EditorMode::Arrangement;
         cx.notify();
     });
@@ -85,7 +85,7 @@ fn held_node_window(cx: &mut TestAppContext) -> Fixture {
         .expect("actual detail-pane toggle");
     visual.simulate_click(toggle.center(), Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.clip_view_open && view.device_panel_active)
+        assert!(view.audio_detail.clip_view_open && view.device_panel.active)
     });
     let start = plot(&mut visual, device, 0.5, 0.5);
     eq_double_click(&mut visual, start);
@@ -240,17 +240,23 @@ fn eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit(
             visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         }
         let key = editor.read_with(cx, |view, _| {
-            assert!(view.last_transport_command.is_none());
-            view.device_gesture.snapshot().map(|snapshot| snapshot.key)
+            assert!(view.test_probes.last_transport_command.is_none());
+            view.device_panel
+                .gesture
+                .snapshot()
+                .map(|snapshot| snapshot.key)
         });
         visual.simulate_keystrokes("space");
         editor.read_with(cx, |view, _| {
             assert!(
-                view.last_transport_command.is_some(),
+                view.test_probes.last_transport_command.is_some(),
                 "actual Space binding did not reach transport while moving={moving}"
             );
             assert_eq!(
-                view.device_gesture.snapshot().map(|snapshot| snapshot.key),
+                view.device_panel
+                    .gesture
+                    .snapshot()
+                    .map(|snapshot| snapshot.key),
                 key
             );
             assert!(
@@ -261,7 +267,7 @@ fn eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit(
         graph.read_with(cx, |graph, _| assert_eq!(graph.is_dragging(), moving));
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         pump_until(&editor, cx, settled);
-        editor.update(cx, |view, _| view.last_transport_command = None);
+        editor.update(cx, |view, _| view.test_probes.last_transport_command = None);
     }
 }
 
@@ -357,8 +363,8 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         let track = &view.state.as_ref().unwrap().project.tracks()[0];
         let device = track.devices()[0].id();
         view.selected_track = Some(track.id());
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         view.mode = crate::editor::EditorMode::Arrangement;
         cx.notify();
         device
@@ -411,18 +417,23 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
             let current_preview_applied = !moving
                 || view.audible_playback.as_ref().is_some_and(|audible| {
                     audible.device_preview_identity.is_some_and(|identity| {
-                        view.device_gesture.snapshot().is_some_and(|snapshot| {
-                            identity.key == snapshot.key && identity.sequence == snapshot.sequence
-                        }) && audible.audio_revision
-                            == view
-                                .audio
-                                .as_ref()
-                                .unwrap()
-                                .control
-                                .status()
-                                .unwrap()
-                                .applied_revision
-                                .load(Acquire)
+                        view.device_panel
+                            .gesture
+                            .snapshot()
+                            .is_some_and(|snapshot| {
+                                identity.key == snapshot.key
+                                    && identity.sequence == snapshot.sequence
+                            })
+                            && audible.audio_revision
+                                == view
+                                    .audio
+                                    .as_ref()
+                                    .unwrap()
+                                    .control
+                                    .status()
+                                    .unwrap()
+                                    .applied_revision
+                                    .load(Acquire)
                     })
                 });
             !current_preview_applied
@@ -453,7 +464,10 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
             .unwrap()
         });
         let key = editor.read_with(cx, |view, _| {
-            view.device_gesture.snapshot().map(|snapshot| snapshot.key)
+            view.device_panel
+                .gesture
+                .snapshot()
+                .map(|snapshot| snapshot.key)
         });
         visual.simulate_keystrokes("space");
         editor.read_with(cx, |view, _| {
@@ -473,7 +487,10 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
                         view.error,
                         view.prepared_seek.is_some(),
                         view.latched_seek_intent.is_some(),
-                        view.device_gesture.snapshot().map(|snapshot| snapshot.key)
+                        view.device_panel
+                            .gesture
+                            .snapshot()
+                            .map(|snapshot| snapshot.key)
                     )
                 });
                 panic!("actual Space did not start callback while moving={moving}: {detail}");
@@ -481,7 +498,10 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         }
         editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.device_gesture.snapshot().map(|snapshot| snapshot.key),
+                view.device_panel
+                    .gesture
+                    .snapshot()
+                    .map(|snapshot| snapshot.key),
                 key
             )
         });
@@ -524,7 +544,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
 
 fn preview_is_applied(view: &EditorView) -> bool {
     use std::sync::atomic::Ordering::Acquire;
-    let Some(snapshot) = view.device_gesture.snapshot() else {
+    let Some(snapshot) = view.device_panel.gesture.snapshot() else {
         return false;
     };
     view.worker_requests_pending == 0
@@ -566,7 +586,7 @@ fn pump_actual_until(
         assert!(
             std::time::Instant::now() < deadline,
             "actual output/worker did not settle: {}",
-            editor.read_with(cx, |view, _| format!("error={:?} generation={} requests={} deferred={} gesture={:?} seek={:?} latched={} pending_playback={} publication={} candidates={} audio={} tracks={}", view.error, view.project_generation, view.worker_requests_pending, view.pending_requests.len(), view.device_gesture.snapshot().map(|s|s.key), view.prepared_seek.as_ref().map(|s|(s.stage,s.cancelled)), view.latched_seek_intent.is_some(), view.pending_playback.is_some(), view.pending_resident_publication.is_some(), view.playback_candidates.len(), view.audio.is_some(), view.state.as_ref().map_or(0,|s|s.project.tracks().len())))
+            editor.read_with(cx, |view, _| format!("error={:?} generation={} requests={} deferred={} gesture={:?} seek={:?} latched={} pending_playback={} publication={} candidates={} audio={} tracks={}", view.error, view.project_generation, view.worker_requests_pending, view.pending_requests.len(), view.device_panel.gesture.snapshot().map(|s|s.key), view.prepared_seek.as_ref().map(|s|(s.stage,s.cancelled)), view.latched_seek_intent.is_some(), view.pending_playback.is_some(), view.pending_resident_publication.is_some(), view.playback_candidates.len(), view.audio.is_some(), view.state.as_ref().map_or(0,|s|s.project.tracks().len())))
         );
     }
 }
@@ -655,7 +675,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                     let next = plot(&mut visual, device, 0.71, 0.6);
                     visual.simulate_mouse_move(next, Some(MouseButton::Left), Modifiers::default());
                     editor.read_with(cx, |view, _| {
-                        let snapshot = view.device_gesture.snapshot().unwrap();
+                        let snapshot = view.device_panel.gesture.snapshot().unwrap();
                         assert_eq!(snapshot.key, identity.key);
                         assert!(snapshot.sequence > identity.sequence);
                     });
@@ -701,7 +721,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                     let current = audible
                         .device_preview_identity
                         .expect("seek remains a preview");
-                    let snapshot = view.device_gesture.snapshot().unwrap();
+                    let snapshot = view.device_panel.gesture.snapshot().unwrap();
                     assert_eq!(
                         (current.key, current.sequence),
                         (snapshot.key, snapshot.sequence)
@@ -718,7 +738,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 visual.simulate_keystrokes("space");
                 editor.read_with(cx, |view, _| {
                     assert_eq!(
-                        view.last_transport_command,
+                        view.test_probes.last_transport_command,
                         Some(hex_engine::playback::PlaybackCommand::Pause)
                     );
                 });
@@ -794,7 +814,10 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                             .is_none()
                     );
                 } else if action == "pause" {
-                    assert_eq!(view.device_gesture.snapshot().unwrap().key, identity.key);
+                    assert_eq!(
+                        view.device_panel.gesture.snapshot().unwrap().key,
+                        identity.key
+                    );
                     assert_eq!(read(view, device), before);
                 } else {
                     assert_eq!(
@@ -1109,7 +1132,11 @@ fn request_worker_seek(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContex
             view.current_preroll_source().expect("applied stateful EQ");
         let audible = view.audible_playback.as_ref().unwrap();
         let preview = audible.device_preview_identity.expect("applied EQ preview");
-        let gesture = view.device_gesture.snapshot().expect("held EQ gesture");
+        let gesture = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("held EQ gesture");
         assert_eq!(
             (preview.key, preview.sequence),
             (gesture.key, gesture.sequence)
@@ -1218,12 +1245,12 @@ fn eq_review_overtaken_preview_preserves_held_seek_intent(cx: &mut TestAppContex
     visual.simulate_mouse_move(second, Some(MouseButton::Left), Modifiers::default());
     let submitted = editor.update(cx, |view, _| {
         view.pump_device_gesture();
-        view.device_gesture.snapshot().unwrap().sequence
+        view.device_panel.gesture.snapshot().unwrap().sequence
     });
     let third = plot(&mut visual, device, 0.73, 0.6);
     visual.simulate_mouse_move(third, Some(MouseButton::Left), Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.device_gesture.snapshot().unwrap().sequence > submitted)
+        assert!(view.device_panel.gesture.snapshot().unwrap().sequence > submitted)
     });
     review_receive_preview(&editor, cx, submitted);
     editor.read_with(cx, |view, _| {
@@ -1600,7 +1627,8 @@ fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut Te
     eq_double_click_down(&mut visual, start);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     pump_until(&editor, cx, |view| {
-        view.resident_device_preview
+        view.device_panel
+            .resident_preview
             .as_ref()
             .is_some_and(|preview| {
                 EqState::decode(preview.state.project.device(device).unwrap().state())
@@ -1611,7 +1639,7 @@ fn eq_new_node_reaches_worker_playback_preview_while_pointer_is_held(cx: &mut Te
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-            assert!(view.resident_device_preview.is_some());
+            assert!(view.device_panel.resident_preview.is_some());
         });
     }
     visual.simulate_keystrokes("escape");

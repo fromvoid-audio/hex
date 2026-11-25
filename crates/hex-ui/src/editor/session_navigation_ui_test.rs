@@ -107,8 +107,8 @@ fn session_window(
                     document_path: None,
                 }));
                 view.mode = EditorMode::Session;
-                view.selected_cell = Some((first_track, first_scene));
-                view.selected_scene = None;
+                view.session_grid.selected_cell = Some((first_track, first_scene));
+                view.session_grid.selected_scene = None;
                 view.focus.focus(window);
                 cx.notify();
             });
@@ -187,13 +187,16 @@ fn session_key_dispatch_navigates_without_edits_and_enter_refuses_offline_playba
     cx.simulate_keystrokes(handle, "right right down up left left enter");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.selected_cell,
+            view.session_grid.selected_cell,
             Some((
                 view.state.as_ref().unwrap().project.tracks()[0].id(),
                 first_scene
             ))
         );
-        assert_ne!(view.selected_cell, Some((second_track, first_scene)));
+        assert_ne!(
+            view.session_grid.selected_cell,
+            Some((second_track, first_scene))
+        );
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
         assert!(!view.play_intent.desired_playing(false));
@@ -209,25 +212,34 @@ fn session_keyboard_focus_switches_details_between_cells_and_clips(cx: &mut Test
     let (handle, editor, second_track, first_scene) = session_window(cx);
     cx.simulate_keystrokes(handle, "right");
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.selected_cell, Some((second_track, first_scene)));
-        assert!(view.device_panel_active, "cell focus selects devices");
-        assert!(view.clip_view_open, "keyboard focus keeps the pane open");
+        assert_eq!(
+            view.session_grid.selected_cell,
+            Some((second_track, first_scene))
+        );
+        assert!(view.device_panel.active, "cell focus selects devices");
+        assert!(
+            view.audio_detail.clip_view_open,
+            "keyboard focus keeps the pane open"
+        );
     });
 
     cx.simulate_keystrokes(handle, "left");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.selected_cell,
+            view.session_grid.selected_cell,
             Some((
                 view.state.as_ref().unwrap().project.tracks()[0].id(),
                 first_scene
             ))
         );
         assert!(
-            !view.device_panel_active,
+            !view.device_panel.active,
             "midi clip focus selects clip details"
         );
-        assert!(view.clip_view_open, "clip focus keeps the pane open");
+        assert!(
+            view.audio_detail.clip_view_open,
+            "clip focus keeps the pane open"
+        );
     });
 }
 
@@ -237,15 +249,18 @@ fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &m
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, _| {
             view.select_session_scene(first_scene);
-            view.midi_focus.focus(window);
+            view.midi_editor.focus.focus(window);
         });
     })
     .expect("focus piano editor");
     cx.simulate_keystrokes(handle, "right enter cmd-d");
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.selected_cell, None);
-        assert_eq!(view.selected_scene, Some(first_scene));
-        assert_ne!(view.selected_cell, Some((second_track, first_scene)));
+        assert_eq!(view.session_grid.selected_cell, None);
+        assert_eq!(view.session_grid.selected_scene, Some(first_scene));
+        assert_ne!(
+            view.session_grid.selected_cell,
+            Some((second_track, first_scene))
+        );
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
         assert_eq!(view.state.as_ref().unwrap().project.scenes().len(), 2);
@@ -294,8 +309,8 @@ fn session_cell_delete_and_undo_respect_piano_focus(cx: &mut TestAppContext) {
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, _| {
             view.select_session_cell(track, scene);
-            view.midi_focus.focus(window);
-            assert!(view.midi_focus.is_focused(window));
+            view.midi_editor.focus.focus(window);
+            assert!(view.midi_editor.focus.is_focused(window));
         });
     })
     .unwrap();
@@ -383,7 +398,7 @@ fn scene_launch_leads_the_caption_and_uses_the_guarded_offline_action(cx: &mut T
     visual.simulate_click(launch.center(), gpui::Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.selected_scene, Some(scene));
+        assert_eq!(view.session_grid.selected_scene, Some(scene));
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
@@ -474,8 +489,8 @@ fn session_scene_duplicate_and_reorder_keys_use_worker_edits(cx: &mut TestAppCon
             panic!("source should remain a midi clip")
         };
         assert_ne!(source_clip.id(), copy_clip.id());
-        assert_eq!(view.selected_scene, Some(duplicate.id()));
-        assert_eq!(view.selected_cell, None);
+        assert_eq!(view.session_grid.selected_scene, Some(duplicate.id()));
+        assert_eq!(view.session_grid.selected_cell, None);
         assert_eq!(view.selected_clip, None);
         duplicate.id()
     });
@@ -492,8 +507,8 @@ fn session_scene_duplicate_and_reorder_keys_use_worker_edits(cx: &mut TestAppCon
             })
     });
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.selected_scene, Some(duplicate_scene));
-        assert_eq!(view.selected_cell, None);
+        assert_eq!(view.session_grid.selected_scene, Some(duplicate_scene));
+        assert_eq!(view.session_grid.selected_cell, None);
         assert_eq!(view.selected_clip, None);
     });
 
@@ -509,7 +524,7 @@ fn session_scene_duplicate_and_reorder_keys_use_worker_edits(cx: &mut TestAppCon
             })
     });
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.selected_scene, Some(duplicate_scene));
+        assert_eq!(view.session_grid.selected_scene, Some(duplicate_scene));
         assert_eq!(
             view.state.as_ref().unwrap().project.scenes()[1].id(),
             duplicate_scene
@@ -546,10 +561,10 @@ fn scene_creation_completion_does_not_change_arrangement_selection(cx: &mut Test
     editor.update(cx, |view, _| {
         let revision = view.state.as_ref().unwrap().revision;
         view.duplicate_scene_if_current(first_scene, revision, view.project_generation);
-        assert!(view.pending_scene_duplicate.is_some());
+        assert!(view.session_grid.pending_scene_duplicate.is_some());
         view.set_mode(EditorMode::Arrangement);
         view.selected_track = Some(track);
-        view.selected_scene = Some(first_scene);
+        view.session_grid.selected_scene = Some(first_scene);
     });
     wait_for_worker(cx, handle, &editor, |view| {
         view.worker_requests_pending == 0
@@ -561,8 +576,8 @@ fn scene_creation_completion_does_not_change_arrangement_selection(cx: &mut Test
     editor.read_with(cx, |view, _| {
         assert_eq!(view.mode, EditorMode::Arrangement);
         assert_eq!(view.selected_track, Some(track));
-        assert_eq!(view.selected_scene, Some(first_scene));
-        assert_eq!(view.selected_cell, None);
+        assert_eq!(view.session_grid.selected_scene, Some(first_scene));
+        assert_eq!(view.session_grid.selected_cell, None);
     });
 }
 
@@ -607,9 +622,9 @@ fn duplicate_completion_preserves_a_newer_session_selection(cx: &mut TestAppCont
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(view.mode, EditorMode::Session);
-        assert_eq!(view.selected_scene, Some(newer_selection));
-        assert_eq!(view.selected_cell, None);
-        assert!(view.pending_scene_duplicate.is_none());
+        assert_eq!(view.session_grid.selected_scene, Some(newer_selection));
+        assert_eq!(view.session_grid.selected_cell, None);
+        assert!(view.session_grid.pending_scene_duplicate.is_none());
     });
 }
 
@@ -619,16 +634,16 @@ fn failed_scene_duplicate_clears_its_pending_selection_intent(cx: &mut TestAppCo
     editor.update(cx, |view, _| {
         view.select_session_scene(source);
         view.duplicate_selected_scene();
-        assert!(view.pending_scene_duplicate.is_some());
+        assert!(view.session_grid.pending_scene_duplicate.is_some());
     });
     wait_for_worker(cx, handle, &editor, |view| {
         view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.pending_scene_duplicate.is_none());
+        assert!(view.session_grid.pending_scene_duplicate.is_none());
         assert!(view.error.is_some());
         assert!(view.state.as_ref().unwrap().project.scenes().is_empty());
-        assert_eq!(view.selected_scene, None);
+        assert_eq!(view.session_grid.selected_scene, None);
     });
 
     submit_edit_and_wait(
@@ -641,8 +656,8 @@ fn failed_scene_duplicate_clears_its_pending_selection_intent(cx: &mut TestAppCo
     );
     editor.read_with(cx, |view, _| {
         let later = view.state.as_ref().unwrap().project.scenes()[0].id();
-        assert_eq!(view.selected_scene, Some(later));
-        assert!(view.pending_scene_duplicate.is_none());
+        assert_eq!(view.session_grid.selected_scene, Some(later));
+        assert!(view.session_grid.pending_scene_duplicate.is_none());
     });
 }
 
@@ -673,7 +688,7 @@ fn computer_keyboard_dispatch_reserves_notes_and_toggle_without_edit_shortcuts(
         assert_eq!(view.computer_keyboard.held()[2].unwrap().pitch, 62);
         assert_eq!(view.computer_keyboard.held()[14].unwrap().pitch, 74);
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "s, l and w must remain notes without solo or loop edits"
         );
     });

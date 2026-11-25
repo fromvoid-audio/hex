@@ -198,7 +198,7 @@ fn fixture(
         });
         visual.run_until_parked();
         if editor.read_with(cx, |view, _| {
-            !view.opening_project
+            !view.persistence.opening_project
                 && !view.edit_pending()
                 && view
                     .state
@@ -209,7 +209,7 @@ fn fixture(
         }
         editor.read_with(cx, |view, _| {
             assert!(
-                view.opening_project || view.error.is_none(),
+                view.persistence.opening_project || view.error.is_none(),
                 "profile open refused: {:?}",
                 view.error
             );
@@ -256,8 +256,8 @@ fn fixture(
     visual.update(|window, cx| {
         assert_eq!(window.scale_factor(), 2.0);
         editor.update(cx, |view, cx| {
-            view.clip_view_open = false;
-            view.device_panel_active = false;
+            view.audio_detail.clip_view_open = false;
+            view.device_panel.active = false;
             view.edit_cursor = None;
             view.focus.focus(window);
             cx.notify();

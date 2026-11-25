@@ -1001,13 +1001,13 @@ fn arming_gain_recording_preserves_active_sampler_text(cx: &mut TestAppContext) 
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("invalid");
     editor.update(&mut visual, |view, cx| {
-        assert!(view.sampler_parameter.numeric_draft_active());
+        assert!(view.device_panel.sampler_parameter.numeric_draft_active());
         view.toggle_gain_recording(track, cx);
         assert_eq!(
             view.error.as_deref(),
             Some("finish local drafts before arming gain recording")
         );
-        assert!(view.sampler_parameter.numeric_draft_active());
+        assert!(view.device_panel.sampler_parameter.numeric_draft_active());
         assert_eq!(
             crate::editor::sampler_parameter::tests::sampler_text(view, cx),
             "invalid"
@@ -1025,7 +1025,7 @@ fn arming_gain_recording_preserves_active_gain_text(cx: &mut TestAppContext) {
     let (mut visual, editor, _, track, _) =
         window_with_gain(cx, "hex.utility", Slot::Track, true, None);
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         view.gain_lane.track = Some(track);
         view.gain_lane.selected = Some(hex_project::BeatTime::from_raw(2));
         cx.notify();

@@ -282,14 +282,14 @@ pub(super) fn default_preferences_path() -> Option<PathBuf> {
 
 impl EditorView {
     pub(super) fn start_theme_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.theme_settings.path.clone() else {
-            self.theme_settings.loading = false;
-            self.theme_settings.writable = false;
-            self.theme_settings.error =
+        let Some(path) = self.settings.theme.path.clone() else {
+            self.settings.theme.loading = false;
+            self.settings.theme.writable = false;
+            self.settings.theme.error =
                 Some("theme settings unavailable · home directory is unset".into());
             return;
         };
-        let generation = self.theme_settings.load_generation;
+        let generation = self.settings.theme.load_generation;
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
@@ -316,40 +316,40 @@ impl EditorView {
         result: Result<ThemePreferences, hex_preferences::PreferencesError>,
         cx: &mut Context<Self>,
     ) {
-        if generation != self.theme_settings.load_generation {
+        if generation != self.settings.theme.load_generation {
             return;
         }
-        self.theme_settings.loading = false;
+        self.settings.theme.loading = false;
         match result {
             Ok(colors) => {
-                self.theme_settings.draft = colors;
+                self.settings.theme.draft = colors;
                 if theme::colors_are_legible(colors) {
-                    self.theme_settings.before_open = colors;
+                    self.settings.theme.before_open = colors;
                     theme::apply_preferences(colors);
                 } else {
-                    self.theme_settings.before_open = theme::preferences();
-                    self.theme_settings.error = Some(
+                    self.settings.theme.before_open = theme::preferences();
+                    self.settings.theme.error = Some(
                         "saved theme colors need more contrast; adjust the colors before saving"
                             .into(),
                     );
                 }
             }
             Err(error) => {
-                self.theme_settings.writable = false;
-                self.theme_settings.error = Some(format!(
+                self.settings.theme.writable = false;
+                self.settings.theme.error = Some(format!(
                     "could not load theme settings · {}",
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 ));
             }
         }
-        if self.theme_settings.open {
+        if self.settings.theme.open {
             self.create_theme_controls(cx);
         }
     }
 
     pub(super) fn open_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.theme_settings.open {
-            self.theme_settings.focus.focus(window);
+        if self.settings.theme.open {
+            self.settings.theme.focus.focus(window);
             return;
         }
         if self.controller_input_is_open() {
@@ -358,34 +358,34 @@ impl EditorView {
         self.prepare_controller_settings(cx);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         self.load_vst3_editor_settings(cx);
-        self.project_rate_settings.clear_draft();
-        self.theme_settings.open = true;
-        if self.theme_settings.loading {
-            self.theme_settings.error = Some("loading theme settings…".into());
-        } else if self.theme_settings.writable
-            && theme::colors_are_legible(self.theme_settings.draft)
+        self.settings.project_rate.clear_draft();
+        self.settings.theme.open = true;
+        if self.settings.theme.loading {
+            self.settings.theme.error = Some("loading theme settings…".into());
+        } else if self.settings.theme.writable
+            && theme::colors_are_legible(self.settings.theme.draft)
         {
-            self.theme_settings.error = None;
+            self.settings.theme.error = None;
         }
-        self.theme_settings.before_open = theme::preferences();
-        if theme::colors_are_legible(self.theme_settings.draft) {
-            self.theme_settings.draft = self.theme_settings.before_open;
+        self.settings.theme.before_open = theme::preferences();
+        if theme::colors_are_legible(self.settings.theme.draft) {
+            self.settings.theme.draft = self.settings.theme.before_open;
         }
-        if !self.theme_settings.loading {
+        if !self.settings.theme.loading {
             self.create_theme_controls(cx);
         }
-        self.theme_settings.focus.focus(window);
+        self.settings.theme.focus.focus(window);
         cx.notify();
     }
 
     pub(super) fn theme_settings_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.theme_settings.open {
+        if self.settings.theme.open {
             self.cancel_theme_settings(window, cx);
         }
     }
 
     fn create_theme_controls(&mut self, cx: &mut Context<Self>) {
-        if !self.theme_settings.controls.is_empty() {
+        if !self.settings.theme.controls.is_empty() {
             self.sync_theme_controls(cx);
             return;
         }
@@ -401,7 +401,7 @@ impl EditorView {
             ) {
                 Ok(spec) => spec,
                 Err(error) => {
-                    self.theme_settings.error = Some(error.to_string());
+                    self.settings.theme.error = Some(error.to_string());
                     return;
                 }
             };
@@ -411,12 +411,12 @@ impl EditorView {
                 theme::text(channel.channel_name()),
                 NumericControlKind::HorizontalSlider,
                 spec,
-                f64::from(channel.get(self.theme_settings.draft)),
+                f64::from(channel.get(self.settings.theme.draft)),
                 style,
             ) {
                 Ok(config) => config,
                 Err(error) => {
-                    self.theme_settings.error = Some(error.to_string());
+                    self.settings.theme.error = Some(error.to_string());
                     return;
                 }
             };
@@ -432,7 +432,7 @@ impl EditorView {
                         view.update_theme_channel(channel, event.value, cx);
                     }
                 });
-            self.theme_settings.controls.insert(
+            self.settings.theme.controls.insert(
                 channel,
                 ColorControl {
                     entity,
@@ -452,7 +452,7 @@ impl EditorView {
             ) {
                 Ok(spec) => spec,
                 Err(error) => {
-                    self.theme_settings.error = Some(error.to_string());
+                    self.settings.theme.error = Some(error.to_string());
                     return;
                 }
             };
@@ -467,7 +467,7 @@ impl EditorView {
             ) {
                 Ok(config) => config,
                 Err(error) => {
-                    self.theme_settings.error = Some(error.to_string());
+                    self.settings.theme.error = Some(error.to_string());
                     return;
                 }
             };
@@ -483,7 +483,7 @@ impl EditorView {
                         view.update_theme_hsb(channel, event.value, cx);
                     }
                 });
-            self.theme_settings.hsb_controls.insert(
+            self.settings.theme.hsb_controls.insert(
                 channel,
                 ColorControl {
                     entity,
@@ -491,11 +491,12 @@ impl EditorView {
                 },
             );
         }
-        let role = self.theme_settings.selected_role;
-        let color = role.color(self.theme_settings.draft);
+        let role = self.settings.theme.selected_role;
+        let color = role.color(self.settings.theme.draft);
         let rgb = RgbColor::new(color.red, color.green, color.blue);
         let hue = self
-            .theme_settings
+            .settings
+            .theme
             .role_hues
             .get(&role)
             .copied()
@@ -503,7 +504,7 @@ impl EditorView {
         let config = match ColorPickerConfig::new("theme-color-picker", rgb, hue, style) {
             Ok(config) => config,
             Err(error) => {
-                self.theme_settings.error = Some(error.into());
+                self.settings.theme.error = Some(error.into());
                 return;
             }
         };
@@ -511,51 +512,52 @@ impl EditorView {
         let subscription = cx.subscribe(&entity, |view, _, event: &ColorPickerEvent, cx| {
             view.update_theme_picker(*event, cx);
         });
-        self.theme_settings.picker = Some(entity);
-        self.theme_settings.picker_subscription = Some(subscription);
+        self.settings.theme.picker = Some(entity);
+        self.settings.theme.picker_subscription = Some(subscription);
         self.sync_theme_controls(cx);
     }
 
     fn update_theme_channel(&mut self, channel: ThemeChannel, value: f64, cx: &mut Context<Self>) {
-        if self.theme_settings.saving {
+        if self.settings.theme.saving {
             return;
         }
         if !value.is_finite() || !(0.0..=255.0).contains(&value) {
-            self.theme_settings.error = Some("color channel must be between 0 and 255".into());
+            self.settings.theme.error = Some("color channel must be between 0 and 255".into());
             return;
         }
-        channel.set(&mut self.theme_settings.draft, value.round() as u8);
-        if self.theme_settings.selected_role.name() == channel.color_name() {
+        channel.set(&mut self.settings.theme.draft, value.round() as u8);
+        if self.settings.theme.selected_role.name() == channel.color_name() {
             self.sync_theme_controls(cx);
         }
-        let valid = theme::colors_are_legible(self.theme_settings.draft);
+        let valid = theme::colors_are_legible(self.settings.theme.draft);
         if valid {
-            theme::apply_preferences(self.theme_settings.draft);
+            theme::apply_preferences(self.settings.theme.draft);
         }
-        self.theme_settings.error =
+        self.settings.theme.error =
             (!valid).then(|| "text needs 4.5:1 contrast; accent colors need 3:1 contrast".into());
         cx.notify();
     }
 
     fn sync_theme_controls(&mut self, cx: &mut Context<Self>) {
-        let colors = self.theme_settings.draft;
+        let colors = self.settings.theme.draft;
         let style = crate::theme::control_style();
-        for (channel, control) in &self.theme_settings.controls {
+        for (channel, control) in &self.settings.theme.controls {
             let value = f64::from(channel.get(colors));
             control.entity.update(cx, |control, cx| {
                 let _ = control.set_external_style(style, cx);
                 let _ = control.set_external_value(value, cx);
             });
         }
-        let role = self.theme_settings.selected_role;
+        let role = self.settings.theme.selected_role;
         let color = role.color(colors);
         let hue = self
-            .theme_settings
+            .settings
+            .theme
             .role_hues
             .get(&role)
             .copied()
             .unwrap_or(0.0);
-        if let Some(picker) = self.theme_settings.picker.clone() {
+        if let Some(picker) = self.settings.theme.picker.clone() {
             let hsv = picker.update(cx, |picker, cx| {
                 picker.set_external_color(
                     RgbColor::new(color.red, color.green, color.blue),
@@ -564,8 +566,8 @@ impl EditorView {
                 );
                 picker.hsv()
             });
-            self.theme_settings.role_hues.insert(role, hsv.hue);
-            for (channel, control) in &self.theme_settings.hsb_controls {
+            self.settings.theme.role_hues.insert(role, hsv.hue);
+            for (channel, control) in &self.settings.theme.hsb_controls {
                 let value = channel.get(hsv);
                 control.entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
@@ -576,10 +578,11 @@ impl EditorView {
     }
 
     fn selected_hsv(&self) -> HsvColor {
-        let role = self.theme_settings.selected_role;
-        let color = role.color(self.theme_settings.draft);
+        let role = self.settings.theme.selected_role;
+        let color = role.color(self.settings.theme.draft);
         let preferred = self
-            .theme_settings
+            .settings
+            .theme
             .role_hues
             .get(&role)
             .copied()
@@ -588,12 +591,13 @@ impl EditorView {
     }
 
     fn select_theme_role(&mut self, role: ThemeRole, cx: &mut Context<Self>) {
-        self.theme_settings.selected_role = role;
-        if let Some(picker) = self.theme_settings.picker.as_ref() {
-            let color = role.color(self.theme_settings.draft);
+        self.settings.theme.selected_role = role;
+        if let Some(picker) = self.settings.theme.picker.as_ref() {
+            let color = role.color(self.settings.theme.draft);
             let rgb = RgbColor::new(color.red, color.green, color.blue);
             let hue = self
-                .theme_settings
+                .settings
+                .theme
                 .role_hues
                 .get(&role)
                 .copied()
@@ -608,15 +612,15 @@ impl EditorView {
     }
 
     fn update_theme_hsb(&mut self, channel: HsbChannel, value: f64, cx: &mut Context<Self>) {
-        if self.theme_settings.saving {
+        if self.settings.theme.saving {
             return;
         }
         let (minimum, maximum, _) = channel.range();
         if !value.is_finite() || !(minimum..=maximum).contains(&value) {
-            self.theme_settings.error = Some("hsv value is outside its valid range".into());
+            self.settings.theme.error = Some("hsv value is outside its valid range".into());
             return;
         }
-        let Some(picker) = self.theme_settings.picker.as_ref() else {
+        let Some(picker) = self.settings.theme.picker.as_ref() else {
             return;
         };
         picker.update(cx, |picker, cx| {
@@ -627,20 +631,20 @@ impl EditorView {
     }
 
     fn update_theme_picker(&mut self, event: ColorPickerEvent, cx: &mut Context<Self>) {
-        if self.theme_settings.saving {
+        if self.settings.theme.saving {
             return;
         }
-        let role = self.theme_settings.selected_role;
+        let role = self.settings.theme.selected_role;
         role.set(
-            &mut self.theme_settings.draft,
+            &mut self.settings.theme.draft,
             hex_preferences::RgbColor::new(event.color.red, event.color.green, event.color.blue),
         );
-        self.theme_settings.role_hues.insert(role, event.hsv.hue);
-        let valid = theme::colors_are_legible(self.theme_settings.draft);
+        self.settings.theme.role_hues.insert(role, event.hsv.hue);
+        let valid = theme::colors_are_legible(self.settings.theme.draft);
         if valid {
-            theme::apply_preferences(self.theme_settings.draft);
+            theme::apply_preferences(self.settings.theme.draft);
         }
-        self.theme_settings.error =
+        self.settings.theme.error =
             (!valid).then(|| "text needs 4.5:1 contrast; accent colors need 3:1 contrast".into());
         self.sync_theme_controls(cx);
         cx.notify();
@@ -650,8 +654,8 @@ impl EditorView {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Result<ThemePreferences, String> {
-        let mut colors = self.theme_settings.draft;
-        for (channel, control) in &self.theme_settings.controls {
+        let mut colors = self.settings.theme.draft;
+        for (channel, control) in &self.settings.theme.controls {
             let result = control.entity.update(cx, |control, cx| {
                 let prepared = control
                     .prepare_finish_edit_for_owner(cx)
@@ -664,9 +668,9 @@ impl EditorView {
             });
             result.map_err(|error| error.to_string())?;
         }
-        self.theme_settings.draft = colors;
+        self.settings.theme.draft = colors;
         let mut hsv = self.selected_hsv();
-        for (channel, control) in &self.theme_settings.hsb_controls {
+        for (channel, control) in &self.settings.theme.hsb_controls {
             let result = control.entity.update(cx, |control, cx| {
                 let prepared = control
                     .prepare_finish_edit_for_owner(cx)
@@ -682,93 +686,94 @@ impl EditorView {
         let Some(color) = hex_widgets::hsv_to_rgb(hsv) else {
             return Err("hsv value is outside its valid range".into());
         };
-        self.theme_settings.selected_role.set(
-            &mut self.theme_settings.draft,
+        self.settings.theme.selected_role.set(
+            &mut self.settings.theme.draft,
             hex_preferences::RgbColor::new(color.red, color.green, color.blue),
         );
-        self.theme_settings
+        self.settings
+            .theme
             .role_hues
-            .insert(self.theme_settings.selected_role, hsv.hue);
-        let colors = self.theme_settings.draft;
+            .insert(self.settings.theme.selected_role, hsv.hue);
+        let colors = self.settings.theme.draft;
         let valid = theme::colors_are_legible(colors);
         if valid {
             theme::apply_preferences(colors);
         }
         self.sync_theme_controls(cx);
-        self.theme_settings.error =
+        self.settings.theme.error =
             (!valid).then(|| "text needs 4.5:1 contrast; accent colors need 3:1 contrast".into());
         Ok(colors)
     }
 
     pub(super) fn reset_theme_settings(&mut self, cx: &mut Context<Self>) {
-        if self.theme_settings.saving {
+        if self.settings.theme.saving {
             return;
         }
         match self.collect_theme_control_drafts(cx) {
             Ok(_) => {
                 let defaults = ThemePreferences::default();
-                self.theme_settings.draft = defaults;
+                self.settings.theme.draft = defaults;
                 theme::apply_preferences(defaults);
-                self.theme_settings.error = None;
+                self.settings.theme.error = None;
                 self.sync_theme_controls(cx);
             }
             Err(error) => {
-                self.theme_settings.error = Some(format!("invalid color value · {error}"))
+                self.settings.theme.error = Some(format!("invalid color value · {error}"))
             }
         }
         cx.notify();
     }
 
     pub(super) fn save_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_rate_settings.applying() {
+        if self.settings.project_rate.applying() {
             return;
         }
-        if self.theme_settings.loading
-            || self.theme_settings.saving
-            || !self.theme_settings.writable
+        if self.settings.theme.loading
+            || self.settings.theme.saving
+            || !self.settings.theme.writable
         {
-            self.theme_settings.error = Some("theme settings cannot be saved".into());
+            self.settings.theme.error = Some("theme settings cannot be saved".into());
             cx.notify();
             return;
         }
         let colors = match self.collect_theme_control_drafts(cx) {
             Ok(colors) => colors,
             Err(error) => {
-                self.theme_settings.error = Some(format!("invalid color value · {error}"));
+                self.settings.theme.error = Some(format!("invalid color value · {error}"));
                 cx.notify();
                 return;
             }
         };
         if !theme::colors_are_legible(colors) {
-            self.theme_settings.error =
+            self.settings.theme.error =
                 Some("text needs 4.5:1 contrast; accent colors need 3:1 contrast".into());
             cx.notify();
             return;
         }
-        self.theme_settings.save_generation = self.theme_settings.save_generation.wrapping_add(1);
-        self.theme_settings.pending_save = Some((self.theme_settings.save_generation, colors));
+        self.settings.theme.save_generation = self.settings.theme.save_generation.wrapping_add(1);
+        self.settings.theme.pending_save = Some((self.settings.theme.save_generation, colors));
         self.start_theme_save(cx);
         let _ = window;
         cx.notify();
     }
 
     fn start_theme_save(&mut self, cx: &mut Context<Self>) {
-        if self.theme_settings.saving || !self.theme_settings.writable {
+        if self.settings.theme.saving || !self.settings.theme.writable {
             return;
         }
-        let Some((generation, colors)) = self.theme_settings.pending_save.take() else {
+        let Some((generation, colors)) = self.settings.theme.pending_save.take() else {
             return;
         };
-        let Some(path) = self.theme_settings.path.clone() else {
-            self.theme_settings.writable = false;
-            self.theme_settings.error =
+        let Some(path) = self.settings.theme.path.clone() else {
+            self.settings.theme.writable = false;
+            self.settings.theme.error =
                 Some("theme settings unavailable · home directory is unset".into());
             return;
         };
-        self.theme_settings.saving = true;
-        self.theme_settings.saving_colors = Some((generation, colors));
-        self.theme_settings.error = Some("saving theme settings…".into());
-        let window_handle = self.theme_settings.window;
+        self.settings.theme.saving = true;
+        self.settings.theme.saving_colors = Some((generation, colors));
+        self.settings.theme.error = Some("saving theme settings…".into());
+        let window_handle = self.settings.theme.window;
         let editor_focus = self.focus.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
@@ -804,44 +809,45 @@ impl EditorView {
         result: Result<(), hex_preferences::PreferencesError>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if generation != self.theme_settings.save_generation {
+        if generation != self.settings.theme.save_generation {
             return false;
         }
-        self.theme_settings.saving = false;
+        self.settings.theme.saving = false;
         let saved_colors = self
-            .theme_settings
+            .settings
+            .theme
             .saving_colors
             .take()
             .filter(|(saved_generation, _)| *saved_generation == generation)
             .map(|(_, colors)| colors);
-        if let Some((_, _)) = self.theme_settings.pending_save {
+        if let Some((_, _)) = self.settings.theme.pending_save {
             self.start_theme_save(cx);
             return false;
         }
         match result {
             Ok(()) => {
                 if let Some(colors) = saved_colors {
-                    if self.theme_settings.draft == colors {
-                        self.theme_settings.open = false;
-                        self.theme_settings.error = None;
-                        self.theme_settings.controls.clear();
-                        self.theme_settings.hsb_controls.clear();
-                        self.theme_settings.picker = None;
-                        self.theme_settings.picker_subscription = None;
+                    if self.settings.theme.draft == colors {
+                        self.settings.theme.open = false;
+                        self.settings.theme.error = None;
+                        self.settings.theme.controls.clear();
+                        self.settings.theme.hsb_controls.clear();
+                        self.settings.theme.picker = None;
+                        self.settings.theme.picker_subscription = None;
                         return true;
                     } else {
-                        self.theme_settings.save_generation =
-                            self.theme_settings.save_generation.wrapping_add(1);
-                        self.theme_settings.pending_save = Some((
-                            self.theme_settings.save_generation,
-                            self.theme_settings.draft,
+                        self.settings.theme.save_generation =
+                            self.settings.theme.save_generation.wrapping_add(1);
+                        self.settings.theme.pending_save = Some((
+                            self.settings.theme.save_generation,
+                            self.settings.theme.draft,
                         ));
                         self.start_theme_save(cx);
                     }
                 }
             }
             Err(error) => {
-                self.theme_settings.error = Some(format!(
+                self.settings.theme.error = Some(format!(
                     "could not save theme settings · {}",
                     hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
                 ));
@@ -851,23 +857,23 @@ impl EditorView {
     }
 
     pub(super) fn cancel_theme_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.project_rate_settings.applying() {
+        if self.settings.project_rate.applying() {
             return;
         }
-        self.project_rate_settings.clear_draft();
-        if self.theme_settings.saving {
-            self.theme_settings.error = Some("theme save in progress".into());
+        self.settings.project_rate.clear_draft();
+        if self.settings.theme.saving {
+            self.settings.theme.error = Some("theme save in progress".into());
             cx.notify();
             return;
         }
-        theme::apply_preferences(self.theme_settings.before_open);
-        self.theme_settings.draft = self.theme_settings.before_open;
-        self.theme_settings.open = false;
-        self.theme_settings.error = None;
-        self.theme_settings.controls.clear();
-        self.theme_settings.hsb_controls.clear();
-        self.theme_settings.picker = None;
-        self.theme_settings.picker_subscription = None;
+        theme::apply_preferences(self.settings.theme.before_open);
+        self.settings.theme.draft = self.settings.theme.before_open;
+        self.settings.theme.open = false;
+        self.settings.theme.error = None;
+        self.settings.theme.controls.clear();
+        self.settings.theme.hsb_controls.clear();
+        self.settings.theme.picker = None;
+        self.settings.theme.picker_subscription = None;
         self.focus.focus(window);
         cx.notify();
     }
@@ -877,26 +883,26 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.project_rate_settings.applying() {
+        if self.settings.project_rate.applying() {
             return false;
         }
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if self.theme_settings.vst3_editor.saving {
+        if self.settings.theme.vst3_editor.saving {
             return false;
         }
-        if self.theme_settings.saving {
-            self.theme_settings.error = Some("theme save in progress".into());
+        if self.settings.theme.saving {
+            self.settings.theme.error = Some("theme save in progress".into());
             cx.notify();
             return false;
         }
-        if self.theme_settings.open {
-            theme::apply_preferences(self.theme_settings.before_open);
-            self.theme_settings.draft = self.theme_settings.before_open;
-            self.theme_settings.open = false;
-            self.theme_settings.controls.clear();
-            self.theme_settings.hsb_controls.clear();
-            self.theme_settings.picker = None;
-            self.theme_settings.picker_subscription = None;
+        if self.settings.theme.open {
+            theme::apply_preferences(self.settings.theme.before_open);
+            self.settings.theme.draft = self.settings.theme.before_open;
+            self.settings.theme.open = false;
+            self.settings.theme.controls.clear();
+            self.settings.theme.hsb_controls.clear();
+            self.settings.theme.picker = None;
+            self.settings.theme.picker_subscription = None;
             self.focus.focus(window);
             cx.notify();
         }
@@ -905,25 +911,25 @@ impl EditorView {
 
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn mark_theme_save_pending_for_update_test(&mut self) {
-        self.theme_settings.saving = true;
+        self.settings.theme.saving = true;
     }
 
     pub(super) fn render_theme_settings(
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
-        if !self.theme_settings.open {
+        if !self.settings.theme.open {
             return None;
         }
-        let colors = self.theme_settings.draft;
+        let colors = self.settings.theme.draft;
         let style = crate::theme::control_style();
-        let error = self.theme_settings.error.clone();
-        let writable = self.theme_settings.writable;
-        let saving = self.theme_settings.saving;
+        let error = self.settings.theme.error.clone();
+        let writable = self.settings.theme.writable;
+        let saving = self.settings.theme.saving;
         let mut rows = div().flex().gap(px(6.0));
         for role in ThemeRole::ALL {
             let color = role.color(colors);
-            let selected = role == self.theme_settings.selected_role;
+            let selected = role == self.settings.theme.selected_role;
             let id = format!("theme-role-{}", role.name());
             rows = rows.child(
                 div()
@@ -946,7 +952,7 @@ impl EditorView {
                     .child(theme::text(role.name())),
             );
         }
-        let role = self.theme_settings.selected_role;
+        let role = self.settings.theme.selected_role;
         let color = role.color(colors);
         let hex = format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue);
         let mut controls = div().flex().gap(px(4.0));
@@ -954,7 +960,7 @@ impl EditorView {
             .into_iter()
             .filter(|channel| channel.color_name() == role.name())
         {
-            if let Some(control) = self.theme_settings.controls.get(&channel) {
+            if let Some(control) = self.settings.theme.controls.get(&channel) {
                 control.entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(!saving, cx);
@@ -971,7 +977,7 @@ impl EditorView {
         }
         let mut element = div().flex().flex_col().gap(px(4.0));
         for channel in HsbChannel::ALL {
-            if let Some(control) = self.theme_settings.hsb_controls.get(&channel) {
+            if let Some(control) = self.settings.theme.hsb_controls.get(&channel) {
                 control.entity.update(cx, |control, cx| {
                     let _ = control.set_external_style(style, cx);
                     control.set_enabled(!saving, cx);
@@ -979,7 +985,7 @@ impl EditorView {
                 element = element.child(div().h(px(24.0)).child(control.entity.clone()));
             }
         }
-        let picker = self.theme_settings.picker.clone();
+        let picker = self.settings.theme.picker.clone();
         let control = picker.map_or_else(
             || div().w(px(180.0)).h(px(132.0)),
             |entity| div().child(entity.clone()),
@@ -1032,7 +1038,7 @@ impl EditorView {
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
-            .track_focus(&self.theme_settings.focus)
+            .track_focus(&self.settings.theme.focus)
             .key_context("hex_theme_settings")
             .w(px(560.0))
             .max_w(px(600.0))
@@ -1244,7 +1250,7 @@ mod tests {
         loop {
             cx.run_until_parked();
             if editor.read_with(cx, |view, _| {
-                !view.theme_settings.loading && !view.audio_import_settings.is_loading()
+                !view.settings.theme.loading && !view.settings.audio_import.is_loading()
             }) {
                 break;
             }
@@ -1281,7 +1287,7 @@ mod tests {
         click_bounds(&mut visual, "cancel theme changes");
         editor.read_with(&visual, |view, _| {
             assert!(
-                !view.theme_settings.open,
+                !view.settings.theme.open,
                 "cancel closes the settings panel"
             );
             assert_eq!(view.state.as_ref().unwrap().project.sample_rate(), 48_000);
@@ -1317,7 +1323,7 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             let state = view.state.as_ref().unwrap();
             assert!(state.can_undo);
-            assert!(!view.project_rate_settings.applying());
+            assert!(!view.settings.project_rate.applying());
         });
     }
 
@@ -1347,21 +1353,21 @@ mod tests {
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert_ne!(view.theme_settings.draft.primary.red, 0xf0);
+            assert_ne!(view.settings.theme.draft.primary.red, 0xf0);
             assert_ne!(theme::preferences(), ThemePreferences::default());
         });
 
-        let draft = editor.read_with(cx, |view, _| view.theme_settings.draft);
+        let draft = editor.read_with(cx, |view, _| view.settings.theme.draft);
         visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert!(view.theme_settings.open);
-            assert_eq!(view.theme_settings.draft, draft);
+            assert!(view.settings.theme.open);
+            assert_eq!(view.settings.theme.draft, draft);
         });
 
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
-        assert!(!editor.read_with(cx, |view, _| view.theme_settings.open));
+        assert!(!editor.read_with(cx, |view, _| view.settings.theme.open));
         assert_eq!(theme::preferences(), ThemePreferences::default());
         let focused = cx
             .update_window(handle, |_, window, cx| {
@@ -1391,7 +1397,7 @@ mod tests {
         let saved = hex_preferences::load_theme_preferences(&directory.0.join("theme.json"))
             .expect("saved theme preferences");
         assert_eq!(saved.primary.red, 235);
-        assert!(!editor.read_with(cx, |view, _| view.theme_settings.open));
+        assert!(!editor.read_with(cx, |view, _| view.settings.theme.open));
         let focused = cx
             .update_window(handle, |_, window, cx| {
                 editor.read_with(cx, |view, _| view.focus.is_focused(window))
@@ -1521,7 +1527,7 @@ mod tests {
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
-            editor.read_with(cx, |view, _| view.theme_settings.selected_role),
+            editor.read_with(cx, |view, _| view.settings.theme.selected_role),
             ThemeRole::Secondary,
         );
         let field = visual
@@ -1538,20 +1544,20 @@ mod tests {
         visual.run_until_parked();
 
         editor.read_with(cx, |view, _| {
-            let changed = view.theme_settings.draft.secondary;
+            let changed = view.settings.theme.draft.secondary;
             assert_ne!(changed, defaults.secondary);
             assert_eq!(theme::preferences().secondary, changed);
             let hsv = view.selected_hsv();
             assert_eq!(hsv.saturation, 100.0);
             assert_eq!(hsv.value, 100.0);
             assert_eq!(
-                view.theme_settings.hsb_controls[&HsbChannel::Saturation]
+                view.settings.theme.hsb_controls[&HsbChannel::Saturation]
                     .entity
                     .read_with(cx, |control, _| control.value()),
                 100.0
             );
             assert_eq!(
-                view.theme_settings.hsb_controls[&HsbChannel::Brightness]
+                view.settings.theme.hsb_controls[&HsbChannel::Brightness]
                     .entity
                     .read_with(cx, |control, _| control.value()),
                 100.0
@@ -1561,7 +1567,7 @@ mod tests {
         click_bounds(&mut visual, "reset theme colors");
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.theme_settings.draft, defaults);
+            assert_eq!(view.settings.theme.draft, defaults);
             assert_eq!(theme::preferences(), defaults);
         });
 
@@ -1581,7 +1587,7 @@ mod tests {
             assert_eq!(view.selected_hsv().hue, 120.0);
             let expected =
                 hex_widgets::hsv_to_rgb(view.selected_hsv()).expect("valid selected hsv");
-            let actual = view.theme_settings.draft.secondary;
+            let actual = view.settings.theme.draft.secondary;
             assert_eq!(
                 actual,
                 hex_preferences::RgbColor::new(expected.red, expected.green, expected.blue)
@@ -1614,9 +1620,9 @@ mod tests {
         visual.simulate_mouse_down(field.center(), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         let retained = editor.update(cx, |view, cx| {
-            let color = view.theme_settings.draft.primary;
+            let color = view.settings.theme.draft.primary;
             // Source identity changes even when its current value is identical.
-            view.theme_settings.draft.secondary = color;
+            view.settings.theme.draft.secondary = color;
             view.select_theme_role(ThemeRole::Secondary, cx);
             color
         });
@@ -1626,10 +1632,10 @@ mod tests {
         visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.theme_settings.selected_role, ThemeRole::Secondary);
-            assert_eq!(view.theme_settings.draft.primary, retained);
+            assert_eq!(view.settings.theme.selected_role, ThemeRole::Secondary);
+            assert_eq!(view.settings.theme.draft.primary, retained);
             assert_eq!(
-                view.theme_settings.draft.secondary, retained,
+                view.settings.theme.draft.secondary, retained,
                 "an old pointer must not edit the newly selected role"
             );
         });
@@ -1649,13 +1655,14 @@ mod tests {
 
         editor.update(cx, |view, cx| {
             view.select_theme_role(ThemeRole::Text, cx);
-            let background = view.theme_settings.draft.background;
+            let background = view.settings.theme.draft.background;
             let hsv = hex_widgets::rgb_to_hsv(
                 RgbColor::new(background.red, background.green, background.blue),
                 0.0,
             );
             let picker = view
-                .theme_settings
+                .settings
+                .theme
                 .picker
                 .clone()
                 .expect("shared color picker");
@@ -1665,10 +1672,11 @@ mod tests {
         });
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.theme_settings.draft.text, defaults.background);
+            assert_eq!(view.settings.theme.draft.text, defaults.background);
             assert_eq!(theme::preferences(), defaults);
             assert!(
-                view.theme_settings
+                view.settings
+                    .theme
                     .error
                     .as_deref()
                     .is_some_and(|error| error.contains("4.5:1 contrast"))
@@ -1692,7 +1700,7 @@ mod tests {
         visual.run_until_parked();
         editor.update(cx, |view, cx| {
             view.update_theme_channel(ThemeChannel::SecondaryBlue, 120.0, cx);
-            view.theme_settings.saving = true;
+            view.settings.theme.saving = true;
         });
 
         let allowed = cx
@@ -1702,11 +1710,11 @@ mod tests {
             .expect("window close guard");
         assert!(!allowed);
         editor.read_with(cx, |view, _| {
-            assert!(view.theme_settings.open);
-            assert!(view.theme_settings.saving);
-            assert_eq!(view.theme_settings.draft.secondary.blue, 120);
+            assert!(view.settings.theme.open);
+            assert!(view.settings.theme.saving);
+            assert_eq!(view.settings.theme.draft.secondary.blue, 120);
             assert_eq!(
-                view.theme_settings.error.as_deref(),
+                view.settings.theme.error.as_deref(),
                 Some("theme save in progress")
             );
         });
@@ -1725,18 +1733,19 @@ mod tests {
         editor.update(cx, |view, cx| {
             // Loading used the valid missing-file path; point the save at a directory so the
             // asynchronous atomic publisher deterministically reports a recoverable I/O error.
-            view.theme_settings.path = Some(directory.0.clone());
+            view.settings.theme.path = Some(directory.0.clone());
             view.update_theme_channel(ThemeChannel::PrimaryRed, 220.0, cx)
         });
         click_bounds(&mut visual, "save theme settings");
         visual.run_until_parked();
 
         editor.read_with(cx, |view, _| {
-            assert!(view.theme_settings.open);
-            assert!(!view.theme_settings.saving);
-            assert_eq!(view.theme_settings.draft.primary.red, 220);
+            assert!(view.settings.theme.open);
+            assert!(!view.settings.theme.saving);
+            assert_eq!(view.settings.theme.draft.primary.red, 220);
             assert!(
-                view.theme_settings
+                view.settings
+                    .theme
                     .error
                     .as_deref()
                     .is_some_and(|error| error.starts_with("could not save theme settings"))
@@ -1764,9 +1773,10 @@ mod tests {
         visual.simulate_keystrokes("cmd-,");
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.theme_settings.draft, invalid);
+            assert_eq!(view.settings.theme.draft, invalid);
             assert!(
-                view.theme_settings
+                view.settings
+                    .theme
                     .error
                     .as_deref()
                     .is_some_and(|error| error.contains("need more contrast"))
@@ -1863,7 +1873,7 @@ mod tests {
             loop {
                 cx.run_until_parked();
                 if editor.read_with(cx, |view, cx| {
-                    view.theme_settings.vst3_editor.visible_choice(cx) == Some(expected)
+                    view.settings.theme.vst3_editor.visible_choice(cx) == Some(expected)
                 }) {
                     break;
                 }
@@ -1914,10 +1924,10 @@ mod tests {
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
                 view.open_theme_settings(window, cx);
-                view.theme_settings.vst3_editor.saving = true;
+                view.settings.theme.vst3_editor.saving = true;
                 assert!(!view.prepare_theme_window_close(window, cx));
-                assert!(view.theme_settings.open);
-                view.theme_settings.vst3_editor.saving = false;
+                assert!(view.settings.theme.open);
+                view.settings.theme.vst3_editor.saving = false;
                 assert!(view.prepare_theme_window_close(window, cx));
             });
         })

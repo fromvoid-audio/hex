@@ -342,7 +342,7 @@ fn shared_source_utility_matrix_with_filter(
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
-            assert!(view.device_gesture.snapshot().is_some());
+            assert!(view.device_panel.gesture.snapshot().is_some());
             let Some(ParameterControl::Float { entity, .. }) =
                 view.device_panel.controls.get(&ParameterKey {
                     device,
@@ -860,7 +860,7 @@ fn shared_source_mode_inner(
         });
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.device_gesture.snapshot().is_none());
+            assert!(view.device_panel.gesture.snapshot().is_none());
             assert!(view.error.is_some());
             assert_eq!(
                 hex_engine::native_device_parameter_for_class(
@@ -907,7 +907,7 @@ fn shared_source_mode_inner(
         visual.simulate_click(target.center(), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.device_gesture.snapshot().is_some())
+            assert!(view.device_panel.gesture.snapshot().is_some())
         });
         editor.update(&mut visual, |view, cx| {
             view.audio = None;
@@ -929,7 +929,8 @@ fn shared_source_mode_inner(
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
             let snapshot = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .snapshot()
                 .expect("pending mode gesture");
             assert_eq!(snapshot.value, ParameterValue::Bool(!initial));
@@ -973,7 +974,7 @@ fn shared_source_mode_inner(
                 };
                 assert!(!entity.read(cx).is_editing());
                 assert_eq!(
-                    view.device_gesture.snapshot().unwrap().target,
+                    view.device_panel.gesture.snapshot().unwrap().target,
                     hex_session::device_gesture::GestureTarget::DeviceParameter {
                         device,
                         parameter: mode
@@ -998,7 +999,7 @@ fn shared_source_mode_inner(
                 .unwrap()
         });
         pump_until(&editor, cx, |view| {
-            view.device_gesture.snapshot().is_none() && view.error.is_some()
+            view.device_panel.gesture.snapshot().is_none() && view.error.is_some()
         });
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
@@ -1022,7 +1023,7 @@ fn shared_source_mode_inner(
     }
     pump_until(&editor, cx, |view| {
         value(view) == Some(ParameterValue::Bool(!initial))
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -1049,7 +1050,7 @@ fn shared_source_mode_inner(
     visual.run_until_parked();
     pump_until(&editor, cx, |view| {
         value(view) == Some(ParameterValue::Bool(initial))
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
 }
 
@@ -1141,7 +1142,8 @@ fn shared_source_channel_selector_keeps_linked_identity_and_history(cx: &mut Tes
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
             let snapshot = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .snapshot()
                 .expect("pending channel gesture");
             assert_eq!(snapshot.value, ParameterValue::Choice(1));
@@ -1163,7 +1165,8 @@ fn shared_source_channel_selector_keeps_linked_identity_and_history(cx: &mut Tes
         .ok()
     };
     pump_until(&editor, cx, |view| {
-        value(view) == Some(ParameterValue::Choice(1)) && view.device_gesture.snapshot().is_none()
+        value(view) == Some(ParameterValue::Choice(1))
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
@@ -1195,14 +1198,16 @@ fn shared_source_channel_selector_keeps_linked_identity_and_history(cx: &mut Tes
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.simulate_keystrokes("down");
     pump_until(&editor, cx, |view| {
-        value(view) == Some(ParameterValue::Choice(2)) && view.device_gesture.snapshot().is_none()
+        value(view) == Some(ParameterValue::Choice(2))
+            && view.device_panel.gesture.snapshot().is_none()
     });
     visual.run_until_parked();
     let bounds = visual.debug_bounds(selector).expect("channel selector");
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.simulate_keystrokes("down");
     pump_until(&editor, cx, |view| {
-        value(view) == Some(ParameterValue::Choice(3)) && view.device_gesture.snapshot().is_none()
+        value(view) == Some(ParameterValue::Choice(3))
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.update(cx, |view, _| {
         assert!(
@@ -1246,7 +1251,7 @@ fn shared_source_channel_selector_keeps_linked_identity_and_history(cx: &mut Tes
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(value(view), Some(ParameterValue::Choice(3)));
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(view.error.is_some());
     });
 }

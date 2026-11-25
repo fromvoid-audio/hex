@@ -482,7 +482,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     .read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
                 for selected in [false, true] {
                     f.editor.update(&mut visual, |v, cx| {
-                        v.selected_cell = selected.then_some((f.track, scene));
+                        v.session_grid.selected_cell = selected.then_some((f.track, scene));
                         cx.notify();
                     });
                     visual.run_until_parked();
@@ -515,7 +515,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                     );
                     // Existing history reconciliation may retire cell selection;
                     // compare the actual painted state, not a fabricated focus.
-                    v.selected_cell == Some((f.track, scene))
+                    v.session_grid.selected_cell == Some((f.track, scene))
                 });
                 assert_eq!(
                     visual.rendered_background(surface).unwrap(),
@@ -539,7 +539,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
             theme::clip_activity_fill(
                 project.track(f.track).unwrap().color(),
                 project.clip_flavor(clip).unwrap(),
-                v.selected_cell == Some((f.track, scene)),
+                v.session_grid.selected_cell == Some((f.track, scene)),
                 false,
             )
         });
@@ -566,7 +566,7 @@ fn console_audio_midi_flavors_follow_shared_fill_and_history_without_geometry_ch
                 "empty/stop cells have no colored clip"
             );
             let role = f.editor.read_with(&visual, |v, _| {
-                if v.selected_cell == Some((f.track, scene)) {
+                if v.session_grid.selected_cell == Some((f.track, scene)) {
                     theme::PaletteRole::Raised
                 } else {
                     theme::PaletteRole::Background

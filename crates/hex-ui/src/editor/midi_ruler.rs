@@ -63,18 +63,18 @@ impl EditorView {
             play_start_region: arrangement
                 .is_some_and(|clip| !clip.looping() && clip.content_view().is_none()),
             arrangement_scope: arrangement.is_some(),
-            start: self.piano_beat_start,
-            span: self.piano_beat_span.raw(),
-            grid: self.midi_snap_grid,
+            start: self.midi_editor.piano_beat_start,
+            span: self.midi_editor.piano_beat_span.raw(),
+            grid: self.midi_editor.snap_grid,
             bounds,
         };
         context.valid().then_some(context)
     }
     pub(super) fn reconcile_midi_ruler(&mut self) {
-        if self.midi_ruler.gesture.is_some_and(|gesture| {
+        if self.midi_editor.ruler.gesture.is_some_and(|gesture| {
             self.midi_ruler_context(gesture.context.bounds) != Some(gesture.context)
         }) {
-            self.midi_ruler.cancel();
+            self.midi_editor.ruler.cancel();
         }
     }
     fn begin_midi_start(
@@ -129,13 +129,13 @@ impl EditorView {
                     if !view.owns_midi_ruler_capture(context, handle) {
                         return;
                     }
-                    let changed = if !view.clip_view_open
-                        || view.device_panel_active
-                        || !view.midi_focus.is_focused(window)
+                    let changed = if !view.audio_detail.clip_view_open
+                        || view.device_panel.active
+                        || !view.midi_editor.focus.is_focused(window)
                         || !f32::from(position.x).is_finite()
                         || !f32::from(position.y).is_finite()
                     {
-                        view.midi_ruler.cancel()
+                        view.midi_editor.ruler.cancel()
                     } else {
                         let invert_snap = moved
                             .map(|e| e.modifiers.platform)
@@ -157,7 +157,7 @@ impl EditorView {
                         }
                     };
                     if changed {
-                        if view.midi_ruler.gesture.is_none() {
+                        if view.midi_editor.ruler.gesture.is_none() {
                             view.sync_held_play_start_audition();
                         }
                         cx.notify();
@@ -167,7 +167,7 @@ impl EditorView {
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.owns_midi_ruler_capture(context, handle) {
-                        view.midi_ruler.cancel();
+                        view.midi_editor.ruler.cancel();
                         view.sync_held_play_start_audition();
                         cx.notify();
                     }
@@ -178,8 +178,8 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_note_gesture();
-        self.midi_hover = None;
-        self.midi_ruler.gesture = Some(Gesture {
+        self.midi_editor.hover = None;
+        self.midi_editor.ruler.gesture = Some(Gesture {
             context,
             down_x: x,
             handle,
@@ -188,7 +188,8 @@ impl EditorView {
         true
     }
     fn owns_midi_ruler_capture(&self, context: Context, handle: Handle) -> bool {
-        self.midi_ruler
+        self.midi_editor
+            .ruler
             .gesture
             .is_some_and(|g| g.context == context && g.handle == handle)
     }
@@ -200,10 +201,10 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut gpui::Window,
     ) {
-        if self.clip_view_open
-            && !self.device_panel_active
-            && self.midi_focus.is_focused(window)
-            && let Some(gesture) = self.midi_ruler.gesture
+        if self.audio_detail.clip_view_open
+            && !self.device_panel.active
+            && self.midi_editor.focus.is_focused(window)
+            && let Some(gesture) = self.midi_editor.ruler.gesture
             && gesture.context.bounds == bounds
             && gesture.context.generation == self.project_generation
             && self
@@ -218,7 +219,7 @@ impl EditorView {
         &self,
     ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
         use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
-        let gesture = self.midi_ruler.gesture?;
+        let gesture = self.midi_editor.ruler.gesture?;
         if gesture.handle != Handle::Start
             || gesture.preview == gesture.context.values
             || self.midi_ruler_context(gesture.context.bounds) != Some(gesture.context)
@@ -240,14 +241,15 @@ impl EditorView {
     }
 
     fn update_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) -> bool {
-        let Some(gesture) = self.midi_ruler.gesture else {
+        let Some(gesture) = self.midi_editor.ruler.gesture else {
             return false;
         };
         let changed = if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context)
         {
-            self.midi_ruler.cancel()
+            self.midi_editor.ruler.cancel()
         } else {
-            self.midi_ruler
+            self.midi_editor
+                .ruler
                 .gesture
                 .as_mut()
                 .is_some_and(|gesture| gesture.update(x, invert_snap))
@@ -258,7 +260,7 @@ impl EditorView {
         changed
     }
     fn finish_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) {
-        let Some(mut gesture) = self.midi_ruler.gesture.take() else {
+        let Some(mut gesture) = self.midi_editor.ruler.gesture.take() else {
             return;
         };
         if !x.is_finite() || self.midi_ruler_context(bounds) != Some(gesture.context) {
@@ -284,7 +286,7 @@ impl EditorView {
         clip: &hex_project::MidiClip,
         revision: u64,
     ) -> Option<hex_project::MidiClip> {
-        let g = self.midi_ruler.gesture.filter(|g| {
+        let g = self.midi_editor.ruler.gesture.filter(|g| {
             g.context.clip == clip.id()
                 && g.context.generation == self.project_generation
                 && g.context.revision == revision
@@ -309,7 +311,8 @@ impl EditorView {
         clip: ClipId,
         revision: u64,
     ) -> Option<SourceValues> {
-        self.midi_ruler
+        self.midi_editor
+            .ruler
             .gesture
             .filter(|g| {
                 g.context.clip == clip
@@ -321,7 +324,8 @@ impl EditorView {
             .or_else(|| self.pending_clip_loop_midi(clip))
     }
     pub(super) fn midi_display_play_start(&self) -> Option<u64> {
-        self.midi_ruler
+        self.midi_editor
+            .ruler
             .gesture
             .map(|gesture| gesture.preview.source_start)
             .or_else(|| {
@@ -332,8 +336,8 @@ impl EditorView {
             .or_else(|| self.midi_clip().map(|source| source.source_start().raw()))
     }
     pub(super) fn midi_source_ruler(&mut self, cx: &mut ViewContext<Self>) -> Div {
-        let start = self.piano_beat_start;
-        let span = self.piano_beat_span.raw().max(1);
+        let start = self.midi_editor.piano_beat_start;
+        let span = self.midi_editor.piano_beat_span.raw().max(1);
         let marker = self.midi_display_play_start();
         let rendered = self.midi_ruler_context(CanvasBounds {
             x: 0.0,
@@ -342,7 +346,8 @@ impl EditorView {
             height: 1.0,
         });
         let active = self
-            .midi_ruler
+            .midi_editor
+            .ruler
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
         let time_selection = self.midi_time_selection_bounds();
@@ -354,7 +359,7 @@ impl EditorView {
             .h_full()
             .flex_1()
             .min_w_0()
-            .track_focus(&self.midi_focus)
+            .track_focus(&self.midi_editor.focus)
             .key_context("hex_midi")
             .tooltip(|_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
@@ -366,7 +371,8 @@ impl EditorView {
             });
         let step = super::midi_viewport_grid::ruler_step(
             span,
-            self.midi_snap_grid
+            self.midi_editor
+                .snap_grid
                 .step_raw()
                 .unwrap_or(hex_project::BeatTime::ONE.raw()),
         );
@@ -479,8 +485,8 @@ impl EditorView {
                                 });
                         hover_entity.update(cx, |view, cx| {
                             let hovered = hovered && !view.time_selection_key_held;
-                            if view.midi_ruler.marker_hovered != hovered {
-                                view.midi_ruler.marker_hovered = hovered;
+                            if view.midi_editor.ruler.marker_hovered != hovered {
+                                view.midi_editor.ruler.marker_hovered = hovered;
                                 cx.notify();
                             }
                         });
@@ -520,7 +526,7 @@ impl EditorView {
                                 window,
                                 cx,
                             )) {
-                                view.midi_focus.focus(window);
+                                view.midi_editor.focus.focus(window);
                                 cx.notify();
                                 cx.stop_propagation();
                             }

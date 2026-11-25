@@ -188,7 +188,7 @@ impl EditorView {
         class: [u8; 16],
         parameter: u32,
     ) {
-        if self.automation_close_preflight.frozen()
+        if self.persistence.automation_close_preflight.frozen()
             || self
                 .vst3_editor_group_menu(device, class, parameter)
                 .is_none()
@@ -242,7 +242,7 @@ impl EditorView {
     }
 
     fn toggle_editor_arm(&mut self, target: PluginEditorRecordingTarget) {
-        if self.automation_close_preflight.frozen() {
+        if self.persistence.automation_close_preflight.frozen() {
             return;
         }
         if self.editor_arm_matches(target) {
@@ -253,7 +253,7 @@ impl EditorView {
         if self.automation_take_recovery.unresolved()
             || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
@@ -317,10 +317,10 @@ impl EditorView {
             self.native_automation_recorder.editor_arm = None;
             return true;
         }
-        if self.automation_close_preflight.frozen()
+        if self.persistence.automation_close_preflight.frozen()
             || self.automation_take_recovery.unresolved()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
@@ -341,7 +341,8 @@ impl EditorView {
             return false;
         }
         let Ok(key) = self
-            .device_gesture
+            .device_panel
+            .gesture
             .reserve_plugin_editor_key(arm.generation)
         else {
             return false;

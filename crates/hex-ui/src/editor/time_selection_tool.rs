@@ -23,8 +23,8 @@ impl EditorView {
 
     fn time_selection_tool_has_focus(&self, window: &Window) -> bool {
         self.focus.is_focused(window)
-            || self.midi_focus.is_focused(window)
-            || self.audio_event_focus.is_focused(window)
+            || self.midi_editor.focus.is_focused(window)
+            || self.audio_detail.focus.is_focused(window)
             || self.focused_header_target(window).is_some()
     }
 
@@ -42,15 +42,15 @@ impl EditorView {
             || self.track_name.is_editing()
             || self.sections.naming()
             || self.context_menu.is_some()
-            || self.theme_settings.open
-            || self.tuning.open
+            || self.settings.theme.open
+            || self.settings.tuning.open
             || self.gain_numeric_editing(cx)
             || self.clip_numeric_editing(cx)
             || self.project_tempo_editing(cx)
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return false;
         }
@@ -166,7 +166,7 @@ mod tests {
             assert!(v.time_selection_gesture.is_none());
             assert!(!v.time_selection_key_held);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
         });
     }
 
@@ -192,8 +192,8 @@ mod tests {
                         .notes()
                         .is_empty()
                 );
-                v.midi_draw_mode = draw;
-                v.midi_pan.enabled = draw;
+                v.midi_editor.draw_mode = draw;
+                v.midi_editor.pan.enabled = draw;
                 cx.notify();
                 v.state.as_ref().unwrap().project.snapshot()
             });
@@ -212,10 +212,10 @@ mod tests {
             pump(&editor, &mut visual);
             editor.read_with(&visual, |v, _| {
                 assert!(v.midi_time_selection_bounds().is_some());
-                assert_eq!(v.midi_draw_mode, draw);
-                assert_eq!(v.midi_pan.enabled, draw);
-                assert!(v.midi_note_gesture.is_none());
-                assert!(v.midi_stroke.is_none());
+                assert_eq!(v.midi_editor.draw_mode, draw);
+                assert_eq!(v.midi_editor.pan.enabled, draw);
+                assert!(v.midi_editor.note_gesture.is_none());
+                assert!(v.midi_editor.stroke.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
@@ -363,7 +363,9 @@ mod tests {
         pump(&editor, &mut visual);
         visual.simulate_mouse_down(at(0.3), MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        editor.read_with(&visual, |v, _| assert!(v.midi_note_gesture.is_some()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_editor.note_gesture.is_some())
+        });
         let captured = visual.rendered_cursor_style();
         assert_eq!(captured, Some(CursorStyle::ClosedHand));
         key(&mut visual, true);

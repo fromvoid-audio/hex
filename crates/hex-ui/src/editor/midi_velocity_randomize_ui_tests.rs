@@ -110,9 +110,9 @@ fn randomizer_selected_only_exact_history_roundtrip_and_playback(cx: &mut TestAp
     pump(&editor, &mut visual);
     let before = editor.update(&mut visual, |view, cx| {
         let notes = originals(view);
-        view.midi_selection.set_single(notes[0].id);
-        view.midi_selection.toggle(notes[2].id).unwrap();
-        view.midi_velocity_randomize.amount = 126;
+        view.midi_editor.selection.set_single(notes[0].id);
+        view.midi_editor.selection.toggle(notes[2].id).unwrap();
+        view.midi_editor.velocity_randomize.amount = 126;
         cx.notify();
         view.state.as_ref().unwrap().project.snapshot()
     });
@@ -142,7 +142,10 @@ fn randomizer_selected_only_exact_history_roundtrip_and_playback(cx: &mut TestAp
                 }
             );
         }
-        assert_eq!(view.midi_selection.ids(), &[notes[0].id, notes[2].id]);
+        assert_eq!(
+            view.midi_editor.selection.ids(),
+            &[notes[0].id, notes[2].id]
+        );
         view.state.as_ref().unwrap().project.snapshot()
     });
     assert_ne!(before, after);
@@ -261,16 +264,16 @@ fn randomizer_bounds_determinism_and_stale_or_empty_selection_refuse(cx: &mut Te
             assert!(randomized(&[invalid], length, 16, 1).is_err());
         }
         let captured = view.velocity_random_context().unwrap();
-        view.midi_selection.clear();
+        view.midi_editor.selection.clear();
         view.randomize_selected_velocities(captured);
         view.randomize_selected_velocities(view.velocity_random_context().unwrap());
         assert!(!view.edit_pending());
-        view.midi_selection.set_single(notes[0].id);
+        view.midi_editor.selection.set_single(notes[0].id);
         let captured = view.velocity_random_context().unwrap();
-        view.midi_selection.set_single(notes[1].id);
+        view.midi_editor.selection.set_single(notes[1].id);
         view.randomize_selected_velocities(captured);
         assert!(!view.edit_pending());
-        assert_eq!(view.midi_velocity_randomize.seed, 0);
+        assert_eq!(view.midi_editor.velocity_randomize.seed, 0);
         for context in [
             Context {
                 clip: other_clip,
@@ -287,17 +290,17 @@ fn randomizer_bounds_determinism_and_stale_or_empty_selection_refuse(cx: &mut Te
         ] {
             view.randomize_selected_velocities(context);
             assert!(!view.edit_pending());
-            assert_eq!(view.midi_velocity_randomize.seed, 0);
+            assert_eq!(view.midi_editor.velocity_randomize.seed, 0);
         }
         let captured = view.velocity_random_context().unwrap();
-        view.midi_velocity_randomize.amount = 0;
+        view.midi_editor.velocity_randomize.amount = 0;
         view.randomize_selected_velocities(captured); // stale amount
-        assert_eq!(view.midi_velocity_randomize.seed, 0);
+        assert_eq!(view.midi_editor.velocity_randomize.seed, 0);
         view.randomize_selected_velocities(view.velocity_random_context().unwrap()); // no-op
         assert!(!view.edit_pending());
-        assert_eq!(view.midi_velocity_randomize.seed, 1);
-        view.midi_velocity_randomize.amount = 126;
-        view.midi_velocity_randomize.seed = u64::MAX;
+        assert_eq!(view.midi_editor.velocity_randomize.seed, 1);
+        view.midi_editor.velocity_randomize.amount = 126;
+        view.midi_editor.velocity_randomize.seed = u64::MAX;
         view.randomize_selected_velocities(view.velocity_random_context().unwrap());
         assert!(!view.edit_pending());
         assert!(view.error.as_ref().unwrap().contains("seed exhausted"));
@@ -336,12 +339,12 @@ fn randomizer_bounds_determinism_and_stale_or_empty_selection_refuse(cx: &mut Te
             visual.run_until_parked();
         }
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.midi_velocity_randomize.amount, amount);
+            assert_eq!(view.midi_editor.velocity_randomize.amount, amount);
             assert!(!view.edit_pending());
         });
     }
     editor.update(&mut visual, |view, _| {
-        view.midi_velocity_randomize.seed = 0;
+        view.midi_editor.velocity_randomize.seed = 0;
         let captured = view.velocity_random_context().unwrap();
         assert!(view.enqueue(Request::Edit(Command::RenameTrack {
             track: view.selected_track.unwrap(),
@@ -349,7 +352,7 @@ fn randomizer_bounds_determinism_and_stale_or_empty_selection_refuse(cx: &mut Te
         })));
         view.randomize_selected_velocities(captured);
         assert_eq!(
-            view.midi_velocity_randomize.seed, 0,
+            view.midi_editor.velocity_randomize.seed, 0,
             "a pending edit must not consume a random action"
         );
     });
@@ -409,11 +412,11 @@ fn randomizer_console_selection_uses_its_own_source(cx: &mut TestAppContext) {
         };
         let clip = clip.id();
         view.mode = super::super::EditorMode::Session;
-        view.selected_scene = Some(scene);
-        view.selected_cell = Some((track, scene));
+        view.session_grid.selected_scene = Some(scene);
+        view.session_grid.selected_cell = Some((track, scene));
         view.selected_clip = Some(clip);
-        view.piano_view_clip = None;
-        view.midi_selection.set_single(
+        view.midi_editor.piano_view_clip = None;
+        view.midi_editor.selection.set_single(
             view.state
                 .as_ref()
                 .unwrap()
@@ -423,7 +426,7 @@ fn randomizer_console_selection_uses_its_own_source(cx: &mut TestAppContext) {
                 .notes()[0]
                 .id(),
         );
-        view.midi_velocity_randomize.amount = 126;
+        view.midi_editor.velocity_randomize.amount = 126;
         cx.notify();
         clip
     });

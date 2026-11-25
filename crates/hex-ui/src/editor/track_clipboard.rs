@@ -77,7 +77,7 @@ impl EditorView {
             || self.track_resize_active()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
             || self.time_selection_gesture.is_some()
         {
@@ -191,8 +191,8 @@ impl EditorView {
     pub(super) fn complete_track_clipboard(&mut self, completion: Completion) {
         let p = completion.pending;
         if self.mode != p.mode
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || self.recovery.generation().is_some()
             || p.generation != self.project_generation
             || p.epoch.is_none()
@@ -235,13 +235,13 @@ impl EditorView {
         self.track_selection.replace(&ids);
         self.selected_track = ids.first().copied();
         self.selected_clip = None;
-        self.selected_cell = None;
-        self.selected_scene = None;
-        self.focused_return = None;
+        self.session_grid.selected_cell = None;
+        self.session_grid.selected_scene = None;
+        self.session_grid.focused_return = None;
         self.device_panel.main_selected = None;
-        self.midi_selection.clear();
-        self.midi_note_gesture = None;
-        self.midi_group_gesture = None;
+        self.midi_editor.selection.clear();
+        self.midi_editor.note_gesture = None;
+        self.midi_editor.group_gesture = None;
         self.update_track_selection_status();
     }
 }

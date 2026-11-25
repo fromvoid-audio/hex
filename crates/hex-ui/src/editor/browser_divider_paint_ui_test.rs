@@ -210,9 +210,9 @@ fn browser_divider_fixture_catalog_retains_same_music_and_preferences_until_job_
         assert_eq!(view.browser.directory, music);
         [
             view.browser.test_preferences_path().to_owned(),
-            view.recent_projects.test_path().to_owned(),
-            view.theme_settings.test_path().to_owned(),
-            view.project_directory.test_path().to_owned(),
+            view.settings.recent_projects.test_path().to_owned(),
+            view.settings.theme.test_path().to_owned(),
+            view.settings.project_directory.test_path().to_owned(),
         ]
     });
     for (path, name) in paths.iter().zip([

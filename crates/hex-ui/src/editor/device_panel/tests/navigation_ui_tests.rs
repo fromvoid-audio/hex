@@ -53,7 +53,7 @@ fn device_chain_navigation_pan_overview_release_escape_and_resize(cx: &mut TestA
     editor.read_with(cx, |view, _| {
         assert_eq!(view.device_panel.navigation.scroll.offset().x, px(-200.0));
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "panning must not edit the project"
         );
     });
@@ -218,8 +218,8 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
         visual.simulate_mouse_up(toggle, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.clip_view_open, expected_open);
-            assert_eq!(view.focused_return, Some(return_track));
+            assert_eq!(view.audio_detail.clip_view_open, expected_open);
+            assert_eq!(view.session_grid.focused_return, Some(return_track));
         });
         assert_eq!(
             visual.debug_bounds("device-chain-scroll").is_some(),
@@ -280,7 +280,7 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
             view.device_panel.chain_window.scroll.max_offset()
         );
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "Return navigation does not author history"
         );
     });
@@ -293,7 +293,7 @@ fn device_chain_bottom_toggle_preserves_return_owner_and_short_chain_is_safe(
     );
     // Changing to the empty regular chain retires the return navigation identity.
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -499,7 +499,7 @@ fn workspace_four_returns_hidden_add_menu_does_not_block_tab(cx: &mut TestAppCon
     visual.simulate_click(toggle, Modifiers::default());
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-add-menu").is_none());
-    editor.read_with(&visual, |v, _| assert!(!v.clip_view_open));
+    editor.read_with(&visual, |v, _| assert!(!v.audio_detail.clip_view_open));
     editor.update(&mut visual, |v, cx| {
         v.device_panel.add_menu_open = true;
         cx.notify();
@@ -601,7 +601,9 @@ fn workspace_adb3_returns_removed_last_track_menu_does_not_own_tab(cx: &mut Test
     let before = editor.read_with(&visual, |v, _| {
         assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
         assert!(v.selected_track.is_none());
-        assert!(v.clip_view_open && v.device_panel_active && v.device_panel.add_menu_open);
+        assert!(
+            v.audio_detail.clip_view_open && v.device_panel.active && v.device_panel.add_menu_open
+        );
         v.state.as_ref().unwrap().clone()
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));

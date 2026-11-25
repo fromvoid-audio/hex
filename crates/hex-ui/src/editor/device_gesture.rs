@@ -135,7 +135,7 @@ impl EditorView {
     pub(super) fn check_device_gesture_admission(&self) -> Result<(), &'static str> {
         device_gesture_admission_error(
             self.audio_recorder.blocks_edits(),
-            self.automation_close_preflight.frozen(),
+            self.persistence.automation_close_preflight.frozen(),
             self.native_automation_recorder.busy(),
         )
     }
@@ -147,7 +147,8 @@ impl EditorView {
         initial: ParameterValue,
     ) -> Result<(), &'static str> {
         self.check_device_gesture_admission()?;
-        self.device_gesture
+        self.device_panel
+            .gesture
             .begin(self.project_generation, target, initial)?;
         self.pump_device_gesture();
         Ok(())
@@ -161,8 +162,13 @@ impl EditorView {
         initial: ParameterPairValue,
     ) -> Result<(), &'static str> {
         self.check_device_gesture_admission()?;
-        self.device_gesture
-            .begin_pair(self.project_generation, device, first, second, initial)?;
+        self.device_panel.gesture.begin_pair(
+            self.project_generation,
+            device,
+            first,
+            second,
+            initial,
+        )?;
         self.pump_device_gesture();
         Ok(())
     }
@@ -173,9 +179,10 @@ impl EditorView {
         initial: DeviceParameterSnapshot,
     ) -> Result<GestureKey, &'static str> {
         self.check_device_gesture_admission()?;
-        let key = self
-            .device_gesture
-            .begin_snapshot(self.project_generation, device, initial)?;
+        let key =
+            self.device_panel
+                .gesture
+                .begin_snapshot(self.project_generation, device, initial)?;
         self.pump_device_gesture();
         Ok(key)
     }
@@ -186,9 +193,11 @@ impl EditorView {
         snapshot: EqNodeCreationSnapshot,
     ) -> Result<GestureKey, &'static str> {
         self.check_device_gesture_admission()?;
-        let key =
-            self.device_gesture
-                .begin_eq_creation(self.project_generation, device, snapshot)?;
+        let key = self.device_panel.gesture.begin_eq_creation(
+            self.project_generation,
+            device,
+            snapshot,
+        )?;
         self.pump_device_gesture();
         Ok(key)
     }
@@ -198,14 +207,15 @@ impl EditorView {
         group: hex_project::RelativeTrackGains,
     ) -> Result<(), &'static str> {
         self.check_device_gesture_admission()?;
-        self.device_gesture
+        self.device_panel
+            .gesture
             .begin_track_gains(self.project_generation, group)?;
         self.pump_device_gesture();
         Ok(())
     }
 
     pub fn change_device_gesture(&mut self, value: ParameterValue) -> Result<(), &'static str> {
-        self.device_gesture.change(value)?;
+        self.device_panel.gesture.change(value)?;
         self.pump_device_gesture();
         Ok(())
     }
@@ -214,7 +224,7 @@ impl EditorView {
         &mut self,
         value: ParameterPairValue,
     ) -> Result<(), &'static str> {
-        self.device_gesture.change_pair(value)?;
+        self.device_panel.gesture.change_pair(value)?;
         self.pump_device_gesture();
         Ok(())
     }
@@ -223,7 +233,7 @@ impl EditorView {
         &mut self,
         value: ParameterValue,
     ) -> Result<(), &'static str> {
-        self.device_gesture.finish(value)?;
+        self.device_panel.gesture.finish(value)?;
         self.pump_device_gesture();
         Ok(())
     }
@@ -232,33 +242,36 @@ impl EditorView {
         &mut self,
         value: ParameterPairValue,
     ) -> Result<(), &'static str> {
-        self.device_gesture.finish_pair(value)?;
+        self.device_panel.gesture.finish_pair(value)?;
         self.pump_device_gesture();
         Ok(())
     }
 
     pub fn cancel_device_gesture(&mut self) -> Result<(), &'static str> {
-        self.device_gesture.cancel()?;
+        self.device_panel.gesture.cancel()?;
         self.pump_device_gesture();
         Ok(())
     }
 
     pub(super) fn device_gesture_pending(&self) -> bool {
-        self.device_gesture.snapshot().is_some() || !self.device_gesture_barriers.is_empty()
+        self.device_panel.gesture.snapshot().is_some()
+            || !self.device_panel.gesture_barriers.is_empty()
     }
 
     pub(super) fn refuse_device_gesture_barriers(&mut self, reason: &'static str) {
         let insertions: Vec<_> = self
-            .device_gesture_barriers
+            .device_panel
+            .gesture_barriers
             .iter()
             .filter_map(insertion_control)
             .collect();
         let had_clipboard = self
-            .device_gesture_barriers
+            .device_panel
+            .gesture_barriers
             .iter()
             .any(|request| matches!(request, Request::DeviceClipboard { .. }));
-        self.device_gesture_barriers.clear();
-        self.catalog_barrier.custody = None;
+        self.device_panel.gesture_barriers.clear();
+        self.device_panel.catalog_barrier.custody = None;
         if had_clipboard {
             self.device_panel.pending_duplicate = None;
         }
@@ -268,18 +281,18 @@ impl EditorView {
     }
 
     pub(super) fn pump_device_gesture(&mut self) -> bool {
-        let Some(gesture) = self.device_gesture.next_request() else {
+        let Some(gesture) = self.device_panel.gesture.next_request() else {
             return false;
         };
         match self.service.submit(Request::device_gesture(gesture)) {
             Ok(()) => {
-                self.device_gesture.mark_submitted();
+                self.device_panel.gesture.mark_submitted();
                 self.worker_submitted();
                 true
             }
             Err(SubmitError::Full(_)) => false,
             Err(SubmitError::Busy(_, reason)) => {
-                self.device_gesture.reset();
+                self.device_panel.gesture.reset();
                 self.refuse_device_gesture_barriers(super::user_errors::busy(reason));
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
@@ -287,7 +300,7 @@ impl EditorView {
                 true
             }
             Err(SubmitError::Closed(_)) => {
-                self.device_gesture.reset();
+                self.device_panel.gesture.reset();
                 self.refuse_device_gesture_barriers("project worker stopped");
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
@@ -315,21 +328,25 @@ impl EditorView {
             && !ack.preview_retained
             && !ack.source_lost)
             .then(|| {
-                let active = self.device_gesture.snapshot()?;
+                let active = self.device_panel.gesture.snapshot()?;
                 (active.key == ack.key
                     && active.sequence == ack.sequence
                     && active.plugin_value.is_some()
-                    && self.device_gesture.terminal() == Some((GesturePhase::Commit, ack.sequence)))
+                    && self.device_panel.gesture.terminal()
+                        == Some((GesturePhase::Commit, ack.sequence)))
                 .then_some(active)
             })
             .flatten();
         let committed_plugin = committed_display.filter(|_| !self.owns_vst3_recording(ack.key));
         let terminal =
             matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) || ack.source_lost;
-        let plugin = self.device_gesture.snapshot().is_some_and(|active| {
+        let plugin = self.device_panel.gesture.snapshot().is_some_and(|active| {
             active.key == ack.key && matches!(active.target, GestureTarget::PluginParameter { .. })
         });
-        let matched = self.device_gesture.acknowledge_with_snapshot(ack, snapshot);
+        let matched = self
+            .device_panel
+            .gesture
+            .acknowledge_with_snapshot(ack, snapshot);
         if !matched {
             self.refuse_catalog_barriers(
                 "device load canceled · device acknowledgment did not match",
@@ -350,23 +367,24 @@ impl EditorView {
             self.bind_tuning_library_device_terminal(ack.key, ack.accepted);
             if !ack.accepted {
                 self.refuse_deferred_tuning_writes();
-                let effects = retire_failed_finalize_barriers(&mut self.device_gesture_barriers);
+                let effects =
+                    retire_failed_finalize_barriers(&mut self.device_panel.gesture_barriers);
                 if effects.tuning_library_refused {
-                    self.tuning.library_pending = None;
+                    self.settings.tuning.library_pending = None;
                 }
                 if effects.save_refused {
-                    self.saving_project = false;
+                    self.persistence.saving_project = false;
                     self.cancel_open_after_save();
                     self.offer_committed_copy();
                 }
                 if effects.export_refused {
                     // Deferred exports have not been submitted to Service, so
                     // there is no worker reservation to release here.
-                    self.export_pending = false;
-                    if let Some(control) = self.export_control.take() {
+                    self.persistence.export_pending = false;
+                    if let Some(control) = self.persistence.export_control.take() {
                         control.cancel();
                     }
-                    self.export_window = None;
+                    self.persistence.export_window = None;
                 }
                 self.error = Some(
                     ack.reason
@@ -380,7 +398,7 @@ impl EditorView {
             if !ack.preview_retained {
                 release_deferred(
                     &mut self.pending_requests,
-                    &mut self.device_gesture_barriers,
+                    &mut self.device_panel.gesture_barriers,
                 );
             }
         } else if ack.phase == GesturePhase::Begin && !ack.accepted {
@@ -389,7 +407,7 @@ impl EditorView {
             // barriers in their accepted order without an edit to finalize.
             release_deferred(
                 &mut self.pending_requests,
-                &mut self.device_gesture_barriers,
+                &mut self.device_panel.gesture_barriers,
             );
             self.error = Some(
                 ack.reason
@@ -407,13 +425,13 @@ impl EditorView {
         if let Some(admitted) = self.submit_update_save(&request) {
             return admitted;
         }
-        if self.device_gesture.snapshot().is_none() {
+        if self.device_panel.gesture.snapshot().is_none() {
             return self.enqueue(request);
         }
         if !self.admit_independent_edit_with_local_draft(&request) {
             return false;
         }
-        if self.pending_requests.len() + self.device_gesture_barriers.len()
+        if self.pending_requests.len() + self.device_panel.gesture_barriers.len()
             >= super::UI_REQUEST_CAPACITY
         {
             self.error = Some("device edit queue full · request was not applied".into());
@@ -426,16 +444,20 @@ impl EditorView {
                 return false;
             }
         };
-        if !self.device_gesture.has_pending_terminal() {
+        if !self.device_panel.gesture.has_pending_terminal() {
             // An unreleased creation has no canonical node to finalize. An
             // independent project action cancels it; a released terminal keeps
             // its admitted custody and remains ordered ahead of this barrier.
-            let result = if self.device_gesture.snapshot().is_some_and(|snapshot| {
-                matches!(snapshot.target, GestureTarget::EqNodeCreation { .. })
-            }) {
-                self.device_gesture.cancel()
+            let result = if self
+                .device_panel
+                .gesture
+                .snapshot()
+                .is_some_and(|snapshot| {
+                    matches!(snapshot.target, GestureTarget::EqNodeCreation { .. })
+                }) {
+                self.device_panel.gesture.cancel()
             } else {
-                self.device_gesture.finish_current()
+                self.device_panel.gesture.finish_current()
             };
             if let Err(error) = result {
                 self.error = Some(error.into());
@@ -445,11 +467,11 @@ impl EditorView {
         }
         if defer_request(
             &mut self.pending_requests,
-            &mut self.device_gesture_barriers,
+            &mut self.device_panel.gesture_barriers,
             request,
         ) {
             if let Some(proof) = custody {
-                self.catalog_barrier.custody = Some(proof);
+                self.device_panel.catalog_barrier.custody = Some(proof);
             }
             true
         } else {
@@ -467,7 +489,9 @@ impl EditorView {
         if matches!(request, Some(Request::SaveCommittedParameterCopy { .. })) {
             return None;
         }
-        if self.device_gesture_barriers.is_empty() && !self.device_gesture.has_pending_terminal() {
+        if self.device_panel.gesture_barriers.is_empty()
+            && !self.device_panel.gesture.has_pending_terminal()
+        {
             return None;
         }
         let Some(request) = request.take() else {
@@ -482,11 +506,11 @@ impl EditorView {
         };
         if defer_request(
             &mut self.pending_requests,
-            &mut self.device_gesture_barriers,
+            &mut self.device_panel.gesture_barriers,
             request,
         ) {
             if let Some(proof) = custody {
-                self.catalog_barrier.custody = Some(proof);
+                self.device_panel.catalog_barrier.custody = Some(proof);
             }
             Some(true)
         } else {
@@ -626,7 +650,8 @@ mod tests {
         );
         editor.update(cx, |view, _| {
             let key = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .begin_plugin(PluginParameterOrigin {
                     context: hex_engine::AudioSourceContext {
                         project_generation: view.project_generation,
@@ -639,7 +664,7 @@ mod tests {
                     initial: PluginParameterValue::new(0.25).unwrap(),
                 })
                 .unwrap();
-            view.device_gesture.next_request().unwrap();
+            view.device_panel.gesture.next_request().unwrap();
             assert!(view.acknowledge_device_gesture(&GestureAck {
                 key,
                 phase: GesturePhase::Begin,
@@ -650,17 +675,21 @@ mod tests {
                 reason: None,
             }));
             let sequence = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .change_plugin(PluginParameterValue::new(0.75).unwrap())
                 .unwrap();
-            view.device_gesture.next_request().unwrap();
-            view.device_gesture.mark_submitted();
-            view.device_gesture_barriers.push_back(Request::SaveCurrent);
-            view.device_gesture_barriers
+            view.device_panel.gesture.next_request().unwrap();
+            view.device_panel.gesture.mark_submitted();
+            view.device_panel
+                .gesture_barriers
+                .push_back(Request::SaveCurrent);
+            view.device_panel
+                .gesture_barriers
                 .push_back(Request::Edit(Command::AddTrack {
                     name: "after lost source".into(),
                 }));
-            view.saving_project = true;
+            view.persistence.saving_project = true;
             assert!(view.acknowledge_device_gesture(&GestureAck {
                 key,
                 phase: GesturePhase::Change,
@@ -670,9 +699,9 @@ mod tests {
                 source_lost: true,
                 reason: Some("plugin source disappeared".into()),
             }));
-            assert!(view.device_gesture.snapshot().is_none());
-            assert!(!view.saving_project);
-            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.device_panel.gesture.snapshot().is_none());
+            assert!(!view.persistence.saving_project);
+            assert!(view.device_panel.gesture_barriers.is_empty());
             assert_eq!(view.pending_requests.len(), 1);
             assert!(matches!(
                 view.pending_requests.front(),
@@ -703,14 +732,15 @@ mod tests {
         );
         editor.update(cx, |view, _| {
             let key = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .begin(
                     view.project_generation,
                     GestureTarget::TrackGain { track },
                     ParameterValue::Float(1.0),
                 )
                 .unwrap();
-            view.device_gesture.next_request().unwrap();
+            view.device_panel.gesture.next_request().unwrap();
             let begin_ack = GestureAck {
                 key,
                 phase: GesturePhase::Begin,
@@ -722,10 +752,11 @@ mod tests {
             };
             assert!(view.acknowledge_device_gesture(&begin_ack));
             let sequence = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .change(ParameterValue::Float(0.5))
                 .unwrap();
-            view.device_gesture.next_request().unwrap();
+            view.device_panel.gesture.next_request().unwrap();
             assert!(view.acknowledge_device_gesture(&GestureAck {
                 key,
                 phase: GesturePhase::Change,
@@ -735,18 +766,22 @@ mod tests {
                 source_lost: false,
                 reason: None,
             }));
-            let accepted = view.device_gesture.snapshot().unwrap();
-            view.device_gesture
+            let accepted = view.device_panel.gesture.snapshot().unwrap();
+            view.device_panel
+                .gesture
                 .finish(ParameterValue::Float(0.25))
                 .unwrap();
-            let terminal = view.device_gesture.next_request().unwrap();
-            view.device_gesture.mark_submitted();
-            view.device_gesture_barriers.push_back(Request::SaveCurrent);
-            view.device_gesture_barriers
+            let terminal = view.device_panel.gesture.next_request().unwrap();
+            view.device_panel.gesture.mark_submitted();
+            view.device_panel
+                .gesture_barriers
+                .push_back(Request::SaveCurrent);
+            view.device_panel
+                .gesture_barriers
                 .push_back(Request::Edit(Command::AddTrack {
                     name: "after cancellation".into(),
                 }));
-            view.saving_project = true;
+            view.persistence.saving_project = true;
             let refusal = GestureAck {
                 key,
                 phase: GesturePhase::Commit,
@@ -757,20 +792,20 @@ mod tests {
                 reason: Some("audio publication queue full".into()),
             };
             assert!(view.acknowledge_device_gesture_with_snapshot(&refusal, Some(accepted)));
-            assert_eq!(view.device_gesture.snapshot(), Some(accepted));
+            assert_eq!(view.device_panel.gesture.snapshot(), Some(accepted));
             assert!(
-                view.device_gesture.next_request().is_none(),
+                view.device_panel.gesture.next_request().is_none(),
                 "refusal does not spin"
             );
-            assert!(!view.saving_project);
+            assert!(!view.persistence.saving_project);
             assert!(view.pending_requests.is_empty());
-            assert_eq!(view.device_gesture_barriers.len(), 1);
+            assert_eq!(view.device_panel.gesture_barriers.len(), 1);
             assert!(matches!(
-                view.device_gesture_barriers.front(),
+                view.device_panel.gesture_barriers.front(),
                 Some(Request::Edit(_))
             ));
-            view.device_gesture.cancel().unwrap();
-            let cancel = view.device_gesture.next_request().unwrap();
+            view.device_panel.gesture.cancel().unwrap();
+            let cancel = view.device_panel.gesture.next_request().unwrap();
             assert!(view.acknowledge_device_gesture(&GestureAck {
                 key,
                 phase: GesturePhase::Cancel,
@@ -780,8 +815,8 @@ mod tests {
                 source_lost: false,
                 reason: None,
             }));
-            assert!(view.device_gesture.snapshot().is_none());
-            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.device_panel.gesture.snapshot().is_none());
+            assert!(view.device_panel.gesture_barriers.is_empty());
             assert!(matches!(
                 view.pending_requests.front(),
                 Some(Request::Edit(_))
@@ -1091,8 +1126,8 @@ mod admission_tests {
                 Err(expected)
             );
             assert_eq!(view.begin_track_gains_gesture(group), Err(expected));
-            assert!(view.device_gesture.snapshot().is_none());
-            assert!(view.device_gesture.next_request().is_none());
+            assert!(view.device_panel.gesture.snapshot().is_none());
+            assert!(view.device_panel.gesture.next_request().is_none());
         };
 
         // 1. Audio recording active
@@ -1116,7 +1151,7 @@ mod admission_tests {
             .update(&mut visual, |_, window, cx| {
                 view.update(cx, |view, cx| {
                     view.request_quit(window, cx);
-                    assert!(view.automation_close_preflight.frozen());
+                    assert!(view.persistence.automation_close_preflight.frozen());
                     assert_all_refused(view, "close is pending · device gestures are unavailable");
                 });
             })
@@ -1200,31 +1235,32 @@ mod admission_tests {
 
         // 1. Refusing a queued Request::InsertPluginEffect retires pending_plugin_effect cleanly.
         view.update(&mut visual, |view, cx| {
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .begin(
                     view.project_generation,
                     GestureTarget::TrackGain { track },
                     ParameterValue::Float(1.0),
                 )
                 .unwrap();
-            let _ = view.device_gesture.next_request();
-            view.device_gesture.mark_submitted();
+            let _ = view.device_panel.gesture.next_request();
+            view.device_panel.gesture.mark_submitted();
             view.insert_plugin_effect(
                 &plugin_selection,
                 PluginEffectDestination::Track(track),
                 None,
                 cx,
             );
-            assert!(view.pending_plugin_effect.is_some());
-            assert_eq!(view.device_gesture_barriers.len(), 1);
+            assert!(view.device_panel.pending_plugin_effect.is_some());
+            assert_eq!(view.device_panel.gesture_barriers.len(), 1);
 
             view.refuse_device_gesture_barriers("project worker busy");
             assert!(
-                view.pending_plugin_effect.is_none(),
+                view.device_panel.pending_plugin_effect.is_none(),
                 "refuse_device_gesture_barriers must retire pending_plugin_effect"
             );
-            assert!(view.device_gesture_barriers.is_empty());
-            view.device_gesture.reset();
+            assert!(view.device_panel.gesture_barriers.is_empty());
+            view.device_panel.gesture.reset();
         });
 
         // 2. Committing a gesture rebases all 7 newly covered revision-stamped device requests (R -> R+1).
@@ -1264,7 +1300,8 @@ mod admission_tests {
             );
             view.receive(begin_event);
 
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .finish(ParameterValue::Float(6.0))
                 .unwrap();
             assert!(view.pump_device_gesture());
@@ -1335,7 +1372,7 @@ mod admission_tests {
                 None,
                 cx,
             );
-            assert_eq!(view.device_gesture_barriers.len(), 7);
+            assert_eq!(view.device_panel.gesture_barriers.len(), 7);
 
             commit_event = Some(recv_event(&view.service));
         });
@@ -1345,7 +1382,7 @@ mod admission_tests {
             let next_rev = start_rev + 1;
             assert_eq!(event.state.revision, next_rev);
             view.receive(event);
-            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.device_panel.gesture_barriers.is_empty());
             assert_eq!(view.pending_requests.len(), 7);
 
             for request in &view.pending_requests {

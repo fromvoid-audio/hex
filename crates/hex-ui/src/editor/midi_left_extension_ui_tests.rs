@@ -164,7 +164,7 @@ fn fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history(
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let desired = editor.read_with(&visual, |v, _| {
-        let drag = v.active_midi_trim_drag.as_ref().expect("actual left-handle capture");
+        let drag = v.midi_editor.active_trim_drag.as_ref().expect("actual left-handle capture");
         let preview = drag.preview.borrow().expect("canonical metadata candidate");
         eprintln!("fresh midi original={:?}..{:?} source={:?}, down={down:?} target={target:?}, preview={:?}..{:?}",
             original.start(), original.start().raw()+original.length().raw(), original.source_start(), preview.start(), preview.start().raw()+preview.length().raw());
@@ -186,7 +186,7 @@ fn fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history(
     visual.run_until_parked();
     assert_eq!(visual.debug_bounds("midi-trim-live-preview"), Some(held));
     editor.read_with(&visual, |v, _| {
-        assert!(v.active_midi_trim_drag.is_none());
+        assert!(v.midi_editor.active_trim_drag.is_none());
         assert!(v.pending_trim.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -307,7 +307,8 @@ fn fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_cand
     visual.run_until_parked();
     let target = capture_left(&mut visual, clip, -90.0);
     let snapped = editor.read_with(&visual, |v, _| {
-        v.active_midi_trim_drag
+        v.midi_editor
+            .active_trim_drag
             .as_ref()
             .unwrap()
             .preview
@@ -322,7 +323,8 @@ fn fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_cand
     visual.simulate_modifiers_change(free);
     visual.run_until_parked();
     let desired = editor.read_with(&visual, |v, _| {
-        v.active_midi_trim_drag
+        v.midi_editor
+            .active_trim_drag
             .as_ref()
             .unwrap()
             .preview
@@ -358,7 +360,8 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
         let target = capture_left(&mut visual, clip, -90.0);
         editor.read_with(&visual, |v, _| {
             assert!(
-                v.active_midi_trim_drag
+                v.midi_editor
+                    .active_trim_drag
                     .as_ref()
                     .unwrap()
                     .preview
@@ -371,7 +374,7 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
                     .is_some_and(|prefix| prefix > BeatTime::ZERO)
             )
         });
-        editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+        editor.update(&mut visual, |v, _| v.test_probes.last_enqueued_edit = None);
         if replacement {
             editor.update(&mut visual, |v, _| {
                 assert!(v.enqueue(Request::NewWithAudioMode {
@@ -392,10 +395,10 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
-            assert!(v.active_midi_trim_drag.is_none());
+            assert!(v.midi_editor.active_trim_drag.is_none());
             assert!(v.pending_trim.is_none());
             assert!(
-                v.last_enqueued_edit.is_none(),
+                v.test_probes.last_enqueued_edit.is_none(),
                 "stale/cancelled capture cannot author its prefix"
             );
         });
@@ -441,7 +444,8 @@ fn fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry
     let (stopped, desired) = editor.read_with(&visual, |v, _| {
         (
             v.viewport,
-            v.active_midi_trim_drag
+            v.midi_editor
+                .active_trim_drag
                 .as_ref()
                 .unwrap()
                 .preview
@@ -493,7 +497,8 @@ fn fresh_midi_left_extension_empty_creation_reaches_zero_without_negative_source
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         let desired = v
-            .active_midi_trim_drag
+            .midi_editor
+            .active_trim_drag
             .as_ref()
             .unwrap()
             .preview

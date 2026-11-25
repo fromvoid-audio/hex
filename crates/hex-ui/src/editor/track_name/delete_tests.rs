@@ -145,12 +145,16 @@ fn header_backspace_removes_tracks(cx: &mut TestAppContext, multiple: bool, key:
         );
     }
     if key == "x" {
-        editor.update(&mut visual, |view, _| view.close_prompt_open = true);
+        editor.update(&mut visual, |view, _| {
+            view.persistence.close_prompt_open = true
+        });
         visual.simulate_keystrokes(key);
         editor.read_with(&visual, |view, _| {
-            assert!(view.last_enqueued_edit.is_none())
+            assert!(view.test_probes.last_enqueued_edit.is_none())
         });
-        editor.update(&mut visual, |view, _| view.close_prompt_open = false);
+        editor.update(&mut visual, |view, _| {
+            view.persistence.close_prompt_open = false
+        });
     }
     visual.simulate_keystrokes(key);
     pump(&editor, &mut visual);
@@ -195,7 +199,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     assert!(visual.debug_bounds("main-track-header").is_some());
     editor.read_with(&visual, |view, _| {
         assert!(view.state.as_ref().unwrap().project.track(track).is_some());
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     // Platform-toggle off the only selected header: focus alone cannot delete.
     header(&mut visual, track, Modifiers::default());
@@ -210,7 +214,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     visual.simulate_keystrokes("backspace");
     editor.read_with(&visual, |view, _| {
         assert!(view.selected_track_ids().is_empty());
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     header(&mut visual, track, Modifiers::default());
     visual.simulate_keystrokes("cmd-r");
@@ -222,7 +226,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
             view.track_name.edit.as_ref().unwrap().input.read(cx).text(),
             "draf"
         );
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     visual.simulate_keystrokes("escape");
     visual.update(|window, cx| {
@@ -232,7 +236,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     visual.simulate_keystrokes("backspace");
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).text(), "ab");
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     let b = visual
         .debug_bounds(Box::leak(
@@ -243,7 +247,7 @@ fn header_backspace_respects_clip_rename_browser_and_empty_selection(cx: &mut Te
     visual.simulate_keystrokes("backspace");
     editor.read_with(&visual, |view, _| {
         assert!(
-            matches!(view.last_enqueued_edit,Some(Command::RemoveClip(id)) if id==clip),
+            matches!(view.test_probes.last_enqueued_edit,Some(Command::RemoveClip(id)) if id==clip),
             "clip focus keeps clip deletion"
         );
     });
@@ -329,7 +333,7 @@ fn toolbar_remove_keeps_single_track_semantics_after_header_selection_toggle(
                         "toolbar retained_focus={retained_focus} toggled_out={toggled_out} immediate_focus={} pending={} edit={:?}",
                         view.track_name.focuses[&super::Target::Track(focused)].is_focused(window),
                         view.edit_pending(),
-                        view.last_enqueued_edit
+                        view.test_probes.last_enqueued_edit
                     );
                 })
             });
@@ -419,7 +423,7 @@ fn header_forward_delete_removes_track_and_keeps_previously_selected_clip(cx: &m
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "header-focused DeleteClip must not remove the selected clip"
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);

@@ -25,9 +25,9 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
         (
             state.project.snapshot(),
             state.project.midi_source(clip).unwrap().notes()[0].id(),
-            v.midi_selection.primary().unwrap(),
-            v.piano_pitch.first_test_pitch(),
-            v.piano_pitch.test_row_count(),
+            v.midi_editor.selection.primary().unwrap(),
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_pitch.test_row_count(),
         )
     });
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
@@ -47,12 +47,17 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert_eq!(
-                v.midi_selection.ids(),
+                v.midi_editor.selection.ids(),
                 &[first, baseline],
                 "contact selects before pointer release"
             );
             assert_eq!(
-                v.midi_marquee.as_ref().unwrap().highlighted().as_ref(),
+                v.midi_editor
+                    .marquee
+                    .as_ref()
+                    .unwrap()
+                    .highlighted()
+                    .as_ref(),
                 &[first, baseline]
             );
         });
@@ -63,9 +68,9 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             if cancel {
-                assert_eq!(v.midi_selection.ids(), &[baseline]);
+                assert_eq!(v.midi_editor.selection.ids(), &[baseline]);
             } else {
-                assert_eq!(v.midi_selection.ids(), &[first, baseline]);
+                assert_eq!(v.midi_editor.selection.ids(), &[first, baseline]);
             }
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert!(!v.edit_pending());
@@ -73,7 +78,7 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
     }
 
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.set_single(first);
+        v.midi_editor.selection.set_single(first);
         cx.notify();
     });
     visual.run_until_parked();
@@ -93,9 +98,14 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
     visual.simulate_mouse_move(second_end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), &[first, baseline]);
+        assert_eq!(v.midi_editor.selection.ids(), &[first, baseline]);
         assert_eq!(
-            v.midi_marquee.as_ref().unwrap().highlighted().as_ref(),
+            v.midi_editor
+                .marquee
+                .as_ref()
+                .unwrap()
+                .highlighted()
+                .as_ref(),
             &[first, baseline]
         );
     });
@@ -108,23 +118,30 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            v.midi_marquee.as_ref().unwrap().highlighted().as_ref(),
+            v.midi_editor
+                .marquee
+                .as_ref()
+                .unwrap()
+                .highlighted()
+                .as_ref(),
             &[first]
         );
     });
-    editor.read_with(&visual, |v, _| assert_eq!(v.midi_selection.ids(), &[first]));
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_editor.selection.ids(), &[first])
+    });
     // Release must use its actual position even without a final motion event.
     visual.simulate_mouse_up(second_end, MouseButton::Left, shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), &[first, baseline])
+        assert_eq!(v.midi_editor.selection.ids(), &[first, baseline])
     });
 
     visual.simulate_mouse_down(start, MouseButton::Left, shift);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.set_single(baseline);
+        v.midi_editor.selection.set_single(baseline);
         cx.notify();
     });
     visual.run_until_parked();
@@ -132,7 +149,7 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            v.midi_selection.ids(),
+            v.midi_editor.selection.ids(),
             &[baseline],
             "an older preview cannot replace newer selection"
         );
@@ -144,17 +161,20 @@ fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut Te
     visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch =
-            crate::editor::PitchViewport::from_rows(v.piano_pitch.first_test_pitch(), 12).unwrap();
+        v.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            12,
+        )
+        .unwrap();
         cx.notify();
     });
     visual.run_until_parked();
     visual.simulate_mouse_up(end, MouseButton::Left, shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_marquee.is_none());
+        assert!(v.midi_editor.marquee.is_none());
         assert_eq!(
-            v.midi_selection.ids(),
+            v.midi_editor.selection.ids(),
             &[first, baseline],
             "stale geometry must not commit a preview"
         );
@@ -190,12 +210,12 @@ fn empty_grid_drag_selects_notes_without_a_modifier(cx: &mut TestAppContext) {
         (
             notes[0].id(),
             notes[1].id(),
-            view.piano_pitch.first_test_pitch(),
-            view.piano_pitch.test_row_count(),
+            view.midi_editor.piano_pitch.first_test_pitch(),
+            view.midi_editor.piano_pitch.test_row_count(),
         )
     });
     editor.update(&mut visual, |view, cx| {
-        view.midi_selection.set_single(baseline);
+        view.midi_editor.selection.set_single(baseline);
         cx.notify();
     });
     visual.run_until_parked();
@@ -211,9 +231,9 @@ fn empty_grid_drag_selects_notes_without_a_modifier(cx: &mut TestAppContext) {
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.midi_marquee.is_some());
-            assert!(view.midi_time_selection.gesture.is_none());
-            assert_eq!(view.midi_selection.ids(), &[first]);
+            assert!(view.midi_editor.marquee.is_some());
+            assert!(view.midi_editor.time_selection.gesture.is_none());
+            assert_eq!(view.midi_editor.selection.ids(), &[first]);
         });
         if cancel {
             visual.simulate_keystrokes("escape");
@@ -222,7 +242,7 @@ fn empty_grid_drag_selects_notes_without_a_modifier(cx: &mut TestAppContext) {
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             let expected = if cancel { baseline } else { first };
-            assert_eq!(view.midi_selection.ids(), &[expected]);
+            assert_eq!(view.midi_editor.selection.ids(), &[expected]);
         });
     }
 }

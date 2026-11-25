@@ -43,11 +43,12 @@ fn keyboard_single_and_group_move_grow_extent_once_and_reverse_without_shrinking
                 .unwrap()
                 .clone();
             if group {
-                v.midi_selection
+                v.midi_editor
+                    .selection
                     .select_all(source.notes().iter().map(|n| n.id()))
                     .unwrap();
             } else {
-                v.midi_selection.set_single(source.notes()[0].id());
+                v.midi_editor.selection.set_single(source.notes()[0].id());
             }
             cx.notify();
             source
@@ -56,7 +57,7 @@ fn keyboard_single_and_group_move_grow_extent_once_and_reverse_without_shrinking
         visual.simulate_keystrokes("right");
         editor.read_with(&visual, |v, _| {
             assert!(matches!(
-                v.last_enqueued_edit,
+                v.test_probes.last_enqueued_edit,
                 Some(Command::UpdateMidiNotesWithSourceExtent { .. })
             ));
             assert_eq!(

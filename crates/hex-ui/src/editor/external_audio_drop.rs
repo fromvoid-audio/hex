@@ -19,20 +19,20 @@ impl EditorView {
             return;
         }
         if self.mode != EditorMode::Arrangement
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
-            || self.audio_batch.is_some()
-            || self.device_gesture.snapshot().is_some()
-            || self.device_gesture.has_pending_terminal()
-            || !self.device_gesture_barriers.is_empty()
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
+            || self.persistence.audio_batch.is_some()
+            || self.device_panel.gesture.snapshot().is_some()
+            || self.device_panel.gesture.has_pending_terminal()
+            || !self.device_panel.gesture_barriers.is_empty()
             || self.device_panel.has_pending_draft(cx)
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
         {
             self.error = Some("audio drop canceled · arrangement is busy".into());
             cx.notify();
@@ -102,22 +102,22 @@ impl EditorView {
         };
         // Only path metadata crosses the UI queue; PCM stays on the worker.
         if self.enqueue(request) {
-            self.audio_batch = Some(control);
-            self.audio_batch_progress = None;
+            self.persistence.audio_batch = Some(control);
+            self.persistence.audio_batch_progress = None;
             self.error = None;
             self.poll_audio_batch();
         }
         cx.notify();
     }
     pub(super) fn poll_audio_batch(&mut self) -> bool {
-        let Some(control) = &self.audio_batch else {
+        let Some(control) = &self.persistence.audio_batch else {
             return false;
         };
         let progress = control.progress();
-        if self.audio_batch_progress == Some(progress) {
+        if self.persistence.audio_batch_progress == Some(progress) {
             return false;
         }
-        self.audio_batch_progress = Some(progress);
+        self.persistence.audio_batch_progress = Some(progress);
         let phase = match progress.phase {
             AudioBatchPhase::Queued => "queued",
             AudioBatchPhase::Decoding => "decoding",
@@ -140,9 +140,9 @@ impl EditorView {
         true
     }
     pub(super) fn cancel_audio_batch(&mut self, cx: &mut Context<Self>) -> bool {
-        let had_queued = !self.pending_browser_insertions.is_empty();
-        self.pending_browser_insertions.clear();
-        let Some(control) = &self.audio_batch else {
+        let had_queued = !self.browser.pending_insertions.is_empty();
+        self.browser.pending_insertions.clear();
+        let Some(control) = &self.persistence.audio_batch else {
             if !had_queued {
                 return false;
             }

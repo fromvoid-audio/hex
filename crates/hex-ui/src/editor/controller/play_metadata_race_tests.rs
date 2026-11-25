@@ -105,7 +105,8 @@ fn eq_preview_applied_before_worker_submitted_preserves_preroll_and_allows_toggl
         // applies the EQ preview graph before the UI drains submission metadata.
         let held_rx = std::mem::replace(&mut view.audio_events, std::sync::mpsc::channel().1);
         let key = view
-            .device_gesture
+            .device_panel
+            .gesture
             .begin_pair(
                 view.project_generation,
                 device,
@@ -125,7 +126,8 @@ fn eq_preview_applied_before_worker_submitted_preserves_preroll_and_allows_toggl
     // Let Begin ACK drain and submit `change_pair` while `audio_events`
     // (`ResidentSubmitted` / `worker_submitted`) remain withheld.
     editor.update(cx, |view, _| {
-        view.device_gesture
+        view.device_panel
+            .gesture
             .change_pair(hex_session::device_gesture::ParameterPairValue {
                 first: hex_session::device_gesture::ParameterValue::Float(1_200.0),
                 second: hex_session::device_gesture::ParameterValue::Float(3.0),
@@ -171,7 +173,7 @@ fn eq_preview_applied_before_worker_submitted_preserves_preroll_and_allows_toggl
         view.toggle_play();
         assert!(view.error.is_none(), "unexpected error: {:?}", view.error);
         assert!(matches!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(PlaybackCommand::PlayFromWithNoteChase { .. })
         ));
     });
@@ -347,7 +349,7 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
             view.error
         );
         assert!(matches!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(PlaybackCommand::PlayFromWithNoteChase { .. })
         ));
     });

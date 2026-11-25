@@ -86,66 +86,67 @@ impl EditorView {
         request_id: Option<u64>,
         audio_revision: u64,
     ) {
-        if self.midi_recorder.preparing()
+        if self.midi_editor.recorder.preparing()
             && request_id == Some(self.computer_keyboard.request_id)
-            && context.project_generation == self.midi_recorder.generation
-            && context.editor_revision == self.midi_recorder.revision
+            && context.project_generation == self.midi_editor.recorder.generation
+            && context.editor_revision == self.midi_editor.recorder.revision
             && self
                 .audio
                 .as_ref()
                 .and_then(|audio| audio.control.output_identity())
-                == self.midi_recorder.output_identity
+                == self.midi_editor.recorder.output_identity
         {
-            self.midi_recorder.prepared_audio_revision = Some(audio_revision);
+            self.midi_editor.recorder.prepared_audio_revision = Some(audio_revision);
         }
     }
     pub(super) fn midi_take_not_submitted(&mut self, request: &Request) {
         if let Request::CommitMidiTake { request_id, .. } = request
-            && self.midi_recorder.pending_commit == Some(*request_id)
+            && self.midi_editor.recorder.pending_commit == Some(*request_id)
         {
-            self.midi_recorder.mode = Mode::Ready;
-            self.midi_recorder.pending_commit = None;
+            self.midi_editor.recorder.mode = Mode::Ready;
+            self.midi_editor.recorder.pending_commit = None;
         }
     }
     pub(super) fn midi_service_disconnected(&mut self) {
-        if self.midi_recorder.mode == Mode::Committing {
+        if self.midi_editor.recorder.mode == Mode::Committing {
             self.status = "midi commit outcome unknown · take retained".into();
         }
         if matches!(
-            self.midi_recorder.mode,
+            self.midi_editor.recorder.mode,
             Mode::Preparing | Mode::Capturing | Mode::Finishing | Mode::Committing
         ) {
-            self.midi_recorder.seal();
+            self.midi_editor.recorder.seal();
             if let Some(audio) = &self.audio {
                 audio.control.midi_cancel();
             }
-            if let Some(take) = &mut self.midi_recorder.take {
+            if let Some(take) = &mut self.midi_editor.recorder.take {
                 take.interrupt();
             }
-            self.midi_recorder.mode = Mode::Interrupted;
+            self.midi_editor.recorder.mode = Mode::Interrupted;
         }
     }
     pub(super) fn midi_recording_preparation_failed(&mut self) {
-        if self.midi_recorder.preparing() {
-            self.midi_recorder.mode = Mode::Interrupted;
+        if self.midi_editor.recorder.preparing() {
+            self.midi_editor.recorder.mode = Mode::Interrupted;
         }
     }
     /// Decide before priority Stop cancels its own input prefix. A known
     /// disconnect/refusal must stay interrupted, even if no callback has yet
     /// observed it. Cancel wins over the endpoint's subsequent normal Stop.
     pub(super) fn finish_midi_recording(&mut self) {
-        if self.midi_recorder.preparing() {
-            self.midi_recorder.clear();
+        if self.midi_editor.recorder.preparing() {
+            self.midi_editor.recorder.clear();
             return;
         }
-        if self.midi_recorder.mode != Mode::Capturing {
+        if self.midi_editor.recorder.mode != Mode::Capturing {
             return;
         }
         let valid = self
-            .midi_recorder
+            .midi_editor
+            .recorder
             .input
             .as_ref()
-            .zip(self.midi_recorder.target)
+            .zip(self.midi_editor.recorder.target)
             .is_some_and(|(input, target)| {
                 input.recording_input_current_on_control(
                     target.capture.keys,
@@ -160,16 +161,16 @@ impl EditorView {
                 audio.control.midi_cancel();
             }
         }
-        self.midi_recorder.mode = Mode::Finishing;
+        self.midi_editor.recorder.mode = Mode::Finishing;
     }
     pub(super) fn toggle_midi_recording(&mut self) {
-        match self.midi_recorder.mode {
+        match self.midi_editor.recorder.mode {
             Mode::Capturing => {
                 self.finish_midi_recording();
                 return;
             }
             Mode::Preparing => {
-                self.midi_recorder.clear();
+                self.midi_editor.recorder.clear();
                 return;
             }
             Mode::Ready => {
@@ -182,7 +183,7 @@ impl EditorView {
         if self.edit_pending()
             || self.gain_recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
-            || self.midi_step.enabled
+            || self.midi_editor.step.enabled
             || self.pending_playback.is_some()
             || !self.playback_candidates.is_empty()
             || self.mode != EditorMode::Arrangement
@@ -231,15 +232,15 @@ impl EditorView {
                 Some("start playback inside the selected midi clip before recording".into());
             return;
         }
-        self.midi_recorder.generation = self.project_generation;
-        self.midi_recorder.revision = state.revision;
-        self.midi_recorder.binding = Some(binding);
-        self.midi_recorder.output_identity = self
+        self.midi_editor.recorder.generation = self.project_generation;
+        self.midi_editor.recorder.revision = state.revision;
+        self.midi_editor.recorder.binding = Some(binding);
+        self.midi_editor.recorder.output_identity = self
             .audio
             .as_ref()
             .and_then(|audio| audio.control.output_identity());
-        self.midi_recorder.mode = Mode::Preparing;
-        self.midi_audition.clear();
+        self.midi_editor.recorder.mode = Mode::Preparing;
+        self.midi_editor.audition.clear();
         self.reprepare_controller_for_recording();
         self.cancel_computer_keyboard();
         self.computer_keyboard.suspended = false;
@@ -248,19 +249,19 @@ impl EditorView {
     }
     pub(super) fn discard_midi_take(&mut self) {
         if matches!(
-            self.midi_recorder.mode,
+            self.midi_editor.recorder.mode,
             Mode::Capturing | Mode::Finishing | Mode::Committing
         ) {
             self.error = Some("finish the active recording or commit before discarding".into());
             return;
         }
         if let Some(audio) = &self.audio
-            && audio.control.midi_target() == self.midi_recorder.target
-            && self.midi_recorder.target.is_some()
+            && audio.control.midi_target() == self.midi_editor.recorder.target
+            && self.midi_editor.recorder.target.is_some()
         {
             audio.control.midi_cancel();
         }
-        self.midi_recorder.clear();
+        self.midi_editor.recorder.clear();
         self.status = "midi take discarded".into();
     }
     pub(super) fn observe_midi_take_completion(
@@ -268,31 +269,32 @@ impl EditorView {
         completion: Option<hex_session::service::MidiTakeCompletion>,
     ) {
         let Some(completion) =
-            completion.filter(|c| Some(c.request_id) == self.midi_recorder.pending_commit)
+            completion.filter(|c| Some(c.request_id) == self.midi_editor.recorder.pending_commit)
         else {
             return;
         };
         if completion.accepted {
-            self.midi_recorder.clear();
+            self.midi_editor.recorder.clear();
         } else {
-            self.midi_recorder.mode = Mode::Ready;
-            self.midi_recorder.pending_commit = None;
+            self.midi_editor.recorder.mode = Mode::Ready;
+            self.midi_editor.recorder.pending_commit = None;
         }
     }
     fn commit_midi_take(&mut self) {
-        if self.midi_recorder.mode != Mode::Ready {
+        if self.midi_editor.recorder.mode != Mode::Ready {
             return;
         }
-        let Some(request_id) = self.midi_recorder.commit_serial.checked_add(1) else {
+        let Some(request_id) = self.midi_editor.recorder.commit_serial.checked_add(1) else {
             self.error = Some("midi commit identity exhausted".into());
             return;
         };
         let Some((binding, notes, stop_frame)) = self
-            .midi_recorder
+            .midi_editor
+            .recorder
             .binding
             .as_ref()
-            .zip(self.midi_recorder.notes.as_ref())
-            .zip(self.midi_recorder.stop_frame)
+            .zip(self.midi_editor.recorder.notes.as_ref())
+            .zip(self.midi_editor.recorder.stop_frame)
             .map(|((binding, notes), end)| (Arc::clone(binding), Arc::clone(notes), end))
         else {
             return;
@@ -301,18 +303,18 @@ impl EditorView {
         // including queue refusal and delayed service preparation.
         let request = Request::CommitMidiTake {
             request_id,
-            project_generation: self.midi_recorder.generation,
-            revision: self.midi_recorder.revision,
+            project_generation: self.midi_editor.recorder.generation,
+            revision: self.midi_editor.recorder.revision,
             binding,
             notes,
             stop_frame,
         };
-        self.midi_recorder.commit_serial = request_id;
-        self.midi_recorder.pending_commit = Some(request_id);
+        self.midi_editor.recorder.commit_serial = request_id;
+        self.midi_editor.recorder.pending_commit = Some(request_id);
         if self.enqueue(request) {
-            self.midi_recorder.mode = Mode::Committing;
+            self.midi_editor.recorder.mode = Mode::Committing;
         } else {
-            self.midi_recorder.pending_commit = None;
+            self.midi_editor.recorder.pending_commit = None;
         }
     }
     fn arm_prepared_midi_take(&mut self) -> Result<bool, &'static str> {
@@ -320,7 +322,8 @@ impl EditorView {
             return Ok(false);
         }
         let binding = self
-            .midi_recorder
+            .midi_editor
+            .recorder
             .binding
             .as_ref()
             .ok_or("midi take binding is missing")?;
@@ -336,18 +339,20 @@ impl EditorView {
             .status()
             .ok_or("midi recording output closed")?;
         let Some(source) = status.recording_source().filter(|s| {
-            s.context.project_generation == self.midi_recorder.generation
-                && s.context.editor_revision == self.midi_recorder.revision
-                && Some(s.output_identity) == self.midi_recorder.output_identity
+            s.context.project_generation == self.midi_editor.recorder.generation
+                && s.context.editor_revision == self.midi_editor.recorder.revision
+                && Some(s.output_identity) == self.midi_editor.recorder.output_identity
                 && self
-                    .midi_recorder
+                    .midi_editor
+                    .recorder
                     .prepared_audio_revision
                     .is_some_and(|revision| s.audio_revision >= revision)
         }) else {
             return Ok(false);
         };
         let Some(take_id) = self
-            .midi_recorder
+            .midi_editor
+            .recorder
             .serial
             .checked_add(1)
             .filter(|id| *id <= u64::MAX >> 2)
@@ -372,8 +377,8 @@ impl EditorView {
                 first_frame: binding.first_frame(),
                 end_frame: binding.end_frame(),
             },
-            project_generation: self.midi_recorder.generation,
-            canonical_revision: self.midi_recorder.revision,
+            project_generation: self.midi_editor.recorder.generation,
+            canonical_revision: self.midi_editor.recorder.revision,
             audio_revision: source.audio_revision,
             output_identity: source.output_identity,
             transport_epoch: status.transport_epoch.load(Acquire),
@@ -382,16 +387,16 @@ impl EditorView {
             let _ = input.seal_ordered_keys_on_control(keys);
             return Err(reason);
         }
-        self.midi_recorder.serial = take_id;
-        self.midi_recorder.keys = Some(keys);
-        self.midi_recorder.input = Some(Arc::clone(input));
-        self.midi_recorder.target = Some(target);
-        self.midi_recorder.mode = Mode::Capturing;
+        self.midi_editor.recorder.serial = take_id;
+        self.midi_editor.recorder.keys = Some(keys);
+        self.midi_editor.recorder.input = Some(Arc::clone(input));
+        self.midi_editor.recorder.target = Some(target);
+        self.midi_editor.recorder.mode = Mode::Capturing;
         self.status = "midi recording requested · waiting for output".into();
         Ok(true)
     }
     pub(super) fn tick_midi_recording(&mut self) -> bool {
-        if !self.midi_recorder.blocks_edits() {
+        if !self.midi_editor.recorder.blocks_edits() {
             // An explicit discard can precede a late terminal on a faulted
             // output. Drain that cancelled take so admission can be released.
             let mut changed = false;
@@ -409,25 +414,25 @@ impl EditorView {
             return changed;
         }
         if matches!(
-            self.midi_recorder.mode,
+            self.midi_editor.recorder.mode,
             Mode::Preparing | Mode::Capturing | Mode::Finishing
-        ) && self.midi_recorder.output_identity.is_some()
+        ) && self.midi_editor.recorder.output_identity.is_some()
             && self.audio.as_ref().is_none_or(|audio| {
-                audio.control.output_identity() != self.midi_recorder.output_identity
+                audio.control.output_identity() != self.midi_editor.recorder.output_identity
                     || audio.control.status().is_none()
             })
         {
-            self.midi_recorder.seal();
-            if let Some(take) = &mut self.midi_recorder.take {
+            self.midi_editor.recorder.seal();
+            if let Some(take) = &mut self.midi_editor.recorder.take {
                 take.interrupt();
             }
-            self.midi_recorder.mode = Mode::Interrupted;
+            self.midi_editor.recorder.mode = Mode::Interrupted;
             self.error = Some("midi output changed · incomplete take retained".into());
             return true;
         }
-        if self.midi_recorder.preparing() {
+        if self.midi_editor.recorder.preparing() {
             if self.computer_keyboard.suspended {
-                self.midi_recorder.mode = Mode::Interrupted;
+                self.midi_editor.recorder.mode = Mode::Interrupted;
                 self.error =
                     Some("midi recording input preparation refused · discard to retry".into());
                 return true;
@@ -439,7 +444,7 @@ impl EditorView {
                     }
                 }
                 Err(reason) => {
-                    self.midi_recorder.mode = Mode::Interrupted;
+                    self.midi_editor.recorder.mode = Mode::Interrupted;
                     self.error = Some(reason.into());
                     return true;
                 }
@@ -456,13 +461,13 @@ impl EditorView {
             let Some(receipt) = receipt else {
                 break;
             };
-            if Some(receipt.target()) != self.midi_recorder.target {
+            if Some(receipt.target()) != self.midi_editor.recorder.target {
                 continue;
             }
             changed = true;
-            if self.midi_recorder.mode == Mode::Interrupted {
+            if self.midi_editor.recorder.mode == Mode::Interrupted {
                 if matches!(receipt, Receipt::Finished { .. } | Receipt::Aborted { .. }) {
-                    self.midi_recorder.seal();
+                    self.midi_editor.recorder.seal();
                 }
                 continue;
             }
@@ -479,7 +484,7 @@ impl EditorView {
                         latency_frames,
                     ) {
                         Ok(take) => {
-                            self.midi_recorder.take = Some(take);
+                            self.midi_editor.recorder.take = Some(take);
                             self.status = "midi recording · next-block input timing".into();
                         }
                         Err(reason) => {
@@ -487,7 +492,7 @@ impl EditorView {
                             if let Some(audio) = &self.audio {
                                 audio.control.midi_cancel();
                             }
-                            self.midi_recorder.mode = Mode::Finishing;
+                            self.midi_editor.recorder.mode = Mode::Finishing;
                         }
                     }
                 }
@@ -496,50 +501,51 @@ impl EditorView {
                     content_frame,
                     ..
                 } => {
-                    if let Some(take) = &mut self.midi_recorder.take
+                    if let Some(take) = &mut self.midi_editor.recorder.take
                         && let Err(reason) = take.push(note, content_frame)
                     {
                         self.error = Some(reason.into());
                         if let Some(audio) = &self.audio {
                             audio.control.midi_cancel();
                         }
-                        self.midi_recorder.mode = Mode::Finishing;
+                        self.midi_editor.recorder.mode = Mode::Finishing;
                     }
                 }
                 Receipt::Finished { clock, .. } => {
-                    self.midi_recorder.seal();
-                    if clock.is_none() && self.midi_recorder.take.is_none() {
-                        self.midi_recorder.clear();
+                    self.midi_editor.recorder.seal();
+                    if clock.is_none() && self.midi_editor.recorder.take.is_none() {
+                        self.midi_editor.recorder.clear();
                         continue;
                     }
                     let result = clock
-                        .zip(self.midi_recorder.take.as_mut())
+                        .zip(self.midi_editor.recorder.take.as_mut())
                         .ok_or("midi take completion is missing delivered notes")
                         .and_then(|(clock, take)| take.finish(clock));
                     match result {
                         Ok(end) => {
-                            self.midi_recorder.stop_frame = Some(end);
-                            self.midi_recorder.notes = self
-                                .midi_recorder
+                            self.midi_editor.recorder.stop_frame = Some(end);
+                            self.midi_editor.recorder.notes = self
+                                .midi_editor
+                                .recorder
                                 .take
                                 .as_ref()
                                 .map(|take| Arc::from(take.notes()));
-                            self.midi_recorder.mode = Mode::Ready;
+                            self.midi_editor.recorder.mode = Mode::Ready;
                             self.commit_midi_take();
                         }
                         Err(reason) => {
-                            self.midi_recorder.mode = Mode::Interrupted;
+                            self.midi_editor.recorder.mode = Mode::Interrupted;
                             self.error = Some(reason.into());
                         }
                     }
                 }
                 Receipt::Aborted { reason, .. } => {
                     self.status = "midi recording interrupted · take retained".into();
-                    self.midi_recorder.seal();
-                    if let Some(take) = &mut self.midi_recorder.take {
+                    self.midi_editor.recorder.seal();
+                    if let Some(take) = &mut self.midi_editor.recorder.take {
                         take.interrupt();
                     }
-                    self.midi_recorder.mode = Mode::Interrupted;
+                    self.midi_editor.recorder.mode = Mode::Interrupted;
                     self.error = Some(
                         format!(
                             "midi recording interrupted · {} · take retained; discard explicitly",
@@ -591,12 +597,12 @@ mod tests {
                     channel: 2,
                     velocity: 93,
                 }]);
-                view.midi_recorder.binding = Some(binding);
-                view.midi_recorder.notes = Some(Arc::clone(&notes));
-                view.midi_recorder.stop_frame = Some(12_000);
-                view.midi_recorder.generation = view.project_generation;
-                view.midi_recorder.revision = state.revision;
-                view.midi_recorder.mode = Mode::Ready;
+                view.midi_editor.recorder.binding = Some(binding);
+                view.midi_editor.recorder.notes = Some(Arc::clone(&notes));
+                view.midi_editor.recorder.stop_frame = Some(12_000);
+                view.midi_editor.recorder.generation = view.project_generation;
+                view.midi_editor.recorder.revision = state.revision;
+                view.midi_editor.recorder.mode = Mode::Ready;
                 assert!(!view.enqueue(Request::Edit(Command::AddMidiTrack {
                     name: "blocked".into()
                 })));
@@ -604,11 +610,11 @@ mod tests {
                     std::path::PathBuf::from("/tmp/midi-take-guard.hex"),
                     hex_session::DocumentAudioMode::Resident,
                 );
-                assert!(view.pending_open_path.is_none());
+                assert!(view.persistence.pending_open_path.is_none());
                 view.commit_midi_take();
-                assert!(view.midi_recorder.mode == Mode::Committing);
+                assert!(view.midi_editor.recorder.mode == Mode::Committing);
                 assert!(Arc::ptr_eq(
-                    view.midi_recorder.notes.as_ref().unwrap(),
+                    view.midi_editor.recorder.notes.as_ref().unwrap(),
                     &notes
                 ));
                 notes
@@ -617,9 +623,9 @@ mod tests {
             // installed. Notes stay owned by this exact take, independent of UI focus.
             visual.run_until_parked();
             editor.update(&mut visual, |view, cx| {
-                assert!(view.midi_recorder.blocks_edits());
+                assert!(view.midi_editor.recorder.blocks_edits());
                 assert!(Arc::ptr_eq(
-                    view.midi_recorder.notes.as_ref().unwrap(),
+                    view.midi_editor.recorder.notes.as_ref().unwrap(),
                     &retained
                 ));
                 cx.notify();
@@ -640,9 +646,9 @@ mod tests {
                 );
                 view.receive(event);
                 if substitute_source {
-                    assert!(view.midi_recorder.mode == Mode::Ready);
+                    assert!(view.midi_editor.recorder.mode == Mode::Ready);
                     assert!(Arc::ptr_eq(
-                        view.midi_recorder.notes.as_ref().unwrap(),
+                        view.midi_editor.recorder.notes.as_ref().unwrap(),
                         &retained
                     ));
                     assert!(
@@ -657,7 +663,7 @@ mod tests {
                     );
                     view.discard_midi_take();
                 } else {
-                    assert!(!view.midi_recorder.blocks_edits());
+                    assert!(!view.midi_editor.recorder.blocks_edits());
                     assert_eq!(
                         view.state
                             .as_ref()
@@ -670,7 +676,7 @@ mod tests {
                         1
                     );
                 }
-                assert!(!view.midi_recorder.blocks_edits());
+                assert!(!view.midi_editor.recorder.blocks_edits());
             });
         }
     }
@@ -790,7 +796,7 @@ mod lifecycle_tests {
             assert!(!view.edit_pending());
             view.toggle_midi_recording();
             assert!(
-                view.midi_recorder.mode == Mode::Preparing,
+                view.midi_editor.recorder.mode == Mode::Preparing,
                 "{:?}",
                 view.error
             );
@@ -799,7 +805,7 @@ mod lifecycle_tests {
                 view.input_quantization,
                 hex_project::InputQuantization::Sixteenth
             );
-            let binding = Arc::clone(view.midi_recorder.binding.as_ref().unwrap());
+            let binding = Arc::clone(view.midi_editor.recorder.binding.as_ref().unwrap());
             // Later display state cannot reinterpret the retained admission.
             view.input_quantization = hex_project::InputQuantization::Off;
             view.snap_grid = super::super::musical_time::SnapGrid::Off;
@@ -918,13 +924,13 @@ mod lifecycle_tests {
             view.computer_keyboard.prepared = true; // worker submission has completed
             view.computer_keyboard.request_id = 42;
             view.computer_keyboard.input = Some(Arc::clone(&input));
-            view.midi_recorder.mode = Mode::Preparing;
-            view.midi_recorder.binding = Some(Arc::new(
+            view.midi_editor.recorder.mode = Mode::Preparing;
+            view.midi_editor.recorder.binding = Some(Arc::new(
                 MidiTakeBinding::capture(&project, track, clip).unwrap(),
             ));
-            view.midi_recorder.generation = generation;
-            view.midi_recorder.revision = revision;
-            view.midi_recorder.output_identity =
+            view.midi_editor.recorder.generation = generation;
+            view.midi_editor.recorder.revision = revision;
+            view.midi_editor.recorder.output_identity =
                 view.audio.as_ref().unwrap().control.output_identity();
             view.midi_recording_published(context, Some(42), new_revision);
             assert_eq!(
@@ -959,7 +965,14 @@ mod lifecycle_tests {
         backend.render_direct(&mut frames, &mut host).unwrap();
         let captured = editor.update(&mut visual, |view, _| {
             assert!(view.tick_midi_recording());
-            let notes = view.midi_recorder.take.as_ref().unwrap().notes().to_vec();
+            let notes = view
+                .midi_editor
+                .recorder
+                .take
+                .as_ref()
+                .unwrap()
+                .notes()
+                .to_vec();
             assert_eq!(notes.len(), 1);
             // Close and replace without any tick seeing an absent endpoint.
             if case == 0 {
@@ -983,9 +996,9 @@ mod lifecycle_tests {
                     let before = view.state.as_ref().unwrap().project.snapshot();
                     let revision = view.state.as_ref().unwrap().revision;
                     assert!(view.tick_midi_recording());
-                    assert!(view.midi_recorder.mode == Mode::Interrupted);
-                    assert!(view.midi_recorder.blocks_edits());
-                    assert!(view.midi_recorder.pending_commit.is_none());
+                    assert!(view.midi_editor.recorder.mode == Mode::Interrupted);
+                    assert!(view.midi_editor.recorder.blocks_edits());
+                    assert!(view.midi_editor.recorder.pending_commit.is_none());
                     assert!(view.error.as_ref().unwrap().contains("cancelled"));
                     assert_eq!(view.state.as_ref().unwrap().revision, revision);
                     assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
@@ -1001,7 +1014,10 @@ mod lifecycle_tests {
                         .midi_receipt()
                         .is_none()
                 );
-                assert_eq!(view.midi_recorder.take.as_ref().unwrap().notes(), captured);
+                assert_eq!(
+                    view.midi_editor.recorder.take.as_ref().unwrap().notes(),
+                    captured
+                );
                 assert!(
                     view.state
                         .as_ref()
@@ -1014,9 +1030,9 @@ mod lifecycle_tests {
                 );
                 if case == 1 {
                     view.discard_midi_take();
-                    assert!(!view.midi_recorder.blocks_edits());
+                    assert!(!view.midi_editor.recorder.blocks_edits());
                 } else {
-                    view.midi_recorder.clear();
+                    view.midi_editor.recorder.clear();
                 }
                 view.audio.as_mut().unwrap().control.close();
                 view.audio = None;
@@ -1033,10 +1049,13 @@ mod lifecycle_tests {
             view.audio = Some(audio(replacement_client));
             assert!(view.audio.as_ref().unwrap().status().is_some());
             assert!(view.tick_midi_recording());
-            assert!(view.midi_recorder.mode == Mode::Interrupted);
-            assert_eq!(view.midi_recorder.take.as_ref().unwrap().notes(), captured);
+            assert!(view.midi_editor.recorder.mode == Mode::Interrupted);
+            assert_eq!(
+                view.midi_editor.recorder.take.as_ref().unwrap().notes(),
+                captured
+            );
             view.discard_midi_take();
-            assert!(!view.midi_recorder.blocks_edits());
+            assert!(!view.midi_editor.recorder.blocks_edits());
             view.audio.as_mut().unwrap().control.close();
             view.audio = None;
         });
@@ -1085,10 +1104,10 @@ fn midi_recording_worker_closure_distinguishes_unsubmitted_from_unknown_commit(
             channel: 0,
             velocity: 100,
         }]);
-        view.midi_recorder.notes = Some(Arc::clone(&notes));
-        view.midi_recorder.binding = Some(Arc::clone(&binding));
-        view.midi_recorder.mode = Mode::Committing;
-        view.midi_recorder.pending_commit = Some(77);
+        view.midi_editor.recorder.notes = Some(Arc::clone(&notes));
+        view.midi_editor.recorder.binding = Some(Arc::clone(&binding));
+        view.midi_editor.recorder.mode = Mode::Committing;
+        view.midi_editor.recorder.pending_commit = Some(77);
         let request = Request::CommitMidiTake {
             request_id: 77,
             project_generation: view.project_generation,
@@ -1098,28 +1117,28 @@ fn midi_recording_worker_closure_distinguishes_unsubmitted_from_unknown_commit(
             stop_frame: 11,
         };
         view.midi_service_disconnected();
-        assert!(view.midi_recorder.mode == Mode::Interrupted);
+        assert!(view.midi_editor.recorder.mode == Mode::Interrupted);
         assert!(view.status.contains("outcome unknown"));
         assert!(Arc::ptr_eq(
-            view.midi_recorder.notes.as_ref().unwrap(),
+            view.midi_editor.recorder.notes.as_ref().unwrap(),
             &notes
         ));
         // A retained Closed(request) subsequently proves this particular queued
         // attempt was never submitted. Only that evidence makes Retry safe.
         view.midi_take_not_submitted(&request);
-        assert!(view.midi_recorder.mode == Mode::Ready);
+        assert!(view.midi_editor.recorder.mode == Mode::Ready);
         assert!(Arc::ptr_eq(
-            view.midi_recorder.notes.as_ref().unwrap(),
+            view.midi_editor.recorder.notes.as_ref().unwrap(),
             &notes
         ));
-        view.midi_recorder.mode = Mode::Committing;
-        view.midi_recorder.pending_commit = Some(78);
+        view.midi_editor.recorder.mode = Mode::Committing;
+        view.midi_editor.recorder.pending_commit = Some(78);
         view.midi_service_disconnected();
         view.midi_take_not_submitted(&request); // wrong attempt cannot authorize retry
-        assert!(view.midi_recorder.mode == Mode::Interrupted);
+        assert!(view.midi_editor.recorder.mode == Mode::Interrupted);
         view.toggle_midi_recording();
-        assert!(view.midi_recorder.mode == Mode::Interrupted);
+        assert!(view.midi_editor.recorder.mode == Mode::Interrupted);
         view.discard_midi_take();
-        assert!(!view.midi_recorder.blocks_edits());
+        assert!(!view.midi_editor.recorder.blocks_edits());
     });
 }

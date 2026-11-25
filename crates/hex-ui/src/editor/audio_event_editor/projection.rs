@@ -17,14 +17,14 @@ impl EditorView {
         let end = root
             .root_frame_at(editor_bounds(root).1, tempo)
             .unwrap_or(first);
-        let view = self.audio_event_editor.viewport.unwrap_or(Viewport {
+        let view = self.audio_detail.event.viewport.unwrap_or(Viewport {
             start: 0,
             length: end.saturating_sub(first),
         });
         SignedFrameViewport {
             start: i128::from(view.start)
-                - i128::from(if self.audio_event_editor.viewport.is_some() {
-                    self.audio_event_editor.negative_pan
+                - i128::from(if self.audio_detail.event.viewport.is_some() {
+                    self.audio_detail.event.negative_pan
                 } else {
                     0
                 }),
@@ -99,7 +99,8 @@ impl EditorView {
             return position;
         }
         if let Some(preview) = self
-            .audio_clip_controls
+            .audio_detail
+            .clip_controls
             .play_start_preview_clip(self, clip.id())
         {
             let preview_root = preview.audio_event_root();
@@ -126,14 +127,14 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn audio_editor_cursor_play_start(&self) -> Option<u64> {
-        if self.audio_event_editor.source_view
-            || !self.audio_event_editor.retained_ancestors.is_empty()
+        if self.audio_detail.event.source_view
+            || !self.audio_detail.event.retained_ancestors.is_empty()
             || !self.event_context_current()
         {
             return None;
         }
         let (_, root, _) = self.event_context()?;
-        u64::try_from(self.event_project_frame(&root, self.audio_event_editor.cursor)?).ok()
+        u64::try_from(self.event_project_frame(&root, self.audio_detail.event.cursor)?).ok()
     }
 
     pub(super) fn event_pointer_position(&self, x: f32, platform: bool) -> Option<u64> {
@@ -142,7 +143,8 @@ impl EditorView {
         let window = self.event_project_window(&root)?;
         let (frame, width) = self.event_pointer_frame(window, x)?;
         let snapped = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .grid
             .with_platform_modifier(platform)
             .snap_signed_frame(&state.project, frame, window, width)?;
@@ -164,7 +166,7 @@ impl EditorView {
     }
 
     fn event_pointer_frame(&self, window: SignedFrameViewport, x: f32) -> Option<(i128, f32)> {
-        let bounds = self.audio_event_editor.bounds?;
+        let bounds = self.audio_detail.event.bounds?;
         let width = f32::from(bounds.size.width);
         if !x.is_finite() || !width.is_finite() || width <= 0.0 {
             return None;
@@ -202,14 +204,15 @@ impl EditorView {
         let state = self.state.as_ref()?;
         let project_frame = self.event_project_frame(&root, position)?;
         let snapped = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .grid
             .with_platform_modifier(platform)
             .snap_signed_frame(
                 &state.project,
                 project_frame,
                 self.event_project_window(&root)?,
-                f32::from(self.audio_event_editor.bounds?.size.width),
+                f32::from(self.audio_detail.event.bounds?.size.width),
             )?;
         self.event_position_from_signed_project_frame(&root, snapped)
     }
@@ -229,11 +232,11 @@ impl EditorView {
         ) else {
             return false;
         };
-        self.audio_event_editor.viewport = Some(Viewport {
+        self.audio_detail.event.viewport = Some(Viewport {
             start,
             length: window.length,
         });
-        self.audio_event_editor.negative_pan = negative;
+        self.audio_detail.event.negative_pan = negative;
         true
     }
 }

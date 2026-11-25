@@ -203,7 +203,7 @@ fn lfo_pitch_assignment_clicks_commit_history_and_project_reopen(cx: &mut TestAp
     editor.update(cx, |view, cx| view.save_project(cx));
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
-            && !view.saving_project
+            && !view.persistence.saving_project
             && view.state.as_ref().is_some_and(|state| !state.unsaved)
     });
     let reload = Service::new(48_000, 8, 8_000_000).unwrap();
@@ -355,7 +355,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture_barriers.is_empty()
+                && view.device_panel.gesture_barriers.is_empty()
                 && view.state.as_ref().is_some_and(|state| {
                     operator_parameter_value(state, track, device, 513 + operator)
                         == ParameterValue::Bool(false)
@@ -374,7 +374,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture_barriers.is_empty()
+                && view.device_panel.gesture_barriers.is_empty()
                 && view.state.as_ref().is_some_and(|state| {
                     operator_parameter_value(state, track, device, 513 + operator)
                         == ParameterValue::Bool(true)
@@ -416,7 +416,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture_barriers.is_empty()
+                && view.device_panel.gesture_barriers.is_empty()
         });
         visual.run_until_parked();
         assert!(
@@ -570,7 +570,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
     visual.simulate_click(fine.center(), Modifiers::default());
     tab_to_routing(&mut visual, &editor, device);
     let page_before_space = editor.update(&mut visual, |view, _| {
-        view.last_transport_command = None;
+        view.test_probes.last_transport_command = None;
         view.device_panel.operator_pages[&device].page
     });
     visual.simulate_keystrokes("space");
@@ -580,7 +580,7 @@ fn operator_section_navigation_keeps_rendered_bounds_and_owner_fields(cx: &mut T
             view.device_panel.operator_pages[&device].page,
             page_before_space
         );
-        assert!(view.last_transport_command.is_none());
+        assert!(view.test_probes.last_transport_command.is_none());
         assert!(
             view.device_panel.operator_previews[&device]
                 .routing_popup

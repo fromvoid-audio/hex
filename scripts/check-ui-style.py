@@ -246,7 +246,7 @@ for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/he
         # The batched Arrangement lane nests a TrackLaneCanvas and typed
         # Divs that own pointer and drag handlers, without raw string children.
         header_mixer_component = header_mixer_component or (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_lane_canvas.rs'
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/track_lane_canvas/interaction.rs'
             and suffix.startswith(('canvas)', 'inner)', 'with_audio_trim)',
                                    'with_midi_trim)', 'with_clip_move)'))
         )
@@ -363,12 +363,12 @@ for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/he
             and suffix.startswith(('bar)', 'bars.id('))
         )
         plugin_parameter_search = (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters.rs'
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters/render.rs'
             and suffix.startswith('panel.search.clone())')
         )
         # This row contains only controls from the shared themed factory.
         modulator_parameter_control = (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators.rs'
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators/source_card.rs'
             and suffix.startswith(('parameter_control_with_presentation(', 'control_row)'))
         )
         if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not modulator_parameter_control:

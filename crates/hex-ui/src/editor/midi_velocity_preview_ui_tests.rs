@@ -58,9 +58,9 @@ fn released_velocity_handles_keep_final_values_until_exact_real_terminal(cx: &mu
                 .iter()
                 .map(|n| n.id())
                 .collect();
-            v.midi_selection.set_single(ids[0]);
+            v.midi_editor.selection.set_single(ids[0]);
             if group {
-                v.midi_selection.toggle(ids[1]).unwrap();
+                v.midi_editor.selection.toggle(ids[1]).unwrap();
             }
             cx.notify();
         });
@@ -86,14 +86,14 @@ fn released_velocity_handles_keep_final_values_until_exact_real_terminal(cx: &mu
                 "released preview must survive completed paints"
             );
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_velocity.gesture.is_none());
+                assert!(v.midi_editor.velocity.gesture.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
         // Selection/focus are no longer input custody after release.
         visual.update(|w, cx| {
             editor.update(cx, |v, cx| {
-                v.midi_selection.clear();
+                v.midi_editor.selection.clear();
                 v.focus.focus(w);
                 cx.notify();
             })
@@ -106,7 +106,9 @@ fn released_velocity_handles_keep_final_values_until_exact_real_terminal(cx: &mu
         });
         repaint(&editor, &mut visual);
         assert_eq!(handles(&mut visual), held);
-        editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_none()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_editor.pending_drag.is_none())
+        });
         let after = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         for (command, expected) in [(Request::Undo, &before), (Request::Redo, &after)] {
             editor.update(&mut visual, |v, _| assert!(v.enqueue(command)));

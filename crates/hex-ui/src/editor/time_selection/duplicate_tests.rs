@@ -243,7 +243,7 @@ fn command_d_refuses_overflow_and_pending_time_edits(cx: &mut TestAppContext) {
                 });
                 view.worker_requests_pending = usize::from(pending);
                 assert!(view.duplicate_time_selection(window));
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
                 assert!(view.pending_time_range_move.is_none());
                 assert!(view.error.is_some());
                 view.worker_requests_pending = 0;

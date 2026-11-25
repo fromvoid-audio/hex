@@ -81,7 +81,7 @@ fn operator_enable_badges_commit_canonical_history_and_reopen(cx: &mut TestAppCo
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && !view.saving_project
+            && !view.persistence.saving_project
             && view.state.as_ref().is_some_and(|state| !state.unsaved)
     });
     let reload = Service::new(48_000, 8, 8_000_000).unwrap();

@@ -32,7 +32,7 @@ impl EditorView {
         }
     }
     pub(super) fn set_input_quantization(&mut self, policy: InputQuantization) {
-        if self.midi_recorder.blocks_edits() {
+        if self.midi_editor.recorder.blocks_edits() {
             self.error =
                 Some("finish or discard the midi take before changing input quantization".into());
             return;
@@ -79,7 +79,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.midi_recorder.blocks_edits() {
+        if self.midi_editor.recorder.blocks_edits() {
             self.error =
                 Some("finish or discard the midi take before changing input quantization".into());
             cx.notify();

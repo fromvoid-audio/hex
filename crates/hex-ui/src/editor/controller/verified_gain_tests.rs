@@ -117,7 +117,8 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
         view.playback_candidates.clear();
         view.applied_project_revision = None;
         assert_eq!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .begin(
                     context.project_generation,
                     GestureTarget::TrackGain { track },
@@ -126,20 +127,23 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
                 .unwrap(),
             key
         );
-        view.device_gesture.next_request().unwrap();
+        view.device_panel.gesture.next_request().unwrap();
         assert!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .acknowledge(began.gesture_ack.as_ref().unwrap())
         );
         assert_eq!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .change(ParameterValue::Float(0.25))
                 .unwrap(),
             1
         );
-        view.device_gesture.next_request().unwrap();
+        view.device_panel.gesture.next_request().unwrap();
         assert!(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .acknowledge(changed.gesture_ack.as_ref().unwrap())
         );
     });
@@ -168,7 +172,7 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
         });
     }
     editor.update(&mut visual, |view, _| {
-        view.resident_device_preview = Some(preview);
+        view.device_panel.resident_preview = Some(preview);
         assert!(view.reconcile_publication_observation());
         let candidate = view.playback_candidates.back().unwrap();
         assert_eq!(candidate.device_preview_identity, Some(identity));

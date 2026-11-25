@@ -358,7 +358,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         {
                             failures.push(format!("{rate}/{pattern}/{processing}/loop={looping}/{edge:?}/{distance}: spans={:?}, accepted_root={root_matches}, mapping={:?}, expected={expected_mapping:?}", rendered[0].spans, rendered[0].prepared));
                         }
-                        assert!(view.last_enqueued_edit.is_none());
+                        assert!(view.test_probes.last_enqueued_edit.is_none());
                         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
                     });
                 }
@@ -379,7 +379,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                 });
                 visual.run_until_parked();
                 editor.read_with(&visual, |view, _| {
-                    assert!(view.last_enqueued_edit.is_none());
+                    assert!(view.test_probes.last_enqueued_edit.is_none());
                     assert!(view.active_trim_drag.is_none());
                     let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
                     assert_eq!(rendered.len(), 1);

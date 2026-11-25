@@ -152,7 +152,8 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
         );
         editor.read_with(&visual, |v, _| {
             let gesture = v
-                .audio_event_editor
+                .audio_detail
+                .event
                 .gesture
                 .as_ref()
                 .expect("real gesture must start");
@@ -192,7 +193,7 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
         assert!(!visual.update(|w, _| w.is_pointer_dragging()));
         assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::Crosshair));
         editor.read_with(&visual, |v, _| {
-            assert!(v.audio_event_editor.gesture.is_none());
+            assert!(v.audio_detail.event.gesture.is_none());
             if kind != "select" {
                 assert!(
                     if kind == "start" {
@@ -200,7 +201,7 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
                             .and_then(|id| v.pending_clip_loop_audio(id))
                             .is_some()
                     } else {
-                        v.audio_event_editor.pending.is_some()
+                        v.audio_detail.event.pending.is_some()
                     },
                     "kind={kind} must hand off one frozen edit"
                 );
@@ -216,7 +217,7 @@ fn held_event_gestures_isolate_other_input_and_finish_outside(cx: &mut TestAppCo
                         .and_then(|id| v.pending_clip_loop_audio(id))
                         .is_some()
                 } else {
-                    v.audio_event_editor.pending.is_some()
+                    v.audio_detail.event.pending.is_some()
                 });
             }
         });
@@ -249,7 +250,7 @@ fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppCon
                 MouseButton::Left,
                 Modifiers::default(),
             );
-            assert!(editor.read_with(&visual, |v, _| v.audio_event_editor.gesture.is_some()));
+            assert!(editor.read_with(&visual, |v, _| v.audio_detail.event.gesture.is_some()));
             match loss {
                 "button" => visual.simulate_mouse_move(outside, None, Modifiers::default()),
                 "invalid" => visual.simulate_mouse_move(
@@ -274,7 +275,7 @@ fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppCon
                     cx.notify();
                 }),
                 "hide" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "escape" => visual.simulate_keystrokes("escape"),
@@ -289,8 +290,8 @@ fn lost_event_pointers_never_commit_or_activate_late_release(cx: &mut TestAppCon
             visual.run_until_parked();
             assert_eq!(actions.get(), 0, "kind={kind} loss={loss}");
             editor.read_with(&visual, |v, _| {
-                assert!(v.audio_event_editor.gesture.is_none());
-                assert!(v.audio_event_editor.pending.is_none());
+                assert!(v.audio_detail.event.gesture.is_none());
+                assert!(v.audio_detail.event.pending.is_none());
                 assert!(
                     v.detail_clip_id()
                         .and_then(|id| v.pending_clip_loop_audio(id))
@@ -327,14 +328,14 @@ fn profile_audio_event_pointer(cx: &mut TestAppContext) {
             editor.update(&mut visual, |v, cx| {
                 assert_eq!(v.worker_requests_pending, 0);
                 assert!(v.pending_requests.is_empty());
-                assert!(v.audio_event_editor.pending.is_none());
-                assert!(v.audio_event_editor.gesture.is_none());
+                assert!(v.audio_detail.event.pending.is_none());
+                assert!(v.audio_detail.event.gesture.is_none());
                 cx.notify();
             });
             visual.run_until_parked();
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
-            assert!(editor.read_with(&visual, |v, _| v.audio_event_editor.gesture.is_some()));
+            assert!(editor.read_with(&visual, |v, _| v.audio_detail.event.gesture.is_some()));
             let clock = std::time::Instant::now();
             let mut at = down;
             for step in 0..8 {

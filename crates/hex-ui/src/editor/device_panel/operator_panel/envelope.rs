@@ -500,7 +500,7 @@ fn begin_gesture(
     };
     if event.node_id > 3
         || !finalize_controls_except_graph(view, cx, graph)
-        || view.device_gesture.snapshot().is_some()
+        || view.device_panel.gesture.snapshot().is_some()
     {
         return;
     }
@@ -763,7 +763,7 @@ fn cancel_key_gesture(view: &mut EditorView, key: GraphKey) {
         return;
     };
     clear_pending(view, key, gesture.node_id);
-    let Some(snapshot) = view.device_gesture.snapshot() else {
+    let Some(snapshot) = view.device_panel.gesture.snapshot() else {
         return;
     };
     if gesture_target_matches(key, gesture.node_id, snapshot.target) {

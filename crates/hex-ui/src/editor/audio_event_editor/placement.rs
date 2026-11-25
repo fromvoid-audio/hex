@@ -295,7 +295,7 @@ impl EditorView {
         let Some((_, root, _)) = self.event_context() else {
             return;
         };
-        let Some(bounds) = self.audio_event_editor.bounds else {
+        let Some(bounds) = self.audio_detail.event.bounds else {
             return;
         };
         let width = f64::from(f32::from(bounds.size.width));
@@ -362,14 +362,15 @@ impl EditorView {
             .ok()?;
         let frame = i128::from(clip.start()) + raw - i128::from(first);
         let snapped = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .grid
             .with_platform_modifier(platform)
             .snap_signed_frame(
                 &state.project,
                 frame,
                 self.event_project_window(root)?,
-                f32::from(self.audio_event_editor.bounds?.size.width),
+                f32::from(self.audio_detail.event.bounds?.size.width),
             )?;
         Some(snapped - i128::from(clip.start()) + i128::from(first))
     }

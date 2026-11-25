@@ -232,7 +232,7 @@ pub(super) fn marker_handle(
             MouseButton::Left,
             cx.listener(move |view, down: &gpui::MouseDownEvent, window, cx| {
                 if view.time_selection_key_held
-                    || view.audio_event_editor.fade_key_held
+                    || view.audio_detail.event.fade_key_held
                     || !view.audio_navigation_idle()
                 {
                     return;
@@ -269,7 +269,7 @@ impl EditorView {
         let Some(clip) = state.project.clip(clip_id) else {
             return;
         };
-        if direct_event(&root, clip).is_none() || self.audio_clip_controls.has_pending() {
+        if direct_event(&root, clip).is_none() || self.audio_detail.clip_controls.has_pending() {
             return;
         }
         let change = state
@@ -369,7 +369,9 @@ impl EditorView {
         let Some(clip) = self.state().and_then(|s| s.project.clip(clip_id)) else {
             return;
         };
-        if self.audio_clip_controls.has_pending() || self.audio_event_editor.pending.is_some() {
+        if self.audio_detail.clip_controls.has_pending()
+            || self.audio_detail.event.pending.is_some()
+        {
             return;
         }
         let beat = if let Some(event) = event {
@@ -394,9 +396,9 @@ impl EditorView {
             beat,
             event,
         };
-        self.audio_event_focus.focus(window);
+        self.audio_detail.focus.focus(window);
         if self.capture_audio_event_pointer(kind, window, cx) {
-            self.audio_event_editor.gesture = Some(Gesture {
+            self.audio_detail.event.gesture = Some(Gesture {
                 anchor,
                 pointer_x: x,
                 origin_x: x,

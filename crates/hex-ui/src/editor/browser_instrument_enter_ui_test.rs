@@ -111,8 +111,8 @@ fn browser_instrument_enter_reveals_the_session_append_on_a_full_page(cx: &mut T
     visual.simulate_resize(gpui::size(gpui::px(565.0), gpui::px(570.0)));
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.session_visible_columns, 1);
-        assert_eq!(view.session_track_start, 0);
+        assert_eq!(view.session_grid.visible_columns, 1);
+        assert_eq!(view.session_grid.track_start, 0);
     });
     let source = visual
         .debug_bounds("browser-device-instrument-hex.instrument.fm4")
@@ -179,7 +179,7 @@ fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_und
         .unwrap();
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "UI must send identity, not construct a device edit"
             );
             assert_eq!(
@@ -261,7 +261,7 @@ fn browser_instrument_enter_refuses_absent_stale_and_invalid_selection_without_q
                 let mut selected_class = class;
                 view.browser.results_focused = true;
                 view.browser.selected_index = 0;
-                view.last_enqueued_edit = None;
+                view.test_probes.last_enqueued_edit = None;
                 view.error = None;
                 match case {
                     0 => view.browser.results_focused = false,
@@ -291,7 +291,7 @@ fn browser_instrument_enter_refuses_absent_stale_and_invalid_selection_without_q
         visual.simulate_keystrokes("enter");
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "case{case} must refuse before queue"
             );
             assert_eq!(view.worker_requests_pending, 0);

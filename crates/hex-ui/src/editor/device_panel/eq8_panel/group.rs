@@ -107,7 +107,7 @@ pub(super) fn event(
         if let Some(control) = view.device_panel.eq8_graphs.get_mut(&device) {
             control.group_drag = None;
         }
-        if view.device_gesture.snapshot().is_some() {
+        if view.device_panel.gesture.snapshot().is_some() {
             view.device_panel.message = Some("wait for the current device edit, then retry".into());
             return;
         }
@@ -192,12 +192,12 @@ pub(super) fn event(
         return;
     };
     if event.node_id != plan.node
-        || !view.device_gesture.snapshot().is_some_and(|s| {
+        || !view.device_panel.gesture.snapshot().is_some_and(|s| {
             s.key == plan.key
                 && s.key.generation == view.project_generation
                 && s.target == GestureTarget::DeviceParameterSnapshot { device }
         })
-        || view.device_gesture.has_pending_terminal()
+        || view.device_panel.gesture.has_pending_terminal()
     {
         return;
     }
@@ -208,12 +208,17 @@ pub(super) fn event(
     let result = match event.phase {
         Phase::Cancel => view.cancel_device_gesture(),
         Phase::Commit => snapshot(&plan.bands, delta, plan.rate)
-            .and_then(|values| view.device_gesture.finish_snapshot(values))
+            .and_then(|values| view.device_panel.gesture.finish_snapshot(values))
             .map(|()| {
                 view.pump_device_gesture();
             }),
         Phase::Change => snapshot(&plan.bands, delta, plan.rate)
-            .and_then(|values| view.device_gesture.change_snapshot(values).map(|_| ()))
+            .and_then(|values| {
+                view.device_panel
+                    .gesture
+                    .change_snapshot(values)
+                    .map(|_| ())
+            })
             .map(|()| {
                 view.pump_device_gesture();
             }),
@@ -270,7 +275,7 @@ pub(super) fn disable(view: &mut EditorView, device: DeviceId, cx: &mut Context<
             let disabled = DeviceParameterSnapshot::new(&disabled)
                 .map_err(|_| "eq8 group parameters unavailable")?;
             view.begin_device_snapshot_gesture(device, initial)?;
-            let result = view.device_gesture.finish_snapshot(disabled);
+            let result = view.device_panel.gesture.finish_snapshot(disabled);
             if result.is_err() {
                 let _ = view.cancel_device_gesture();
             } else {

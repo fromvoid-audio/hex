@@ -258,7 +258,7 @@ impl EditorView {
         &self,
     ) -> Option<hex_session::service::ArrangementPlayStartAudition> {
         use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
-        let gesture = self.audio_event_editor.gesture.as_ref()?;
+        let gesture = self.audio_detail.event.gesture.as_ref()?;
         let Kind::PlayStart { position, .. } = gesture.kind else {
             return None;
         };
@@ -267,8 +267,8 @@ impl EditorView {
         }
         let clip = self.detail_clip_id()?;
         let editor_revision = self.state.as_ref()?.revision;
-        if self.audio_event_editor.owner != Some((clip, self.project_generation))
-            || self.audio_event_editor.revision != editor_revision
+        if self.audio_detail.event.owner != Some((clip, self.project_generation))
+            || self.audio_detail.event.revision != editor_revision
         {
             return None;
         }
@@ -287,7 +287,7 @@ impl EditorView {
                 recovery_attempted, ..
             },
             ..
-        }) = self.audio_event_editor.gesture.as_mut()
+        }) = self.audio_detail.event.gesture.as_mut()
         else {
             return false;
         };
@@ -296,8 +296,8 @@ impl EditorView {
 
     fn event_context_current(&self) -> bool {
         self.event_context().is_some_and(|(clip, _, revision)| {
-            self.audio_event_editor.owner == Some((clip, self.project_generation))
-                && self.audio_event_editor.revision == revision
+            self.audio_detail.event.owner == Some((clip, self.project_generation))
+                && self.audio_detail.event.revision == revision
         })
     }
     pub(super) fn held_arrangement_event_clip(&self) -> Option<ClipId> {
@@ -306,7 +306,7 @@ impl EditorView {
     }
 
     fn held_arrangement_event_amplitude(&self) -> Option<(ClipId, &AudioEventEdit)> {
-        let editor = &self.audio_event_editor;
+        let editor = &self.audio_detail.event;
         let operation = editor.gesture.as_ref()?.operation.as_ref()?;
         if !is_event_amplitude_edit(operation)
             || !editor.retained_ancestors.is_empty()
@@ -322,7 +322,7 @@ impl EditorView {
         &self,
         clip: &hex_project::Clip,
     ) -> Option<hex_project::AudioEvents> {
-        if let Some(pending) = &self.audio_event_editor.pending
+        if let Some(pending) = &self.audio_detail.event.pending
             && pending.owner == (clip.id(), self.project_generation)
             && is_event_amplitude_edit(&pending.operation)
         {
@@ -345,24 +345,24 @@ impl EditorView {
         self.event_context_current()
     }
     pub(in crate::editor) fn audio_loop_grid(&self) -> SnapGrid {
-        self.audio_event_editor.grid
+        self.audio_detail.event.grid
     }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in crate::editor) fn set_audio_loop_grid(&mut self, grid: SnapGrid) {
-        self.audio_event_editor.grid = grid;
+        self.audio_detail.event.grid = grid;
     }
     pub(in crate::editor) fn audio_loop_time_selection(&self) -> Option<(u64, u64)> {
         self.event_context_current()
-            .then_some(self.audio_event_editor.range)
+            .then_some(self.audio_detail.event.range)
             .flatten()
     }
     fn event_range(&self) -> Option<(u64, u64)> {
-        if let Some(range) = self.audio_event_editor.range.filter(|(a, b)| a < b) {
+        if let Some(range) = self.audio_detail.event.range.filter(|(a, b)| a < b) {
             return Some(range);
         }
         let state = self.state.as_ref()?;
         let clip = state.project.clip(self.detail_clip_id()?)?;
-        let selected = self.audio_event_editor.selected?;
+        let selected = self.audio_detail.event.selected?;
         clip.editable_audio_events()
             .ok()?
             .events
@@ -372,15 +372,15 @@ impl EditorView {
     }
     /// Toggle the explicitly selected event; retained geometry and source stay intact.
     pub(in crate::editor) fn event_toggle_active(&mut self) -> bool {
-        if self.audio_event_editor.source_view || !self.event_context_current() {
+        if self.audio_detail.event.source_view || !self.event_context_current() {
             return false;
         }
-        let Some(selected) = self.audio_event_editor.selected else {
+        let Some(selected) = self.audio_detail.event.selected else {
             return false;
         };
         if self.activation_gesture_blocked()
-            || self.audio_event_editor.pending.is_some()
-            || self.audio_event_editor.gesture.is_some()
+            || self.audio_detail.event.pending.is_some()
+            || self.audio_detail.event.gesture.is_some()
         {
             self.error = Some("finish the current edit before changing activation".into());
             return true;
@@ -397,7 +397,7 @@ impl EditorView {
         let Some(event) = events.events.iter().find(|event| event.id == selected) else {
             return false;
         };
-        if let Some((path, event_id)) = self.audio_event_editor.retained_selection.clone() {
+        if let Some((path, event_id)) = self.audio_detail.event.retained_selection.clone() {
             if path.first() != Some(&event.source) {
                 self.error = Some("retained audio selection changed".into());
                 return true;
@@ -426,8 +426,8 @@ impl EditorView {
     }
     fn event_retained_step(&mut self, forward: bool) {
         if self.activation_gesture_blocked()
-            || self.audio_event_editor.pending.is_some()
-            || self.audio_event_editor.gesture.is_some()
+            || self.audio_detail.event.pending.is_some()
+            || self.audio_detail.event.gesture.is_some()
         {
             return;
         }
@@ -443,20 +443,22 @@ impl EditorView {
         let Some(outer) = events
             .events
             .iter()
-            .find(|event| Some(event.id) == self.audio_event_editor.selected)
+            .find(|event| Some(event.id) == self.audio_detail.event.selected)
         else {
             return;
         };
         let continuing = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .retained_selection
             .as_ref()
             .is_some_and(|(path, _)| path.first() == Some(&outer.source));
         if !continuing {
-            self.audio_event_editor.retained_ancestors.clear();
+            self.audio_detail.event.retained_ancestors.clear();
         }
         let path = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .retained_selection
             .as_ref()
             .filter(|(path, _)| path.first() == Some(&outer.source))
@@ -468,7 +470,8 @@ impl EditorView {
             return;
         }
         let current = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .retained_selection
             .as_ref()
             .filter(|(selected_path, _)| *selected_path == path)
@@ -478,18 +481,18 @@ impl EditorView {
             Some(index) => (index + inner.events.len() - 1) % inner.events.len(),
             None => 0,
         };
-        self.audio_event_editor.retained_selection = Some((path, inner.events[index].id));
+        self.audio_detail.event.retained_selection = Some((path, inner.events[index].id));
     }
 
     fn event_retained_depth(&mut self, deeper: bool) {
         if self.activation_gesture_blocked()
-            || self.audio_event_editor.pending.is_some()
-            || self.audio_event_editor.gesture.is_some()
+            || self.audio_detail.event.pending.is_some()
+            || self.audio_detail.event.gesture.is_some()
             || !self.event_context_current()
         {
             return;
         }
-        let Some((mut path, selected)) = self.audio_event_editor.retained_selection.clone() else {
+        let Some((mut path, selected)) = self.audio_detail.event.retained_selection.clone() else {
             return;
         };
         let Some(clip) = self
@@ -516,8 +519,8 @@ impl EditorView {
             let Some(event) = next.events.first() else {
                 return;
             };
-            self.audio_event_editor.retained_ancestors.push(selected);
-            self.audio_event_editor.retained_selection = Some((path, event.id));
+            self.audio_detail.event.retained_ancestors.push(selected);
+            self.audio_detail.event.retained_selection = Some((path, event.id));
         } else if path.len() > 1 {
             let Some(source) = path.pop() else {
                 return;
@@ -525,7 +528,7 @@ impl EditorView {
             let Some(parent) = retained_events(clip, &path) else {
                 return;
             };
-            let Some(parent_id) = self.audio_event_editor.retained_ancestors.last().copied() else {
+            let Some(parent_id) = self.audio_detail.event.retained_ancestors.last().copied() else {
                 return;
             };
             let Some(event) = parent
@@ -535,15 +538,15 @@ impl EditorView {
             else {
                 return;
             };
-            self.audio_event_editor.retained_ancestors.pop();
-            self.audio_event_editor.retained_selection = Some((path, event.id));
+            self.audio_detail.event.retained_ancestors.pop();
+            self.audio_detail.event.retained_selection = Some((path, event.id));
         }
     }
     pub(super) fn event_group_selected(&mut self) {
-        if self.audio_event_editor.source_view
+        if self.audio_detail.event.source_view
             || !self.event_context_current()
             || self.edit_pending()
-            || self.audio_event_editor.pending.is_some()
+            || self.audio_detail.event.pending.is_some()
         {
             return;
         }
@@ -563,7 +566,7 @@ impl EditorView {
     }
     fn event_copy(&mut self, cut: bool) {
         if self.edit_pending()
-            || self.audio_event_editor.pending.is_some()
+            || self.audio_detail.event.pending.is_some()
             || !self.event_context_current()
         {
             return;
@@ -595,17 +598,17 @@ impl EditorView {
         };
         if cut {
             self.event_commit(AudioEventEdit::Delete { start, end });
-            if let Some(pending) = self.audio_event_editor.pending.as_mut() {
+            if let Some(pending) = self.audio_detail.event.pending.as_mut() {
                 pending.clipboard = Some(clipboard);
             }
         } else {
-            self.audio_event_editor.clipboard = Some(clipboard);
-            self.audio_event_editor.cursor = start;
+            self.audio_detail.event.clipboard = Some(clipboard);
+            self.audio_detail.event.cursor = start;
         }
     }
     fn event_paste(&mut self, insert: bool) {
         if self.edit_pending()
-            || self.audio_event_editor.pending.is_some()
+            || self.audio_detail.event.pending.is_some()
             || !self.event_context_current()
         {
             return;
@@ -613,7 +616,7 @@ impl EditorView {
         let Some((clip, mut root, _)) = self.event_context() else {
             return;
         };
-        let Some(clipboard) = self.audio_event_editor.clipboard.as_ref() else {
+        let Some(clipboard) = self.audio_detail.event.clipboard.as_ref() else {
             return;
         };
         let last_event_end = root
@@ -641,7 +644,7 @@ impl EditorView {
             );
             return;
         }
-        if !event_paste_fits_view(&root, self.audio_event_editor.cursor, clipboard.length) {
+        if !event_paste_fits_view(&root, self.audio_detail.event.cursor, clipboard.length) {
             self.error = Some("audio event paste exceeds the visible clip".into());
             return;
         }
@@ -655,13 +658,13 @@ impl EditorView {
         }
         let operation = if insert {
             AudioEventEdit::Insert {
-                at: self.audio_event_editor.cursor,
+                at: self.audio_detail.event.cursor,
                 length: clipboard.length,
                 events: clipboard.events.clone(),
             }
         } else {
             AudioEventEdit::Paste {
-                at: self.audio_event_editor.cursor,
+                at: self.audio_detail.event.cursor,
                 length: clipboard.length,
                 events: clipboard.events.clone(),
             }
@@ -671,13 +674,13 @@ impl EditorView {
                 source.preview(
                     &root,
                     state.project.tempo_map(),
-                    self.audio_event_editor.cursor,
+                    self.audio_detail.event.cursor,
                     clipboard.length,
                 )
             })
         });
         self.event_commit(operation);
-        if let Some(pending) = &mut self.audio_event_editor.pending {
+        if let Some(pending) = &mut self.audio_detail.event.pending {
             pending.waveform = waveform;
         }
     }
@@ -690,11 +693,11 @@ impl EditorView {
         let Some((_, root, _)) = self.event_context() else {
             return;
         };
-        if let Some((start, end)) = self.audio_event_editor.range.filter(|(a, b)| a < b) {
+        if let Some((start, end)) = self.audio_detail.event.range.filter(|(a, b)| a < b) {
             self.event_commit(AudioEventEdit::SplitRange { start, end });
             return;
         }
-        let at = self.audio_event_editor.cursor;
+        let at = self.audio_detail.event.cursor;
         if at > editor_bounds(&root).0 && at < editor_bounds(&root).1 {
             self.event_commit(AudioEventEdit::Split { at });
         }
@@ -703,7 +706,7 @@ impl EditorView {
     // inside it. Only explicit cancellation discards held input.
     fn event_release_pointer(&mut self, x: f32, platform: bool) {
         self.event_update_pointer(x, platform);
-        if let Some(gesture) = self.audio_event_editor.gesture.take() {
+        if let Some(gesture) = self.audio_detail.event.gesture.take() {
             if let Kind::PlayStart { position, .. } = gesture.kind {
                 if position != gesture.anchor
                     && let Some((clip, _, _)) = self.event_context()
@@ -737,11 +740,11 @@ impl EditorView {
     }
     fn event_update_gain(&mut self, y: f32, fine: bool) {
         if !y.is_finite() || !self.event_context_current() || self.edit_pending() {
-            self.audio_event_editor.gesture = None;
+            self.audio_detail.event.gesture = None;
             self.set_held_gain_audition(None);
             return;
         }
-        let Some(gesture) = self.audio_event_editor.gesture.as_mut() else {
+        let Some(gesture) = self.audio_detail.event.gesture.as_mut() else {
             return;
         };
         let Kind::Gain {
@@ -768,7 +771,7 @@ impl EditorView {
         let operation = hex_project::ClipGain::new(millidb)
             .ok()
             .filter(|gain| *gain != event.gain)
-            .map(|gain| match &self.audio_event_editor.retained_selection {
+            .map(|gain| match &self.audio_detail.event.retained_selection {
                 Some((sources, id)) if *id == event.id => AudioEventEdit::SetRetainedGain {
                     sources: sources.clone(),
                     event: event.id,
@@ -781,10 +784,11 @@ impl EditorView {
             });
         if gesture.operation != operation {
             gesture.operation = operation;
-            let edit = self.audio_event_editor.owner.and_then(|(clip, _)| {
+            let edit = self.audio_detail.event.owner.and_then(|(clip, _)| {
                 use hex_session::service::GainEdit;
                 match self
-                    .audio_event_editor
+                    .audio_detail
+                    .event
                     .gesture
                     .as_ref()?
                     .operation
@@ -817,23 +821,25 @@ impl EditorView {
             && self
                 .state
                 .as_ref()
-                .is_some_and(|state| state.revision == self.audio_event_editor.revision)
+                .is_some_and(|state| state.revision == self.audio_detail.event.revision)
             && self.detail_clip_id().is_some_and(|clip| {
-                self.audio_event_editor.owner == Some((clip, self.project_generation))
+                self.audio_detail.event.owner == Some((clip, self.project_generation))
             })
             && self
-                .audio_event_editor
+                .audio_detail
+                .event
                 .gesture
                 .as_ref()
                 .is_some_and(|gesture| matches!(gesture.kind, Kind::Gain { .. }))
     }
     fn event_update_pointer(&mut self, x: f32, platform: bool) {
-        if let Some(Kind::Fade(fade)) = self.audio_event_editor.gesture.as_ref().map(|g| g.kind) {
+        if let Some(Kind::Fade(fade)) = self.audio_detail.event.gesture.as_ref().map(|g| g.kind) {
             self.event_update_fade_pointer(x, fade.last_y, platform);
             return;
         }
         let recovering_play_start = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .gesture
             .as_ref()
             .is_some_and(|g| matches!(g.kind, Kind::PlayStart { .. }))
@@ -841,17 +847,17 @@ impl EditorView {
                 .detail_clip_id()
                 .is_some_and(|clip| self.recovering_clip_play_start(clip));
         if !self.event_context_current() || (self.edit_pending() && !recovering_play_start) {
-            self.audio_event_editor.gesture = None;
+            self.audio_detail.event.gesture = None;
             self.sync_held_play_start_audition();
             return;
         }
-        let Some(mut gesture) = self.audio_event_editor.gesture.clone() else {
+        let Some(mut gesture) = self.audio_detail.event.gesture.clone() else {
             return;
         };
         gesture.pointer_x = x;
         if !matches!(gesture.kind, Kind::Select) && !gesture.moved {
             if (x - gesture.origin_x).abs() < 3.0 {
-                self.audio_event_editor.gesture = Some(gesture);
+                self.audio_detail.event.gesture = Some(gesture);
                 return;
             }
             gesture.moved = true;
@@ -861,7 +867,7 @@ impl EditorView {
             return;
         };
         let Some(raw) =
-            self.event_pointer_position(x, self.audio_event_editor.grid != SnapGrid::Off)
+            self.event_pointer_position(x, self.audio_detail.event.grid != SnapGrid::Off)
         else {
             return;
         };
@@ -899,9 +905,9 @@ impl EditorView {
                 };
             }
             Kind::Select => {
-                self.audio_event_editor.range =
+                self.audio_detail.event.range =
                     Some((gesture.anchor.min(position), gesture.anchor.max(position)));
-                self.audio_event_editor.cursor = position;
+                self.audio_detail.event.cursor = position;
             }
             Kind::RangeMove { start, end } => {
                 let candidate = (i128::from(start) + i128::from(raw) - i128::from(gesture.anchor))
@@ -996,11 +1002,11 @@ impl EditorView {
                 });
             }
         }
-        if gesture.placement.is_some() && self.audio_event_editor.viewport.is_none() {
+        if gesture.placement.is_some() && self.audio_detail.event.viewport.is_none() {
             self.store_event_camera(self.event_frame_window(&root));
         }
         let play_start = matches!(gesture.kind, Kind::PlayStart { .. });
-        self.audio_event_editor.gesture = Some(gesture);
+        self.audio_detail.event.gesture = Some(gesture);
         if play_start {
             self.sync_held_play_start_audition();
         }
@@ -1021,7 +1027,7 @@ impl EditorView {
         let Some(event) = events
             .events
             .iter()
-            .find(|e| Some(e.id) == self.audio_event_editor.selected)
+            .find(|e| Some(e.id) == self.audio_detail.event.selected)
             .copied()
         else {
             return;
@@ -1039,11 +1045,13 @@ impl EditorView {
             return;
         };
         let width = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .bounds
             .map_or(640.0, |b| f32::from(b.size.width));
         let Some(next) = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .grid
             .with_platform_modifier(platform)
             .adjacent_signed_frame(&state.project, frame, window, width, right)
@@ -1093,12 +1101,12 @@ impl EditorView {
     fn event_select_all(&mut self) {
         if let Some((_, root, _)) = self.event_context() {
             self.advance_selection_intent();
-            self.audio_event_editor.range = Some((editor_bounds(&root).0, editor_bounds(&root).1));
-            self.audio_event_editor.cursor = editor_bounds(&root).0;
+            self.audio_detail.event.range = Some((editor_bounds(&root).0, editor_bounds(&root).1));
+            self.audio_detail.event.cursor = editor_bounds(&root).0;
         }
     }
     fn duplicate_selected_event(&mut self) {
-        let Some(selected) = self.audio_event_editor.selected else {
+        let Some(selected) = self.audio_detail.event.selected else {
             return;
         };
         let Some((clip, _, _)) = self.event_context() else {
@@ -1159,7 +1167,8 @@ impl EditorView {
     }
     pub(super) fn refresh_audio_event_modifiers(&mut self, platform: bool) -> bool {
         let Some(pointer) = self
-            .audio_event_editor
+            .audio_detail
+            .event
             .gesture
             .as_ref()
             .map(|g| g.pointer_x)
@@ -1171,8 +1180,8 @@ impl EditorView {
     }
     fn remember_audio_fit(&mut self) {
         if self.event_context_current() {
-            self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
-            self.audio_event_editor.fit_back_negative = self.audio_event_editor.negative_pan;
+            self.audio_detail.event.fit_back = Some(self.audio_detail.event.viewport);
+            self.audio_detail.event.fit_back_negative = self.audio_detail.event.negative_pan;
         }
     }
     /// Manual fit calculation in the source root's output clock.
@@ -1210,22 +1219,22 @@ impl EditorView {
         if remember {
             self.remember_audio_fit();
         }
-        self.audio_event_editor.gesture = None;
+        self.audio_detail.event.gesture = None;
         self.store_event_camera(window)
     }
     pub(super) fn event_zoom_back_available(&self) -> bool {
         self.event_context_current()
-            && if self.audio_event_editor.source_view {
-                self.audio_event_editor.source_fit_back.is_some()
+            && if self.audio_detail.event.source_view {
+                self.audio_detail.event.source_fit_back.is_some()
             } else {
-                self.audio_event_editor.fit_back.is_some()
+                self.audio_detail.event.fit_back.is_some()
             }
     }
     pub(super) fn event_fit_selection(&mut self, back: bool) -> bool {
         if !self.audio_navigation_idle() {
             return false;
         }
-        if self.audio_event_editor.source_view {
+        if self.audio_detail.event.source_view {
             return self.source_fit(back);
         }
         if !self.event_context_current() {
@@ -1249,12 +1258,12 @@ impl EditorView {
             return false;
         }
         let next = if back {
-            let Some(prior) = self.audio_event_editor.fit_back.take() else {
+            let Some(prior) = self.audio_detail.event.fit_back.take() else {
                 return false;
             };
             prior
         } else {
-            let range = self.audio_event_editor.range.and_then(|(a, b)| {
+            let range = self.audio_detail.event.range.and_then(|(a, b)| {
                 let first = a
                     .min(b)
                     .clamp(content_bounds(&root).0, content_bounds(&root).1);
@@ -1268,10 +1277,10 @@ impl EditorView {
                 true,
             );
         };
-        self.audio_event_editor.gesture = None;
-        self.audio_event_editor.viewport = next;
-        self.audio_event_editor.negative_pan = if next.is_some() {
-            self.audio_event_editor.fit_back_negative
+        self.audio_detail.event.gesture = None;
+        self.audio_detail.event.viewport = next;
+        self.audio_detail.event.negative_pan = if next.is_some() {
+            self.audio_detail.event.fit_back_negative
         } else {
             0
         };

@@ -70,10 +70,10 @@ fn usable_directory(directory: Option<PathBuf>) -> Option<PathBuf> {
 
 impl EditorView {
     pub(super) fn start_project_directory_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.project_directory.path.clone() else {
-            self.project_directory.loading = false;
-            self.project_directory.writable = false;
-            self.project_directory.directory = None;
+        let Some(path) = self.settings.project_directory.path.clone() else {
+            self.settings.project_directory.loading = false;
+            self.settings.project_directory.writable = false;
+            self.settings.project_directory.directory = None;
             return;
         };
         #[cfg(test)]
@@ -96,18 +96,18 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                view.project_directory.loading = false;
+                view.settings.project_directory.loading = false;
                 match result {
                     Ok(directory) => {
-                        if !view.project_directory.changed_while_loading {
-                            view.project_directory.directory = directory;
+                        if !view.settings.project_directory.changed_while_loading {
+                            view.settings.project_directory.directory = directory;
                         }
                         view.start_project_directory_save(cx);
                     }
                     Err(error) => {
-                        view.project_directory.writable = false;
-                        view.project_directory.directory = None;
-                        if let Ok(mut writes) = view.project_directory.writes.lock() {
+                        view.settings.project_directory.writable = false;
+                        view.settings.project_directory.directory = None;
+                        if let Ok(mut writes) = view.settings.project_directory.writes.lock() {
                             writes.pending = None;
                         }
                         view.project_directory_error("load", error);
@@ -140,7 +140,7 @@ impl EditorView {
 
     /// Called ONLY after canonical successful Open/Save completion, never picker acceptance.
     pub(super) fn record_project_directory(&mut self, document: PathBuf, cx: &mut Context<Self>) {
-        if !self.project_directory.writable {
+        if !self.settings.project_directory.writable {
             self.error = Some(
                 "could not remember project folder · original invalid preferences preserved".into(),
             );
@@ -150,9 +150,9 @@ impl EditorView {
             return;
         };
         let directory = parent.to_path_buf();
-        self.project_directory.directory = Some(directory.clone());
-        self.project_directory.changed_while_loading = true;
-        match self.project_directory.writes.lock() {
+        self.settings.project_directory.directory = Some(directory.clone());
+        self.settings.project_directory.changed_while_loading = true;
+        match self.settings.project_directory.writes.lock() {
             Ok(mut writes) => writes.pending = Some(directory),
             Err(_) => {
                 self.error = Some("could not queue project folder preference".into());
@@ -163,17 +163,17 @@ impl EditorView {
     }
 
     fn start_project_directory_save(&mut self, cx: &mut Context<Self>) {
-        if !self.project_directory.writable {
+        if !self.settings.project_directory.writable {
             return;
         }
-        let Some(path) = self.project_directory.path.clone() else {
-            self.project_directory.writable = false;
-            if let Ok(mut writes) = self.project_directory.writes.lock() {
+        let Some(path) = self.settings.project_directory.path.clone() else {
+            self.settings.project_directory.writable = false;
+            if let Ok(mut writes) = self.settings.project_directory.writes.lock() {
                 writes.pending = None;
             }
             return;
         };
-        let writes = Arc::clone(&self.project_directory.writes);
+        let writes = Arc::clone(&self.settings.project_directory.writes);
         let start = match writes.lock() {
             Ok(mut writes) if !writes.running && writes.pending.is_some() => {
                 writes.running = true;
@@ -185,7 +185,7 @@ impl EditorView {
             return;
         }
         #[cfg(test)]
-        let gate = self.project_directory.save_gate.take();
+        let gate = self.settings.project_directory.save_gate.take();
         #[cfg(test)]
         let environment = Arc::clone(&self.test_environment);
         cx.spawn(async move |this, cx| {
@@ -239,15 +239,17 @@ impl EditorView {
         cx: &mut Context<Self>,
         ready: impl FnOnce(&mut Self, Option<PathBuf>, &mut Context<Self>) + 'static,
     ) {
-        if !self.project_directory.loading && self.project_directory.directory.is_none() {
+        if !self.settings.project_directory.loading
+            && self.settings.project_directory.directory.is_none()
+        {
             ready(self, None, cx);
             return;
         }
         cx.spawn(async move |this, cx| {
             let directory = loop {
                 match this.update(cx, |view, _| {
-                    (!view.project_directory.loading)
-                        .then(|| view.project_directory.directory.clone())
+                    (!view.settings.project_directory.loading)
+                        .then(|| view.settings.project_directory.directory.clone())
                 }) {
                     Ok(Some(directory)) => break directory,
                     Err(_) => return,
@@ -264,8 +266,9 @@ impl EditorView {
                 Err(_) => return,
             };
             #[cfg(test)]
-            let gate = match this.update(cx, |view, _| view.project_directory.directory_gate.take())
-            {
+            let gate = match this.update(cx, |view, _| {
+                view.settings.project_directory.directory_gate.take()
+            }) {
                 Ok(gate) => gate,
                 Err(_) => return,
             };

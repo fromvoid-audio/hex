@@ -79,7 +79,7 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
     let first = if is_return { ids[0] } else { first };
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = return_id;
+        view.session_grid.focused_return = return_id;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -170,7 +170,7 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
     );
     {
         editor.update(cx, |view, cx| {
-            view.active_native_device_drag = Some(drag::NativeDeviceDrag {
+            view.device_panel.active_native_drag = Some(drag::NativeDeviceDrag {
                 project_generation: view.project_generation,
                 revision: view.state.as_ref().unwrap().revision,
                 source: drag::NativeDeviceDragSource::Existing {
@@ -220,7 +220,7 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
                 .is_some()
         );
         editor.update(cx, |view, cx| {
-            view.active_native_device_drag = None;
+            view.device_panel.active_native_drag = None;
             cx.notify();
         });
     }
@@ -305,7 +305,7 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
         Modifiers::default(),
     );
     pump_until(&editor, cx, |view| {
-        view.device_gesture.snapshot().is_none() && view.worker_requests_pending == 0
+        view.device_panel.gesture.snapshot().is_none() && view.worker_requests_pending == 0
     });
     assert!(!control.read_with(cx, |control, _| control.is_interacting()));
     scroll(&editor, &mut visual, 0.0);
@@ -345,7 +345,9 @@ fn exercise(cx: &mut TestAppContext, is_return: bool) {
     editor.update(cx, |view, _| {
         let _ = view.cancel_device_gesture();
     });
-    pump_until(&editor, cx, |view| view.device_gesture.snapshot().is_none());
+    pump_until(&editor, cx, |view| {
+        view.device_panel.gesture.snapshot().is_none()
+    });
     visual.run_until_parked();
     // Removing an offscreen owner retires its entity; Undo restores its ID and
     // canonical ordering without replacing surviving controls.
@@ -452,7 +454,7 @@ fn return_chain_type_change_retires_old_identity_and_metadata(cx: &mut TestAppCo
     let (service, state, track, return_track, device, parameter) = actor_return_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let visual = VisualTestContext::from_window(handle, cx);

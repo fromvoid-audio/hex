@@ -15,33 +15,33 @@ pub(super) struct Zoom {
 }
 impl EditorView {
     pub(super) fn reconcile_piano_pitch_zoom(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let invalid = self.piano_pitch_zoom.as_ref().is_some_and(|z| {
+        let invalid = self.midi_editor.piano_pitch_zoom.as_ref().is_some_and(|z| {
             self.project_generation != z.scene.generation
                 || self
                     .state
                     .as_ref()
                     .is_none_or(|s| s.revision != z.scene.revision)
                 || self.detail_midi_clip_data() != Some(z.scene.clip)
-                || self.piano_beat_start != z.scene.beat_start
-                || self.piano_beat_span.raw() != z.scene.beat_span
-                || self.piano_pitch != z.applied_pitch
-                || !self.clip_view_open
-                || self.device_panel_active
+                || self.midi_editor.piano_beat_start != z.scene.beat_start
+                || self.midi_editor.piano_beat_span.raw() != z.scene.beat_span
+                || self.midi_editor.piano_pitch != z.applied_pitch
+                || !self.audio_detail.clip_view_open
+                || self.device_panel.active
                 || self.context_menu.is_some()
-                || !self.midi_focus.is_focused(window)
+                || !self.midi_editor.focus.is_focused(window)
                 || !z.gesture.matches_window(window)
                 || window.viewport_size() != z.viewport
                 || self.piano_grid_height() != z.grid_height
         });
         if invalid {
-            self.piano_pitch_zoom = None;
+            self.midi_editor.piano_pitch_zoom = None;
             cx.notify();
         }
     }
     pub(super) fn piano_pitch_input(&self, cx: &Context<Self>) -> SplitterInput<Self> {
         SplitterInput::new(
             cx.entity(),
-            |v| v.piano_pitch_zoom.as_ref().map(|z| z.gesture),
+            |v| v.midi_editor.piano_pitch_zoom.as_ref().map(|z| z.gesture),
             Self::piano_pitch_event,
         )
     }
@@ -53,7 +53,10 @@ impl EditorView {
     ) -> bool {
         match event {
             SplitterEvent::Begin(gesture) => {
-                if !self.clip_view_open || self.device_panel_active || self.context_menu.is_some() {
+                if !self.audio_detail.clip_view_open
+                    || self.device_panel.active
+                    || self.context_menu.is_some()
+                {
                     return false;
                 }
                 let Some(clip) = self.detail_midi_clip_data() else {
@@ -62,21 +65,21 @@ impl EditorView {
                 let Some(revision) = self.state.as_ref().map(|s| s.revision) else {
                     return false;
                 };
-                let pitch = self.piano_pitch;
+                let pitch = self.midi_editor.piano_pitch;
                 self.cancel_midi_note_gesture();
-                self.midi_focus.focus(window);
-                self.piano_pitch_zoom = Some(Zoom {
+                self.midi_editor.focus.focus(window);
+                self.midi_editor.piano_pitch_zoom = Some(Zoom {
                     gesture,
                     scene: SceneKey {
                         generation: self.project_generation,
                         revision,
                         clip,
-                        beat_start: self.piano_beat_start,
-                        beat_span: self.piano_beat_span.raw(),
+                        beat_start: self.midi_editor.piano_beat_start,
+                        beat_span: self.midi_editor.piano_beat_span.raw(),
                         pitch,
                     },
                     applied_pitch: pitch,
-                    note_fit: self.piano_pitch_note_fit,
+                    note_fit: self.midi_editor.piano_pitch_note_fit,
                     viewport: window.viewport_size(),
                     grid_height: self.piano_grid_height(),
                 });
@@ -85,33 +88,35 @@ impl EditorView {
             }
             SplitterEvent::Change(delta) | SplitterEvent::Commit(delta) => {
                 self.reconcile_piano_pitch_zoom(window, cx);
-                let Some(z) = self.piano_pitch_zoom.as_mut() else {
+                let Some(z) = self.midi_editor.piano_pitch_zoom.as_mut() else {
                     return false;
                 };
                 if !delta.is_finite() {
-                    self.piano_pitch_zoom = None;
+                    self.midi_editor.piano_pitch_zoom = None;
                     cx.notify();
                     return true;
                 }
                 let Some(pitch) = z.scene.pitch.zoom_at(z.grid_height, 0.5, delta) else {
                     return false;
                 };
-                if matches!(event, SplitterEvent::Change(_)) && self.piano_pitch == pitch {
+                if matches!(event, SplitterEvent::Change(_))
+                    && self.midi_editor.piano_pitch == pitch
+                {
                     return false;
                 }
-                if self.piano_pitch != pitch {
-                    self.piano_pitch = pitch;
-                    self.piano_pitch_note_fit = z.note_fit && pitch == z.scene.pitch;
+                if self.midi_editor.piano_pitch != pitch {
+                    self.midi_editor.piano_pitch = pitch;
+                    self.midi_editor.piano_pitch_note_fit = z.note_fit && pitch == z.scene.pitch;
                     z.applied_pitch = pitch;
                 }
                 if matches!(event, SplitterEvent::Commit(_)) {
-                    self.piano_pitch_zoom = None;
+                    self.midi_editor.piano_pitch_zoom = None;
                 }
                 cx.notify();
                 true
             }
             SplitterEvent::Cancel(_) => {
-                let changed = self.piano_pitch_zoom.take().is_some();
+                let changed = self.midi_editor.piano_pitch_zoom.take().is_some();
                 if changed {
                     cx.notify();
                 }

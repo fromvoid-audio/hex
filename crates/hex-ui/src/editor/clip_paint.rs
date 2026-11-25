@@ -57,15 +57,15 @@ impl EditorView {
             && !self.track_name.is_editing()
             && !self.edit_pending()
             && self.context_menu.is_none()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
             && self.active_clip_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
-            && self.active_native_device_drag.is_none()
+            && self.browser.active_audio_drag.is_none()
+            && self.device_panel.active_native_drag.is_none()
             && self.active_trim_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
+            && self.midi_editor.active_trim_drag.is_none()
             && self
                 .clip_paint_gesture
                 .as_ref()

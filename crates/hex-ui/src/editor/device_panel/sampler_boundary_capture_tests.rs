@@ -156,7 +156,7 @@ fn sampler_handles_capture_loss_never_submits_late_release(cx: &mut TestAppConte
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "focus" => visual.update(|w, cx| {

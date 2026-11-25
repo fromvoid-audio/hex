@@ -78,7 +78,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        if self.midi_selection.is_empty() {
+        if self.midi_editor.selection.is_empty() {
             self.error = Some("select notes to duplicate".into());
             return;
         }
@@ -101,10 +101,10 @@ impl EditorView {
                         channel: note.channel(),
                         velocity: note.velocity(),
                     }),
-                    self.midi_selection.ids(),
+                    self.midi_editor.selection.ids(),
                 )?;
                 notes.sort_unstable_by_key(|note| note.id);
-                let delta = keyboard_delta(&notes, self.midi_snap_grid.step_raw())?;
+                let delta = keyboard_delta(&notes, self.midi_editor.snap_grid.step_raw())?;
                 insertions(&notes, delta)
             });
         match result {

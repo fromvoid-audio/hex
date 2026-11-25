@@ -82,7 +82,7 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
     };
     let (track_frame, _) = assert_gate_bounds(&mut visual, device);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -90,7 +90,7 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
     assert_eq!(return_frame.size, track_frame.size);
 
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -107,8 +107,8 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("state");
@@ -146,8 +146,8 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(

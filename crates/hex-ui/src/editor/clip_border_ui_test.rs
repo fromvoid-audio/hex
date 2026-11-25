@@ -618,7 +618,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_clip, primary, "membership-only invalidation");
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     // The selected border also follows the real held edge preview, and escape
     // restores the original visible geometry without submitting a model edit.
@@ -654,7 +654,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     editor.read_with(&visual, |view, _| {
         assert!(view.active_trim_drag.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
 }
 
@@ -975,7 +975,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
     }
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), original);
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
     });
 }
 

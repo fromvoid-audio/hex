@@ -67,7 +67,7 @@ impl EditorView {
                     self.state.as_ref().map(|s| s.revision),
                     self.selected_track.map(|id| id.value()),
                     self.selected_clip.map(|id| id.value()),
-                    self.selected_scene.map(|id| id.value()),
+                    self.session_grid.selected_scene.map(|id| id.value()),
                     self.mode,
                     self.viewport,
                     self.browser.open,
@@ -136,7 +136,7 @@ impl EditorView {
         visible_change |= self.tick_sampler_parameter();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
-        visible_change |= self.tuning.broadcast.tick(cx);
+        visible_change |= self.settings.tuning.broadcast.tick(cx);
         visible_change |= self.tick_tuning_midi_activity();
         visible_change |= self.tick_controller_input(cx);
         visible_change |= self.tick_midi_pitch_feedback();
@@ -216,8 +216,8 @@ impl EditorView {
                         );
                     }
                     self.submitted_clip_cuts.clear();
-                    self.pending_created_note_selection = None;
-                    self.midi_step.cancel_pending();
+                    self.midi_editor.pending_created_note_selection = None;
+                    self.midi_editor.step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.duplicate_intent.reject();
                     visible_change |= self.pending_time_range_move.take().is_some();
@@ -247,9 +247,9 @@ impl EditorView {
                     visible_change |= self.retire_all_eq_creations();
                     visible_change |= self.pending_loop.take().is_some();
                     visible_change |= self.section_launch_after_loop.take().is_some();
-                    self.browser_insertion_flight = None;
-                    visible_change |= !self.pending_browser_insertions.is_empty();
-                    self.pending_browser_insertions.clear();
+                    self.browser.insertion_flight = None;
+                    visible_change |= !self.browser.pending_insertions.is_empty();
+                    self.browser.pending_insertions.clear();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -260,7 +260,7 @@ impl EditorView {
             visible_change |= self.observe_paste_view(view);
         }
         if !self.edit_pending() {
-            self.midi_step.cancel_pending();
+            self.midi_editor.step.cancel_pending();
         }
         visible_change |= self.submit_deferred_clip_move();
         visible_change |= self.submit_queued_section();
@@ -269,7 +269,9 @@ impl EditorView {
         visible_change |= self.poll_export(cx);
         visible_change |= self.poll_bounce_progress();
         visible_change |= self.pump_tuning_gesture();
-        if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
+        if !self.settings.tuning.client.has_pending_requests()
+            && !self.settings.tuning.client.is_recovery_pending()
+        {
             while self.pending_requests.front().is_some_and(|request| {
                 !self.holds_stopped_vst3_requests()
                     || matches!(request, Request::RestoreStoppedPlayback)
@@ -537,12 +539,13 @@ impl EditorView {
             .and_then(|status| status.session_capability())
         {
             let code = capability as u32;
-            if self.observed_session_capability != Some(code) {
-                let previous_message = self.session_capability_message.as_deref();
-                self.observed_session_capability = Some(code);
+            if self.session_grid.observed_capability != Some(code) {
+                let previous_message = self.session_grid.capability_message.as_deref();
+                self.session_grid.observed_capability = Some(code);
                 if let Some(message) = capability.message() {
                     let message = self
-                        .session_capability_message
+                        .session_grid
+                        .capability_message
                         .as_deref()
                         .unwrap_or(message);
                     visible_change |= replace_error(&mut self.error, message);
@@ -559,8 +562,8 @@ impl EditorView {
         // rejection snapshot first and then acquiring `applied_revision` lets
         // accepted work win accounting before older coalesced rejections prune
         // the remaining pending revisions.
-        let active_gesture = (!self.device_gesture.has_pending_terminal())
-            .then(|| self.device_gesture.snapshot())
+        let active_gesture = (!self.device_panel.gesture.has_pending_terminal())
+            .then(|| self.device_panel.gesture.snapshot())
             .flatten()
             .map(|snapshot| (snapshot.key, snapshot.sequence));
         let rejected_revision = audio
@@ -652,7 +655,11 @@ impl EditorView {
                 audio_revision,
                 self.project_generation,
                 self.state.as_ref().map(|s| s.revision),
-                self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
+                self.settings
+                    .tuning
+                    .client
+                    .snapshot()
+                    .map(|s| (s.key, s.sequence)),
             ) {
                 // Preview failures are transient, but remain visible even
                 // though they do not change the canonical admission footer.
@@ -837,7 +844,11 @@ impl EditorView {
                     &candidate,
                     self.project_generation,
                     self.state.as_ref().map(|s| s.revision),
-                    self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
+                    self.settings
+                        .tuning
+                        .client
+                        .snapshot()
+                        .map(|s| (s.key, s.sequence)),
                 )
                 .unwrap_or_else(|| {
                     applied_candidate_source(
@@ -862,7 +873,7 @@ impl EditorView {
             } else if source == AppliedCandidateSource::Current {
                 visible_change |= self.applied_clip_preview.take().is_some();
                 if candidate.tuning_preview_identity.is_some() {
-                    self.tuning.broadcast.observe(
+                    self.settings.tuning.broadcast.observe(
                         candidate.project_generation,
                         candidate.state.revision,
                         candidate.state.project.tuning(),
@@ -942,7 +953,7 @@ impl EditorView {
             self.pending_audio_commands.clear();
             self.pending_seek_ticket = None;
             self.pending_metronome_ticket = None;
-            self.pending_session_ticket = None;
+            self.session_grid.pending_session_ticket = None;
             self.play_intent.clear();
             self.pending_recovery_generation = None;
             visible_change |= replace_error(
@@ -1000,7 +1011,8 @@ impl EditorView {
                         pending.action,
                         PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_)
                     ) {
-                        self.pending_session_ticket = Some((ticket, pending.generation));
+                        self.session_grid.pending_session_ticket =
+                            Some((ticket, pending.generation));
                     }
                     if let Some(token) = pending.intent_token {
                         self.play_intent.attach_ticket(token, ticket);
@@ -1055,11 +1067,11 @@ impl EditorView {
                     }
                 }
                 let (pending, result) = reconcile_session_receipt(
-                    self.pending_session_ticket,
+                    self.session_grid.pending_session_ticket,
                     self.project_generation,
                     receipt,
                 );
-                self.pending_session_ticket = pending;
+                self.session_grid.pending_session_ticket = pending;
                 match result {
                     Some(SessionTicketOutcome::Consumed) => {
                         visible_change |=
@@ -1134,12 +1146,12 @@ impl EditorView {
             self.play_intent
                 .reconcile(consumed_command, actual_playing, rejected_action_ticket);
             let (pending_session_ticket, session_outcome) = reconcile_session_ticket(
-                self.pending_session_ticket,
+                self.session_grid.pending_session_ticket,
                 self.project_generation,
                 consumed_command,
                 rejected_action_ticket,
             );
-            self.pending_session_ticket = pending_session_ticket;
+            self.session_grid.pending_session_ticket = pending_session_ticket;
             match session_outcome {
                 Some(SessionTicketOutcome::Consumed) => {
                     visible_change |= replace_status(&mut self.status, "session request consumed");
@@ -1172,10 +1184,10 @@ impl EditorView {
             .status()
             .is_some_and(|status| status.device_fault.load(Relaxed))
         {
-            self.session_routes.clear();
+            self.session_grid.routes.clear();
             self.pending_audio_commands.clear();
             self.pending_metronome_ticket = None;
-            self.pending_session_ticket = None;
+            self.session_grid.pending_session_ticket = None;
             self.pending_seek_ticket = None;
             self.deferred_toggle_play = None;
             self.deferred_metadata_seek = None;
@@ -1189,11 +1201,11 @@ impl EditorView {
             .status()
             .is_some_and(|status| status.render_fault.load(Relaxed))
         {
-            self.session_routes.clear();
+            self.session_grid.routes.clear();
             self.pending_audio_commands.clear();
             self.pending_metronome_ticket = None;
             self.pending_seek_ticket = None;
-            self.pending_session_ticket = None;
+            self.session_grid.pending_session_ticket = None;
             self.deferred_toggle_play = None;
             self.deferred_metadata_seek = None;
             self.play_intent.clear();
@@ -1249,10 +1261,10 @@ impl EditorView {
             if let Some(identity) = audio.control.output_identity()
                 && let Some(status) = audio.control.status()
             {
-                visible_change |= self.session_routes.poll(identity, status);
+                visible_change |= self.session_grid.routes.poll(identity, status);
             }
         } else {
-            self.session_routes.clear();
+            self.session_grid.routes.clear();
         }
         let frame = audio.control.status().map(|status| {
             let mut frame = AudioFrame::capture(status);
@@ -1306,8 +1318,8 @@ impl EditorView {
         identity: hex_engine::PostNodeIdentity,
         generation: u64,
     ) -> bool {
-        if !self.clip_view_open
-            || !self.device_panel_active
+        if !self.audio_detail.clip_view_open
+            || !self.device_panel.active
             || self.project_generation != generation
             || !matches!(identity.device_type.as_str(), Ok("hex.eq8" | "hex.eq"))
         {
@@ -1363,8 +1375,8 @@ impl EditorView {
         &self,
         target: hex_audio::processor_audition::ProcessorAuditionTarget,
     ) -> bool {
-        if !self.clip_view_open
-            || !self.device_panel_active
+        if !self.audio_detail.clip_view_open
+            || !self.device_panel.active
             || self.project_generation != target.project_generation
             || !matches!(
                 target.identity.device_type.as_str(),

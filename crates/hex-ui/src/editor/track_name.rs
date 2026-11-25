@@ -160,7 +160,7 @@ impl EditorView {
             || self.track_reorder_active()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
         {
             self.error = Some("finish the current edit before removing tracks".into());
@@ -310,7 +310,7 @@ impl EditorView {
             || self.clip_name_edit.is_some()
             || self.active_clip_drag.is_some()
             || self.active_trim_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
         {
             return;
@@ -429,8 +429,8 @@ impl EditorView {
         };
         let name = edit.input.read(cx).text();
         if self.edit_pending()
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
             || edit.generation != self.project_generation
             || !self.state.as_ref().is_some_and(|state| {
                 state.revision == edit.revision && edit.matches(&state.project)
@@ -686,8 +686,8 @@ mod tests {
         visual.simulate_keystrokes("enter");
         let command = editor.read_with(&visual,|view,_| {
             assert!(view.track_name.edit.is_none());
-            assert!(matches!(&view.last_enqueued_edit,Some(Command::RenameTrack {track:id,name}) if *id==track && name=="Verse S 🎹"));
-            view.last_enqueued_edit.clone().unwrap()
+            assert!(matches!(&view.test_probes.last_enqueued_edit,Some(Command::RenameTrack {track:id,name}) if *id==track && name=="Verse S 🎹"));
+            view.test_probes.last_enqueued_edit.clone().unwrap()
         });
         let mut canonical = hex_project::Editor::new(original.clone(), 8).unwrap();
         canonical.execute(command.clone()).unwrap();
@@ -718,7 +718,7 @@ mod tests {
         visual.simulate_keystrokes("escape");
         editor.read_with(&visual, |view, _| {
             assert!(view.track_name.edit.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         click(
             &mut visual,
@@ -729,7 +729,7 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert!(view.track_name.edit.is_none());
             assert!(view.clip_name_edit.is_some());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
     #[gpui::test]
@@ -768,7 +768,7 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert!(view.track_name.edit.is_none());
             assert!(view.clip_name_edit.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
 }

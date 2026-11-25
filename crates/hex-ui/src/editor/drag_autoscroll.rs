@@ -129,10 +129,10 @@ impl EditorView {
     ) -> bool {
         if self.mode != EditorMode::Arrangement
             || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
             || self.edit_pending()
         {
             return false;
@@ -179,7 +179,7 @@ impl EditorView {
             }
             return false;
         }
-        if let Some(drag) = self.active_browser_audio_drag.clone() {
+        if let Some(drag) = self.browser.active_audio_drag.clone() {
             if !self.browser_audio_drag_is_current(&drag) {
                 return false;
             }
@@ -194,7 +194,7 @@ impl EditorView {
                 self.apply_drag_scroll(&drag.scroll, next, horizon);
             }
             if vertical {
-                self.sampler_load.header_insertion_line_y = None;
+                self.device_panel.sampler_load.header_insertion_line_y = None;
                 drag.preview.set(None);
                 drag.destination.set(None);
                 drag.insertion_line_y.set(None);
@@ -207,10 +207,10 @@ impl EditorView {
             }
             if self.arrangement_bounds_epoch == self.drag_layout_generation {
                 let before = drag.destination.get();
-                let sampler_line = self.sampler_load.header_insertion_line_y;
+                let sampler_line = self.device_panel.sampler_load.header_insertion_line_y;
                 self.refresh_browser_audio_drag(&drag);
                 return before != drag.destination.get()
-                    || sampler_line != self.sampler_load.header_insertion_line_y;
+                    || sampler_line != self.device_panel.sampler_load.header_insertion_line_y;
             }
             return false;
         }
@@ -236,7 +236,7 @@ impl EditorView {
             self.update_trim_preview(&drag, x, cx);
             return true;
         }
-        if let Some(drag) = self.active_midi_trim_drag.clone() {
+        if let Some(drag) = self.midi_editor.active_trim_drag.clone() {
             if !self.midi_trim_drag_current(&drag) {
                 self.clear_midi_trim_drag(drag.project_generation, drag.clip.id(), cx);
                 return true;

@@ -77,7 +77,11 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
             );
             editor.read_with(cx, |view, _| {
                 assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
-                assert!(view.last_enqueued_arrangement_device_drop.is_none());
+                assert!(
+                    view.test_probes
+                        .last_enqueued_arrangement_device_drop
+                        .is_none()
+                );
             });
             visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
@@ -99,25 +103,31 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                     },
                     _ => ArrangementDeviceDestination::NewTrack { before_track: None },
                 };
-                assert_eq!(view.last_enqueued_arrangement_device_drop, Some(expected));
+                assert_eq!(
+                    view.test_probes.last_enqueued_arrangement_device_drop,
+                    Some(expected)
+                );
                 let expected_gain = if destination == 0 {
                     None
                 } else {
                     Some(0.251_188_64)
                 };
-                assert_eq!(view.last_enqueued_device_track_gain, Some(expected_gain));
+                assert_eq!(
+                    view.test_probes.last_enqueued_device_track_gain,
+                    Some(expected_gain)
+                );
                 assert_eq!(
                     view.selected_track,
                     if destination == 2 { None } else { Some(first) }
                 );
-                assert!(view.arrangement_device_preview.is_none());
-                assert!(view.pending_plugin_effect.is_some());
+                assert!(view.device_panel.arrangement_drop_preview.is_none());
+                assert!(view.device_panel.pending_plugin_effect.is_some());
                 assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
             });
             if destination == 0 {
                 editor.update(&mut visual, |view, cx| {
                     view.selected_track = Some(target);
-                    view.device_panel_active = true;
+                    view.device_panel.active = true;
                     cx.notify();
                 });
                 visual.run_until_parked();
@@ -201,7 +211,7 @@ fn arrangement_catalog_pointer_refuses_stale_busy_main_and_escape_without_edits(
                     }));
                 }
                 4 => view.worker_requests_pending = 1,
-                6 => view.opening_project = true,
+                6 => view.persistence.opening_project = true,
                 _ => {}
             });
         }
@@ -214,13 +224,15 @@ fn arrangement_catalog_pointer_refuses_stale_busy_main_and_escape_without_edits(
         visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(
-                view.last_enqueued_arrangement_device_drop.is_none(),
+                view.test_probes
+                    .last_enqueued_arrangement_device_drop
+                    .is_none(),
                 "refusal {refusal}"
             );
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
             assert_eq!(view.selected_track, Some(first));
-            assert!(view.arrangement_device_preview.is_none());
-            assert!(view.active_native_device_drag.is_none());
+            assert!(view.device_panel.arrangement_drop_preview.is_none());
+            assert!(view.device_panel.active_native_drag.is_none());
             if refusal != 5 && refusal != 7 {
                 assert!(view.error.is_some(), "visible refusal {refusal}");
             }
@@ -436,14 +448,14 @@ fn arrangement_header_column_device_drops_insert_tracks_and_preview_like_the_gri
                     _ => ArrangementDeviceDestination::NewTrack { before_track: None },
                 };
                 assert_eq!(
-                    view.last_enqueued_arrangement_device_drop,
+                    view.test_probes.last_enqueued_arrangement_device_drop,
                     Some(expected),
                     "class={class:?} destination={destination} error={:?}",
                     view.error
                 );
                 assert!(view.error.is_none(), "{:?}", view.error);
-                assert!(view.arrangement_device_preview.is_none());
-                assert!(view.pending_plugin_effect.is_some());
+                assert!(view.device_panel.arrangement_drop_preview.is_none());
+                assert!(view.device_panel.pending_plugin_effect.is_some());
                 assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
             });
         }

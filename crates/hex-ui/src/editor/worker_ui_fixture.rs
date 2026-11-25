@@ -340,7 +340,7 @@ mod tests {
             Box::leak(format!("section-launch-{}", id.value()).into_boxed_str())
         });
         fixture.editor.update(&mut visual, |view, cx| {
-            view.session_quantization = hex_engine::LaunchQuantization::Immediate;
+            view.session_grid.quantization = hex_engine::LaunchQuantization::Immediate;
             cx.notify();
         });
         visual.run_until_parked();
@@ -436,7 +436,7 @@ mod tests {
         fixture.editor.update(&mut visual, |view, cx| {
             view.tick(cx);
             assert_eq!(
-                view.last_transport_command,
+                view.test_probes.last_transport_command,
                 Some(hex_engine::PlaybackCommand::Pause)
             );
             assert!(!view.audio_status().unwrap().playing.load(Acquire));
@@ -561,7 +561,7 @@ mod tests {
         loop {
             let ready = editor.update(cx, |view, cx| {
                 view.tick(cx);
-                !view.playback_settings.loading && view.applied_project_revision().is_some()
+                !view.settings.playback.loading && view.applied_project_revision().is_some()
             });
             if ready {
                 break;
@@ -719,7 +719,7 @@ mod tests {
         loop {
             let ready = editor.update(cx, |view, cx| {
                 view.tick(cx);
-                !view.playback_settings.loading && view.applied_project_revision().is_some()
+                !view.settings.playback.loading && view.applied_project_revision().is_some()
             });
             if ready {
                 break;
@@ -842,7 +842,7 @@ mod tests {
         loop {
             let ready = editor.update(cx, |view, cx| {
                 view.tick(cx);
-                !view.playback_settings.loading && view.applied_project_revision().is_some()
+                !view.settings.playback.loading && view.applied_project_revision().is_some()
             });
             if ready {
                 break;

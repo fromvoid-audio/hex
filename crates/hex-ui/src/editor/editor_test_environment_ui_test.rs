@@ -48,8 +48,8 @@ fn browser_test_environment_ordinary_constructor_has_private_roots_before_startu
                 .unwrap()
                 .starts_with(owner)
         );
-        assert!(view.recent_projects.test_path().starts_with(owner));
-        assert!(view.theme_settings.test_path().starts_with(owner));
+        assert!(view.settings.recent_projects.test_path().starts_with(owner));
+        assert!(view.settings.theme.test_path().starts_with(owner));
     });
 }
 
@@ -100,8 +100,8 @@ fn browser_test_environment_unique_editors_complete_real_directory_and_catalog_s
                     .unwrap()
                     .starts_with(&root)
             );
-            assert!(view.recent_projects.test_path().starts_with(&root));
-            assert!(view.theme_settings.test_path().starts_with(&root));
+            assert!(view.settings.recent_projects.test_path().starts_with(&root));
+            assert!(view.settings.theme.test_path().starts_with(&root));
             (
                 root,
                 view.browser.home.clone(),
@@ -208,9 +208,10 @@ fn browser_test_environment_explicit_missing_corrupt_and_populated_preferences_k
                 view.browser.preferences_path.as_deref(),
                 Some(prefs.as_path())
             );
-            assert_eq!(view.recent_projects.test_path(), recent);
+            assert_eq!(view.settings.recent_projects.test_path(), recent);
             assert!(
-                view.theme_settings
+                view.settings
+                    .theme
                     .test_path()
                     .starts_with(view.test_environment.root())
             );

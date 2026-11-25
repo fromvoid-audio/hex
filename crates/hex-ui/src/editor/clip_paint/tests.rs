@@ -186,7 +186,7 @@ fn double_press_selects_existing_clip_header_without_moving_it(cx: &mut TestAppC
             assert!(view.pointer_down.is_none());
             assert!(view.active_clip_drag.is_none());
             assert!(view.time_selection_gesture.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
 }
@@ -322,7 +322,7 @@ fn audio_rectangle_double_press_selects_at_every_height(cx: &mut TestAppContext)
             assert!(view.pointer_down.is_none());
             assert!(view.active_clip_drag.is_none());
             assert!(view.time_selection_gesture.is_none());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         editor.update(cx, |view, cx| {
             view.cancel_clip_paint();

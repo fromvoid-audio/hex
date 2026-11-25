@@ -177,8 +177,8 @@ impl EditorView {
                     project,
                     frozen.as_deref(),
                     &self.arrangement_focus.projection.console_indices,
-                    self.session_track_start,
-                    self.session_visible_columns,
+                    self.session_grid.track_start,
+                    self.session_grid.visible_columns,
                     self.selected_track,
                     visible,
                 );
@@ -752,8 +752,8 @@ mod tests {
                 );
             }
             view.mode = super::super::EditorMode::Session;
-            view.session_track_start = 1;
-            view.session_visible_columns = 1;
+            view.session_grid.track_start = 1;
+            view.session_grid.visible_columns = 1;
             view.selected_track = Some(track);
             let other = view.state.as_ref().unwrap().project.tracks()[1].id();
             view.audible_playback
