@@ -266,7 +266,7 @@ pub(super) fn restore(
     }
     let prepared = Arc::clone(&snapshot.prepared);
     *preview = None;
-    Ok(Some((Arc::new(session.project().clone()), prepared)))
+    Ok(Some((session.project_arc(), prepared)))
 }
 
 pub(super) fn clip_audition(
@@ -321,7 +321,7 @@ fn commit_preview(
     let prepared = Arc::clone(&snapshot.prepared);
     *current = Some(snapshot);
     *preview = None;
-    Ok(Some((Arc::new(session.project().clone()), prepared)))
+    Ok(Some((session.project_arc(), prepared)))
 }
 #[allow(clippy::too_many_arguments)] // One finite overlay editor and the actual publication/source union.
 fn prepare_preview(

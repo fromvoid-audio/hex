@@ -32,7 +32,7 @@ pub(super) fn view_state_bound(
         Option<ComparisonAudioBinding>,
     )>,
 ) -> Arc<ViewState> {
-    let project = Arc::new(session.project().clone());
+    let project = session.project_arc();
     let rate = u64::from(project.sample_rate());
     let latest_clip_end = latest_timeline_content_end(&project);
     let latest_content_end = latest_clip_end.max(

@@ -415,6 +415,114 @@ impl Inputs<'_> {
         {
             return Err(SessionError::Invalid("resident preparation cancelled"));
         }
+        // Incremental fast-path for pure mixer, Arrangement MIDI note, and
+        // latency-preserving built-in effect parameter edits: reuses the
+        // existing PreparedDeviceResources, ResidentFileSet, SignalGraph,
+        // PreparedSessionInventory, and AudioClipWaveform cache without
+        // rescanning Sampler PCM or recompiling unrelated tracks.
+        if offline.is_none()
+            && self.native_parameter_input.is_none()
+            && self.plugin_effect.is_none()
+            && self.device_insert_control.is_none()
+            && !self.restoring_plugin_state
+            && self.power_on.is_none()
+            && self.running_power_off.is_none()
+            && self.hosted_move.is_none()
+            && self.reload_plugin_device.is_none()
+            && matches!(self.native, NativeSamplerSources::Committed(_))
+            && let Some(current) = self.current
+            && let Some((source, explicit_tuning)) = tuning_source
+            && !explicit_tuning
+            && !project_has_vst3_devices(source)
+            && !project_has_vst3_devices(project)
+            && let Some(prepared) = {
+                crate::device_comparison::validate_project(project)?;
+                PreparedRevision::try_prepare_incremental(source, project, &current.prepared)?
+            }
+        {
+            let mut pending = Some(prepared);
+            let mut invoked = false;
+            let mut compile = |_effects: &hex_engine::AudioCandidateEffects<'_, '_>| {
+                if invoked {
+                    return Err(hex_engine::Invalid(
+                        "host effect compiler was invoked more than once",
+                    ));
+                }
+                invoked = true;
+                pending
+                    .take()
+                    .ok_or(hex_engine::Invalid("incremental revision already consumed"))
+            };
+            let hosted = sink
+                .prepare_resident_effects(
+                    ResidentEffectPreparation {
+                        project,
+                        context,
+                        restoring_plugin_state: self.restoring_plugin_state,
+                        preparing_edit: self.preparing_edit,
+                        reload_plugin_device: self.reload_plugin_device,
+                        power_on: self.power_on,
+                        running_power_off: self.running_power_off,
+                        hosted_move: self.hosted_move,
+                    },
+                    &mut compile,
+                )
+                .map_err(SessionError::NativeAudio)?;
+            let prepared = match (hosted, invoked) {
+                (Some(prepared), true) => prepared,
+                (None, false) => pending
+                    .take()
+                    .ok_or(SessionError::Invalid("incremental revision missing"))?,
+                _ => {
+                    return Err(SessionError::Invalid(
+                        "host effect compiler result differs from its invocation",
+                    ));
+                }
+            };
+            let held = sink.native_sampler_hold();
+            let predecessor = self
+                .admission
+                .preview
+                .filter(|preview| preview.follows(current))
+                .map_or(current, |preview| &preview.snapshot);
+            let prepared = prepared
+                .with_foreign_program_history_from(&predecessor.prepared, |binding| {
+                    sink.received_foreign_program_on_control(binding)
+                })?;
+            let prepared = match gain_recording {
+                Some(track) => prepared.arm_gain_recording(project, track)?,
+                None => prepared,
+            };
+            let resources = current
+                .resources
+                .capture_on_control(self.limits.storage.max_retained_bytes)?;
+            let snapshot = Snapshot {
+                source_origin: ResidentSourceOrigin::Unknown,
+                prepared_context: context,
+                submission: None,
+                file_sources: current.file_sources.clone(),
+                resources,
+                prepared: Arc::new(prepared),
+                inputs: if self.predecessor.is_some() {
+                    RuntimeInputs::default()
+                } else {
+                    current.inputs.clone()
+                },
+            };
+            let runtime =
+                runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance(&snapshot)?)?;
+            self.admit_with_requirements(
+                &snapshot.resources,
+                Some(&snapshot.prepared),
+                &sink.resident_admission(),
+                held.construction_bytes
+                    .checked_add(runtime)
+                    .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?,
+                0,
+                snapshot.file_requirements(),
+            )?;
+            return Ok(snapshot);
+        }
         let resources = match self.native {
             NativeSamplerSources::Committed(store) => PreparedDeviceResources::prepare_on_control(
                 store,
@@ -2675,12 +2783,12 @@ impl Session {
         } = resident;
         let mut inputs = self.resident_seek_inputs(admission, Some(current), cancel)?;
         inputs.stopped_history = true;
-        let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
-        let result = editor.execute_prepared_transition(command, |source, candidate| {
+        let result = (|| {
+            let project = self.editor.stage_preview(command)?;
             let media = self.media_bank();
             let mut snapshot = inputs.prepare_transition(
-                source,
-                candidate,
+                self.project(),
+                &project,
                 matches!(identity, resident_preview::Identity::Tuning(_)),
                 sink,
                 CompileResources {
@@ -2692,7 +2800,6 @@ impl Session {
                 context,
             )?;
             snapshot.source_origin = identity.source_origin();
-            let project = Arc::new(candidate.clone());
             if cancel.is_some_and(|cancel| cancel.load(Ordering::Acquire)) {
                 return Err(SessionError::Invalid("clip audition cancelled"));
             }
@@ -2719,10 +2826,9 @@ impl Session {
             };
             inputs.publish_tagged(&mut snapshot, &project, sink, metadata)?;
             Ok::<_, SessionError>((project, snapshot))
-        });
+        })();
         sink.finish_resident_effect_edit(context, result.is_ok());
-        let (_, prepared) = result?;
-        Ok(prepared)
+        result
     }
     /// Restore canonical audio as a successor to a preview that may have
     /// advanced a foreign worker. The older canonical graph can lack the
@@ -3343,7 +3449,7 @@ impl Session {
             if matches!(command.as_ref(), Command::SetTuning(..)));
         let mut finish_context = context;
         let prepare = |source: &Project, project: &Project| {
-            let changed = source != project;
+            let changed = !std::ptr::eq(source, project);
             let context = if !changed {
                 hex_engine::AudioSourceContext {
                     editor_revision: context.editor_revision.saturating_sub(1),
@@ -3491,3 +3597,17 @@ impl Session {
 
 #[cfg(test)]
 pub(super) mod tests;
+
+fn project_has_vst3_devices(project: &Project) -> bool {
+    let is_vst3 = |device: &hex_project::Device| {
+        device.state().type_id() == hex_lattice_contract::VST3_DEVICE_TYPE_ID
+    };
+    project.main_devices().iter().any(is_vst3)
+        || project
+            .return_tracks()
+            .iter()
+            .any(|bus| bus.devices().iter().any(is_vst3))
+        || project.tracks().iter().any(|track| {
+            track.instrument().is_some_and(is_vst3) || track.devices().iter().any(is_vst3)
+        })
+}

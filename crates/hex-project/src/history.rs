@@ -5,7 +5,7 @@ use std::sync::Arc;
 /// Bounded snapshot history on the control thread. Oldest edits expire at capacity.
 /// IDs never rewind across undo, redo or branching, so stale references stay stale.
 struct HistoryEntry {
-    project: Project,
+    project: Arc<Project>,
     midi_effect: Option<crate::MidiHistoryEffect>,
     // Structural intent can affect only markers in an empty arrangement.
     // Snapshot audio differences cannot recover the required publication law.
@@ -13,6 +13,131 @@ struct HistoryEntry {
     // Ephemeral history-edge custody, never saved project state. Both directions
     // replace baked/live source ownership under the stopped Arrangement gate.
     stopped_bounce: bool,
+}
+
+/// Validation and diff scope for a single canonical command.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandValidationScope {
+    /// Pure scalar mixer / mute / solo / send-level edit that cannot alter tracks,
+    /// clips, devices, routing topology, or occupancy invariants.
+    PureMixer,
+    /// Arrangement MIDI note edit that cannot alter audio clips, devices, routing,
+    /// or track hierarchy invariants (when clip aliases did not expand).
+    MidiNotesOnly,
+    /// General command requiring full project validation and structural diff.
+    Full,
+}
+
+fn command_validation_scope(command: &Command) -> CommandValidationScope {
+    match command {
+        Command::Gain { .. }
+        | Command::GainBy { .. }
+        | Command::SetTrackGains { .. }
+        | Command::Balance { .. }
+        | Command::BalanceBy { .. }
+        | Command::MasterGain { .. }
+        | Command::MasterGainBy { .. }
+        | Command::Mute { .. }
+        | Command::ToggleMute(..)
+        | Command::ToggleTracksMute(..)
+        | Command::ToggleSolo { .. }
+        | Command::ToggleSoloTracks { .. }
+        | Command::ReturnGain { .. }
+        | Command::ReturnMute { .. }
+        | Command::SetReturnSend { .. } => CommandValidationScope::PureMixer,
+        Command::AddMidiNote { .. }
+        | Command::AddMidiNotes { .. }
+        | Command::UpdateMidiNote { .. }
+        | Command::UpdateMidiNotes { .. }
+        | Command::EditMidiNotes { .. }
+        | Command::SetMidiNotesActive { .. }
+        | Command::RemoveMidiNote(_)
+        | Command::RemoveMidiNotes { .. } => CommandValidationScope::MidiNotesOnly,
+        _ => CommandValidationScope::Full,
+    }
+}
+
+/// Fast pre-clone check for common scalar mixer no-ops.
+/// Returns `true` only when the target exists and already has the exact requested value,
+/// guaranteeing `apply()` would succeed with `Created::None` and zero state change.
+fn is_pure_mixer_noop(project: &Project, command: &Command) -> bool {
+    match command {
+        Command::Gain { track, gain } => {
+            gain.is_finite() && project.track(*track).is_some_and(|t| t.gain() == *gain)
+        }
+        Command::Balance { track, balance } => {
+            balance.is_finite()
+                && project
+                    .track(*track)
+                    .is_some_and(|t| t.balance() == *balance)
+        }
+        Command::MasterGain { gain } => gain.is_finite() && project.master_gain() == *gain,
+        Command::Mute { track, muted } => {
+            project.track(*track).is_some_and(|t| t.muted() == *muted)
+        }
+        Command::ReturnGain { return_track, gain } => {
+            gain.is_finite()
+                && project
+                    .return_tracks()
+                    .iter()
+                    .find(|bus| bus.id() == *return_track)
+                    .is_some_and(|bus| bus.gain() == *gain)
+        }
+        Command::ReturnMute {
+            return_track,
+            muted,
+        } => project
+            .return_tracks()
+            .iter()
+            .find(|bus| bus.id() == *return_track)
+            .is_some_and(|bus| bus.muted() == *muted),
+        _ => false,
+    }
+}
+
+/// O(tracks + returns) diff for `PureMixer` commands, avoiding full-project `PartialEq`.
+fn pure_mixer_changed(before: &Project, after: &Project) -> bool {
+    if before.master_gain() != after.master_gain()
+        || before.tracks().len() != after.tracks().len()
+        || before.return_tracks().len() != after.return_tracks().len()
+    {
+        return true;
+    }
+    if before.tracks().iter().zip(after.tracks()).any(|(a, b)| {
+        a.gain() != b.gain()
+            || a.balance() != b.balance()
+            || a.muted() != b.muted()
+            || a.soloed() != b.soloed()
+            || a.sends() != b.sends()
+    }) {
+        return true;
+    }
+    before
+        .return_tracks()
+        .iter()
+        .zip(after.return_tracks())
+        .any(|(a, b)| a.gain() != b.gain() || a.muted() != b.muted())
+}
+
+/// Scoped diff for `MidiNotesOnly` commands without alias expansion.
+fn midi_notes_changed(before: &Project, after: &Project) -> bool {
+    before.next_id != after.next_id
+        || before.tracks().len() != after.tracks().len()
+        || before.session() != after.session()
+        || before
+            .tracks()
+            .iter()
+            .zip(after.tracks())
+            .any(|(a, b)| a.midi_clips() != b.midi_clips())
+}
+
+fn needs_history_normalization(target: &Project, current: &Project) -> bool {
+    target.next_id < current.next_id
+        || target.tracks.iter().any(|track| {
+            current
+                .track(track.id)
+                .is_some_and(|old| track.gain_lane.recording_epoch < old.gain_lane.recording_epoch)
+        })
 }
 
 /// A rate-changing edge uses the exact same bounded history stacks as edits.
@@ -32,7 +157,7 @@ pub enum SampleRateHistoryAction {
 pub struct StagedProjectEdit {
     editor_identity: Arc<()>,
     history_revision: u64,
-    project: Project,
+    project: Arc<Project>,
     created: Created,
     changed: bool,
     midi_effect: Option<crate::MidiHistoryEffect>,
@@ -44,6 +169,14 @@ impl StagedProjectEdit {
     pub fn project(&self) -> &Project {
         &self.project
     }
+
+    pub fn project_arc(&self) -> Arc<Project> {
+        Arc::clone(&self.project)
+    }
+
+    pub fn changed(&self) -> bool {
+        self.changed
+    }
 }
 
 /// One exact Undo or Redo target and its reserved history transfer. Dropping
@@ -52,7 +185,7 @@ impl StagedProjectEdit {
 pub struct StagedProjectHistory {
     editor_identity: Arc<()>,
     history_revision: u64,
-    project: Project,
+    project: Arc<Project>,
     redo: bool,
 }
 
@@ -60,10 +193,14 @@ impl StagedProjectHistory {
     pub fn project(&self) -> &Project {
         &self.project
     }
+
+    pub fn project_arc(&self) -> Arc<Project> {
+        Arc::clone(&self.project)
+    }
 }
 
 pub struct Editor {
-    project: Project,
+    project: Arc<Project>,
     undo: VecDeque<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     capacity: usize,
@@ -78,7 +215,7 @@ impl Editor {
             return Err(Invalid("history capacity must be 1..128"));
         }
         Ok(Self {
-            project,
+            project: Arc::new(project),
             undo: VecDeque::new(),
             redo: Vec::new(),
             capacity,
@@ -88,6 +225,14 @@ impl Editor {
     }
     pub fn project(&self) -> &Project {
         &self.project
+    }
+    /// Immutable shared handle to the current canonical project without deep cloning.
+    pub fn project_arc(&self) -> Arc<Project> {
+        Arc::clone(&self.project)
+    }
+    /// Monotonic history revision incremented on every committed edit, undo, or redo.
+    pub fn history_revision(&self) -> u64 {
+        self.history_revision
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -161,7 +306,8 @@ impl Editor {
                 "captured project clock differs from the current rate",
             )));
         }
-        let original = outgoing.map(|project| std::mem::replace(&mut self.project, project));
+        let original =
+            outgoing.map(|project| std::mem::replace(&mut self.project, Arc::new(project)));
         let result = match action {
             SampleRateHistoryAction::Apply { rate, mode } => {
                 self.apply_sample_rate(rate, mode, prepare)
@@ -187,12 +333,13 @@ impl Editor {
             .project
             .at_sample_rate(rate)?
             .with_sample_rate_mode(mode);
-        if candidate == self.project {
+        if candidate == *self.project {
             return Ok(None);
         }
         self.undo
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve sample rate history")))?;
+        let candidate = Arc::new(candidate);
         let prepared = prepare(&candidate)?;
         self.commit_candidate(candidate, None, false, false);
         Ok(Some(prepared))
@@ -200,7 +347,7 @@ impl Editor {
 
     fn commit_candidate(
         &mut self,
-        candidate: Project,
+        candidate: Arc<Project>,
         midi_effect: Option<crate::MidiHistoryEffect>,
         section_publication: bool,
         stopped_bounce: bool,
@@ -211,7 +358,7 @@ impl Editor {
 
     fn push_undo(
         &mut self,
-        previous: Project,
+        previous: Arc<Project>,
         midi_effect: Option<crate::MidiHistoryEffect>,
         section_publication: bool,
         stopped_bounce: bool,
@@ -277,8 +424,8 @@ impl Editor {
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve device edit history")))?;
         let prepared = prepare(&self.project, &candidate)?;
-        self.project = candidate;
-        self.push_undo(previous, None, false, false);
+        self.project = Arc::new(candidate);
+        self.push_undo(Arc::new(previous), None, false, false);
         Ok(prepared)
     }
 
@@ -363,11 +510,75 @@ impl Editor {
         Ok(edit.created)
     }
 
+    /// Validate and apply one preview command without touching history or cloning
+    /// `Editor`. Reuses the current `Arc<Project>` on no-ops and performs at most
+    /// one `Project` clone otherwise.
+    pub fn stage_preview(&self, command: Command) -> Result<Arc<Project>, Invalid> {
+        let scope = command_validation_scope(&command);
+        if scope == CommandValidationScope::PureMixer && is_pure_mixer_noop(&self.project, &command)
+        {
+            return Ok(Arc::clone(&self.project));
+        }
+        let mut command = command;
+        let alias_plan = crate::clip_alias_edit::Plan::capture(&self.project, &mut command)?;
+        let mut candidate = (*self.project).clone();
+        let _ = candidate.apply(command)?;
+        let alias_changed = alias_plan.finish(&mut candidate)?;
+        let changed = match scope {
+            CommandValidationScope::PureMixer => pure_mixer_changed(&self.project, &candidate),
+            CommandValidationScope::MidiNotesOnly if !alias_changed => {
+                candidate.validate_changed_midi_occupancy(&self.project)?;
+                candidate.validate_midi_volumes()?;
+                midi_notes_changed(&self.project, &candidate)
+            }
+            _ => {
+                candidate.prune_deleted_sidechains();
+                if alias_changed {
+                    Project::from_snapshot(candidate.snapshot())?;
+                }
+                candidate.validate_serial_units()?;
+                candidate.validate_source_bindings()?;
+                candidate.validate_track_hierarchy()?;
+                candidate.validate_changed_midi_occupancy(&self.project)?;
+                candidate.validate_changed_arrangement_occupancy(&self.project)?;
+                candidate.validate_retained_audio_roots()?;
+                candidate.validate_device_asset_references()?;
+                candidate.validate_device_automation()?;
+                candidate.validate_device_modulation()?;
+                candidate.validate_midi_volumes()?;
+                candidate.validate_playable_routes()?;
+                candidate != *self.project
+            }
+        };
+        if changed {
+            Ok(Arc::new(candidate))
+        } else {
+            Ok(Arc::clone(&self.project))
+        }
+    }
+
     fn stage_transition(
         &mut self,
         command: Command,
         require_midi: bool,
     ) -> Result<StagedProjectEdit, Invalid> {
+        let scope = command_validation_scope(&command);
+        if !require_midi
+            && scope == CommandValidationScope::PureMixer
+            && is_pure_mixer_noop(&self.project, &command)
+        {
+            self.renew_history_identity_if_exhausted();
+            return Ok(StagedProjectEdit {
+                editor_identity: Arc::clone(&self.identity),
+                history_revision: self.history_revision,
+                project: Arc::clone(&self.project),
+                created: Created::None,
+                changed: false,
+                midi_effect: None,
+                section_publication: false,
+                stopped_bounce: false,
+            });
+        }
         let mut command = command;
         let alias_plan = crate::clip_alias_edit::Plan::capture(&self.project, &mut command)?;
         let section_publication = command.requires_section_publication();
@@ -384,26 +595,36 @@ impl Editor {
         if require_midi && plan.is_none() {
             return Err(Invalid("unsupported midi edit command"));
         }
-        let mut candidate = self.project.clone();
+        let mut candidate = (*self.project).clone();
         let result = candidate.apply(command)?;
         let alias_changed = alias_plan.finish(&mut candidate)?;
-        candidate.prune_deleted_sidechains();
-        if alias_changed {
-            Project::from_snapshot(candidate.snapshot())?;
-        }
-        candidate.validate_serial_units()?;
-        candidate.validate_source_bindings()?;
-        candidate.validate_track_hierarchy()?;
-        candidate.validate_changed_midi_occupancy(&self.project)?;
-        candidate.validate_changed_arrangement_occupancy(&self.project)?;
-        candidate.validate_retained_audio_roots()?;
-        candidate.validate_device_asset_references()?;
-        candidate.validate_device_automation()?;
-        candidate.validate_device_modulation()?;
-        candidate.validate_midi_volumes()?;
-        candidate.validate_playable_routes()?;
+        let changed = match scope {
+            CommandValidationScope::PureMixer => pure_mixer_changed(&self.project, &candidate),
+            CommandValidationScope::MidiNotesOnly if !alias_changed => {
+                candidate.validate_changed_midi_occupancy(&self.project)?;
+                candidate.validate_midi_volumes()?;
+                midi_notes_changed(&self.project, &candidate)
+            }
+            _ => {
+                candidate.prune_deleted_sidechains();
+                if alias_changed {
+                    Project::from_snapshot(candidate.snapshot())?;
+                }
+                candidate.validate_serial_units()?;
+                candidate.validate_source_bindings()?;
+                candidate.validate_track_hierarchy()?;
+                candidate.validate_changed_midi_occupancy(&self.project)?;
+                candidate.validate_changed_arrangement_occupancy(&self.project)?;
+                candidate.validate_retained_audio_roots()?;
+                candidate.validate_device_asset_references()?;
+                candidate.validate_device_automation()?;
+                candidate.validate_device_modulation()?;
+                candidate.validate_midi_volumes()?;
+                candidate.validate_playable_routes()?;
+                candidate != *self.project
+            }
+        };
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
-        let changed = candidate != self.project;
         if require_midi && changed && effect.is_none() {
             return Err(Invalid("midi command changed unsupported project state"));
         }
@@ -413,10 +634,15 @@ impl Editor {
                 .map_err(|_| Invalid("could not reserve edit history"))?;
         }
         self.renew_history_identity_if_exhausted();
+        let project = if changed {
+            Arc::new(candidate)
+        } else {
+            Arc::clone(&self.project)
+        };
         Ok(StagedProjectEdit {
             editor_identity: Arc::clone(&self.identity),
             history_revision: self.history_revision,
-            project: candidate,
+            project,
             created: result,
             changed,
             midi_effect: effect,
@@ -533,7 +759,7 @@ impl Editor {
         results
             .try_reserve_exact(commands.len())
             .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
-        let mut candidate = self.project.clone();
+        let mut candidate = (*self.project).clone();
         if let Some((warp, new_track_gain)) = arrangement_import {
             results = candidate.apply_audio_imports(commands, warp, new_track_gain)?;
         } else {
@@ -563,8 +789,14 @@ impl Editor {
         self.undo
             .try_reserve(1)
             .map_err(|_| E::from(Invalid("could not reserve batch history")))?;
+        let changed = candidate != *self.project;
+        let candidate = if changed {
+            Arc::new(candidate)
+        } else {
+            Arc::clone(&self.project)
+        };
         let prepared = prepare(&candidate, &results)?;
-        if candidate != self.project {
+        if changed {
             self.commit_candidate(candidate, None, section_publication, false);
         }
         Ok((results, prepared))
@@ -574,10 +806,11 @@ impl Editor {
         let Some(mut previous) = self.undo.pop_back() else {
             return false;
         };
-        previous.project.next_id = previous.project.next_id.max(self.project.next_id);
-        previous
-            .project
-            .retain_gain_touch_epochs_from(&self.project);
+        if needs_history_normalization(&previous.project, &self.project) {
+            let project = Arc::make_mut(&mut previous.project);
+            project.next_id = project.next_id.max(self.project.next_id);
+            project.retain_gain_touch_epochs_from(&self.project);
+        }
         self.redo.push(HistoryEntry {
             project: std::mem::replace(&mut self.project, previous.project),
             midi_effect: previous.midi_effect,
@@ -617,8 +850,11 @@ impl Editor {
         let Some(mut next) = self.redo.pop() else {
             return false;
         };
-        next.project.next_id = next.project.next_id.max(self.project.next_id);
-        next.project.retain_gain_touch_epochs_from(&self.project);
+        if needs_history_normalization(&next.project, &self.project) {
+            let project = Arc::make_mut(&mut next.project);
+            project.next_id = project.next_id.max(self.project.next_id);
+            project.retain_gain_touch_epochs_from(&self.project);
+        }
         self.undo.push_back(HistoryEntry {
             project: std::mem::replace(&mut self.project, next.project),
             midi_effect: next.midi_effect,
@@ -670,11 +906,20 @@ impl Editor {
     /// Normalize the exact adjacent history target and reserve its inverse
     /// before an external owner prepares or installs that target.
     pub fn stage_history(&mut self, redo: bool) -> Result<Option<StagedProjectHistory>, Invalid> {
-        let Some(mut project) = self.inspect_history(redo, |_, target| target.clone()) else {
+        let target = if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        };
+        let Some(target) = target else {
             return Ok(None);
         };
-        project.next_id = project.next_id.max(self.project.next_id);
-        project.retain_gain_touch_epochs_from(&self.project);
+        let mut project = Arc::clone(&target.project);
+        if needs_history_normalization(&project, &self.project) {
+            let normalized = Arc::make_mut(&mut project);
+            normalized.next_id = normalized.next_id.max(self.project.next_id);
+            normalized.retain_gain_touch_epochs_from(&self.project);
+        }
         if redo {
             self.undo
                 .try_reserve(1)
@@ -738,12 +983,13 @@ impl Editor {
             .ok_or(Invalid("reordered track changed"))?;
         // Temporarily mask only the order on the private target, then put
         // back the exact history payload before giving it to the caller.
+        let project = Arc::make_mut(&mut edge.project);
         let reordered = std::mem::replace(
-            &mut edge.project.track_mut(track)?.devices,
+            &mut project.track_mut(track)?.devices,
             current.devices().to_vec(),
         );
-        let exact = edge.project == self.project;
-        edge.project.track_mut(track)?.devices = reordered;
+        let exact = *project == *self.project;
+        project.track_mut(track)?.devices = reordered;
         Ok(exact.then_some((track, edge)))
     }
 
@@ -1322,7 +1568,9 @@ mod gain_touch_epoch_tests {
                 })
                 .unwrap();
             // Private metadata fixture: no production recording/adoption API is opened.
-            editor.project.tracks[0].gain_lane.recording_epoch = 9;
+            Arc::make_mut(&mut editor.project).tracks[0]
+                .gain_lane
+                .recording_epoch = 9;
             if prepared {
                 assert!(
                     editor
@@ -1345,7 +1593,9 @@ mod gain_touch_epoch_tests {
                     .recording_epoch(),
                 9
             );
-            editor.project.tracks[0].gain_lane.recording_epoch = 10;
+            Arc::make_mut(&mut editor.project).tracks[0]
+                .gain_lane
+                .recording_epoch = 10;
             if prepared {
                 assert!(
                     editor
@@ -1558,5 +1808,159 @@ mod section_history_tests {
             assert!(editor.next_section_history_requires_publication(false));
             assert!(!editor.next_section_history_requires_publication(true));
         }
+    }
+
+    #[test]
+    fn arc_sharing_and_fast_validation_preserve_noop_preview_and_history_invariants() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "synth".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track expected");
+        };
+        let baseline = editor.project_arc();
+        let rev_before = editor.history_revision();
+
+        // Pure mixer no-op reuses exact Arc without cloning or advancing history.
+        let noop = editor
+            .stage_edit(Command::Mute {
+                track,
+                muted: false,
+            })
+            .unwrap();
+        assert!(!noop.changed());
+        assert!(Arc::ptr_eq(&noop.project_arc(), &baseline));
+        editor.commit_staged_edit(noop).unwrap();
+        assert_eq!(editor.history_revision(), rev_before);
+        assert!(Arc::ptr_eq(&editor.project_arc(), &baseline));
+
+        // Preview no-op reuses exact Arc; real preview returns distinct Arc without touching history.
+        let preview_noop = editor
+            .stage_preview(Command::Gain { track, gain: 1.0 })
+            .unwrap();
+        assert!(Arc::ptr_eq(&preview_noop, &baseline));
+        let preview_changed = editor
+            .stage_preview(Command::Gain { track, gain: 0.5 })
+            .unwrap();
+        assert!(!Arc::ptr_eq(&preview_changed, &baseline));
+        assert_eq!(preview_changed.track(track).unwrap().gain(), 0.5);
+        assert_eq!(editor.history_revision(), rev_before);
+        assert!(Arc::ptr_eq(&editor.project_arc(), &baseline));
+
+        // Invalid pure-mixer value still fails cleanly.
+        assert!(
+            editor
+                .stage_preview(Command::Gain {
+                    track,
+                    gain: f32::NAN,
+                })
+                .is_err()
+        );
+
+        // Real mixer edit commits, and Undo returns the exact baseline Arc without re-cloning.
+        editor
+            .execute(Command::Mute { track, muted: true })
+            .unwrap();
+        assert!(editor.project().track(track).unwrap().muted());
+        assert!(!Arc::ptr_eq(&editor.project_arc(), &baseline));
+        assert!(editor.undo());
+        assert!(Arc::ptr_eq(&editor.project_arc(), &baseline));
+        assert!(editor.redo());
+        assert!(editor.project().track(track).unwrap().muted());
+
+        // Single-clip MIDI note add/update/undo fast-path preserves exact behavior.
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: crate::BeatTime::ZERO,
+                length: crate::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("midi clip expected");
+        };
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: crate::BeatTime::ZERO,
+                duration: crate::BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("note expected");
+        };
+        let after_add = editor.project_arc();
+        editor
+            .execute(Command::UpdateMidiNote {
+                note,
+                start: crate::BeatTime::ONE,
+                duration: crate::BeatTime::ONE,
+                pitch: 64,
+                channel: 0,
+                velocity: 96,
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().track(track).unwrap().midi_clips()[0].notes()[0].pitch(),
+            64
+        );
+        assert!(editor.undo());
+        assert!(Arc::ptr_eq(&editor.project_arc(), &after_add));
+
+        // Session/Console MIDI clip note updates must also be detected as changed (never treated as no-ops).
+        let Created::Scene(scene) = editor
+            .execute(Command::AddScene { name: "s".into() })
+            .unwrap()
+        else {
+            panic!("scene expected");
+        };
+        let Created::SessionClip(session_clip) = editor
+            .execute(Command::CreateSessionMidiClip {
+                track,
+                scene,
+                name: "session".into(),
+                source_length: crate::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("session clip expected");
+        };
+        let Created::Note(session_note) = editor
+            .execute(Command::AddMidiNote {
+                clip: session_clip,
+                start: crate::BeatTime::ZERO,
+                duration: crate::BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("session note expected");
+        };
+        let before_session_update = editor.project_arc();
+        let staged = editor
+            .stage_edit(Command::UpdateMidiNote {
+                note: session_note,
+                start: crate::BeatTime::ONE,
+                duration: crate::BeatTime::ONE,
+                pitch: 67,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+        assert!(staged.changed());
+        assert!(!Arc::ptr_eq(&staged.project_arc(), &before_session_update));
+        editor.commit_staged_edit(staged).unwrap();
+        assert_eq!(
+            editor.project().midi_source(session_clip).unwrap().notes()[0].pitch(),
+            67
+        );
     }
 }
