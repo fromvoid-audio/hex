@@ -132,6 +132,7 @@ fn batch_rejects_midi_destination_without_instrument_before_preparation() {
 fn valid_final_audio_batch_can_pass_through_a_transient_cycle() {
     let (project, t, r1) = audio_fixture();
     let mut e = Editor::new(project.clone(), 4).unwrap();
+    assert!(e.stage_preview(cycle(t, r1, 1.0)).is_err());
     assert!(
         e.execute(cycle(t, r1, 1.0)).is_err(),
         "single transition remains invalid"
