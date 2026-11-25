@@ -696,6 +696,7 @@ struct ModalMouseScope {
 }
 
 pub(crate) struct Frame {
+    pub(crate) generation: u64,
     pub(crate) accessibility: crate::accessibility::AccessibilityFrame,
     pub(crate) focus: Option<FocusId>,
     pub(crate) window_active: bool,
@@ -785,6 +786,7 @@ pub(crate) struct PaintIndex {
 impl Frame {
     pub(crate) fn new(dispatch_tree: DispatchTree) -> Self {
         Frame {
+            generation: 0,
             accessibility: Default::default(),
             focus: None,
             window_active: false,
@@ -816,6 +818,7 @@ impl Frame {
     }
 
     pub(crate) fn clear(&mut self) {
+        self.generation = 0;
         self.accessibility = Default::default();
         self.element_states.clear();
         self.accessed_element_states.clear();
@@ -2112,6 +2115,7 @@ impl Window {
         if let Some(input_handler) = self.platform_window.take_input_handler() {
             self.rendered_frame.input_handlers.push(Some(input_handler));
         }
+        self.next_frame.generation = self.rendered_frame.generation.wrapping_add(1);
         self.draw_roots(cx);
         self.dirty_views.clear();
         self.next_frame.window_active = self.active.get();

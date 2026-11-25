@@ -14,6 +14,7 @@ use std::{any::TypeId, fmt, ops::Range};
 struct AnyViewState {
     prepaint_range: Range<PrepaintStateIndex>,
     paint_range: Range<PaintIndex>,
+    painted_frame: Option<u64>,
     cache_key: ViewCacheKey,
     accessed_entities: FxHashSet<EntityId>,
 }
@@ -218,6 +219,7 @@ impl Element for AnyView {
                     let text_style = window.text_style();
 
                     if let Some(mut element_state) = element_state
+                        && element_state.painted_frame == Some(window.rendered_frame.generation)
                         && element_state.cache_key.bounds == bounds
                         && element_state.cache_key.content_mask == content_mask
                         && element_state.cache_key.text_style == text_style
@@ -232,6 +234,7 @@ impl Element for AnyView {
                             .extend_accessed(&element_state.accessed_entities);
                         let prepaint_end = window.prepaint_index();
                         element_state.prepaint_range = prepaint_start..prepaint_end;
+                        element_state.painted_frame = None;
 
                         return (None, element_state);
                     }
@@ -254,6 +257,7 @@ impl Element for AnyView {
                             accessed_entities,
                             prepaint_range: prepaint_start..prepaint_end,
                             paint_range: PaintIndex::default()..PaintIndex::default(),
+                            painted_frame: None,
                             cache_key: ViewCacheKey {
                                 bounds,
                                 content_mask,
@@ -297,6 +301,7 @@ impl Element for AnyView {
 
                         let paint_end = window.paint_index();
                         element_state.paint_range = paint_start..paint_end;
+                        element_state.painted_frame = Some(window.next_frame.generation);
 
                         ((), element_state)
                     },

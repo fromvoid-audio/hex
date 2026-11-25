@@ -553,3 +553,18 @@ Passive containers omit the redundant parent extent fold while each child still
 resolves its own layout bounds once during its own prepaint. Tracked and
 untracked wheel scrolling, scroll clamping, listener bounds/order, and
 debug/inspector content size remain unchanged.
+
+25 November cached-view frame-generation validation: `Frame` tracks a
+monotonically advancing `generation: u64` assigned on each `Window::draw` and
+cleared with the frame. `AnyViewState` records `painted_frame: Option<u64>`
+only when `AnyView::paint` completes, clears it during `AnyView::prepaint`, and
+requires `element_state.painted_frame == Some(window.rendered_frame.generation)`
+before reusing `prepaint_range` or `paint_range`. When an outer cached
+`AnyView` hits its cache and carries a nested `AnyViewState` across frames via
+`accessed_element_states`, a later switch of the outer view to uncached
+rendering (or a `Window::transact` prepaint rollback) cannot replay stale
+previous-frame `LineLayoutCache` or scene indices against a newer
+`rendered_frame`. Confined to `src/window.rs` and `src/view.rs`; no native API,
+unsafe code, public API or scheduling change. Hex regressions cover nested
+outer-cache-hit to uncached transitions with shrinking text layouts and the
+hosted `EditorWindowRoot` sibling-overlay transition.
