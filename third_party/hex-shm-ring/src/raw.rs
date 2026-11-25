@@ -369,11 +369,18 @@ pub(crate) fn send_shm_fd(stream: &UnixStream, fd: BorrowedFd<'_>) -> io::Result
         msg.msg_controllen = (*cmsg).cmsg_len;
     }
 
-    // SAFETY: `stream` is a live Unix domain socket and `msg` is properly initialized.
-    let sent = unsafe { libc::sendmsg(stream.as_raw_fd(), &msg, 0) };
-    if sent < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let sent = loop {
+        // SAFETY: `stream` is a live Unix domain socket and `msg` is properly initialized.
+        let rc = unsafe { libc::sendmsg(stream.as_raw_fd(), &msg, 0) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        break rc;
+    };
     if sent != 1 {
         return Err(io::Error::new(
             io::ErrorKind::WriteZero,
@@ -399,11 +406,20 @@ pub(crate) fn recv_shm_fd(stream: &UnixStream) -> io::Result<OwnedFd> {
     msg.msg_control = cmsg_buf.as_mut_ptr().cast::<libc::c_void>();
     msg.msg_controllen = cmsg_space as _;
 
-    // SAFETY: `stream` is a live Unix domain socket and `msg` buffers are valid.
-    let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, 0) };
-    if received < 0 {
-        return Err(io::Error::last_os_error());
-    }
+    let received = loop {
+        msg.msg_controllen = cmsg_space as _;
+        msg.msg_flags = 0;
+        // SAFETY: `stream` is a live Unix domain socket and `msg` buffers are valid.
+        let rc = unsafe { libc::recvmsg(stream.as_raw_fd(), &mut msg, 0) };
+        if rc < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        break rc;
+    };
     if received == 0 {
         return Err(io::Error::new(
             io::ErrorKind::UnexpectedEof,
