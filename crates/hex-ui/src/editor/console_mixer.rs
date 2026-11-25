@@ -254,7 +254,7 @@ impl EditorView {
                         .debug_selector(move || format!("console-track-meter-{}", id.value()))
                         .child(super::track_meters::render(
                             id,
-                            self.track_meters.level(id),
+                            self.track_meters.reading(id),
                             50.0,
                         )),
                 );
@@ -281,7 +281,7 @@ impl EditorView {
                     .gap(px(4.0))
                     .child(self.main_track_controls(cx).w_full().min_w_0())
                     .child(self.sample_arm_button(super::sample_recorder::Arm::Main, cx)),
-                super::track_meters::render_main(self.track_meters.main_level(), 50.0),
+                super::track_meters::render_main(self.track_meters.main_reading(), 50.0),
             ]);
         super::console_columns::pinned_row(
             row.child(div().flex_1().min_w(px(12.0))),

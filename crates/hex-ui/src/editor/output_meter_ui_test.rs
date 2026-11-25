@@ -107,18 +107,53 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
     // Actual Status-boundary fixtures, not simulated CPAL/native delivery.
     let status = Status::default();
     status.playing.store(true, Relaxed);
-    for (left, right, text, height, above) in [
-        (0.0, 0.000_001_f32, "last l -inf r <-60 dbfs", 0.0, false),
-        (0.1, 1.0, "last l -20.0 r 0.0 dbfs", 16.0 * 2.0 / 3.0, false),
-        (2.0, 0.5, "last l +6.0! r -6.0 dbfs", 16.0, true),
-        (0.0, 0.0, "last l -inf r -inf dbfs", 0.0, true),
-        (f32::NAN, -1.0, "last l invalid r invalid dbfs", 0.0, true),
+    let start = Instant::now();
+    for (offset_ms, left, right, text, height, above, peak_hold_visible) in [
+        (
+            0_u64,
+            0.0,
+            0.000_001_f32,
+            "last l -inf r <-60 dbfs",
+            0.0,
+            false,
+            false,
+        ),
+        (
+            16,
+            0.1,
+            1.0,
+            "last l -20.0 r 0.0 dbfs",
+            16.0 * 2.0 / 3.0,
+            false,
+            true,
+        ),
+        (32, 2.0, 0.5, "last l +6.0! r -6.0 dbfs", 16.0, true, true),
+        // After sufficient decay time, smooth fill drops back to 0 while latched clip persists.
+        (
+            10_032,
+            0.0,
+            0.0,
+            "last l -inf r -inf dbfs",
+            0.0,
+            true,
+            false,
+        ),
+        (
+            10_048,
+            f32::NAN,
+            -1.0,
+            "last l invalid r invalid dbfs",
+            0.0,
+            true,
+            false,
+        ),
     ] {
         status.peak_left.store(left.to_bits(), Relaxed);
         status.peak_right.store(right.to_bits(), Relaxed);
         let frame = AudioFrame::capture(&status);
+        let at = start + std::time::Duration::from_millis(offset_ms);
         editor.update(cx, |view, cx| {
-            assert!(view.observe_audio_frame(Some(frame), false, Instant::now()));
+            assert!(view.observe_audio_frame(Some(frame), false, at));
             cx.notify();
         });
         visual.run_until_parked();
@@ -139,6 +174,10 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
             visual.debug_bounds("output-meter-left-above").is_some(),
             above
         );
+        assert_eq!(
+            visual.debug_bounds("output-meter-left-peak-hold").is_some(),
+            peak_hold_visible
+        );
     }
     let revision_before = editor.read_with(cx, |view, _| view.state().map(|state| state.revision));
     let cap = visual
@@ -154,10 +193,35 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
             "last l invalid r invalid dbfs"
         );
     });
+    // Callback-latched between-poll clip survives a quieter callback before UI polling.
+    status.record_output_peaks([1.75, 0.25]);
+    status.record_output_peaks([0.05, 0.05]);
+    let latched_frame = AudioFrame::capture(&status);
+    editor.update(cx, |view, cx| {
+        assert!(view.observe_audio_frame(
+            Some(latched_frame),
+            false,
+            start + std::time::Duration::from_millis(10_064)
+        ));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("output-meter-left-above").is_some(),
+        "between-poll callback clip must light the output meter clip cap"
+    );
+    assert!(
+        visual.debug_bounds("output-meter-left-peak-hold").is_some(),
+        "between-poll callback peak must populate peak hold"
+    );
     status.render_fault.store(true, Relaxed);
     let frame = AudioFrame::capture(&status);
     editor.update(cx, |view, cx| {
-        assert!(view.observe_audio_frame(Some(frame), false, Instant::now()));
+        assert!(view.observe_audio_frame(
+            Some(frame),
+            false,
+            start + std::time::Duration::from_millis(10_080)
+        ));
         cx.notify();
     });
     visual.run_until_parked();

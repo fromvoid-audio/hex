@@ -34,6 +34,11 @@ pub struct Status {
     pub deadline_misses: AtomicU64,
     pub peak_left: AtomicU32,
     pub peak_right: AtomicU32,
+    /// Callback-latched maximum peak bits accumulated between UI polls (drained on read).
+    pub latched_peak_left: AtomicU32,
+    pub latched_peak_right: AtomicU32,
+    /// Callback-latched between-poll clip flags: bit 0 = left > 1.0, bit 1 = right > 1.0.
+    pub latched_clip_flags: AtomicU32,
     pub applied_revision: AtomicU64,
     /// Highest admitted command consumed, including commands discarded by Stop.
     /// Release publication follows transport state; readers acquire before reading it.
@@ -128,6 +133,40 @@ impl Status {
     /// Headless endpoints do not have an interface.
     pub fn interface_sample_rate(&self) -> Option<u32> {
         self.interface_sample_rate
+    }
+
+    /// Wait-free callback publication of output sample peaks and between-poll
+    /// latched max-peak/clip flags. Nonnegative finite IEEE-754 f32 values
+    /// preserve ordering as `u32`, so `fetch_max` is exact and lock-free.
+    pub fn record_output_peaks(&self, peaks: [f32; 2]) {
+        self.peak_left.store(peaks[0].to_bits(), Relaxed);
+        self.peak_right.store(peaks[1].to_bits(), Relaxed);
+        let mut clip_mask = 0_u32;
+        if peaks[0].is_finite() && peaks[0] >= 0.0 {
+            self.latched_peak_left
+                .fetch_max(peaks[0].to_bits(), Relaxed);
+            if peaks[0] > 1.0 {
+                clip_mask |= 1;
+            }
+        }
+        if peaks[1].is_finite() && peaks[1] >= 0.0 {
+            self.latched_peak_right
+                .fetch_max(peaks[1].to_bits(), Relaxed);
+            if peaks[1] > 1.0 {
+                clip_mask |= 2;
+            }
+        }
+        if clip_mask != 0 {
+            self.latched_clip_flags.fetch_or(clip_mask, Relaxed);
+        }
+    }
+
+    /// Drain callback-latched between-poll stereo peak maxima and clip flags.
+    pub fn take_latched_output_peaks(&self) -> ([f32; 2], [bool; 2]) {
+        let left = f32::from_bits(self.latched_peak_left.swap(0, AcqRel));
+        let right = f32::from_bits(self.latched_peak_right.swap(0, AcqRel));
+        let flags = self.latched_clip_flags.swap(0, AcqRel);
+        ([left, right], [flags & 1 != 0, flags & 2 != 0])
     }
 
     /// Snapshot of the publication reservation, not a guarantee that admission will succeed:
@@ -278,6 +317,9 @@ impl Status {
             deadline_misses: AtomicU64::new(0),
             peak_left: AtomicU32::new(0),
             peak_right: AtomicU32::new(0),
+            latched_peak_left: AtomicU32::new(0),
+            latched_peak_right: AtomicU32::new(0),
+            latched_clip_flags: AtomicU32::new(0),
             applied_revision: AtomicU64::new(0),
             consumed_command: AtomicU64::new(0),
             stream_applied_command_prefix: AtomicU64::new(0),
@@ -672,6 +714,32 @@ mod tests {
         assert_eq!(
             status.rejected_revision(),
             Some((7, PlaybackHandoffRejection::RuntimeFenceChanged))
+        );
+    }
+
+    #[test]
+    fn output_peak_latch_retains_between_poll_peak_and_clip_across_quieter_callback() {
+        let status = Status::default();
+        status.record_output_peaks([1.75, 0.4]);
+        status.record_output_peaks([0.1, 0.9]);
+        // Latest raw sample peaks reflect the second callback.
+        assert_eq!(f32::from_bits(status.peak_left.load(Relaxed)), 0.1);
+        assert_eq!(f32::from_bits(status.peak_right.load(Relaxed)), 0.9);
+        // Drained latch preserves the transient left clip & max peaks across both callbacks.
+        assert_eq!(
+            status.take_latched_output_peaks(),
+            ([1.75, 0.9], [true, false])
+        );
+        // Second drain without intervening callbacks yields silence and cleared clip flags.
+        assert_eq!(
+            status.take_latched_output_peaks(),
+            ([0.0, 0.0], [false, false])
+        );
+        // Non-finite or negative values do not corrupt the latch.
+        status.record_output_peaks([f32::NAN, -2.0]);
+        assert_eq!(
+            status.take_latched_output_peaks(),
+            ([0.0, 0.0], [false, false])
         );
     }
 }

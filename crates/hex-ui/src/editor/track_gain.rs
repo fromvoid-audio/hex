@@ -216,6 +216,23 @@ impl Controls {
                 control.is_interacting() || control.is_editing()
             })
     }
+
+    /// Scoped per-track draft check for `TrackHeaderCache`: true only when
+    /// `track_id`'s own gain or balance control has an active drag/edit draft.
+    pub(super) fn has_pending_draft_for(&self, track_id: TrackId, cx: &gpui::App) -> bool {
+        let gain_active = self.bindings.get(&track_id).is_some_and(|binding| {
+            let control = binding.entity.read(cx);
+            control.is_interacting() || control.is_editing()
+        });
+        let balance_active = self
+            .mixer
+            .get(&MixerKey::Balance(track_id))
+            .is_some_and(|binding| {
+                let control = binding.entity.read(cx);
+                control.is_interacting() || control.is_editing()
+            });
+        gain_active || balance_active
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

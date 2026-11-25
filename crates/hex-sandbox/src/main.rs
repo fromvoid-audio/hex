@@ -21,6 +21,7 @@ mod gallery;
 #[allow(dead_code)] // The editor also consumes ruler, band and input-grid queries.
 mod musical_time;
 #[path = "../../hex-ui/src/output_meter.rs"]
+#[allow(dead_code)] // The editor also consumes unified peak-hold/latched-clip rendering.
 mod output_meter;
 #[path = "../../hex-ui/src/editor/pending_edit.rs"]
 mod pending_edit;

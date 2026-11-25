@@ -7,8 +7,9 @@ mod scale;
 mod selection;
 
 use super::EditorView;
+use crate::output_meter::MeterReading;
 use crate::theme;
-use decay::{decay_factor, decay_level};
+use decay::{StereoMeterState, decay_factor};
 use gpui::{Div, div, prelude::*, px};
 use hex_project::{ReturnId, TrackId};
 use selection::console_meter_tracks;
@@ -20,8 +21,8 @@ use std::time::Instant;
 pub(super) struct State {
     main: follower::State,
     identity: Option<(u64, u64)>,
-    levels: BTreeMap<TrackId, [f32; 2]>,
-    returns: BTreeMap<ReturnId, [f32; 2]>,
+    levels: BTreeMap<TrackId, StereoMeterState>,
+    returns: BTreeMap<ReturnId, StereoMeterState>,
     updated: Option<Instant>,
     /// Per-tick staging buffers, retained across ticks and `clear`.
     scratch: Scratch,
@@ -62,9 +63,7 @@ impl State {
         let decay = self.decay(now);
         let mut changed = false;
         for entry in self.levels.values_mut().chain(self.returns.values_mut()) {
-            let next = entry.map(|level| decay_level(level, decay));
-            changed |= next != *entry;
-            *entry = next;
+            changed |= entry.decay_only(decay, now);
         }
         changed
     }
@@ -81,14 +80,30 @@ impl State {
     fn decay(&mut self, now: Instant) -> f32 {
         decay_factor(&mut self.updated, now)
     }
+    #[cfg(test)]
     pub(super) fn level(&self, track: TrackId) -> [f32; 2] {
-        self.levels.get(&track).copied().unwrap_or([0.0; 2])
+        self.levels
+            .get(&track)
+            .map_or([0.0; 2], StereoMeterState::level)
     }
+    #[cfg(test)]
     pub(super) fn return_level(&self, id: ReturnId) -> [f32; 2] {
-        self.returns.get(&id).copied().unwrap_or([0.0; 2])
+        self.returns
+            .get(&id)
+            .map_or([0.0; 2], StereoMeterState::level)
     }
-    pub(super) fn main_level(&self) -> [f32; 2] {
-        self.main.level()
+    pub(super) fn reading(&self, track: TrackId) -> MeterReading {
+        self.levels
+            .get(&track)
+            .map_or_else(MeterReading::default, StereoMeterState::reading)
+    }
+    pub(super) fn return_reading(&self, id: ReturnId) -> MeterReading {
+        self.returns
+            .get(&id)
+            .map_or_else(MeterReading::default, StereoMeterState::reading)
+    }
+    pub(super) fn main_reading(&self) -> MeterReading {
+        self.main.reading()
     }
     pub(super) fn observe_main(
         &mut self,
@@ -99,7 +114,8 @@ impl State {
     }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn set_test_level(&mut self, id: TrackId, peak: [f32; 2]) {
-        self.levels.insert(id, peak);
+        self.levels
+            .insert(id, StereoMeterState::from_peak(peak, Instant::now()));
     }
 }
 
@@ -213,14 +229,13 @@ impl EditorView {
             let Some(entry) = self.track_meters.levels.get_mut(&id) else {
                 // Peaks retained while a row was offscreen have unknown age.
                 // Discard them before beginning this visible observation.
-                self.track_meters.levels.insert(id, [0.0; 2]);
+                self.track_meters
+                    .levels
+                    .insert(id, StereoMeterState::default());
                 continue;
             };
-            let next = std::array::from_fn(|channel| {
-                peak[channel].max(decay_level(entry[channel], decay))
-            });
-            changed |= next != *entry;
-            *entry = next;
+            let latched_clip = peak.map(|p| p.is_finite() && p > 1.0);
+            changed |= entry.observe(peak, latched_clip, decay, now);
         }
         if let Some(project) = project {
             self.track_meters.returns.retain(|id, _| {
@@ -231,49 +246,48 @@ impl EditorView {
             });
             for &(id, peak) in return_readings.iter() {
                 let Some(entry) = self.track_meters.returns.get_mut(&id) else {
-                    self.track_meters.returns.insert(id, [0.0; 2]);
+                    self.track_meters
+                        .returns
+                        .insert(id, StereoMeterState::default());
                     continue;
                 };
-                let next = std::array::from_fn(|channel| {
-                    peak[channel].max(decay_level(entry[channel], decay))
-                });
-                changed |= next != *entry;
-                *entry = next;
+                let latched_clip = peak.map(|p| p.is_finite() && p > 1.0);
+                changed |= entry.observe(peak, latched_clip, decay, now);
             }
         }
         changed
     }
 }
 
-pub(super) fn render(track: TrackId, peak: [f32; 2], height: f32) -> Div {
+pub(super) fn render(track: TrackId, reading: MeterReading, height: f32) -> Div {
     render_meter(
         format!("track-output-meter-{}", track.value()),
-        peak,
+        reading,
         compact_meter_height(height),
     )
 }
 
-pub(super) fn render_arrangement(track: TrackId, peak: [f32; 2], row_height: f32) -> Div {
+pub(super) fn render_arrangement(track: TrackId, reading: MeterReading, row_height: f32) -> Div {
     render_meter(
         format!("track-output-meter-{}", track.value()),
-        peak,
+        reading,
         row_height - 6.0,
     )
     .mt(px(2.0))
 }
 
-pub(super) fn render_return(id: ReturnId, peak: [f32; 2], height: f32) -> Div {
+pub(super) fn render_return(id: ReturnId, reading: MeterReading, height: f32) -> Div {
     render_meter(
         format!("return-output-meter-{}", id.value()),
-        peak,
+        reading,
         compact_meter_height(height),
     )
 }
 
-pub(super) fn render_main(peak: [f32; 2], height: f32) -> Div {
+pub(super) fn render_main(reading: MeterReading, height: f32) -> Div {
     render_meter(
         "main-output-meter".into(),
-        peak,
+        reading,
         compact_meter_height(height),
     )
 }
@@ -282,8 +296,10 @@ fn compact_meter_height(height: f32) -> f32 {
     (height - 8.0).clamp(10.0, 42.0)
 }
 
-fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
+fn render_meter(id: String, reading: MeterReading, height: f32) -> Div {
     let style = theme::track_meter_style();
+    let colors = theme::meter_colors();
+    let peaks = reading.level;
     let description = format!(
         "output peak l {} · r {} · scale −70 to +6 dbfs · marks at 0 and +3 dbfs",
         scale::readout(peaks[0]),
@@ -301,17 +317,27 @@ fn render_meter(id: String, peaks: [f32; 2], height: f32) -> Div {
         ))
         .h(px(height))
         .flex_shrink_0();
-    for (side, peak) in ["left", "right"].into_iter().zip(peaks) {
+    for (channel, side) in ["left", "right"].into_iter().enumerate() {
+        let peak = reading.level[channel];
+        let hold = reading.peak_hold[channel];
+        let clipped = reading.clipped[channel] || (peak.is_finite() && peak > 1.0);
         let channel_id = format!("{id}-{side}");
-        let mut bar = hex_widgets::level_meter(
+        let hold_color = if clipped || (hold.is_finite() && hold > 1.0) {
+            colors.clipping
+        } else {
+            style.text
+        };
+        let mut bar = crate::output_meter::render_meter_bar(
             channel_id.clone().into(),
             scale::fraction(peak),
-            peak.is_finite() && peak > 1.0,
+            scale::fraction(hold),
+            clipped,
             hex_widgets::LevelMeterStyle {
                 background: style.rail,
                 fill: style.accent,
-                above: theme::meter_colors().clipping,
+                above: colors.clipping,
             },
+            hold_color,
         )
         .w(px(hex_widgets::STEREO_PEAK_BAR_WIDTH))
         .h_full()
@@ -370,7 +396,7 @@ mod tests {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 div().size_full().child(render_meter(
                     "scale-probe".into(),
-                    self.peak,
+                    MeterReading::from_peaks(self.peak),
                     compact_meter_height(self.height),
                 ))
             }
@@ -470,7 +496,10 @@ mod tests {
         else {
             panic!("track")
         };
-        state.levels.insert(track, [0.5, 0.25]);
+        state.levels.insert(
+            track,
+            StereoMeterState::from_peak([0.5, 0.25], Instant::now()),
+        );
         assert!(state.clear());
         assert!(state.levels.is_empty());
         assert!(state.scratch.visible.capacity() >= 64);
@@ -510,8 +539,12 @@ mod tests {
         let now = Instant::now();
         let mut state = State::default();
         state.adopt((1, 10), now);
-        state.levels.insert(track, [0.8, 0.2]);
-        state.returns.insert(bus, [0.6, 0.1]);
+        state
+            .levels
+            .insert(track, StereoMeterState::from_peak([0.8, 0.2], now));
+        state
+            .returns
+            .insert(bus, StereoMeterState::from_peak([0.6, 0.1], now));
         assert!(state.hold(1, now + Duration::from_millis(16)));
         let held = state.level(track);
         let returned = state.return_level(bus);
@@ -555,7 +588,9 @@ mod tests {
         let now = Instant::now();
         editor.update(cx, |view, cx| {
             view.track_meters.adopt((1, 10), now);
-            view.track_meters.levels.insert(track, [0.8, 0.2]);
+            view.track_meters
+                .levels
+                .insert(track, StereoMeterState::from_peak([0.8, 0.2], now));
             cx.notify();
         });
         visual.run_until_parked();

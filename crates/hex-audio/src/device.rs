@@ -558,8 +558,7 @@ fn render_host_callback<T: SizedSample + FromSample<f32>>(
                 }
             }
         }
-        status.peak_left.store(peaks[0].to_bits(), Relaxed);
-        status.peak_right.store(peaks[1].to_bits(), Relaxed);
+        status.record_output_peaks(peaks);
         let frames = data.len() / channels;
         let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
         let deadline = record_callback_timing(status, elapsed, frames, rate);
