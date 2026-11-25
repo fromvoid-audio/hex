@@ -55,6 +55,10 @@ impl Target {
                 .capture
                 .loop_region
                 .is_none_or(|(start, end)| start < end)
+            && !(matches!(
+                self.capture.route,
+                hex_engine::midi_capture::MidiCaptureRoute::SessionMidi { .. }
+            ) && self.capture.loop_region.is_some())
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -540,6 +544,7 @@ mod tests {
                 first_frame: 0,
                 end_frame: 48_000,
                 loop_region: None,
+                route: hex_engine::midi_capture::MidiCaptureRoute::Arrangement,
             },
             project_generation: 1,
             canonical_revision: 1,

@@ -1966,6 +1966,19 @@ impl Playback {
 
     /// Admit capture against the installed engine graph. The caller still owns
     /// output/source/transport authority and must confirm delivered host output.
+    pub fn midi_capture_clock(
+        &self,
+        route: crate::midi_capture::MidiCaptureRoute,
+    ) -> crate::midi_capture::MidiCaptureClock {
+        self.session_runtime.as_ref().map_or(
+            crate::midi_capture::MidiCaptureClock {
+                content_frame: self.position(),
+                performance_frame: self.performance_frame(),
+                loop_pass: self.arrangement_loop_pass(),
+            },
+            |runtime| runtime.midi_capture_clock(route),
+        )
+    }
     pub fn arm_midi_capture(
         &mut self,
         binding: crate::midi_capture::MidiCaptureBinding,

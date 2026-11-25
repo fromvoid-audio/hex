@@ -297,16 +297,19 @@ impl RuntimeMut<'_> {
     pub(super) fn position(&self) -> u64 {
         self.read().position()
     }
-    pub(super) fn arrangement_loop_pass(&self) -> u64 {
-        match self {
-            Self::Legacy(p) => p.arrangement_loop_pass(),
-            Self::Eligible(p) => p.arrangement_loop_pass(),
-        }
-    }
     pub(super) fn main_output_latency_frames(&self) -> Option<u32> {
         self.read()
             .status()
             .map(|status| status.main_output_latency_frames)
+    }
+    pub(super) fn midi_capture_clock(
+        &self,
+        route: hex_engine::midi_capture::MidiCaptureRoute,
+    ) -> hex_engine::midi_capture::MidiCaptureClock {
+        match self {
+            Self::Legacy(p) => p.midi_capture_clock(route),
+            Self::Eligible(p) => p.midi_capture_clock(route),
+        }
     }
     pub(super) fn arm_midi_capture(
         &mut self,

@@ -9,7 +9,7 @@ use crate::{
     Invalid,
     computer_keyboard::{LiveNoteActivation, MidiKeyActivation},
 };
-use hex_project::{DeviceId, TrackId};
+use hex_project::{ClipId, DeviceId, TrackId};
 
 /// At most 256 accepted onsets, their 256 releases, and 64 preexisting releases.
 pub const MAX_ACCEPTED_MIDI_NOTES_PER_RENDER: usize = 576;
@@ -94,6 +94,22 @@ pub fn compensate_midi_capture_frame(
     }
 }
 
+/// Which playback route owns the armed MIDI take.
+///
+/// Arrangement capture uses the Arrangement content-frame clock. Console
+/// capture binds to one active Session MIDI clip incarnation (`clip`,
+/// `origin`, and `clock_anchor`) and uses the monotonic performance-frame
+/// clock rather than Arrangement frame coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MidiCaptureRoute {
+    Arrangement,
+    SessionMidi {
+        clip: ClipId,
+        origin: crate::SessionMidiOrigin,
+        clock_anchor: Option<crate::SessionClockAnchor>,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiCaptureBinding {
     pub take_id: u64,
@@ -106,7 +122,9 @@ pub struct MidiCaptureBinding {
     pub first_frame: u64,
     pub end_frame: u64,
     /// Enabled Arrangement loop interval `(start_frame, end_frame)`, if any.
+    /// Must be `None` for `MidiCaptureRoute::SessionMidi`.
     pub loop_region: Option<(u64, u64)>,
+    pub route: MidiCaptureRoute,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MidiCaptureClock {

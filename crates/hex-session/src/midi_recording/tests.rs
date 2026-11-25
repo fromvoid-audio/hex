@@ -973,3 +973,291 @@ fn capture_track_extends_existing_clip_past_end_as_one_atomic_persisted_edit() {
     assert!(editor.redo());
     assert_eq!(editor.project().snapshot(), after);
 }
+
+#[test]
+fn console_midi_take_maps_linear_and_looping_passes_quantizes_overwrites_and_replays_pcm() {
+    let mut editor = Editor::new(Project::new(8_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "console".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Scene(scene) = editor
+        .execute(Command::AddScene { name: "s1".into() })
+        .unwrap()
+    else {
+        panic!("scene")
+    };
+    let Created::SessionClip(clip) = editor
+        .execute(Command::CreateSessionMidiClip {
+            track,
+            scene,
+            name: "lead".into(),
+            source_length: beat(4),
+        })
+        .unwrap()
+    else {
+        panic!("session clip")
+    };
+    // Pre-existing notes: pitch 60 at beat 0..2 (will be overlapped on same pitch at beat 1..2)
+    // and pitch 67 at beat 2..3 (must remain untouched).
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(2),
+            pitch: 60,
+            channel: 0,
+            velocity: 90,
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: beat(2),
+            duration: BeatTime::ONE,
+            pitch: 67,
+            channel: 0,
+            velocity: 95,
+        })
+        .unwrap();
+
+    // Clip launched at performance beat 2 (frame 8_000 at 120 BPM, 8 kHz -> 4_000 frames/beat).
+    let origin = hex_engine::SessionMidiOrigin::launch(beat(2));
+    let anchor = None;
+    // Arrangement loop enabled must refuse Console capture.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 8_000,
+            enabled: true,
+        })
+        .unwrap();
+    assert!(
+        MidiTakeBinding::capture_session_clip(
+            editor.project(),
+            track,
+            clip,
+            origin,
+            anchor,
+            8_000,
+        )
+        .is_err()
+    );
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 8_000,
+            enabled: false,
+        })
+        .unwrap();
+
+    // Exhausted one-shot (performance frame 24_000 = beat 6 = elapsed beat 4) must refuse.
+    assert!(
+        MidiTakeBinding::capture_session_clip(
+            editor.project(),
+            track,
+            clip,
+            origin,
+            anchor,
+            24_000,
+        )
+        .is_err()
+    );
+
+    let before = editor.project().snapshot();
+    let grid =
+        hex_project::ResolvedInputGrid::fixed(editor.project().meter_map(), BeatTime::ONE).unwrap();
+    let binding = MidiTakeBinding::capture_session_clip_with_grid(
+        editor.project(),
+        track,
+        clip,
+        origin,
+        anchor,
+        8_000,
+        grid,
+    )
+    .unwrap();
+    assert_eq!(binding.clip(), Some(clip));
+    assert_eq!(binding.first_frame(), 8_000);
+    assert_eq!(binding.end_frame(), 24_000);
+    assert!(matches!(
+        binding.capture_route(),
+        hex_engine::midi_capture::MidiCaptureRoute::SessionMidi {
+            clip: c,
+            origin: o,
+            clock_anchor: a,
+        } if c == clip && o == origin && a == anchor
+    ));
+
+    // Record pitch 60 slightly late of clip beat 1 (perf frame 12_100 -> snaps to clip beat 1.0,
+    // length 0.5 beat) and pitch 72 at clip beat 3.0..3.5 (perf frames 20_000..22_000).
+    let captured = [
+        RecordedMidiNote {
+            start_frame: 12_100,
+            end_frame: 14_100,
+            pitch: 60,
+            channel: 0,
+            velocity: 110,
+        },
+        RecordedMidiNote {
+            start_frame: 20_000,
+            end_frame: 22_000,
+            pitch: 72,
+            channel: 1,
+            velocity: 105,
+        },
+    ];
+    let command = finish_take(editor.project(), &binding, &captured, 24_000)
+        .unwrap()
+        .unwrap();
+    assert!(matches!(command, Command::AddMidiNotes { clip: c, .. } if c == clip));
+    editor.execute(command).unwrap();
+
+    let updated = editor.project().session_midi_clip(clip).unwrap();
+    let notes = updated.source().notes();
+    // Pre-existing pitch 60 trimmed to 0..1, recorded pitch 60 at 1..1.5, pre-existing pitch 67 at 2..3, recorded pitch 72 at 3..3.5.
+    assert_eq!(notes.len(), 4);
+    assert!(
+        notes.iter().any(|n| n.pitch() == 60
+            && n.start() == BeatTime::ZERO
+            && n.duration() == BeatTime::ONE)
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.pitch() == 60 && n.start() == BeatTime::ONE && n.velocity() == 110)
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.pitch() == 67 && n.start() == beat(2) && n.duration() == BeatTime::ONE)
+    );
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.pitch() == 72 && n.start() == beat(3) && n.channel() == 1)
+    );
+
+    // Verify actual Console clip PCM replay plays the newly recorded pitch 72 note at beat 3!
+    let rev = std::sync::Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            editor.project(),
+            &std::collections::BTreeMap::new(),
+            std::sync::Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = hex_engine::SessionPlayback::new(rev).unwrap();
+    playback
+        .apply(hex_engine::SessionPlaybackCommand::Play)
+        .unwrap();
+    playback
+        .apply(hex_engine::SessionPlaybackCommand::LaunchClip {
+            clip,
+            quantization: hex_engine::LaunchQuantization::Immediate,
+        })
+        .unwrap();
+    let mut pcm = vec![[0.0; 2]; 16_000];
+    playback.render(&mut pcm).unwrap();
+    let beat3_peak = pcm[12_200..13_500]
+        .iter()
+        .map(|f| f[0].abs())
+        .fold(0.0_f32, f32::max);
+    assert!(
+        beat3_peak > 0.05,
+        "recorded console note must render audible PCM"
+    );
+
+    // Save/reopen round trip + single Undo/Redo.
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
+    assert!(editor.undo());
+    let mut restored = before;
+    restored.next_id = after.next_id;
+    assert_eq!(editor.project().snapshot(), restored);
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+
+    // Looping Console clip: record during wrapped loop pass 2 (loop 0..2 beats, launched at beat 0 -> pass 2 is beats 4..6 = frames 16_000..24_000).
+    editor
+        .execute(Command::SetSessionMidiClipSource {
+            clip,
+            source_length: beat(4),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: beat(2),
+            looping: true,
+        })
+        .unwrap();
+    let loop_origin = hex_engine::SessionMidiOrigin::launch(BeatTime::ZERO);
+    let loop_binding = MidiTakeBinding::capture_session_clip(
+        editor.project(),
+        track,
+        clip,
+        loop_origin,
+        anchor,
+        18_000, // beat 4.5 (pass 2, 0.5 beats into 0..2 loop)
+    )
+    .unwrap();
+    assert_eq!(loop_binding.first_frame(), 16_000);
+    assert_eq!(loop_binding.end_frame(), 24_000);
+    // Note recorded at frames 18_000..24_000 (beat 4.5..6.0) maps to source beat 0.5..2.0 (closed cleanly at loop_end).
+    let loop_cmd = finish_take(
+        editor.project(),
+        &loop_binding,
+        &[RecordedMidiNote {
+            start_frame: 18_000,
+            end_frame: 24_000,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        }],
+        24_000,
+    )
+    .unwrap()
+    .unwrap();
+    // Stale source refusal: mutating clip source invalidates binding without losing original notes.
+    let mut stale_editor = Editor::new(editor.project().clone(), 8).unwrap();
+    stale_editor
+        .execute(Command::SetClipActive {
+            clip,
+            active: false,
+        })
+        .unwrap();
+    assert!(
+        finish_take(
+            stale_editor.project(),
+            &loop_binding,
+            &[RecordedMidiNote {
+                start_frame: 18_000,
+                end_frame: 24_000,
+                pitch: 64,
+                channel: 0,
+                velocity: 100,
+            }],
+            24_000,
+        )
+        .is_err()
+    );
+    editor.execute(loop_cmd).unwrap();
+    let looped_notes = editor
+        .project()
+        .session_midi_clip(clip)
+        .unwrap()
+        .source()
+        .notes();
+    assert!(looped_notes.iter().any(|n| {
+        n.pitch() == 64
+            && n.start() == BeatTime::from_ratio(1, 2).unwrap()
+            && n.duration() == BeatTime::from_ratio(3, 2).unwrap()
+    }));
+}
