@@ -15,11 +15,24 @@ pub(in crate::editor) struct Broadcast {
     serial: u64,
     accepted: Option<ProjectTuning>,
     sent: Option<ProjectTuning>,
+    scale_name: Option<String>,
+    sent_name: Option<String>,
     snapshot: Option<Snapshot>,
     error: Option<String>,
     auto_enable_pending: bool,
 }
 impl Broadcast {
+    pub(in crate::editor) fn set_scale_name(&mut self, name: Option<String>) {
+        let normalized = name.map(|raw| hex_mts::sanitize_scale_name(&raw));
+        if self.scale_name == normalized {
+            return;
+        }
+        self.scale_name = normalized;
+        if self.owner.is_some() && self.sent_name != self.scale_name {
+            self.send(false);
+        }
+    }
+
     pub(in crate::editor) fn observe(
         &mut self,
         generation: u64,
@@ -33,6 +46,8 @@ impl Broadcast {
             self.generation = generation;
             self.serial = 0;
             self.sent = None;
+            self.scale_name = None;
+            self.sent_name = None;
             self.auto_enable_pending = false;
         }
         let was_enabled = !project_changed && self.accepted.is_some_and(ProjectTuning::enabled);
@@ -49,7 +64,8 @@ impl Broadcast {
                 self.disable();
             }
         }
-        if self.owner.is_some() && self.sent != Some(tuning) {
+        if self.owner.is_some() && (self.sent != Some(tuning) || self.sent_name != self.scale_name)
+        {
             self.send(false);
         }
     }
@@ -75,6 +91,7 @@ impl Broadcast {
             self.snapshot = handle.snapshot().ok();
         }
         self.sent = None;
+        self.sent_name = None;
     }
     fn send(&mut self, enable: bool) {
         let Some(owner) = self.owner else {
@@ -87,13 +104,14 @@ impl Broadcast {
             self.error = Some("mts publication identity exhausted".into());
             return;
         };
-        let result = Publication::new(
+        let result = Publication::new_named(
             Revision {
                 owner,
                 serial,
                 project_revision: self.revision,
             },
             tuning,
+            self.scale_name.as_deref(),
         )
         .map_err(|error| error.to_string())
         .and_then(|publication| {
@@ -113,6 +131,7 @@ impl Broadcast {
             Ok(()) => {
                 self.serial = serial;
                 self.sent = Some(tuning);
+                self.sent_name = self.scale_name.clone();
                 self.error = None;
             }
             Err(error) => {

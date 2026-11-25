@@ -237,7 +237,7 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
         .downcast_ref::<GateRuntime>()
         .unwrap()
         .history();
-    assert!(old.ramp_remaining > 0 || old.open);
+    assert!(old.gain_ramp.is_active() || old.open);
 
     let mut same = runtime(&original, 8_000);
     assert!(same.can_copy_history_from(source.as_ref()));
@@ -272,7 +272,7 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
         .downcast_ref::<GateRuntime>()
         .unwrap()
         .history();
-    assert!(closed_history.ramp_remaining > 0 && !closed_history.open);
+    assert!(closed_history.gain_ramp.is_active() && !closed_history.open);
 
     let base = state_with(0.0, -6.0, -20.0, 0.5, 0.0, 1.0);
     let floor_changed = patch(&base, parameter::FLOOR, -40.0);
@@ -283,10 +283,13 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
         .downcast_ref::<GateRuntime>()
         .unwrap()
         .history();
-    assert_eq!(floor_history.gain, closed_history.gain);
+    assert_eq!(
+        floor_history.gain_ramp.value(),
+        closed_history.gain_ramp.value()
+    );
     assert_eq!(floor_history.open, closed_history.open);
-    assert_eq!(floor_history.ramp_target, db_gain(-40.0));
-    assert_eq!(floor_history.ramp_remaining, 8);
+    assert_eq!(floor_history.gain_ramp.target(), db_gain(-40.0));
+    assert_eq!(floor_history.gain_ramp.remaining(), 8);
 
     let threshold_changed = patch(&base, parameter::THRESHOLD, -3.0);
     let mut threshold_candidate = runtime(&threshold_changed, 8_000);
@@ -317,9 +320,12 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
         .downcast_ref::<GateRuntime>()
         .unwrap()
         .history();
-    assert_eq!(after_attack_edit.gain, before_attack_edit.gain);
-    assert_eq!(after_attack_edit.ramp_target, 1.0);
-    assert_eq!(after_attack_edit.ramp_remaining, 16);
+    assert_eq!(
+        after_attack_edit.gain_ramp.value(),
+        before_attack_edit.gain_ramp.value()
+    );
+    assert_eq!(after_attack_edit.gain_ramp.target(), 1.0);
+    assert_eq!(after_attack_edit.gain_ramp.remaining(), 16);
 
     let hold_state = state_with(0.0, -6.0, -20.0, 0.5, 6.0, 1.0);
     let mut holding = runtime(&hold_state, 8_000);
@@ -353,7 +359,8 @@ fn same_settings_history_copy_is_partition_exact_and_changed_controls_retarget_o
             .downcast_ref::<GateRuntime>()
             .unwrap()
             .history()
-            .ramp_remaining,
+            .gain_ramp
+            .remaining(),
         16
     );
 
@@ -418,8 +425,8 @@ fn floor_edit_when_settled_closed_ramps_and_runtime_has_no_output_tail() {
         .downcast_ref::<GateRuntime>()
         .unwrap()
         .history();
-    assert_eq!(history.ramp_target, db_gain(-40.0));
-    assert_eq!(history.ramp_remaining, 8);
+    assert_eq!(history.gain_ramp.target(), db_gain(-40.0));
+    assert_eq!(history.gain_ramp.remaining(), 8);
     assert!(candidate.is_quiescent());
     assert_eq!(
         prepared(&floor_changed, 8_000).algorithmic_latency_frames(),

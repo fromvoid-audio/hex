@@ -10,10 +10,12 @@
 //! support control-side step entry without scheduling or monitoring sound.
 mod held_notes;
 mod note_events;
+mod timebase;
 pub use held_notes::{
     HELD_NOTE_COUNT, HeldNote, HeldNoteFault, HeldNoteInput, HeldNotes, HeldNotesRead,
 };
-pub use note_events::NoteEvent;
+pub use note_events::{ControlChange, NoteEvent};
+pub use timebase::{MachTimebase, MonotonicTimestampClock, TimedPacket, TimestampedNoteEvent};
 
 use std::sync::{
     Arc,
@@ -28,6 +30,12 @@ pub struct Controllers {
     pub pressure: u8,
     pub bend: i16,
     pub wheel: u8,
+    /// Sustain Pedal (CC64) 7-bit controller value (`>= 64` means pedal down).
+    pub sustain: u8,
+    /// Expression (CC11) 7-bit controller value.
+    pub expression: u8,
+    /// Most recent non-reset Control Change received on the selected channel.
+    pub last_cc: Option<ControlChange>,
 }
 /// Exact channel-voice messages only; malformed input never changes the snapshot.
 pub fn parse(message: &[u8], channel: u8, current: Controllers) -> Option<Controllers> {
@@ -42,8 +50,23 @@ pub fn parse(message: &[u8], channel: u8, current: Controllers) -> Option<Contro
     match (status & 0xf0, data) {
         (0xd0, [pressure]) => next.pressure = *pressure,
         (0xe0, [low, high]) => next.bend = (i16::from(*high) * 128 + i16::from(*low)) - 8192,
-        (0xb0, [1, wheel]) => next.wheel = *wheel,
-        (0xb0, [121, _]) => next = Controllers::default(),
+        (0xb0, [cc, value]) if !note_events::is_all_notes_off_cc(*cc) => {
+            if *cc == ControlChange::RESET_ALL_CONTROLLERS {
+                next = Controllers::default();
+            } else {
+                match *cc {
+                    ControlChange::MOD_WHEEL => next.wheel = *value,
+                    ControlChange::EXPRESSION => next.expression = *value,
+                    ControlChange::SUSTAIN => next.sustain = *value,
+                    _ => {}
+                }
+                next.last_cc = Some(ControlChange {
+                    channel,
+                    cc: *cc,
+                    value: *value,
+                });
+            }
+        }
         _ => return None,
     }
     Some(next)
@@ -180,26 +203,67 @@ pub fn deliver_packets<'a>(
 pub fn deliver_packets_with_notes<'a>(
     decoder: &mut Decoder,
     channel: u8,
-    mut current: Controllers,
+    current: Controllers,
     packets: impl IntoIterator<Item = &'a [u8]>,
     notes: &HeldNoteInput,
     publish: &dyn Fn(Controllers),
     note: &dyn Fn(NoteEvent),
+) -> Controllers {
+    let mut clock = MonotonicTimestampClock::default();
+    deliver_timed_packets_with_notes(
+        decoder,
+        channel,
+        current,
+        MachTimebase::NANOSECONDS,
+        &mut clock,
+        packets.into_iter().map(|data| TimedPacket {
+            timestamp_ticks: 0,
+            data,
+        }),
+        notes,
+        publish,
+        &|timed| note(timed.event),
+    )
+}
+
+/// Hardware-timestamped counterpart of `deliver_packets_with_notes`. Each packet's
+/// raw Mach host timestamp is converted via `timebase` and clamped to monotonic
+/// non-decreasing nanoseconds via `clock` before attaching to every emitted
+/// [`TimestampedNoteEvent`] (including `NoteEvent::ControlChange` and overflow resets).
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_timed_packets_with_notes<'a>(
+    decoder: &mut Decoder,
+    channel: u8,
+    mut current: Controllers,
+    timebase: MachTimebase,
+    clock: &mut MonotonicTimestampClock,
+    packets: impl IntoIterator<Item = TimedPacket<'a>>,
+    notes: &HeldNoteInput,
+    publish: &dyn Fn(Controllers),
+    note: &dyn Fn(TimestampedNoteEvent),
 ) -> Controllers {
     if notes.is_cancelled() {
         return current;
     }
     let mut remaining = CALLBACK_BYTES;
     // One packet past the limit is inspected only to detect overflow.
-    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
+    for (index, packet) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
+        let timestamp_ns = clock.advance(timebase, packet.timestamp_ticks);
+        let bytes = packet.data;
         let overflow = index == CALLBACK_PACKETS || bytes.len() > remaining;
         let accepted = if index == CALLBACK_PACKETS {
             &[][..]
         } else {
             bytes.get(..remaining).unwrap_or(bytes)
         };
+        let emit = |event| {
+            note(TimestampedNoteEvent {
+                timestamp_ns,
+                event,
+            });
+        };
         for byte in accepted {
-            if let Some(next) = decoder.byte_with_notes(*byte, channel, current, note) {
+            if let Some(next) = decoder.byte_with_notes(*byte, channel, current, &emit) {
                 current = next;
                 publish(current);
             }
@@ -209,7 +273,7 @@ pub fn deliver_packets_with_notes<'a>(
             }
         }
         if overflow {
-            decoder.reset(note);
+            decoder.reset(&emit);
             break;
         }
         remaining -= accepted.len();
@@ -230,8 +294,9 @@ pub struct Port {
 /// Constructed on control; the native callback only invokes this bounded sink.
 pub struct Sink {
     pub publish: Box<dyn Fn(Controllers) + Send>,
-    /// Ordered native input messages, independent of the step-entry snapshot.
-    pub note: Box<dyn Fn(NoteEvent) + Send>,
+    /// Ordered native input messages with monotonic hardware timestamps,
+    /// independent of the step-entry snapshot.
+    pub note: Box<dyn Fn(TimestampedNoteEvent) + Send>,
     pub notes: Arc<HeldNoteInput>,
     pub cancel: Box<dyn Fn() + Send>,
     pub is_cancelled: Box<dyn Fn() -> bool + Send>,
@@ -505,16 +570,23 @@ mod native {
                 .map_err(|status| format!("controller client failed: {status}"))?;
             let mut decoder = Decoder::default();
             let mut current = Controllers::default();
+            let timebase = MachTimebase::host();
+            let mut clock = MonotonicTimestampClock::default();
             let publish = sink.publish;
             let note = sink.note;
             let notes = Arc::clone(&sink.notes);
             let input = client
                 .input_port("hex controller input", move |packets| {
-                    current = deliver_packets_with_notes(
+                    current = deliver_timed_packets_with_notes(
                         &mut decoder,
                         channel,
                         current,
-                        packets.iter().map(|packet| packet.data()),
+                        timebase,
+                        &mut clock,
+                        packets.iter().map(|packet| TimedPacket {
+                            timestamp_ticks: packet.timestamp(),
+                            data: packet.data(),
+                        }),
                         &notes,
                         publish.as_ref(),
                         note.as_ref(),
@@ -725,7 +797,44 @@ mod tests {
         assert_eq!(parse(&[0xe2, 0, 64], 2, pressure).unwrap().bend, 0);
         let wheel = parse(&[0xb2, 1, 127], 2, pressure).unwrap();
         assert_eq!(wheel.wheel, 127);
-        assert_eq!(parse(&[0xb2, 121, 0], 2, wheel), Some(initial));
+        assert_eq!(
+            wheel.last_cc,
+            Some(ControlChange {
+                channel: 2,
+                cc: 1,
+                value: 127,
+            })
+        );
+        let sustain = parse(&[0xb2, 64, 127], 2, wheel).unwrap();
+        assert_eq!(sustain.sustain, 127);
+        assert_eq!(
+            sustain.last_cc,
+            Some(ControlChange {
+                channel: 2,
+                cc: 64,
+                value: 127,
+            })
+        );
+        let expression = parse(&[0xb2, 11, 96], 2, sustain).unwrap();
+        assert_eq!(expression.expression, 96);
+        assert_eq!(
+            expression.last_cc,
+            Some(ControlChange {
+                channel: 2,
+                cc: 11,
+                value: 96,
+            })
+        );
+        let general = parse(&[0xb2, 74, 88], 2, expression).unwrap();
+        assert_eq!(
+            general.last_cc,
+            Some(ControlChange {
+                channel: 2,
+                cc: 74,
+                value: 88,
+            })
+        );
+        assert_eq!(parse(&[0xb2, 121, 0], 2, general), Some(initial));
         for malformed in [
             &[0xd2][..],
             &[0xd2, 128],
@@ -733,14 +842,14 @@ mod tests {
             &[0xe2, 0],
             &[0xb2, 1],
             &[0x92, 60, 127],
-            &[0xb2, 64, 127],
+            &[0xb2, 123, 0],
             &[0xd1, 127],
             &[0xf8],
             &[0xf0, 1, 0xf7],
         ] {
-            assert_eq!(parse(malformed, 2, wheel), None, "{malformed:?}");
+            assert_eq!(parse(malformed, 2, general), None, "{malformed:?}");
         }
-        assert_eq!(parse(&[0xd0, 1], 16, wheel), None);
+        assert_eq!(parse(&[0xd0, 1], 16, general), None);
     }
     #[test]
     fn flood_coalesces_to_latest_without_message_storage() {
@@ -778,7 +887,14 @@ mod tests {
             Controllers {
                 pressure: 90,
                 bend: 0,
-                wheel: 30
+                wheel: 30,
+                sustain: 0,
+                expression: 0,
+                last_cc: Some(ControlChange {
+                    channel: 0,
+                    cc: 1,
+                    value: 30,
+                }),
             }
         );
         decoder.byte(0xb0, 0, state);
@@ -818,6 +934,13 @@ mod tests {
                 pressure: 64,
                 bend: 4096,
                 wheel: 90,
+                sustain: 0,
+                expression: 0,
+                last_cc: Some(ControlChange {
+                    channel: 0,
+                    cc: 1,
+                    value: 90,
+                }),
             }
         );
 
@@ -867,6 +990,13 @@ mod tests {
                 pressure: 0,
                 bend: 0,
                 wheel: 42,
+                sustain: 0,
+                expression: 0,
+                last_cc: Some(ControlChange {
+                    channel: 0,
+                    cc: 1,
+                    value: 42,
+                }),
             }
         );
         assert_eq!(
@@ -876,17 +1006,30 @@ mod tests {
                     pressure: 0,
                     bend: 4096,
                     wheel: 0,
+                    sustain: 0,
+                    expression: 0,
+                    last_cc: None,
                 },
                 Controllers {
                     pressure: 64,
                     bend: 4096,
                     wheel: 0,
+                    sustain: 0,
+                    expression: 0,
+                    last_cc: None,
                 },
                 Controllers::default(),
                 Controllers {
                     pressure: 0,
                     bend: 0,
                     wheel: 42,
+                    sustain: 0,
+                    expression: 0,
+                    last_cc: Some(ControlChange {
+                        channel: 0,
+                        cc: 1,
+                        value: 42,
+                    }),
                 },
             ]
         );
@@ -899,6 +1042,11 @@ mod tests {
                     velocity: 110,
                 },
                 NoteEvent::AllNotesOff,
+                NoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 1,
+                    value: 42,
+                },
             ]
         );
         let HeldNotesRead::Snapshot(after_resumed) = held.read() else {

@@ -230,7 +230,10 @@ fn handoff_preserves_history_and_ramps_to_new_targets_even_during_an_edit() {
     assert!(edited.can_retarget_parameters_from(old.as_ref()));
     edited.copy_history_from(old.as_ref());
     let runtime = edited.as_any().downcast_ref::<OverdriveRuntime>().unwrap();
-    assert_ne!(runtime.current, runtime.targets);
+    assert_ne!(
+        runtime.ramps.map(hex_dsp::LinearRamp::value),
+        runtime.ramps.map(hex_dsp::LinearRamp::target)
+    );
     edited.process_block(&mut [[0.2; 2]; 71], &EMPTY_DEVICE_RESOURCES);
     let mut replacement = prepared(&changed, 48_000).create_runtime();
     replacement.copy_history_from(edited.as_ref());
@@ -243,7 +246,10 @@ fn handoff_preserves_history_and_ramps_to_new_targets_even_during_an_edit() {
         .as_any()
         .downcast_ref::<OverdriveRuntime>()
         .unwrap();
-    assert_eq!(runtime.current, runtime.targets);
+    assert_eq!(
+        runtime.ramps.map(hex_dsp::LinearRamp::value),
+        runtime.ramps.map(hex_dsp::LinearRamp::target)
+    );
     assert!(
         !prepared(&s, 96_000)
             .create_runtime()

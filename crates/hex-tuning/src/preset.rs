@@ -1,13 +1,100 @@
-//! Bounded portable Freqs scale text codec; filesystem publication belongs to control workers.
+//! Bounded portable Freqs and Scala (.scl/.kbm) scale text codecs; filesystem
+//! publication belongs to control workers.
 use crate::{Invalid, MAX_DEGREES, Scale};
 use std::fmt::Write;
 
 pub const MAX_PRESET_BYTES: usize = 8192;
+pub const MAX_SCALA_BYTES: usize = 16_384;
+pub const MAX_KBM_MAP_SIZE: usize = 128;
+
+/// Default middle-C reference frequency (Hz) used when decoding a standalone `.scl`
+/// file without an accompanying `.kbm` keyboard mapping.
+pub const DEFAULT_SCALA_ROOT_KEY: u8 = 60;
+pub const DEFAULT_SCALA_ROOT_HZ: f64 = 261.625_565_300_598_6;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Preset {
     pub name: String,
     pub scale: Scale,
+}
+
+/// Validated Scala `.kbm` keyboard mapping specifying MIDI key layout and reference pitch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KeyboardMapping {
+    /// Size of repeating key map (`0` means direct 1:1 linear mapping over scale degrees).
+    pub map_size: usize,
+    /// Lowest MIDI key to map (`0..=127`).
+    pub first_key: u8,
+    /// Highest MIDI key to map (`first_key..=127`).
+    pub last_key: u8,
+    /// MIDI key where scale degree `0` begins (`0..=127`).
+    pub middle_note: u8,
+    /// MIDI key assigned `reference_hz` (`0..=127`).
+    pub reference_note: u8,
+    /// Reference frequency in Hz (`10.0..=20_000.0`).
+    pub reference_hz: f64,
+    /// Scale degree representing the formal octave (`0` means scale degree count).
+    pub formal_octave: usize,
+    /// Optional explicit key-to-degree entries (`len == map_size`; `None` for `'x'` unmapped).
+    pub entries: Vec<Option<usize>>,
+}
+
+impl KeyboardMapping {
+    /// Construct a linear `.kbm` mapping that round-trips `scale`'s exact root key,
+    /// reference frequency, and root degree.
+    pub fn from_scale(scale: Scale) -> Result<Self, Invalid> {
+        if !scale.valid() {
+            return Err(Invalid("invalid preset scale"));
+        }
+        let count = scale.count();
+        let root_key = scale.root_key();
+        let root_degree = scale.root_degree();
+        let middle_note = if usize::from(root_key) >= root_degree {
+            (usize::from(root_key) - root_degree) as u8
+        } else {
+            (usize::from(root_key) + count - root_degree) as u8
+        };
+        Ok(Self {
+            map_size: 0,
+            first_key: 0,
+            last_key: 127,
+            middle_note,
+            reference_note: root_key,
+            reference_hz: scale.root_hz(),
+            formal_octave: count,
+            entries: Vec::new(),
+        })
+    }
+
+    /// Resolve the root MIDI key, reference frequency, and root degree for a scale
+    /// with `scale_count` degrees.
+    pub fn resolve_reference(&self, scale_count: usize) -> Result<(u8, f64, usize), Invalid> {
+        if !(3..=MAX_DEGREES).contains(&scale_count) {
+            return Err(Invalid("scala scale degree count must be 3–48"));
+        }
+        if self.formal_octave != 0 && self.formal_octave != scale_count {
+            return Err(Invalid(
+                "scala kbm formal octave must be 0 or match scale degree count",
+            ));
+        }
+        let root_degree = if self.map_size == 0 {
+            (i32::from(self.reference_note) - i32::from(self.middle_note))
+                .rem_euclid(scale_count as i32) as usize
+        } else {
+            let offset = (i32::from(self.reference_note) - i32::from(self.middle_note))
+                .rem_euclid(self.map_size as i32) as usize;
+            let Some(Some(degree)) = self.entries.get(offset).copied() else {
+                return Err(Invalid("scala kbm reference key is unmapped"));
+            };
+            if degree >= scale_count {
+                return Err(Invalid(
+                    "scala kbm reference degree exceeds scale degree count",
+                ));
+            }
+            degree
+        };
+        Ok((self.reference_note, self.reference_hz, root_degree))
+    }
 }
 
 /// Validate library metadata without changing case or treating it as a filename.
@@ -89,6 +176,308 @@ pub fn decode(text: &str) -> Result<Preset, Invalid> {
     })
 }
 
+fn sanitize_scala_name(description: &str) -> String {
+    let trimmed = description.trim();
+    let mut out = String::new();
+    for ch in trimmed.chars() {
+        if ch.is_control() || matches!(ch, '/' | '\\' | ':') {
+            continue;
+        }
+        if out.len() + ch.len_utf8() > 48 {
+            break;
+        }
+        out.push(ch);
+    }
+    let cleaned = out.trim();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." || validate_name(cleaned).is_err() {
+        "imported scala".to_owned()
+    } else {
+        cleaned.to_owned()
+    }
+}
+
+fn parse_scala_pitch_cents(line: &str) -> Result<f64, Invalid> {
+    let token = line
+        .split_whitespace()
+        .next()
+        .ok_or(Invalid("scala pitch line is empty"))?;
+    if token.contains('.') {
+        let cents: f64 = token
+            .parse()
+            .map_err(|_| Invalid("invalid scala cents value"))?;
+        if !cents.is_finite() || cents <= 0.0 {
+            return Err(Invalid("scala cents value must be finite and positive"));
+        }
+        return Ok(cents);
+    }
+    if let Some((num_str, den_str)) = token.split_once('/') {
+        if den_str.contains('/')
+            || num_str.is_empty()
+            || den_str.is_empty()
+            || !num_str.bytes().all(|b| b.is_ascii_digit())
+            || !den_str.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(Invalid("invalid scala ratio"));
+        }
+        let num: u64 = num_str
+            .parse()
+            .map_err(|_| Invalid("invalid scala ratio numerator"))?;
+        let den: u64 = den_str
+            .parse()
+            .map_err(|_| Invalid("invalid scala ratio denominator"))?;
+        if num == 0 || den == 0 {
+            return Err(Invalid("scala ratio must be positive"));
+        }
+        let ratio = num as f64 / den as f64;
+        let cents = 1200.0 * ratio.log2();
+        if !cents.is_finite() || cents <= 0.0 {
+            return Err(Invalid("scala ratio must be greater than 1/1"));
+        }
+        return Ok(cents);
+    }
+    if !token.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(Invalid("invalid scala pitch token"));
+    }
+    let integer: u64 = token
+        .parse()
+        .map_err(|_| Invalid("invalid scala integer ratio"))?;
+    if integer <= 1 {
+        return Err(Invalid("scala integer ratio must be greater than 1"));
+    }
+    let cents = 1200.0 * (integer as f64).log2();
+    if !cents.is_finite() || cents <= 0.0 {
+        return Err(Invalid("scala integer ratio is out of range"));
+    }
+    Ok(cents)
+}
+
+fn format_scala_cents(cents: f32) -> String {
+    let mut s = format!("{cents}");
+    if !s.contains('.') {
+        s.push_str(".0");
+    }
+    s
+}
+
+/// Encode a validated scale into standard Scala `.scl` format.
+pub fn encode_scl(name: &str, scale: Scale) -> Result<String, Invalid> {
+    validate_name(name)?;
+    if !scale.valid() {
+        return Err(Invalid("invalid preset scale"));
+    }
+    let mut text = format!(
+        "! {name}.scl\n! Exported by hex\n{name}\n {}\n!\n",
+        scale.count()
+    );
+    let base = scale.cents()[0];
+    for &cent in scale.cents().iter().take(scale.count()).skip(1) {
+        let interval = cent - base;
+        writeln!(&mut text, " {}", format_scala_cents(interval))
+            .map_err(|_| Invalid("cannot encode scala scale"))?;
+    }
+    writeln!(&mut text, " {}", format_scala_cents(scale.period_cents()))
+        .map_err(|_| Invalid("cannot encode scala scale"))?;
+    if text.len() > MAX_SCALA_BYTES {
+        return Err(Invalid("encoded scala scale exceeds size limit"));
+    }
+    Ok(text)
+}
+
+/// Parse a bounded, strictly validated Scala `.scl` scale using the standard
+/// middle-C reference (`root_key = 60`, `root_hz = 261.6255653005986`, `root_degree = 0`).
+pub fn decode_scl(text: &str) -> Result<Preset, Invalid> {
+    decode_scl_with_reference(text, DEFAULT_SCALA_ROOT_KEY, DEFAULT_SCALA_ROOT_HZ, 0)
+}
+
+/// Parse a Scala `.scl` scale paired with a Scala `.kbm` keyboard mapping.
+pub fn decode_scl_with_kbm(scl: &str, kbm: &str) -> Result<Preset, Invalid> {
+    let mapping = decode_kbm(kbm)?;
+    let parsed = decode_scl(scl)?;
+    let (root_key, root_hz, root_degree) = mapping.resolve_reference(parsed.scale.count())?;
+    let mut scale = parsed.scale;
+    scale.set_reference(root_key, root_hz, root_degree)?;
+    Ok(Preset {
+        name: parsed.name,
+        scale,
+    })
+}
+
+fn decode_scl_with_reference(
+    text: &str,
+    root_key: u8,
+    root_hz: f64,
+    root_degree: usize,
+) -> Result<Preset, Invalid> {
+    if text.len() > MAX_SCALA_BYTES {
+        return Err(Invalid("scala file exceeds size limit"));
+    }
+    let mut lines = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('!'));
+    let description = lines
+        .next()
+        .ok_or(Invalid("scala description line is missing"))?;
+    let count_line = lines
+        .next()
+        .ok_or(Invalid("scala note count line is missing"))?;
+    let count: usize = count_line
+        .split_whitespace()
+        .next()
+        .ok_or(Invalid("scala note count is missing"))?
+        .parse()
+        .map_err(|_| Invalid("invalid scala note count"))?;
+    if !(3..=MAX_DEGREES).contains(&count) {
+        return Err(Invalid("scala note count must be 3–48"));
+    }
+    let mut cents = [0.0_f32; MAX_DEGREES];
+    for slot in cents.iter_mut().take(count).skip(1) {
+        let line = lines.next().ok_or(Invalid("scala pitch line is missing"))?;
+        *slot = parse_scala_pitch_cents(line)? as f32;
+    }
+    let period_line = lines.next().ok_or(Invalid("scala pitch line is missing"))?;
+    let period_cents = parse_scala_pitch_cents(period_line)? as f32;
+    if lines.any(|line| !line.trim().is_empty()) {
+        return Err(Invalid("unexpected data after scala scale"));
+    }
+    let scale = Scale::new(count, cents, root_key, root_hz, root_degree, period_cents)?;
+    Ok(Preset {
+        name: sanitize_scala_name(description),
+        scale,
+    })
+}
+
+/// Encode a validated scale's keyboard reference as a standard Scala `.kbm` mapping.
+pub fn encode_kbm(scale: Scale) -> Result<String, Invalid> {
+    let mapping = KeyboardMapping::from_scale(scale)?;
+    encode_keyboard_mapping(&mapping)
+}
+
+/// Encode a [`KeyboardMapping`] into standard Scala `.kbm` text format.
+pub fn encode_keyboard_mapping(mapping: &KeyboardMapping) -> Result<String, Invalid> {
+    if mapping.map_size > MAX_KBM_MAP_SIZE
+        || mapping.first_key > 127
+        || mapping.last_key > 127
+        || mapping.first_key > mapping.last_key
+        || mapping.middle_note > 127
+        || mapping.reference_note > 127
+        || !mapping.reference_hz.is_finite()
+        || !(10.0..=20_000.0).contains(&mapping.reference_hz)
+        || mapping.formal_octave > MAX_DEGREES
+        || mapping.entries.len() != mapping.map_size
+    {
+        return Err(Invalid("invalid scala kbm mapping"));
+    }
+    let mut text = format!(
+        "! Exported by hex\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        mapping.map_size,
+        mapping.first_key,
+        mapping.last_key,
+        mapping.middle_note,
+        mapping.reference_note,
+        mapping.reference_hz,
+        mapping.formal_octave,
+    );
+    for entry in &mapping.entries {
+        match entry {
+            Some(degree) if *degree < MAX_DEGREES => {
+                writeln!(&mut text, "{degree}")
+                    .map_err(|_| Invalid("cannot encode scala kbm entry"))?;
+            }
+            Some(_) => return Err(Invalid("scala kbm degree exceeds limit")),
+            None => {
+                writeln!(&mut text, "x").map_err(|_| Invalid("cannot encode scala kbm entry"))?;
+            }
+        }
+    }
+    if text.len() > MAX_SCALA_BYTES {
+        return Err(Invalid("encoded scala kbm exceeds size limit"));
+    }
+    Ok(text)
+}
+
+/// Parse a bounded, strictly validated Scala `.kbm` keyboard mapping file.
+pub fn decode_kbm(text: &str) -> Result<KeyboardMapping, Invalid> {
+    if text.len() > MAX_SCALA_BYTES {
+        return Err(Invalid("scala kbm file exceeds size limit"));
+    }
+    let mut lines = text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('!'));
+    fn next_token<'a>(lines: &mut impl Iterator<Item = &'a str>) -> Result<&'a str, Invalid> {
+        lines
+            .next()
+            .and_then(|line| line.split_whitespace().next())
+            .ok_or(Invalid("scala kbm file is incomplete"))
+    }
+    let map_size: usize = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm map size"))?;
+    if map_size > MAX_KBM_MAP_SIZE {
+        return Err(Invalid("scala kbm map size exceeds 128"));
+    }
+    let first_key: u8 = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm first key"))?;
+    let last_key: u8 = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm last key"))?;
+    let middle_note: u8 = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm middle note"))?;
+    let reference_note: u8 = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm reference note"))?;
+    let reference_hz: f64 = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm reference frequency"))?;
+    let formal_octave: usize = next_token(&mut lines)?
+        .parse()
+        .map_err(|_| Invalid("invalid scala kbm formal octave"))?;
+    if first_key > 127
+        || last_key > 127
+        || first_key > last_key
+        || middle_note > 127
+        || reference_note > 127
+        || !reference_hz.is_finite()
+        || !(10.0..=20_000.0).contains(&reference_hz)
+        || formal_octave > MAX_DEGREES
+    {
+        return Err(Invalid("scala kbm header value is out of range"));
+    }
+    let mut entries = Vec::new();
+    if entries.try_reserve_exact(map_size).is_err() {
+        return Err(Invalid("cannot reserve scala kbm entries"));
+    }
+    for _ in 0..map_size {
+        let token = next_token(&mut lines)?;
+        if token.eq_ignore_ascii_case("x") {
+            entries.push(None);
+        } else {
+            let degree: usize = token
+                .parse()
+                .map_err(|_| Invalid("invalid scala kbm degree entry"))?;
+            if degree >= MAX_DEGREES {
+                return Err(Invalid("scala kbm degree entry exceeds 47"));
+            }
+            entries.push(Some(degree));
+        }
+    }
+    if lines.next().is_some() {
+        return Err(Invalid("unexpected data after scala kbm mapping"));
+    }
+    Ok(KeyboardMapping {
+        map_size,
+        first_key,
+        last_key,
+        middle_note,
+        reference_note,
+        reference_hz,
+        formal_octave,
+        entries,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,5 +536,124 @@ mod tests {
         assert!(decode(&"x".repeat(MAX_PRESET_BYTES + 1)).is_err());
         assert!(encode("../scale", Scale::default()).is_err());
         assert!(decode(&text.replace("\n7\n", "\n18446744073709551615\n")).is_err());
+    }
+
+    #[test]
+    fn scala_scl_and_kbm_round_trip_cents_ratios_comments_and_edge_degrees() {
+        // 1. Just major via ratios, cents, comments, and inline comments.
+        let just_scl = "\
+! just_major.scl
+! 5-limit Ptolemy intense diatonic
+Just Major 5-Limit
+ 7
+!
+ 9/8   major second
+ 5/4   major third
+ 4/3   perfect fourth
+ 3/2   perfect fifth
+ 5/3   major sixth
+ 15/8  major seventh
+ 2     octave
+";
+        let decoded = decode_scl(just_scl).unwrap();
+        assert_eq!(decoded.name, "Just Major 5-Limit");
+        assert_eq!(decoded.scale.count(), 7);
+        assert!((decoded.scale.period_cents() - 1200.0).abs() < 1e-4);
+        assert!((decoded.scale.cents()[4] - (1200.0 * 1.5_f64.log2()) as f32).abs() < 1e-4);
+        assert_eq!(decoded.scale.root_key(), DEFAULT_SCALA_ROOT_KEY);
+        assert_eq!(decoded.scale.root_hz(), DEFAULT_SCALA_ROOT_HZ);
+
+        // 2. Round-trip .scl + .kbm across edge degree counts (3, 12, 19, 48) and
+        //    non-zero root degrees including root_key < root_degree.
+        for (count, root_key, root_hz, root_degree, period) in [
+            (3_usize, 60_u8, 220.0_f64, 0_usize, 1200.0_f32),
+            (12, 69, 440.0, 9, 1200.0),
+            (13, 60, 261.625_565_300_598_6, 2, 1901.955), // Bohlen-Pierce 3:1 period
+            (48, 2, 110.0, 5, 1200.0),
+        ] {
+            let mut cents = [0.0_f32; MAX_DEGREES];
+            for (i, cent) in cents.iter_mut().enumerate().take(count) {
+                *cent = i as f32 * period / count as f32;
+            }
+            let scale = Scale::new(count, cents, root_key, root_hz, root_degree, period).unwrap();
+            let scl = encode_scl("Edge Scale", scale).unwrap();
+            let kbm = encode_kbm(scale).unwrap();
+            let restored = decode_scl_with_kbm(&scl, &kbm).unwrap();
+            assert_eq!(restored.name, "Edge Scale");
+            assert_eq!(restored.scale.count(), scale.count());
+            assert_eq!(restored.scale.root_key(), scale.root_key());
+            assert_eq!(restored.scale.root_degree(), scale.root_degree());
+            assert_eq!(
+                restored.scale.root_hz().to_bits(),
+                scale.root_hz().to_bits()
+            );
+            assert!((restored.scale.period_cents() - scale.period_cents()).abs() < 1e-4);
+            for i in 0..count {
+                assert!((restored.scale.cents()[i] - scale.cents()[i]).abs() < 1e-4);
+            }
+        }
+
+        // 3. Explicit non-linear .kbm mapping with unmapped 'x' keys and comments.
+        let explicit_kbm = "\
+! Custom 7-key keyboard map
+7
+21
+108
+60
+69
+432.0
+7
+0
+1
+x
+2
+3
+4
+5
+";
+        let mapping = decode_kbm(explicit_kbm).unwrap();
+        assert_eq!(mapping.map_size, 7);
+        assert_eq!(mapping.entries[2], None);
+        assert_eq!(mapping.reference_note, 69);
+        assert_eq!(mapping.reference_hz, 432.0);
+        // (69 - 60) % 7 = 2 -> unmapped 'x', so applying to a 7-note scale rejects cleanly.
+        assert!(decode_scl_with_kbm(just_scl, explicit_kbm).is_err());
+
+        // Map reference_note=67 -> (67 - 60) % 7 = 0 -> degree 0.
+        let mapped_kbm = explicit_kbm.replace("\n69\n", "\n67\n");
+        let combined = decode_scl_with_kbm(just_scl, &mapped_kbm).unwrap();
+        assert_eq!(combined.scale.root_key(), 67);
+        assert_eq!(combined.scale.root_hz(), 432.0);
+        assert_eq!(combined.scale.root_degree(), 0);
+        let reencoded = encode_keyboard_mapping(&decode_kbm(&mapped_kbm).unwrap()).unwrap();
+        assert_eq!(
+            decode_kbm(&reencoded).unwrap(),
+            decode_kbm(&mapped_kbm).unwrap()
+        );
+    }
+
+    #[test]
+    fn scala_decoders_reject_malformed_out_of_range_and_oversized_inputs() {
+        // Oversized inputs
+        assert!(decode_scl(&"!".repeat(MAX_SCALA_BYTES + 1)).is_err());
+        assert!(decode_kbm(&"!".repeat(MAX_SCALA_BYTES + 1)).is_err());
+        // Degree counts outside 3..=48
+        assert!(decode_scl("too small\n2\n600.0\n1200.0\n").is_err());
+        assert!(decode_scl("too large\n49\n").is_err());
+        // Zero/negative/malformed ratios & nonfinite cents
+        assert!(decode_scl("bad\n3\n0/1\n700.0\n1200.0\n").is_err());
+        assert!(decode_scl("bad\n3\n3/0\n700.0\n1200.0\n").is_err());
+        assert!(decode_scl("bad\n3\n-100.0\n700.0\n1200.0\n").is_err());
+        assert!(decode_scl("bad\n3\nNaN.\n700.0\n1200.0\n").is_err());
+        assert!(decode_scl("bad\n3\n1/2/3\n700.0\n1200.0\n").is_err());
+        // Non-ascending degrees & trailing garbage
+        assert!(decode_scl("bad\n3\n700.0\n500.0\n1200.0\n").is_err());
+        assert!(decode_scl("bad\n3\n400.0\n800.0\n1200.0\nextra\n").is_err());
+        // Truncated or out-of-range .kbm
+        assert!(decode_kbm("0\n0\n127\n").is_err());
+        assert!(decode_kbm("129\n0\n127\n60\n69\n440.0\n12\n").is_err());
+        assert!(decode_kbm("0\n100\n50\n60\n69\n440.0\n12\n").is_err());
+        assert!(decode_kbm("0\n0\n127\n60\n69\nNaN\n12\n").is_err());
+        assert!(decode_kbm("0\n0\n127\n60\n69\n440.0\n12\nextra\n").is_err());
     }
 }

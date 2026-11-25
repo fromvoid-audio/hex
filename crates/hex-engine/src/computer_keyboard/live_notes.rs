@@ -55,6 +55,8 @@ pub enum LiveNoteEvent {
     /// Polyphonic pressure for the currently held note on one channel and key.
     /// A later NoteOn on the same key creates a new occurrence.
     PolyPressure { channel: u8, pitch: u8, value: u8 },
+    /// Channel Control Change (including CC64 Sustain, CC11 Expression, and general CCs).
+    ControlChange { channel: u8, cc: u8, value: u8 },
     /// Release every live note owned by this input.
     #[default]
     AllNotesOff,
@@ -83,6 +85,11 @@ impl LiveNoteEvent {
                 pitch,
                 value,
             } if channel <= 15 && pitch <= 127 && value <= 127 => (4_u64, channel, pitch, value),
+            Self::ControlChange { channel, cc, value }
+                if channel <= 15 && cc <= 127 && value <= 127 =>
+            {
+                (5_u64, channel, cc, value)
+            }
             _ => return None,
         };
         Some(
@@ -115,6 +122,11 @@ impl LiveNoteEvent {
                 pitch,
                 value: velocity,
             }),
+            5 => Some(Self::ControlChange {
+                channel,
+                cc: pitch,
+                value: velocity,
+            }),
             _ => None,
         }
     }
@@ -139,6 +151,7 @@ pub enum LiveNotePublishError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LiveNoteBatch {
     pub(crate) events: [LiveNoteEvent; LIVE_NOTE_BATCH_CAPACITY],
+    pub(crate) timestamps: [u64; LIVE_NOTE_BATCH_CAPACITY],
     pub(crate) len: usize,
     pub(crate) activation: LiveNoteActivation,
     start: u64,
@@ -148,6 +161,11 @@ pub struct LiveNoteBatch {
 impl LiveNoteBatch {
     pub(crate) fn events(&self) -> &[LiveNoteEvent] {
         &self.events[..self.len]
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn timestamps(&self) -> &[u64] {
+        &self.timestamps[..self.len]
     }
 
     #[cfg(test)]
@@ -167,6 +185,7 @@ impl LiveNoteBatch {
 #[derive(Debug)]
 pub struct LiveNoteInput {
     slots: [AtomicU64; LIVE_NOTE_INPUT_CAPACITY],
+    timestamps: [AtomicU64; LIVE_NOTE_INPUT_CAPACITY],
     tail: AtomicU64,
     head: AtomicU64,
     writer: AtomicU8,
@@ -178,6 +197,7 @@ impl Default for LiveNoteInput {
     fn default() -> Self {
         Self {
             slots: std::array::from_fn(|_| AtomicU64::new(0)),
+            timestamps: std::array::from_fn(|_| AtomicU64::new(0)),
             tail: AtomicU64::new(0),
             head: AtomicU64::new(0),
             writer: AtomicU8::new(WRITER_IDLE),
@@ -373,6 +393,16 @@ impl LiveNoteInput {
         activation: LiveNoteActivation,
         event: LiveNoteEvent,
     ) -> Result<(), LiveNotePublishError> {
+        self.publish_at(activation, event, 0)
+    }
+
+    /// Append one event with its monotonic hardware nanosecond timestamp.
+    pub fn publish_at(
+        &self,
+        activation: LiveNoteActivation,
+        event: LiveNoteEvent,
+        timestamp_ns: u64,
+    ) -> Result<(), LiveNotePublishError> {
         self.require_active(activation)?;
         let Some(word) = event.encode() else {
             return Err(self.fault_activation(activation, LiveNotePublishError::InvalidEvent));
@@ -392,7 +422,7 @@ impl LiveNoteInput {
             }
             return Err(self.fault_activation(activation, LiveNotePublishError::ConcurrentProducer));
         }
-        let result = self.publish_locked(activation, word);
+        let result = self.publish_locked(activation, word, timestamp_ns);
         self.writer.store(WRITER_IDLE, Ordering::Release);
         result
     }
@@ -401,6 +431,7 @@ impl LiveNoteInput {
         &self,
         activation: LiveNoteActivation,
         word: u64,
+        timestamp_ns: u64,
     ) -> Result<(), LiveNotePublishError> {
         self.require_active(activation)?;
         let tail = self.tail.load(Ordering::Relaxed);
@@ -421,6 +452,7 @@ impl LiveNoteInput {
         // A speculative old reader may overlap slot reuse after rearm. Reading
         // this replacement with Acquire must also observe the new activation;
         // the tail release alone cannot fence that old reader's earlier tail.
+        self.timestamps[index].store(timestamp_ns, Ordering::Release);
         self.slots[index].store(word, Ordering::Release);
         self.require_active(activation)?;
         self.tail.store(next, Ordering::Release);
@@ -499,6 +531,7 @@ impl LiveNoteInput {
         };
         let mut batch = LiveNoteBatch {
             events: [LiveNoteEvent::AllNotesOff; LIVE_NOTE_BATCH_CAPACITY],
+            timestamps: [0; LIVE_NOTE_BATCH_CAPACITY],
             len,
             activation,
             start,
@@ -507,6 +540,7 @@ impl LiveNoteInput {
         for offset in 0..len {
             let index = ((start + offset as u64) % LIVE_NOTE_INPUT_CAPACITY as u64) as usize;
             let word = self.slots[index].load(Ordering::Acquire);
+            let timestamp_ns = self.timestamps[index].load(Ordering::Acquire);
             self.require_active(activation)?;
             let Some(event) = LiveNoteEvent::decode(word) else {
                 return Err(
@@ -514,6 +548,7 @@ impl LiveNoteInput {
                 );
             };
             batch.events[offset] = event;
+            batch.timestamps[offset] = timestamp_ns;
         }
         self.require_active(activation)?;
         Ok(batch)
@@ -833,5 +868,89 @@ mod tests {
             Err(LiveNotePublishError::Retired)
         );
         assert!(input.is_cancelled());
+    }
+
+    #[test]
+    fn control_change_and_monotonic_timestamps_survive_burst_snapshot_and_commit() {
+        let input = LiveNoteInput::default();
+        let token = input.current_activation_on_control().unwrap();
+        let events = [
+            (
+                LiveNoteEvent::NoteOn {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 100,
+                },
+                1_000_000_u64,
+            ),
+            (
+                LiveNoteEvent::ControlChange {
+                    channel: 2,
+                    cc: 64,
+                    value: 127,
+                },
+                1_500_000_u64,
+            ),
+            (
+                LiveNoteEvent::ControlChange {
+                    channel: 2,
+                    cc: 11,
+                    value: 92,
+                },
+                2_000_000_u64,
+            ),
+            (
+                LiveNoteEvent::ControlChange {
+                    channel: 2,
+                    cc: 74,
+                    value: 64,
+                },
+                2_000_000_u64,
+            ),
+            (
+                LiveNoteEvent::NoteOff {
+                    channel: 2,
+                    pitch: 60,
+                    velocity: 0,
+                },
+                2_500_000_u64,
+            ),
+            (
+                LiveNoteEvent::ControlChange {
+                    channel: 2,
+                    cc: 64,
+                    value: 0,
+                },
+                3_000_000_u64,
+            ),
+        ];
+        for (event, ts) in events {
+            input.publish_at(token, event, ts).unwrap();
+        }
+        let batch = input.snapshot().unwrap();
+        assert_eq!(batch.events().len(), events.len());
+        assert_eq!(
+            batch.timestamps(),
+            &[
+                1_000_000, 1_500_000, 2_000_000, 2_000_000, 2_500_000, 3_000_000
+            ]
+        );
+        assert!(batch.timestamps().windows(2).all(|w| w[0] <= w[1]));
+        input.commit(&batch, events.len()).unwrap();
+        assert!(input.snapshot().unwrap().is_empty());
+
+        // Out-of-range ControlChange faults the activation cleanly.
+        assert_eq!(
+            input.publish_at(
+                token,
+                LiveNoteEvent::ControlChange {
+                    channel: 2,
+                    cc: 128,
+                    value: 0,
+                },
+                4_000_000,
+            ),
+            Err(LiveNotePublishError::InvalidEvent)
+        );
     }
 }

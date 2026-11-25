@@ -38,6 +38,7 @@ struct HeaderKey {
     resident_layout: bool,
     show_track_latency: bool,
     send_menu_open: bool,
+    displayed_gain_bits: Option<u32>,
 }
 
 #[derive(Default)]
@@ -267,6 +268,14 @@ impl EditorView {
             resident_layout: self.document_audio_mode == hex_session::DocumentAudioMode::Resident,
             show_track_latency: self.show_track_latency,
             send_menu_open: self.send_menu_track == Some(track_id),
+            displayed_gain_bits: self
+                .track_gain_controls
+                .displayed_track_gain(self.project_generation, track_id)
+                .or_else(|| {
+                    self.device_gesture
+                        .preview_track_gain(self.project_generation, track_id)
+                })
+                .map(f32::to_bits),
         };
         let parent = cx.weak_entity();
         let fresh = !self.track_header_cache_allowed_for(track_id, cx);

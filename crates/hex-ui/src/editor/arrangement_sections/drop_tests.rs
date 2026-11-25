@@ -180,6 +180,7 @@ fn queued_tempo_completion_keeps_drop_feedback_frozen_until_exact_refusal(cx: &m
             layout: None,
             receipt,
             selection_intent_epoch: v.selection_intent_epoch,
+            deferred_submission: false,
         });
         v.worker_requests_pending = 2;
     });

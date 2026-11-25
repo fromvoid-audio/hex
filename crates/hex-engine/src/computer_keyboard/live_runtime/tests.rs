@@ -513,3 +513,81 @@ fn reusable_chord_refuses_all_onsets_and_preserves_hardware_when_one_pitch_or_sl
         );
     }
 }
+
+#[test]
+fn sustain_pedal_holds_native_instrument_note_across_note_off_until_pedal_release() {
+    let (project, track) = fixture();
+    let sustained_input = input();
+    let held_oracle_input = input();
+    let mut sustained = playback(&project, track, &sustained_input);
+    let mut held_oracle = playback(&project, track, &held_oracle_input);
+
+    let live = sustained_input.live_notes().unwrap();
+    let token = live.current_activation_on_control().unwrap();
+    let oracle_live = held_oracle_input.live_notes().unwrap();
+    let oracle_token = oracle_live.current_activation_on_control().unwrap();
+
+    // Start note 60 on ch 3 on both; press CC64 sustain on ch 3, send CC11 expression, and release key 60 on tested.
+    live.publish_at(token, on(60, 100), 1_000).unwrap();
+    live.publish_at(
+        token,
+        LiveNoteEvent::ControlChange {
+            channel: 3,
+            cc: 64,
+            value: 127,
+        },
+        2_000,
+    )
+    .unwrap();
+    live.publish_at(
+        token,
+        LiveNoteEvent::ControlChange {
+            channel: 3,
+            cc: 11,
+            value: 96,
+        },
+        3_000,
+    )
+    .unwrap();
+    live.publish_at(token, off(60), 4_000).unwrap();
+    oracle_live
+        .publish_at(oracle_token, on(60, 100), 1_000)
+        .unwrap();
+
+    // While CC64 sustain is down, NoteOff(60) must NOT release the voice:
+    // rendered PCM matches the continuously held oracle note.
+    let mut actual = [[0.0; 2]; 512];
+    let mut expected = [[0.0; 2]; 512];
+    sustained.render(&mut actual).unwrap();
+    held_oracle.render(&mut expected).unwrap();
+    assert_eq!(
+        actual, expected,
+        "CC64 sustain must hold sounding native instrument voice across NoteOff"
+    );
+    assert!(actual.iter().flatten().any(|sample| *sample != 0.0));
+
+    // Release CC64 sustain pedal on ch 3: voice now releases and decays to silence.
+    live.publish_at(
+        token,
+        LiveNoteEvent::ControlChange {
+            channel: 3,
+            cc: 64,
+            value: 0,
+        },
+        5_000,
+    )
+    .unwrap();
+    let mut tail = [[0.0; 2]; 512];
+    let mut decayed = false;
+    for _ in 0..200 {
+        sustained.render(&mut tail).unwrap();
+        if tail.iter().flatten().all(|sample| *sample == 0.0) {
+            decayed = true;
+            break;
+        }
+    }
+    assert!(
+        decayed,
+        "releasing CC64 sustain pedal must release the held native voice to silence"
+    );
+}

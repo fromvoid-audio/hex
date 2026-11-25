@@ -44,12 +44,8 @@ impl Decimator {
             let v2 = state[1] + G * v1;
             state[0] = 2.0 * v1 - state[0];
             state[1] = 2.0 * v2 - state[1];
-            if state[0].abs() < 1e-30 {
-                state[0] = 0.0
-            }
-            if state[1].abs() < 1e-30 {
-                state[1] = 0.0
-            }
+            state[0] = hex_dsp::flush_below(state[0], hex_dsp::POWER_FLOOR);
+            state[1] = hex_dsp::flush_below(state[1], hex_dsp::POWER_FLOOR);
             value = v2;
         }
         value as f32

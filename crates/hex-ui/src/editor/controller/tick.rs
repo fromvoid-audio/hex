@@ -262,6 +262,7 @@ impl EditorView {
         if !self.edit_pending() {
             self.midi_step.cancel_pending();
         }
+        visible_change |= self.submit_deferred_clip_move();
         visible_change |= self.submit_queued_section();
         visible_change |= self.drain_pending_browser_insertion(cx);
         visible_change |= self.poll_editor_audio_events(cx);

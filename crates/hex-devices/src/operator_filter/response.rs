@@ -4,21 +4,7 @@ use super::Prepared;
 impl Prepared {
     /// Authored preparation has binary wet/cascade switches, unlike a live ramp.
     pub(crate) fn magnitude_at_hz(self, frequency: f32) -> f32 {
-        let frame = self.frame;
-        if frame.wet == 0.0 {
-            return 1.0;
-        }
-        let s =
-            (std::f64::consts::PI * f64::from(frequency) / f64::from(self.rate)).tan() / frame.g;
-        let [low, band, high] = frame.weights;
-        let numerator = (low - high * s * s).powi(2) + (band * s).powi(2);
-        let denominator = (1.0 - s * s).powi(2) + (frame.k * s).powi(2);
-        let squared = numerator / denominator;
-        if frame.cascade == 0.0 {
-            squared.sqrt() as f32
-        } else {
-            squared as f32
-        }
+        self.frame.magnitude_at_hz(f64::from(frequency), self.rate) as f32
     }
 }
 

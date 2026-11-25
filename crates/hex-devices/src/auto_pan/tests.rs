@@ -254,7 +254,7 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("new runtime");
-    assert_eq!(target_pan.dsp.amount.remaining, 40);
+    assert_eq!(target_pan.dsp.amount.remaining(), 40);
 
     let mut first = [[1.0, 1.0]; 10];
     target.process_block(&mut first, &hex_lattice::EMPTY_DEVICE_RESOURCES);
@@ -262,7 +262,7 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(in_flight.dsp.amount.remaining, 30);
+    assert_eq!(in_flight.dsp.amount.remaining(), 30);
     let transferred = runtime(&edit, 8_000);
     let mut same = transferred;
     same.copy_history_from(target.as_ref());
@@ -271,11 +271,11 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
     assert_eq!(same_state.dsp.phase_cycles, in_flight.dsp.phase_cycles);
-    assert_eq!(same_state.dsp.amount.current, in_flight.dsp.amount.current);
-    assert_eq!(same_state.dsp.amount.step, in_flight.dsp.amount.step);
+    assert_eq!(same_state.dsp.amount.value(), in_flight.dsp.amount.value());
+    assert_eq!(same_state.dsp.amount.step(), in_flight.dsp.amount.step());
     assert_eq!(
-        same_state.dsp.amount.remaining,
-        in_flight.dsp.amount.remaining
+        same_state.dsp.amount.remaining(),
+        in_flight.dsp.amount.remaining()
     );
 
     let second_edit = patch(&edit, parameter::RATE, 2.0);
@@ -286,11 +286,11 @@ fn compatible_transfer_preserves_phase_and_unchanged_ramps_while_retargeting_cha
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
     assert_eq!(
-        retargeted.dsp.amount.remaining,
-        in_flight.dsp.amount.remaining
+        retargeted.dsp.amount.remaining(),
+        in_flight.dsp.amount.remaining()
     );
-    assert_eq!(retargeted.dsp.amount.step, in_flight.dsp.amount.step);
-    assert_eq!(retargeted.dsp.rate_hz.remaining, 40);
+    assert_eq!(retargeted.dsp.amount.step(), in_flight.dsp.amount.step());
+    assert_eq!(retargeted.dsp.rate_hz.remaining(), 40);
     assert_ne!(retargeted.dsp.phase_cycles, old_pan.dsp.phase_cycles);
 
     let phase_tie = shortest_degrees(0.0, 180.0);
@@ -315,16 +315,16 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(ramp.dsp.amount.remaining, 1);
-    assert!((ramp.dsp.amount.current - (0.5 + 0.5 * 39.0 / 40.0)).abs() < 1.0e-14);
+    assert_eq!(ramp.dsp.amount.remaining(), 1);
+    assert!((ramp.dsp.amount.value() - (0.5 + 0.5 * 39.0 / 40.0)).abs() < 1.0e-14);
     let mut final_ramp_frame = [[1.0, 1.0]];
     edited.process_block(&mut final_ramp_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let ramp = edited
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(ramp.dsp.amount.current, 1.0);
-    assert_eq!(ramp.dsp.amount.remaining, 0);
+    assert_eq!(ramp.dsp.amount.value(), 1.0);
+    assert_eq!(ramp.dsp.amount.remaining(), 0);
     let mut held_frame = [[1.0, 1.0]];
     edited.process_block(&mut held_frame, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(
@@ -334,7 +334,7 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
             .expect("runtime")
             .dsp
             .amount
-            .current,
+            .value(),
         1.0
     );
 
@@ -348,8 +348,8 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert_eq!(rate_state.dsp.rate_hz.current, 2.0);
-    assert_eq!(rate_state.dsp.rate_hz.remaining, 0);
+    assert_eq!(rate_state.dsp.rate_hz.value(), 2.0);
+    assert_eq!(rate_state.dsp.rate_hz.remaining(), 0);
     assert!((rate_state.dsp.phase_cycles - 60.5 / 8_000.0).abs() < 1.0e-14);
     let phase = rate_state.dsp.phase_cycles;
     let mut after_rate_ramp = [[1.0, 1.0]];
@@ -367,8 +367,8 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert!((phase.dsp.right_phase_degrees.current - 270.0).abs() < 1.0e-12);
-    assert_eq!(phase.dsp.right_phase_degrees.remaining, 20);
+    assert!((phase.dsp.right_phase_degrees.value() - 270.0).abs() < 1.0e-12);
+    assert_eq!(phase.dsp.right_phase_degrees.remaining(), 20);
     let phase_at_sample_20 = 19.0 / 8_000.0;
     let expected_lfo =
         (1.0 + (std::f64::consts::TAU * (phase_at_sample_20 + 270.0 / 360.0)).sin()) * 0.5;
@@ -384,8 +384,8 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .as_any()
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
-    assert!((retargeted.dsp.right_phase_degrees.current - 274.5).abs() < 1.0e-12);
-    assert_eq!(retargeted.dsp.right_phase_degrees.remaining, 39);
+    assert!((retargeted.dsp.right_phase_degrees.value() - 274.5).abs() < 1.0e-12);
+    assert_eq!(retargeted.dsp.right_phase_degrees.remaining(), 39);
 
     // 360 and 0 are equivalent targets, so an unrelated in-flight phase ramp
     // must be inherited unchanged instead of restarted.
@@ -401,16 +401,16 @@ fn edits_reach_targets_on_exactly_five_milliseconds_and_phase_retargets_by_short
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
     assert_eq!(
-        equivalent.dsp.right_phase_degrees.current,
-        in_flight.dsp.right_phase_degrees.current
+        equivalent.dsp.right_phase_degrees.value(),
+        in_flight.dsp.right_phase_degrees.value()
     );
     assert_eq!(
-        equivalent.dsp.right_phase_degrees.step,
-        in_flight.dsp.right_phase_degrees.step
+        equivalent.dsp.right_phase_degrees.step(),
+        in_flight.dsp.right_phase_degrees.step()
     );
     assert_eq!(
-        equivalent.dsp.right_phase_degrees.remaining,
-        in_flight.dsp.right_phase_degrees.remaining
+        equivalent.dsp.right_phase_degrees.remaining(),
+        in_flight.dsp.right_phase_degrees.remaining()
     );
 }
 
@@ -437,9 +437,9 @@ fn reset_clears_phase_and_ramps_and_360_degrees_matches_zero() {
         .downcast_ref::<AutoPanRuntime>()
         .expect("runtime");
     assert_eq!(candidate.dsp.phase_cycles, 0.0);
-    assert_eq!(candidate.dsp.amount.current, 1.0);
-    assert_eq!(candidate.dsp.amount.target, 1.0);
-    assert_eq!(candidate.dsp.amount.remaining, 0);
+    assert_eq!(candidate.dsp.amount.value(), 1.0);
+    assert_eq!(candidate.dsp.amount.target(), 1.0);
+    assert_eq!(candidate.dsp.amount.remaining(), 0);
     source.reset();
 }
 
@@ -620,7 +620,13 @@ fn shape_changes_crossfade_independent_steady_streams_without_clock_reset_or_blo
             let state = actual.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
             let expected_phase = ((count + 17) as f64 * 20.0 / f64::from(rate)).rem_euclid(1.0);
             assert!((state.dsp.phase_cycles - expected_phase).abs() < 1.0e-12);
-            assert!(state.dsp.waveform_weights.iter().all(|w| w.remaining == 0));
+            assert!(
+                state
+                    .dsp
+                    .waveform_weights
+                    .iter()
+                    .all(|w| w.remaining() == 0)
+            );
             assert_eq!(
                 source
                     .as_any()
@@ -725,12 +731,12 @@ fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
     let after = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
     assert_eq!(after.dsp.phase_cycles, before.dsp.phase_cycles);
     assert_eq!(
-        after.dsp.waveform_weights.map(|w| w.current),
-        before.dsp.waveform_weights.map(|w| w.current)
+        after.dsp.waveform_weights.map(|w| w.value()),
+        before.dsp.waveform_weights.map(|w| w.value())
     );
     rapid.process_block(&mut [[1.0, 1.0]; 40], &hex_lattice::EMPTY_DEVICE_RESOURCES);
     let settled = rapid.as_any().downcast_ref::<AutoPanRuntime>().unwrap();
-    assert_eq!(settled.dsp.waveform_weights[1].current, 1.0);
+    assert_eq!(settled.dsp.waveform_weights[1].value(), 1.0);
 }
 
 #[test]

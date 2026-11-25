@@ -47,7 +47,6 @@ impl Shaper for Tanh {
 pub const OVERDRIVE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.overdrive");
 pub const OVERDRIVE_STATE_VERSION: u32 = 1;
 const STATE_BYTES: usize = 24;
-const FLOOR: f64 = 1.0e-20;
 
 pub mod parameter {
     use hex_lattice_contract::ParameterId;
@@ -288,7 +287,7 @@ fn validate_rate(rate: u32) -> Result<(), DeviceContractError> {
     Ok(())
 }
 fn pole(hz: f64, rate: f64) -> f64 {
-    (-std::f64::consts::TAU * hz / rate).exp()
+    hex_dsp::frequency_pole(hz, rate).unwrap_or(0.0)
 }
 fn band_poles(settings: Settings, rate: u32) -> [f64; 2] {
     let rate = f64::from(rate);
@@ -410,15 +409,12 @@ impl PreparedNativeProcessor for PreparedOverdrive {
         let runtime = OverdriveRuntime {
             base_targets: self.targets,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
-            targets: self.targets,
-            current: self.targets,
-            step: [0.0; 6],
-            remaining: 0,
+            ramps: self.targets.map(hex_dsp::LinearRamp::settled),
             rate: self.rate,
             channels: [Channel::default(); 2],
             envelope: [0.0; 2],
-            attack: (-1.0 / (0.001 * f64::from(self.rate))).exp(),
-            release: (-1.0 / (0.080 * f64::from(self.rate))).exp(),
+            attack: hex_dsp::one_pole_pole(self.rate, 0.001).unwrap_or(0.0),
+            release: hex_dsp::one_pole_pole(self.rate, 0.080).unwrap_or(0.0),
             kernel: self.kernel,
             delay: [[0.0; 3]; LATENCY_FRAMES],
             delay_index: 0,
@@ -445,7 +441,7 @@ struct Channel {
     tone: f64,
 }
 fn quiet(value: f64) -> f64 {
-    if value.abs() < FLOOR { 0.0 } else { value }
+    hex_dsp::flush_quiet(value)
 }
 fn lowpass(input: f64, state: &mut f64, pole: f64) -> f64 {
     *state = quiet(input + pole * (*state - input));
@@ -472,10 +468,7 @@ impl Channel {
 pub struct OverdriveRuntime {
     base_targets: [f64; 6],
     controls: crate::parameter_binding::Controls<Settings, 6>,
-    targets: [f64; 6],
-    current: [f64; 6],
-    step: [f64; 6],
-    remaining: u32,
+    ramps: [hex_dsp::LinearRamp; 6],
     rate: u32,
     channels: [Channel; 2],
     envelope: [f64; 2],
@@ -495,15 +488,9 @@ impl OverdriveRuntime {
         self.delay_index = 0;
     }
     fn frame(&mut self, frame: &mut StereoFrame) {
-        if self.remaining > 0 {
-            self.remaining -= 1;
-            for i in 0..6 {
-                self.current[i] = if self.remaining == 0 {
-                    self.targets[i]
-                } else {
-                    self.current[i] + self.step[i]
-                };
-            }
+        let mut current = [0.0; 6];
+        for (slot, ramp) in current.iter_mut().zip(&mut self.ramps) {
+            *slot = ramp.advance();
         }
         // Reject poisoned input before it can enter recursive histories.
         if !frame.iter().all(|s| s.is_finite()) {
@@ -524,7 +511,7 @@ impl OverdriveRuntime {
         } else {
             self.silent_frames = 0;
         }
-        let [hp, lp, drive, tone, dynamics, mix] = self.current;
+        let [hp, lp, drive, tone, dynamics, mix] = current;
         let input = frame.map(f64::from);
         let mut wet = [0.0; 2];
         let mut input_peak = 0.0_f64;
@@ -549,7 +536,7 @@ impl OverdriveRuntime {
             };
             *envelope = quiet(peak + p * (*envelope - peak));
         }
-        let restore = if self.envelope[1] > FLOOR {
+        let restore = if self.envelope[1] > hex_dsp::QUIET_FLOOR {
             (self.envelope[0] / self.envelope[1]).clamp(0.0, 4.0)
         } else {
             1.0
@@ -578,11 +565,8 @@ impl NativeProcessorRuntime for OverdriveRuntime {
     }
     fn reset(&mut self) {
         self.controls.reset();
-        self.targets = self.base_targets;
         self.clear_history();
-        self.current = self.targets;
-        self.step = [0.0; 6];
-        self.remaining = 0;
+        self.ramps = self.base_targets.map(hex_dsp::LinearRamp::settled);
         self.silent_frames = self.rate * 4;
     }
     fn is_quiescent(&self) -> bool {
@@ -610,6 +594,7 @@ impl NativeProcessorRuntime for OverdriveRuntime {
         self.delay = previous.delay;
         self.delay_index = previous.delay_index;
         self.silent_frames = previous.silent_frames;
+        let mut targets = self.base_targets;
         if BINDINGS
             .iter()
             .any(|b| self.controls.supports(&BINDINGS, b.descriptor.id))
@@ -618,15 +603,17 @@ impl NativeProcessorRuntime for OverdriveRuntime {
                 .any(|b| previous.controls.supports(&BINDINGS, b.descriptor.id))
         {
             self.controls.inherit(&previous.controls);
-            self.targets = previous.targets;
+            targets = previous.ramps.map(hex_dsp::LinearRamp::target);
         }
-        self.current = previous.current;
-        self.step = previous.step;
-        self.remaining = previous.remaining;
-        if self.targets != previous.targets {
-            self.remaining = (self.rate / 200).max(1);
-            for i in 0..6 {
-                self.step[i] = (self.targets[i] - self.current[i]) / f64::from(self.remaining);
+        self.ramps = previous.ramps;
+        if targets
+            .iter()
+            .zip(&previous.ramps)
+            .any(|(&target, ramp)| target != ramp.target())
+        {
+            let frames = (self.rate / 200).max(1);
+            for (ramp, target) in self.ramps.iter_mut().zip(targets) {
+                ramp.retarget(target, frames);
             }
         }
     }

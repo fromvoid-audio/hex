@@ -2,17 +2,14 @@
 //! The host copies committed state into scratch before each transaction.
 
 use super::*;
-use crate::{
-    auto_pan::Waveform,
-    operator_filter::{Carrier, Frame},
-};
-use hex_dsp::EnvelopeFollower;
+use crate::auto_pan::Waveform;
+use hex_dsp::{EnvelopeFollower, OnePoleSmoother, SvfFilter, SvfFrame, SvfMode};
 use hex_lattice::{DeviceResources, NativeProcessorRuntime, OutputTail, StereoFrame};
 use std::{any::Any, f64::consts::PI};
 
 #[derive(Clone, Copy)]
 pub struct PreparedFilter {
-    pub(super) frame: Frame,
+    pub(super) frame: SvfFrame,
     rate: u32,
     oscillator: Waveform,
     phase_step: f64,
@@ -20,7 +17,7 @@ pub struct PreparedFilter {
     lfo_depth: f64,
     envelope_depth: f64,
     envelope: EnvelopeFollower,
-    modulation_step: f64,
+    modulation_smoother: OnePoleSmoother,
 }
 
 impl PreparedFilter {
@@ -30,10 +27,14 @@ impl PreparedFilter {
         }
         let sample_rate = f64::from(rate);
         let frequency = settings.float(CUTOFF).min(0.45 * sample_rate);
+        let mode = SvfMode::from_index(settings.0[TYPE])
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let modulation_smoother = OnePoleSmoother::new(0.0, rate, 0.002)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         Ok(Self {
-            frame: Frame::clean_filter(
+            frame: SvfFrame::clean_filter(
                 (PI * frequency / sample_rate).tan(),
-                settings.0[TYPE],
+                mode,
                 settings.float(RESONANCE) / 100.0,
                 settings.float(MORPH) / 100.0,
                 settings.float(MIX) / 100.0,
@@ -51,7 +52,7 @@ impl PreparedFilter {
                 settings.float(ENV_RELEASE) * 0.001,
             )
             .map_err(|_| DeviceContractError::InvalidParameterValue)?,
-            modulation_step: -(-1.0 / (sample_rate * 0.002)).exp_m1(),
+            modulation_smoother,
         })
     }
 }
@@ -84,12 +85,12 @@ impl PreparedNativeProcessor for PreparedFilter {
 #[derive(Clone, Copy)]
 pub struct FilterRuntime {
     base: PreparedFilter,
-    frame: Frame,
+    frame: SvfFrame,
     ramp: u32,
-    lane: [Carrier; 2],
+    lane: [SvfFilter; 2],
     envelope: EnvelopeFollower,
     phase: f64,
-    modulation: [f64; 2],
+    modulation: [OnePoleSmoother; 2],
 }
 
 impl FilterRuntime {
@@ -98,10 +99,10 @@ impl FilterRuntime {
             base,
             frame: base.frame,
             ramp: 0,
-            lane: [Carrier::default(); 2],
+            lane: [SvfFilter::new(); 2],
             envelope: base.envelope,
             phase: 0.0,
-            modulation: [0.0; 2],
+            modulation: [base.modulation_smoother; 2],
         }
     }
 }
@@ -129,12 +130,11 @@ impl NativeProcessorRuntime for FilterRuntime {
                     let phase = (self.phase + channel as f64 * self.base.phase_offset).fract();
                     (2.0 * self.base.oscillator.lfo(phase) - 1.0) * self.base.lfo_depth
                 };
-                let offset = &mut self.modulation[channel];
-                *offset += (envelope + lfo - *offset) * self.base.modulation_step;
+                let offset = self.modulation[channel].advance_toward(envelope + lfo);
                 let coefficients = if offset.abs() > 1e-6 {
-                    self.frame.with_cutoff_offset(*offset, self.base.rate)
+                    self.frame.with_cutoff_offset(offset, self.base.rate)
                 } else {
-                    *offset = 0.0;
+                    self.modulation[channel].reset(0.0);
                     self.frame
                 };
                 let output = self.lane[channel].process(f64::from(input[channel]), coefficients);
@@ -148,7 +148,7 @@ impl NativeProcessorRuntime for FilterRuntime {
         *self = Self::new(self.base);
     }
     fn is_quiescent(&self) -> bool {
-        self.lane.into_iter().all(Carrier::is_quiet)
+        self.lane.into_iter().all(SvfFilter::is_quiet)
     }
     fn can_copy_history_from(&self, old: &dyn NativeProcessorRuntime) -> bool {
         old.as_any()
@@ -176,7 +176,9 @@ impl NativeProcessorRuntime for FilterRuntime {
             self.lane = old.lane;
             self.envelope.inherit_envelope(&old.envelope);
             self.phase = old.phase;
-            self.modulation = old.modulation;
+            for (dst, src) in self.modulation.iter_mut().zip(&old.modulation) {
+                dst.inherit_value(src);
+            }
         }
     }
     fn as_any(&self) -> &dyn Any {

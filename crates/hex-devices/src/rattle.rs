@@ -50,7 +50,6 @@ pub const LATENCY_FRAMES: u32 = ((TAPS - 1) / 2) as u32;
 const SMOOTHING_MS: f64 = 20.0;
 const SPLIT_HZ: f64 = 1_000.0;
 const DC_BLOCK_HZ: f64 = 10.0;
-const FLOOR: f64 = 1.0e-20;
 const NOISE_SEEDS: [u32; 2] = [0x9e37_79b9, 0x85eb_ca6b];
 
 pub mod parameter {
@@ -214,23 +213,37 @@ impl RattleDefinition {
             }
             automated = true;
         }
-        let base_rate = f64::from(sample_rate);
-        let fast_rate = base_rate * 2.0;
+        let fast_rate = f64::from(sample_rate) * 2.0;
         let g = (std::f64::consts::PI * SPLIT_HZ / fast_rate).tan();
         let damping = std::f64::consts::SQRT_2;
+        let smoothing = hex_dsp::one_pole_coefficient(sample_rate, SMOOTHING_MS * 0.001)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let dc_pole = hex_dsp::frequency_pole(DC_BLOCK_HZ, fast_rate)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let fast_rate_u32 = sample_rate
+            .checked_mul(2)
+            .ok_or(DeviceContractError::InvalidParameterValue)?;
+        let attack = hex_dsp::one_pole_pole(fast_rate_u32, 0.001)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let release = hex_dsp::one_pole_pole(fast_rate_u32, 0.040)
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let drive_smoother =
+            hex_dsp::OnePoleSmoother::from_coefficient(f64::from(settings.drive), smoothing)
+                .and_then(|s| s.with_snap_epsilon(1.0e-6))
+                .map_err(|_| DeviceContractError::InvalidParameterValue)?;
         Ok(PreparedRattle {
             settings,
             sample_rate,
             automated,
+            drive_smoother,
             coefficients: Coefficients {
                 halfband: halfband(),
-                smoothing: 1.0 - (-1_000.0 / (SMOOTHING_MS * base_rate)).exp(),
-                dc_pole: (-std::f64::consts::TAU * DC_BLOCK_HZ / fast_rate).exp(),
+                dc_pole,
                 svf_g: g,
                 svf_damping: damping,
                 svf_norm: 1.0 / (1.0 + g * (g + damping)),
-                attack: (-1.0 / (0.001 * fast_rate)).exp(),
-                release: (-1.0 / (0.040 * fast_rate)).exp(),
+                attack,
+                release,
                 slew_per_hz: std::f64::consts::TAU / fast_rate,
                 silence_frames: LATENCY_FRAMES + sample_rate / 4,
             },
@@ -313,7 +326,6 @@ fn halfband() -> [f64; TAPS] {
 #[derive(Clone, Copy, Debug)]
 struct Coefficients {
     halfband: [f64; TAPS],
-    smoothing: f64,
     dc_pole: f64,
     svf_g: f64,
     svf_damping: f64,
@@ -330,6 +342,7 @@ pub struct PreparedRattle {
     settings: RattleSettings,
     sample_rate: u32,
     automated: bool,
+    drive_smoother: hex_dsp::OnePoleSmoother,
     coefficients: Coefficients,
 }
 
@@ -381,8 +394,7 @@ impl PreparedNativeProcessor for PreparedRattle {
         Box::new(RattleRuntime {
             base: *self,
             controls: crate::parameter_binding::Controls::new(self.settings, [self.automated]),
-            target: drive,
-            drive,
+            drive: self.drive_smoother,
             shape: Shape::new(drive, &self.coefficients),
             channels: [Channel::new(NOISE_SEEDS[0]), Channel::new(NOISE_SEEDS[1])],
             silent_frames: 0,
@@ -444,7 +456,7 @@ impl Shape {
 const COMPENSATION: f64 = 2.2;
 
 fn quiet(value: f64) -> f64 {
-    if value.abs() < FLOOR { 0.0 } else { value }
+    hex_dsp::flush_quiet(value)
 }
 
 /// Per-channel oversampling, filter, envelope, noise and slew history.
@@ -457,7 +469,7 @@ struct Channel {
     dc_input: f64,
     dc_output: f64,
     out_dc: [f64; 2],
-    svf: [f64; 2],
+    svf: hex_dsp::SvfSection,
     envelope: f64,
     pink: [f64; 3],
     slew: f64,
@@ -473,7 +485,7 @@ impl Channel {
             dc_input: 0.0,
             dc_output: 0.0,
             out_dc: [0.0; 2],
-            svf: [0.0; 2],
+            svf: hex_dsp::SvfSection::new(),
             envelope: 0.0,
             pink: [0.0; 3],
             slew: 0.0,
@@ -514,11 +526,10 @@ impl Channel {
         self.dc_output = blocked;
         let soft = blocked / (1.0 + blocked * blocked).sqrt();
         // Topology-preserving state-variable high-pass split.
-        let [s1, s2] = self.svf;
-        let high = (soft - (c.svf_damping + c.svf_g) * s1 - s2) * c.svf_norm;
-        let band = c.svf_g * high + s1;
-        let low = c.svf_g * band + s2;
-        self.svf = [quiet(c.svf_g * high + band), quiet(c.svf_g * band + low)];
+        let high = self
+            .svf
+            .process_outputs_precomputed(soft, c.svf_g, c.svf_damping, c.svf_norm)
+            .high;
         let split = (soft - high) + (shape.high_drive * high).tanh() * shape.high_gain;
         // Grit follows the program envelope, so silence stays silent.
         let level = split.abs();
@@ -575,8 +586,7 @@ impl Channel {
 pub struct RattleRuntime {
     base: PreparedRattle,
     controls: crate::parameter_binding::Controls<RattleSettings, 1>,
-    target: f64,
-    drive: f64,
+    drive: hex_dsp::OnePoleSmoother,
     shape: Shape,
     channels: [Channel; 2],
     silent_frames: u32,
@@ -588,16 +598,11 @@ impl RattleRuntime {
     }
 
     fn advance_drive(&mut self) {
-        if self.drive == self.target {
+        if self.drive.is_settled() {
             return;
         }
-        let next = self.drive + (self.target - self.drive) * self.base.coefficients.smoothing;
-        self.drive = if (next - self.target).abs() < 1.0e-6 {
-            self.target
-        } else {
-            next
-        };
-        self.shape = Shape::new(self.drive, &self.base.coefficients);
+        let next = self.drive.advance();
+        self.shape = Shape::new(next, &self.base.coefficients);
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame) {
@@ -645,7 +650,7 @@ impl RattleRuntime {
                 .sample(&BINDINGS, &mut resolved, values, offset)?
             {
                 // Validated typed value; smoothing is infallible DSP-only work.
-                self.target = f64::from(next.effective().drive);
+                self.drive.set_target(f64::from(next.effective().drive));
                 self.controls.install(next);
             }
             let original = *frame;
@@ -682,9 +687,9 @@ impl NativeProcessorRuntime for RattleRuntime {
     }
     fn reset(&mut self) {
         self.controls.reset();
-        self.target = f64::from(self.base.settings.drive);
-        self.drive = self.target;
-        self.shape = Shape::new(self.drive, &self.base.coefficients);
+        let drive = f64::from(self.base.settings.drive);
+        self.drive.reset(drive);
+        self.shape = Shape::new(drive, &self.base.coefficients);
         self.clear_history();
         self.silent_frames = 0;
     }
@@ -708,11 +713,11 @@ impl NativeProcessorRuntime for RattleRuntime {
         self.channels = previous.channels;
         self.silent_frames = previous.silent_frames;
         // Continue from the audible drive; the new target is reached by smoothing.
-        self.drive = previous.drive;
+        self.drive.inherit_value(&previous.drive);
         self.shape = previous.shape;
         if self.base.automated && previous.base.automated {
             self.controls.inherit(&previous.controls);
-            self.target = previous.target;
+            self.drive.set_target(previous.drive.target());
         }
     }
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {

@@ -126,6 +126,13 @@ impl EditorView {
         if let Some(slot) = result.selected_slot {
             self.tuning.slot = slot;
         }
+        let active_name = self
+            .tuning
+            .slots
+            .iter()
+            .find(|s| s.number == self.tuning.slot)
+            .and_then(|s| s.name.clone());
+        self.tuning.broadcast.set_scale_name(active_name);
         if let Some(error) = result.error.as_ref() {
             self.tuning.error = Some(error.clone());
         } else {

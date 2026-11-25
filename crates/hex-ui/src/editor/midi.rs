@@ -629,6 +629,32 @@ impl EditorView {
             || self.close_prompt_open
     }
 
+    /// Scoped piano-roll admission: blocks only on global modal/recording/device-gesture
+    /// barriers or a full pending MIDI edit queue, not on unrelated in-flight worker work
+    /// or an earlier released note move.
+    pub(super) fn midi_canvas_edit_blocked(&self) -> bool {
+        self.edit_blocked_outside_request_queue() || self.pending_midi_drag.is_full()
+    }
+
+    /// Scoped track-volume admission: blocks only on conflicting track/gain/modal custody
+    /// or a backed-up UI overflow queue, not on unrelated in-flight worker edits such as
+    /// clip duplication or section copy.
+    pub(super) fn track_gain_edit_blocked(&self) -> bool {
+        self.edit_blocked_outside_request_queue()
+            || !self.pending_requests.is_empty()
+            || self.track_reorder_active()
+            || self.pending_track_clipboard.is_some()
+            || self.gain_lane.pending.is_some()
+    }
+
+    /// Scoped mixer-control admission (main volume, return volume, track pan).
+    pub(super) fn mixer_edit_blocked(&self) -> bool {
+        self.edit_blocked_outside_request_queue()
+            || !self.pending_requests.is_empty()
+            || self.track_reorder_active()
+            || self.pending_track_clipboard.is_some()
+    }
+
     pub(super) fn midi_clip(&self) -> Option<&MidiSource> {
         self.state
             .as_ref()?

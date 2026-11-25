@@ -106,7 +106,7 @@ impl Lowpass {
 }
 
 fn quiet(value: f64) -> f64 {
-    if value.is_subnormal() { 0.0 } else { value }
+    hex_dsp::flush_subnormal(value)
 }
 
 #[cfg(test)]
