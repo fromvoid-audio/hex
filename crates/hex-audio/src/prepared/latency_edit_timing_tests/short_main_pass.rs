@@ -172,7 +172,7 @@ fn terminal_main_limiter_keeps_two_resident_tracks_aligned_until_stop() {
 }
 
 #[test]
-fn longer_main_limiter_removal_requires_consent() {
+fn longer_main_limiter_removal_retains_pass_delay_until_stop() {
     let limiter = &hex_devices::limiter::DEFINITION;
     let state = limiter
         .patch_parameter(
@@ -181,16 +181,158 @@ fn longer_main_limiter_removal_requires_consent() {
             ParameterValue::Choice(1),
         )
         .unwrap();
-    let ([dry, delayed], _) = main_append_revisions(None, state, vec![SIGNAL; 2048]);
-    assert_eq!(delayed.arrangement().main_latency_frames(), 144);
-    let (control, mut callback, predecessor, receipt) =
-        begin_insert_with_pending_track(delayed, dry, None, 512);
-    render(&mut callback, &mut [[0.0; 2]; 257]);
-    assert_eq!(
-        receipt.state(),
-        PublicationReceiptState::Refused(PlaybackHandoffRejection::DeviceInsertNeedsConfirmation)
-    );
-    assert_eq!(control.status.recording_source(), Some(predecessor));
+    terminal_inline_stage(state, RATE, 144);
+}
+
+#[test]
+fn multi_track_multi_device_main_and_return_latency_floor_retains_until_stop() {
+    const CUT: usize = 512;
+    const FADE: usize = 240;
+    const FRAMES: usize = 4_096;
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let mut media = BTreeMap::new();
+    let mut tracks = Vec::new();
+    for index in 0..4 {
+        let Created::Imported { track, asset, .. } = editor
+            .execute(Command::ImportPreparedAudioTrack {
+                name: format!("track {index}"),
+                path: format!("memory/multi-{index}.wav").into(),
+                source_sample_rate: RATE,
+                source_frames: FRAMES as u64,
+                playback_frames: FRAMES as u64,
+                conversion_version: hex_project::IDENTITY_CONVERSION,
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        tracks.push(track);
+        let level = 0.05 * (index + 1) as f32;
+        media.insert(
+            asset,
+            hex_engine::Audio::new(RATE, vec![[level, -level]; FRAMES]).unwrap(),
+        );
+    }
+    let Created::ReturnTrack(ret) = editor
+        .execute(Command::AddReturnTrack { name: "bus".into() })
+        .unwrap()
+    else {
+        panic!("return");
+    };
+    editor
+        .execute(Command::SetReturnSend {
+            track: tracks[0],
+            return_track: ret,
+            gain: 0.25,
+        })
+        .unwrap();
+    editor
+        .execute(Command::InsertDevice {
+            track: tracks[1],
+            before: None,
+            state: hex_devices::utility::UTILITY_DEFINITION
+                .default_state()
+                .unwrap(),
+        })
+        .unwrap();
+    // Multi-device Main chain: EQ8 + 3.0 ms Limiter (144 frames).
+    editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: hex_devices::eq8::EQ8_DEFINITION.default_state().unwrap(),
+        })
+        .unwrap();
+    let limiter = &hex_devices::limiter::DEFINITION;
+    let limiter_3ms = limiter
+        .patch_parameter(
+            &limiter.default_state().unwrap(),
+            hex_devices::limiter::parameter::LOOKAHEAD,
+            ParameterValue::Choice(1),
+        )
+        .unwrap();
+    let Created::Device(main_limiter) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: limiter_3ms,
+        })
+        .unwrap()
+    else {
+        panic!("main limiter");
+    };
+    let table = Arc::new(hex_engine::SineTable::new());
+    let prepare = |project: &Project| {
+        Arc::new(
+            hex_engine::PreparedRevision::prepare(project, &media, Arc::clone(&table), None)
+                .unwrap(),
+        )
+    };
+    let before = prepare(editor.project());
+    assert_eq!(before.arrangement().main_latency_frames(), 144);
+    editor.execute(Command::RemoveDevice(main_limiter)).unwrap();
+    let after_remove = prepare(editor.project());
+    assert_eq!(after_remove.arrangement().main_latency_frames(), 0);
+
+    // 1. Removing the Main limiter in a 4-track + Return + multi-device Main topology
+    //    succeeds continuously with zero callback allocations, retaining 144 frames until Stop.
+    let (mut control, mut callback, predecessor, receipt) =
+        begin_insert_with_pending_track(Arc::clone(&before), Arc::clone(&after_remove), None, CUT);
+    let mut fade = [[0.0; 2]; FADE];
+    render(&mut callback, &mut fade);
+    let mut after_cut = [[0.0; 2]; BLOCK];
+    render(&mut callback, &mut after_cut);
+    assert_eq!(receipt.state(), PublicationReceiptState::Installed);
+    let latency = |callback: &Callback| {
+        callback
+            .active
+            .as_ref()
+            .and_then(ActivePublication::current)
+            .and_then(|active| active.playback.main_output_latency_frames())
+    };
+    assert_eq!(latency(&callback), Some(144));
+    assert_eq!(control.reclaim(), 1);
+
+    // 2. Inserting a 1.5 ms (72-frame) Limiter fits inside the active 144-frame pass floor
+    //    and installs continuously while keeping total output latency pinned at 144 frames.
+    let Created::Device(_) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: limiter.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("1.5ms limiter");
+    };
+    let after_reinsert = prepare(editor.project());
+    assert_eq!(after_reinsert.arrangement().main_latency_frames(), 72);
+    let current_sub = control.status.recording_source().unwrap();
+    assert_eq!(current_sub.output_identity, predecessor.output_identity);
+    let fence = control.capture_fresh_runtime_fence().unwrap();
+    let candidate = Playback::try_from_prepared_with_session(after_reinsert).unwrap();
+    let revision = control
+        .publish_unaccounted_pcm_obligation(
+            candidate,
+            PublicationPolicy::DeviceInsert {
+                predecessor: current_sub,
+                fence,
+            },
+            5,
+            true,
+            false,
+            Some(hex_engine::AudioSourceContext {
+                project_generation: 5,
+                editor_revision: 9,
+            }),
+        )
+        .unwrap();
+    let reinsert_receipt = control.fresh_runtime_receipt(revision).unwrap();
+    render(&mut callback, &mut after_cut);
+    assert_eq!(reinsert_receipt.state(), PublicationReceiptState::Installed);
+    assert_eq!(latency(&callback), Some(144));
+
+    // 3. Stopping clears the retained pass-level delay so the next Play runs at natural 72 frames.
+    control.stop();
+    render(&mut callback, &mut after_cut[..1]);
+    assert_eq!(latency(&callback), Some(72));
 }
 
 fn terminal_inline_stage(

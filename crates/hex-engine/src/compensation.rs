@@ -453,19 +453,20 @@ impl CompensationRuntime {
         edge.committed_main_pass_delay()
     }
 
-    /// Borrow two separate, fully committed direct Main alignment rings.
-    pub(crate) fn committed_hosted_return_pair(
+    /// Borrow a single fully committed alignment ring of exact `latency` frames.
+    pub(crate) fn committed_main_pass_pcm_at(
         &self,
-        [first, second]: [usize; 2],
-    ) -> Option<[(&[Frame; 512], usize); 2]> {
-        if !self.is_closed() || first == second {
+        index: usize,
+        latency: u32,
+    ) -> Option<(&[Frame], usize)> {
+        if !self.is_closed() {
             return None;
         }
-        let pcm = |index: usize| {
-            let (frames, next) = self.edges.get(index)?.committed_main_pass_pcm()?;
-            Some((frames.try_into().ok()?, next))
-        };
-        Some([pcm(first)?, pcm(second)?])
+        let edge = self.edges.get(index)?;
+        if edge.delay_frames() != latency {
+            return None;
+        }
+        edge.committed_main_pass_pcm()
     }
 
     /// True when no committed routing edge holds PCM. Transport stamps do not

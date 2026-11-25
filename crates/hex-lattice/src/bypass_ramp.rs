@@ -2,10 +2,12 @@
 use hex_lattice_contract::DeviceContractError;
 
 const MAX_ALIGNED_DRY_FRAMES: usize = 16;
-// The fixed 1.5 ms native path at the maximum 192 kHz output rate.
-const MAX_NATIVE_MAIN_PASS_DRY_FRAMES: usize = 288;
-// Two 256-frame bridge quanta and the admitted seven-frame Main processor.
-const MAX_MAIN_PASS_DRY_FRAMES: usize = 519;
+/// Maximum passive pass-level compensation delay retained until Stop/next Play
+/// per `docs/design/live-repatching-brief.md` rule 10. Matches the bounded
+/// reserved bypass capacity so any admitted latency reduction fits without
+/// callback allocation.
+pub const MAX_MAIN_PASS_DELAY_FRAMES: u32 = crate::MAX_RESERVED_BYPASS_FRAMES;
+const MAX_MAIN_PASS_DRY_FRAMES: usize = MAX_MAIN_PASS_DELAY_FRAMES as usize;
 
 /// Value-only aligned PCM retained at Main when an original processor retires.
 pub type MainPassDelay = InlineDryDelay<MAX_MAIN_PASS_DRY_FRAMES>;
@@ -35,6 +37,75 @@ impl<const CAPACITY: usize> InlineDryDelay<CAPACITY> {
             .get_mut(..frames.len())?
             .copy_from_slice(frames);
         Some(delay)
+    }
+
+    /// Construct a zero-filled pass-level compensation delay of `len` frames
+    /// (`1..=CAPACITY`) with no heap allocation.
+    pub fn zeroed(len: usize) -> Option<Self> {
+        if !(1..=CAPACITY).contains(&len) {
+            return None;
+        }
+        Some(Self {
+            frames: [[0.0; 2]; CAPACITY],
+            len,
+            next: 0,
+        })
+    }
+
+    /// Add a committed ring's samples (ordered oldest-to-newest starting at
+    /// `next`) into `self` in place. Requires `self.next == 0` and identical length.
+    pub fn add_committed_ring(&mut self, frames: &[[f32; 2]], next: usize) -> bool {
+        if self.next != 0 || frames.len() != self.len || next >= self.len {
+            return false;
+        }
+        for offset in 0..self.len {
+            let src = frames[(next + offset) % self.len];
+            self.frames[offset][0] += src[0];
+            self.frames[offset][1] += src[1];
+        }
+        true
+    }
+
+    /// Extend an existing pass delay by `extra` additional frames while
+    /// preserving every committed sample already queued in `self` in FIFO order.
+    pub fn with_additional_delay(&self, extra: usize) -> Option<Self> {
+        if extra == 0 {
+            return Some(*self);
+        }
+        let new_len = self.len.checked_add(extra)?;
+        if new_len > CAPACITY {
+            return None;
+        }
+        let mut out = Self {
+            frames: [[0.0; 2]; CAPACITY],
+            len: new_len,
+            next: 0,
+        };
+        for i in 0..self.len {
+            out.frames[i] = self.frames[(self.next + i) % self.len];
+        }
+        Some(out)
+    }
+
+    /// Shrink an existing pass delay to `new_len` frames (`1..self.len`),
+    /// preserving the next `new_len` queued frames in FIFO order so re-inserted
+    /// or re-enabled latency devices consume part of the existing pass floor.
+    pub fn shrink_to(&self, new_len: usize) -> Option<Self> {
+        if new_len == self.len {
+            return Some(*self);
+        }
+        if !(1..self.len).contains(&new_len) {
+            return None;
+        }
+        let mut out = Self {
+            frames: [[0.0; 2]; CAPACITY],
+            len: new_len,
+            next: 0,
+        };
+        for i in 0..new_len {
+            out.frames[i] = self.frames[(self.next + i) % self.len];
+        }
+        Some(out)
     }
 
     pub fn latency_frames(&self) -> u32 {
@@ -168,7 +239,7 @@ impl AlignedDry {
     }
     pub(crate) fn main_pass_latency_frames(&self) -> Option<u32> {
         let len = self.parts().0.len();
-        (1..=MAX_NATIVE_MAIN_PASS_DRY_FRAMES)
+        (1..=MAX_MAIN_PASS_DRY_FRAMES)
             .contains(&len)
             .then_some(len as u32)
     }
@@ -304,7 +375,25 @@ mod tests {
             assert!(MainPassDelay::copy_committed_ring(ring, len).is_none());
         }
         assert!(MainPassDelay::copy_committed_ring(&[], 0).is_none());
-        assert!(MainPassDelay::copy_committed_ring(&[[0.0; 2]; 520], 0).is_none());
+        let oversized = vec![[0.0; 2]; super::MAX_MAIN_PASS_DRY_FRAMES + 1];
+        assert!(MainPassDelay::copy_committed_ring(&oversized, 0).is_none());
+
+        let mut base =
+            MainPassDelay::copy_committed_ring(&[[0.25, -0.25], [0.5, -0.5]], 1).unwrap();
+        let mut extended = base.with_additional_delay(2).unwrap();
+        assert_eq!(extended.latency_frames(), 4);
+        let mut out = [[0.0; 2]; 4];
+        extended.process(&mut out);
+        assert_eq!(out, [[0.5, -0.5], [0.25, -0.25], [0.0, 0.0], [0.0, 0.0]]);
+
+        let mut shrunk = base.shrink_to(1).unwrap();
+        assert_eq!(shrunk.latency_frames(), 1);
+        let mut single = [[1.0, 1.0]];
+        shrunk.process(&mut single);
+        assert_eq!(single, [[0.5, -0.5]]);
+        base.reset();
+        assert!(MainPassDelay::zeroed(0).is_none());
+        assert_eq!(MainPassDelay::zeroed(144).unwrap().latency_frames(), 144);
     }
 
     #[test]

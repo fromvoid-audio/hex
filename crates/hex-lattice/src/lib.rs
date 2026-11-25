@@ -44,7 +44,7 @@ mod powered_off_tests;
 #[cfg(test)]
 mod static_processing_tests;
 mod tail_split;
-pub use bypass_ramp::MainPassDelay;
+pub use bypass_ramp::{MAX_MAIN_PASS_DELAY_FRAMES, MainPassDelay};
 pub use foreign_processor::{
     ForeignAutomation, ForeignAutomationProgram, ForeignAutomationSource, ForeignNote,
     ForeignNoteKind, ForeignParameterCapability, ForeignProcessorNode, ForeignProcessors,

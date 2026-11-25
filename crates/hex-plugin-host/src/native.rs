@@ -41,11 +41,40 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileFingerprint {
+    dev: u64,
+    ino: u64,
+    len: u64,
+    mtime: i64,
+    mtime_nsec: i64,
+    ctime: i64,
+    ctime_nsec: i64,
+}
+
+impl FileFingerprint {
+    fn capture(path: &Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self {
+            dev: meta.dev(),
+            ino: meta.ino(),
+            len: meta.len(),
+            mtime: meta.mtime(),
+            mtime_nsec: meta.mtime_nsec(),
+            ctime: meta.ctime(),
+            ctime_nsec: meta.ctime_nsec(),
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Source {
     bundle: Bundle,
     executable: Executable,
     identity: Identity,
+    info_fingerprint: Option<FileFingerprint>,
+    executable_fingerprint: Option<FileFingerprint>,
     grouped_editor_callbacks: bool,
     transport_space: bool,
     live_deadline: bool,
@@ -54,6 +83,10 @@ impl Source {
     pub fn inspect_on_control(path: &Path, executable: &str, class: ClassId) -> Result<Self> {
         let bundle = Bundle::inspect(path).map_err(Error::Source)?;
         let executable = bundle.admit(executable).map_err(Error::Source)?;
+        let info_fingerprint =
+            FileFingerprint::capture(&bundle.canonical_path.join("Contents/Info.plist"));
+        let executable_fingerprint =
+            FileFingerprint::capture(&bundle.canonical_path.join(&executable.relative_path));
         let identity = Identity {
             class,
             binary: BinaryIdentity {
@@ -65,6 +98,8 @@ impl Source {
             bundle,
             executable,
             identity,
+            info_fingerprint,
+            executable_fingerprint,
             grouped_editor_callbacks: false,
             transport_space: false,
             live_deadline: false,
@@ -88,6 +123,32 @@ impl Source {
     }
     pub fn identity(&self) -> Identity {
         self.identity
+    }
+    /// Fast identity check avoiding redundant multi-MB Mach-O disk SHA-256 reads
+    /// once `inspect_on_control` has already hashed both `Info.plist` and the
+    /// executable. Verifies canonical bundle path and exact `stat` fingerprints
+    /// (`dev`, `ino`, `len`, `mtime`, `ctime`); falls back to full SHA-256
+    /// revalidation on any metadata change so tampering is always refused with
+    /// the exact validation error.
+    fn unchanged_fast(&self) -> Result<()> {
+        let current = std::fs::canonicalize(&self.bundle.supplied_path).map_err(|_| {
+            Error::Validation(hex_plugin_scan::macos::validation::Error::Invalid(
+                "selected bundle identity changed",
+            ))
+        })?;
+        if current != self.bundle.canonical_path {
+            return self.unchanged();
+        }
+        let info_matches = self.info_fingerprint.is_some()
+            && FileFingerprint::capture(&current.join("Contents/Info.plist"))
+                == self.info_fingerprint;
+        let exec_matches = self.executable_fingerprint.is_some()
+            && FileFingerprint::capture(&current.join(&self.executable.relative_path))
+                == self.executable_fingerprint;
+        if info_matches && exec_matches {
+            return Ok(());
+        }
+        self.unchanged()
     }
     fn unchanged(&self) -> Result<()> {
         self.bundle
@@ -450,12 +511,16 @@ impl Pending {
             .try_copy_on_control()
             .map_err(Error::Validation)
             .map_err(PreparationFailure::before_native)?;
+        // Verify helper build and selected source once per spawn instead of
+        // re-hashing multi-MB Mach-O binaries five times synchronously on the
+        // control worker. The supervised child also verifies exact SHA-256 of
+        // both Info.plist and the executable right before loading the bundle.
         measure_revalidation(
             timings
                 .as_deref_mut()
                 .map(|timings| &mut timings.revalidation),
             || {
-                source.unchanged()?;
+                source.unchanged_fast()?;
                 build.unchanged().map_err(Error::Validation)
             },
         )
@@ -484,16 +549,6 @@ impl Pending {
                 "waitable-child preflight did not exit normally".into(),
             )));
         }
-        measure_revalidation(
-            timings
-                .as_deref_mut()
-                .map(|timings| &mut timings.revalidation),
-            || {
-                build.unchanged().map_err(Error::Validation)?;
-                source.unchanged()
-            },
-        )
-        .map_err(PreparationFailure::before_native)?;
         let (data, child_data) = UnixStream::pair()
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
@@ -576,10 +631,6 @@ impl Pending {
                 timings.instance_to_facts = Some(started.elapsed());
             }
             token.check()?;
-            measure_revalidation(timings.map(|timings| &mut timings.revalidation), || {
-                source.unchanged()?;
-                build.unchanged().map_err(Error::Validation)
-            })?;
             match pending.child.observe()? {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
@@ -665,8 +716,9 @@ impl Pending {
         let token = self.lease.cancellation.clone();
         let result = (|| {
             token.check()?;
-            self.source.unchanged()?;
-            self.build.unchanged().map_err(Error::Validation)?;
+            // Fast stat-fingerprint check detects mid-handshake bundle or
+            // Info.plist modifications without re-reading multi-MB Mach-O binaries.
+            self.source.unchanged_fast()?;
             let expected = presentation.expected(self.facts.presentation_available)?;
             let until = end_after(self.limits.startup)?;
             let request = protocol::presentation_request(self.config.binding, presentation)?;
@@ -697,8 +749,6 @@ impl Pending {
                     "prepared facts changed before final acknowledgement",
                 ));
             }
-            self.source.unchanged()?;
-            self.build.unchanged().map_err(Error::Validation)?;
             if self.lease.child.observe()?.is_some() {
                 return Err(Error::Custody("prepared worker already exited".into()));
             }

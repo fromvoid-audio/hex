@@ -221,13 +221,12 @@ struct Module {
         NSString* root=string(request.root);
         const auto info=hex(request.info_hash.data(),request.info_hash.size());
         const auto binary=hex(request.executable_hash.data(),request.executable_hash.size());
-        if(digest(member(root,@"Contents/Info.plist"),65536)!=info) throw Refusal{};
         CFURLRef url=CFURLCreateWithFileSystemPath(nullptr,(__bridge CFStringRef)root,kCFURLPOSIXPathStyle,true);
         if(!url) throw Refusal{};
         bundle=CFBundleCreate(nullptr,url);CFRelease(url);
         if(!bundle || executable(bundle,root)!=request.executable ||
-            digest(member(root,string(request.executable)))!=binary ||
-            digest(member(root,@"Contents/Info.plist"),65536)!=info)
+            digest(member(root,@"Contents/Info.plist"),65536)!=info ||
+            digest(member(root,string(request.executable)))!=binary)
             throw Refusal{};
         native_attempted=true;
         if(!CFBundleLoadExecutable(bundle)) throw Refusal{};loaded=true;

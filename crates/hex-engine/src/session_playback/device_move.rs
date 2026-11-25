@@ -1,7 +1,6 @@
 //! One direct Resident audio-track effect move, cut with both route faders.
 use super::{RouteOwner, SessionPlayback};
 use hex_lattice::ProcessorInstanceIdentity;
-use hex_lattice_contract::NativeDeviceMetadata;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeTrackMove {
@@ -16,8 +15,13 @@ impl SessionPlayback {
         // or custody is established, including for unrelated streamed tracks.
         if self.revision.contains_streamed_sources()
             || previous.revision.contains_streamed_sources()
-            || self.compensation.is_some()
-            || previous.compensation.is_some()
+        {
+            return None;
+        }
+        // Moving across tracks can run continuously whenever the resulting graph
+        // fits within the active pass's output latency floor and any active
+        // compensation delay layout can carry over.
+        if self.revision.arrangement().main_latency_frames() > previous.main_output_latency_frames()
         {
             return None;
         }
@@ -57,28 +61,17 @@ impl SessionPlayback {
             {
                 continue;
             }
-            let lengths = (previous_chain.len(), next.len());
-            if matches!(lengths, (1, 2) | (2, 1)) {
-                let before = old.get(index)?.device_chain.first()?;
-                let after = new.get(index)?.device_chain.first()?;
-                let supported_prefix = |prefix: &hex_lattice::PreparedRuntimeInstance| {
-                    prefix.device_type == hex_devices::utility::UTILITY_TYPE_ID
-                        && prefix.algorithmic_latency_frames() == Some(0)
-                        && !prefix.bypassed
-                        && prefix.automation.is_empty()
-                        && prefix.modulation.is_none()
-                };
-                if !next.configuration_matches_range(previous_chain, 0..1)
-                    || ![before, after].into_iter().all(supported_prefix)
-                {
-                    return None;
-                }
+            if previous_chain.len().checked_sub(1) == Some(next.len())
+                && source.replace(index).is_none()
+            {
+                continue;
             }
-            match lengths {
-                (1, 0) | (2, 1) if source.replace(index).is_none() => {}
-                (0, 1) | (1, 2) if destination.replace(index).is_none() => {}
-                _ => return None,
+            if previous_chain.len().checked_add(1) == Some(next.len())
+                && destination.replace(index).is_none()
+            {
+                continue;
             }
+            return None;
         }
         let (source, destination) = (source?, destination?);
         for index in [source, destination] {
@@ -95,8 +88,7 @@ impl SessionPlayback {
                 return None;
             }
         }
-        // An empty receiver can start its fresh effect on silence. Pending
-        // Arrangement ownership and earlier route releases use their own cuts.
+        // Pending Arrangement ownership and earlier route releases use their own cuts.
         for playback in [self, previous] {
             for index in [source, destination] {
                 let track = playback.revision.arrangement().tracks().get(index)?;
@@ -104,11 +96,6 @@ impl SessionPlayback {
                 if !matches!(route.owner, RouteOwner::Arrangement)
                     || route.pending.is_some()
                     || route.audio_release.is_some()
-                    || track.instrument_id.is_some()
-                    || track.source_id.is_some()
-                    || track.midi_source_index.is_some()
-                    || track.has_gain_automation()
-                    || !track.sends.is_empty()
                     || playback.revision.gain_recording_track() == Some(route.id)
                     || track.device_chain.len() != playback.device_chains.get(index)?.len()
                 {
@@ -116,17 +103,12 @@ impl SessionPlayback {
                 }
             }
         }
-        // Provider-specific trust belongs here, not in Lattice's generic proof.
-        let device_type = old.get(source)?.device_chain.last()?.device_type;
-        if device_type != hex_devices::delay::DEFINITION.type_id()
-            && device_type != hex_devices::reverb::REVERB_TYPE_ID
-        {
-            return None;
-        }
-        let identity = self
-            .device_chains
-            .get(destination)?
-            .cross_track_native_identity_from(previous.device_chains.get(source)?)?;
+        let identity = hex_lattice::NativeRuntimeChain::cross_track_moved_device_from(
+            previous.device_chains.get(source)?,
+            self.device_chains.get(source)?,
+            previous.device_chains.get(destination)?,
+            self.device_chains.get(destination)?,
+        )?;
         Some(NativeTrackMove {
             source,
             destination,
@@ -168,6 +150,7 @@ pub(super) fn same_clip(a: &crate::Clip, b: &crate::Clip) -> bool {
 mod tests {
     use super::*;
     use crate::{Audio, PreparedRevision, SessionPlaybackCommand};
+    use hex_lattice_contract::NativeDeviceMetadata;
     use hex_project::{Command, Created, DeviceSelectionIds, Editor, Project};
     use std::{collections::BTreeMap, sync::Arc};
 
@@ -310,5 +293,122 @@ mod tests {
             super::super::NativeRemovalProgress::Ready
         );
         next.try_inherit_state_live_from(&mut old).unwrap();
+    }
+
+    #[test]
+    fn generalized_cross_track_move_succeeds_across_multi_device_chains_with_sends() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut media = BTreeMap::new();
+        let mut tracks = Vec::new();
+        for index in 0..3 {
+            let Created::Imported { track, asset, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: format!("track {index}"),
+                    path: format!("multi-{index}.wav").into(),
+                    sample_rate: 48_000,
+                    frames: 2048,
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            tracks.push(track);
+            media.insert(asset, Audio::new(48_000, vec![[0.2, -0.2]; 2048]).unwrap());
+        }
+        let Created::ReturnTrack(ret) = editor
+            .execute(Command::AddReturnTrack {
+                name: "send bus".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        editor
+            .execute(Command::SetReturnSend {
+                track: tracks[0],
+                return_track: ret,
+                gain: 0.3,
+            })
+            .unwrap();
+        // Track 0 has 3 devices: EQ8, Compressor (moved), Utility.
+        editor
+            .execute(Command::InsertDevice {
+                track: tracks[0],
+                before: None,
+                state: hex_devices::eq8::EQ8_DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        let Created::Device(moved) = editor
+            .execute(Command::InsertDevice {
+                track: tracks[0],
+                before: None,
+                state: hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("compressor")
+        };
+        editor
+            .execute(Command::InsertDevice {
+                track: tracks[0],
+                before: None,
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap();
+        // Track 1 already has 2 devices: EQ8, Reverb.
+        editor
+            .execute(Command::InsertDevice {
+                track: tracks[1],
+                before: None,
+                state: hex_devices::eq8::EQ8_DEFINITION.default_state().unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track: tracks[1],
+                before: None,
+                state: hex_devices::reverb::REVERB_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            })
+            .unwrap();
+
+        let table = Arc::new(crate::SineTable::new());
+        let prepare = |project: &Project| {
+            Arc::new(PreparedRevision::prepare(project, &media, Arc::clone(&table), None).unwrap())
+        };
+        let before = prepare(editor.project());
+        editor
+            .execute(Command::MoveTrackDevices {
+                source: tracks[0],
+                destination: tracks[1],
+                selected: DeviceSelectionIds::new(&[moved]).unwrap(),
+            })
+            .unwrap();
+        let after = prepare(editor.project());
+
+        let mut old = SessionPlayback::new(before).unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        old.render(&mut [[0.0; 2]; 32]).unwrap();
+        let mut next = SessionPlayback::new(after).unwrap();
+        next.require_continuous_insert = true;
+        assert!(next.direct_audio_track_move_from(&old).is_some());
+        assert_eq!(
+            next.advance_native_removal_from(&mut old).unwrap(),
+            super::super::NativeRemovalProgress::Fading
+        );
+        let mut faded = [[0.0; 2]; 240];
+        old.render(&mut faded).unwrap();
+        assert_eq!(
+            next.advance_native_removal_from(&mut old).unwrap(),
+            super::super::NativeRemovalProgress::Ready
+        );
+        next.try_inherit_state_live_from(&mut old).unwrap();
+        let mut out = [[0.0; 2]; 64];
+        next.render(&mut out).unwrap();
     }
 }
