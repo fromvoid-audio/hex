@@ -1150,6 +1150,24 @@ mod tests {
             .expect("visible locator element")
     }
 
+    fn wait_for_locator_checkpoint(path: &std::path::Path, project: &hex_project::Project) {
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            match hex_storage::load_journal(path) {
+                Ok(published) if &published == project => return,
+                Ok(_) => {}
+                Err(hex_storage::StorageError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("invalid locator recovery journal: {error}"),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "committed locator checkpoint"
+            );
+            std::thread::yield_now();
+        }
+    }
+
     fn next_terminal(view: &EditorView) -> Event {
         let deadline = crate::test_wait::hang_deadline();
         loop {
@@ -1691,10 +1709,7 @@ mod tests {
             );
             std::thread::yield_now();
         }
-        assert_eq!(
-            hex_storage::load_journal(&recovery).unwrap(),
-            *committed.project
-        );
+        wait_for_locator_checkpoint(&recovery, &committed.project);
         fixture.finish(cx);
     }
 
@@ -1863,10 +1878,7 @@ mod tests {
             view.receive(seek_terminal);
             cx.notify();
         });
-        assert_eq!(
-            hex_storage::load_journal(&recovery).unwrap(),
-            *committed.project
-        );
+        wait_for_locator_checkpoint(&recovery, &committed.project);
         fixture.finish(cx);
     }
 
