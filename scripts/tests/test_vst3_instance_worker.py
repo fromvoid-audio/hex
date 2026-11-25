@@ -225,7 +225,13 @@ class NativeInstanceTests(unittest.TestCase):
                 self.terminal(session, 10, closed=False, unloaded=False, message=session.stop())
 
     def test_actual_parameter_step_ramp_and_feedback_across_variable_sdk_blocks(self):
-        session = self.session(variant=37)
+        self.check_parameter_step_ramp_and_feedback(variant=37)
+
+    def test_double_only_effect_processes_float_wire_audio_and_parameter_points(self):
+        self.check_parameter_step_ramp_and_feedback(variant=164)
+
+    def check_parameter_step_ramp_and_feedback(self, variant):
+        session = self.session(variant=variant)
         self.ready(session, controller=True)
         cases = [
             (1, [(0, 7, .25)], [.25]),
@@ -741,18 +747,6 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
         self.assertEqual(self.observation()[10], 1)
         self.assertEqual(self.observation()[11], 1)
-
-    def test_double_only_effect_processes_float_wire_audio_and_parameter_points(self):
-        session = self.session(variant=164)
-        self.ready(session, controller=True)
-        for block, frames in enumerate((1, 7, 256)):
-            with self.subTest(frames=frames):
-                inputs, (magic, reply) = session.render_parameters(frames, [(0, 7, .5)])
-                self.assertEqual(magic, b"HXVB")
-                output = struct.unpack_from("<" + "f" * (frames * 2), reply, 64)
-                for actual, source in zip(output, inputs):
-                    self.assertAlmostEqual(actual, source * (.5 + block * .125) * 2, places=6)
-        self.terminal(session, 0, message=session.stop())
 
     def test_stopped_flush_rejects_stale_malformed_and_unknown_before_sdk_entry(self):
         for mode in ("operation", "prefix", "binding", "offset", "unknown", "duplicate"):
