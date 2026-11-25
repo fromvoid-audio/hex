@@ -111,7 +111,7 @@ fn timed_node_observation_does_not_allocate_or_free() {
         result = playback.render_with_timed_transport_and_node_observer(
             &mut output,
             &commands,
-            &mut |_, _, _, _| calls += 1,
+            &mut |_, _, _, _: &[hex_engine::Frame]| calls += 1,
         );
     });
     assert!(result.is_ok());
