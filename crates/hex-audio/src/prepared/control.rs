@@ -51,6 +51,7 @@ pub struct Control {
     pub(super) action_admission: Option<action_outcomes::Admission>,
     pub sample_preview: crate::sample_preview::Control,
     pub sample_recording: crate::sample_recording::Control,
+    pub rolling_recorder: crate::rolling_recorder::Control,
     pub input_monitor: input_monitor::Control,
     pub(super) commands: Producer<QueuedCommand>,
     pub spectrum_target: spectrum_target::SpectrumTargetControl,
@@ -1551,6 +1552,7 @@ pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
         .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
         .checked_add(crate::sample_preview::constructor_storage_quote()?)?
         .checked_add(crate::sample_recording::storage_quote()?)?
+        .checked_add(crate::rolling_recorder::storage_quote()?)?
         .checked_add(input_monitor::constructor_storage_quote()?)?
         .checked_add(paused_note_bytes)?
         .checked_add(crate::gain_recording::constructor_storage_quote()?)?

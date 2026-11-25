@@ -2,13 +2,14 @@ use super::device_automation::RangeEdit;
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
-    FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown,
-    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack,
-    OpenAutomationRecovery, OpenProject, OpenRecentProject, OpenRelinkedProject,
-    OpenStreamingProject, PanTimelineLeft, PanTimelineRight, PasteTimeSelection, PreviousTrack,
-    Quit, RecoverKeptSession, RecoverPreviousSave, RecoverSavedProject, RecoverUntitledProject,
-    Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes, SplitClip, Stop, ToggleLoop,
-    ToggleMidiDrawMode, TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    FitTimeline, GroupSelection, ImportAudio, InsertTimeSelection, KeepRollingAudioCapture,
+    LoopSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight, NewProject,
+    NewStreamingProject, NextTrack, OpenAutomationRecovery, OpenProject, OpenRecentProject,
+    OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
+    PasteTimeSelection, PreviousTrack, Quit, RecoverKeptSession, RecoverPreviousSave,
+    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
+    SelectAllMidiNotes, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay,
+    ToggleRollingRecorderIsolation, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::diagnostics::ActionTraceContext as _;
 use crate::theme;
@@ -1863,6 +1864,14 @@ impl Render for EditorView {
                 if let Some(track) = view.selected_track {
                     view.toggle_solo(track, true);
                 }
+                cx.notify();
+            }))
+            .on_action(cx.trace(|view, _: &ToggleRollingRecorderIsolation, _, cx| {
+                view.toggle_rolling_isolation();
+                cx.notify();
+            }))
+            .on_action(cx.trace(|view, _: &KeepRollingAudioCapture, _, cx| {
+                view.keep_rolling_capture();
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &AdditiveSolo, window, cx| {

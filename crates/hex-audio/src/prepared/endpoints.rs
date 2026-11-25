@@ -20,6 +20,7 @@ pub(crate) struct ClientEndpoints {
     pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     sample_recording: crate::sample_recording::Control,
+    rolling_recorder: crate::rolling_recorder::Control,
     input_monitor: input_monitor::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
@@ -52,6 +53,7 @@ impl Control {
             action_admission,
             sample_preview,
             sample_recording,
+            rolling_recorder,
             input_monitor,
             commands,
             spectrum_target,
@@ -82,6 +84,7 @@ impl Control {
             output_identity,
             sample_preview,
             sample_recording,
+            rolling_recorder,
             input_monitor,
             resident_forwarding,
             spectrum_reader,
@@ -248,9 +251,10 @@ impl Client {
         capture_runtime_fence(self.status()?)
     }
     pub fn close(&mut self) {
-        if let Some(endpoints) = self.endpoints.owner_ref() {
+        if let Some(endpoints) = self.endpoints.owner_mut() {
             endpoints.midi_recording.cancel();
             endpoints.sample_recording.stop();
+            endpoints.rolling_recorder.stop();
             endpoints.input_monitor.stop();
             endpoints.status.closing.store(true, Release);
             endpoints.stop();
@@ -557,6 +561,50 @@ impl Client {
     pub fn reclaim_sample_recording(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_mut() {
             endpoints.sample_recording.reclaim();
+        }
+    }
+
+    pub fn start_rolling_recording(
+        &mut self,
+        project_generation: u64,
+        source: crate::rolling_recorder::RollingSource,
+    ) -> Result<crate::rolling_recorder::Reader, Invalid> {
+        let endpoints = self
+            .endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?;
+        if endpoints.status.closing.load(Acquire) || endpoints.status.device_fault.load(Acquire) {
+            return Err(Invalid("rolling audio recorder output is unavailable"));
+        }
+        endpoints.rolling_recorder.start(project_generation, source)
+    }
+
+    pub fn set_rolling_source(
+        &mut self,
+        project_generation: u64,
+        source: crate::rolling_recorder::RollingSource,
+    ) -> Result<u64, Invalid> {
+        let endpoints = self
+            .endpoints
+            .owner_mut()
+            .ok_or(Invalid("audio client is closed"))?;
+        if endpoints.status.closing.load(Acquire) || endpoints.status.device_fault.load(Acquire) {
+            return Err(Invalid("rolling audio recorder output is unavailable"));
+        }
+        endpoints
+            .rolling_recorder
+            .set_source(project_generation, source)
+    }
+
+    pub fn stop_rolling_recording(&mut self) {
+        if let Some(endpoints) = self.endpoints.owner_mut() {
+            endpoints.rolling_recorder.stop();
+        }
+    }
+
+    pub fn reclaim_rolling_recording(&mut self) {
+        if let Some(endpoints) = self.endpoints.owner_mut() {
+            endpoints.rolling_recorder.reclaim();
         }
     }
 

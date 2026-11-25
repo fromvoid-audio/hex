@@ -40,6 +40,7 @@ mod output_route;
 pub mod plugin_effects;
 pub mod plugin_worker;
 mod render_fault;
+pub mod rolling_recorder;
 pub mod sample_preview;
 pub mod sample_recording;
 pub use device::PluginOutputObservation;

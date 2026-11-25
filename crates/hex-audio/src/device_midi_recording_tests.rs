@@ -1479,3 +1479,201 @@ fn mpe_dual_note_member_and_master_pitch_bend_endpoints_make_zero_callback_alloc
     }
     assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
 }
+
+#[test]
+fn rolling_60s_ram_recorder_isolates_selected_track_without_altering_mix_at_zero_callback_allocations()
+ {
+    use crate::rolling_recorder::{RollingHistory, RollingSource};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track_a) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "track-a".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track_a");
+    };
+    let Created::Track(track_b) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "track-b".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track_b");
+    };
+    // Place two distinct pitches on track_a (pitch 60) and track_b (pitch 72).
+    let Created::Clip(clip_a) = editor
+        .execute(Command::PlaceMidiClip {
+            track: track_a,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip_a");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: clip_a,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let Created::Clip(clip_b) = editor
+        .execute(Command::PlaceMidiClip {
+            track: track_b,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("clip_b");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: clip_b,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 72,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+
+    // Also render a single-track oracle for track_a alone to compare exact isolated PCM!
+    let mut oracle_editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Track(oracle_track) = oracle_editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "oracle-a".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("oracle");
+    };
+    let Created::Clip(oracle_clip) = oracle_editor
+        .execute(Command::PlaceMidiClip {
+            track: oracle_track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("oracle_clip");
+    };
+    oracle_editor
+        .execute(Command::AddMidiNote {
+            clip: oracle_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(4).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let oracle_prepared = Arc::new(
+        PreparedRevision::prepare(
+            oracle_editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut oracle_playback = Playback::try_from_prepared_with_session(oracle_prepared).unwrap();
+    oracle_playback.apply(hex_engine::PlaybackCommand::Play);
+    let mut oracle_skip = [[0.0_f32; 2]; 64];
+    oracle_playback.render(&mut oracle_skip).unwrap();
+    let mut oracle_isolated = [[0.0_f32; 2]; 64];
+    oracle_playback.render(&mut oracle_isolated).unwrap();
+
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    control
+        .publish_with_admission_and_source_on_control(
+            graph,
+            prepared::PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 5,
+                editor_revision: 1,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+
+    // Start always-on rolling recorder on Main mix (zero callback allocs verified via `deliver`!).
+    let mut reader = control
+        .rolling_recorder
+        .start(5, RollingSource::Main)
+        .unwrap();
+    let mut history = RollingHistory::new(48_000, 2).unwrap();
+
+    let mut main_block_1 = [[0.0_f32; 2]; 64];
+    assert!(deliver(&mut callback, &mut main_block_1, 2));
+    assert!(main_block_1.iter().flatten().any(|s| *s != 0.0));
+    history.drain(&mut reader);
+    let snap_main = history.snapshot();
+    assert_eq!(snap_main.source, RollingSource::Main);
+    assert_eq!(snap_main.frames.as_slice(), &main_block_1[..]);
+
+    // Toggle isolation onto track_a: earlier mixed Main audio is excluded, audible Main mix
+    // stays unchanged (both tracks still heard in `main_block_2`), and isolated snapshot
+    // matches `oracle_isolated` bit-for-bit at zero callback allocations!
+    control
+        .rolling_recorder
+        .set_source(5, RollingSource::Track(track_a.value()))
+        .unwrap();
+    let mut main_block_2 = [[0.0_f32; 2]; 64];
+    assert!(deliver(&mut callback, &mut main_block_2, 2));
+    assert_ne!(
+        main_block_2, oracle_isolated,
+        "audible Main mix must still contain both track_a and track_b"
+    );
+    history.drain(&mut reader);
+    let snap_isolated = history.snapshot();
+    assert_eq!(snap_isolated.source, RollingSource::Track(track_a.value()));
+    assert_eq!(snap_isolated.frames.len(), 64);
+    assert_eq!(
+        snap_isolated.frames.as_slice(),
+        &oracle_isolated[..],
+        "isolated rolling capture must match track_a alone and exclude earlier Main audio"
+    );
+
+    // Stop & reclaim cleanly at zero callback allocations.
+    control.rolling_recorder.stop();
+    assert!(deliver(&mut callback, &mut [[0.0_f32; 2]; 16], 2));
+    control.rolling_recorder.reclaim();
+    assert!(!control.rolling_recorder.is_active());
+}
