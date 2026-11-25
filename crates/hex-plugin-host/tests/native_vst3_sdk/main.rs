@@ -1538,7 +1538,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     let control_paths = instance
         .control
         .as_ref()
-        .map_or(0, |control| control.storage_bytes().unwrap() - crate::protocol::PACKET_LIMIT);
+        .map_or(0, |control| control.storage_bytes().unwrap() - crate::channel::PCM_BYTES);
     assert_eq!(
         storage.data_bytes,
         pending_storage.data_bytes - provenance_bytes
@@ -1550,7 +1550,7 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
         storage.data_bytes,
         instance.config.bundle.capacity()
             + instance.config.executable.capacity()
-            + crate::protocol::PACKET_LIMIT
+            + crate::channel::PCM_BYTES
             + instance
                 .control
                 .as_ref()

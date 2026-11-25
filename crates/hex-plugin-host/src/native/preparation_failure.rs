@@ -5,7 +5,7 @@ use super::*;
 pub(super) enum Custody {
     NoInstance,
     Probe(ChildCustody),
-    Native(Lease),
+    Native(Box<Lease>),
 }
 
 /// Physical native refusal cleanup only. Neither result admits a native source,
@@ -58,7 +58,7 @@ impl PreparationFailure {
         lease.cancel_native();
         Self {
             cause,
-            custody: Custody::Native(lease),
+            custody: Custody::Native(Box::new(lease)),
             // Overflow must expire immediately rather than disable the bound.
             deadline: Some(
                 Instant::now()
@@ -67,11 +67,16 @@ impl PreparationFailure {
             ),
         }
     }
-    pub(super) fn probe(cause: Error, child: ChildCustody) -> Self {
+    pub(super) fn probe(cause: Error, mut child: ChildCustody, retirement: Duration) -> Self {
+        child.kill();
         Self {
             cause,
             custody: Custody::Probe(child),
-            deadline: None,
+            deadline: Some(
+                Instant::now()
+                    .checked_add(retirement)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
     pub fn cause(&self) -> &Error {
@@ -113,18 +118,26 @@ impl PreparationFailure {
     /// Synchronous convenience callers retain their existing joined-error
     /// behavior. Root uses the retained result and polling method instead.
     pub(super) fn finish_on_control(mut self) -> Error {
-        let child = match &mut self.custody {
-            Custody::NoInstance | Custody::Probe(_) => return self.cause,
-            Custody::Native(lease) => &mut lease.child,
-        };
-        let (exit, custody_error) = match child.reap() {
-            Ok(status) => (Some(status), None),
-            Err(error) => (None, Some(Box::new(error))),
-        };
-        Error::Preparation {
-            cause: Box::new(self.cause),
-            exit,
-            custody_error,
+        let remaining = self.deadline.map_or(Duration::ZERO, |d| {
+            d.saturating_duration_since(Instant::now())
+        });
+        match &mut self.custody {
+            Custody::NoInstance => self.cause,
+            Custody::Probe(child) => {
+                let _ = child.reap_bounded(remaining);
+                self.cause
+            }
+            Custody::Native(lease) => {
+                let (exit, custody_error) = match lease.child.reap_bounded(remaining) {
+                    Ok(status) => (Some(status), None),
+                    Err(error) => (None, Some(Box::new(error))),
+                };
+                Error::Preparation {
+                    cause: Box::new(self.cause),
+                    exit,
+                    custody_error,
+                }
+            }
         }
     }
 }

@@ -51,30 +51,42 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     write_with_parameters(writer, block, None, None, None)
 }
 
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(test)]
 pub(crate) fn encode_into_slice(dst: &mut [u8], block: &Block) -> io::Result<usize> {
-    encode_with_parameters_into_slice(dst, block, None, None, None)
+    encode_with_parameters_into_slice(dst, block, None, None, None, false)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn encode_authored_into_slice(
+pub(crate) fn encode_validated_into_slice(dst: &mut [u8], block: &Block) -> io::Result<usize> {
+    encode_with_parameters_into_slice(dst, block, None, None, None, true)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn encode_validated_authored_into_slice(
     dst: &mut [u8],
     block: &Block,
     manual_parameter: Option<ParameterPoint>,
     step_count: &dyn Fn(u32) -> Option<u32>,
 ) -> io::Result<usize> {
-    encode_with_parameters_into_slice(dst, block, Some(step_count), manual_parameter, None)
+    encode_with_parameters_into_slice(dst, block, Some(step_count), manual_parameter, None, true)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn encode_dense_authored_into_slice(
+pub(crate) fn encode_validated_dense_authored_into_slice(
     dst: &mut [u8],
     block: &Block,
     lane: DenseParameterLane<'_>,
     manual_parameter: Option<ParameterPoint>,
     step_count: &dyn Fn(u32) -> Option<u32>,
 ) -> io::Result<usize> {
-    encode_with_parameters_into_slice(dst, block, Some(step_count), manual_parameter, Some(lane))
+    encode_with_parameters_into_slice(
+        dst,
+        block,
+        Some(step_count),
+        manual_parameter,
+        Some(lane),
+        true,
+    )
 }
 
 fn write_with_parameters(
@@ -85,8 +97,14 @@ fn write_with_parameters(
     dense: Option<DenseParameterLane<'_>>,
 ) -> io::Result<()> {
     let mut packet = [0_u8; MAX_DENSE_PACKET_BYTES];
-    let len =
-        encode_with_parameters_into_slice(&mut packet, block, step_count, manual_parameter, dense)?;
+    let len = encode_with_parameters_into_slice(
+        &mut packet,
+        block,
+        step_count,
+        manual_parameter,
+        dense,
+        false,
+    )?;
     writer.write_all(&packet[..len])?;
     writer.flush()
 }
@@ -97,13 +115,16 @@ fn encode_with_parameters_into_slice(
     step_count: Option<&dyn Fn(u32) -> Option<u32>>,
     manual_parameter: Option<ParameterPoint>,
     dense: Option<DenseParameterLane<'_>>,
+    already_validated: bool,
 ) -> io::Result<usize> {
     if block.frames == 0 || usize::from(block.frames) > MAX_FRAMES {
         return Err(invalid());
     }
-    block
-        .valid(block.binding, block.frames, block.sequence)
-        .map_err(|_| invalid())?;
+    if !already_validated {
+        block
+            .valid(block.binding, block.frames, block.sequence)
+            .map_err(|_| invalid())?;
+    }
     if [
         block.binding.root,
         block.binding.instance,

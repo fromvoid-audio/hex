@@ -224,3 +224,96 @@ fn source_unchanged_fast_avoids_rehash_when_intact_and_refuses_tampering() {
 
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn validate_block_fast_skips_startup_path_scan_and_validates_quantum_invariants() {
+    let binding = Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let config = Configuration {
+        binding,
+        identity: Identity {
+            class: ClassId::new([0x22; 16]).unwrap(),
+            binary: BinaryIdentity {
+                executable_sha256: [0x33; 32],
+                info_sha256: [0x44; 32],
+            },
+        },
+        sample_rate: 48_000.0,
+        quantum: 8,
+        input_channels: 1,
+        output_channels: 2,
+        // Intentionally invalid path with NUL: full `validate_block` rejects
+        // it, while `validate_block_fast` skips immutable startup fields.
+        bundle: "invalid\0bundle".into(),
+        executable: "Contents/MacOS/fixture".into(),
+        restore: None,
+    };
+    let mut block = Block {
+        binding,
+        sequence: 3,
+        first_frame: 24,
+        frames: 8,
+        pcm: [[0.0; 2]; crate::transport::MAX_FRAMES],
+        events: crate::transport::InputEvents::default(),
+        parameters: crate::transport::Parameters::default(),
+        timing: None,
+        timing_changes: crate::transport::TimingChanges::default(),
+    };
+    block.pcm[0] = [0.25, 0.0];
+    assert!(config.validate_block(&block, 3).is_err());
+    assert!(config.validate_block_fast(&block, 3).is_ok());
+
+    // Unused channel 1 must stay zero for mono input.
+    block.pcm[0] = [0.25, 0.5];
+    assert!(config.validate_block_fast(&block, 3).is_err());
+    block.pcm[0] = [0.25, 0.0];
+
+    // Non-finite PCM is refused.
+    block.pcm[1][0] = f32::NAN;
+    assert!(config.validate_block_fast(&block, 3).is_err());
+    block.pcm[1][0] = 0.0;
+
+    // Sequence mismatch is refused.
+    assert!(config.validate_block_fast(&block, 4).is_err());
+}
+
+#[test]
+fn lease_drop_bounds_hung_child_with_kill_and_signals_shm_fault() {
+    let (host_stream, _peer_stream) = UnixStream::pair().unwrap();
+    let channel = Channel::new(host_stream).unwrap();
+    let PreparationCancellation { token, .. } = PreparationCancellation::new_on_control().unwrap();
+    let (host_ring, _fd) = hex_shm_ring::HostRing::create().unwrap();
+    assert!(!host_ring.is_faulted());
+
+    let child = Command::new("/bin/sleep")
+        .arg("60")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let lease = Lease {
+        child: ChildCustody::Owned(child, None),
+        channel,
+        cancellation: token,
+        shm: Some(Box::new(host_ring)),
+        retirement_ms: 20,
+        reap_probe: None,
+    };
+    lease.cancel_native();
+    assert!(
+        lease.shm.as_ref().unwrap().is_faulted(),
+        "Lease::cancel_native must signal shm.set_fault()"
+    );
+    let started = Instant::now();
+    drop(lease);
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "Lease::drop must bound hung child with SIGKILL escalation (took {:?})",
+        started.elapsed()
+    );
+}

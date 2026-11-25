@@ -240,12 +240,12 @@ impl DenseEffectCallback {
         lane: Option<DenseParameterLane<'_>>,
         output: &mut [Frame],
     ) -> Result<(), Fault> {
-        let Some(stage) = &self.callback.staged else {
+        if self.callback.staged.is_none() {
             output.fill([0.0; 2]);
             return self.callback.fail(Fault::Protocol);
-        };
+        }
         if let Err(fault) = self.staging.stage(
-            stage.state.position,
+            self.callback.state.position,
             self.callback.quantum,
             frames,
             parameters,
@@ -262,8 +262,8 @@ impl DenseEffectCallback {
             && !self.callback.is_revoked()
             && let Some(stage) = &self.callback.staged
             && stage.staged_frames == stage.expected_frames
-            && let Some(request) = &stage.request
-            && let Err(fault) = self.staging.publish(request)
+            && stage.has_request
+            && let Err(fault) = self.staging.publish(&self.callback.staged_request)
         {
             return self.callback.fail(fault);
         }

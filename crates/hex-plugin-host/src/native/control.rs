@@ -378,6 +378,7 @@ impl ControlClient {
             pending.sequence,
             pending.operation,
         );
+        self.packet.shrink_to_pcm();
         if matches!(reply, Ok(_) | Err(Error::CaptureRefused(_))) {
             token.check()?;
         }
