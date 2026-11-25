@@ -14,6 +14,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 UI = Path("crates/hex-ui/src")
+UI_KIT = Path("crates/hex-ui-kit/src")
+SANDBOX = Path("crates/hex-sandbox/src")
 PANEL = UI / "editor/device_panel"
 RAW = re.compile(r'(?:br|r)(#*)"')
 QUOTED = re.compile(r'''(?:b)?"(?:\\.|[^"\\])*"|(?:b)?'(?:\\.|[^'\\\n])' ''', re.X)
@@ -202,32 +204,30 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
                 body = functions(read(owner)).get(fn, [])
                 errors.extend(require_calls(body, (f"{module}::render_body",), f"{owner}::{fn}"))
 
-    composition = read(UI / "device_composition.rs")
-    errors.extend(chrome_errors(composition, str(UI / "device_composition.rs")))
-    errors.extend(require_calls(composition, ("hex_widgets::device_body", "theme::device_style"), str(UI / "device_composition.rs")))
+    composition = read(UI_KIT / "device_composition.rs")
+    errors.extend(chrome_errors(composition, str(UI_KIT / "device_composition.rs")))
+    errors.extend(require_calls(composition, ("hex_widgets::device_body", "theme::device_style"), str(UI_KIT / "device_composition.rs")))
     preview = PANEL / "operator_panel/preview.rs"
     errors.extend(chrome_errors(read(preview), str(preview)))
 
     if gallery:
-        # Both launch targets must mount the production owner, not a gallery copy.
-        # This checks the explicit module boundary, not general Rust resolution.
-        for entry in (Path("crates/hex-ui/examples/layout_review.rs"), Path("crates/hex-sandbox/src/main.rs")):
-            source = (root / entry).read_text() if (root / entry).is_file() else ""
-            pattern = r'#\[\s*path\s*=\s*"([^"]+)"\s*\]\s*(?:#\[allow\(dead_code\)\]\s*)?mod\s+device_composition\s*;'
-            reference = re.search(pattern, source)
-            if not reference or (root / entry.parent / reference.group(1)).resolve() != (root / UI / "device_composition.rs").resolve():
-                errors.append(f"{entry}: include the owning src/device_composition.rs module")
-        path = Path("crates/hex-ui/examples/layout_review/compositions.rs")
+        # The sandbox target must import the production owner crate, not a local copy or #[path] shim.
+        entry = SANDBOX / "main.rs"
+        source = (root / entry).read_text() if (root / entry).is_file() else ""
+        uses_crate = re.search(r'\buse\s+hex_ui_kit::\{[^}]*\bdevice_composition\b', source) or re.search(r'\buse\s+hex_ui_kit::device_composition\b', source)
+        if not uses_crate or re.search(r'#\[\s*path\s*=.*device_composition', source):
+            errors.append(f"{entry}: import the owning hex_ui_kit::device_composition module")
+        path = SANDBOX / "compositions.rs"
         stream = read(path)
         errors.extend(chrome_errors(stream, str(path)))
-        host = Path("crates/hex-ui/examples/layout_review/gallery.rs")
+        host = SANDBOX / "gallery.rs"
         host_stream = read(host)
         for call in ("utility", "stacked_plot", "split_body", "three_pane", "paired_rails", "centered_rails", "wrapped_body", "unsupported_body"):
             errors.extend(require_calls(host_stream + stream, (f"device_composition::{call}",), str(path)))
         # Gallery navigation may style its own host buttons, but production
         # previews must still use product-resolved styles and the shared frame.
         errors.extend(chrome_errors(host_stream, str(host), paint=False))
-        errors.extend(require_calls(host_stream + stream, ("device_frame", "theme::device_frame_style", "theme::device_style"), "layout_review production preview"))
+        errors.extend(require_calls(host_stream + stream, ("device_frame", "theme::device_frame_style", "theme::device_style"), "sandbox production preview"))
     return errors
 
 

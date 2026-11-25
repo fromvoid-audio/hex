@@ -12,7 +12,10 @@
 //! Does not own a second editable project, construct DSP or access files/audio devices from
 //! rendering. Render app-owned text through theme::text with bundled Ioskeley Mono; preserve
 //! original user data and path casing.
-pub mod assets;
+pub use hex_ui_kit::{
+    assets, context_menu, device_composition, output_meter, section_hit, section_input,
+    section_surface, theme,
+};
 mod update;
 pub use update::{
     UpdateAction, UpdateApproval, UpdateClient, UpdateCommand, UpdateReady, UpdateStatus,
@@ -23,9 +26,7 @@ pub use mts::install_mts_publisher;
 mod app;
 mod build_info;
 pub use build_info::{BuildIdentity, diagnostic_build_identity, install_build_identity};
-mod context_menu;
 mod controller_input;
-mod device_composition;
 mod diagnostics;
 pub use controller_input::install_controller_input;
 pub use diagnostics::{install_action_diagnostics, install_audio_diagnostics, install_session_log};
@@ -40,17 +41,11 @@ pub use editor_backend::{
 };
 mod layout;
 mod log_viewer;
-mod section_appearance;
-mod section_hit;
-mod section_input;
-mod section_reorder;
-mod section_resize;
-mod section_selection;
-mod section_surface;
+pub(crate) use hex_ui_model::{
+    section_appearance, section_reorder, section_resize, section_selection,
+};
 mod startup;
 pub use startup::open_or_report;
-pub mod output_meter;
-mod theme;
 mod tooltips;
 mod vertical_scrollbar;
 use gpui::{App, AppContext, Bounds, KeyBinding, WindowBounds, WindowOptions, px, size};

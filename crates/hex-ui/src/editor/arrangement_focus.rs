@@ -28,7 +28,6 @@ pub(super) mod hidden_tracks;
 mod interval;
 #[path = "arrangement_focus/visibility.rs"]
 mod visibility;
-pub(super) use interval::track_intersects_sections;
 
 impl State {
     pub(super) fn reset(&mut self) {

@@ -252,8 +252,8 @@ FULL_STEPS = (
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--lib", "--features", "ui-test-support", "--locked")),
     *UI_FEATURE_TARGET_STEPS,
     *UI_UNIT_STEPS,
-    Step("sandbox-unit-tests", ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-unit-tier", "--locked", "theme::"), requires_tests=True),
-    Step("device-gallery-tests", ("cargo", "test", "-p", "hex-ui", "--example", "layout_review", "--features", "ui-test-support", "--locked")),
+    Step("sandbox-unit-tests", ("cargo", "test", "-p", "hex-ui-kit", "--features", "ui-unit-tier", "--locked", "theme::"), requires_tests=True),
+    Step("device-gallery-tests", ("cargo", "test", "-p", "hex-sandbox", "--features", "ui-test-support", "--locked")),
     Step("audio-allocation-probe", ("cargo", "test", "-p", "hex-audio", "-p", "hex-plugin-host", "--features", "allocation-probe", "--locked")),
     # Native fixtures serialize on hex-desktop's process-wide output lease;
     # disjoint test processes each own one, so their chains run concurrently.

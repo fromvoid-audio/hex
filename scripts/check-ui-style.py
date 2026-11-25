@@ -186,7 +186,7 @@ widgets = (
     'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
     'tuning_nodes)', 'tuning_slots)', 'tuning_reference)', 'settings)', 'right)',
 )
-for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
+for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/hex-ui-kit/src').rglob('*.rs'))):
     source = path.read_text()
     for match in re.finditer(r'\.child\(\s*', source):
         suffix = source[match.end():]

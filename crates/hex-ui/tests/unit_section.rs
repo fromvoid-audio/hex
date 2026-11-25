@@ -1,23 +1,17 @@
-//! Section geometry unit tests without a window or service.
-// Runtime consumers use more methods than this unit-only target.
-#[allow(dead_code)]
-#[path = "../src/section_appearance.rs"]
-mod section_appearance;
-#[allow(dead_code)]
-#[path = "../src/section_hit.rs"]
-mod section_hit;
-#[allow(dead_code)]
-#[path = "../src/section_input.rs"]
-mod section_input;
-#[allow(dead_code)]
-#[path = "../src/section_reorder.rs"]
-mod section_reorder;
-#[allow(dead_code)]
-#[path = "../src/section_resize.rs"]
-mod section_resize;
-#[allow(dead_code)]
-#[path = "../src/section_selection.rs"]
-mod section_selection;
+//! Section geometry unit-tier smoke re-export; authoritative unit tests live in
+//! `hex-ui-model` and `hex-ui-kit`.
+#[allow(unused_imports)]
+use hex_ui_kit::{section_hit, section_input, section_surface};
+#[allow(unused_imports)]
+use hex_ui_model::{
+    section_appearance, section_focus_geometry, section_geometry, section_reorder, section_resize,
+    section_selection,
+};
 
-#[path = "section_unit/section_surface.rs"]
-mod section_surface;
+#[test]
+fn section_model_and_kit_crates_are_wired() {
+    const {
+        assert!(section_geometry::CHAMFER > 0.0);
+        assert!(section_hit::INNER_EDGE_WIDTH > 0.0);
+    }
+}

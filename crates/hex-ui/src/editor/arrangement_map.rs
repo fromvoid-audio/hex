@@ -224,9 +224,53 @@ fn paint_layer(
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests {
-    use super::model::tests::project;
     use super::*;
-    use hex_project::{BeatTime, Command, Editor};
+    use hex_project::{BeatTime, Command, Created, Editor, IDENTITY_CONVERSION, Project, Tempo};
+
+    fn project() -> Project {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let mut tracks = Vec::new();
+        for name in ["audio", "midi"] {
+            let Created::Track(id) = editor
+                .execute(Command::AddTrack { name: name.into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            tracks.push(id);
+        }
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(120_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::from_quarters(2).unwrap(),
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::ImportPreparedAudioClip {
+                track: tracks[0],
+                start: 48_000,
+                path: "/tmp/main-map.wav".into(),
+                source_sample_rate: 48_000,
+                source_frames: 48_000,
+                playback_frames: 48_000,
+                conversion_version: IDENTITY_CONVERSION,
+            })
+            .unwrap();
+        editor
+            .execute(Command::PlaceMidiClip {
+                track: tracks[1],
+                start: BeatTime::ONE,
+                length: BeatTime::from_quarters(3).unwrap(),
+            })
+            .unwrap();
+        editor.project().clone()
+    }
 
     const LONG_ROW_SPAN_COUNT: usize = 19;
 

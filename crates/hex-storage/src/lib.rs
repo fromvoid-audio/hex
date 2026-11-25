@@ -3,7 +3,7 @@
 //! source-bound automation recording drafts. Drafts are not canonical lane references.
 //!
 //! # Dependencies
-//! Uses hex-project, hex-tuning, hex-lattice-contract, hex-plugin-state, base64, serde/serde_json, sha2 and fs2, plus
+//! Uses hex-project, hex-text, hex-tuning, hex-lattice-contract, hex-plugin-state, base64, serde/serde_json, sha2 and fs2, plus
 //! libc errno/flags, rustix's safe exclusive rename for create-new publication and its safe
 //! xattr calls to keep a replaced project's extended attributes, and same-file on Windows
 //! for hardlink/alias file identity checks.
@@ -20,9 +20,7 @@ pub mod preset;
 pub mod project_folder;
 pub mod project_name;
 mod publication;
-pub mod text;
-#[cfg(test)]
-mod text_tests;
+pub use hex_text as text;
 pub mod tuning_library;
 pub use journal::{
     Journal, JournalRestartOutcome, JournalRestartToken, MAX_UNTITLED_SLOTS, UntitledSlotClaim,
