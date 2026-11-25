@@ -213,6 +213,7 @@ struct CachedPage {
 struct CliExportPages {
     sources: Vec<CliStreamSource>,
     cache: Vec<CachedPage>,
+    capacity: usize,
     requested: Vec<(StreamSourceKey, u64)>,
     clock: u64,
     missed: bool,
@@ -220,9 +221,14 @@ struct CliExportPages {
 
 impl CliExportPages {
     fn new(sources: Vec<CliStreamSource>) -> Self {
+        Self::with_capacity(sources, CLI_PAGE_CACHE_CAPACITY)
+    }
+
+    fn with_capacity(sources: Vec<CliStreamSource>, capacity: usize) -> Self {
         Self {
             sources,
             cache: Vec::new(),
+            capacity: capacity.max(1),
             requested: Vec::new(),
             clock: 0,
             missed: false,
@@ -252,7 +258,7 @@ impl CliExportPages {
             .ok_or(ExportError::Invalid(
                 "streamed export requested an unknown source",
             ))?;
-        let slot_index = if self.cache.len() < CLI_PAGE_CACHE_CAPACITY {
+        let slot_index = if self.cache.len() < self.capacity {
             self.cache.push(CachedPage {
                 key,
                 page_index,
@@ -395,18 +401,23 @@ fn load_and_prepare_project(input: &Path) -> Result<PreparedCliProject, Box<dyn 
     // transforms (warp/pitch) vs. ordinary verified streaming.
     let mut timeline_assets = BTreeSet::new();
     let mut transformed_assets = BTreeSet::new();
-    for clip in project.tracks().iter().flat_map(|track| track.clips()) {
-        let clip_assets = clip.referenced_assets();
-        let needs_resident = clip.audio_edit().is_some_and(|edit| {
-            edit.domain.content.pitch_cents != 0
-                || edit.domain.content.warp_enabled
-                || edit.domain.content.warp.is_some()
-                || edit.domain.content.events.is_some()
-        });
-        for asset_id in clip_assets {
-            timeline_assets.insert(asset_id);
-            if needs_resident {
-                transformed_assets.insert(asset_id);
+    for track in project.tracks() {
+        if let Some(frozen) = track.frozen() {
+            timeline_assets.insert(frozen.asset);
+        }
+        for clip in track.clips() {
+            let clip_assets = clip.referenced_assets();
+            let needs_resident = clip.audio_edit().is_some_and(|edit| {
+                edit.domain.content.pitch_cents != 0
+                    || edit.domain.content.warp_enabled
+                    || edit.domain.content.warp.is_some()
+                    || edit.domain.content.events.is_some()
+            });
+            for asset_id in clip_assets {
+                timeline_assets.insert(asset_id);
+                if needs_resident {
+                    transformed_assets.insert(asset_id);
+                }
             }
         }
     }
@@ -744,10 +755,18 @@ fn parse_format(name: &str) -> Result<ExportFormat, Box<dyn Error>> {
     }
 }
 
-/// Explicit offline range/scope adapter supporting streamed timeline media,
-/// Sampler/device resources, WAV & FLAC containers, target SRC, and opt-in
-/// peak/loudness normalization.
-pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
+#[derive(Debug, PartialEq)]
+struct ParsedExportArgs<'a> {
+    start: u64,
+    end: u64,
+    frames: u64,
+    scope: Option<&'a str>,
+    overwrite: bool,
+    format: ExportFormat,
+    options: ExportOptions,
+}
+
+fn parse_export_args(args: &[std::ffi::OsString]) -> Result<ParsedExportArgs<'_>, Box<dyn Error>> {
     if !(5..=12).contains(&args.len()) {
         return Err("usage: hex-cli export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32|flac16|flac24|flac] [--sample-rate=<hz>] [--normalize-peak=<dbfs>|--normalize-lufs=<lufs>] [--true-peak-ceiling=<dbfs>] [--overwrite]".into());
     }
@@ -818,6 +837,31 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
         normalization,
     };
     options.validate()?;
+    Ok(ParsedExportArgs {
+        start,
+        end,
+        frames,
+        scope,
+        overwrite,
+        format: format.unwrap_or_default(),
+        options,
+    })
+}
+
+/// Explicit offline range/scope adapter supporting streamed timeline media,
+/// Sampler/device resources, WAV & FLAC containers, target SRC, and opt-in
+/// peak/loudness normalization.
+pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>> {
+    let parsed = parse_export_args(args)?;
+    let ParsedExportArgs {
+        start,
+        end,
+        frames,
+        scope,
+        overwrite,
+        format,
+        options,
+    } = parsed;
 
     let input_path = Path::new(&args[1]);
     let path = Path::new(&args[2]);
@@ -929,7 +973,7 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
                     start,
                     frames,
                     signal,
-                    format: format.unwrap_or_default(),
+                    format,
                     control: &render_control,
                     publication: &publication,
                 },
@@ -951,14 +995,14 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
     }
     let report = worker.join().map_err(|_| "export worker stopped")??;
     println!(
-        "exported {} frames ({} Hz) to {}",
+        "exported {} frames ({} hz) to {}",
         report.frames,
         report.sample_rate,
         report.path.display()
     );
     if !matches!(options.normalization, ExportNormalization::Off) {
         println!(
-            "applied normalization gain: {:+.4} dB ({:.6}x)",
+            "applied normalization gain: {:+.4} db ({:.6}x)",
             report.applied_gain_db, report.applied_gain_linear
         );
     }
@@ -970,8 +1014,56 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
 
 #[cfg(test)]
 mod tests {
-    use super::parse_format;
-    use hex_export::ExportFormat;
+    use super::{
+        CliExportPages, CliStreamSource, ParsedExportArgs, parse_export_args, parse_format,
+        refuse_protected_destination, stream_reader_limits,
+    };
+    use hex_engine::{MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey};
+    use hex_export::{ExportFormat, ExportNormalization, ExportOptions, PreparedExportPages};
+    use hex_media::VerifiedWavReader;
+    use hex_project::{Command, Editor, Project};
+    use std::{
+        ffi::OsString,
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
+
+    fn os_args(items: &[&str]) -> Vec<OsString> {
+        items.iter().map(OsString::from).collect()
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "hex-cli-unit-{tag}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mono_wav_bytes(samples: &[i16], rate: u32) -> Vec<u8> {
+        let data_bytes = (samples.len() * 2) as u32;
+        let mut out = Vec::with_capacity(44 + data_bytes as usize);
+        out.extend_from_slice(b"RIFF");
+        out.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        out.extend_from_slice(b"WAVEfmt ");
+        out.extend_from_slice(&16_u32.to_le_bytes());
+        out.extend_from_slice(&1_u16.to_le_bytes());
+        out.extend_from_slice(&1_u16.to_le_bytes());
+        out.extend_from_slice(&rate.to_le_bytes());
+        out.extend_from_slice(&(rate * 2).to_le_bytes());
+        out.extend_from_slice(&2_u16.to_le_bytes());
+        out.extend_from_slice(&16_u16.to_le_bytes());
+        out.extend_from_slice(b"data");
+        out.extend_from_slice(&data_bytes.to_le_bytes());
+        for &sample in samples {
+            out.extend_from_slice(&sample.to_le_bytes());
+        }
+        out
+    }
 
     #[test]
     fn format_option_names_map_to_export_formats_and_refuse_unknown_names() {
@@ -984,5 +1076,172 @@ mod tests {
         for name in ["", "PCM24", "pcm32", "float64", "FLAC", "mp3"] {
             assert!(parse_format(name).is_err(), "{name}");
         }
+    }
+
+    #[test]
+    fn export_flag_parsing_accepts_valid_options_and_rejects_conflicts() {
+        let args = os_args(&[
+            "export-project",
+            "song.hex",
+            "out.flac",
+            "100",
+            "500",
+            "--tracks=1,2",
+            "--format=flac24",
+            "--sample-rate=44100",
+            "--normalize-lufs=-14.0",
+            "--true-peak-ceiling=-1.0",
+            "--overwrite",
+        ]);
+        let parsed = parse_export_args(&args).unwrap();
+        assert_eq!(
+            parsed,
+            ParsedExportArgs {
+                start: 100,
+                end: 500,
+                frames: 400,
+                scope: Some("--tracks=1,2"),
+                overwrite: true,
+                format: ExportFormat::Flac24,
+                options: ExportOptions {
+                    target_sample_rate: Some(44_100),
+                    normalization: ExportNormalization::Loudness {
+                        target_lufs: -14.0,
+                        true_peak_ceiling_dbfs: Some(-1.0),
+                    },
+                },
+            }
+        );
+
+        // Peak + loudness are mutually exclusive; ceiling requires loudness; range must be ordered.
+        for bad in [
+            vec!["export-project", "a.hex", "b.wav", "50", "50"],
+            vec!["export-project", "a.hex", "b.wav", "60", "50"],
+            vec![
+                "export-project",
+                "a.hex",
+                "b.wav",
+                "0",
+                "10",
+                "--true-peak-ceiling=-1.0",
+            ],
+            vec![
+                "export-project",
+                "a.hex",
+                "b.wav",
+                "0",
+                "10",
+                "--normalize-peak=-1.0",
+                "--normalize-lufs=-14.0",
+            ],
+            vec![
+                "export-project",
+                "a.hex",
+                "b.wav",
+                "0",
+                "10",
+                "--overwrite",
+                "--overwrite",
+            ],
+            vec![
+                "export-project",
+                "a.hex",
+                "b.wav",
+                "0",
+                "10",
+                "--sample-rate=1000",
+            ],
+            vec!["export-project", "a.hex", "b.wav", "0", "10", "--bogus"],
+        ] {
+            assert!(parse_export_args(&os_args(&bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn cli_export_pages_enforces_lru_eviction_pinning_and_miss_detection() {
+        let dir = temp_dir("pages");
+        let wav_path = dir.join("three-pages.wav");
+        let total_frames = STREAM_PAGE_FRAMES * 3;
+        let mut samples = vec![0_i16; total_frames];
+        samples[0] = 4_096;
+        samples[STREAM_PAGE_FRAMES] = 8_192;
+        samples[STREAM_PAGE_FRAMES * 2] = 16_384;
+        fs::write(&wav_path, mono_wav_bytes(&samples, 48_000)).unwrap();
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let hex_project::Created::Imported { asset, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "pages".into(),
+                path: wav_path.clone(),
+                sample_rate: 48_000,
+                frames: total_frames as u64,
+            })
+            .unwrap()
+        else {
+            panic!("imported fixture");
+        };
+        let key = StreamSourceKey::new(1, asset);
+        let reader = VerifiedWavReader::open(&wav_path, stream_reader_limits()).unwrap();
+        let source = CliStreamSource {
+            key,
+            reader,
+            plan: None,
+            playback_frames: total_frames as u64,
+            source_scratch: Vec::new(),
+        };
+        let mut pages = CliExportPages::with_capacity(vec![source], 2);
+
+        // Pin two pages to fill capacity; a third simultaneous pin must fail cleanly.
+        pages.load_and_pin(key, 0).unwrap();
+        pages.load_and_pin(key, 1).unwrap();
+        assert!(pages.load_and_pin(key, 2).is_err());
+        assert_eq!(pages.page(key, 0).unwrap().frames[0][0], 4_096.0 / 32_768.0);
+        assert_eq!(pages.page(key, 1).unwrap().frames[0][0], 8_192.0 / 32_768.0);
+
+        // Unpin via complete_chunk, touch page 0 (making page 1 LRU), then load page 2 -> evicts page 1.
+        pages.complete_chunk().unwrap();
+        pages.load_and_pin(key, 0).unwrap();
+        pages.load_and_pin(key, 2).unwrap();
+        assert_eq!(pages.page(key, 0).unwrap().frames[0][0], 4_096.0 / 32_768.0);
+        assert_eq!(
+            pages.page(key, 2).unwrap().frames[0][0],
+            16_384.0 / 32_768.0
+        );
+        assert!(pages.page(key, 1).is_none());
+        // The page miss above must fail complete_chunk so partial output is never published.
+        assert!(pages.complete_chunk().is_err());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn refuse_protected_destination_blocks_project_and_source_media() {
+        let dir = temp_dir("protected");
+        let media = dir.join("source.wav");
+        let project_path = dir.join("song.hex");
+        fs::write(&media, mono_wav_bytes(&[1000; 16], 48_000)).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        editor
+            .execute(Command::ImportAudioTrack {
+                name: "a".into(),
+                path: PathBuf::from("source.wav"),
+                sample_rate: 48_000,
+                frames: 16,
+            })
+            .unwrap();
+        hex_storage::save_new(&project_path, editor.project()).unwrap();
+
+        assert!(
+            refuse_protected_destination(&project_path, editor.project(), &project_path).is_err()
+        );
+        assert!(refuse_protected_destination(&project_path, editor.project(), &media).is_err());
+        let alias = dir.join(".").join("source.wav");
+        assert!(refuse_protected_destination(&project_path, editor.project(), &alias).is_err());
+        let safe_output = dir.join("export.wav");
+        assert!(
+            refuse_protected_destination(&project_path, editor.project(), &safe_output).is_ok()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
