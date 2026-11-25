@@ -1282,7 +1282,7 @@ impl EditorView {
             self.session_grid.routes.clear();
         }
         let frame = audio.control.status().map(|status| {
-            let mut frame = AudioFrame::capture(status);
+            let mut frame = crate::editor::refresh::capture_audio_frame(status);
             frame.source = audio.control.output_identity().unwrap_or_default();
             frame
         });

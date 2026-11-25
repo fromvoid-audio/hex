@@ -12,7 +12,7 @@ mod mode;
 use hex_ui_model::{fade_calculation, session_navigation, track_proposals};
 pub(super) use mode::EditorMode;
 
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports)]
 #[path = "../../src/editor/audio_admission.rs"]
 mod audio_admission;
 
@@ -33,6 +33,10 @@ mod controller;
 
 #[path = "audio_import_settings.rs"]
 mod audio_import_settings;
+
+#[allow(dead_code, unused_imports)]
+#[path = "../../src/editor/cpu_meter.rs"]
+mod cpu_meter;
 
 #[allow(dead_code)]
 #[path = "../../src/editor/refresh_state.rs"]

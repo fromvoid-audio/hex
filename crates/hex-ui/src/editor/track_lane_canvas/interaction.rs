@@ -490,17 +490,12 @@ impl EditorView {
                             view.focus.focus(window);
                             cx.notify();
                         }
-                        LaneHitZone::TrimLeft
-                        | LaneHitZone::TrimRight
-                        | LaneHitZone::LoopHandle(_) => {
-                            let edge = match hit.zone {
-                                LaneHitZone::TrimLeft => TrimEdge::Left,
-                                LaneHitZone::TrimRight | LaneHitZone::LoopHandle(_) => {
-                                    TrimEdge::Right
-                                }
-                                _ => unreachable!(),
-                            };
-                            view.clear_pointer_down(generation, hit.clip_id, Some(edge));
+                        LaneHitZone::TrimLeft => {
+                            view.clear_pointer_down(generation, hit.clip_id, Some(TrimEdge::Left));
+                            cx.stop_propagation();
+                        }
+                        LaneHitZone::TrimRight | LaneHitZone::LoopHandle(_) => {
+                            view.clear_pointer_down(generation, hit.clip_id, Some(TrimEdge::Right));
                             cx.stop_propagation();
                         }
                         LaneHitZone::Body => {}

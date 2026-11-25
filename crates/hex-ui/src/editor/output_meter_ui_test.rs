@@ -1,4 +1,4 @@
-use super::{clip_drag_ui_test::editor_window, refresh::AudioFrame};
+use super::clip_drag_ui_test::editor_window;
 use crate::output_meter::{HEIGHT, MeterInput, WIDTH, readout};
 use gpui::{Modifiers, TestAppContext, VisualTestContext, px, size};
 use hex_audio::prepared::Status;
@@ -150,7 +150,7 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
     ] {
         status.peak_left.store(left.to_bits(), Relaxed);
         status.peak_right.store(right.to_bits(), Relaxed);
-        let frame = AudioFrame::capture(&status);
+        let frame = crate::editor::refresh::capture_audio_frame(&status);
         let at = start + std::time::Duration::from_millis(offset_ms);
         editor.update(cx, |view, cx| {
             assert!(view.observe_audio_frame(Some(frame), false, at));
@@ -196,7 +196,7 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
     // Callback-latched between-poll clip survives a quieter callback before UI polling.
     status.record_output_peaks([1.75, 0.25]);
     status.record_output_peaks([0.05, 0.05]);
-    let latched_frame = AudioFrame::capture(&status);
+    let latched_frame = crate::editor::refresh::capture_audio_frame(&status);
     editor.update(cx, |view, cx| {
         assert!(view.observe_audio_frame(
             Some(latched_frame),
@@ -215,7 +215,7 @@ fn output_meter_status_snapshot_reaches_actual_editor_at_minimum_size(cx: &mut T
         "between-poll callback peak must populate peak hold"
     );
     status.render_fault.store(true, Relaxed);
-    let frame = AudioFrame::capture(&status);
+    let frame = crate::editor::refresh::capture_audio_frame(&status);
     editor.update(cx, |view, cx| {
         assert!(view.observe_audio_frame(
             Some(frame),
@@ -265,7 +265,7 @@ fn stream_starvation_lights_compact_disk_overload_until_hold_expires(cx: &mut Te
     status.playing.store(true, Relaxed);
     let start = Instant::now();
     let mut observe = |status: &Status, source: u64, at: Instant| {
-        let mut frame = AudioFrame::capture(status);
+        let mut frame = crate::editor::refresh::capture_audio_frame(status);
         frame.source = source;
         let redraw = editor.update(&mut visual, |view, cx| {
             let redraw = view.observe_audio_frame(Some(frame), false, at);

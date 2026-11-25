@@ -394,7 +394,9 @@ impl EditorView {
             return false;
         };
         let gate_frames = u64::from(sample_rate / 4).max(1);
-        let intent = self.midi_editor.audition.pending.take().unwrap();
+        let Some(intent) = self.midi_editor.audition.pending.take() else {
+            return false;
+        };
         if self.worker_owns_keyboard_publication()
             && let Some((_, revision, _)) = self.computer_keyboard.target.as_mut()
             && let Some(state) = self.state.as_ref()

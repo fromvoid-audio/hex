@@ -203,7 +203,7 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
             .as_ref()
             .and_then(|audio| audio.control.output_identity())
             .unwrap_or(1);
-        let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+        let mut frame = crate::editor::refresh::capture_audio_frame(status);
         frame.source = source;
         let track_changed = view.tick_track_meters(start);
         let _ = view.observe_audio_frame_for_tick(Some(frame), false, track_changed, start, cx);
@@ -246,9 +246,9 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
             status.peak_left.store(peak.to_bits(), Relaxed);
             status.peak_right.store((peak * 0.7).to_bits(), Relaxed);
             status.record_output_peaks([peak, peak * 0.7]);
-            let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+            let mut frame = crate::editor::refresh::capture_audio_frame(status);
             frame.source = output_source;
-            frame.cpu = hex_audio::cpu_meter::CpuSample {
+            frame.cpu = hex_ui_model::cpu_meter::CpuSample {
                 elapsed: 1_000_000 + tick * 50_000,
                 budget: 5_333_333,
                 peak: 2_000_000,
@@ -307,7 +307,7 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
             status.peak_left.store(peak.to_bits(), Relaxed);
             status.peak_right.store((peak * 0.6).to_bits(), Relaxed);
             status.record_output_peaks([peak, peak * 0.6]);
-            let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+            let mut frame = crate::editor::refresh::capture_audio_frame(status);
             frame.source = output_source;
             let track_changed = view.tick_track_meters(at);
             view.observe_audio_frame_for_tick(Some(frame), false, track_changed, at, cx)
@@ -824,7 +824,7 @@ fn audio_detail_playhead_isolates_from_editor_view_during_playback(cx: &mut Test
             .as_ref()
             .and_then(|audio| audio.control.output_identity())
             .unwrap_or(1);
-        let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+        let mut frame = crate::editor::refresh::capture_audio_frame(status);
         frame.source = source;
         let _ = view.observe_audio_frame_for_tick(Some(frame), false, false, start, cx);
         cx.notify();
@@ -859,7 +859,7 @@ fn audio_detail_playhead_isolates_from_editor_view_during_playback(cx: &mut Test
         let root_redraw = editor.update(&mut visual, |view, cx| {
             let status = view.audio_status().unwrap();
             status.position.store(4_800 + tick * 1_200, Relaxed);
-            let mut frame = crate::editor::refresh::AudioFrame::capture(status);
+            let mut frame = crate::editor::refresh::capture_audio_frame(status);
             frame.source = output_source;
             view.observe_audio_frame_for_tick(Some(frame), false, false, at, cx)
         });
