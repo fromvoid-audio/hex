@@ -1262,8 +1262,12 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     use std::sync::atomic::Ordering::Acquire;
     let _output_fixture_guard = graph_layout_tests::status_fixture_guard();
     let directory = Directory::new();
-    let slot = directory.0.join("recovery/untitled.hexjournal");
+    let parent = directory.0.join("not-a-recovery-directory");
+    let slot = parent.join("untitled.hexjournal");
+    let mut checkpoint =
+        recovery_error.then(|| hex_session::service::hold_next_checkpoint(slot.clone()).unwrap());
     let service = if recovery_error {
+        std::fs::write(&parent, b"owned fixture obstruction").unwrap();
         Service::with_recovery(48_000, 32, 0, slot.clone()).unwrap()
     } else {
         Service::new(48_000, 32, 0).unwrap()
@@ -1276,7 +1280,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         assert!(event.playback.is_none() && !event.project_replaced);
         if let Some(error) = &event.error {
             assert!(
-                recovery_error && error.contains("project changed outside hex"),
+                recovery_error && error.contains("recovery directory must be a real directory"),
                 "{error}"
             );
         }
@@ -1410,23 +1414,6 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                 AdmissionState::Pending
             );
             assert_eq!(view.applied_project_revision(), None);
-            // Make only this comparison's checkpoint conflict with an external writer.
-            let deadline = crate::test_wait::hang_deadline();
-            loop {
-                match hex_storage::load_journal(&slot) {
-                    Ok(project) if &project == state.project.as_ref() => break,
-                    Ok(_) => {}
-                    Err(hex_storage::StorageError::Io(error))
-                        if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => panic!("could not read the setup checkpoint: {error}"),
-                }
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "setup checkpoint publication"
-                );
-                std::thread::yield_now();
-            }
-            std::fs::write(&slot, b"external fixture bytes").unwrap();
         }
         view.service
             .submit(Request::CompareDevice {
@@ -1443,7 +1430,25 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             .unwrap();
         let event = terminal(&view.service);
         assert!(event.playback.is_none());
-        let notice = if recovery_error && event.recovery_failure.is_none() {
+        if let Some(gate) = checkpoint.as_mut() {
+            // The edit completed while recovery was held. Let the genuine
+            // filesystem failure arrive while the audio candidate is pending.
+            let deadline = crate::test_wait::hang_deadline();
+            loop {
+                match gate.try_entered() {
+                    Ok(()) => break,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => assert!(
+                        std::time::Instant::now() < deadline,
+                        "checkpoint did not enter"
+                    ),
+                    Err(error) => panic!("checkpoint unavailable: {error}"),
+                }
+                std::thread::yield_now();
+            }
+            assert!(event.recovery_failure.is_none());
+            gate.release().unwrap();
+        }
+        let notice = if recovery_error {
             let notice = receive_service_event(&view.service);
             assert!(!notice.request_complete && notice.playback.is_none());
             Some(notice)
@@ -1459,7 +1464,9 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                 .unwrap();
             assert_eq!(failure.path, slot);
             assert!(
-                failure.explanation.contains("project changed outside hex"),
+                failure
+                    .explanation
+                    .contains("recovery directory must be a real directory"),
                 "{failure:?}"
             );
             assert_eq!(event.state.revision, state.revision + 1);
@@ -1517,9 +1524,12 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
                     .as_ref()
                     .unwrap()
                     .explanation
-                    .contains("project changed outside hex")
+                    .contains("recovery directory must be a real directory")
             );
-            assert_eq!(std::fs::read(&slot).unwrap(), b"external fixture bytes");
+            assert_eq!(
+                std::fs::read(&parent).unwrap(),
+                b"owned fixture obstruction"
+            );
         }
         let next = view.state.as_ref().unwrap();
         assert_eq!(next.revision, state.revision + 1);
@@ -1595,13 +1605,13 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         let event = terminal(&view.service);
         let next = event.state.clone();
         if recovery_error {
-            assert!(event.recovery_failure.as_ref().unwrap().explanation.contains("project changed outside hex"));
+            assert!(event.recovery_failure.as_ref().unwrap().explanation.contains("recovery directory must be a real directory"));
             assert!(event.playback.is_none());
             assert!(next.comparison_audio.as_ref().unwrap().follows(&current, &next, 0));
         }
         view.receive(event);
         if recovery_error {
-            assert!(view.recovery_failure.as_ref().unwrap().explanation.contains("project changed outside hex"));
+            assert!(view.recovery_failure.as_ref().unwrap().explanation.contains("recovery directory must be a real directory"));
             assert_eq!(view.computer_keyboard.target, Some((0, next.revision, track)));
             assert!(!keyboard.is_cancelled());
             assert!(Arc::ptr_eq(next.canonical_audio_source.as_ref().unwrap(), &source));
