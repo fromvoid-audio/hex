@@ -196,6 +196,10 @@ impl Gates {
                 batch.consumed += 1;
                 return Ok(());
             }
+            LiveNoteEvent::NotePitchBend { .. } | LiveNoteEvent::NoteTimbre { .. } => {
+                batch.consumed += 1;
+                return Ok(());
+            }
             LiveNoteEvent::AllNotesOff => {
                 if self.release_all(events) {
                     batch.consumed += 1;

@@ -156,19 +156,41 @@ pub enum MpeExpressionEvent {
     AllNotesOff,
 }
 
+/// Active note state tracked on one MPE member channel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MpeActiveNote {
+    pub pitch: u8,
+    pub sustained: bool,
+    /// Per-note pitch bend range captured at NoteOn time so later zone bend-range
+    /// changes do not retune already-held notes.
+    pub pitch_bend_range_semitones: u8,
+    /// Monotonic occurrence token assigned by the decoder.
+    pub occurrence_token: u64,
+}
+
 /// Zero-allocation MPE member-channel expression decoder.
+///
+/// Tracks per-channel note ownership, master/member CC64 sustain, per-note
+/// pitch-bend range capture at NoteOn, duplicate same-channel retrigger
+/// release, channel reuse, and zone/system resets without heap allocation.
 #[derive(Clone, Debug)]
 pub struct MpeDecoder {
     config: MpeConfig,
-    /// Currently sounding pitch on each member channel (`0..=15`).
-    active_pitch: [Option<u8>; 16],
+    /// Currently sounding note on each member channel (`0..=15`).
+    active: [Option<MpeActiveNote>; 16],
+    /// Sustain pedal (CC64 >= 64) state per channel (`0..=15`); master channel
+    /// sustain holds every member channel in the zone.
+    sustain_down: [bool; 16],
+    next_token: u64,
 }
 
 impl MpeDecoder {
     pub const fn new(config: MpeConfig) -> Self {
         Self {
             config,
-            active_pitch: [None; 16],
+            active: [None; 16],
+            sustain_down: [false; 16],
+            next_token: 0,
         }
     }
 
@@ -176,114 +198,297 @@ impl MpeDecoder {
         self.config
     }
 
-    /// Clear tracked active pitches on all member channels.
+    /// Update the per-note pitch bend range (`1..=96` semitones) for future
+    /// notes without retuning already-sounding notes on member channels.
+    pub fn set_pitch_bend_range(&mut self, semitones: u8) -> bool {
+        if semitones == 0 || semitones > MAX_MPE_PITCH_BEND_SEMITONES {
+            return false;
+        }
+        self.config.pitch_bend_range_semitones = semitones;
+        true
+    }
+
+    /// Reconfigure the MPE zone, clearing all tracked notes and sustain state.
+    pub fn set_config(&mut self, config: MpeConfig) -> bool {
+        if !config.zone.is_valid()
+            || config.pitch_bend_range_semitones == 0
+            || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+        {
+            return false;
+        }
+        self.config = config;
+        self.reset();
+        true
+    }
+
+    /// Clear tracked active notes and sustain state on all channels.
     pub fn reset(&mut self) {
-        self.active_pitch = [None; 16];
+        self.active = [None; 16];
+        self.sustain_down = [false; 16];
     }
 
     /// Active pitch currently tracked on `channel` (`0..=15`), if any.
     pub fn active_pitch(&self, channel: u8) -> Option<u8> {
-        self.active_pitch
-            .get(usize::from(channel))
-            .copied()
-            .flatten()
+        self.active_note(channel).map(|note| note.pitch)
     }
 
-    /// Decode one complete MIDI 1.0 channel-voice message (2 or 3 bytes) under
-    /// the configured MPE zone. Returns `None` for out-of-zone or malformed input.
-    pub fn decode_message(&mut self, message: &[u8]) -> Option<MpeExpressionEvent> {
+    /// Full active note state currently tracked on `channel` (`0..=15`), if any.
+    pub fn active_note(&self, channel: u8) -> Option<MpeActiveNote> {
+        self.active.get(usize::from(channel)).copied().flatten()
+    }
+
+    fn channel_sustained(&self, channel: u8) -> bool {
+        let master = self.config.zone.master_channel();
+        self.sustain_down[usize::from(channel)] || self.sustain_down[usize::from(master)]
+    }
+
+    fn bend_to_cents_with_range(bend: i16, range_semitones: u8) -> i16 {
+        let range_cents = i64::from(range_semitones) * 100;
+        let denom = if bend < 0 { 8192_i64 } else { 8191_i64 };
+        let scaled = (i64::from(bend) * range_cents
+            + if bend >= 0 { denom / 2 } else { -(denom / 2) })
+            / denom;
+        scaled.clamp(-4800, 4800) as i16
+    }
+
+    /// Decode one complete MIDI 1.0 channel-voice message (2 or 3 bytes) into
+    /// caller-owned bounded storage (`out`), returning the number of emitted
+    /// events (`0..=16`).
+    ///
+    /// - A duplicate `NoteOn` on an occupied member channel emits `NoteOff` for
+    ///   the prior occurrence before `NoteOn` for the new pitch (no stuck notes).
+    /// - A `NoteOff` while master or member CC64 sustain is held retains note
+    ///   ownership (`sustained = true`) until sustain lifts or CC121 resets.
+    /// - Releasing master CC64 sustain emits `NoteOff` for every sustained member
+    ///   channel in deterministic channel order.
+    /// - Out-of-zone, malformed, or idle-channel expression messages emit `0`.
+    pub fn decode_message_into(
+        &mut self,
+        message: &[u8],
+        out: &mut [MpeExpressionEvent; 16],
+    ) -> usize {
         if !(2..=3).contains(&message.len()) {
-            return None;
+            return 0;
         }
-        let (&status, data) = message.split_first()?;
+        let Some((&status, data)) = message.split_first() else {
+            return 0;
+        };
         if !(0x80..0xf0).contains(&status) || data.iter().any(|&v| v > 127) {
-            return None;
+            return 0;
         }
         let channel = status & 0x0f;
         let kind = status & 0xf0;
         let is_master = channel == self.config.zone.master_channel();
         let is_member = self.config.zone.is_member_channel(channel);
         if !is_master && !is_member {
-            return None;
+            return 0;
         }
+
+        let mut count = 0_usize;
+        let mut push = |event: MpeExpressionEvent| {
+            if count < out.len() {
+                out[count] = event;
+                count += 1;
+            }
+        };
 
         match (kind, data) {
             (0x90, &[pitch, velocity]) if velocity != 0 => {
                 if is_member {
-                    self.active_pitch[usize::from(channel)] = Some(pitch);
+                    if let Some(prior) = self.active[usize::from(channel)].take() {
+                        push(MpeExpressionEvent::NoteOff {
+                            channel,
+                            pitch: prior.pitch,
+                            velocity: 0,
+                        });
+                    }
+                    self.next_token = self.next_token.wrapping_add(1);
+                    self.active[usize::from(channel)] = Some(MpeActiveNote {
+                        pitch,
+                        sustained: false,
+                        pitch_bend_range_semitones: self.config.pitch_bend_range_semitones,
+                        occurrence_token: self.next_token,
+                    });
                 }
-                Some(MpeExpressionEvent::NoteOn {
+                push(MpeExpressionEvent::NoteOn {
                     channel,
                     pitch,
                     velocity,
-                })
+                });
             }
             (0x80 | 0x90, &[pitch, velocity]) => {
-                if is_member && self.active_pitch[usize::from(channel)] == Some(pitch) {
-                    self.active_pitch[usize::from(channel)] = None;
+                if is_member {
+                    let sustained = self.channel_sustained(channel);
+                    let Some(active) = self.active[usize::from(channel)].as_mut() else {
+                        // Refusing stray NoteOff for an idle channel avoids bogus transitions.
+                        return 0;
+                    };
+                    if active.pitch != pitch {
+                        return 0;
+                    }
+                    if sustained {
+                        active.sustained = true;
+                        return 0;
+                    }
+                    self.active[usize::from(channel)] = None;
                 }
-                Some(MpeExpressionEvent::NoteOff {
+                push(MpeExpressionEvent::NoteOff {
                     channel,
                     pitch,
                     velocity,
-                })
+                });
             }
-            (0xa0, &[pitch, value]) => Some(MpeExpressionEvent::NotePressure {
-                channel,
-                pitch,
-                value,
-            }),
+            (0xa0, &[pitch, value]) => {
+                if is_member && self.active[usize::from(channel)].is_none_or(|n| n.pitch != pitch) {
+                    return 0;
+                }
+                push(MpeExpressionEvent::NotePressure {
+                    channel,
+                    pitch,
+                    value,
+                });
+            }
             (0xd0, &[pressure]) => {
                 if is_member {
-                    let pitch = self.active_pitch[usize::from(channel)]?;
-                    Some(MpeExpressionEvent::NotePressure {
+                    let Some(note) = self.active[usize::from(channel)] else {
+                        return 0;
+                    };
+                    push(MpeExpressionEvent::NotePressure {
                         channel,
-                        pitch,
+                        pitch: note.pitch,
                         value: pressure,
-                    })
+                    });
                 } else {
-                    Some(MpeExpressionEvent::MasterPressure {
+                    push(MpeExpressionEvent::MasterPressure {
                         channel,
                         value: pressure,
-                    })
+                    });
                 }
             }
             (0xe0, &[low, high]) => {
                 let bend = (i16::from(high) * 128 + i16::from(low)) - 8192;
                 if is_member {
-                    let pitch = self.active_pitch[usize::from(channel)]?;
-                    Some(MpeExpressionEvent::NotePitchBend {
+                    let Some(note) = self.active[usize::from(channel)] else {
+                        return 0;
+                    };
+                    push(MpeExpressionEvent::NotePitchBend {
                         channel,
-                        pitch,
-                        cents: self.config.bend_to_cents(bend),
-                    })
+                        pitch: note.pitch,
+                        cents: Self::bend_to_cents_with_range(
+                            bend,
+                            note.pitch_bend_range_semitones,
+                        ),
+                    });
                 } else {
-                    Some(MpeExpressionEvent::MasterPitchBend {
+                    push(MpeExpressionEvent::MasterPitchBend {
                         channel,
                         value: bend,
-                    })
+                    });
                 }
             }
             (0xb0, &[cc, value]) => {
                 if crate::note_events::is_all_notes_off_cc(cc) {
                     if is_master {
                         self.reset();
+                        push(MpeExpressionEvent::AllNotesOff);
                     } else {
-                        self.active_pitch[usize::from(channel)] = None;
+                        self.sustain_down[usize::from(channel)] = false;
+                        if let Some(note) = self.active[usize::from(channel)].take() {
+                            push(MpeExpressionEvent::NoteOff {
+                                channel,
+                                pitch: note.pitch,
+                                velocity: 0,
+                            });
+                        } else {
+                            push(MpeExpressionEvent::AllNotesOff);
+                        }
                     }
-                    return Some(MpeExpressionEvent::AllNotesOff);
+                    return count;
+                }
+                if cc == ControlChange::SUSTAIN {
+                    let down = value >= 64;
+                    self.sustain_down[usize::from(channel)] = down;
+                    if !down {
+                        for ch in 0_u8..16 {
+                            if !self.config.zone.is_member_channel(ch) {
+                                continue;
+                            }
+                            if !self.channel_sustained(ch)
+                                && self.active[usize::from(ch)].is_some_and(|n| n.sustained)
+                                && let Some(note) = self.active[usize::from(ch)].take()
+                            {
+                                push(MpeExpressionEvent::NoteOff {
+                                    channel: ch,
+                                    pitch: note.pitch,
+                                    velocity: 0,
+                                });
+                            }
+                        }
+                    }
+                    if is_master {
+                        push(MpeExpressionEvent::MasterControlChange { channel, cc, value });
+                    }
+                    return count;
+                }
+                if cc == ControlChange::RESET_ALL_CONTROLLERS {
+                    if is_master {
+                        self.sustain_down = [false; 16];
+                        for ch in 0_u8..16 {
+                            if self.config.zone.is_member_channel(ch)
+                                && self.active[usize::from(ch)].is_some_and(|n| n.sustained)
+                                && let Some(note) = self.active[usize::from(ch)].take()
+                            {
+                                push(MpeExpressionEvent::NoteOff {
+                                    channel: ch,
+                                    pitch: note.pitch,
+                                    velocity: 0,
+                                });
+                            }
+                        }
+                    } else {
+                        self.sustain_down[usize::from(channel)] = false;
+                        if !self.channel_sustained(channel)
+                            && self.active[usize::from(channel)].is_some_and(|n| n.sustained)
+                            && let Some(note) = self.active[usize::from(channel)].take()
+                        {
+                            push(MpeExpressionEvent::NoteOff {
+                                channel,
+                                pitch: note.pitch,
+                                velocity: 0,
+                            });
+                        }
+                    }
+                    push(MpeExpressionEvent::MasterControlChange { channel, cc, value });
+                    return count;
                 }
                 if is_member && cc == ControlChange::TIMBRE {
-                    let pitch = self.active_pitch[usize::from(channel)]?;
-                    return Some(MpeExpressionEvent::NoteSlide {
+                    let Some(note) = self.active[usize::from(channel)] else {
+                        return 0;
+                    };
+                    push(MpeExpressionEvent::NoteSlide {
                         channel,
-                        pitch,
+                        pitch: note.pitch,
                         value,
                     });
+                    return count;
                 }
-                Some(MpeExpressionEvent::MasterControlChange { channel, cc, value })
+                push(MpeExpressionEvent::MasterControlChange { channel, cc, value });
             }
-            _ => None,
+            _ => {}
+        }
+        count
+    }
+
+    /// Convenience single-event decoder returning the primary decoded event.
+    /// Callers requiring multi-event transitions (duplicate same-channel retrigger
+    /// or master sustain pedal lift) should use [`Self::decode_message_into`].
+    pub fn decode_message(&mut self, message: &[u8]) -> Option<MpeExpressionEvent> {
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+        let count = self.decode_message_into(message, &mut out);
+        if count == 0 {
+            None
+        } else {
+            Some(out[count - 1])
         }
     }
 }
@@ -413,5 +618,183 @@ mod tests {
                 value: 77
             })
         );
+    }
+
+    #[test]
+    fn fragmented_running_status_packets_keep_two_notes_independent_and_clean_up_on_reset_or_overflow()
+     {
+        use crate::{Controllers, Decoder, deliver_packets_with_mpe};
+        use std::cell::RefCell;
+
+        let config = MpeConfig::new(MpeZone::Lower { member_channels: 7 }, 48).unwrap();
+        let mut byte_decoder = Decoder::default();
+        let mut mpe = MpeDecoder::new(config);
+        let events = RefCell::new(Vec::new());
+
+        // Packet 1 splits NoteOn ch1 (60) and NoteOn ch2 (64) across packets with interleaved
+        // realtime clock (0xF8) and running status on ch1 pitch bend + ch2 CC74/pressure.
+        let p1: &[u8] = &[0x91, 60, 0xf8, 100, 0x92, 64];
+        let p2: &[u8] = &[
+            90, 0xe1, 0x7f, 0x7f, 0x00, 0x40, // running-status ch1 bend: +4800, then 0
+            0xb2, 74, 110, 0xd2, 95, // ch2 slide + pressure
+            0x91, 62,
+            88, // duplicate same-channel NoteOn on ch1 => releases 60 then triggers 62
+        ];
+        deliver_packets_with_mpe(
+            &mut byte_decoder,
+            &mut mpe,
+            Controllers::default(),
+            [p1, p2],
+            &|_| {},
+            &|event| events.borrow_mut().push(event),
+        );
+
+        assert_eq!(
+            *events.borrow(),
+            vec![
+                MpeExpressionEvent::NoteOn {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 100
+                },
+                MpeExpressionEvent::NoteOn {
+                    channel: 2,
+                    pitch: 64,
+                    velocity: 90
+                },
+                MpeExpressionEvent::NotePitchBend {
+                    channel: 1,
+                    pitch: 60,
+                    cents: 4800
+                },
+                MpeExpressionEvent::NotePitchBend {
+                    channel: 1,
+                    pitch: 60,
+                    cents: 0
+                },
+                MpeExpressionEvent::NoteSlide {
+                    channel: 2,
+                    pitch: 64,
+                    value: 110
+                },
+                MpeExpressionEvent::NotePressure {
+                    channel: 2,
+                    pitch: 64,
+                    value: 95
+                },
+                MpeExpressionEvent::NoteOff {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 0
+                },
+                MpeExpressionEvent::NoteOn {
+                    channel: 1,
+                    pitch: 62,
+                    velocity: 88
+                },
+            ]
+        );
+        assert_eq!(mpe.active_pitch(1), Some(62));
+        assert_eq!(mpe.active_pitch(2), Some(64));
+
+        // 0xFF System Reset clears all member notes and emits AllNotesOff.
+        events.borrow_mut().clear();
+        deliver_packets_with_mpe(
+            &mut byte_decoder,
+            &mut mpe,
+            Controllers::default(),
+            [&[0xff][..]],
+            &|_| {},
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(*events.borrow(), vec![MpeExpressionEvent::AllNotesOff]);
+        assert_eq!(mpe.active_pitch(1), None);
+        assert_eq!(mpe.active_pitch(2), None);
+        // Idle-channel bend is refused after reset (zero cross-talk).
+        assert_eq!(mpe.decode_message(&[0xe1, 0x7f, 0x7f]), None);
+
+        // Burst overflow past CALLBACK_PACKETS resets MPE state and emits AllNotesOff.
+        events.borrow_mut().clear();
+        let on = [0x91_u8, 60, 100];
+        let mut flood: Vec<&[u8]> = Vec::with_capacity(1026);
+        flood.push(&on);
+        for _ in 0..1025 {
+            flood.push(&[0xf8]);
+        }
+        deliver_packets_with_mpe(
+            &mut byte_decoder,
+            &mut mpe,
+            Controllers::default(),
+            flood,
+            &|_| {},
+            &|event| events.borrow_mut().push(event),
+        );
+        assert_eq!(
+            events.borrow().last().copied(),
+            Some(MpeExpressionEvent::AllNotesOff)
+        );
+        assert_eq!(mpe.active_pitch(1), None);
+    }
+
+    #[test]
+    fn sustain_preserves_mpe_ownership_and_bend_range_changes_do_not_retune_held_notes() {
+        let config = MpeConfig::new(MpeZone::Lower { member_channels: 4 }, 48).unwrap();
+        let mut mpe = MpeDecoder::new(config);
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+
+        // Start note 60 on ch 1 at 48-semitone range, then change zone bend range to 12 semitones.
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        assert!(mpe.set_pitch_bend_range(12));
+        // Start note 64 on ch 2 at the new 12-semitone range.
+        assert_eq!(mpe.decode_message_into(&[0x92, 64, 100], &mut out), 1);
+
+        // Full up bend (+8191): ch 1 stays at 4800 cents, ch 2 uses 1200 cents.
+        assert_eq!(
+            mpe.decode_message(&[0xe1, 0x7f, 0x7f]),
+            Some(MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 4800
+            })
+        );
+        assert_eq!(
+            mpe.decode_message(&[0xe2, 0x7f, 0x7f]),
+            Some(MpeExpressionEvent::NotePitchBend {
+                channel: 2,
+                pitch: 64,
+                cents: 1200
+            })
+        );
+
+        // Hold master sustain (ch 0 CC64=127), release ch 1 key -> remains owned & bendable.
+        assert_eq!(mpe.decode_message_into(&[0xb0, 64, 127], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0x81, 60, 0], &mut out), 0);
+        assert!(mpe.active_note(1).unwrap().sustained);
+        assert_eq!(
+            mpe.decode_message(&[0xb1, 74, 70]),
+            Some(MpeExpressionEvent::NoteSlide {
+                channel: 1,
+                pitch: 60,
+                value: 70
+            })
+        );
+
+        // Lift master sustain (ch 0 CC64=0) -> releases sustained ch 1 while ch 2 remains active.
+        let n = mpe.decode_message_into(&[0xb0, 64, 0], &mut out);
+        assert_eq!(n, 2);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+                velocity: 0
+            }
+        );
+        assert_eq!(mpe.active_pitch(1), None);
+        assert_eq!(mpe.active_pitch(2), Some(64));
+
+        // Zone reconfiguration resets active notes cleanly.
+        assert!(mpe.set_config(MpeConfig::new(MpeZone::Upper { member_channels: 3 }, 24).unwrap()));
+        assert_eq!(mpe.active_pitch(2), None);
     }
 }

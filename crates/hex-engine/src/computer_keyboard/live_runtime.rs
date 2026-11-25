@@ -356,6 +356,56 @@ impl ComputerKeyboardRuntime {
                 }
                 return Ok(());
             }
+            LiveNoteEvent::NotePitchBend {
+                channel,
+                pitch,
+                cents,
+            } => {
+                let source = VoiceSource::Hardware { channel, pitch };
+                if let Some(occurrence_id) = self
+                    .scratch
+                    .iter()
+                    .flatten()
+                    .find(|voice| voice.source == source && voice.gate.is_none())
+                    .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                {
+                    let slot = events
+                        .get_mut(*len)
+                        .ok_or(Invalid("live note event capacity is unavailable"))?;
+                    *slot = NativeInstrumentEvent::NotePitchBend {
+                        frame_offset: 0,
+                        occurrence_id,
+                        cents,
+                    };
+                    *len += 1;
+                }
+                return Ok(());
+            }
+            LiveNoteEvent::NoteTimbre {
+                channel,
+                pitch,
+                value,
+            } => {
+                let source = VoiceSource::Hardware { channel, pitch };
+                if let Some(occurrence_id) = self
+                    .scratch
+                    .iter()
+                    .flatten()
+                    .find(|voice| voice.source == source && voice.gate.is_none())
+                    .and_then(|voice| std::num::NonZeroU64::new(voice.id))
+                {
+                    let slot = events
+                        .get_mut(*len)
+                        .ok_or(Invalid("live note event capacity is unavailable"))?;
+                    *slot = NativeInstrumentEvent::NoteTimbre {
+                        frame_offset: 0,
+                        occurrence_id,
+                        value,
+                    };
+                    *len += 1;
+                }
+                return Ok(());
+            }
         };
         let source = VoiceSource::Hardware { channel, pitch };
         // Repeated same-key on releases the prior occurrence before retriggering.

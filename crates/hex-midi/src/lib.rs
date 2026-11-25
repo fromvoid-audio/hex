@@ -16,8 +16,8 @@ pub use held_notes::{
     HELD_NOTE_COUNT, HeldNote, HeldNoteFault, HeldNoteInput, HeldNotes, HeldNotesRead,
 };
 pub use mpe::{
-    DEFAULT_MPE_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_SEMITONES, MpeConfig, MpeDecoder,
-    MpeExpressionEvent, MpeZone,
+    DEFAULT_MPE_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_SEMITONES, MpeActiveNote, MpeConfig,
+    MpeDecoder, MpeExpressionEvent, MpeZone,
 };
 pub use note_events::{ControlChange, NoteEvent};
 pub use timebase::{MachTimebase, MonotonicTimestampClock, TimedPacket, TimestampedNoteEvent};
@@ -279,6 +279,104 @@ impl Decoder {
         }
         parse_filtered(&message[..width + 1], filter, current)
     }
+
+    /// Decode one MIDI 1.0 byte through the existing byte-stream state machine
+    /// (preserving running status, interleaved realtime bytes, SysEx cancellation,
+    /// and `0xFF` reset) and route completed channel-voice messages through `mpe`.
+    pub fn byte_with_mpe(
+        &mut self,
+        byte: u8,
+        mpe: &mut MpeDecoder,
+        current: Controllers,
+        emit: &dyn Fn(MpeExpressionEvent),
+    ) -> Option<Controllers> {
+        if byte == 0xff {
+            self.held.clear();
+            self.held_channels.fill(0);
+            self.held_changed = true;
+            self.status = 0;
+            self.used = 0;
+            self.sysex = false;
+            mpe.reset();
+            emit(MpeExpressionEvent::AllNotesOff);
+            return Some(Controllers::default());
+        }
+        if byte >= 0xf8 {
+            return None;
+        }
+        if byte >= 0x80 {
+            self.used = 0;
+            if byte >= 0xf0 {
+                self.status = 0;
+                self.sysex = byte == 0xf0;
+            } else {
+                self.status = byte;
+                self.sysex = false;
+            }
+            return None;
+        }
+        if self.sysex || self.status == 0 {
+            return None;
+        }
+        let width = if matches!(self.status & 0xf0, 0xc0 | 0xd0) {
+            1
+        } else {
+            2
+        };
+        self.data[self.used] = byte;
+        self.used += 1;
+        if self.used < width {
+            return None;
+        }
+        self.used = 0;
+        let message = [self.status, self.data[0], self.data[1]];
+        let slice = &message[..width + 1];
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+        let count = mpe.decode_message_into(slice, &mut out);
+        for event in &out[..count] {
+            emit(*event);
+        }
+        let master = ChannelFilter::Single(mpe.config().zone.master_channel());
+        parse_filtered(slice, master, current)
+    }
+}
+
+/// Bounded packet-stream MPE decoder reusing [`Decoder`]'s framing, running
+/// status, interleaved realtime handling, and `CALLBACK_PACKETS`/`CALLBACK_BYTES`
+/// burst-overflow reset without adding a separate input worker.
+pub fn deliver_packets_with_mpe<'a>(
+    decoder: &mut Decoder,
+    mpe: &mut MpeDecoder,
+    mut current: Controllers,
+    packets: impl IntoIterator<Item = &'a [u8]>,
+    publish: &dyn Fn(Controllers),
+    emit: &dyn Fn(MpeExpressionEvent),
+) -> Controllers {
+    let mut remaining = CALLBACK_BYTES;
+    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS + 1).enumerate() {
+        let overflow = index == CALLBACK_PACKETS || bytes.len() > remaining;
+        let accepted = if index == CALLBACK_PACKETS {
+            &[][..]
+        } else {
+            bytes.get(..remaining).unwrap_or(bytes)
+        };
+        for &byte in accepted {
+            if let Some(next) = decoder.byte_with_mpe(byte, mpe, current, emit) {
+                current = next;
+                publish(current);
+            }
+        }
+        if overflow {
+            decoder.status = 0;
+            decoder.used = 0;
+            decoder.sysex = false;
+            mpe.reset();
+            emit(MpeExpressionEvent::AllNotesOff);
+            break;
+        }
+        remaining -= accepted.len();
+    }
+    current
 }
 const CALLBACK_BYTES: usize = 65_536;
 const CALLBACK_PACKETS: usize = 1024;

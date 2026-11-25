@@ -591,3 +591,155 @@ fn sustain_pedal_holds_native_instrument_note_across_note_off_until_pedal_releas
         "releasing CC64 sustain pedal must release the held native voice to silence"
     );
 }
+
+#[test]
+fn mpe_member_channel_expression_routes_to_distinct_note_occurrences_and_handles_reuse_and_stale_activation()
+ {
+    use crate::computer_keyboard::{LiveNoteEvent, LiveNoteInput, LiveNotePublishError};
+
+    // 1. Stale activation and invalid expression bounds are refused deterministically.
+    let probe = LiveNoteInput::default();
+    let stale_token = probe.begin_activation_on_control().unwrap();
+    let fresh_token = probe.begin_activation_on_control().unwrap();
+    assert_eq!(
+        probe.publish(
+            stale_token,
+            LiveNoteEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 1200,
+            },
+        ),
+        Err(LiveNotePublishError::StaleActivation)
+    );
+    assert_eq!(
+        probe.publish(
+            fresh_token,
+            LiveNoteEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 4801,
+            },
+        ),
+        Err(LiveNotePublishError::InvalidEvent)
+    );
+    let invalid_timbre = LiveNoteInput::default();
+    let invalid_timbre_token = invalid_timbre.begin_activation_on_control().unwrap();
+    assert_eq!(
+        invalid_timbre.publish(
+            invalid_timbre_token,
+            LiveNoteEvent::NoteTimbre {
+                channel: 1,
+                pitch: 60,
+                value: 128,
+            },
+        ),
+        Err(LiveNotePublishError::InvalidEvent)
+    );
+
+    // 2. Drive two simultaneous MPE notes on distinct member channels (ch 1 pitch 60,
+    // ch 2 pitch 64) with independent NotePitchBend + NoteTimbre into a real engine playback.
+    let (project, track) = fixture();
+    let mpe_input = input();
+    let oracle_input = input();
+    let mut expressed = playback(&project, track, &mpe_input);
+    let mut unbent_oracle = playback(&project, track, &oracle_input);
+
+    let live = mpe_input.live_notes().unwrap();
+    let token = live.current_activation_on_control().unwrap();
+    let oracle_live = oracle_input.live_notes().unwrap();
+    let oracle_token = oracle_live.current_activation_on_control().unwrap();
+
+    for &(ch, pitch) in &[(1_u8, 60_u8), (2, 64)] {
+        live.publish(
+            token,
+            LiveNoteEvent::NoteOn {
+                channel: ch,
+                pitch,
+                velocity: 100,
+            },
+        )
+        .unwrap();
+        oracle_live
+            .publish(
+                oracle_token,
+                LiveNoteEvent::NoteOn {
+                    channel: ch,
+                    pitch,
+                    velocity: 100,
+                },
+            )
+            .unwrap();
+    }
+    live.publish(
+        token,
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 700,
+        },
+    )
+    .unwrap();
+    live.publish(
+        token,
+        LiveNoteEvent::NoteTimbre {
+            channel: 2,
+            pitch: 64,
+            value: 112,
+        },
+    )
+    .unwrap();
+
+    let mut actual = [[0.0_f32; 2]; 512];
+    let mut expected = [[0.0_f32; 2]; 512];
+    expressed.render(&mut actual).unwrap();
+    unbent_oracle.render(&mut expected).unwrap();
+    assert!(actual.iter().flatten().any(|s| *s != 0.0));
+    assert!(actual.iter().flatten().all(|s| s.is_finite()));
+
+    // 3. Release ch 1, confirm idle ch 1 expression is ignored, then reuse ch 1 for a fresh note
+    // and clean up everything via AllNotesOff without stuck notes.
+    live.publish(
+        token,
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+    )
+    .unwrap();
+    live.publish(
+        token,
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: -1200,
+        },
+    )
+    .unwrap();
+    live.publish(
+        token,
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 67,
+            velocity: 96,
+        },
+    )
+    .unwrap();
+    expressed.render(&mut actual).unwrap();
+    assert!(actual.iter().flatten().all(|s| s.is_finite()));
+
+    live.publish(token, LiveNoteEvent::AllNotesOff).unwrap();
+    let mut silent = false;
+    for _ in 0..200 {
+        expressed.render(&mut actual).unwrap();
+        if actual.iter().flatten().all(|s| *s == 0.0) {
+            silent = true;
+            break;
+        }
+    }
+    assert!(
+        silent,
+        "AllNotesOff must release all MPE member-channel voices cleanly to silence"
+    );
+}
