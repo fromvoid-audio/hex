@@ -405,16 +405,21 @@ impl RuntimeMut<'_> {
         observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
         foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
+        wave: Option<&mut dyn hex_engine::WaveExecutor>,
     ) -> Result<(), Invalid> {
         match (self, foreign) {
-            (Self::Legacy(p), Some(foreign)) => {
-                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            (Self::Legacy(p), Some(foreign)) => p.render_with_foreign_processors_and_wave(
+                output, None, observer, project, foreign, wave,
+            ),
+            (Self::Eligible(p), Some(foreign)) => p.render_with_foreign_processors_and_wave(
+                output, None, observer, project, foreign, wave,
+            ),
+            (Self::Legacy(p), None) => {
+                p.render_with_signal_observers_and_wave(output, observer, project, wave)
             }
-            (Self::Eligible(p), Some(foreign)) => {
-                p.render_with_foreign_processors(output, None, observer, project, foreign)
+            (Self::Eligible(p), None) => {
+                p.render_with_signal_observers_and_wave(output, observer, project, wave)
             }
-            (Self::Legacy(p), None) => p.render_with_signal_observers(output, observer, project),
-            (Self::Eligible(p), None) => p.render_with_signal_observers(output, observer, project),
         }
     }
     pub(super) fn render_with_live_track_audio(

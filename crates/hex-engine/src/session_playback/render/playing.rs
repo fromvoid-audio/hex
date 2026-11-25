@@ -2,12 +2,14 @@
 use super::*;
 
 impl SessionPlayback {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn render_playing<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
         pages: Option<&mut P>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
+        wave: &mut Option<&mut dyn crate::wave_executor::WaveExecutor>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         inputs: RenderBlockInputs<'_>,
     ) -> Result<(), SessionPlaybackError> {
@@ -17,7 +19,11 @@ impl SessionPlayback {
             .native_parameter_state
             .as_deref_mut()
             .and_then(|state| state.scalar.take());
-        let mut sinks = RenderSinks { observer, capture };
+        let mut sinks = RenderSinks {
+            observer,
+            capture,
+            wave,
+        };
         let result = self.render_playing_with_scalar(
             output,
             pages,
@@ -36,7 +42,7 @@ impl SessionPlayback {
         &mut self,
         output: &mut [Frame],
         mut pages: Option<&mut P>,
-        sinks: &mut RenderSinks<'_, '_, '_, '_>,
+        sinks: &mut RenderSinks<'_, '_, '_, '_, '_>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         mut scalar: Option<&mut crate::scalar_automation::StateSet>,
         inputs: RenderBlockInputs<'_>,
@@ -48,6 +54,7 @@ impl SessionPlayback {
         } = inputs;
         let observer = &mut *sinks.observer;
         let capture = &mut *sinks.capture;
+        let wave = &mut *sinks.wave;
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
         self.performance_frame
@@ -214,6 +221,7 @@ impl SessionPlayback {
                         output_offset,
                         observer,
                         capture,
+                        wave,
                         inputs,
                         foreign,
                         &mut tail_scratch,
@@ -475,7 +483,11 @@ impl SessionPlayback {
                         frame_offset: output_offset,
                     },
                     inputs,
-                    &mut RenderSinks { observer, capture },
+                    &mut RenderSinks {
+                        observer,
+                        capture,
+                        wave,
+                    },
                     ForeignRenderStage { foreign, external },
                 )?;
             }

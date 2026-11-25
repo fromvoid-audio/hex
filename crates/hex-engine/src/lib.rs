@@ -90,6 +90,7 @@ pub mod audio_transform;
 mod effect_clock;
 mod main_chain;
 mod native_device_view;
+pub mod wave_executor;
 pub use audio_input_storage::{
     AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
 };
@@ -98,6 +99,8 @@ pub use audio_only_inputs::{
     AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
     ResidentSourceRefusal, StreamedSourceRefusal,
 };
+pub use signal_graph::OwnerWave;
+pub use wave_executor::{SerialWaveExecutor, WaveExecutor};
 pub mod native_device_resources;
 /// The loaded Sampler's existing authored gain control.
 pub use hex_devices::sampler::catalog::GAIN as SAMPLER_GAIN_PARAMETER;

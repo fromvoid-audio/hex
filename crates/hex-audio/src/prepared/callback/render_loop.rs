@@ -584,11 +584,16 @@ impl Callback {
                     foreign,
                 )?;
             } else {
+                let wave = self
+                    .wave_pool
+                    .as_mut()
+                    .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
                 active.playback.render_with_signal_observers(
                     output,
                     node,
                     project.as_mut(),
                     foreign,
+                    wave,
                 )?;
             }
         } else {
@@ -716,9 +721,13 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::current_mut)
         {
+            let wave = self
+                .wave_pool
+                .as_mut()
+                .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
             active
                 .playback
-                .render_with_signal_observers(output, None, None, foreign)?;
+                .render_with_signal_observers(output, None, None, foreign, wave)?;
         } else {
             output.fill([0.0; 2]);
         }

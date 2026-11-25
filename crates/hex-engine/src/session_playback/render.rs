@@ -48,9 +48,10 @@ pub(super) struct RenderBlockInputs<'a> {
     pub(super) pending_monitor_pcm: bool,
 }
 
-pub(super) struct RenderSinks<'a, 'obs, 'obs_in, 'cap> {
+pub(super) struct RenderSinks<'a, 'obs, 'obs_in, 'cap, 'wave> {
     pub(super) observer: &'a mut Option<&'obs mut crate::NodeSignalObserver<'obs_in>>,
     pub(super) capture: &'a mut Option<&'cap mut dyn CaptureSink>,
+    pub(super) wave: &'a mut Option<&'wave mut dyn crate::wave_executor::WaveExecutor>,
 }
 
 #[derive(Clone, Copy)]
@@ -161,6 +162,16 @@ impl SessionPlayback {
         self.render_with_post_node_observer(output, None)
     }
 
+    /// Render a complete block transactionally using `wave` to execute
+    /// independent topological waves of native processor chains in parallel.
+    pub fn render_with_wave_executor(
+        &mut self,
+        output: &mut [Frame],
+        wave: &mut dyn crate::wave_executor::WaveExecutor,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_signal_observers_and_wave(output, None, None, Some(wave))
+    }
+
     /// Test-only comparison with the project tap for ordered resident track
     /// windows. Callers pass every canonical track in prepared order, with
     /// preallocated output for one render window. No worker or history moves.
@@ -257,6 +268,7 @@ impl SessionPlayback {
                 live_audio: Some(live_audio),
                 pending_monitor_pcm: false,
             },
+            None,
         )
     }
 
@@ -310,6 +322,7 @@ impl SessionPlayback {
                 }),
                 pending_monitor_pcm: false,
             },
+            None,
         )?;
         if !input.is_empty()
             && let Some(scope) = &mut self.stopped_input
@@ -328,14 +341,33 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: Option<&mut dyn MediaPages>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_foreign_processors_and_wave(
+            output, pages, observer, project, foreign, None,
+        )
+    }
+
+    /// Foreign-processor render entry that also executes eligible independent
+    /// native waves through `wave`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_foreign_processors_and_wave(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut project: Option<&mut ProjectOutputTap<'_, '_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let capture = project
             .as_mut()
             .map(|tap| &mut **tap as &mut dyn CaptureSink);
-        self.render_internal_with_foreign(output, pages, observer, capture, None, foreign)?;
+        self.render_internal_with_foreign_and_wave(
+            output, pages, observer, capture, None, foreign, wave,
+        )?;
         if let Some(project) = project {
             project.main(output);
         }
@@ -427,7 +459,19 @@ impl SessionPlayback {
         &mut self,
         output: &mut [Frame],
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_signal_observers_and_wave(output, observer, project, None)
+    }
+
+    /// Signal-observer render entry that also executes eligible independent
+    /// native waves through `wave`.
+    pub fn render_with_signal_observers_and_wave(
+        &mut self,
+        output: &mut [Frame],
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut project: Option<&mut ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let contains_streamed_sources = if self.linear_arrangement_export {
@@ -442,7 +486,15 @@ impl SessionPlayback {
         let capture = project
             .as_mut()
             .map(|tap| &mut **tap as &mut dyn CaptureSink);
-        self.render_internal::<dyn MediaPages>(output, None, observer, capture, None)?;
+        self.render_internal_with_foreign_and_wave::<dyn MediaPages>(
+            output,
+            None,
+            observer,
+            capture,
+            None,
+            &mut hex_lattice::RefuseForeign,
+            wave,
+        )?;
         if let Some(project) = project {
             project.main(output);
         }
@@ -637,6 +689,22 @@ impl SessionPlayback {
         sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
+        self.render_internal_with_foreign_and_wave(
+            output, pages, observer, capture, sources, foreign, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn render_internal_with_foreign_and_wave<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        capture: Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), SessionPlaybackError> {
         self.render_internal_with_live_audio(
             output,
             pages,
@@ -648,9 +716,11 @@ impl SessionPlayback {
                 live_audio: None,
                 pending_monitor_pcm: false,
             },
+            wave,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_internal_with_live_audio<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -659,6 +729,7 @@ impl SessionPlayback {
         capture: Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         inputs: RenderBlockInputs<'_>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         // The runtime keeps this revision throughout rendering. Its cloned
         // handle cannot become the final owner on the callback.
@@ -690,16 +761,18 @@ impl SessionPlayback {
                     capture,
                     foreign,
                     inputs,
+                    wave,
                 )
             }
-            None => {
-                self.render_internal_metered::<P>(output, None, observer, capture, foreign, inputs)
-            }
+            None => self.render_internal_metered::<P>(
+                output, None, observer, capture, foreign, inputs, wave,
+            ),
         };
         self.stream_miss_fades = fades;
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_internal_metered<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -708,6 +781,7 @@ impl SessionPlayback {
         capture: Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         inputs: RenderBlockInputs<'_>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         self.render_work.begin(&self.revision, self.device_metering);
         let result = if self.device_metering {
@@ -723,6 +797,7 @@ impl SessionPlayback {
                 Some(&mut meter),
                 foreign,
                 inputs,
+                wave,
             );
             if result.is_err() {
                 meter.invalidate();
@@ -730,7 +805,7 @@ impl SessionPlayback {
             self.meter_cells = cells;
             result
         } else {
-            self.render_on_active_route(output, pages, observer, capture, foreign, inputs)
+            self.render_on_active_route(output, pages, observer, capture, foreign, inputs, wave)
         };
         self.render_work
             .publish(&self.revision, output.len(), result.is_ok());
@@ -766,6 +841,7 @@ impl SessionPlayback {
                 live_audio: None,
                 pending_monitor_pcm,
             },
+            None,
         )
     }
 
@@ -791,6 +867,7 @@ impl SessionPlayback {
             && !self.stopped_edit_tails()
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_on_active_route<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -799,6 +876,7 @@ impl SessionPlayback {
         capture: Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         inputs: RenderBlockInputs<'_>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         if self.defer_paused_source_monitor
             && !self.playing
@@ -825,9 +903,10 @@ impl SessionPlayback {
             monitor.end_resident_interval();
             self.paused_source_monitor = Some(monitor);
         }
-        self.render_internal_borrowed(output, pages, observer, capture, foreign, inputs)
+        self.render_internal_borrowed(output, pages, observer, capture, foreign, inputs, wave)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_internal_borrowed<P: MediaPages + ?Sized>(
         &mut self,
         output: &mut [Frame],
@@ -836,6 +915,7 @@ impl SessionPlayback {
         mut capture: Option<&mut dyn CaptureSink>,
         foreign: &mut dyn hex_lattice::ForeignProcessors,
         inputs: RenderBlockInputs<'_>,
+        mut wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         let RenderBlockInputs {
             sources,
@@ -1011,7 +1091,15 @@ impl SessionPlayback {
         self.return_fade_scratch = self.return_fade;
         self.live_gain_scratch = self.live_gain;
         let result = if self.playing {
-            self.render_playing(output, pages, &mut observer, &mut capture, foreign, inputs)
+            self.render_playing(
+                output,
+                pages,
+                &mut observer,
+                &mut capture,
+                &mut wave,
+                foreign,
+                inputs,
+            )
         } else if main_tails_only {
             // No admitted source monitoring can still feed the current chain.
             // Its flag survives input removal until an explicit discontinuity.

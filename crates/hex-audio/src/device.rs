@@ -296,6 +296,9 @@ pub(crate) fn open_prepared(
             return Err(error.to_string().into());
         }
     };
+    if let Some(pool) = crate::worker_pool::AudioWorkerPool::for_hardware(config.sample_rate) {
+        callback.attach_worker_pool_on_control(pool);
+    }
     let action_outcomes = if matches!(kind, PreparedOutputKind::WorkerReliable(_)) {
         match control.enable_action_outcomes_on_control(&mut callback) {
             Ok(reader) => Some(reader),
