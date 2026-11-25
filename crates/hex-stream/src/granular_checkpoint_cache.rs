@@ -170,12 +170,25 @@ impl VerifiedGranularCheckpointCache {
         let index = (1..self.entries.len())
             .min_by_key(|&i| self.entries[i].age)
             .ok_or(Error::ScratchLimit)?;
+        let total_bytes = self.backing_bytes().ok_or(Error::ScratchLimit)?;
+        let evicted_bytes = self
+            .entries
+            .get(index)
+            .and_then(|entry| entry.checkpoint.backing_bytes())
+            .ok_or(Error::ScratchLimit)?;
+        let other_bytes = total_bytes
+            .checked_sub(evicted_bytes)
+            .ok_or(Error::ScratchLimit)?;
+        let slot_budget = self
+            .budget
+            .checked_sub(other_bytes)
+            .ok_or(Error::ScratchLimit)?;
         let entry = self
             .entries
             .get_mut(index)
             .ok_or(Error::Invalid("invalid granular checkpoint cache"))?;
         let evicted_position = entry.checkpoint.position();
-        cursor.refresh_checkpoint(&mut entry.checkpoint)?;
+        cursor.refresh_checkpoint(&mut entry.checkpoint, slot_budget)?;
         entry.age = self.clock;
         Ok(CheckpointRecord::Replaced { evicted_position })
     }

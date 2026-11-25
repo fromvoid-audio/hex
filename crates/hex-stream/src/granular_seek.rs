@@ -112,11 +112,16 @@ impl VerifiedGranularCursor {
             )?;
         hex_warp::MAX_SCRATCH_BYTES.checked_sub(used)
     }
-    pub(crate) fn refresh_checkpoint(&self, checkpoint: &mut WarpCheckpoint) -> Result<(), Error> {
+    pub(crate) fn refresh_checkpoint(
+        &self,
+        checkpoint: &mut WarpCheckpoint,
+        budget: usize,
+    ) -> Result<(), Error> {
         if self.seeking.is_some() {
             return Err(Error::Invalid("granular seek is pending"));
         }
-        self.renderer.refresh_checkpoint(checkpoint)
+        self.renderer
+            .refresh_checkpoint_with_budget(checkpoint, budget)
     }
 
     /// Capture at a normal output boundary; checkpoint storage is caller-owned.

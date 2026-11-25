@@ -191,10 +191,35 @@ impl OnsetScanner {
         Ok(cp)
     }
 
-    pub(super) fn refresh_checkpoint(&self, cp: &mut OnsetScannerCheckpoint) -> Result<(), Error> {
+    pub(super) fn prepare_refresh_onsets(
+        &self,
+        cp: &OnsetScannerCheckpoint,
+        budget: usize,
+    ) -> Result<(Option<Vec<u64>>, usize), Error> {
         if cp.spec_previous.len() != self.bins || cp.spec_older.len() != self.bins {
             return Err(Error::Invalid("incompatible beats onset checkpoint"));
         }
+        let complex_pair = std::mem::size_of::<[Complex; 2]>();
+        let fixed_bytes = cp
+            .spec_previous
+            .capacity()
+            .checked_mul(complex_pair)
+            .and_then(|v| v.checked_add(cp.spec_older.capacity().checked_mul(complex_pair)?))
+            .ok_or(Error::ScratchLimit)?;
+        let rem = budget.checked_sub(fixed_bytes).ok_or(Error::ScratchLimit)?;
+        let (replacement, vec_bytes) =
+            super::prepare_vec_within(&self.onsets, cp.onsets.capacity(), rem)?;
+        let total = fixed_bytes
+            .checked_add(vec_bytes)
+            .ok_or(Error::ScratchLimit)?;
+        Ok((replacement, total))
+    }
+
+    pub(super) fn commit_refresh(
+        &self,
+        cp: &mut OnsetScannerCheckpoint,
+        replacement_onsets: Option<Vec<u64>>,
+    ) {
         cp.boundary_attack = self.boundary_attack;
         cp.energy_warmup_done = self.energy_warmup_done;
         cp.energy_slow = self.energy_slow;
@@ -208,21 +233,21 @@ impl OnsetScanner {
         cp.spec_before_score = self.spec_before_score;
         cp.spec_center = self.spec_center;
         cp.spec_count = self.spec_count;
-        cp.onsets.clear();
-        if cp.onsets.capacity() < self.onsets.len() {
-            cp.onsets
-                .try_reserve(self.onsets.len() - cp.onsets.capacity())
-                .map_err(|_| Error::Allocation)?;
+        match replacement_onsets {
+            Some(fresh) => cp.onsets = fresh,
+            None => {
+                cp.onsets.clear();
+                cp.onsets.extend_from_slice(&self.onsets);
+            }
         }
-        cp.onsets.extend_from_slice(&self.onsets);
         cp.region_complete = self.region_complete;
-        Ok(())
     }
 
     pub(super) fn restore(&mut self, cp: &OnsetScannerCheckpoint) -> Result<(), Error> {
         if cp.spec_previous.len() != self.bins || cp.spec_older.len() != self.bins {
             return Err(Error::Invalid("incompatible beats onset checkpoint"));
         }
+        super::copy_vec(&cp.onsets, &mut self.onsets)?;
         self.boundary_attack = cp.boundary_attack;
         self.energy_warmup_done = cp.energy_warmup_done;
         self.energy_slow = cp.energy_slow;
@@ -236,13 +261,6 @@ impl OnsetScanner {
         self.spec_before_score = cp.spec_before_score;
         self.spec_center = cp.spec_center;
         self.spec_count = cp.spec_count;
-        self.onsets.clear();
-        if self.onsets.capacity() < cp.onsets.len() {
-            self.onsets
-                .try_reserve(cp.onsets.len() - self.onsets.capacity())
-                .map_err(|_| Error::Allocation)?;
-        }
-        self.onsets.extend_from_slice(&cp.onsets);
         self.region_complete = cp.region_complete;
         Ok(())
     }

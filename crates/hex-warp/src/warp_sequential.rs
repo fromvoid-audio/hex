@@ -241,6 +241,31 @@ impl SequentialWarp {
         }
     }
 
+    pub fn refresh_checkpoint_with_budget(
+        &self,
+        checkpoint: &mut WarpCheckpoint,
+        budget: usize,
+    ) -> Result<(), Error> {
+        match (self, checkpoint) {
+            (Self::Granular(r), WarpCheckpoint::Granular(c)) => {
+                if c.backing_bytes().is_none_or(|bytes| bytes > budget) {
+                    return Err(Error::ScratchLimit);
+                }
+                r.refresh_checkpoint(c)
+            }
+            (Self::Beats(r), WarpCheckpoint::Beats(c)) => {
+                r.refresh_checkpoint_with_budget(c, budget)
+            }
+            (Self::Spectral(r), WarpCheckpoint::Spectral(c)) => {
+                if c.backing_bytes().is_none_or(|bytes| bytes > budget) {
+                    return Err(Error::ScratchLimit);
+                }
+                r.refresh_checkpoint(c)
+            }
+            _ => Err(Error::Invalid("foreign warp checkpoint")),
+        }
+    }
+
     pub fn restore(&mut self, checkpoint: &WarpCheckpoint) -> Result<(), Error> {
         match (self, checkpoint) {
             (Self::Granular(r), WarpCheckpoint::Granular(c)) => r.restore(c),

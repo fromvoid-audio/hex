@@ -499,3 +499,142 @@ fn long_warped_clips_above_max_output_frames_stream_through_worker_bank() {
     let exit = join.join().unwrap();
     assert_eq!(exit.reason, GranularWorkerExitReason::Stopped);
 }
+
+#[test]
+fn beats_checkpoint_cache_record_and_refresh_respects_tight_budget() {
+    use hex_stream::{
+        CheckpointCacheError, CheckpointRecord, VerifiedGranularBuffers,
+        VerifiedGranularCheckpointCache, VerifiedGranularCursor, VerifiedReferenceChannel,
+    };
+    use hex_warp::{
+        Error, MAX_SCRATCH_BYTES, SequentialBeats, SequentialBeatsConfig, SequentialWarp,
+    };
+
+    let wav = FixtureWav::create(SOURCE_FRAMES);
+    let (mut reader, plan, raw) = open_reader_and_plan(&wav);
+    let out_len = 12_288_u64;
+    let map = TimeMap::new_streamed(
+        vec![MapSegment {
+            output_start: 0,
+            output_end: out_len,
+            source_start_q32: 0,
+            source_end_q32: i128::from((SOURCE_FRAMES as u64) * 2) << 32,
+        }],
+        out_len,
+    )
+    .unwrap();
+    let region = SourceRegion::new(
+        SOURCE_FRAMES as u64,
+        0,
+        SOURCE_FRAMES as u64,
+        0,
+        true,
+        Vec::new(),
+    )
+    .unwrap();
+    let mode = Mode::Beats {
+        division_frames: None,
+        tail: Tail::Forward,
+        decay: 55,
+    };
+    let reference = VerifiedReferenceChannel::for_warp_region(raw, region).unwrap();
+    let beats = SequentialBeats::new(
+        SequentialBeatsConfig {
+            map,
+            sample_rate: RATE,
+            mode,
+            pitch_cents: 0,
+            resampler: Resampler::V1,
+            region_length: SOURCE_FRAMES as u64,
+            looping: true,
+            attacks: Vec::new(),
+        },
+        &mut || false,
+    )
+    .unwrap();
+    let mut cursor =
+        VerifiedGranularCursor::new_warp(SequentialWarp::from_beats(beats), reference).unwrap();
+
+    // Measure the exact initial single-checkpoint cache footprint and pick a
+    // tight budget allowing the initial entry plus one moderately grown slot,
+    // while leaving less than 2 full slots so LRU refresh is forced under
+    // dynamic onset/anchor growth.
+    let probe_cache = VerifiedGranularCheckpointCache::new(&cursor, 3, 2_000_000).unwrap();
+    let initial_cache_bytes = probe_cache.backing_bytes().unwrap();
+    let single_cp_bytes = cursor
+        .warp_checkpoint(MAX_SCRATCH_BYTES)
+        .unwrap()
+        .backing_bytes()
+        .unwrap();
+    // Budget fits initial cache + 1 slot + small growth slack, NOT 2 full extra slots.
+    let tight_budget = initial_cache_bytes + single_cp_bytes + 4_096;
+    let mut cache = VerifiedGranularCheckpointCache::new(&cursor, 3, tight_budget).unwrap();
+    assert!(cache.backing_bytes().unwrap() <= tight_budget);
+
+    let mut source_scratch = vec![[0.0; 2]; 16_384];
+    let mut cache_scratch = vec![[0.0; 2]; 16_384];
+    let mut grain_scratch = vec![[0.0; 2]; cursor.max_source_frames()];
+    let mut out = vec![[0.0; 2]; 512];
+
+    let mut saw_added = false;
+    let mut saw_replaced_or_refused = false;
+    for step in 0..16 {
+        let mut drained = 0;
+        while drained < out.len() {
+            let chunk = cursor.available().min(out.len() - drained);
+            if chunk > 0 {
+                cursor
+                    .drain(&mut out[drained..drained + chunk])
+                    .expect("drain");
+                drained += chunk;
+                continue;
+            }
+            cursor
+                .advance(
+                    &mut reader,
+                    &plan,
+                    VerifiedGranularBuffers {
+                        source: &mut source_scratch,
+                        cache: &mut cache_scratch,
+                        grain: &mut grain_scratch,
+                    },
+                    || false,
+                )
+                .expect("advance beats cursor");
+        }
+        let before_bytes = cache.backing_bytes().unwrap();
+        assert!(before_bytes <= tight_budget);
+        match cache.record(&cursor) {
+            Ok(CheckpointRecord::Added) => saw_added = true,
+            Ok(CheckpointRecord::Replaced { .. }) => saw_replaced_or_refused = true,
+            Ok(CheckpointRecord::Existing) => {}
+            Err(CheckpointCacheError::Warp(Error::ScratchLimit)) => {
+                // Tight budget refused growth cleanly without corrupting or
+                // underflowing existing cache accounting.
+                assert_eq!(cache.backing_bytes().unwrap(), before_bytes);
+                saw_replaced_or_refused = true;
+            }
+            Err(other) => panic!("unexpected record error at step {step}: {other:?}"),
+        }
+        assert!(
+            cache.backing_bytes().unwrap() <= tight_budget,
+            "cache backing bytes {} exceeded tight budget {} at step {step}",
+            cache.backing_bytes().unwrap(),
+            tight_budget
+        );
+    }
+    assert!(saw_added, "expected at least one checkpoint added");
+    assert!(
+        saw_replaced_or_refused,
+        "expected tight budget to exercise LRU refresh or bounded refusal"
+    );
+
+    // Seeking back to 0 must still succeed cleanly using the intact origin slot.
+    let seek = cache
+        .begin_seek(&mut cursor, 0, 4096, &mut reader, &plan, || false)
+        .expect("seek to origin");
+    assert_eq!(
+        seek,
+        hex_stream::GranularSeekProgress::Reached { position: 0 }
+    );
+}
