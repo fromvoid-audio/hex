@@ -204,8 +204,8 @@ fn native_vst3_export_refuses_changed_final_latency_without_publishing() {
 
 #[test]
 #[ignore = "requires exact source-bound native helpers and original VST3 fixtures"]
-fn native_vst3_export_refuses_changed_quiescent_tail_without_publishing() {
-    const CHILD: &str = "HEX_OFFLINE_TAIL_REFUSAL_CHILD";
+fn native_vst3_export_adopts_changed_quiescent_tail_before_graph_planning() {
+    const CHILD: &str = "HEX_OFFLINE_TAIL_ADOPT_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -229,10 +229,7 @@ fn native_vst3_export_refuses_changed_quiescent_tail_without_publishing() {
         return;
     }
     let _native = native_fixture();
-    native_effect_export_case(
-        8_192,
-        Some("offline vst3 preparation changed before graph planning"),
-    );
+    native_effect_export_case(8_192, None);
 }
 
 fn native_effect_export_case(limit: u64, refusal: Option<&str>) {

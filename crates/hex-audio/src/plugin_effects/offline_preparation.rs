@@ -9,7 +9,8 @@ use hex_plugin_host::{
 /// owns no live Root slot and cannot publish a graph or callback endpoint. The
 /// compiler borrows only its validated source-derived configuration; completion
 /// resumes this same lease before creating the final paired worker/callback.
-/// Quiescence must preserve its declared latency and tail before graph planning.
+/// Zero-PCM quiescence adopts settled SDK latency and tail facts before graph
+/// planning, while resume still refuses any post-planning timing change.
 pub struct OfflineEffectPreparation {
     source: Quiescent,
     renewal: NativeEffectRenewal,
@@ -19,6 +20,58 @@ pub struct OfflineEffectPreparation {
     authored: Option<AuthoredSelection>,
     bypassed: bool,
 }
+
+fn adopt_quiescent_prepared(
+    previous: PreparedForeignProcessor,
+    facts: hex_plugin_host::protocol::Facts,
+    next_binding: Binding,
+) -> Result<PreparedForeignProcessor, &'static str> {
+    let bridge = previous.bridge_latency_frames();
+    let output_tail = if facts.tail_frames == u32::MAX {
+        hex_lattice::OutputTail::Unbounded
+    } else {
+        hex_lattice::OutputTail::Finite {
+            max_tail_frames: u64::from(facts.tail_frames) + u64::from(bridge),
+        }
+    };
+    let mut prepared = PreparedForeignProcessor::new(
+        previous.quantum_frames(),
+        facts.algorithmic_latency_frames,
+        bridge,
+    )
+    .map_err(|_| "offline vst3 latency overflow")?;
+    if previous.is_instrument_profile() {
+        prepared = prepared.with_instrument_profile();
+    }
+    let prepared = prepared
+        .with_output_tail(output_tail)
+        .with_binding(next_binding)
+        .map_err(|_| "offline vst3 binding invalid")?;
+    if prepared.total_latency_frames() > hex_engine::compensation::MAX_COMPENSATION_FRAMES {
+        return Err("offline vst3 latency exceeds graph limit");
+    }
+    Ok(prepared)
+}
+
+fn adjusted_original_bytes(
+    original_bytes: usize,
+    previous: PreparedForeignProcessor,
+    adopted: PreparedForeignProcessor,
+) -> Option<usize> {
+    let previous_dry =
+        (previous.total_latency_frames() as usize).checked_mul(std::mem::size_of::<[f32; 2]>())?;
+    let adopted_dry =
+        (adopted.total_latency_frames() as usize).checked_mul(std::mem::size_of::<[f32; 2]>())?;
+    original_bytes.checked_add(adopted_dry.saturating_sub(previous_dry))
+}
+
+fn cancel_quiescent(source: Quiescent, reason: &str) -> String {
+    match source.cancel_and_reap_on_control() {
+        Ok(_) => reason.into(),
+        Err(cleanup) => format!("{reason} · {cleanup}"),
+    }
+}
+
 impl OfflineEffectPreparation {
     pub(super) fn from_effect_on_control(
         effect: NativeEffect,
@@ -34,45 +87,43 @@ impl OfflineEffectPreparation {
         let (source, renewal) = effect
             .into_quiescent_on_control()
             .map_err(|e| e.finish_on_control().to_string())?;
-        let facts = source.facts();
-        let output_tail = if facts.tail_frames == u32::MAX {
-            hex_lattice::OutputTail::Unbounded
-        } else {
-            hex_lattice::OutputTail::Finite {
-                max_tail_frames: u64::from(facts.tail_frames)
-                    + u64::from(configuration.prepared.bridge_latency_frames()),
-            }
-        };
-        if source.completed_blocks() != 0
-            || source.configuration().binding.root != u64::MAX
-            || facts.algorithmic_latency_frames != configuration.prepared.processor_latency_frames()
-            || output_tail != configuration.prepared.output_tail()
-        {
-            let reason = "offline vst3 preparation changed before graph planning";
-            return Err(match source.cancel_and_reap_on_control() {
-                Ok(_) => reason.into(),
-                Err(cleanup) => format!("{reason} · {cleanup}"),
-            });
+        if source.completed_blocks() != 0 || source.configuration().binding.root != u64::MAX {
+            return Err(cancel_quiescent(
+                source,
+                "offline vst3 preparation changed before graph planning",
+            ));
         }
-        configuration.binding.epoch = configuration
-            .binding
-            .epoch
-            .checked_add(1)
-            .ok_or("offline vst3 epoch exhausted")?;
-        configuration.prepared = configuration
-            .prepared
-            .with_binding(configuration.binding)
-            .map_err(|e| e.to_string())?;
-        let bytes = source
+        let Some(next_epoch) = configuration.binding.epoch.checked_add(1) else {
+            return Err(cancel_quiescent(source, "offline vst3 epoch exhausted"));
+        };
+        configuration.binding.epoch = next_epoch;
+        let previous_prepared = configuration.prepared;
+        let adopted = match adopt_quiescent_prepared(
+            previous_prepared,
+            source.facts(),
+            configuration.binding,
+        ) {
+            Ok(prepared) => prepared,
+            Err(reason) => return Err(cancel_quiescent(source, reason)),
+        };
+        configuration.prepared = adopted;
+        let Some(final_original_bytes) =
+            adjusted_original_bytes(original_bytes, previous_prepared, adopted)
+        else {
+            return Err(cancel_quiescent(source, "offline vst3 storage unavailable"));
+        };
+        let Some(bytes) = source
             .retained_storage_on_control()
             .and_then(|s| s.data_bytes.checked_add(std::mem::size_of::<Self>()))
             .and_then(|bytes| {
-                original_bytes
+                final_original_bytes
                     .checked_add(std::mem::size_of::<NativeEffect>())
                     .and_then(|original| original.checked_add(std::mem::size_of::<Self>()))
                     .map(|original| bytes.max(original))
             })
-            .ok_or("offline vst3 storage unavailable")?;
+        else {
+            return Err(cancel_quiescent(source, "offline vst3 storage unavailable"));
+        };
         Ok(Self {
             source,
             renewal,
@@ -205,6 +256,96 @@ impl OfflineEffectPreparation {
     }
 }
 
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+    use hex_plugin_host::protocol::Facts;
+
+    fn facts(latency: u32, tail: u32) -> Facts {
+        Facts {
+            algorithmic_latency_frames: latency,
+            tail_frames: tail,
+            presentation_available: false,
+            restored: true,
+        }
+    }
+
+    #[test]
+    fn adopt_quiescent_prepared_updates_latency_and_tail_before_graph_planning() {
+        let initial_binding = Binding {
+            root: u64::MAX,
+            instance: 7,
+            graph: 1,
+            epoch: 1,
+        };
+        let next_binding = Binding {
+            epoch: 2,
+            ..initial_binding
+        };
+        let base = PreparedForeignProcessor::new(256, 0, 512)
+            .unwrap()
+            .with_instrument_profile()
+            .with_output_tail(hex_lattice::OutputTail::Finite {
+                max_tail_frames: 515,
+            })
+            .with_binding(initial_binding)
+            .unwrap();
+
+        let finite_growth = adopt_quiescent_prepared(base, facts(64, 19), next_binding).unwrap();
+        assert_eq!(finite_growth.quantum_frames(), 256);
+        assert_eq!(finite_growth.bridge_latency_frames(), 512);
+        assert_eq!(finite_growth.processor_latency_frames(), 64);
+        assert_eq!(finite_growth.total_latency_frames(), 576);
+        assert!(finite_growth.is_instrument_profile());
+        assert_eq!(finite_growth.binding(), Some(next_binding));
+        assert_eq!(
+            finite_growth.output_tail(),
+            hex_lattice::OutputTail::Finite {
+                max_tail_frames: 531
+            }
+        );
+
+        let unbounded =
+            adopt_quiescent_prepared(finite_growth, facts(16, u32::MAX), next_binding).unwrap();
+        assert_eq!(unbounded.processor_latency_frames(), 16);
+        assert_eq!(unbounded.output_tail(), hex_lattice::OutputTail::Unbounded);
+
+        let back_to_finite =
+            adopt_quiescent_prepared(unbounded, facts(0, 3), next_binding).unwrap();
+        assert_eq!(
+            back_to_finite.output_tail(),
+            hex_lattice::OutputTail::Finite {
+                max_tail_frames: 515
+            }
+        );
+
+        let over_limit = hex_engine::compensation::MAX_COMPENSATION_FRAMES;
+        assert_eq!(
+            adopt_quiescent_prepared(base, facts(over_limit, 0), next_binding),
+            Err("offline vst3 latency exceeds graph limit")
+        );
+        assert_eq!(
+            adopt_quiescent_prepared(base, facts(u32::MAX, 0), next_binding),
+            Err("offline vst3 latency overflow")
+        );
+    }
+
+    #[test]
+    fn adjusted_original_bytes_covers_dry_buffer_growth_without_shrinking() {
+        let initial = PreparedForeignProcessor::new(256, 10, 512).unwrap();
+        let larger = PreparedForeignProcessor::new(256, 74, 512).unwrap();
+        let smaller = PreparedForeignProcessor::new(256, 0, 512).unwrap();
+        let frame_bytes = std::mem::size_of::<[f32; 2]>();
+
+        assert_eq!(
+            adjusted_original_bytes(4096, initial, larger),
+            Some(4096 + 64 * frame_bytes)
+        );
+        assert_eq!(adjusted_original_bytes(4096, initial, smaller), Some(4096));
+        assert_eq!(adjusted_original_bytes(usize::MAX, initial, larger), None);
+    }
+}
+
 crate::include_vst3_sdk_tests! {
 #[cfg(test)]
 mod tests {
@@ -215,7 +356,7 @@ mod tests {
 
     #[test]
     #[ignore = "explicit source-bound original SDK helpers required"]
-    fn actual_offline_source_refuses_changed_tail_before_graph_planning() {
+    fn actual_offline_source_adopts_changed_tail_before_graph_planning() {
         const CHILD: &str = "HEX_AUDIO_OFFLINE_TAIL_CHILD";
         if std::env::var_os(CHILD).is_none() {
             for (before, after) in [(3_u32, 3_u32), (3, 19), (3, u32::MAX), (u32::MAX, 3)] {
@@ -225,7 +366,7 @@ mod tests {
                         std::thread::current().name().unwrap(),
                         "--ignored",
                     ])
-                    .env(CHILD, if before == after { "stable" } else { "changed" })
+                    .env(CHILD, "1")
                     .env("HEX_ORIGINAL_TAIL_FRAMES", before.to_string())
                     .env("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT", after.to_string())
                     .output()
@@ -251,33 +392,22 @@ mod tests {
             instance,
         )
         .unwrap();
-        let expected = effect.finite_tail_frames();
+        let bridge = u64::from(effect.prepared().bridge_latency_frames());
+        let expected_tail_frames = std::env::var("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT")
+            .unwrap()
+            .parse::<u32>()
+            .unwrap();
+        let expected_finite_tail =
+            (expected_tail_frames != u32::MAX).then_some(u64::from(expected_tail_frames) + bridge);
         let stage =
-            OfflineEffectPreparation::from_effect_on_control(effect, usize::MAX, None, false);
-        match stage {
-            Ok(stage) => {
-                assert_eq!(stage.finite_tail_frames(), expected);
-                assert_eq!(
-                    stage.source.facts().tail_frames,
-                    std::env::var("HEX_ORIGINAL_TAIL_WHEN_QUIESCENT")
-                        .unwrap()
-                        .parse::<u32>()
-                        .unwrap()
-                );
-                assert_eq!(stage.source.completed_blocks(), 0);
-                let terminal = stage.source.retire_on_control().unwrap();
-                assert!(terminal.status.success());
-                assert_eq!(terminal.terminal.unwrap().blocks, 0);
-                assert_eq!(std::env::var(CHILD).as_deref(), Ok("stable"));
-            }
-            Err(reason) => {
-                assert_eq!(std::env::var(CHILD).as_deref(), Ok("changed"));
-                assert_eq!(
-                    reason,
-                    "offline vst3 preparation changed before graph planning"
-                );
-            }
-        }
+            OfflineEffectPreparation::from_effect_on_control(effect, usize::MAX, None, false)
+                .unwrap();
+        assert_eq!(stage.finite_tail_frames(), expected_finite_tail);
+        assert_eq!(stage.source.facts().tail_frames, expected_tail_frames);
+        assert_eq!(stage.source.completed_blocks(), 0);
+        let terminal = stage.source.retire_on_control().unwrap();
+        assert!(terminal.status.success());
+        assert_eq!(terminal.terminal.unwrap().blocks, 0);
     }
 
     #[test]

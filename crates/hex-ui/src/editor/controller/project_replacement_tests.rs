@@ -891,3 +891,29 @@ fn project_replacement_holds_resident_endpoint_until_released(cx: &mut TestAppCo
         })
         .expect("held endpoint release");
 }
+
+#[gpui::test]
+fn failed_bounce_clears_bouncing_status_and_reports_error(cx: &mut TestAppContext) {
+    let window = cx.add_window(|window, cx| {
+        let service = Service::new(48_000, 8, 8_000_000).expect("test service");
+        EditorView::new(window, cx, service, Err("offline test".into()))
+    });
+    let project = Arc::new(Project::new(48_000).expect("project"));
+    let control = hex_session::service::ExportControl::default();
+    let mut failed = event(Arc::clone(&project), 1, false);
+    failed.playback = None;
+    failed.bounce_complete = Some(control.clone());
+    failed.error = Some("offline vst3 bounce failed".to_owned());
+
+    window
+        .update(cx, |view, _, _| {
+            view.receive(event(Arc::clone(&project), 1, true));
+            view.persistence.bounce_control = Some(control);
+            view.status = "bouncing audio · escape cancels".into();
+            view.receive(failed);
+            assert!(view.persistence.bounce_control.is_none());
+            assert_eq!(view.status, "arrangement was not bounced");
+            assert_eq!(view.error.as_deref(), Some("offline vst3 bounce failed"));
+        })
+        .expect("failed bounce receive");
+}
