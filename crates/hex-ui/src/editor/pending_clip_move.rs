@@ -15,6 +15,11 @@ pub(super) struct Pending {
     members: Vec<hex_project::ClipId>,
     validated_source: Option<Weak<Project>>,
     cursor_epoch: Option<u64>,
+    /// True when the clip was dropped while an unrelated worker edit was still
+    /// in flight; waits for the worker queue to drain before submitting
+    /// `MoveExistingClips` against the resulting canonical revision.
+    deferred_submission: bool,
+    deferred_copy_intent: Option<super::group_copy::Pending>,
 }
 
 impl Pending {
@@ -24,8 +29,32 @@ impl Pending {
         source: Arc<Project>,
         cursor_epoch: Option<u64>,
     ) -> Self {
+        Self::with_deferred(drag, command, source, cursor_epoch, false, None)
+    }
+
+    pub(super) fn new_deferred(
+        drag: ClipDrag,
+        command: Command,
+        source: Arc<Project>,
+        cursor_epoch: Option<u64>,
+        copy_intent: Option<super::group_copy::Pending>,
+    ) -> Self {
+        Self::with_deferred(drag, command, source, cursor_epoch, true, copy_intent)
+    }
+
+    fn with_deferred(
+        drag: ClipDrag,
+        command: Command,
+        source: Arc<Project>,
+        cursor_epoch: Option<u64>,
+        deferred_submission: bool,
+        deferred_copy_intent: Option<super::group_copy::Pending>,
+    ) -> Self {
         let receipt = Receipt::new(drag.project_generation);
         let mut members = drag.group.borrow().ids.clone();
+        if members.is_empty() {
+            members.push(drag.clip);
+        }
         members.sort_unstable();
         Self {
             drag,
@@ -35,11 +64,13 @@ impl Pending {
             source,
             members,
             cursor_epoch,
+            deferred_submission,
+            deferred_copy_intent,
         }
     }
 
     fn matches(&self, request: &Request) -> bool {
-        if !self.receipt.is_queued() {
+        if self.deferred_submission || !self.receipt.is_queued() {
             return false;
         }
         let command = match request {
@@ -49,7 +80,7 @@ impl Pending {
                 revision,
                 command,
             } if *project_generation == self.drag.project_generation
-                && *revision == self.drag.revision =>
+                && *revision == self.drag.effective_revision() =>
             {
                 command
             }
@@ -207,7 +238,7 @@ impl Pending {
     fn current(&self, view: &EditorView) -> bool {
         self.drag.project_generation == view.project_generation
             && view.state.as_ref().is_some_and(|s| {
-                s.revision >= self.drag.revision
+                s.revision >= self.drag.effective_revision()
                     && self
                         .validated_source
                         .as_ref()
@@ -278,6 +309,12 @@ fn selected_sources_unchanged(
 }
 
 impl EditorView {
+    pub(in crate::editor) fn pending_clip_move_active(&self) -> bool {
+        self.pending_clip_move
+            .as_ref()
+            .is_some_and(|p| p.current(self))
+    }
+
     /// Rendering can borrow the held capture or its released successor. Pending
     /// display never passes the held-drag admission check (work is now in flight).
     pub(super) fn displayed_clip_drag(&self) -> Option<&ClipDrag> {
@@ -309,7 +346,7 @@ impl EditorView {
                     !self.opening_project
                         && !self.close_prompt_open
                         && drag.project_generation == self.project_generation
-                        && drag.revision == state.revision
+                        && drag.effective_revision() == state.revision
                         && drag.viewport() == viewport
                         && drag.snap_grid == self.snap_grid
                         && (group.ids.len() <= 1
@@ -372,7 +409,38 @@ impl EditorView {
         &mut self,
         event: &Event,
     ) -> Option<(DropCursor, Option<ClipId>)> {
+        if !event.project_replaced
+            && let Some(active) = self.active_clip_drag.as_ref()
+            && active.project_generation == self.project_generation
+            && active.effective_revision() < event.state.revision
+        {
+            let mut group = active.group.borrow_mut();
+            let mut members = group.ids.clone();
+            if members.is_empty() {
+                members.push(active.clip);
+            }
+            members.sort_unstable();
+            let unchanged = group
+                .source_project
+                .as_ref()
+                .is_some_and(|src| selected_sources_unchanged(src, &event.state.project, &members));
+            if unchanged {
+                group.rebased_revision = Some(event.state.revision);
+            }
+        }
         let p = self.pending_clip_move.as_mut()?;
+        if p.deferred_submission {
+            if event.project_replaced || p.drag.project_generation != self.project_generation {
+                self.retire_pending_clip_move();
+            } else {
+                p.observe_source(&event.state.project);
+                if p.validated_source.is_none() {
+                    self.error = Some("clip move canceled · project changed".into());
+                    self.retire_pending_clip_move();
+                }
+            }
+            return None;
+        }
         let disposition = p.receipt.observe(
             self.project_generation,
             event.project_replaced,
@@ -402,6 +470,62 @@ impl EditorView {
         cursor.map(|cursor| (cursor, moved_clip))
     }
 
+    /// Submit a clip drop that was released while an unrelated worker edit was
+    /// in flight, once the worker queue drains and the source clips remain intact.
+    pub(super) fn submit_deferred_clip_move(&mut self) -> bool {
+        let ready = self
+            .pending_clip_move
+            .as_ref()
+            .is_some_and(|p| p.deferred_submission);
+        if !ready || self.clip_move_must_defer() || self.edit_blocked_outside_request_queue() {
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let revision = state.revision;
+        let project = Arc::clone(&state.project);
+        let Some(p) = self.pending_clip_move.as_mut() else {
+            return false;
+        };
+        p.observe_source(&project);
+        let target_ok = match p.drag.destination.get() {
+            Some(super::drag::ClipDropDestination::ExistingTrack(track)) => {
+                project.track(track).is_some()
+            }
+            Some(super::drag::ClipDropDestination::NewTrack { before_track, .. }) => {
+                before_track.is_none_or(|track| project.track(track).is_some())
+            }
+            None => false,
+        };
+        if p.validated_source.is_none() || !target_ok {
+            self.error = Some("clip move canceled · project changed".into());
+            self.retire_pending_clip_move();
+            return true;
+        }
+        p.deferred_submission = false;
+        p.drag.group.borrow_mut().rebased_revision = Some(revision);
+        let generation = p.drag.project_generation;
+        let command = p.command.clone();
+        let copy_intent = p.deferred_copy_intent.take();
+        let before_pending = self.worker_requests_pending;
+        if self.enqueue(Request::MoveExistingClips {
+            project_generation: generation,
+            revision,
+            command,
+        }) {
+            if let Some(mut intent) = copy_intent {
+                if self.worker_requests_pending > before_pending {
+                    intent.submitted(self.worker_requests_pending);
+                }
+                self.pending_group_copy = Some(intent);
+            }
+        } else {
+            self.retire_pending_clip_move();
+        }
+        true
+    }
+
     pub(super) fn retire_pending_clip_move(&mut self) -> bool {
         let Some(pending) = self.pending_clip_move.take() else {
             return false;
@@ -416,7 +540,9 @@ impl EditorView {
     pub(super) fn retire_abandoned_clip_move(&mut self) -> bool {
         let abandoned = self.pending_clip_move.as_ref().is_some_and(|p| {
             !p.current(self)
-                || (p.receipt.is_queued() && !self.queued_requests().any(|r| p.matches(r)))
+                || (!p.deferred_submission
+                    && p.receipt.is_queued()
+                    && !self.queued_requests().any(|r| p.matches(r)))
         });
         if abandoned {
             self.retire_pending_clip_move();

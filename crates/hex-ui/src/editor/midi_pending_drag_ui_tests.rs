@@ -650,6 +650,127 @@ fn new_note_creation_repaint_latency(cx: &mut TestAppContext) {
     });
 }
 
+#[gpui::test]
+fn back_to_back_note_moves_succeed_without_dropped_clicks_or_release_flicker(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    seed(&editor, &mut visual, clip);
+    editor.update(&mut visual, |v, cx| {
+        v.piano_beat_span = beat(4.0);
+        let first = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes()[0]
+            .id();
+        v.midi_selection.set_single(first);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let baseline = bodies(&editor, &mut visual);
+
+    // 1. Move Note 1 (beat 0.5, pitch 60 -> beat 1.0, pitch 60) and hold its
+    //    real worker terminal so `worker_requests_pending == 1`.
+    let down1 = position(&editor, &mut visual, 0.75, 60);
+    let end1 = position(&editor, &mut visual, 1.25, 60);
+    visual.simulate_mouse_down(down1, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end1, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let held1 = bodies(&editor, &mut visual);
+    assert_ne!(
+        held1, baseline,
+        "first note move must change rendered bodies"
+    );
+    visual.simulate_mouse_up(end1, MouseButton::Left, Modifiers::default());
+    repaint(&editor, &mut visual);
+    assert_eq!(
+        bodies(&editor, &mut visual),
+        held1,
+        "first move release must keep preview without flicker"
+    );
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.worker_requests_pending, 1);
+        assert_eq!(v.pending_midi_drag.len(), 1);
+        assert!(v.error.is_none());
+    });
+
+    // 2. Immediately (before Note 1's terminal is received) click and move Note 2
+    //    (beat 1.5, pitch 64 -> beat 2.0, pitch 64). Must NOT drop MouseDownEvent.
+    let down2 = position(&editor, &mut visual, 1.75, 64);
+    let end2 = position(&editor, &mut visual, 2.25, 64);
+    visual.simulate_mouse_down(down2, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end2, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let held2 = bodies(&editor, &mut visual);
+    assert_ne!(
+        held2, held1,
+        "second note move must capture immediately while first move is pending"
+    );
+    visual.simulate_mouse_up(end2, MouseButton::Left, Modifiers::default());
+    repaint(&editor, &mut visual);
+    assert_eq!(
+        bodies(&editor, &mut visual),
+        held2,
+        "both moved notes must stay painted at their released destinations without flicker"
+    );
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.worker_requests_pending, 2);
+        assert_eq!(v.pending_midi_drag.len(), 2);
+        assert!(v.error.is_none());
+    });
+
+    // 3. Deliver terminal #1 (Note 1): Note 1 commits canonically while Note 2
+    //    remains pinned at its released preview with zero flicker.
+    let first_terminal = terminal(&editor, &mut visual);
+    assert!(first_terminal.error.is_none());
+    editor.update(&mut visual, |v, cx| {
+        v.receive(first_terminal);
+        cx.notify();
+    });
+    repaint(&editor, &mut visual);
+    assert_eq!(
+        bodies(&editor, &mut visual),
+        held2,
+        "receiving first terminal must not flicker either moved note"
+    );
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.worker_requests_pending, 1);
+        assert_eq!(v.pending_midi_drag.len(), 1);
+        assert!(v.error.is_none());
+    });
+
+    // 4. Deliver terminal #2 (Note 2): both moves are now canonical and idle.
+    let second_terminal = terminal(&editor, &mut visual);
+    assert!(second_terminal.error.is_none());
+    editor.update(&mut visual, |v, cx| {
+        v.receive(second_terminal);
+        cx.notify();
+    });
+    repaint(&editor, &mut visual);
+    assert_eq!(
+        bodies(&editor, &mut visual),
+        held2,
+        "final canonical state must match both released previews"
+    );
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(v.pending_midi_drag.is_none());
+        assert!(v.error.is_none());
+        let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
+        let starts: Vec<(u8, u64)> = source
+            .notes()
+            .iter()
+            .map(|n| (n.pitch(), n.start().raw()))
+            .collect();
+        assert!(starts.contains(&(60, beat(1.0).raw())), "{starts:?}");
+        assert!(starts.contains(&(64, beat(2.0).raw())), "{starts:?}");
+    });
+}
+
 #[path = "midi_creation_capture_tests.rs"]
 mod creation_capture_tests;
 

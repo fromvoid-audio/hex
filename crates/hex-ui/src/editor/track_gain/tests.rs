@@ -3042,3 +3042,127 @@ fn verified_return_slider_keeps_atomic_history_and_reverts_refused_edits(cx: &mu
         );
     });
 }
+
+#[gpui::test]
+fn clip_duplicate_then_immediate_volume_drag_succeeds_without_refusal_banner(
+    cx: &mut TestAppContext,
+) {
+    use hex_project::BeatTime;
+    use hex_session::service::Request;
+
+    let (_browser, mut visual, editor, tracks) = actor_fixture(cx);
+    // Seed a MIDI clip on tracks[0] so we can duplicate it.
+    editor.update(cx, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track: tracks[0],
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        })));
+    });
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(tracks[0])
+                .unwrap()
+                .midi_clips()
+                .len()
+                == 1
+    });
+    visual.run_until_parked();
+
+    let clip_id = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(tracks[0])
+            .unwrap()
+            .midi_clips()[0]
+            .id()
+    });
+    let initial_gain = editor.read_with(cx, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(tracks[0])
+            .unwrap()
+            .gain()
+    });
+
+    // Trigger clip duplication and deliberately do NOT pump its terminal yet.
+    editor.update_in(&mut visual, |view, window, cx| {
+        view.select_clip_header(tracks[0], clip_id, Modifiers::default(), window, cx);
+        view.duplicate_selected();
+        assert!(view.duplicate_intent.is_pending());
+        assert_eq!(view.worker_requests_pending, 1);
+        assert!(
+            view.drag_available(),
+            "clip dragging must remain available during clip duplication"
+        );
+        assert!(
+            view.sections_idle(),
+            "section gestures must remain available during clip duplication"
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    // Immediately drag track 0's volume slider while DuplicateClips is still in flight.
+    let selector: &'static str =
+        Box::leak(format!("track-volume-{}-slider", tracks[0].value()).into_boxed_str());
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("track volume slider bounds");
+    let start = point(bounds.left() + px(10.0), bounds.center().y);
+    let end = point(start.x, start.y - px(24.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.error.as_deref(),
+            None,
+            "volume drag during in-flight clip duplicate must not show refusal banner"
+        );
+        assert!(
+            view.device_gesture.snapshot().is_some() || view.worker_requests_pending >= 1,
+            "volume gesture must be admitted behind clip duplication"
+        );
+    });
+
+    // Settle both the clip duplicate and the track volume commit.
+    pump(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_gesture.snapshot().is_none()
+            && !view.duplicate_intent.is_pending()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.error.as_deref(), None);
+        let track = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(tracks[0])
+            .unwrap();
+        assert_eq!(
+            track.midi_clips().len(),
+            2,
+            "duplicated clip must be committed"
+        );
+        assert!(
+            (track.gain() - initial_gain).abs() > 0.05,
+            "track volume drag must commit cleanly ({} -> {})",
+            initial_gain,
+            track.gain()
+        );
+    });
+}

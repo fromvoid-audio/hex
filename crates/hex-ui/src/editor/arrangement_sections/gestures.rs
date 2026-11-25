@@ -516,9 +516,36 @@ impl EditorView {
     pub(super) fn sections_available(&self) -> bool {
         self.sections_idle() && self.section_input_open()
     }
-    /// No section or other project edit is in flight.
-    pub(super) fn sections_idle(&self) -> bool {
-        !self.edit_pending() && self.sections.pending.is_none() && !self.section_install_pending()
+    /// No section edit or global modal/recording/device-gesture barrier is in flight.
+    /// Unrelated worker requests (such as clip duplication) do not block sections.
+    pub(in crate::editor) fn sections_idle(&self) -> bool {
+        !self.edit_blocked_outside_request_queue()
+            && self.sections.pending.is_none()
+            && !self.section_install_pending()
+    }
+    fn pending_section_is_copy(&self) -> bool {
+        self.sections.pending.as_ref().is_some_and(|pending| {
+            matches!(
+                &pending.command,
+                Command::DuplicateArrangementSection(_) | Command::PasteArrangementSection { .. }
+            ) || copied_section_source(&pending.command).is_some()
+        })
+    }
+    /// Pointer section gestures are admitted while idle OR while a single
+    /// section copy is in flight and no follow-up is queued yet.
+    pub(super) fn section_pointer_available(&self) -> bool {
+        let stopped_edit_pending = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.status())
+            .is_some_and(|status| status.stopped_edit_pending());
+        self.section_input_open()
+            && !self.edit_blocked_outside_request_queue()
+            && !stopped_edit_pending
+            && (self.sections.pending.is_none()
+                || (self.sections.queued.is_none()
+                    && self.sections.ahead.is_none()
+                    && self.pending_section_is_copy()))
     }
     /// No modal owner, text field or other gesture holds editor input.
     pub(super) fn section_input_open(&self) -> bool {
@@ -553,7 +580,7 @@ impl EditorView {
     }
 
     pub(super) fn section_current(&self, g: &Gesture) -> bool {
-        self.sections_available()
+        self.section_pointer_available()
             && g.generation == self.project_generation
             && self.section_geometry() == Some(g.layout)
             && g.snap == self.snap_grid
@@ -658,7 +685,7 @@ impl EditorView {
         let Some(anchor) = self.section_pointer(x, y, free) else {
             return false;
         };
-        if !self.sections_available() {
+        if !self.section_pointer_available() {
             let hit = self.section_hit(x, y).is_some();
             if hit && !self.sections_idle() {
                 self.error = Some(SECTION_BUSY.into());
@@ -1120,7 +1147,16 @@ impl EditorView {
         self.suppress_cursor_click = true;
         if self.section_current(&g) {
             if let Some(command) = g.command {
-                self.submit_section(command, g.display, g.generation, g.revision);
+                if self.sections.pending.is_some() {
+                    self.sections.queued = Some(Queued {
+                        generation: g.generation,
+                        command,
+                        display: Some(g.display),
+                    });
+                    self.status = "section edit queued · applies after the current edit".into();
+                } else {
+                    self.submit_section(command, g.display, g.generation, g.revision);
+                }
             } else if g.launch_eligible
                 && !g.capture.displaced(4.0)
                 && let Mode::Reorder(id) = g.mode
@@ -1145,6 +1181,8 @@ impl EditorView {
             .as_ref()
             .filter(|state| state.revision == revision)
             .and_then(|state| crate::editor::section_layout_preview::build(state, &command));
+        let deferred = (self.worker_requests_pending != 0 || !self.pending_requests.is_empty())
+            && self.pending_requests.len() < super::super::UI_REQUEST_CAPACITY;
         self.sections.pending = Some(Pending {
             generation,
             revision,
@@ -1156,12 +1194,15 @@ impl EditorView {
             cut_cursor: None,
             receipt: Receipt::new(generation),
             selection_intent_epoch: self.selection_intent_epoch,
+            deferred_submission: deferred,
         });
-        if !self.enqueue(Request::EditArrangementSection {
-            project_generation: generation,
-            revision,
-            command,
-        }) {
+        if !deferred
+            && !self.enqueue(Request::EditArrangementSection {
+                project_generation: generation,
+                revision,
+                command,
+            })
+        {
             self.sections.pending = None;
         }
     }
@@ -1179,7 +1220,8 @@ impl EditorView {
             .iter()
             .chain(self.sections.ahead.iter())
             .any(|pending| {
-                pending.receipt.is_queued()
+                !pending.deferred_submission
+                    && pending.receipt.is_queued()
                     && *project_generation == pending.generation
                     && *revision == pending.revision
                     && same_command(command, &pending.command)
@@ -1190,12 +1232,12 @@ impl EditorView {
             .sections
             .ahead
             .as_mut()
-            .filter(|p| p.receipt.is_queued())
+            .filter(|p| !p.deferred_submission && p.receipt.is_queued())
             .or_else(|| {
                 self.sections
                     .pending
                     .as_mut()
-                    .filter(|p| p.receipt.is_queued())
+                    .filter(|p| !p.deferred_submission && p.receipt.is_queued())
             })
         {
             p.receipt.submitted(self.worker_requests_pending);
@@ -1232,6 +1274,9 @@ impl EditorView {
             self.sections.ahead = None;
         }
         if self.sections.pending.as_mut().is_some_and(|p| {
+            if p.deferred_submission {
+                return event.project_replaced || p.generation != self.project_generation;
+            }
             p.receipt.observe(
                 self.project_generation,
                 event.project_replaced,
@@ -1328,18 +1373,71 @@ impl EditorView {
         }
         if event.project_replaced {
             self.sections = Sections::default();
-        } else if self
-            .sections
-            .gesture
-            .as_ref()
-            .is_some_and(|g| g.revision != event.state.revision)
+        } else if let Some(g) = self.sections.gesture.as_mut()
+            && g.revision != event.state.revision
         {
-            self.cancel_section_pointer();
+            let sections_unchanged = self.state.as_ref().is_some_and(|old| {
+                old.project.arrangement_sections() == event.state.project.arrangement_sections()
+                    && old.project.tempo_map() == event.state.project.tempo_map()
+            });
+            let target_unchanged = g.original.as_ref().and_then(|m| m.id).is_some_and(|id| {
+                let Some(orig) = g.original.as_ref() else {
+                    return false;
+                };
+                event
+                    .state
+                    .project
+                    .arrangement_section(id)
+                    .is_some_and(|s| s.start() == orig.start && s.end() == orig.end)
+            });
+            if sections_unchanged || target_unchanged {
+                g.revision = event.state.revision;
+            } else {
+                self.cancel_section_pointer();
+            }
         }
     }
-    /// Submit the queued follow-up once its predecessor is acknowledged.
-    /// It is validated against the installed revision like a fresh key press.
+    /// Submit any deferred section release (held while an unrelated worker edit
+    /// drained) or queued follow-up once its predecessor is acknowledged.
     pub(in crate::editor) fn submit_queued_section(&mut self) -> bool {
+        if self
+            .sections
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.deferred_submission)
+            && self.worker_requests_pending == 0
+            && self.pending_requests.is_empty()
+            && !self.edit_blocked_outside_request_queue()
+        {
+            let Some(state) = self.state.as_ref() else {
+                return false;
+            };
+            let revision = state.revision;
+            let layout = self
+                .sections
+                .pending
+                .as_ref()
+                .and_then(|p| crate::editor::section_layout_preview::build(state, &p.command));
+            if let Some(p) = self.sections.pending.as_mut() {
+                if p.generation != self.project_generation {
+                    self.sections.pending = None;
+                    return true;
+                }
+                p.revision = revision;
+                p.layout = layout;
+                p.deferred_submission = false;
+                let generation = p.generation;
+                let command = p.command.clone();
+                if !self.enqueue(Request::EditArrangementSection {
+                    project_generation: generation,
+                    revision,
+                    command,
+                }) {
+                    self.sections.pending = None;
+                }
+                return true;
+            }
+        }
         if self
             .sections
             .queued
@@ -1349,14 +1447,27 @@ impl EditorView {
             self.sections.queued = None;
             return true;
         }
-        if self.sections.queued.is_none() || !self.sections_available() {
+        if self.sections.queued.is_none()
+            || !self.sections_available()
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+        {
             return false;
         }
-        let Some(Queued { command, .. }) = self.sections.queued.take() else {
+        let Some(Queued {
+            command, display, ..
+        }) = self.sections.queued.take()
+        else {
             return false;
         };
         self.status = "applying queued section edit".into();
-        self.section_metadata(command);
+        if let Some(display) = display
+            && let Some(revision) = self.state.as_ref().map(|s| s.revision)
+        {
+            self.submit_section(command, display, self.project_generation, revision);
+        } else {
+            self.section_metadata(command);
+        }
         true
     }
     /// Undo/Redo order behind the in-flight edit; a queued section follow-up
@@ -1745,6 +1856,7 @@ impl EditorView {
             self.sections.queued = Some(Queued {
                 generation: self.project_generation,
                 command,
+                display: None,
             });
             self.status = "section edit queued · applies after the current edit".into();
             self.start_ahead_section_duplicate();
@@ -1883,6 +1995,7 @@ impl EditorView {
             cut_cursor: None,
             receipt: Receipt::new(self.project_generation),
             selection_intent_epoch: primary.selection_intent_epoch,
+            deferred_submission: false,
         });
         self.sections.queued = None;
         if !self.enqueue(Request::EditArrangementSection {

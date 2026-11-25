@@ -432,7 +432,7 @@ impl EditorView {
             visible |= self.duplicate_intent.reject();
         }
         if kinds.midi_drag {
-            visible |= self.retire_pending_midi_drag();
+            visible |= self.retire_unsubmitted_midi_drag(request);
         }
         if kinds.fade {
             visible |= self.retire_pending_fade();

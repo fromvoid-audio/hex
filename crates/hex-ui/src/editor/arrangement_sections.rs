@@ -189,6 +189,10 @@ struct Pending {
     cut_cursor: Option<BeatTime>,
     receipt: Receipt,
     selection_intent_epoch: Option<u64>,
+    /// True when released while an unrelated worker request (e.g. clip
+    /// duplication) was in flight; waits for the worker queue to drain before
+    /// submitting `EditArrangementSection` against the resulting revision.
+    deferred_submission: bool,
 }
 struct Name {
     id: SectionId,
@@ -225,6 +229,9 @@ pub(super) struct Sections {
 struct Queued {
     generation: u64,
     command: Command,
+    /// Optional frozen pointer-release preview retained until `submit_queued_section`
+    /// hands it off to `sections.pending`, preventing release flicker.
+    display: Option<Display>,
 }
 /// Visible refusal for section input that cannot wait for an in-flight edit.
 const SECTION_BUSY: &str = "applying section edit · try again when it finishes";
