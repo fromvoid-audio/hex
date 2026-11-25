@@ -1850,7 +1850,7 @@ fn auto_pan_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
             state: trimmed,
         }))
         .unwrap();
-    let state = terminal(&service).state;
+    let state = receive_service_event(&service).state;
     let (handle, editor) = directory.window(cx, service, state, track, bus);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1600.0), px(800.0)));
@@ -2118,7 +2118,7 @@ fn compressor_rms_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
             state: trimmed,
         }))
         .unwrap();
-    let state = terminal(&service).state;
+    let state = receive_service_event(&service).state;
     let (handle, editor) = directory.window(cx, service, state, track, bus);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1600.0), px(800.0)));
