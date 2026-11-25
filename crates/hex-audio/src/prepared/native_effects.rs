@@ -367,6 +367,23 @@ impl hex_lattice::ForeignProcessors for NativeEffectWindow<'_> {
         self.inner
             .process_segment_with_modulation(node, offset, frames, lane, clock)
     }
+    fn process_segment_with_modulations(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        offset: usize,
+        frames: &mut [[f32; 2]],
+        lanes: &[hex_lattice::ForeignModulationSamples<'_>],
+        notes: &[hex_lattice::ForeignNote],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), hex_lattice_contract::DeviceContractError> {
+        let Some(offset) = self.start.checked_add(offset) else {
+            self.inner.reject_callback();
+            frames.fill([0.0; 2]);
+            return Err(hex_lattice_contract::DeviceContractError::ForeignProcessingFailed);
+        };
+        self.inner
+            .process_segment_with_modulations(node, offset, frames, lanes, notes, clock)
+    }
     fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)
     }

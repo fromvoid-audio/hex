@@ -40,9 +40,18 @@ pub struct ModulationRoute {
     pub range: [f32; 2],
 }
 
-/// A signed normalized offset to the one foreign target of a prepared bank.
+/// A signed normalized offset to the one foreign target of a single-target prepared bank.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ForeignModulationRoute {
+    pub source: usize,
+    pub amount: f32,
+    pub range: [f32; 2],
+}
+
+/// A signed normalized offset to a specific raw foreign parameter ID in a multi-target bank.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ForeignTargetModulationRoute {
+    pub target: u32,
     pub source: usize,
     pub amount: f32,
     pub range: [f32; 2],
@@ -357,12 +366,20 @@ impl PreparedModulation {
         })
     }
 
-    pub(crate) fn for_foreign_target(
-        routes: &[ForeignModulationRoute],
+    pub(crate) fn for_foreign_targets(
+        target_ids: &[u32],
+        routes: &[ForeignTargetModulationRoute],
         source_count: usize,
     ) -> Result<Self, Error> {
-        if routes.len() > MAX_MODULATION_ROUTES || source_count > MAX_MODULATION_SOURCES {
+        if target_ids.is_empty()
+            || target_ids.len() > crate::foreign_modulation::MAX_FOREIGN_MODULATION_TARGETS
+            || routes.len() > MAX_MODULATION_ROUTES
+            || source_count > MAX_MODULATION_SOURCES
+        {
             return Err(Error::RuntimeBudgetExceeded);
+        }
+        if target_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(Error::InvalidDescriptor);
         }
         let mut program = Self::new(&[], &[], source_count)?;
         program
@@ -373,13 +390,19 @@ impl PreparedModulation {
             if route.source >= source_count {
                 return Err(Error::InvalidParameterValue);
             }
+            let target_index = target_ids
+                .binary_search(&route.target)
+                .map_err(|_| Error::UnknownParameter)?;
             program.routes.push(Route {
                 source: route.source,
-                target_index: 0,
+                target_index,
                 order,
                 contribution: RangeContribution::prepare(route.amount, route.range)?,
             });
         }
+        program
+            .routes
+            .sort_unstable_by_key(|route| (route.target_index, route.order));
         Ok(program)
     }
 
@@ -531,17 +554,25 @@ impl ModulationBlock<'_> {
         HostGain::from_normalized(final_value)
     }
 
-    pub(crate) fn compose_foreign_target(
+    pub(crate) fn compose_foreign_target_at(
         &self,
+        target_index: usize,
         normalized_base: f64,
         output: &mut [f64],
     ) -> Result<(), Error> {
         if output.len() != self.frames {
             return Err(Error::InvalidParameterValue);
         }
-        let routes = 0..self.program.routes.len();
+        let start = self
+            .program
+            .routes
+            .partition_point(|route| route.target_index < target_index);
+        let end = self
+            .program
+            .routes
+            .partition_point(|route| route.target_index <= target_index);
         for (offset, value) in output.iter_mut().enumerate() {
-            let sum = self.sum_routes(routes.clone(), offset)?;
+            let sum = self.sum_routes(start..end, offset)?;
             *value = (normalized_base + sum).clamp(0.0, 1.0);
         }
         Ok(())

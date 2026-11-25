@@ -114,11 +114,18 @@ pub struct ForeignAutomationSource<'a> {
     pub class: [u8; 16],
     pub sample_rate: u32,
     pub quantum_frames: u16,
-    /// Raw continuous ID with a reserved dense lane on this exact effect.
-    /// Ordinary effects and all instruments expose no reservation here.
-    pub dense_parameter: Option<u32>,
+    /// Strictly increasing raw continuous parameter IDs with reserved dense
+    /// modulation lanes (up to `MAX_FOREIGN_MODULATION_TARGETS`).
+    pub dense_parameters: &'a [u32],
     /// Strictly increasing raw parameter IDs.
     pub parameters: &'a [ForeignParameterCapability],
+}
+
+impl ForeignAutomationSource<'_> {
+    /// Primary reserved dense modulation parameter when present.
+    pub fn dense_parameter(&self) -> Option<u32> {
+        self.dense_parameters.first().copied()
+    }
 }
 
 /// An immutable, control-prepared program that fills bounded storage for a
@@ -735,6 +742,32 @@ pub trait ForeignProcessors {
         _lane: ForeignModulationSamples<'_>,
         _clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
+        self.reject_callback();
+        frames.fill([0.0; 2]);
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+    /// Stage one or more modulated continuous parameter lanes (and optional
+    /// ordered note events for VST3 instruments) through the same endpoint and
+    /// host acceptance as PCM. Single-lane audio effects default to
+    /// `process_segment_with_modulation` for backwards compatibility.
+    fn process_segment_with_modulations(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        frame_offset: usize,
+        frames: &mut [StereoFrame],
+        lanes: &[ForeignModulationSamples<'_>],
+        notes: &[ForeignNote],
+        clock: Option<&dyn NativeInstrumentClock>,
+    ) -> Result<(), DeviceContractError> {
+        if lanes.len() == 1 && notes.is_empty() {
+            return self.process_segment_with_modulation(
+                node,
+                frame_offset,
+                frames,
+                lanes[0],
+                clock,
+            );
+        }
         self.reject_callback();
         frames.fill([0.0; 2]);
         Err(DeviceContractError::ForeignProcessingUnavailable)

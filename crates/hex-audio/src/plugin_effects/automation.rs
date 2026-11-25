@@ -325,7 +325,7 @@ impl SourceCapabilities {
             class: self.class?.bytes(),
             sample_rate,
             quantum_frames,
-            dense_parameter: None,
+            dense_parameters: &[],
             parameters: &self.parameters[..self.len],
         })
     }
