@@ -32,6 +32,10 @@ mod stream;
 mod verified_stream;
 mod wav;
 
+/// Maximum metadata/chunk headers scanned during resident WAV/AIFF/FLAC decode.
+/// Bounds malformed empty-chunk/metadata storms without restricting real files.
+pub(crate) const MAX_RESIDENT_HEADER_COUNT: usize = 4_096;
+
 #[cfg(test)]
 mod codec_tests;
 
