@@ -1,6 +1,8 @@
 //! Control-side pairing of the accepted, delivered event stream. A take owns its
 //! bounded notes until its caller observes the exact canonical commit terminal.
-use super::{MAX_MIDI_TAKE_NOTES, RecordedMidiNote};
+use super::{
+    MAX_MIDI_TAKE_NOTES, RecordedExpressionSample, RecordedMidiNote, RecordedNoteExpression,
+};
 use hex_engine::midi_capture::{
     AcceptedMidiNote, MidiCaptureClock, MidiCaptureEvent, MidiCaptureSource,
     advance_midi_capture_clock, compensate_midi_capture_frame,
@@ -12,6 +14,8 @@ struct Held {
     occurrence: u64,
     start_pass: u64,
     note: RecordedMidiNote,
+    current_expression: hex_project::NoteExpression,
+    expression_points: Vec<RecordedExpressionSample>,
 }
 /// Mutable assembly on control only. An error leaves the captured prefix owned
 /// here; it must be presented as incomplete rather than committed automatically.
@@ -25,6 +29,7 @@ pub struct MidiTake {
     wrapped: bool,
     held: Vec<Held>,
     notes: Vec<RecordedMidiNote>,
+    expressions: Vec<RecordedNoteExpression>,
     onsets: usize,
     finished: Option<u64>,
     faulted: bool,
@@ -67,6 +72,10 @@ impl MidiTake {
         notes
             .try_reserve_exact(MAX_MIDI_TAKE_NOTES)
             .map_err(|_| "could not reserve midi take notes")?;
+        let mut expressions = Vec::new();
+        expressions
+            .try_reserve_exact(MAX_MIDI_TAKE_NOTES)
+            .map_err(|_| "could not reserve midi take expression storage")?;
         let mut held = Vec::new();
         held.try_reserve_exact(MAX_HELD)
             .map_err(|_| "could not reserve midi take gates")?;
@@ -80,6 +89,7 @@ impl MidiTake {
             wrapped: false,
             held,
             notes,
+            expressions,
             onsets: 0,
             finished: None,
             faulted: false,
@@ -170,6 +180,8 @@ impl MidiTake {
                         channel,
                         velocity,
                     },
+                    current_expression: hex_project::NoteExpression::default(),
+                    expression_points: Vec::new(),
                 });
                 self.onsets += 1;
             }
@@ -190,8 +202,69 @@ impl MidiTake {
                     let mut held = self.held.swap_remove(index);
                     held.note.end_frame = close_frame;
                     if held.note.end_frame > held.note.start_frame {
+                        let expr = finalize_held_expression(
+                            held.note.start_frame,
+                            held.note.end_frame,
+                            held.expression_points,
+                        );
                         self.notes.push(held.note);
+                        self.expressions.push(expr);
                     }
+                }
+            }
+            MidiCaptureEvent::PitchBend { cents } => {
+                if !matches!(event.source, MidiCaptureSource::Hardware { .. })
+                    || !(hex_project::MIN_NOTE_PITCH_OFFSET_CENTS
+                        ..=hex_project::MAX_NOTE_PITCH_OFFSET_CENTS)
+                        .contains(&cents)
+                {
+                    return Err("midi take per-note pitch bend is invalid");
+                }
+                if let Some(index) = held {
+                    let sample_frame = expression_sample_frame(
+                        self.loop_region,
+                        self.end,
+                        &self.held[index],
+                        expected_pass,
+                        frame,
+                    );
+                    let entry = &mut self.held[index];
+                    entry.current_expression.pitch_offset_cents = cents;
+                    push_expression_sample(entry, sample_frame)?;
+                }
+            }
+            MidiCaptureEvent::Timbre { value } => {
+                if !matches!(event.source, MidiCaptureSource::Hardware { .. }) || value > 127 {
+                    return Err("midi take per-note timbre is invalid");
+                }
+                if let Some(index) = held {
+                    let sample_frame = expression_sample_frame(
+                        self.loop_region,
+                        self.end,
+                        &self.held[index],
+                        expected_pass,
+                        frame,
+                    );
+                    let entry = &mut self.held[index];
+                    entry.current_expression.timbre = value;
+                    push_expression_sample(entry, sample_frame)?;
+                }
+            }
+            MidiCaptureEvent::Pressure { value } => {
+                if !matches!(event.source, MidiCaptureSource::Hardware { .. }) || value > 127 {
+                    return Err("midi take per-note pressure is invalid");
+                }
+                if let Some(index) = held {
+                    let sample_frame = expression_sample_frame(
+                        self.loop_region,
+                        self.end,
+                        &self.held[index],
+                        expected_pass,
+                        frame,
+                    );
+                    let entry = &mut self.held[index];
+                    entry.current_expression.pressure = value;
+                    push_expression_sample(entry, sample_frame)?;
                 }
             }
         }
@@ -268,10 +341,25 @@ impl MidiTake {
                 .filter(|_| final_pass > held.start_pass)
                 .map_or(corrected_end, |(_, loop_end)| loop_end.min(self.end));
             if note.end_frame > note.start_frame {
+                let expr = finalize_held_expression(
+                    note.start_frame,
+                    note.end_frame,
+                    held.expression_points,
+                );
                 self.notes.push(note);
+                self.expressions.push(expr);
             }
         }
-        self.notes.sort_by_key(|note| note.start_frame);
+        let mut paired: Vec<_> = self
+            .notes
+            .drain(..)
+            .zip(self.expressions.drain(..))
+            .collect();
+        paired.sort_by_key(|(note, _)| note.start_frame);
+        for (note, expr) in paired {
+            self.notes.push(note);
+            self.expressions.push(expr);
+        }
         let stop_frame = if self.wrapped {
             self.loop_region.map_or(corrected_end, |(_, loop_end)| {
                 corrected_end.max(loop_end.min(self.end))
@@ -287,10 +375,67 @@ impl MidiTake {
     pub fn notes(&self) -> &[RecordedMidiNote] {
         &self.notes
     }
+    /// Borrow captured per-note expression index-aligned with `notes()`.
+    pub fn note_expressions(&self) -> &[RecordedNoteExpression] {
+        &self.expressions
+    }
     pub fn complete(&self) -> bool {
         self.finished.is_some() && !self.faulted
     }
     pub fn interrupt(&mut self) {
         self.faulted = true;
     }
+}
+
+fn expression_sample_frame(
+    loop_region: Option<(u64, u64)>,
+    end: u64,
+    held: &Held,
+    expected_pass: u64,
+    frame: u64,
+) -> u64 {
+    let cap = loop_region
+        .filter(|_| expected_pass > held.start_pass)
+        .map_or(end, |(_, loop_end)| loop_end.min(end));
+    frame.clamp(held.note.start_frame, cap)
+}
+
+fn push_expression_sample(held: &mut Held, sample_frame: u64) -> Result<(), &'static str> {
+    let sample = RecordedExpressionSample {
+        frame: sample_frame,
+        pitch_offset_cents: held.current_expression.pitch_offset_cents,
+        timbre: held.current_expression.timbre,
+        pressure: held.current_expression.pressure,
+    };
+    if let Some(last) = held.expression_points.last_mut() {
+        if sample_frame < last.frame {
+            return Err("midi take expression timestamp moved backwards");
+        }
+        if sample_frame == last.frame {
+            *last = sample;
+            return Ok(());
+        }
+    }
+    if held.expression_points.len() >= hex_project::MAX_NOTE_EXPRESSION_POINTS {
+        return Err("midi take expression point limit reached");
+    }
+    held.expression_points.push(sample);
+    Ok(())
+}
+
+fn finalize_held_expression(
+    start_frame: u64,
+    end_frame: u64,
+    mut points: Vec<RecordedExpressionSample>,
+) -> RecordedNoteExpression {
+    points.retain(|p| p.frame >= start_frame && p.frame <= end_frame);
+    let initial = points
+        .first()
+        .map(|p| hex_project::NoteExpression {
+            pitch_offset_cents: p.pitch_offset_cents,
+            timbre: p.timbre,
+            pressure: p.pressure,
+        })
+        .unwrap_or_default();
+    RecordedNoteExpression { initial, points }
 }

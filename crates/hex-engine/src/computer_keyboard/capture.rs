@@ -145,6 +145,7 @@ impl ComputerKeyboardRuntime {
     pub(super) fn capture_voice_changes(
         &mut self,
         before: &[Option<Voice>; VOICES],
+        live_event: Option<LiveNoteEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) {
         let Some(capture) = self.capture.as_mut().filter(|capture| capture.is_active()) else {
@@ -212,6 +213,49 @@ impl ComputerKeyboardRuntime {
                     .is_err()
                 {
                     return;
+                }
+            }
+        }
+        // Capture occurrence-owned per-note expression on active post-Arm hardware
+        // voices without copying transient channel snapshots across notes.
+        if let Some(activation) = binding.hardware {
+            let expr_match = match live_event {
+                Some(LiveNoteEvent::NotePitchBend {
+                    channel,
+                    pitch,
+                    cents,
+                }) if (hex_project::MIN_NOTE_PITCH_OFFSET_CENTS
+                    ..=hex_project::MAX_NOTE_PITCH_OFFSET_CENTS)
+                    .contains(&cents) =>
+                {
+                    Some((channel, pitch, MidiCaptureEvent::PitchBend { cents }))
+                }
+                Some(LiveNoteEvent::NoteTimbre {
+                    channel,
+                    pitch,
+                    value,
+                }) if value <= 127 => Some((channel, pitch, MidiCaptureEvent::Timbre { value })),
+                Some(LiveNoteEvent::PolyPressure {
+                    channel,
+                    pitch,
+                    value,
+                }) if value <= 127 => Some((channel, pitch, MidiCaptureEvent::Pressure { value })),
+                _ => None,
+            };
+            if let Some((channel, pitch, event)) = expr_match {
+                let target = VoiceSource::Hardware { channel, pitch };
+                if let Some(voice) = self.scratch.iter().flatten().find(|voice| {
+                    voice.source == target && voice.gate.is_none() && voice.id > first_occurrence
+                }) {
+                    let _ = capture.push(AcceptedMidiNote {
+                        source: MidiCaptureSource::Hardware {
+                            activation,
+                            channel,
+                        },
+                        occurrence_id: voice.id,
+                        performance_frame: frame,
+                        event,
+                    });
                 }
             }
         }
@@ -873,5 +917,124 @@ mod tests {
             runtime.midi_capture_fault(1),
             Some(MidiCaptureFault::RouteChanged)
         );
+    }
+
+    #[test]
+    fn overlapping_hardware_notes_capture_distinct_occurrence_owned_expression() {
+        let (project, track, clock, input, mut runtime) = setup(true);
+        let live = input.live_notes().unwrap();
+        let hw = live.current_activation_on_control().unwrap();
+        // Pre-Arm held note on ch 1 pitch 55: expression on it must NOT be captured!
+        live.publish(
+            hw,
+            LiveNoteEvent::NoteOn {
+                channel: 1,
+                pitch: 55,
+                velocity: 80,
+            },
+        )
+        .unwrap();
+        runtime.render(&mut [[0.0; 2]; 8]).unwrap();
+
+        let keys = input.begin_ordered_keys_on_control().unwrap();
+        let bind = binding(&project, track, &input, keys);
+        runtime.arm_midi_capture(bind, &clock).unwrap();
+
+        // Two overlapping MPE member-channel notes with distinct per-note expression.
+        for ev in [
+            LiveNoteEvent::NoteOn {
+                channel: 2,
+                pitch: 60,
+                velocity: 100,
+            },
+            LiveNoteEvent::NoteOn {
+                channel: 3,
+                pitch: 64,
+                velocity: 105,
+            },
+            // Pre-Arm note expression -> must be ignored.
+            LiveNoteEvent::NotePitchBend {
+                channel: 1,
+                pitch: 55,
+                cents: 150,
+            },
+            LiveNoteEvent::NotePitchBend {
+                channel: 2,
+                pitch: 60,
+                cents: 200,
+            },
+            LiveNoteEvent::NoteTimbre {
+                channel: 2,
+                pitch: 60,
+                value: 90,
+            },
+            LiveNoteEvent::PolyPressure {
+                channel: 2,
+                pitch: 60,
+                value: 80,
+            },
+            LiveNoteEvent::NotePitchBend {
+                channel: 3,
+                pitch: 64,
+                cents: -300,
+            },
+            LiveNoteEvent::NoteTimbre {
+                channel: 3,
+                pitch: 64,
+                value: 30,
+            },
+            LiveNoteEvent::PolyPressure {
+                channel: 3,
+                pitch: 64,
+                value: 110,
+            },
+        ] {
+            live.publish(hw, ev).unwrap();
+        }
+        runtime.render(&mut [[0.0; 2]; 32]).unwrap();
+        let render = runtime.midi_capture_render(1).unwrap().unwrap();
+        let on_60 = render
+            .events
+            .iter()
+            .find(|e| matches!(e.event, MidiCaptureEvent::On { pitch: 60, .. }))
+            .expect("on 60");
+        let on_64 = render
+            .events
+            .iter()
+            .find(|e| matches!(e.event, MidiCaptureEvent::On { pitch: 64, .. }))
+            .expect("on 64");
+        assert_ne!(on_60.occurrence_id, on_64.occurrence_id);
+        // Pre-Arm note ch 1 must produce ZERO captured expression events.
+        assert!(
+            !render
+                .events
+                .iter()
+                .any(|e| matches!(e.source, MidiCaptureSource::Hardware { channel: 1, .. }))
+        );
+        // Exact occurrence ownership for pitch 60 (ch 2) and pitch 64 (ch 3).
+        assert!(render.events.iter().any(|e| {
+            e.occurrence_id == on_60.occurrence_id
+                && e.event == MidiCaptureEvent::PitchBend { cents: 200 }
+        }));
+        assert!(render.events.iter().any(|e| {
+            e.occurrence_id == on_60.occurrence_id
+                && e.event == MidiCaptureEvent::Timbre { value: 90 }
+        }));
+        assert!(render.events.iter().any(|e| {
+            e.occurrence_id == on_60.occurrence_id
+                && e.event == MidiCaptureEvent::Pressure { value: 80 }
+        }));
+        assert!(render.events.iter().any(|e| {
+            e.occurrence_id == on_64.occurrence_id
+                && e.event == MidiCaptureEvent::PitchBend { cents: -300 }
+        }));
+        assert!(render.events.iter().any(|e| {
+            e.occurrence_id == on_64.occurrence_id
+                && e.event == MidiCaptureEvent::Timbre { value: 30 }
+        }));
+        assert!(render.events.iter().any(|e| {
+            e.occurrence_id == on_64.occurrence_id
+                && e.event == MidiCaptureEvent::Pressure { value: 110 }
+        }));
     }
 }

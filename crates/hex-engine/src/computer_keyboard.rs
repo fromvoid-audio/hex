@@ -1641,7 +1641,7 @@ impl ComputerKeyboardRuntime {
         self.scratch_audition_gate.advance(output.len() as u64);
         self.boundary = false;
         if let Some(before) = before_voices {
-            self.capture_voice_changes(&before, clock);
+            self.capture_voice_changes(&before, live_event, clock);
         }
         let resources = self
             .resources

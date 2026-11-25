@@ -58,6 +58,7 @@ fn midi_take_worker_refuses_stale_and_malformed_then_commits_one_history_edit_wi
                 revision,
                 binding: Arc::clone(&binding),
                 notes: captured,
+                expressions: Arc::from([]),
                 stop_frame: 3_000,
             })
             .unwrap();
@@ -84,6 +85,7 @@ fn midi_take_worker_refuses_stale_and_malformed_then_commits_one_history_edit_wi
             revision: before.state.revision,
             binding,
             notes: Arc::clone(&notes),
+            expressions: Arc::from([]),
             stop_frame: 3_000,
         })
         .unwrap();

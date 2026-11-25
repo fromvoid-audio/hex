@@ -60,6 +60,7 @@ fn command_validation_scope(project: &Project, command: &Command) -> CommandVali
         }
         Command::AddMidiNote { .. }
         | Command::AddMidiNotes { .. }
+        | Command::AddMidiNotesWithExpression { .. }
         | Command::UpdateMidiNote { .. }
         | Command::UpdateMidiNotes { .. }
         | Command::EditMidiNotes { .. }

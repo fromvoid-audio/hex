@@ -21,6 +21,29 @@ use hex_project::{
 /// The caller keeps its original spans until the canonical edit acknowledges.
 pub const MAX_MIDI_TAKE_NOTES: usize = 16_384;
 
+/// One time-varying per-note expression sample in the audible content-frame clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordedExpressionSample {
+    pub frame: u64,
+    pub pitch_offset_cents: i16,
+    pub timbre: u8,
+    pub pressure: u8,
+}
+
+/// Bounded per-note expression captured for one recorded note occurrence,
+/// index-aligned with `MidiTake::notes()`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RecordedNoteExpression {
+    pub initial: hex_project::NoteExpression,
+    pub points: Vec<RecordedExpressionSample>,
+}
+
+impl RecordedNoteExpression {
+    pub fn is_empty(&self) -> bool {
+        self.initial.is_default() && self.points.is_empty()
+    }
+}
+
 /// Completed physical note in the project-frame clock.
 /// Channel is zero based; velocity zero is an input note-off, never a new note.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -715,13 +738,31 @@ pub fn finish_take(
     notes: &[RecordedMidiNote],
     stop_frame: u64,
 ) -> Result<Option<Command>, &'static str> {
+    finish_take_with_expression(project, binding, notes, &[], stop_frame)
+}
+
+/// Build the atomic MIDI authoring command preserving bounded per-note
+/// expression (`NoteExpression` + `NoteExpressionPoint`s) index-aligned with
+/// `notes` (or an empty slice when no per-note expression was recorded).
+/// Refuses invalid expression values, out-of-range/unordered timestamps, and
+/// mismatched slice lengths without mutating the project or consuming the take.
+pub fn finish_take_with_expression(
+    project: &Project,
+    binding: &MidiTakeBinding,
+    notes: &[RecordedMidiNote],
+    expressions: &[RecordedNoteExpression],
+    stop_frame: u64,
+) -> Result<Option<Command>, &'static str> {
     binding.validate(project)?;
     if notes.len() > MAX_MIDI_TAKE_NOTES || stop_frame < binding.first_frame {
         return Err("midi take exceeds its note or time bound");
     }
+    if !expressions.is_empty() && expressions.len() != notes.len() {
+        return Err("midi take expression count does not match recorded notes");
+    }
     let mut previous_start = None;
     // Refuse malformed/unsorted capture before allocating the proposed command.
-    for note in notes {
+    for (idx, note) in notes.iter().enumerate() {
         if note.pitch > 127
             || note.channel > 15
             || !(1..=127).contains(&note.velocity)
@@ -733,11 +774,37 @@ pub fn finish_take(
         {
             return Err("midi take contains invalid or unordered note spans");
         }
+        if let Some(expr) = expressions.get(idx) {
+            expr.initial
+                .validate()
+                .map_err(|_| "midi take contains invalid per-note expression")?;
+            if expr.points.len() > hex_project::MAX_NOTE_EXPRESSION_POINTS {
+                return Err("midi take expression curve exceeds point limit");
+            }
+            let mut prev_frame: Option<u64> = None;
+            for point in &expr.points {
+                if point.frame < note.start_frame
+                    || point.frame > note.end_frame
+                    || prev_frame.is_some_and(|p| point.frame <= p)
+                {
+                    return Err("midi take contains invalid or unordered expression timestamps");
+                }
+                hex_project::NoteExpression {
+                    pitch_offset_cents: point.pitch_offset_cents,
+                    timbre: point.timbre,
+                    pressure: point.pressure,
+                }
+                .validate()
+                .map_err(|_| "midi take contains invalid per-note expression point")?;
+                prev_frame = Some(point.frame);
+            }
+        }
         previous_start = Some(note.start_frame);
     }
     if notes.is_empty() {
         return Ok(None);
     }
+    let has_expression = expressions.iter().any(|expr| !expr.is_empty());
     if let MidiTakeTarget::ExistingSession {
         clip,
         clock_anchor,
@@ -748,65 +815,78 @@ pub fn finish_take(
         ..
     } = &binding.target
     {
+        if !has_expression {
+            let mut insert = Vec::new();
+            insert
+                .try_reserve_exact(notes.len())
+                .map_err(|_| "could not reserve recorded midi notes")?;
+            for note in notes {
+                let (start, duration, _) = project_session_note(
+                    binding,
+                    *clock_anchor,
+                    *anchor_perf_beat,
+                    *pass_end_perf_beat,
+                    *anchor_source_beat,
+                    *pass_source_end,
+                    note,
+                )?;
+                insert.push(MidiNoteInsert {
+                    active: true,
+                    start: BeatTime::from_raw(start),
+                    duration: BeatTime::from_raw(duration),
+                    pitch: note.pitch,
+                    channel: note.channel,
+                    velocity: note.velocity,
+                });
+            }
+            return Ok(Some(Command::AddMidiNotes {
+                clip: *clip,
+                notes: insert,
+            }));
+        }
         let mut insert = Vec::new();
         insert
             .try_reserve_exact(notes.len())
             .map_err(|_| "could not reserve recorded midi notes")?;
-        for note in notes {
-            let perf_first =
-                anchored_frame_to_beat(&binding.tempo, *clock_anchor, note.start_frame)?;
-            let perf_last = anchored_frame_to_beat(
-                &binding.tempo,
+        for (idx, note) in notes.iter().enumerate() {
+            let (start, duration, raw_start) = project_session_note(
+                binding,
                 *clock_anchor,
-                note.end_frame.min(binding.end_frame),
+                *anchor_perf_beat,
+                *pass_end_perf_beat,
+                *anchor_source_beat,
+                *pass_source_end,
+                note,
             )?;
-            let to_source = |perf: BeatTime| -> Result<u64, &'static str> {
-                let clamped = perf
-                    .raw()
-                    .clamp(anchor_perf_beat.raw(), pass_end_perf_beat.raw());
-                let elapsed = clamped - anchor_perf_beat.raw();
-                anchor_source_beat
-                    .raw()
-                    .checked_add(elapsed)
-                    .map(|pos| pos.min(pass_source_end.raw()))
-                    .ok_or("console midi take source position overflow")
-            };
-            let raw_start = to_source(perf_first)?;
-            let raw_end = to_source(perf_last)?;
-            let raw_duration = raw_end
-                .checked_sub(raw_start)
-                .filter(|d| *d > 0)
-                .ok_or("recorded console midi note has no positive audible duration")?;
-            let (start, end) = if binding.input_grid.is_off() {
-                (raw_start, raw_end)
-            } else {
-                let snapped = binding
-                    .input_grid
-                    .snap_beat(&binding.tempo, BeatTime::from_raw(raw_start))
-                    .map_err(|_| "midi input grid cannot project this note")?;
-                let latest = pass_source_end
-                    .raw()
-                    .checked_sub(1)
-                    .ok_or("console midi clip has no valid quantized range")?;
-                let q_start = snapped.raw().clamp(anchor_source_beat.raw(), latest);
-                let q_end = q_start
-                    .checked_add(raw_duration)
-                    .map_or(pass_source_end.raw(), |e| e.min(pass_source_end.raw()));
-                if q_end <= q_start {
-                    return Err("quantized console midi note has no positive duration");
-                }
-                (q_start, q_end)
-            };
-            insert.push(MidiNoteInsert {
+            let expr = expressions.get(idx);
+            let initial = expr.map(|e| e.initial).unwrap_or_default();
+            let points = project_expression_points(
+                expr.map(|e| e.points.as_slice()).unwrap_or(&[]),
+                duration,
+                |frame| {
+                    let perf = anchored_frame_to_beat(&binding.tempo, *clock_anchor, frame)?;
+                    let clamped = perf
+                        .raw()
+                        .clamp(anchor_perf_beat.raw(), pass_end_perf_beat.raw());
+                    let pos = anchor_source_beat
+                        .raw()
+                        .checked_add(clamped - anchor_perf_beat.raw())
+                        .ok_or("console midi expression position overflow")?;
+                    Ok(pos.saturating_sub(raw_start))
+                },
+            )?;
+            insert.push(hex_project::MidiExpressiveNoteInsert {
                 active: true,
                 start: BeatTime::from_raw(start),
-                duration: BeatTime::from_raw(end - start),
+                duration: BeatTime::from_raw(duration),
                 pitch: note.pitch,
                 channel: note.channel,
                 velocity: note.velocity,
+                expression: initial,
+                expression_points: points,
             });
         }
-        return Ok(Some(Command::AddMidiNotes {
+        return Ok(Some(Command::AddMidiNotesWithExpression {
             clip: *clip,
             notes: insert,
         }));
@@ -915,23 +995,99 @@ pub fn finish_take(
         }
     };
 
+    if !has_expression {
+        let mut insert = Vec::new();
+        insert
+            .try_reserve_exact(notes.len())
+            .map_err(|_| "could not reserve recorded midi notes")?;
+        for note in notes {
+            let first = binding
+                .tempo
+                .frame_to_beat(note.start_frame)
+                .map_err(|_| "midi take start cannot be projected")?;
+            let last = binding
+                .tempo
+                .frame_to_beat(note.end_frame.min(effective_end_frame))
+                .map_err(|_| "midi take end cannot be projected")?;
+            let (first, last) = binding.quantize_span(
+                first,
+                last,
+                clip_start,
+                clip_end_raw,
+                effective_end_frame,
+            )?;
+            let source_position = |beat: BeatTime| {
+                beat.raw()
+                    .clamp(clip_start.raw(), clip_end_raw)
+                    .checked_sub(clip_start.raw())
+                    .and_then(|elapsed| {
+                        source_start
+                            .raw()
+                            .checked_add(playback_offset.raw())?
+                            .checked_add(elapsed)
+                    })
+            };
+            let start = source_position(first).ok_or("midi take source position overflow")?;
+            let end = source_position(last)
+                .ok_or("midi take source end overflow")?
+                .min(audible_end_raw);
+            let duration = end
+                .checked_sub(start)
+                .filter(|duration| *duration > 0)
+                .ok_or("recorded midi note has no positive audible duration")?;
+            insert.push(MidiNoteInsert {
+                active: true,
+                start: BeatTime::from_raw(start),
+                duration: BeatTime::from_raw(duration),
+                pitch: note.pitch,
+                channel: note.channel,
+                velocity: note.velocity,
+            });
+        }
+        return match auto_create_or_extend {
+            None => {
+                let MidiTakeTarget::ExistingClip { clip, .. } = binding.target else {
+                    return Err("midi recording target is missing");
+                };
+                Ok(Some(Command::AddMidiNotes {
+                    clip,
+                    notes: insert,
+                }))
+            }
+            Some((Some(clip), length)) => Ok(Some(Command::ExtendMidiClipWithNotes {
+                clip,
+                length,
+                notes: insert,
+            })),
+            Some((None, length)) => Ok(Some(Command::PlaceMidiClipWithNotes {
+                track: binding.track,
+                start: clip_start,
+                length,
+                notes: insert,
+            })),
+        };
+    }
+
     let mut insert = Vec::new();
     insert
         .try_reserve_exact(notes.len())
         .map_err(|_| "could not reserve recorded midi notes")?;
-    for note in notes {
-        let first = binding
+    for (idx, note) in notes.iter().enumerate() {
+        let raw_first = binding
             .tempo
             .frame_to_beat(note.start_frame)
             .map_err(|_| "midi take start cannot be projected")?;
-        let last = binding
+        let raw_last = binding
             .tempo
             .frame_to_beat(note.end_frame.min(effective_end_frame))
             .map_err(|_| "midi take end cannot be projected")?;
-        // A sample boundary may round to the neighboring side of an authored
-        // subframe edge. Clamp only this validated clip-boundary projection.
-        let (first, last) =
-            binding.quantize_span(first, last, clip_start, clip_end_raw, effective_end_frame)?;
+        let (first, last) = binding.quantize_span(
+            raw_first,
+            raw_last,
+            clip_start,
+            clip_end_raw,
+            effective_end_frame,
+        )?;
         let source_position = |beat: BeatTime| {
             beat.raw()
                 .clamp(clip_start.raw(), clip_end_raw)
@@ -951,13 +1107,28 @@ pub fn finish_take(
             .checked_sub(start)
             .filter(|duration| *duration > 0)
             .ok_or("recorded midi note has no positive audible duration")?;
-        insert.push(MidiNoteInsert {
+        let expr = expressions.get(idx);
+        let initial = expr.map(|e| e.initial).unwrap_or_default();
+        let points = project_expression_points(
+            expr.map(|e| e.points.as_slice()).unwrap_or(&[]),
+            duration,
+            |frame| {
+                let beat = binding
+                    .tempo
+                    .frame_to_beat(frame.min(effective_end_frame))
+                    .map_err(|_| "midi expression timestamp cannot be projected")?;
+                Ok(beat.raw().saturating_sub(raw_first.raw()))
+            },
+        )?;
+        insert.push(hex_project::MidiExpressiveNoteInsert {
             active: true,
             start: BeatTime::from_raw(start),
             duration: BeatTime::from_raw(duration),
             pitch: note.pitch,
             channel: note.channel,
             velocity: note.velocity,
+            expression: initial,
+            expression_points: points,
         });
     }
     match auto_create_or_extend {
@@ -965,23 +1136,107 @@ pub fn finish_take(
             let MidiTakeTarget::ExistingClip { clip, .. } = binding.target else {
                 return Err("midi recording target is missing");
             };
-            Ok(Some(Command::AddMidiNotes {
+            Ok(Some(Command::AddMidiNotesWithExpression {
                 clip,
                 notes: insert,
             }))
         }
-        Some((Some(clip), length)) => Ok(Some(Command::ExtendMidiClipWithNotes {
+        Some((Some(clip), length)) => Ok(Some(Command::ExtendMidiClipWithExpressiveNotes {
             clip,
             length,
             notes: insert,
         })),
-        Some((None, length)) => Ok(Some(Command::PlaceMidiClipWithNotes {
+        Some((None, length)) => Ok(Some(Command::PlaceMidiClipWithExpressiveNotes {
             track: binding.track,
             start: clip_start,
             length,
             notes: insert,
         })),
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_session_note(
+    binding: &MidiTakeBinding,
+    clock_anchor: Option<hex_engine::SessionClockAnchor>,
+    anchor_perf_beat: BeatTime,
+    pass_end_perf_beat: BeatTime,
+    anchor_source_beat: BeatTime,
+    pass_source_end: BeatTime,
+    note: &RecordedMidiNote,
+) -> Result<(u64, u64, u64), &'static str> {
+    let perf_first = anchored_frame_to_beat(&binding.tempo, clock_anchor, note.start_frame)?;
+    let perf_last = anchored_frame_to_beat(
+        &binding.tempo,
+        clock_anchor,
+        note.end_frame.min(binding.end_frame),
+    )?;
+    let to_source = |perf: BeatTime| -> Result<u64, &'static str> {
+        let clamped = perf
+            .raw()
+            .clamp(anchor_perf_beat.raw(), pass_end_perf_beat.raw());
+        let elapsed = clamped - anchor_perf_beat.raw();
+        anchor_source_beat
+            .raw()
+            .checked_add(elapsed)
+            .map(|pos| pos.min(pass_source_end.raw()))
+            .ok_or("console midi take source position overflow")
+    };
+    let raw_start = to_source(perf_first)?;
+    let raw_end = to_source(perf_last)?;
+    let raw_duration = raw_end
+        .checked_sub(raw_start)
+        .filter(|d| *d > 0)
+        .ok_or("recorded console midi note has no positive audible duration")?;
+    let (start, end) = if binding.input_grid.is_off() {
+        (raw_start, raw_end)
+    } else {
+        let snapped = binding
+            .input_grid
+            .snap_beat(&binding.tempo, BeatTime::from_raw(raw_start))
+            .map_err(|_| "midi input grid cannot project this note")?;
+        let latest = pass_source_end
+            .raw()
+            .checked_sub(1)
+            .ok_or("console midi clip has no valid quantized range")?;
+        let q_start = snapped.raw().clamp(anchor_source_beat.raw(), latest);
+        let q_end = q_start
+            .checked_add(raw_duration)
+            .map_or(pass_source_end.raw(), |e| e.min(pass_source_end.raw()));
+        if q_end <= q_start {
+            return Err("quantized console midi note has no positive duration");
+        }
+        (q_start, q_end)
+    };
+    Ok((start, end - start, raw_start))
+}
+
+fn project_expression_points(
+    samples: &[RecordedExpressionSample],
+    duration_raw: u64,
+    mut offset_raw: impl FnMut(u64) -> Result<u64, &'static str>,
+) -> Result<Vec<hex_project::NoteExpressionPoint>, &'static str> {
+    let mut out: Vec<hex_project::NoteExpressionPoint> = Vec::with_capacity(samples.len());
+    for sample in samples {
+        let off = offset_raw(sample.frame)?.min(duration_raw);
+        let point = hex_project::NoteExpressionPoint {
+            offset: BeatTime::from_raw(off),
+            pitch_offset_cents: sample.pitch_offset_cents,
+            timbre: sample.timbre,
+            pressure: sample.pressure,
+        };
+        if let Some(last) = out.last_mut() {
+            if off == last.offset.raw() {
+                *last = point;
+                continue;
+            }
+            if off < last.offset.raw() {
+                return Err("midi expression beat offsets are not ascending");
+            }
+        }
+        out.push(point);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]

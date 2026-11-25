@@ -493,6 +493,7 @@ impl Command {
             | Self::SetMidiClipGain { clip, .. }
             | Self::SetMidiExpressionLane { clip, .. }
             | Self::SetMidiNoteExpression { clip, .. }
+            | Self::AddMidiNotesWithExpression { clip, .. }
             | Self::AddMidiNote { clip, .. }
             | Self::AddMidiNotes { clip, .. }
             | Self::SetMidiNotesActive { clip, .. }
@@ -520,6 +521,7 @@ impl Command {
             | Self::TrimClipEndBy { clip, .. }
             | Self::TrimMidiClipEdge { clip, .. }
             | Self::ExtendMidiClipWithNotes { clip, .. }
+            | Self::ExtendMidiClipWithExpressiveNotes { clip, .. }
             | Self::StretchMidiClipEdge { clip, .. }
             | Self::SplitMidiClip { clip, .. }
             | Self::MoveMidiClip { clip, .. }
@@ -728,7 +730,8 @@ impl Command {
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)
             | Self::PlaceMidiClipWithOverwrite { .. }
-            | Self::PlaceMidiClipWithNotes { .. } => ClipCommandScope::Unrelated,
+            | Self::PlaceMidiClipWithNotes { .. }
+            | Self::PlaceMidiClipWithExpressiveNotes { .. } => ClipCommandScope::Unrelated,
         }
     }
 }
