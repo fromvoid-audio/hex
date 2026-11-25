@@ -207,6 +207,7 @@ pub(in crate::editor) fn view(
         .unwrap_or_else(|| {
             "click curve to add · drag a point · cmd for free beat placement".into()
         });
+    let display_gain = view.live_track_gain_display(track_id, track.gain());
     let title = format!(
         "gain · {} · {} · static fallback {:.0}%",
         hex_session::service::text::verbatim(track.name()),
@@ -215,7 +216,7 @@ pub(in crate::editor) fn view(
         } else {
             "automation owns gain"
         },
-        track.gain() * 100.0
+        display_gain * 100.0
     );
     let plot = plot(view, state, track_id, viewport, grid, false, cx)?;
     let details_tooltip = details.clone();
@@ -297,7 +298,8 @@ fn plot(
     let generation = view.project_generation;
     let revision = state.revision;
     let preview = state.gain_preview.clone();
-    let static_gain = track.gain();
+    let static_gain = view.live_track_gain_display(track_id, track.gain());
+    let unautomated = track.gain_envelope().is_empty() && track.gain_lane().spans().is_empty();
     let points = track.gain_envelope();
     let first = points.partition_point(|p| {
         state
@@ -385,22 +387,41 @@ fn plot(
                                 });
                             if !present {
                                 let static_y = y(static_gain);
-                                vertices
-                                    .extend([(rect[0], static_y), (rect[0] + rect[2], static_y)]);
+                                let color = rgb(theme::color(theme::PaletteRole::Secondary));
+                                for (dash_x, dash_w) in
+                                    super::super::device_automation::plot_geometry::dashed_baseline_segments(
+                                        rect[0],
+                                        rect[0] + rect[2],
+                                        rect[0],
+                                        rect[2],
+                                    )
+                                {
+                                    window.paint_quad(fill(
+                                        Bounds::new(
+                                            gpui_point(px(dash_x), px(static_y - 0.5)),
+                                            size(px(dash_w), px(1.0)),
+                                        ),
+                                        color,
+                                    ));
+                                }
                             }
                         }
-                        let mut path = PathBuilder::stroke(px(1.0));
-                        for (index, (x, y)) in vertices.into_iter().enumerate() {
-                            let p = gpui_point(px(x), px(y));
-                            if index == 0 {
-                                path.move_to(p)
-                            } else {
-                                path.line_to(p)
+                        if !vertices.is_empty() {
+                            let mut path = PathBuilder::stroke(px(1.0));
+                            for (index, (x, y)) in vertices.into_iter().enumerate() {
+                                let p = gpui_point(px(x), px(y));
+                                if index == 0 {
+                                    path.move_to(p)
+                                } else {
+                                    path.line_to(p)
+                                }
                             }
-                        }
-                        if let Ok(path) = path.build() {
-                            window
-                                .paint_path(path, rgb(theme::color(theme::PaletteRole::Secondary)));
+                            if let Ok(path) = path.build() {
+                                window.paint_path(
+                                    path,
+                                    rgb(theme::color(theme::PaletteRole::Secondary)),
+                                );
+                            }
                         }
                     }
                     let down = entity.clone();
@@ -534,6 +555,19 @@ fn plot(
                     ))),
             )
         });
+    let plot = plot.when(unautomated, |plot| {
+        plot.child(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .h(px(0.0))
+                .top(gpui::relative(
+                    1.0 - gain_display_position(static_gain).clamp(0.0, 1.0),
+                ))
+                .debug_selector(move || format!("gain-dotted-{}-{inline}", track_id.value())),
+        )
+    });
     Some(plot.children(markers))
 }
 

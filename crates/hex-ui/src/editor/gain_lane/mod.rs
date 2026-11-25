@@ -174,6 +174,43 @@ impl EditorView {
         true
     }
 
+    pub(super) fn select_touched_track_gain_lane(&mut self, track: TrackId) {
+        if !self.automation_view.enabled {
+            return;
+        }
+        self.automation_view
+            .devices
+            .clear_main(super::device_panel::DevicePanelOwner::Track(track));
+        let changed = self.gain_lane.track != Some(track);
+        self.gain_lane.track = Some(track);
+        if changed {
+            self.gain_lane.selected = self
+                .state
+                .as_ref()
+                .and_then(|state| state.project.track(track))
+                .and_then(|source| source.gain_envelope().first())
+                .map(|point| point.beat);
+            self.gain_lane.draft = None;
+            self.gain_lane.gain = None;
+            self.gain_lane.error = None;
+        }
+    }
+
+    /// Live track gain value for unautomated lanes: in-flight gesture or pending
+    /// recovery preview first, then canonical track gain. Keeps the released
+    /// gesture value across repaints until the exact terminal installs state.
+    pub(super) fn live_track_gain_display(&self, track: TrackId, canonical: f32) -> f32 {
+        self.track_gain_controls
+            .displayed_track_gain(self.project_generation, track)
+            .or_else(|| {
+                self.device_panel
+                    .gesture
+                    .preview_track_gain(self.project_generation, track)
+            })
+            .filter(|value| value.is_finite())
+            .unwrap_or(canonical)
+    }
+
     pub(super) fn show_gain_lane(
         &mut self,
         track: TrackId,

@@ -934,4 +934,229 @@ pub(in crate::editor) mod native {
             cx.notify();
         });
     }
+
+    #[gpui::test]
+    fn automation_mode_volume_touch_selects_gain_lane_and_tracks_live_dotted_line_through_delayed_ack(
+        cx: &mut TestAppContext,
+    ) {
+        use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+        use hex_project::{Command, Created, DeviceAutomationTarget, Editor, Project};
+        use hex_session::device_gesture::{GestureAck, GesturePhase, GestureTarget};
+        use std::sync::Arc;
+
+        let mut editor_model = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track_a) = editor_model
+            .execute(Command::AddTrack {
+                name: "lead".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track a")
+        };
+        let Created::Track(track_b) = editor_model
+            .execute(Command::AddTrack {
+                name: "bass".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track b")
+        };
+        let utility_state = hex_devices::utility::UTILITY_DEFINITION
+            .default_state()
+            .unwrap();
+        let Created::Device(dev_a) = editor_model
+            .execute(Command::InsertDevice {
+                track: track_a,
+                before: None,
+                state: utility_state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("device a")
+        };
+        let Created::Device(dev_b) = editor_model
+            .execute(Command::InsertDevice {
+                track: track_b,
+                before: None,
+                state: utility_state,
+            })
+            .unwrap()
+        else {
+            panic!("device b")
+        };
+
+        let (handle, entity) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            editor_model.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(880.0), px(540.0)));
+
+        // Enable automation mode and place a device main lane on both tracks.
+        let owner_a = crate::editor::device_panel::DevicePanelOwner::Track(track_a);
+        let owner_b = crate::editor::device_panel::DevicePanelOwner::Track(track_b);
+        entity.update(&mut visual, |view, cx| {
+            view.toggle_automation_view(cx);
+            assert!(view.automation_view.enabled);
+            view.device_panel.owner = Some(owner_a);
+            assert!(
+                view.remember_automation_parameter(dev_a, DeviceAutomationTarget::HostOutputGain)
+            );
+            view.device_panel.owner = Some(owner_b);
+            assert!(
+                view.remember_automation_parameter(dev_b, DeviceAutomationTarget::HostOutputGain)
+            );
+            assert!(view.automation_view.devices.has_main(owner_a));
+            assert!(view.automation_view.devices.has_main(owner_b));
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        let dotted_selector =
+            Box::leak(format!("gain-dotted-{}-true", track_a.value()).into_boxed_str());
+        assert!(
+            visual.debug_bounds(dotted_selector).is_none(),
+            "device main lane owns track A before touching mixer volume"
+        );
+
+        // Touch track A's mixer volume (Begin): replaces track A's device main lane
+        // with its gain lane while keeping track B's device main lane intact.
+        let begin_key = entity.update(&mut visual, |view, cx| {
+            view.begin_device_gesture(
+                GestureTarget::TrackGain { track: track_a },
+                ParameterValue::Float(1.0),
+            )
+            .unwrap();
+            assert_eq!(view.gain_lane.track, Some(track_a));
+            assert!(!view.automation_view.devices.has_main(owner_a));
+            assert!(view.automation_view.devices.has_main(owner_b));
+            let key = view.device_panel.gesture.snapshot().unwrap().key;
+            cx.notify();
+            key
+        });
+        visual.run_until_parked();
+        let y_at_unity = visual
+            .debug_bounds(dotted_selector)
+            .expect("inline dotted gain line visible after mixer volume touch")
+            .origin
+            .y;
+
+        // Acknowledge Begin and drag volume down to 0.25: dotted line tracks frame by frame.
+        let change_seq = entity.update(&mut visual, |view, cx| {
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key: begin_key,
+                phase: GesturePhase::Begin,
+                sequence: 0,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+            view.change_device_gesture(ParameterValue::Float(0.25))
+                .unwrap();
+            let seq = view.device_panel.gesture.snapshot().unwrap().sequence;
+            cx.notify();
+            seq
+        });
+        visual.run_until_parked();
+        let y_at_quarter = visual
+            .debug_bounds(dotted_selector)
+            .expect("dotted line at 0.25 preview")
+            .origin
+            .y;
+        assert!(
+            y_at_quarter > y_at_unity + px(4.0),
+            "lower gain must move dotted line downward ({y_at_unity:?} -> {y_at_quarter:?})"
+        );
+
+        // Acknowledge Change and release (Commit) to 0.125 WITHOUT worker Commit ACK yet:
+        // completed repaints must hold the released preview height and never snap back to 1.0.
+        let commit_seq = entity.update(&mut visual, |view, cx| {
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key: begin_key,
+                phase: GesturePhase::Change,
+                sequence: change_seq,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+            view.finish_device_gesture(ParameterValue::Float(0.125))
+                .unwrap();
+            let seq = view.device_panel.gesture.snapshot().unwrap().sequence;
+            cx.notify();
+            seq
+        });
+        for _ in 0..3 {
+            visual.update(|window, cx| {
+                window.refresh();
+                window.draw(cx).clear();
+            });
+            let y_pending = visual
+                .debug_bounds(dotted_selector)
+                .expect("dotted line retained through delayed ACK repaint")
+                .origin
+                .y;
+            assert!(
+                y_pending > y_at_quarter + px(1.0),
+                "released preview must stay at 0.125 across delayed-ACK repaints ({y_pending:?} vs {y_at_quarter:?})"
+            );
+        }
+
+        // Install canonical 0.125 alongside exact terminal Commit ACK: dotted line stays seamless.
+        editor_model
+            .execute(Command::Gain {
+                track: track_a,
+                gain: 0.125,
+            })
+            .unwrap();
+        let committed_project = Arc::new(editor_model.project().clone());
+        let committed_preview =
+            Arc::new(hex_engine::GainAutomationPreview::prepare(&committed_project).unwrap());
+        let y_before_ack = visual
+            .debug_bounds(dotted_selector)
+            .expect("pre-ack dotted y")
+            .origin
+            .y;
+        entity.update(&mut visual, |view, cx| {
+            let old = view.state.as_ref().unwrap().clone();
+            view.state = Some(Arc::new(ViewState {
+                canonical_audio_source: old.canonical_audio_source.clone(),
+                comparison_audio: old.comparison_audio.clone(),
+                project: committed_project,
+                gain_preview: Ok(committed_preview),
+                waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
+                audio_clip_waveforms: old.audio_clip_waveforms.clone(),
+                midi_preview: old.midi_preview.clone(),
+                timeline_frames: old.timeline_frames,
+                can_undo: true,
+                can_redo: false,
+                revision: old.revision + 1,
+                unsaved: true,
+                document_path: old.document_path.clone(),
+            }));
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key: begin_key,
+                phase: GesturePhase::Commit,
+                sequence: commit_seq,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let y_after_ack = visual
+            .debug_bounds(dotted_selector)
+            .expect("post-ack dotted y")
+            .origin
+            .y;
+        assert_eq!(
+            y_after_ack, y_before_ack,
+            "dotted line must remain seamless when terminal ACK installs canonical gain"
+        );
+    }
 }

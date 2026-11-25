@@ -504,6 +504,11 @@ fn begin_degraded_recovery(
         view.defer_play_until_audio_recovers();
     }
     view.recovery.bind_mixer_edit(context);
+    let touched_track = match &target {
+        RecoveryTarget::TrackGain(track) => Some(*track),
+        RecoveryTarget::TrackGains(group) => Some(group.anchor()),
+        _ => None,
+    };
     let is_pan = target.is_pan();
     view.track_gain_controls.pending_recovery = Some(PendingRecovery {
         receipt: None,
@@ -511,6 +516,9 @@ fn begin_degraded_recovery(
         target,
         value,
     });
+    if let Some(track) = touched_track {
+        view.select_touched_track_gain_lane(track);
+    }
     view.status = if is_pan {
         "restarting audio · pan will update when ready"
     } else {
