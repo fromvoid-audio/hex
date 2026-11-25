@@ -37,6 +37,457 @@ use devices::{
     read_track_io,
 };
 
+/// Single source of truth for post-schema-63 capabilities, schema versions,
+/// post-112 wrapper counts, and legacy encoder refusals.
+///
+/// Kept strictly sorted by `capability` so [`capabilities_for`] emits a
+/// deterministic sorted manifest without sorting at runtime, and so
+/// [`crate::schema_version_for`], [`capabilities_for`], and legacy refusal
+/// cannot drift when a new schema capability is added.
+pub(crate) struct SchemaFeature {
+    pub(crate) capability: &'static str,
+    pub(crate) schema_version: u32,
+    pub(crate) post_112_wrapper: bool,
+    pub(crate) legacy_refusal: &'static str,
+    pub(crate) present: fn(&Project) -> bool,
+}
+
+fn has_arrangement_locators(project: &Project) -> bool {
+    !project.arrangement_locators().is_empty()
+}
+
+fn has_free_lfo_rate_route(project: &Project) -> bool {
+    super::device_modulation::lfo_rate_route_schema(project)
+        == Some(crate::LFO_RATE_ROUTE_SCHEMA_VERSION)
+}
+
+fn has_tempo_lfo_rate_route(project: &Project) -> bool {
+    super::device_modulation::lfo_rate_route_schema(project)
+        == Some(crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION)
+}
+
+fn has_long_granular(project: &Project) -> bool {
+    super::long_granular::contains(project, super::long_granular::LongWarpSchema::Granular)
+}
+
+fn has_long_inactive_warp(project: &Project) -> bool {
+    super::long_granular::contains(project, super::long_granular::LongWarpSchema::Inactive)
+}
+
+fn has_sidechains(project: &Project) -> bool {
+    !project.sidechains().is_empty()
+}
+
+/// Strictly sorted unified feature table covering all post-schema-63 capabilities (`64..=129`).
+pub(crate) const SCHEMA_FEATURES: &[SchemaFeature] = &[
+    SchemaFeature {
+        capability: "adsr_modulator",
+        schema_version: crate::ADSR_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save adsr modulation",
+        present: super::device_modulation::contains_adsr,
+    },
+    SchemaFeature {
+        capability: "ahd_release_modulator",
+        schema_version: crate::AHD_RELEASE_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save ahd modulation",
+        present: super::device_modulation::contains_ahd_release,
+    },
+    SchemaFeature {
+        capability: "arrangement_locators",
+        schema_version: crate::ARRANGEMENT_LOCATOR_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save arrangement locators",
+        present: has_arrangement_locators,
+    },
+    SchemaFeature {
+        capability: "arrangement_steps",
+        schema_version: crate::ARRANGEMENT_STEPS_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save arrangement steps modulation",
+        present: super::device_modulation::contains_arrangement_steps,
+    },
+    SchemaFeature {
+        capability: "audio_rate_modulator",
+        schema_version: crate::AUDIO_RATE_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save audio-rate modulation",
+        present: super::device_modulation::contains_audio_rate,
+    },
+    SchemaFeature {
+        capability: "automation_curves_and_freeze",
+        schema_version: crate::AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save automation curves, mixer automation, or frozen tracks",
+        present: contains_automation_curves_and_freeze,
+    },
+    SchemaFeature {
+        capability: "bound_source_effects",
+        schema_version: crate::BOUND_SOURCE_EFFECT_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save bound source effects",
+        present: super::bound_source_effects::contains,
+    },
+    SchemaFeature {
+        capability: "button_modulator",
+        schema_version: crate::BUTTON_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save button modulation",
+        present: super::device_modulation::contains_button,
+    },
+    SchemaFeature {
+        capability: "buttons_modulator",
+        schema_version: crate::BUTTONS_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save buttons modulation",
+        present: super::device_modulation::contains_buttons,
+    },
+    SchemaFeature {
+        capability: "coincident_automation",
+        schema_version: crate::COINCIDENT_AUTOMATION_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save coincident device automation points",
+        present: super::coincident_automation::contains,
+    },
+    SchemaFeature {
+        capability: "content_view_resampler",
+        schema_version: crate::CONTENT_VIEW_RESAMPLER_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save explicit content view resampler laws",
+        present: super::content_view_resampler::contains_explicit,
+    },
+    SchemaFeature {
+        capability: "device_automation_touch",
+        schema_version: crate::DEVICE_AUTOMATION_TOUCH_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save device automation touches",
+        present: super::device_automation_touch::contains,
+    },
+    SchemaFeature {
+        capability: "device_modulation",
+        schema_version: crate::DEVICE_MODULATION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save device modulation",
+        present: super::device_modulation::contains,
+    },
+    SchemaFeature {
+        capability: "device_state",
+        schema_version: crate::DEVICE_STATE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save newer native device states",
+        present: super::sampler_crossfade::contains_newer_states,
+    },
+    SchemaFeature {
+        capability: "event_warp_sources",
+        schema_version: crate::EVENT_WARP_SOURCE_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save event warp sources",
+        present: super::event_warp_sources::contains,
+    },
+    SchemaFeature {
+        capability: "extended_automation_touch",
+        schema_version: crate::EXTENDED_AUTOMATION_TOUCH_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save extended automation touches",
+        present: super::device_automation_touch::contains_extended,
+    },
+    SchemaFeature {
+        capability: "extended_frame_events",
+        schema_version: crate::EXTENDED_FRAME_EVENTS_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save an extended frame event root",
+        present: crate::contains_extended_frame_events,
+    },
+    SchemaFeature {
+        capability: "free_lfo_rate_route",
+        schema_version: crate::LFO_RATE_ROUTE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save free lfo rate modulation routes",
+        present: has_free_lfo_rate_route,
+    },
+    SchemaFeature {
+        capability: "group_output_mute",
+        schema_version: crate::GROUP_OUTPUT_MUTE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save group output mute ranges",
+        present: super::group_output_mute::contains,
+    },
+    SchemaFeature {
+        capability: "instrument_modulation",
+        schema_version: crate::INSTRUMENT_MODULATION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save instrument modulation",
+        present: super::device_modulation::contains_instrument_modulation,
+    },
+    SchemaFeature {
+        capability: "large_vst3_state",
+        schema_version: crate::LARGE_VST3_STATE_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save large vst3 device states",
+        present: super::large_vst3_state::contains,
+    },
+    SchemaFeature {
+        capability: "leading_audio_once",
+        schema_version: crate::LEADING_AUDIO_ONCE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save leading silent musical one-shots",
+        present: crate::contains_leading_audio_once,
+    },
+    SchemaFeature {
+        capability: "lfo_shape",
+        schema_version: crate::LFO_SHAPE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save newer lfo shapes",
+        present: super::device_modulation::contains_newer_lfo,
+    },
+    SchemaFeature {
+        capability: "long_granular",
+        schema_version: crate::LONG_GRANULAR_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save long granular warp edits",
+        present: has_long_granular,
+    },
+    SchemaFeature {
+        capability: "long_inactive_warp",
+        schema_version: crate::LONG_INACTIVE_WARP_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save long inactive warp edits",
+        present: has_long_inactive_warp,
+    },
+    SchemaFeature {
+        capability: "long_pitch",
+        schema_version: crate::LONG_PITCH_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save long plain pitch edits",
+        present: super::long_pitch::contains,
+    },
+    SchemaFeature {
+        capability: "long_pitch_fade",
+        schema_version: crate::LONG_PITCH_FADE_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save long pitch fade edits",
+        present: super::long_pitch_fade::contains,
+    },
+    SchemaFeature {
+        capability: "long_reverse",
+        schema_version: crate::LONG_REVERSE_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save long plain reverse edits",
+        present: super::long_reverse::contains,
+    },
+    SchemaFeature {
+        capability: "macro_four_modulator",
+        schema_version: crate::MACRO_FOUR_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save macro-four modulation",
+        present: super::device_modulation::contains_macro_four,
+    },
+    SchemaFeature {
+        capability: "math_modulator",
+        schema_version: crate::MATH_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save math modulation",
+        present: super::device_modulation::contains_math,
+    },
+    SchemaFeature {
+        capability: "midi_expression",
+        schema_version: crate::MIDI_EXPRESSION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save midi cc or mpe expression",
+        present: contains_midi_expression,
+    },
+    SchemaFeature {
+        capability: "mix_modulator",
+        schema_version: crate::MIX_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save mix modulation",
+        present: super::device_modulation::contains_mix,
+    },
+    SchemaFeature {
+        capability: "modulation_slot_color",
+        schema_version: crate::MODULATION_SLOT_COLOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save modulation slot colors",
+        present: super::device_modulation::contains_colors,
+    },
+    SchemaFeature {
+        capability: "musical_event_source",
+        schema_version: crate::MUSICAL_EVENT_SOURCE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save a retained musical event source",
+        present: super::musical_event_source::contains,
+    },
+    SchemaFeature {
+        capability: "native_instrument_touch",
+        schema_version: crate::NATIVE_INSTRUMENT_TOUCH_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save native instrument automation touches",
+        present: super::device_automation_touch::contains_native_instrument,
+    },
+    SchemaFeature {
+        capability: "native_source_effect_touch",
+        schema_version: crate::NATIVE_SOURCE_EFFECT_TOUCH_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save native source effect automation touches",
+        present: super::device_automation_touch::contains_native_source_effect,
+    },
+    SchemaFeature {
+        capability: "note_counter_modulator",
+        schema_version: crate::NOTE_COUNTER_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save note-counter modulation",
+        present: super::device_modulation::contains_note_counter,
+    },
+    SchemaFeature {
+        capability: "note_pressure_modulator",
+        schema_version: crate::NOTE_PRESSURE_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save note-pressure modulation",
+        present: super::device_modulation::contains_note_pressure,
+    },
+    SchemaFeature {
+        capability: "operator_modulation",
+        schema_version: crate::OPERATOR_MODULATION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save operator modulation",
+        present: super::device_modulation::contains_operator_modulation,
+    },
+    SchemaFeature {
+        capability: "outer_clip_fades",
+        schema_version: crate::OUTER_CLIP_FADE_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save outer clip fades",
+        present: super::outer_clip_fades::contains,
+    },
+    SchemaFeature {
+        capability: "ramp_modulator",
+        schema_version: crate::RAMP_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save ramp modulation",
+        present: super::device_modulation::contains_ramp,
+    },
+    SchemaFeature {
+        capability: "retained_receiver",
+        schema_version: crate::RETAINED_RECEIVER_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save a retained source path",
+        present: super::retained_receiver::contains,
+    },
+    SchemaFeature {
+        capability: "s_curve_fades",
+        schema_version: crate::S_CURVE_FADE_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save s-curve fades",
+        present: super::s_curve_fades::contains,
+    },
+    SchemaFeature {
+        capability: "sample_rate_mode",
+        schema_version: crate::SAMPLE_RATE_MODE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save the project sample rate mode",
+        present: super::sample_rate_mode::contains,
+    },
+    SchemaFeature {
+        capability: "sampler_modulation",
+        schema_version: crate::SAMPLER_MODULATION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save sampler modulation",
+        present: super::device_modulation::contains_sampler_modulation,
+    },
+    SchemaFeature {
+        capability: "scoped_musical_events",
+        schema_version: crate::SCOPED_MUSICAL_EVENTS_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save scoped musical event sources",
+        present: super::musical_event_source::contains_scoped,
+    },
+    SchemaFeature {
+        capability: "serial_devices",
+        schema_version: crate::SERIAL_DEVICE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save serial device units",
+        present: super::serial_units::contains,
+    },
+    SchemaFeature {
+        capability: "sidechain",
+        schema_version: crate::SIDECHAIN_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save a compressor sidechain",
+        present: has_sidechains,
+    },
+    SchemaFeature {
+        capability: "silent_repeat",
+        schema_version: crate::SILENT_REPEAT_SCHEMA_VERSION,
+        post_112_wrapper: true,
+        legacy_refusal: "older schema cannot save independent audio repeat periods",
+        present: super::silent_repeat::contains,
+    },
+    SchemaFeature {
+        capability: "sinc_v2",
+        schema_version: crate::SINC_V2_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save sinc v2 resampled assets",
+        present: super::conversion_v2::contains_v2,
+    },
+    SchemaFeature {
+        capability: "steps_modulator",
+        schema_version: crate::STEPS_MODULATOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save steps modulation",
+        present: super::device_modulation::contains_steps,
+    },
+    SchemaFeature {
+        capability: "tempo_lfo_rate_route",
+        schema_version: crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save tempo-synced lfo rate modulation routes",
+        present: has_tempo_lfo_rate_route,
+    },
+    SchemaFeature {
+        capability: "track_io_routing",
+        schema_version: crate::TRACK_IO_ROUTING_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save track output routing or input monitoring",
+        present: contains_track_io_routing,
+    },
+    SchemaFeature {
+        capability: "track_tags",
+        schema_version: crate::TRACK_TAGS_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save track tags",
+        present: super::track_tags::contains,
+    },
+    SchemaFeature {
+        capability: "vst3_automation",
+        schema_version: crate::VST3_AUTOMATION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save vst3 automation",
+        present: super::vst3_automation::contains,
+    },
+    SchemaFeature {
+        capability: "vst3_automation_touch",
+        schema_version: crate::VST3_AUTOMATION_TOUCH_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save vst3 automation touches",
+        present: super::device_automation_touch::contains_vst3,
+    },
+    SchemaFeature {
+        capability: "vst3_state_size",
+        schema_version: crate::VST3_STATE_SIZE_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save a larger vst3 device state; save with the current format",
+        present: crate::contains_larger_device_state,
+    },
+    SchemaFeature {
+        capability: "warp_resampler",
+        schema_version: crate::WARP_RESAMPLER_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save explicit warp resampler laws",
+        present: super::warp_resampler::contains_explicit,
+    },
+];
+
 /// Sorted canonical list of all capabilities recognized by this build.
 pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "adsr_modulator",
@@ -101,25 +552,50 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
 
 /// Count of active post-112 wrapper features on `project`.
 pub(crate) fn post_112_feature_count(project: &Project) -> usize {
-    use super::long_granular::{self, LongWarpSchema};
-    [
-        super::large_vst3_state::contains(project),
-        super::event_warp_sources::contains(project),
-        super::musical_event_source::contains_scoped(project),
-        super::outer_clip_fades::contains(project),
-        long_granular::contains(project, LongWarpSchema::Inactive),
-        long_granular::contains(project, LongWarpSchema::Granular),
-        super::long_pitch_fade::contains(project),
-        super::silent_repeat::contains(project),
-        super::long_pitch::contains(project),
-        super::long_reverse::contains(project),
-        super::coincident_automation::contains(project),
-        !project.arrangement_locators().is_empty(),
-        super::s_curve_fades::contains(project),
-    ]
-    .into_iter()
-    .filter(|&active| active)
-    .count()
+    SCHEMA_FEATURES
+        .iter()
+        .filter(|feature| feature.post_112_wrapper && (feature.present)(project))
+        .count()
+}
+
+/// Refuse any post-schema-63 capability in [`SCHEMA_FEATURES`] when encoding to
+/// a legacy format (`encode_schema22` / `encode_schema20`).
+pub(crate) fn refuse_post_63_features(project: &Project) -> Result<(), StorageError> {
+    if let Some(feature) = SCHEMA_FEATURES
+        .iter()
+        .filter(|feature| (feature.present)(project))
+        .max_by_key(|feature| feature.schema_version)
+    {
+        return Err(StorageError::Invalid(feature.legacy_refusal));
+    }
+    Ok(())
+}
+
+/// Unified schema version selection derived from [`SCHEMA_FEATURES`].
+pub(crate) fn schema_version_for(project: &Project) -> u32 {
+    let mut max_version = crate::CURRENT_SCHEMA_VERSION;
+    let mut post_112_count = 0_usize;
+    for feature in SCHEMA_FEATURES {
+        if (feature.present)(project) {
+            max_version = max_version.max(feature.schema_version);
+            if feature.post_112_wrapper {
+                post_112_count += 1;
+            }
+        }
+    }
+    if max_version >= CAPABILITY_MANIFEST_SCHEMA_VERSION {
+        return max_version;
+    }
+    if post_112_count >= 4 {
+        return CAPABILITY_MANIFEST_SCHEMA_VERSION;
+    }
+    if max_version >= crate::S_CURVE_FADE_SCHEMA_VERSION {
+        return max_version;
+    }
+    if super::device_automation_touch::contains_native_source_effect(project) {
+        return super::device_automation_touch::source_effect_schema_version(project);
+    }
+    max_version
 }
 
 /// True when `project` carries any clip MIDI CC/pitch-bend lanes or non-default
@@ -173,211 +649,11 @@ pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
 
 /// Deterministic, strictly sorted capability manifest for `project`.
 pub(crate) fn capabilities_for(project: &Project) -> Vec<&'static str> {
-    use super::long_granular::{self, LongWarpSchema};
-    let lfo_route = super::device_modulation::lfo_rate_route_schema(project);
-    let mut caps = Vec::new();
-    let mut push = |cond: bool, cap: &'static str| {
-        if cond {
-            caps.push(cap);
-        }
-    };
-    push(
-        super::device_modulation::contains_adsr(project),
-        "adsr_modulator",
-    );
-    push(
-        super::device_modulation::contains_ahd_release(project),
-        "ahd_release_modulator",
-    );
-    push(
-        !project.arrangement_locators().is_empty(),
-        "arrangement_locators",
-    );
-    push(
-        super::device_modulation::contains_arrangement_steps(project),
-        "arrangement_steps",
-    );
-    push(
-        super::device_modulation::contains_audio_rate(project),
-        "audio_rate_modulator",
-    );
-    push(
-        contains_automation_curves_and_freeze(project),
-        "automation_curves_and_freeze",
-    );
-    push(
-        super::bound_source_effects::contains(project),
-        "bound_source_effects",
-    );
-    push(
-        super::device_modulation::contains_button(project),
-        "button_modulator",
-    );
-    push(
-        super::device_modulation::contains_buttons(project),
-        "buttons_modulator",
-    );
-    push(
-        super::coincident_automation::contains(project),
-        "coincident_automation",
-    );
-    push(
-        super::content_view_resampler::contains_explicit(project),
-        "content_view_resampler",
-    );
-    push(
-        super::device_automation_touch::contains(project),
-        "device_automation_touch",
-    );
-    push(
-        super::device_modulation::contains(project),
-        "device_modulation",
-    );
-    push(
-        super::sampler_crossfade::contains_newer_states(project),
-        "device_state",
-    );
-    push(
-        super::event_warp_sources::contains(project),
-        "event_warp_sources",
-    );
-    push(
-        super::device_automation_touch::contains_extended(project),
-        "extended_automation_touch",
-    );
-    push(
-        crate::contains_extended_frame_events(project),
-        "extended_frame_events",
-    );
-    push(
-        lfo_route == Some(crate::LFO_RATE_ROUTE_SCHEMA_VERSION),
-        "free_lfo_rate_route",
-    );
-    push(
-        super::group_output_mute::contains(project),
-        "group_output_mute",
-    );
-    push(
-        super::device_modulation::contains_instrument_modulation(project),
-        "instrument_modulation",
-    );
-    push(
-        super::large_vst3_state::contains(project),
-        "large_vst3_state",
-    );
-    push(
-        crate::contains_leading_audio_once(project),
-        "leading_audio_once",
-    );
-    push(
-        super::device_modulation::contains_newer_lfo(project),
-        "lfo_shape",
-    );
-    push(
-        long_granular::contains(project, LongWarpSchema::Granular),
-        "long_granular",
-    );
-    push(
-        long_granular::contains(project, LongWarpSchema::Inactive),
-        "long_inactive_warp",
-    );
-    push(super::long_pitch::contains(project), "long_pitch");
-    push(super::long_pitch_fade::contains(project), "long_pitch_fade");
-    push(super::long_reverse::contains(project), "long_reverse");
-    push(
-        super::device_modulation::contains_macro_four(project),
-        "macro_four_modulator",
-    );
-    push(
-        super::device_modulation::contains_math(project),
-        "math_modulator",
-    );
-    push(contains_midi_expression(project), "midi_expression");
-    push(
-        super::device_modulation::contains_mix(project),
-        "mix_modulator",
-    );
-    push(
-        super::device_modulation::contains_colors(project),
-        "modulation_slot_color",
-    );
-    push(
-        super::musical_event_source::contains(project),
-        "musical_event_source",
-    );
-    push(
-        super::device_automation_touch::contains_native_instrument(project),
-        "native_instrument_touch",
-    );
-    push(
-        super::device_automation_touch::contains_native_source_effect(project),
-        "native_source_effect_touch",
-    );
-    push(
-        super::device_modulation::contains_note_counter(project),
-        "note_counter_modulator",
-    );
-    push(
-        super::device_modulation::contains_note_pressure(project),
-        "note_pressure_modulator",
-    );
-    push(
-        super::device_modulation::contains_operator_modulation(project),
-        "operator_modulation",
-    );
-    push(
-        super::outer_clip_fades::contains(project),
-        "outer_clip_fades",
-    );
-    push(
-        super::device_modulation::contains_ramp(project),
-        "ramp_modulator",
-    );
-    push(
-        super::retained_receiver::contains(project),
-        "retained_receiver",
-    );
-    push(super::s_curve_fades::contains(project), "s_curve_fades");
-    push(
-        super::sample_rate_mode::contains(project),
-        "sample_rate_mode",
-    );
-    push(
-        super::device_modulation::contains_sampler_modulation(project),
-        "sampler_modulation",
-    );
-    push(
-        super::musical_event_source::contains_scoped(project),
-        "scoped_musical_events",
-    );
-    push(super::serial_units::contains(project), "serial_devices");
-    push(!project.sidechains().is_empty(), "sidechain");
-    push(super::silent_repeat::contains(project), "silent_repeat");
-    push(super::conversion_v2::contains_v2(project), "sinc_v2");
-    push(
-        super::device_modulation::contains_steps(project),
-        "steps_modulator",
-    );
-    push(
-        lfo_route == Some(crate::TEMPO_LFO_RATE_ROUTE_SCHEMA_VERSION),
-        "tempo_lfo_rate_route",
-    );
-    push(contains_track_io_routing(project), "track_io_routing");
-    push(super::track_tags::contains(project), "track_tags");
-    push(super::vst3_automation::contains(project), "vst3_automation");
-    push(
-        super::device_automation_touch::contains_vst3(project),
-        "vst3_automation_touch",
-    );
-    push(
-        crate::contains_larger_device_state(project),
-        "vst3_state_size",
-    );
-    push(
-        super::warp_resampler::contains_explicit(project),
-        "warp_resampler",
-    );
-    caps
+    SCHEMA_FEATURES
+        .iter()
+        .filter(|feature| (feature.present)(project))
+        .map(|feature| feature.capability)
+        .collect()
 }
 
 pub(super) struct SliceSeq<'a, T, U>(&'a [T], fn(&'a T) -> U);

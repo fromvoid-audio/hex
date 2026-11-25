@@ -889,6 +889,110 @@ fn schema129_track_io_routing_round_trips_and_rejects_downgrade() {
 }
 
 #[test]
+fn unified_schema_feature_table_is_sorted_complete_and_blocks_legacy_encoders() {
+    // 1. SCHEMA_FEATURES is strictly sorted and matches SUPPORTED_CAPABILITIES 1:1.
+    let table_caps: Vec<&str> = super::SCHEMA_FEATURES
+        .iter()
+        .map(|feature| feature.capability)
+        .collect();
+    assert_eq!(table_caps.as_slice(), super::SUPPORTED_CAPABILITIES);
+    assert!(table_caps.windows(2).all(|pair| pair[0] < pair[1]));
+
+    // 2. M9 MIDI expression refuses encode_schema22 and encode_schema20.
+    let mut midi_editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = midi_editor
+        .execute(Command::AddTrack { name: "mpe".into() })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Clip(clip) = midi_editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: hex_project::BeatTime::ZERO,
+            length: hex_project::BeatTime::from_quarters(4).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    midi_editor
+        .execute(Command::SetMidiExpressionLane {
+            clip,
+            kind: hex_project::MidiLaneKind::ControlChange(1),
+            points: vec![hex_project::MidiLanePoint {
+                beat: hex_project::BeatTime::ZERO,
+                channel: 0,
+                value: 96,
+            }],
+        })
+        .unwrap();
+    assert!(crate::encode_schema22(midi_editor.project()).is_err());
+    assert!(crate::encode_schema20(midi_editor.project()).is_err());
+
+    // 3. M9 automation curves / track freeze refuse encode_schema22 and encode_schema20.
+    let mut freeze_editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(ftrack) = freeze_editor
+        .execute(Command::AddTrack {
+            name: "frozen".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    freeze_editor
+        .execute(Command::FreezeTrack {
+            track: ftrack,
+            path: "frozen.wav".into(),
+            start: 0,
+            duration: 128,
+            frames: 128,
+        })
+        .unwrap();
+    assert!(crate::encode_schema22(freeze_editor.project()).is_err());
+    assert!(crate::encode_schema20(freeze_editor.project()).is_err());
+
+    // 4. M9 track I/O routing refuses encode_schema22 and encode_schema20.
+    let mut io_editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(iotrack) = io_editor
+        .execute(Command::AddTrack { name: "io".into() })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    io_editor
+        .execute(Command::SetTrackInputMonitoring {
+            track: iotrack,
+            mode: hex_project::InputMonitoring::In,
+        })
+        .unwrap();
+    assert!(crate::encode_schema22(io_editor.project()).is_err());
+    assert!(crate::encode_schema20(io_editor.project()).is_err());
+
+    // 5. Post-112 multi-feature projects refuse encode_schema22 and encode_schema20.
+    let rich = build_rich_multi_feature_project();
+    assert!(crate::encode_schema22(&rich).is_err());
+    assert!(crate::encode_schema20(&rich).is_err());
+
+    // 6. Top-level decode_impl size guard applies across legacy (schema 20/22/63) AND manifest schemas.
+    let plain = Project::new(48_000).unwrap();
+    for bytes in [
+        crate::encode_schema20(&plain).unwrap(),
+        crate::encode_schema22(&plain).unwrap(),
+        crate::encode(&plain).unwrap(),
+        crate::encode_capability_manifest(&plain).unwrap(),
+    ] {
+        let too_small = bytes.len() - 1;
+        assert!(matches!(
+            crate::decode_impl_within(&bytes, false, too_small),
+            Err(StorageError::Invalid(
+                "project exceeds the document size limit"
+            ))
+        ));
+    }
+}
+
+#[test]
 #[ignore = "memory footprint probe for unified schema 126"]
 fn bench_memory_unified_schema126() {
     let project = build_rich_multi_feature_project();
