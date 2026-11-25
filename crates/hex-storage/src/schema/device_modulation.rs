@@ -526,14 +526,6 @@ pub(crate) fn contains_newer_lfo(project: &Project) -> bool {
     })
 }
 
-pub(crate) fn refuse_legacy(project: &Project) -> Result<(), StorageError> {
-    if contains(project) {
-        return Err(StorageError::Invalid(
-            "older schema cannot save device modulation",
-        ));
-    }
-    Ok(())
-}
 pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageError> {
     let version = if contains_operator_modulation(project) {
         crate::OPERATOR_MODULATION_SCHEMA_VERSION
