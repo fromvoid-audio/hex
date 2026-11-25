@@ -549,7 +549,7 @@ impl Block {
         self.timing_changes.len += 1;
         Ok(())
     }
-    fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
+    pub(crate) fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
         if self.binding != binding
             || self.sequence != sequence
             || self.frames != quantum
@@ -954,7 +954,7 @@ struct OutputReply {
 }
 
 impl OutputReply {
-    fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
+    pub(crate) fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
         self.block.valid_reply(binding, quantum, sequence)?;
         if self
             .manual
@@ -974,15 +974,20 @@ struct State {
     input_manual_origin: Option<ManualParameterOrigin>,
     input_editor_scope: Option<NonZeroU64>,
     output: OutputReply,
+    output_event_cursor: usize,
+    output_parameter_cursor: usize,
     output_gap: bool,
     consecutive_output_gaps: u8,
     next_output_reply: u64,
     parameter_capacity: usize,
 }
+/// Lightweight per-callback staging metadata. Because any callback staging
+/// failure or refusal permanently revokes the endpoint, `Callback::state` and
+/// `Callback::staged_request` are mutated in place without ~50 KiB rollback
+/// copies on every physical callback.
 #[derive(Clone, Copy)]
 struct Stage {
-    state: State,
-    request: Option<InputRequest>,
+    has_request: bool,
     manual: Option<AcceptedManualParameter>,
     editor: Option<AcceptedEditorQuantum>,
     concealed: Option<DeadlineMiss>,
@@ -993,6 +998,26 @@ struct Stage {
     output_events: usize,
     input_parameters: usize,
     output_parameters: usize,
+}
+
+#[cfg(test)]
+mod stage_layout_tests {
+    use super::*;
+
+    #[test]
+    fn stage_metadata_does_not_embed_state_or_request_rollback_copies() {
+        assert!(
+            std::mem::size_of::<Stage>() < std::mem::size_of::<State>() / 4,
+            "Stage ({} B) must stay lightweight relative to State ({} B)",
+            std::mem::size_of::<Stage>(),
+            std::mem::size_of::<State>(),
+        );
+        assert!(
+            std::mem::size_of::<Stage>() <= 4096,
+            "Stage ({} B) unexpectedly grew",
+            std::mem::size_of::<Stage>(),
+        );
+    }
 }
 
 /// Copied responses for one staged graph segment. Like PCM, this is not a
@@ -1016,7 +1041,11 @@ pub struct Callback {
     requests: Producer<InputRequest>,
     replies: Consumer<OutputReply>,
     revoked: Arc<Revocation>,
+    /// Last committed sample position; updated only in `finish(true)` so
+    /// diagnostic/control reads never observe uncommitted staged progress.
+    committed_position: u64,
     state: State,
+    staged_request: InputRequest,
     staged: Option<Stage>,
     accepted_manual: Option<AcceptedManualParameter>,
     accepted_editor: Option<AcceptedEditorQuantum>,
@@ -1103,6 +1132,7 @@ fn channel_with_policy(
             requests: request_tx,
             replies: reply_rx,
             revoked: Arc::clone(&revoked),
+            committed_position: position,
             state: State {
                 position,
                 input: empty,
@@ -1114,10 +1144,20 @@ fn channel_with_policy(
                     manual: None,
                     editor: None,
                 },
+                output_event_cursor: 0,
+                output_parameter_cursor: 0,
                 output_gap: false,
                 consecutive_output_gaps: 0,
                 next_output_reply: completed_blocks,
                 parameter_capacity: MAX_PARAMETER_POINTS,
+            },
+            staged_request: InputRequest {
+                block: empty,
+                sidechain: None,
+                parameter_capacity: MAX_PARAMETER_POINTS,
+                authored_program: None,
+                manual_origin: None,
+                editor_scope: None,
             },
             staged: None,
             accepted_manual: None,
@@ -1150,7 +1190,7 @@ impl Callback {
     /// Committed request prefix for an exclusively owned offline endpoint.
     /// No observation or borrow of the device callback is permitted.
     pub fn dispatched_blocks_on_control(&self) -> u64 {
-        self.state.position / u64::from(self.quantum)
+        self.committed_position / u64::from(self.quantum)
     }
     /// Permanently refuse this exchange at its actual host validation boundary.
     /// Rejection neither replays work nor destroys either endpoint.
@@ -1168,7 +1208,7 @@ impl Callback {
     /// alone does not advance it; this grants no worker/readiness authority.
     #[cfg(any(test, feature = "test-support", feature = "allocation-probe"))]
     pub fn committed_position_for_test(&self) -> u64 {
-        self.state.position
+        self.committed_position
     }
     /// Snapshot the original producer's pending requests. This is diagnostic
     /// progress only, not processing completion or native/publication custody.
@@ -1236,8 +1276,7 @@ impl Callback {
         self.accepted_manual = None;
         self.accepted_editor = None;
         self.staged = Some(Stage {
-            state: self.state,
-            request: None,
+            has_request: false,
             manual: None,
             editor: None,
             concealed: None,
@@ -1533,7 +1572,7 @@ impl Callback {
         }
         let q = u64::from(self.quantum);
         let quantum_frames = usize::from(self.quantum);
-        let initial_offset = (stage.state.position % q) as usize;
+        let initial_offset = (self.state.position % q) as usize;
         let EffectSegmentOrigins { authored, manual } = origins;
         if authored.is_some() && !parameters.is_empty() {
             return Err(Fault::InvalidParameters);
@@ -1557,7 +1596,7 @@ impl Callback {
                 return Err(Fault::InvalidParameters);
             }
         }
-        let mut concealed_output = (initial_offset != 0 && stage.state.output_gap)
+        let mut concealed_output = (initial_offset != 0 && self.state.output_gap)
             .then_some((0, input.len().min(quantum_frames - initial_offset)));
         let mut output_events = 0;
         let mut output_parameters = 0;
@@ -1565,28 +1604,28 @@ impl Callback {
         let mut parameter_index = 0;
         let mut input_parameters = parameters.len();
         for (index, (source, destination)) in input.iter().zip(output).enumerate() {
-            let position = stage.state.position;
+            let position = self.state.position;
             let offset = (position % q) as usize;
             let sequence = position / q;
             let origin = authored
                 .as_ref()
                 .and_then(|segment| (segment.origin)(index));
             if offset == 0 {
-                stage.state.input = Block::empty(self.binding, self.quantum);
-                stage.state.input.sequence = sequence;
-                stage.state.input.first_frame = position;
-                stage.state.input_sidechain = sidechain.map(|_| [[0.0; 2]; MAX_FRAMES]);
-                stage.state.input_manual_origin = manual.and_then(|origin| origin(index));
+                self.state.input = Block::empty(self.binding, self.quantum);
+                self.state.input.sequence = sequence;
+                self.state.input.first_frame = position;
+                self.state.input_sidechain = sidechain.map(|_| [[0.0; 2]; MAX_FRAMES]);
+                self.state.input_manual_origin = manual.and_then(|origin| origin(index));
                 let editor_scope = self.revoked.editor_scope.load(Acquire);
-                stage.state.input_editor_scope = if editor_scope & 1 != 0 {
+                self.state.input_editor_scope = if editor_scope & 1 != 0 {
                     NonZeroU64::new(editor_scope >> 1)
                 } else {
                     None
                 };
-                stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
+                self.state.parameter_capacity = MAX_PARAMETER_POINTS;
                 self.authored_origins.open(program, clock_epoch);
-                stage.state.input.timing = (timing.at)(index);
-                if stage.state.input.timing.is_some_and(|origin| {
+                self.state.input.timing = (timing.at)(index);
+                if self.state.input.timing.is_some_and(|origin| {
                     !origin.is_valid()
                         || timing
                             .playing
@@ -1601,10 +1640,10 @@ impl Callback {
                         self.binding,
                         self.quantum,
                         self.conceal_output_gap,
-                        &mut stage.state,
+                        &mut self.state,
                         sequence - 2,
                     )?;
-                    if stage.state.output_gap {
+                    if self.state.output_gap {
                         stage.concealed = Some(DeadlineMiss {
                             reply_sequence: sequence - 2,
                             worker_phase: self.revoked.worker_progress(sequence - 2).0,
@@ -1612,23 +1651,23 @@ impl Callback {
                         let start = concealed_output.map_or(index, |span| span.0);
                         concealed_output = Some((start, input.len().min(index + quantum_frames)));
                     }
-                    if let Some(manual) = stage.state.output.manual {
+                    if let Some(manual) = self.state.output.manual {
                         // Extent is at most one quantum, so only one reply
                         // start can fall in the complete physical callback.
                         stage.manual = Some(AcceptedManualParameter {
                             binding: self.binding,
-                            sequence: stage.state.output.block.sequence,
-                            first_frame: stage.state.output.block.first_frame,
+                            sequence: self.state.output.block.sequence,
+                            first_frame: self.state.output.block.first_frame,
                             callback_offset: (frame_offset + index) as u16,
                             input: manual.input,
                             origin: manual.origin,
                         });
                     }
-                    if let Some(editor) = stage.state.output.editor {
+                    if let Some(editor) = self.state.output.editor {
                         stage.editor = Some(AcceptedEditorQuantum {
                             binding: self.binding,
-                            sequence: stage.state.output.block.sequence,
-                            first_frame: stage.state.output.block.first_frame,
+                            sequence: self.state.output.block.sequence,
+                            first_frame: self.state.output.block.first_frame,
                             callback_offset: (frame_offset + index) as u16,
                             scope: editor.scope,
                             performs: editor.facts.performs,
@@ -1650,16 +1689,16 @@ impl Callback {
                 let change = (timing.at)(index)
                     .filter(|origin| origin.playing)
                     .ok_or(Fault::Protocol)?;
-                stage.state.input.add_timing_change(offset as u16, change)?;
+                self.state.input.add_timing_change(offset as u16, change)?;
             } else if index == 0
                 && let Some(playing) = timing.playing
-                && let Some((prior_frame, prior)) = stage.state.input.latest_timing_entry()
+                && let Some((prior_frame, prior)) = self.state.input.latest_timing_entry()
             {
                 if prior.playing != playing {
                     let change = (timing.at)(index)
                         .filter(|origin| origin.playing == playing)
                         .ok_or(Fault::Protocol)?;
-                    stage.state.input.add_timing_change(offset as u16, change)?;
+                    self.state.input.add_timing_change(offset as u16, change)?;
                 } else if playing && let Some(change) = (timing.at)(index) {
                     if !change.playing {
                         return Err(Fault::Protocol);
@@ -1670,13 +1709,13 @@ impl Callback {
                     if expected != Some(change.arrangement_frame)
                         || prior.tempo_micro_bpm != change.tempo_micro_bpm
                     {
-                        stage.state.input.add_timing_change(offset as u16, change)?;
+                        self.state.input.add_timing_change(offset as u16, change)?;
                     }
                 }
             }
-            stage.state.input.pcm[offset] = *source;
+            self.state.input.pcm[offset] = *source;
             if let Some(key) = sidechain {
-                let buf = stage
+                let buf = self
                     .state
                     .input_sidechain
                     .get_or_insert([[0.0; 2]; MAX_FRAMES]);
@@ -1688,30 +1727,27 @@ impl Callback {
             {
                 let mut event = *event;
                 event.frame = offset as u16;
-                stage.state.input.events.push(event)?;
+                self.state.input.events.push(event)?;
                 event_index += 1;
             }
             while let Some(point) = parameters
                 .get(parameter_index)
                 .filter(|point| usize::from(point.frame) == index)
             {
-                stage.state.input.parameters.push(ParameterPoint {
+                self.state.input.parameters.push(ParameterPoint {
                     frame: offset as u16,
                     ..*point
                 })?;
                 parameter_index += 1;
             }
             if sequence >= 2 {
-                *destination = stage.state.output.block.pcm[offset];
-                for event in stage
-                    .state
-                    .output
-                    .block
-                    .events
-                    .as_slice()
-                    .iter()
+                *destination = self.state.output.block.pcm[offset];
+                let out_events = self.state.output.block.events.as_slice();
+                while let Some(event) = out_events
+                    .get(self.state.output_event_cursor)
                     .filter(|e| usize::from(e.frame) == offset)
                 {
+                    self.state.output_event_cursor += 1;
                     output_events += 1;
                     if let Some(reply) = reply.as_deref_mut() {
                         let mut event = *event;
@@ -1719,15 +1755,12 @@ impl Callback {
                         reply.events.push(event)?;
                     }
                 }
-                for point in stage
-                    .state
-                    .output
-                    .block
-                    .parameters
-                    .as_slice()
-                    .iter()
+                let out_parameters = self.state.output.block.parameters.as_slice();
+                while let Some(point) = out_parameters
+                    .get(self.state.output_parameter_cursor)
                     .filter(|point| usize::from(point.frame) == offset)
                 {
+                    self.state.output_parameter_cursor += 1;
                     output_parameters += 1;
                     if let Some(reply) = reply.as_deref_mut() {
                         reply.parameters.push(ParameterPoint {
@@ -1740,7 +1773,7 @@ impl Callback {
             if authored.is_some() {
                 self.authored_origins.frames[offset] = origin;
             }
-            stage.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
+            self.state.position = position.checked_add(1).ok_or(Fault::Exhausted)?;
             if offset + 1 == quantum_frames {
                 // Absence is also frozen at the opening frame. A programme
                 // first supplied mid-quantum starts at the next boundary;
@@ -1751,22 +1784,23 @@ impl Callback {
                     let points = self.authored_origins.render(
                         authored,
                         usize::from(self.quantum),
-                        &stage.state.input.timing_changes,
+                        &self.state.input.timing_changes,
                     )?;
                     input_parameters += points.as_slice().len();
                     if input_parameters > MAX_PARAMETER_POINTS - stage.input_parameters {
                         return Err(Fault::InvalidParameters);
                     }
-                    stage.state.input.parameters = points;
+                    self.state.input.parameters = points;
                 }
-                stage.request = Some(InputRequest {
-                    block: stage.state.input,
-                    sidechain: stage.state.input_sidechain.take(),
-                    parameter_capacity: stage.state.parameter_capacity,
+                self.staged_request = InputRequest {
+                    block: self.state.input,
+                    sidechain: self.state.input_sidechain.take(),
+                    parameter_capacity: self.state.parameter_capacity,
                     authored_program: self.authored_origins.program,
-                    manual_origin: stage.state.input_manual_origin,
-                    editor_scope: stage.state.input_editor_scope,
-                });
+                    manual_origin: self.state.input_manual_origin,
+                    editor_scope: self.state.input_editor_scope,
+                };
+                stage.has_request = true;
             }
         }
         if output_events > MAX_EVENTS - stage.output_events {
@@ -1798,26 +1832,27 @@ impl Callback {
         if self.revoked.is_revoked() {
             return self.fail(Fault::Revoked);
         }
-        let Some(mut stage) = self.staged.take() else {
+        let Some(stage) = self.staged.take() else {
             return self.fail(Fault::Protocol);
         };
         if stage.staged_frames != stage.expected_frames {
             return self.fail(Fault::Protocol);
         }
         let remaining = MAX_PARAMETER_POINTS - stage.input_parameters;
-        if let Some(mut request) = stage.request {
-            request.parameter_capacity = request.parameter_capacity.min(remaining);
-            if self.requests.push(request).is_err() {
+        if stage.has_request {
+            self.staged_request.parameter_capacity =
+                self.staged_request.parameter_capacity.min(remaining);
+            if self.requests.push(self.staged_request).is_err() {
                 return self.fail(Fault::Saturated);
             }
             self.revoked.wake_worker();
         }
-        if stage.state.position % u64::from(self.quantum) != 0 {
-            stage.state.parameter_capacity = stage.state.parameter_capacity.min(remaining);
+        if !self.state.position.is_multiple_of(u64::from(self.quantum)) {
+            self.state.parameter_capacity = self.state.parameter_capacity.min(remaining);
         } else {
-            stage.state.parameter_capacity = MAX_PARAMETER_POINTS;
+            self.state.parameter_capacity = MAX_PARAMETER_POINTS;
         }
-        self.state = stage.state;
+        self.committed_position = self.state.position;
         self.accepted_manual = stage.manual;
         self.accepted_editor = stage.editor;
         let quantum = if self.state.position.is_multiple_of(u64::from(self.quantum)) {
@@ -1884,6 +1919,8 @@ fn stage_reply(
                 state.next_output_reply = sequence.checked_add(1).ok_or(Fault::Exhausted)?;
                 if sequence == expected {
                     state.output = reply;
+                    state.output_event_cursor = 0;
+                    state.output_parameter_cursor = 0;
                     state.output_gap = false;
                     state.consecutive_output_gaps = 0;
                     return Ok(());
@@ -1898,6 +1935,8 @@ fn stage_reply(
                     manual: None,
                     editor: None,
                 };
+                state.output_event_cursor = 0;
+                state.output_parameter_cursor = 0;
                 state.output_gap = true;
                 state.consecutive_output_gaps += 1;
                 return Ok(());

@@ -310,7 +310,6 @@ enum EditorTouchMode<'a> {
 /// the callback. Drop may wait for actual process retirement on that lane.
 pub struct Prepared {
     lease: Lease,
-    shm: Option<hex_shm_ring::HostRing>,
     config: Configuration,
     ready: Ready,
     limits: Limits,
@@ -339,7 +338,6 @@ pub struct Prepared {
 /// Derive the graph plan from `facts`, then consume it once through completion.
 pub struct Pending {
     lease: Lease,
-    shm: Option<hex_shm_ring::HostRing>,
     control_channel: Channel,
     control_packet: Packet,
     config: Configuration,
@@ -534,6 +532,8 @@ impl Pending {
         // No foreign module is loaded by this exact executable's probe. A
         // missing/auto-reaped child refuses before any SDK instance starts.
         let probe_started = timings.as_ref().map(|_| Instant::now());
+        let probe_until =
+            end_after(options.limits.startup).map_err(PreparationFailure::before_native)?;
         let probe = Command::new(build.helper())
             .arg("--child-custody-probe")
             .stdin(Stdio::null())
@@ -543,9 +543,15 @@ impl Pending {
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
         let mut probe = ChildCustody::Owned(probe, None);
-        let status = match probe.reap() {
+        let status = match wait(&mut probe, probe_until, &mut || cancellation.token.check()) {
             Ok(status) => status,
-            Err(cause) => return Err(PreparationFailure::probe(cause, probe)),
+            Err(cause) => {
+                return Err(PreparationFailure::probe(
+                    cause,
+                    probe,
+                    options.limits.retirement,
+                ));
+            }
         };
         if let Some((started, timings)) = probe_started.zip(timings.as_deref_mut()) {
             timings.waitable_probe = Some(started.elapsed());
@@ -609,6 +615,8 @@ impl Pending {
             child: ChildCustody::Owned(child, deadline),
             channel,
             cancellation,
+            shm: None,
+            retirement_ms: duration_to_ms_u32(options.limits.retirement),
             #[cfg(test)]
             reap_probe: None,
         };
@@ -624,6 +632,7 @@ impl Pending {
             let shm = pending
                 .channel
                 .create_and_send_shm_fd(until, &mut || token.check())?;
+            pending.shm = Some(Box::new(shm));
             pending
                 .channel
                 .read(&mut packet, until, &mut || token.check())?;
@@ -637,6 +646,7 @@ impl Pending {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
+            packet.shrink_to_pcm();
             if let Some((started, timings)) = instance_started.zip(timings.as_deref_mut()) {
                 timings.instance_to_facts = Some(started.elapsed());
             }
@@ -645,10 +655,10 @@ impl Pending {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
             }
-            Ok((facts, shm))
+            Ok(facts)
         })();
-        let (facts, shm) = match prepared {
-            Ok(pair) => pair,
+        let facts = match prepared {
+            Ok(facts) => facts,
             Err(cause) => {
                 return Err(PreparationFailure::native(
                     cause,
@@ -659,7 +669,6 @@ impl Pending {
         };
         Ok(Self {
             lease: pending,
-            shm: Some(shm),
             control_channel,
             control_packet,
             config,
@@ -751,6 +760,7 @@ impl Pending {
                 ));
             }
             let ready = Ready::decode(self.packet.body()?, &self.config, presentation)?;
+            self.packet.shrink_to_pcm();
             if ready.restored != self.facts.restored
                 || ready.algorithmic_latency_frames != self.facts.algorithmic_latency_frames
                 || ready.tail_frames != self.facts.tail_frames
@@ -785,7 +795,6 @@ impl Pending {
         );
         Ok(Prepared {
             lease: self.lease,
-            shm: self.shm,
             config: self.config,
             ready,
             limits: self.limits,
@@ -1306,9 +1315,6 @@ impl Prepared {
         );
         if result.is_err() {
             self.faulted = true;
-            if let Some(shm) = &self.shm {
-                shm.set_fault();
-            }
             self.lease.cancel_native();
         }
         result
@@ -1326,7 +1332,7 @@ impl Prepared {
     ) -> Result<protocol::EditorPcm> {
         self.check_live_capture_deadline()?;
         self.check_parameter_page_deadline()?;
-        self.config.validate_block(&block, self.sequence)?;
+        self.config.validate_block_fast(&block, self.sequence)?;
         if let Some(aux) = sidechain
             && (aux.len() != usize::from(block.frames)
                 || !aux.iter().flatten().all(|sample| sample.is_finite()))
@@ -1340,7 +1346,7 @@ impl Prepared {
         let bytes = self.packet.request_buffer()?;
         let mut length = match (metadata, dense) {
             (Some(metadata), Some(dense)) => {
-                crate::transport::wire::encode_dense_authored_into_slice(
+                crate::transport::wire::encode_validated_dense_authored_into_slice(
                     bytes,
                     &block,
                     dense,
@@ -1348,13 +1354,13 @@ impl Prepared {
                     &|id| metadata.step_count(id),
                 )
             }
-            (Some(metadata), None) => crate::transport::wire::encode_authored_into_slice(
+            (Some(metadata), None) => crate::transport::wire::encode_validated_authored_into_slice(
                 bytes,
                 &block,
                 manual_parameter,
                 &|id| metadata.step_count(id),
             ),
-            (None, None) => crate::transport::wire::encode_into_slice(bytes, &block),
+            (None, None) => crate::transport::wire::encode_validated_into_slice(bytes, &block),
             (None, Some(_)) => return Err(Error::Protocol("dense parameter metadata is missing")),
         }
         .map_err(Error::Io)?;
@@ -1399,14 +1405,15 @@ impl Prepared {
         bytes[5] |= (protocol::SDK_TIMING_BIT >> 8) as u8;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
-        self.lease
-            .channel
-            .send_pcm(&bytes[..length], self.shm.as_mut(), until, &mut || {
-                token.check()
-            })?;
+        self.lease.channel.send_pcm(
+            &bytes[..length],
+            self.lease.shm.as_deref_mut(),
+            until,
+            &mut || token.check(),
+        )?;
         self.lease.channel.read_with_shm(
             &mut self.packet,
-            self.shm.as_mut(),
+            self.lease.shm.as_deref_mut(),
             until,
             &mut || token.check(),
         )?;
@@ -1496,6 +1503,9 @@ impl Prepared {
                 return Err(Error::Protocol("missing instance retirement terminal"));
             }
             let terminal = Terminal::decode(self.packet.body()?, self.config.binding)?;
+            if let Some(shm) = &self.lease.shm {
+                shm.set_fault();
+            }
             let status = wait(&mut self.lease.child, until, &mut || token.check())?;
             let retired = Retirement {
                 status,
@@ -1638,10 +1648,16 @@ impl SidechainExchange<'_> {
     }
 }
 
+pub(super) fn duration_to_ms_u32(duration: Duration) -> u32 {
+    u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
+}
+
 struct Lease {
     child: ChildCustody,
     channel: Channel,
     cancellation: Cancellation,
+    shm: Option<Box<hex_shm_ring::HostRing>>,
+    retirement_ms: u32,
     #[cfg(test)]
     reap_probe: Option<Arc<std::sync::atomic::AtomicI32>>,
 }
@@ -1666,6 +1682,12 @@ impl ChildCustody {
         Error::Custody(crate::CustodyError::Lost(source))
     }
 
+    fn kill(&mut self) {
+        if let Self::Owned(child, _) = self {
+            let _ = child.kill();
+        }
+    }
+
     fn observe(&mut self) -> Result<Option<ExitStatus>> {
         let result = match self {
             Self::Owned(child, _) => child.try_wait(),
@@ -1683,6 +1705,7 @@ impl ChildCustody {
             Err(error) => Err(self.lose(error)),
         }
     }
+    #[cfg(all(test, feature = "allocation-probe"))]
     fn reap(&mut self) -> Result<ExitStatus> {
         let result = match self {
             Self::Owned(child, _) => child.wait(),
@@ -1699,11 +1722,42 @@ impl ChildCustody {
             Err(error) => Err(self.lose(error)),
         }
     }
+    fn reap_bounded(&mut self, limit: Duration) -> Result<ExitStatus> {
+        if let Some(status) = self.observe()? {
+            return Ok(status);
+        }
+        let until = end_after(limit)?;
+        loop {
+            if let Some(status) = self.observe()? {
+                return Ok(status);
+            }
+            if Instant::now() >= until {
+                break;
+            }
+            pause(until);
+        }
+        // Escalate to SIGKILL once the bounded retirement window expires,
+        // then allow a short bounded kernel reap grace instead of blocking forever.
+        self.kill();
+        let kill_grace = limit.clamp(Duration::from_millis(25), Duration::from_millis(250));
+        let kill_until = end_after(kill_grace)?;
+        loop {
+            if let Some(status) = self.observe()? {
+                return Ok(status);
+            }
+            if Instant::now() >= kill_until {
+                return Err(Error::Timeout);
+            }
+            pause(kill_until);
+        }
+    }
 }
 impl Lease {
     fn cancel_native(&self) {
         self.cancellation.cancel_on_control();
-
+        if let Some(shm) = &self.shm {
+            shm.set_fault();
+        }
         self.channel.close();
     }
 }
@@ -1728,7 +1782,9 @@ fn wait(
 impl Drop for Lease {
     fn drop(&mut self) {
         self.cancel_native();
-        let reaped = self.child.reap(); // joining control/worker only; lost custody never retries
+        let reaped = self
+            .child
+            .reap_bounded(Duration::from_millis(u64::from(self.retirement_ms))); // joining control/worker only; lost custody never retries
         #[cfg(test)]
         if let Some(probe) = &self.reap_probe {
             let code = match &reaped {

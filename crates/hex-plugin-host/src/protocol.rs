@@ -176,32 +176,34 @@ impl Configuration {
         }
         finish_control(out)
     }
-    pub fn validate_block(&self, block: &Block, sequence: u64) -> Result<()> {
-        self.validate()?;
-        if block.binding != self.binding
-            || block.frames != self.quantum
-            || block.sequence != sequence
-            || sequence.checked_mul(u64::from(self.quantum)) != Some(block.first_frame)
-            || block.events.as_slice().iter().any(|event| {
-                !matches!(
-                    (event.bytes[0] & 0xf0, event.len),
-                    (0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0, 3) | (0xd0, 2)
-                )
-            })
-            || !block.pcm[..usize::from(self.quantum)]
+    /// Fast per-quantum block validation for an already-validated immutable
+    /// [`Configuration`]. Validates binding, sequence, frames, samples, unused
+    /// input channels, events, parameters, and timing in one pass without
+    /// re-scanning startup paths or re-decoding `restore` state.
+    pub fn validate_block_fast(&self, block: &Block, sequence: u64) -> Result<()> {
+        block
+            .valid(self.binding, self.quantum, sequence)
+            .map_err(|_| Error::Protocol("instance request identity or samples refused"))?;
+        if block.events.as_slice().iter().any(|event| {
+            !matches!(
+                (event.bytes[0] & 0xf0, event.len),
+                (0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0, 3) | (0xd0, 2)
+            )
+        }) || (self.input_channels < 2
+            && block.pcm[..usize::from(self.quantum)]
                 .iter()
-                .flatten()
-                .all(|v| v.is_finite())
-            || block.pcm[..usize::from(self.quantum)].iter().any(|v| {
-                (self.input_channels < 2 && v[1] != 0.0)
-                    || (self.input_channels == 0 && v[0] != 0.0)
-            })
+                .any(|v| v[1] != 0.0 || (self.input_channels == 0 && v[0] != 0.0)))
         {
             return Err(Error::Protocol(
                 "instance request identity or samples refused",
             ));
         }
         Ok(())
+    }
+
+    pub fn validate_block(&self, block: &Block, sequence: u64) -> Result<()> {
+        self.validate()?;
+        self.validate_block_fast(block, sequence)
     }
 }
 

@@ -134,6 +134,7 @@ impl Prepared {
             self.sequence,
             pending.operation,
         );
+        self.packet.shrink_to_pcm();
         // Cancellation wins over a decoded reply or refusal; a worker error or
         // malformed frame stays the terminal cause.
         if matches!(reply, Ok(_) | Err(Error::CaptureRefused(_))) {

@@ -13,10 +13,11 @@ use std::{
 const CHECK_INTERVAL: Duration = Duration::from_millis(10);
 
 // Dense PCM requests with stereo sidechain key and a grouped editor touch are
-// the largest audio exchange. State replies can be much larger. Reserve their
-// full allowance once, then initialize the extra backing only after validating
-// the control-frame header.
-const PCM_BYTES: usize = crate::transport::wire::MAX_DENSE_PACKET_BYTES
+// the largest steady-state audio exchange. Reserve only `PCM_BYTES` upfront so
+// steady-state instances stay ~12-20 KiB instead of 16 MiB per lane; rare large
+// control/state-capture frames grow fallibly on demand and shrink back after
+// decode.
+pub(crate) const PCM_BYTES: usize = crate::transport::wire::MAX_DENSE_PACKET_BYTES
     + crate::transport::MAX_FRAMES * 8
     + protocol::EditorTouchPlanSet::WIRE_BYTES;
 const _: () = assert!(PCM_BYTES <= protocol::PACKET_LIMIT);
@@ -28,9 +29,26 @@ pub(crate) struct Packet {
 }
 impl Packet {
     pub fn new() -> Result<Self> {
-        let mut bytes = protocol::buffer(protocol::PACKET_LIMIT)?;
+        let mut bytes = protocol::buffer(PCM_BYTES)?;
         bytes.resize(PCM_BYTES, 0);
         Ok(Self { bytes, len: 0 })
+    }
+
+    /// Release transient large state-capture storage and return this packet to
+    /// its steady-state `PCM_BYTES` footprint.
+    pub fn shrink_to_pcm(&mut self) {
+        if self.bytes.capacity() > PCM_BYTES {
+            if let Ok(mut compact) = protocol::buffer(PCM_BYTES) {
+                compact.resize(PCM_BYTES, 0);
+                self.bytes = compact;
+            } else {
+                self.bytes.truncate(PCM_BYTES);
+                self.bytes.shrink_to(PCM_BYTES);
+            }
+        } else if self.bytes.len() > PCM_BYTES {
+            self.bytes.truncate(PCM_BYTES);
+        }
+        self.len = 0;
     }
 
     pub fn storage_bytes(&self) -> usize {
@@ -258,10 +276,15 @@ impl Channel {
                     }
                     wanted = 12 + n;
                     if wanted > out.bytes.len() {
-                        if wanted > out.bytes.capacity() {
+                        if wanted > protocol::PACKET_LIMIT {
                             return Err(Error::Protocol(
                                 "control frame exceeds packet reservation",
                             ));
+                        }
+                        if wanted > out.bytes.capacity() {
+                            out.bytes
+                                .try_reserve_exact(wanted - out.bytes.len())
+                                .map_err(|_| Error::Protocol("control frame allocation refused"))?;
                         }
                         out.bytes.resize(wanted, 0);
                     }
@@ -533,10 +556,9 @@ mod tests {
         }
     }
     #[test]
-    fn state_reply_uses_reserved_storage_beyond_the_initial_pcm_extent() {
+    fn state_reply_grows_beyond_pcm_on_demand_and_shrinks_back_to_pcm() {
         let mut packet = Packet::new().unwrap();
         let initial = packet.bytes.len();
-        let allocation = packet.bytes.as_ptr();
         assert_eq!(initial, PCM_BYTES);
         assert!(initial < protocol::PACKET_LIMIT / 2);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -555,9 +577,10 @@ mod tests {
             header[12..14].fill(protocol::MAX_PARAMETER_EDITS as u8);
             assert!(protocol::pcm_packet_extent(&header).unwrap() <= initial);
         }
-        assert_eq!(packet.storage_bytes(), protocol::PACKET_LIMIT);
+        assert_eq!(packet.storage_bytes(), PCM_BYTES);
         let body = vec![0x5a; initial + 1];
         let frame = protocol::control(*b"HXVICS02", &body).unwrap();
+        let frame_len = frame.len();
         let (stream, mut peer) = UnixStream::pair().unwrap();
         let writer = std::thread::spawn(move || peer.write_all(&frame).unwrap());
         Channel::new(stream)
@@ -570,8 +593,11 @@ mod tests {
             .unwrap();
         writer.join().unwrap();
         assert_eq!(packet.body().unwrap(), body);
-        assert_eq!(packet.bytes.as_ptr(), allocation);
-        assert_eq!(packet.storage_bytes(), protocol::PACKET_LIMIT);
+        assert!(packet.storage_bytes() >= frame_len);
+        packet.shrink_to_pcm();
+        assert_eq!(packet.storage_bytes(), PCM_BYTES);
+        assert_eq!(packet.bytes.len(), PCM_BYTES);
+        assert_eq!(packet.len, 0);
     }
 
     #[test]

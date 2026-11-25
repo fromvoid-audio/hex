@@ -210,6 +210,7 @@ impl Prepared {
             }
             let facts =
                 protocol::quiescent_facts(self.packet.body()?, &self.config, self.sequence)?;
+            self.packet.shrink_to_pcm();
             self.require_live_epoch()?;
             Ok(facts)
         })();
@@ -290,6 +291,7 @@ impl Quiescent {
                 self.instance.sequence,
                 operation,
             )?;
+            self.instance.packet.shrink_to_pcm();
             self.instance.require_live_epoch()?;
             self.facts = facts;
             self.reactivate_sequence = operation;
@@ -396,8 +398,10 @@ impl Quiescent {
                     operation,
                 )?)
             } else {
+                self.instance.packet.shrink_to_pcm();
                 return Err(Error::Protocol("missing actual capture acknowledgement"));
             };
+            self.instance.packet.shrink_to_pcm();
             self.instance.require_live_epoch()?;
             check()?;
             self.capture_sequence = operation;
@@ -566,6 +570,7 @@ impl Quiescent {
                 self.facts,
                 presentation,
             )?;
+            self.instance.packet.shrink_to_pcm();
             self.instance.require_live_epoch()?;
             Ok((config, applied))
         })();
