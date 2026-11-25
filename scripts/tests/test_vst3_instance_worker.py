@@ -550,6 +550,34 @@ class NativeInstanceTests(unittest.TestCase):
         session.frames += 8
         self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
 
+    def test_pitch_bend_preserves_center_low_byte_and_channel_assignment(self):
+        session = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD05")
+        notes = [(0, 0x92, 60, 127), (0, 0xe1, 0, 0), (1, 0xe2, 127, 127),
+                 (2, 0xe1, 9, 32), (4, 0xe1, 0, 64), (6, 0xe1, 127, 127),
+                 (7, 0x82, 60, 0)]
+        magic, reply = self.instrument_block(session, notes)
+        self.assertEqual(magic, b"HXVB")
+        low = (32 * 128 + 9) / 8192  # Fixture gain is twice the normalized parameter.
+        curve = [0, low / 2, low, (low + 1) / 2, 1, 1.5, 2, 0]
+        for actual, expected in zip(struct.unpack_from("<16f", reply, 64),
+                                    (v for frame in curve for v in (frame, frame))):
+            self.assertAlmostEqual(actual, expected, places=6)
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
+    def test_malformed_pitch_bend_refuses_before_instrument_processing(self):
+        for width, high, identity in [(2, 64, 0), (3, 128, 0), (3, 64, 41)]:
+            with self.subTest(width=width, high=high, identity=identity):
+                session = self.session(variant=145, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD05")
+                header = bytearray(session.packet(8))
+                struct.pack_into("<HHH", header, 4, 3, 8, 1)
+                event = struct.pack("<HBBBB2xI", 0, width, 0xe1, 9, high, identity)
+                session.socket.sendall(header + bytes(64) + event)
+                self.error(session, 8)
+                self.terminal(session, 8)
+                self.assertEqual(self.observation()[10], 0)
+
     def test_controller_remap_moves_pressure_to_the_new_channel(self):
         release = self.root / "remap-pressure"
         with patch.dict(os.environ, {"HEX_ORIGINAL_INSTANCE_RELEASE": str(release)}):

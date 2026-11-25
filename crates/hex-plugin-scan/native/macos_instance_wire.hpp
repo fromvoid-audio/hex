@@ -7,6 +7,7 @@
 #include "macos_editor_touch.hpp"
 #include "macos_parameter_page.hpp"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
+#include "public.sdk/source/vst/utility/midiconvert.h"
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -231,9 +232,9 @@ struct Packet {
     uint32_t dense_id=0,dense_steps=0;
     std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
-    struct ChannelPressure { uint16_t offset; uint8_t channel,value; };
-    std::array<ChannelPressure,hex_instance::LEGACY_INPUT_NOTE_COUNT> pressures{};
-    size_t note_count=0,pressure_count=0;
+    struct ControllerPoint { uint16_t offset; uint8_t channel; bool bend; double normalized; };
+    std::array<ControllerPoint,hex_instance::LEGACY_INPUT_NOTE_COUNT> controllers{};
+    size_t note_count=0,controller_count=0;
     size_t parameter_count=0;
     size_t reply_parameter_count=0,timing_change_count=0;
     bool reply_parameters_coalesced=false;
@@ -400,7 +401,7 @@ struct Packet {
         for(size_t n=0;n<frames*2u;++n) if(!std::isfinite(sample(p+header_size+n*4))) return -1;
         const auto* payload=p+header_size+frames*8;
         const auto event_count=note_count;
-        note_count=0;pressure_count=0;
+        note_count=0;controller_count=0;
         uint64_t previous_offset=0;
         for (size_t n=0;n<event_count;++n) {
             const auto* raw=payload+n*note_bytes;
@@ -412,9 +413,12 @@ struct Packet {
                 (dense_notes && !note_id) ||
                 note_id>static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) return -1;
             previous_offset=offset;
-            if(status==0xd0) {
-                if(raw[2]!=2 || raw[5] || note_id || pressure_count>=pressures.size()) return -1;
-                pressures[pressure_count++]={static_cast<uint16_t>(offset),static_cast<uint8_t>(raw[3]&15),raw[4]};
+            if(status==0xd0 || status==0xe0) {
+                const bool bend=status==0xe0;
+                if(raw[2]!=(bend?3:2) || (!bend && raw[5]) || note_id || controller_count>=controllers.size()) return -1;
+                const double value=bend?Steinberg::Vst::midi14BitToNormalized<double>(raw[4]|(raw[5]<<7)):
+                    static_cast<double>(raw[4])/127.0;
+                controllers[controller_count++]={static_cast<uint16_t>(offset),static_cast<uint8_t>(raw[3]&15),bend,value};
                 continue;
             }
             if(raw[2]!=3 || (status!=0x80 && status!=0x90 && status!=0xa0)) return -1;
