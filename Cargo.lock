@@ -2738,6 +2738,7 @@ dependencies = [
  "hex-lattice-contract",
  "hex-plugin-scan",
  "hex-plugin-state",
+ "hex-shm-ring",
  "rtrb",
  "rustix 1.1.5",
 ]
@@ -2814,6 +2815,13 @@ dependencies = [
  "hex-storage",
  "hex-tuning",
  "serde_json",
+]
+
+[[package]]
+name = "hex-shm-ring"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

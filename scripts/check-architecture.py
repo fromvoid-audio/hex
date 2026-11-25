@@ -69,7 +69,7 @@ DEV_ALLOWED = {
     'hex-audio': {'hex-project', 'hex-storage', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
-BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
+BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'hex-shm-ring': {'hex-plugin-host'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
               'gpui_platform': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
               # Safe macOS joining-transport scheduling, never callback calls.

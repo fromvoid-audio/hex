@@ -50,6 +50,30 @@ impl PreparedOutput {
         open_prepared(expected_sample_rate, lease, PreparedOutputKind::Legacy)?.into_legacy()
     }
 }
+/// Supported plugin bridge quantum sizes in project frames.
+/// Lower quanta reduce the 2-quantum out-of-process bridge round-trip latency
+/// (128 frames at 64-frame quantum, 256 at 128, 512 at 256).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PluginBridgeQuantum {
+    Frames64 = 64,
+    Frames128 = 128,
+    #[default]
+    Frames256 = 256,
+}
+impl PluginBridgeQuantum {
+    pub const fn frames(self) -> u16 {
+        self as u16
+    }
+    pub const fn from_frames(frames: u16) -> Option<Self> {
+        match frames {
+            64 => Some(Self::Frames64),
+            128 => Some(Self::Frames128),
+            256 => Some(Self::Frames256),
+            _ => None,
+        }
+    }
+}
+
 /// Explicit output construction policy. Ordinary outputs preserve the device
 /// default; only a plugin-capable open requests the bridge's finite buffer
 /// profile. This is an off-callback request, never proof of actual delivery.
@@ -58,6 +82,18 @@ pub enum WorkerOutputProfile {
     #[default]
     DeviceDefault,
     PluginBridge,
+    /// Plugin bridge capped at an explicit 64, 128, or 256-frame quantum even
+    /// when the device uses default or larger hardware buffers.
+    PluginBridgeQuantum(PluginBridgeQuantum),
+}
+impl WorkerOutputProfile {
+    pub const fn bridge_quantum(self) -> Option<u16> {
+        match self {
+            Self::DeviceDefault => None,
+            Self::PluginBridge => Some(hex_plugin_host::transport::MAX_FRAMES as u16),
+            Self::PluginBridgeQuantum(quantum) => Some(quantum.frames()),
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PreparedOutputKind {
@@ -76,20 +112,22 @@ struct BridgeStreamPlan {
 }
 
 impl PreparedOutputKind {
+    fn bridge_quantum(self) -> Option<u16> {
+        match self {
+            Self::Legacy => None,
+            Self::Worker(profile) | Self::WorkerReliable(profile) => profile.bridge_quantum(),
+        }
+    }
+
     fn bridge_stream_plan(
         self,
         supported: cpal::SupportedBufferSize,
         device_rate: u32,
         project_rate: u32,
     ) -> Result<Option<BridgeStreamPlan>, String> {
-        if !matches!(
-            self,
-            Self::Worker(WorkerOutputProfile::PluginBridge)
-                | Self::WorkerReliable(WorkerOutputProfile::PluginBridge)
-        ) {
+        let Some(quantum) = self.bridge_quantum() else {
             return Ok(None);
-        }
-        let quantum = hex_plugin_host::transport::MAX_FRAMES as u16;
+        };
         if device_rate == project_rate {
             let device_frames = bridge_callback_request(supported, u32::from(quantum), false)?;
             return Ok(Some(BridgeStreamPlan {
@@ -148,18 +186,12 @@ fn negotiate_output_buffer_plan(
             "output device does not support {req} frame buffer (supported {min}..={max})"
         ));
     }
-    let is_bridge = matches!(
-        kind,
-        PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
-            | PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
-    );
-    if !is_bridge {
+    let Some(quantum) = kind.bridge_quantum() else {
         return Ok(NegotiatedBufferPlan {
             hardware_buffer: Some(req),
             bridge: None,
         });
-    }
-    let quantum = hex_plugin_host::transport::MAX_FRAMES as u16;
+    };
     if device_rate == project_rate {
         if req <= u32::from(quantum) {
             let frames = u16::try_from(req)
@@ -1777,6 +1809,58 @@ mod tests {
             hex_plugin_host::transport::MAX_FRAMES as u16
         );
         assert_eq!(bridge_large.bridge.unwrap().device_frames, None);
+
+        // Explicit 64, 128, and 256-frame plugin bridge quanta configure matching
+        // hardware buffers when no buffer size is forced, and sub-slice larger
+        // hardware buffers (e.g. 512) cleanly down to the selected quantum.
+        use super::PluginBridgeQuantum;
+        for quantum in [
+            PluginBridgeQuantum::Frames64,
+            PluginBridgeQuantum::Frames128,
+            PluginBridgeQuantum::Frames256,
+        ] {
+            let profile = WorkerOutputProfile::PluginBridgeQuantum(quantum);
+            assert_eq!(
+                PluginBridgeQuantum::from_frames(quantum.frames()),
+                Some(quantum)
+            );
+            let default_plan = negotiate_output_buffer_plan(
+                range,
+                None,
+                PreparedOutputKind::WorkerReliable(profile),
+                48_000,
+                48_000,
+            )
+            .unwrap();
+            assert_eq!(
+                default_plan.hardware_buffer,
+                Some(u32::from(quantum.frames()))
+            );
+            assert_eq!(
+                default_plan.bridge.unwrap().project_quantum,
+                quantum.frames()
+            );
+            assert_eq!(
+                default_plan.bridge.unwrap().device_frames,
+                Some(quantum.frames())
+            );
+
+            let subsliced_plan = negotiate_output_buffer_plan(
+                range,
+                Some(512),
+                PreparedOutputKind::WorkerReliable(profile),
+                48_000,
+                48_000,
+            )
+            .unwrap();
+            assert_eq!(subsliced_plan.hardware_buffer, Some(512));
+            assert_eq!(
+                subsliced_plan.bridge.unwrap().project_quantum,
+                quantum.frames()
+            );
+            assert_eq!(subsliced_plan.bridge.unwrap().device_frames, None);
+        }
+        assert_eq!(PluginBridgeQuantum::from_frames(96), None);
     }
 
     #[cfg(feature = "allocation-probe")]

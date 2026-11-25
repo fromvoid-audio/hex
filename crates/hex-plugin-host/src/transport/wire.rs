@@ -51,31 +51,30 @@ pub fn write(writer: &mut impl Write, block: &Block) -> io::Result<()> {
     write_with_parameters(writer, block, None, None, None)
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn write_authored(
-    writer: &mut impl Write,
-    block: &Block,
-    manual_parameter: Option<ParameterPoint>,
-    step_count: &dyn Fn(u32) -> Option<u32>,
-) -> io::Result<()> {
-    write_with_parameters(writer, block, Some(step_count), manual_parameter, None)
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+pub(crate) fn encode_into_slice(dst: &mut [u8], block: &Block) -> io::Result<usize> {
+    encode_with_parameters_into_slice(dst, block, None, None, None)
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub(crate) fn write_dense_authored(
-    writer: &mut impl Write,
+pub(crate) fn encode_authored_into_slice(
+    dst: &mut [u8],
+    block: &Block,
+    manual_parameter: Option<ParameterPoint>,
+    step_count: &dyn Fn(u32) -> Option<u32>,
+) -> io::Result<usize> {
+    encode_with_parameters_into_slice(dst, block, Some(step_count), manual_parameter, None)
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub(crate) fn encode_dense_authored_into_slice(
+    dst: &mut [u8],
     block: &Block,
     lane: DenseParameterLane<'_>,
     manual_parameter: Option<ParameterPoint>,
     step_count: &dyn Fn(u32) -> Option<u32>,
-) -> io::Result<()> {
-    write_with_parameters(
-        writer,
-        block,
-        Some(step_count),
-        manual_parameter,
-        Some(lane),
-    )
+) -> io::Result<usize> {
+    encode_with_parameters_into_slice(dst, block, Some(step_count), manual_parameter, Some(lane))
 }
 
 fn write_with_parameters(
@@ -85,6 +84,20 @@ fn write_with_parameters(
     manual_parameter: Option<ParameterPoint>,
     dense: Option<DenseParameterLane<'_>>,
 ) -> io::Result<()> {
+    let mut packet = [0_u8; MAX_DENSE_PACKET_BYTES];
+    let len =
+        encode_with_parameters_into_slice(&mut packet, block, step_count, manual_parameter, dense)?;
+    writer.write_all(&packet[..len])?;
+    writer.flush()
+}
+
+fn encode_with_parameters_into_slice(
+    packet: &mut [u8],
+    block: &Block,
+    step_count: Option<&dyn Fn(u32) -> Option<u32>>,
+    manual_parameter: Option<ParameterPoint>,
+    dense: Option<DenseParameterLane<'_>>,
+) -> io::Result<usize> {
     if block.frames == 0 || usize::from(block.frames) > MAX_FRAMES {
         return Err(invalid());
     }
@@ -101,8 +114,6 @@ fn write_with_parameters(
     {
         return Err(invalid());
     }
-    let mut packet = [0_u8; MAX_PACKET_BYTES];
-    packet[..4].copy_from_slice(b"HXVB");
     let dense_steps = dense
         .map(|lane| {
             if !lane.valid(usize::from(block.frames))
@@ -163,6 +174,29 @@ fn write_with_parameters(
         } else {
             0
         };
+    let event_width = if version >= 3 { 12 } else { 8 };
+    let param_width = if step_count.is_some() { 20 } else { 16 };
+    let timing_bytes = block.timing.map_or(0, |_| timing_width(version));
+    let dense_bytes = if dense.is_some() {
+        DENSE_PARAMETER_HEADER_BYTES + usize::from(block.frames) * 8
+    } else {
+        0
+    };
+    let total_len = HEADER_BYTES
+        + usize::from(block.frames) * 8
+        + block.events.as_slice().len() * event_width
+        + points.len() * param_width
+        + timing_bytes
+        + changes.len() * TIMING_CHANGE_BYTES
+        + dense_bytes;
+    if packet.len() < total_len {
+        return Err(io::Error::new(
+            io::ErrorKind::WriteZero,
+            "destination slice smaller than encoded pcm packet",
+        ));
+    }
+    packet[..HEADER_BYTES].fill(0);
+    packet[..4].copy_from_slice(b"HXVB");
     packet[4..6].copy_from_slice(&wire_version.to_le_bytes());
     packet[6..8].copy_from_slice(&block.frames.to_le_bytes());
     packet[8..10].copy_from_slice(&(block.events.len as u16).to_le_bytes());
@@ -196,6 +230,7 @@ fn write_with_parameters(
         packet[offset + 2] = event.len;
         packet[offset + 3..offset + 6].copy_from_slice(&event.bytes);
         packet[offset + 6] = u8::from(event.is_live);
+        packet[offset + 7] = 0;
         offset += 8;
         if version >= 3 {
             let id = event.note_id.map_or(0, std::num::NonZeroU32::get);
@@ -205,8 +240,9 @@ fn write_with_parameters(
     }
     for (index, point) in points.iter().enumerate() {
         let manual = index == 0 && manual_parameter.is_some();
-        packet[offset + 2] = u8::from(manual);
         packet[offset..offset + 2].copy_from_slice(&point.frame.to_le_bytes());
+        packet[offset + 2] = u8::from(manual);
+        packet[offset + 3] = 0;
         packet[offset + 4..offset + 8].copy_from_slice(&point.id.to_le_bytes());
         packet[offset + 8..offset + 16].copy_from_slice(&point.normalized.to_le_bytes());
         offset += 16;
@@ -224,10 +260,12 @@ fn write_with_parameters(
     }
     if let Some(timing) = block.timing {
         let width = timing_width(version);
+        packet[offset..offset + width].fill(0);
         encode_timing(&mut packet[offset..offset + width], timing);
         offset += width;
     }
     for change in changes {
+        packet[offset..offset + TIMING_CHANGE_BYTES].fill(0);
         packet[offset..offset + 2].copy_from_slice(&change.frame.to_le_bytes());
         encode_timing(
             &mut packet[offset + 8..offset + TIMING_CHANGE_BYTES],
@@ -235,19 +273,18 @@ fn write_with_parameters(
         );
         offset += TIMING_CHANGE_BYTES;
     }
-    writer.write_all(&packet[..offset])?;
     if let Some((lane, steps)) = dense.zip(dense_steps) {
-        let mut payload = [0_u8; DENSE_PARAMETER_HEADER_BYTES + MAX_FRAMES * 8];
-        payload[..4].copy_from_slice(&lane.id.to_le_bytes());
-        payload[4..DENSE_PARAMETER_HEADER_BYTES].copy_from_slice(&steps.to_le_bytes());
-        let mut offset = DENSE_PARAMETER_HEADER_BYTES;
+        packet[offset..offset + 4].copy_from_slice(&lane.id.to_le_bytes());
+        packet[offset + 4..offset + DENSE_PARAMETER_HEADER_BYTES]
+            .copy_from_slice(&steps.to_le_bytes());
+        offset += DENSE_PARAMETER_HEADER_BYTES;
         for value in lane.normalized {
-            payload[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            packet[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
             offset += 8;
         }
-        writer.write_all(&payload[..offset])?;
     }
-    writer.flush()
+    debug_assert_eq!(offset, total_len);
+    Ok(offset)
 }
 
 fn timing_width(version: u16) -> usize {

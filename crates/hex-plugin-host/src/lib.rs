@@ -18,8 +18,10 @@
 //! Uses hex-plugin-scan's fresh source/helper provenance, hex-plugin-state's
 //! strict provider codec and hex-lattice-contract's immutable state envelope.
 //! Owns the bounded copied transport vocabulary/rings independently of native
-//! output. std and rustix event-only readiness serve control/worker I/O;
-//! there are no process-global handlers or rustix process APIs in this client.
+//! output. On Unix, uses the narrow excluded `hex-shm-ring` adapter for bounded
+//! shared-memory PCM ring buffers and `rustix` event-only readiness for
+//! control/worker I/O; there are no process-global handlers or rustix process
+//! APIs in this client.
 //!
 //! # Does not own
 //! No SDK ABI/pointers, unsafe Rust, native device/callback, worker scheduling, canonical

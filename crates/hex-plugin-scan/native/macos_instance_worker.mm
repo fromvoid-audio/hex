@@ -405,6 +405,8 @@ int main(int argc,char** argv) {
     if(argc!=1 && !supervised) return Configuration;
     const auto* transport_space=std::getenv("HEX_VST3_TRANSPORT_SPACE");
     const bool reserve_space=supervised && !offline && transport_space && !std::strcmp(transport_space,"1");
+    const auto* shm_ring_env=std::getenv("HEX_VST3_SHM_RING");
+    const bool use_shm_ring=supervised && shm_ring_env && !std::strcmp(shm_ring_env,"1");
     const auto process_mode=offline?kOffline:kRealtime;
     // The joining host reserves one paired slot for this native child.
     const auto* deadline_admitted=std::getenv("HEX_VST3_WORKER_DEADLINE_ADMITTED");
@@ -429,6 +431,7 @@ int main(int argc,char** argv) {
     const auto* message_diagnostics=std::getenv("HEX_VST3_MESSAGE_DIAGNOSTICS");
     const bool trace_messages=message_diagnostics && !std::strcmp(message_diagnostics,"1");
     Module module;hex_instance::Instance instance;
+    hex_instance_shm::ShmRing shm_ring;
     hex_instance::EditorWindow editor(supervised?::getppid():0);
     std::optional<wire::Config> config;
     uint32_t failure=Configuration;bool accepted=false,normal_stop=false;
@@ -444,6 +447,7 @@ int main(int argc,char** argv) {
         try {
             auto request=wire::configuration(channel);config.emplace(request);
             const auto restoration=wire::startup(channel,*config);
+            if(use_shm_ring && !shm_ring.recv_and_map(channel)) { failure=ProtocolFailure;throw Refusal{}; }
             failure=Admission;module.open(*config);
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
@@ -1135,7 +1139,8 @@ int main(int argc,char** argv) {
                             audio_ready=true;
                         }
                         worker_in_poll.store(false,std::memory_order_release);
-                        const auto received=packet.read(channel,*config,blocks,frames);
+                        const auto* active_shm=shm_ring.active()?&shm_ring:nullptr;
+                        const auto received=packet.read(channel,*config,blocks,frames,true,nullptr,nullptr,active_shm);
                         if(received==2 || received==3) { deadline.end_stream(); deadline.leave(); }
                         if(worker_failure.load()) break;
                         // A late End is not DSP work. Retire its pending
@@ -1464,7 +1469,7 @@ int main(int argc,char** argv) {
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
                         flush_pending_feedback_to_main();
-                        if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
+                        if(!packet.write(channel,active_shm)) { worker_failure.store(Cancelled);break; }
                         deadline.pcm_replied();
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
                         slice_clock.replied(blocks);

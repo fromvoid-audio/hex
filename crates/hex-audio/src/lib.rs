@@ -56,7 +56,7 @@ pub mod sample_preview;
 pub mod sample_recording;
 #[cfg(target_os = "macos")]
 pub use device::PluginOutputObservation;
-pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
+pub use device::{PluginBridgeQuantum, PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,
     audio_lifecycle_failure, request_initial_open, request_recovery_open, request_worker_open,
