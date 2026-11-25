@@ -234,6 +234,10 @@ impl NativeWorker {
             .completed
             .parameter_change_requested
             .store(false, Release);
+        self.reaper
+            .completed
+            .idle_parameter_change_requested
+            .store(false, Release);
         Ok(match terminal {
             Some(Terminal::Processed(value)) => NativeWorkerParameterProgress::Processed(value),
             Some(Terminal::Flushed) => NativeWorkerParameterProgress::Flushed,
@@ -479,6 +483,13 @@ impl NativeWorker {
             .completed
             .parameter_change_requested
             .store(true, Release);
+        if intent == Intent::Idle {
+            self.reaper
+                .completed
+                .idle_parameter_change_requested
+                .store(true, Release);
+            self.reaper.wake_worker();
+        }
         Ok((request, reserved))
     }
 
@@ -511,6 +522,10 @@ impl NativeWorker {
         self.reaper
             .completed
             .parameter_change_requested
+            .store(false, Release);
+        self.reaper
+            .completed
+            .idle_parameter_change_requested
             .store(false, Release);
         Ok(true)
     }
@@ -701,6 +716,7 @@ impl State {
             }
             slot.phase = Phase::InFlight;
             signal.parameter_change_requested.store(false, Release);
+            signal.idle_parameter_change_requested.store(false, Release);
             (slot.ordinal, slot.point)
         };
         let Some(Processor::Native(instance)) = self.processor.as_mut() else {

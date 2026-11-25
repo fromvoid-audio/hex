@@ -76,6 +76,7 @@ pub use hex_plugin_host::protocol::StateCaptureRefusal;
 // The callback never sees the capture mailbox or takes its mutex.
 struct Signal {
     blocks: AtomicU64,
+    wakeups: AtomicU64,
     offline: Option<OfflineProgress>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     editor_plan: EditorPlanSignal,
@@ -95,6 +96,8 @@ struct Signal {
     slow_exchange_dropped: AtomicU64,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change_requested: std::sync::atomic::AtomicBool,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    idle_parameter_change_requested: std::sync::atomic::AtomicBool,
 }
 #[derive(Default)]
 struct OfflineProgress {
@@ -102,114 +105,19 @@ struct OfflineProgress {
     changed: std::sync::Condvar,
 }
 
-// The private render owner can wake a parked worker after dispatch. A timeout
-// also lets both sides check revocation, cancellation, or a failed worker.
+// The private render owner and callback submission wake a parked worker
+// immediately on new work or revocation. Bounded timeouts keep idle deadline
+// restoration and safety liveness checks responsive with ~20 wakeups/sec max.
 const OFFLINE_IDLE: Duration = Duration::from_millis(10);
 const LIVE_POLL: Duration = Duration::from_micros(50);
 const QUIET_TRANSPORT: Duration = Duration::from_millis(40);
-const LIVE_IDLE_POLL: Duration = Duration::from_millis(1);
-
-// Keep fast polling during ordinary PCM delivery. A stopped instance still
-// checks revocation, input and control work every millisecond without a
-// callback wake or another handoff.
-fn live_poll_wait(
-    empty_since: &mut Option<Instant>,
-    now: Instant,
-    active_poll: Duration,
-) -> Duration {
-    if now.saturating_duration_since(*empty_since.get_or_insert(now)) >= QUIET_TRANSPORT {
-        LIVE_IDLE_POLL
-    } else {
-        active_poll
-    }
-}
-
-/// Pure worker-side cadence tracker that avoids waking realtime transport
-/// threads dozens of times mid-quantum once paced hardware delivery is
-/// established, while preserving fine `active_poll` pickup during the arrival
-/// window, unpaced/burst runs, and pending control work.
-struct LivePollCadence {
-    period: Option<Duration>,
-    last_pickup: Option<Instant>,
-    paced_blocks: u8,
-}
-
-impl LivePollCadence {
-    fn new(period: Option<Duration>) -> Self {
-        Self {
-            period: period.filter(|period| *period >= Duration::from_millis(2)),
-            last_pickup: None,
-            paced_blocks: 0,
-        }
-    }
-
-    fn record_pickup(&mut self, now: Instant) {
-        if let (Some(period), Some(previous)) = (self.period, self.last_pickup) {
-            let gap = now.saturating_duration_since(previous);
-            if gap >= period / 2 && gap <= period * 2 {
-                self.paced_blocks = self.paced_blocks.saturating_add(1).min(4);
-            } else {
-                self.paced_blocks = 0;
-            }
-        }
-        self.last_pickup = Some(now);
-    }
-
-    fn wait(
-        &self,
-        empty_since: &mut Option<Instant>,
-        now: Instant,
-        active_poll: Duration,
-        control_pending: bool,
-    ) -> Duration {
-        let base = live_poll_wait(empty_since, now, active_poll);
-        if base != active_poll || control_pending || self.paced_blocks < 2 {
-            return base;
-        }
-        let (Some(period), Some(last_pickup)) = (self.period, self.last_pickup) else {
-            return base;
-        };
-        let lead = (period / 8).clamp(Duration::from_micros(400), Duration::from_millis(1));
-        let Some(expected_next) = last_pickup.checked_add(period) else {
-            return base;
-        };
-        let Some(coarse_target) = expected_next.checked_sub(lead) else {
-            return base;
-        };
-        if let Some(remaining) = coarse_target.checked_duration_since(now)
-            && remaining > active_poll
-        {
-            remaining.min(period / 2)
-        } else {
-            base
-        }
-    }
-}
-
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-fn native_quantum_period(quantum: u16, sample_rate: f64) -> Option<Duration> {
-    if !sample_rate.is_finite() || sample_rate <= 0.0 || quantum == 0 {
-        return None;
-    }
-    Duration::try_from_secs_f64(f64::from(quantum) / sample_rate).ok()
-}
-
-// Give active workers more pickup opportunities under scheduling contention
-// by polling at most one sixty-fourth of a native quantum, subject to the
-// existing wait bounds. The quiet-window backoff still owns idle cadence.
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-fn native_active_poll(quantum: u16, sample_rate: f64) -> Duration {
-    if !sample_rate.is_finite() || sample_rate <= 0.0 {
-        return LIVE_POLL;
-    }
-    let micros = f64::from(quantum) * (1_000_000.0 / 64.0) / sample_rate;
-    Duration::from_micros(micros.clamp(50.0, 250.0) as u64)
-}
+const LIVE_EVENT_IDLE_PARK: Duration = Duration::from_millis(50);
 
 impl Signal {
     fn new(offline: bool) -> Self {
         Self {
             blocks: AtomicU64::new(0),
+            wakeups: AtomicU64::new(0),
             offline: offline.then(OfflineProgress::default),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             editor_plan: EditorPlanSignal::default(),
@@ -229,6 +137,8 @@ impl Signal {
             slow_exchange_dropped: AtomicU64::new(0),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            idle_parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -417,37 +327,40 @@ struct State {
     editor_lost: Option<std::num::NonZeroU64>,
 }
 impl State {
-    fn active_poll(&self) -> Duration {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some(Processor::Native(instance)) = &self.processor {
-            let configuration = instance.configuration();
-            return native_active_poll(configuration.quantum, configuration.sample_rate);
-        }
-        LIVE_POLL
-    }
-
-    fn quantum_period(&self) -> Option<Duration> {
-        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-        if let Some(Processor::Native(instance)) = &self.processor {
-            let configuration = instance.configuration();
-            return native_quantum_period(configuration.quantum, configuration.sample_rate);
-        }
-        None
-    }
-
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    fn has_pending_control(&self, signal: &Signal) -> bool {
-        signal.capture_requested.load(Acquire)
-            || self.capture.is_in_flight()
-            || signal.controller_requested.load(Acquire)
-            || self.controller.is_in_flight()
+    fn has_ready_worker_control(&self, signal: &Signal) -> bool {
+        (signal.capture_requested.load(Acquire) && !self.capture.between_polls())
+            || (signal.controller_requested.load(Acquire) && !self.controller.between_polls())
             || signal.edits_requested.load(Acquire)
-            || signal.parameter_change_requested.load(Acquire)
+            || signal.idle_parameter_change_requested.load(Acquire)
     }
 
     #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-    fn has_pending_control(&self, _signal: &Signal) -> bool {
+    fn has_ready_worker_control(&self, _signal: &Signal) -> bool {
         false
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn next_control_poll_wait(&self, now: Instant) -> Option<Duration> {
+        let mut soonest: Option<Duration> = None;
+        for poll_after in [
+            self.capture.next_poll_after(),
+            self.controller.next_poll_after(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let remaining = poll_after
+                .saturating_duration_since(now)
+                .max(Duration::from_millis(1));
+            soonest = Some(soonest.map_or(remaining, |current| current.min(remaining)));
+        }
+        soonest
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    fn next_control_poll_wait(&self, _now: Instant) -> Option<Duration> {
+        None
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -604,13 +517,17 @@ impl Reaper {
     }
     pub fn revoke(&self) {
         self.control.revoke();
-        self.wake_offline();
+        self.wake_worker();
+    }
+    pub(super) fn wake_worker(&self) {
+        self.control.wake_worker();
+        if let Some(join) = &self.join {
+            join.thread().unpark();
+        }
     }
     fn wake_offline(&self) {
-        if self.completed.offline.is_some()
-            && let Some(join) = &self.join
-        {
-            join.thread().unpark();
+        if self.completed.offline.is_some() {
+            self.wake_worker();
         }
     }
 
@@ -777,12 +694,12 @@ fn transport_runner_with_setup(
 ) -> impl FnOnce() -> Completion + Send + 'static {
     move || {
         let mut fault = None;
-        let (active_poll, quantum_period) = match guard.owner_mut() {
+        match guard.owner_mut() {
             Some(state) => {
                 if let Err(error) = setup(state) {
                     return Completion { fault: Some(error) };
                 }
-                (state.active_poll(), state.quantum_period())
+                state.worker.register_wakeup_thread();
             }
             None => {
                 return Completion {
@@ -790,8 +707,6 @@ fn transport_runner_with_setup(
                 };
             }
         };
-        let mut empty_since = None;
-        let mut cadence = LivePollCadence::new(quantum_period);
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         let mut deadline = if published.offline.is_none() {
             guard
@@ -820,13 +735,12 @@ fn transport_runner_with_setup(
                     manual_origin_available,
                     editor_scope,
                 })) => {
-                    empty_since = None;
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     if let Some(deadline) = &mut deadline {
                         deadline.enter();
                     }
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let pickup_now = Instant::now();
-                    cadence.record_pickup(pickup_now);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let empty_poll_to_pickup_ns = last_empty_poll
                         .take()
@@ -973,25 +887,36 @@ fn transport_runner_with_setup(
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     state.record_empty_pcm_poll();
                     if published.offline.is_some() {
-                        thread::park_timeout(OFFLINE_IDLE);
+                        state.worker.park_timeout(OFFLINE_IDLE, || false);
                     } else {
                         let now = Instant::now();
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-                        if let Some(deadline) = &mut deadline {
+                        let deadline_wait = if let Some(deadline) = &mut deadline {
                             deadline.after_empty_poll(now);
-                        }
+                            deadline.remaining_live_window(now)
+                        } else {
+                            None
+                        };
+                        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                        let deadline_wait: Option<Duration> = None;
                         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                         if matches!(state.processor, Some(Processor::Native(_))) {
                             last_empty_poll = Some(now);
                         }
-                        let control_pending = state.has_pending_control(&published);
-                        thread::sleep(cadence.wait(
-                            &mut empty_since,
-                            now,
-                            active_poll,
-                            control_pending,
-                        ));
+                        let mut wait = LIVE_EVENT_IDLE_PARK;
+                        if let Some(control_wait) = state.next_control_poll_wait(now) {
+                            wait = wait.min(control_wait);
+                        }
+                        if let Some(live_wait) = deadline_wait {
+                            wait = wait.min(live_wait.max(Duration::from_millis(1)));
+                        }
+                        state
+                            .worker
+                            .park_timeout(wait, || state.has_ready_worker_control(&published));
                     }
+                    published
+                        .wakeups
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(Fault::Revoked) => break,
                 Err(error) => {
@@ -1048,6 +973,8 @@ pub struct NativeWorker {
     editor_edits_sealed: bool,
     grouped_editor_callbacks: bool,
     source_storage: Option<hex_plugin_host::native::PreparedStorage>,
+    control_client: Option<Box<hex_plugin_host::native::ControlClient>>,
+    control_error: Option<hex_plugin_host::Error>,
 }
 /// Actual native process retirement after joining its transport worker. A
 /// processing/stop failure remains explicit even when cancellation reaps the
@@ -1070,6 +997,50 @@ impl NativeWorker {
     }
     pub fn binding(&self) -> Binding {
         self.binding
+    }
+
+    pub(super) fn record_control_failure(
+        &mut self,
+        _exchange: &str,
+        error: hex_plugin_host::Error,
+    ) {
+        let bundle = self
+            .control_client
+            .as_deref()
+            .and_then(|client| std::path::Path::new(client.bundle_path()).file_name())
+            .unwrap_or_default()
+            .to_os_string();
+        if let Some(client) = self.control_client.as_mut() {
+            client.cancel_native();
+        }
+        let message = format!(
+            "vst3 worker failed: exchange=control bundle={bundle:?} binding={:?} cause={error}",
+            self.binding
+        );
+        if let Ok(mut diagnostic) = self.reaper.completed.failure_diagnostic.lock()
+            && diagnostic.is_none()
+        {
+            *diagnostic = Some(message);
+        }
+        if self.control_error.is_none() {
+            self.control_error = Some(error);
+        }
+        self.reaper.revoke();
+    }
+
+    pub(super) fn restore_control_client_into_joined_state(&mut self) {
+        if let Some(state) = self.reaper.worker.as_mut() {
+            if let Some(client) = self.control_client.take()
+                && let Some(Processor::Native(instance)) = state.processor.as_mut()
+            {
+                instance.restore_control_client_on_control(client);
+            }
+            if state.native_error.is_none()
+                && let Some(error) = self.control_error.take()
+            {
+                state.native_error = Some(error);
+            }
+        }
     }
 
     /// Enable exact editor observations on this original native worker's next
@@ -1312,6 +1283,7 @@ impl NativeWorker {
             ));
         }
         let joined = self.reaper.join_on_control();
+        self.restore_control_client_into_joined_state();
         let state = self
             .reaper
             .worker
@@ -1371,6 +1343,7 @@ impl NativeWorker {
         }
         self.retirement_requested = true;
         let joined = self.reaper.join_on_control();
+        self.restore_control_client_into_joined_state();
         let state = self
             .reaper
             .worker
@@ -1380,14 +1353,19 @@ impl NativeWorker {
             .native_error
             .take()
             .or_else(|| joined.err().map(|fault| Error::Protocol(fault.message())));
-        if failure.is_none() && (state.capture.is_in_flight() || state.controller.is_in_flight()) {
+        let Some(Processor::Native(instance)) = state.processor.as_mut() else {
+            return Err(Error::Protocol("native worker already returned its source"));
+        };
+        if failure.is_none()
+            && (state.capture.is_in_flight()
+                || state.controller.is_in_flight()
+                || instance.has_pending_control_capture_on_control()
+                || instance.has_pending_control_controller_on_control())
+        {
             // Retirement explicitly cancels the outstanding original request;
             // never send normal SDK Stop while the main lane owns it.
             failure = Some(Error::Cancelled);
         }
-        let Some(Processor::Native(instance)) = state.processor.as_mut() else {
-            return Err(Error::Protocol("native worker already returned its source"));
-        };
         if failure.is_none() {
             match instance.stop_and_reap_on_control() {
                 Ok(native) => return Ok(NativeWorkerRetirement { native, failure }),
@@ -1516,126 +1494,96 @@ mod tests {
     }
 
     #[test]
-    fn native_active_poll_tracks_the_admitted_quantum_with_bounded_waits() {
-        assert_eq!(native_active_poll(256, 44_100.0), Duration::from_micros(90));
-        assert_eq!(native_active_poll(256, 48_000.0), Duration::from_micros(83));
-        assert_eq!(native_active_poll(256, 96_000.0), LIVE_POLL);
-        assert_eq!(native_active_poll(64, 96_000.0), LIVE_POLL);
-        assert_eq!(native_active_poll(256, 8_000.0), Duration::from_micros(250));
-    }
+    fn event_driven_idle_worker_cuts_wakeups_by_over_10x_and_wakes_immediately_on_pcm() {
+        const QUANTUM: u16 = 256;
+        let (control, mut callback, worker) = channel(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            QUANTUM,
+        )
+        .unwrap();
+        let processor = Processor::Function(Box::new(Ok));
+        let mut reaper = spawn_processor_with(control, worker, processor, false, spawn_transport)
+            .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
 
-    #[test]
-    fn live_worker_backs_off_only_after_a_quiet_request_window() {
-        let start = Instant::now();
-        let mut empty_since = None;
-        assert_eq!(
-            live_poll_wait(&mut empty_since, start, LIVE_POLL),
-            LIVE_POLL
-        );
-        assert_eq!(
-            live_poll_wait(
-                &mut empty_since,
-                start + QUIET_TRANSPORT - LIVE_POLL,
-                LIVE_POLL
-            ),
-            LIVE_POLL
-        );
-        assert_eq!(
-            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
-            LIVE_IDLE_POLL
-        );
-        empty_since = None; // A new PCM request resets the quiet window.
-        assert_eq!(
-            live_poll_wait(&mut empty_since, start + QUIET_TRANSPORT, LIVE_POLL),
-            LIVE_POLL
-        );
-    }
-
-    #[test]
-    fn paced_cadence_coarsens_mid_quantum_waits_and_keeps_fine_arrival_polling() {
-        let period = native_quantum_period(256, 44_100.0).unwrap();
-        let active_poll = native_active_poll(256, 44_100.0);
-        let mut cadence = LivePollCadence::new(Some(period));
-        let t0 = Instant::now();
-        let mut empty_since = None;
-
-        // Startup and single-block bursts stay at fine active_poll.
-        cadence.record_pickup(t0);
-        assert_eq!(
-            cadence.wait(
-                &mut empty_since,
-                t0 + Duration::from_micros(300),
-                active_poll,
-                false
-            ),
-            active_poll
-        );
-        cadence.record_pickup(t0 + period);
-        assert_eq!(
-            cadence.wait(
-                &mut empty_since,
-                t0 + period + Duration::from_micros(300),
-                active_poll,
-                false
-            ),
-            active_poll
-        );
-
-        // Once two consecutive paced inter-arrivals are observed, mid-quantum
-        // sleeps coarsen to reduce RT timer wakeups while waking >= 725 us
-        // before the next expected callback.
-        let t2 = t0 + period * 2;
-        cadence.record_pickup(t2);
-        empty_since = None;
-        let first_wait = cadence.wait(
-            &mut empty_since,
-            t2 + Duration::from_micros(500),
-            active_poll,
-            false,
-        );
+        // Let the live worker sit idle for 150 ms. Under the old 1 ms idle / 50 us
+        // polling loop this caused 150-3000 wakeups; event-driven park stays <= 6.
+        thread::sleep(Duration::from_millis(150));
+        let idle_wakeups = reaper
+            .completed
+            .wakeups
+            .load(std::sync::atomic::Ordering::Relaxed);
         assert!(
-            first_wait >= Duration::from_millis(2) && first_wait <= period / 2,
-            "expected coarse mid-quantum wait, got {first_wait:?}"
+            idle_wakeups <= 8,
+            "expected >10x reduction in idle wakeups (<= 8 in 150 ms), got {idle_wakeups}"
         );
-        // Pending control work always bypasses coarse sleep.
-        assert_eq!(
-            cadence.wait(
-                &mut empty_since,
-                t2 + Duration::from_micros(500),
-                active_poll,
-                true
-            ),
-            active_poll
+
+        // Callback submission unparks the worker immediately (far below the 50 ms park timeout).
+        let mut output = [[0.0; 2]; QUANTUM as usize];
+        let submitted = Instant::now();
+        callback
+            .stage(&[[0.25; 2]; QUANTUM as usize], &[], &mut output)
+            .unwrap();
+        callback.finish(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while reaper.completed_blocks() < 1 {
+            assert!(Instant::now() < deadline, "worker did not wake on PCM");
+            thread::sleep(Duration::from_micros(200));
+        }
+        let pickup = submitted.elapsed();
+        assert!(
+            pickup < LIVE_EVENT_IDLE_PARK / 2,
+            "callback wakeup should not wait for idle park timeout, took {pickup:?}"
         );
-        // Inside the arrival lead window (~725 us before expected_next), fine
-        // polling resumes so pickup latency stays bounded by active_poll.
-        let lead_entry = t2 + period - Duration::from_micros(700);
-        assert_eq!(
-            cadence.wait(&mut empty_since, lead_entry, active_poll, false),
-            active_poll
+        reaper.join_on_control().unwrap();
+    }
+
+    #[test]
+    fn event_driven_active_worker_wakes_once_per_submitted_quantum() {
+        const QUANTUM: u16 = 256;
+        let (control, mut callback, worker) = channel(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            QUANTUM,
+        )
+        .unwrap();
+        let processor = Processor::Function(Box::new(Ok));
+        let mut reaper = spawn_processor_with(control, worker, processor, false, spawn_transport)
+            .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
+
+        // 10 quanta spaced 5 ms apart (~48 kHz live cadence = 50 ms total).
+        // Under the old 50-83 us polling loop this caused ~600-1000 wakeups.
+        let mut output = [[0.0; 2]; QUANTUM as usize];
+        for seq in 0..10_u64 {
+            callback
+                .stage(&[[0.5; 2]; QUANTUM as usize], &[], &mut output)
+                .unwrap();
+            callback.finish(true).unwrap();
+            let target = seq + 1;
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while reaper.completed_blocks() < target {
+                assert!(Instant::now() < deadline, "missed block {target}");
+                thread::sleep(Duration::from_micros(200));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        let active_wakeups = reaper
+            .completed
+            .wakeups
+            .load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            active_wakeups <= 25,
+            "expected >10x reduction in active wakeups (<= 25 for 10 blocks), got {active_wakeups}"
         );
-        // Past QUIET_TRANSPORT, idle backoff still wins.
-        assert_eq!(
-            cadence.wait(
-                &mut empty_since,
-                t2 + Duration::from_micros(500) + QUIET_TRANSPORT,
-                active_poll,
-                false
-            ),
-            LIVE_IDLE_POLL
-        );
-        // An unpaced/serial burst resets paced_blocks immediately.
-        cadence.record_pickup(t2 + Duration::from_micros(400));
-        empty_since = None;
-        assert_eq!(
-            cadence.wait(
-                &mut empty_since,
-                t2 + Duration::from_micros(600),
-                active_poll,
-                false
-            ),
-            active_poll
-        );
+        reaper.join_on_control().unwrap();
     }
 
     #[test]

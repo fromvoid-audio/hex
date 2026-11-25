@@ -256,11 +256,42 @@ pub fn recovery_edits(
     operation: u64,
     previous: (u64, u64),
 ) -> Result<RecoveryEdits> {
+    recovery_edits_inner(body, config, sequence, operation, previous, true)
+}
+pub fn recovery_edits_at_least(
+    body: &[u8],
+    config: &Configuration,
+    min_sequence: u64,
+    operation: u64,
+    previous: (u64, u64),
+) -> Result<(RecoveryEdits, u64)> {
+    let (edits, ordinal) = body
+        .split_last_chunk::<8>()
+        .ok_or(Error::Protocol("missing latency restart ordinal"))?;
+    let (edits, observed_sequence) =
+        parameter_edits_inner(edits, config, min_sequence, operation, previous, false)?;
+    Ok((
+        RecoveryEdits {
+            edits,
+            pending_latency_restart: NonZeroU64::new(u64::from_le_bytes(*ordinal)),
+        },
+        observed_sequence,
+    ))
+}
+fn recovery_edits_inner(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+    previous: (u64, u64),
+    exact_sequence: bool,
+) -> Result<RecoveryEdits> {
     let (edits, ordinal) = body
         .split_last_chunk::<8>()
         .ok_or(Error::Protocol("missing latency restart ordinal"))?;
     Ok(RecoveryEdits {
-        edits: parameter_edits(edits, config, sequence, operation, previous)?,
+        edits: parameter_edits_inner(edits, config, sequence, operation, previous, exact_sequence)?
+            .0,
         pending_latency_restart: NonZeroU64::new(u64::from_le_bytes(*ordinal)),
     })
 }
@@ -271,16 +302,41 @@ pub fn parameter_edits(
     operation: u64,
     previous: (u64, u64),
 ) -> Result<ParameterEdits> {
+    parameter_edits_inner(body, config, sequence, operation, previous, true).map(|(edits, _)| edits)
+}
+pub fn parameter_edits_at_least(
+    body: &[u8],
+    config: &Configuration,
+    min_sequence: u64,
+    operation: u64,
+    previous: (u64, u64),
+) -> Result<(ParameterEdits, u64)> {
+    parameter_edits_inner(body, config, min_sequence, operation, previous, false)
+}
+fn parameter_edits_inner(
+    body: &[u8],
+    config: &Configuration,
+    expected_sequence: u64,
+    operation: u64,
+    previous: (u64, u64),
+    exact_sequence: bool,
+) -> Result<(ParameterEdits, u64)> {
     config.validate()?;
-    let frames = sequence
+    let mut reader = Reader::new(body);
+    if operation == 0 || reader.binding()? != config.binding {
+        return Err(Error::Protocol("parameter edit acknowledgement differs"));
+    }
+    let observed_sequence = u64::from_le_bytes(reader.array()?);
+    let observed_frames = u64::from_le_bytes(reader.array()?);
+    let frames = observed_sequence
         .checked_mul(u64::from(config.quantum))
         .ok_or(Error::Protocol("edit position exhausted"))?;
-    let mut reader = Reader::new(body);
-    if operation == 0
-        || reader.binding()? != config.binding
-        || u64::from_le_bytes(reader.array()?) != sequence
-        || u64::from_le_bytes(reader.array()?) != frames
-        || u64::from_le_bytes(reader.array()?) != operation
+    let sequence_ok = if exact_sequence {
+        observed_sequence == expected_sequence
+    } else {
+        observed_sequence >= expected_sequence
+    };
+    if !sequence_ok || observed_frames != frames || u64::from_le_bytes(reader.array()?) != operation
     {
         return Err(Error::Protocol("parameter edit acknowledgement differs"));
     }
@@ -347,5 +403,5 @@ pub fn parameter_edits(
         last_frame = first_frame;
     }
     reader.end()?;
-    Ok(result)
+    Ok((result, observed_sequence))
 }

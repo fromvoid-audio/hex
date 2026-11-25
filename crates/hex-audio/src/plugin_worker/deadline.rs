@@ -65,6 +65,11 @@ impl Deadline {
         }
     }
 
+    pub(super) fn remaining_live_window(&self, now: Instant) -> Option<Duration> {
+        self.live_until
+            .and_then(|until| until.checked_duration_since(now))
+    }
+
     pub(super) fn enter(&mut self) {
         if !self.active && !self.refused {
             self.active = self.policy.enter().is_ok();

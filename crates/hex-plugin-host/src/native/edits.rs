@@ -9,6 +9,14 @@ impl Prepared {
     /// boundaries remain ordered. Source cancellation or terminal refusal
     /// ends queued operations; no receipt grants canonical edits.
     pub fn poll_parameter_edits_on_worker(&mut self) -> Result<protocol::ParameterEdits> {
+        if let Some(control) = self.control.as_mut() {
+            let result = control.poll_parameter_edits_on_control();
+            if control.is_faulted() {
+                self.faulted = true;
+                self.lease.cancel_native();
+            }
+            return result;
+        }
         Ok(self.poll_edits_on_worker(false, false)?.edits)
     }
 
@@ -17,6 +25,14 @@ impl Prepared {
     /// this poll for subsequent observations on the same source. Reading an
     /// ordinal does not cover it or grant permission to resume.
     pub fn poll_recovery_edits_on_worker(&mut self) -> Result<protocol::RecoveryEdits> {
+        if let Some(control) = self.control.as_mut() {
+            let result = control.poll_recovery_edits_on_control();
+            if control.is_faulted() {
+                self.faulted = true;
+                self.lease.cancel_native();
+            }
+            return result;
+        }
         self.poll_edits_on_worker(true, false)
     }
 
@@ -97,12 +113,12 @@ impl Quiescent {
     /// Observe uncovered restart intent before planning this stopped epoch's
     /// resume. A new ordinal can arrive during SDK activation.
     pub fn poll_recovery_edits_on_control(&mut self) -> Result<protocol::RecoveryEdits> {
-        self.instance.poll_recovery_edits_on_worker()
+        self.instance.poll_edits_on_worker(true, false)
     }
 
     /// Same original stopped reader; polling alone never processes Perform.
     /// Apply pending values through the legitimate zero-frame flush contract.
     pub fn poll_parameter_edits_on_control(&mut self) -> Result<protocol::ParameterEdits> {
-        self.instance.poll_parameter_edits_on_worker()
+        Ok(self.instance.poll_edits_on_worker(false, false)?.edits)
     }
 }

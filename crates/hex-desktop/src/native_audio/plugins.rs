@@ -229,11 +229,13 @@ pub(crate) struct Plugins {
     sources: Vec<Source>,
     paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
-    editor: Option<editor::EditorOperation>,
+    editor_ops: Vec<editor::EditorPending>,
+    editor_visibility: Vec<editor::EditorPending>,
     editor_close: Option<editor_close::EditorClose>,
     replay_editor_hold: Option<editor_close::ReplayEditorHold>,
     editor_close_ordinal: u64,
-    queued_editor_toggle: Option<(Binding, u64)>,
+    queued_editor_toggles: Vec<(Binding, u64)>,
+    editor_results: std::collections::VecDeque<(u64, Result<bool, String>)>,
     editor_visibility_cursor: usize,
     next_editor_visibility: Option<std::time::Instant>,
     parameters: Option<parameters::Inventory>,
@@ -473,29 +475,23 @@ impl Plugins {
         }
         self.editor_checked = None;
         self.installed_removals_checked = None;
-        let queued_generation = self
-            .queued_editor_toggle
-            .take()
-            .map(|(_, generation)| generation);
-        let pending_generation = if let Some(editor::EditorOperation::Pending {
-            generation,
-            action: editor::EditorAction::Toggle,
-            ..
-        }) = &self.editor
-        {
-            Some(*generation)
-        } else {
-            None
-        };
+        let mut cancelled_toggle_generations = Vec::new();
+        for op in self.editor_ops.drain(..) {
+            if op.action == editor::EditorAction::Toggle {
+                cancelled_toggle_generations.push(op.generation);
+            }
+        }
+        self.editor_visibility.clear();
+        for (_, generation) in self.queued_editor_toggles.drain(..) {
+            cancelled_toggle_generations.push(generation);
+        }
         self.next_editor_visibility = None;
         self.editor_visibility_cursor = 0;
-        if let Some(generation) = pending_generation.or(queued_generation) {
-            self.editor = Some(editor::EditorOperation::Complete {
+        for generation in cancelled_toggle_generations {
+            self.editor_results.push_back((
                 generation,
-                result: Err("vst3 editor closed · output changed".into()),
-            });
-        } else if matches!(self.editor, Some(editor::EditorOperation::Pending { .. })) {
-            self.editor = None;
+                Err("vst3 editor closed · output changed".into()),
+            ));
         }
         if let Some(restore) = self.restore.as_mut() {
             restore.output_closed();
@@ -580,8 +576,10 @@ impl Plugins {
 
     fn quiescent(&self, handoff_admitted_reads: bool) -> bool {
         self.pending.is_none()
-            && self.editor.is_none()
-            && self.queued_editor_toggle.is_none()
+            && self.editor_ops.is_empty()
+            && self.editor_visibility.is_empty()
+            && self.queued_editor_toggles.is_empty()
+            && self.editor_results.is_empty()
             && self.editor_recording.is_none()
             && self.parameters.is_none()
             && self.parameter_conversion.is_none()
@@ -2609,7 +2607,7 @@ mod pool_reclamation_tests {
         assert!(plugins.has_reclaimable_retiring_source());
 
         let binding = plugins.sources[0].binding;
-        plugins.editor = Some(editor::EditorOperation::Pending {
+        plugins.editor_ops.push(editor::EditorPending {
             binding,
             generation: 1,
             action: editor::EditorAction::Detach,
@@ -2619,7 +2617,7 @@ mod pool_reclamation_tests {
         });
         assert!(plugins.editor_holds(binding));
         assert!(!plugins.has_reclaimable_retiring_source());
-        plugins.editor = None;
+        plugins.editor_ops.clear();
         assert!(plugins.has_reclaimable_retiring_source());
     }
 

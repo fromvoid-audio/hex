@@ -8,6 +8,7 @@
 #include "macos_parameter_page.hpp"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstdint>
@@ -243,6 +244,7 @@ struct Packet {
     uint16_t frames=0;bool stop=false,observe_latency=false,flush_idle_edits=false,release_gates=false;
     uint64_t next_graph=0,next_epoch=0;
     uint64_t capture_operation=0;
+    uint64_t request_sequence=0,request_frame=0;
     std::optional<uint64_t> expected_editor_admission;
     hex_instance::ControllerQuery parameter_query{};
     PresentationPlan resumed_presentation;
@@ -250,9 +252,10 @@ struct Packet {
     // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 parameter-only flush,
     // 9 edit receipts, 10 controller page start, 11 controller page poll,
     // 12 explicit stopped component reactivation, -1 malformed.
-    // Only the serialized processing lane reads these requests. Resume changes
-    // no source/format facts, and is legal only in an acknowledged quiescence.
-    int read(int fd,const Config& config,uint64_t sequence,uint64_t frame) {
+    // The audio lane reads with check_sequence=true; the dedicated control
+    // channel reads non-DSP control requests with check_sequence=false.
+    int read(int fd,const Config& config,uint64_t sequence,uint64_t frame,bool check_sequence=true,
+             const std::atomic<uint64_t>* live_graph=nullptr,const std::atomic<uint64_t>* live_epoch=nullptr) {
         auto* p=bytes.data();const auto received=read_exact(fd,p,header_size);
         if(received!=1) return received;
         stop=!std::memcmp(p,"HXVE",4);
@@ -307,7 +310,13 @@ struct Packet {
         timing_change_count=sliced_timing?p[12]:0;
         if(sliced_timing && (!timing_change_count || timing_change_count>timing_changes.size() || p[13]>1)) return -1;
         for(size_t n=sliced_timing?14:(resume?11:(has_parameter_field?12:10));n<16;++n) if(p[n]) return -1;
-        for(size_t n=0;n<4;++n) if(number(p+16+n*8,8)!=config.binding[n]) return -1;
+        const uint64_t expected_binding[4]={
+            config.binding[0],
+            config.binding[1],
+            live_graph?live_graph->load(std::memory_order_acquire):config.binding[2],
+            live_epoch?live_epoch->load(std::memory_order_acquire):config.binding[3],
+        };
+        for(size_t n=0;n<4;++n) if(number(p+16+n*8,8)!=expected_binding[n]) return -1;
         frames=static_cast<uint16_t>(number(p+6,2));
         if(resume) {
             next_graph=number(p+48,8);next_epoch=number(p+56,8);
@@ -320,7 +329,17 @@ struct Packet {
             }
             return 4;
         }
-        if(number(p+48,8)!=sequence || number(p+56,8)!=frame) return -1;
+        request_sequence=number(p+48,8);
+        request_frame=number(p+56,8);
+        if(check_sequence) {
+            if(request_sequence!=sequence || request_frame!=frame) return -1;
+        } else {
+            const bool control_allowed=page_start || page_poll || live_start || live_poll ||
+                (edit_query && !flush_idle_edits);
+            if(!control_allowed || !config.maximum ||
+                request_sequence>std::numeric_limits<uint64_t>::max()/config.maximum ||
+                request_frame!=request_sequence*config.maximum) return -1;
+        }
         if(stop) return frames? -1:2;
         if(quiesce) return frames? -1:3;
         if(page_start || page_poll) {

@@ -144,12 +144,12 @@ fn native_source_controls_refuse_the_retiring_original_root() {
 fn native_pool_reserves_handles_before_allocating_and_keeps_them_while_vacant() {
     let per_source = resources::PoolResources::new(1).unwrap();
     assert_eq!(per_source.per_source.shared_groups, 12);
-    assert_eq!(per_source.per_source.shared_handle_bound, 33);
+    assert_eq!(per_source.per_source.shared_handle_bound, 35);
     assert_eq!(
         per_source.per_source.source.inventory_node_lifetime_bound,
         4
     );
-    assert_eq!(per_source.per_source.source.ipc_handle_bound, 4);
+    assert_eq!(per_source.per_source.source.ipc_handle_bound, 6);
     assert_eq!(per_source.per_source.source.native_child_lifetime_bound, 1);
     assert_eq!(per_source.per_source.joining_thread_lifetime_bound, 1);
     for fits in [false, true] {

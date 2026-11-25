@@ -32,8 +32,8 @@ impl PreparationResourceBound {
     pub const fn ordinary_instance() -> Self {
         Self {
             shared_groups: 5,
-            shared_handle_bound: 9,
-            ipc_handle_bound: 4,
+            shared_handle_bound: 11,
+            ipc_handle_bound: 6,
             native_child_lifetime_bound: 1,
             command_context_lifetime_bound: 1,
             inventory_node_lifetime_bound:
@@ -195,9 +195,12 @@ impl Source {
             max_pending_data_bytes: input_data_bytes
                 .checked_add(config_data)?
                 .checked_add(protocol::PACKET_LIMIT)?
+                .checked_add(protocol::PACKET_LIMIT)?
                 .checked_add(crate::NATIVE_DIAGNOSTIC_DATA_BYTES)?,
             max_prepared_data_bytes: config_data
+                .checked_add(config_paths)?
                 .checked_add(restore_bytes)?
+                .checked_add(protocol::PACKET_LIMIT)?
                 .checked_add(protocol::PACKET_LIMIT)?
                 .checked_add(hex_plugin_state::MAX_ENVELOPE_BYTES)?
                 .checked_add(crate::NATIVE_DIAGNOSTIC_DATA_BYTES)?,
@@ -231,10 +234,11 @@ impl Pending {
             data_bytes: data
                 .checked_add(self.source.metadata_backing()?)?
                 .checked_add(build.data_bytes)?
-                .checked_add(self.packet.storage_bytes())?,
+                .checked_add(self.packet.storage_bytes())?
+                .checked_add(self.control_packet.storage_bytes())?,
             shared_groups: shared,
             shared_handle_bound: shared,
-            ipc_handle_bound: 2,
+            ipc_handle_bound: 3,
             native_child_lifetime_bound: 1,
             inventory_node_lifetime_bound: build.inventory_node_lifetime_bound,
         })
@@ -262,13 +266,21 @@ impl Prepared {
             } else {
                 (0, 0)
             };
+        let (control_data, control_handles, control_ipc) = if let Some(control) = &self.control {
+            (control.storage_bytes()?, 2, 1)
+        } else {
+            (0, 0, 0)
+        };
         Some(PreparedStorage {
             data_bytes: data_bytes
                 .checked_add(self.packet.storage_bytes())?
+                .checked_add(control_data)?
                 .checked_add(authored_data)?,
             shared_groups: shared,
-            shared_handle_bound: shared.checked_add(authored_handle)?,
-            ipc_handle_bound: 2,
+            shared_handle_bound: shared
+                .checked_add(authored_handle)?
+                .checked_add(control_handles)?,
+            ipc_handle_bound: 2 + control_ipc,
             native_child_lifetime_bound: 1,
         })
     }

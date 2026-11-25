@@ -22,6 +22,14 @@ impl Prepared {
     /// canonical state remain unchanged. Ordinary PCM progress checks the same
     /// capture deadline, so an abandoned operation cannot live indefinitely.
     pub fn begin_state_capture_on_worker(&mut self) -> Result<()> {
+        if let Some(control) = self.control.as_mut() {
+            let result = control.begin_state_capture_on_control();
+            if control.is_faulted() {
+                self.faulted = true;
+                self.lease.cancel_native();
+            }
+            return result;
+        }
         self.require_live_epoch()?;
         if self.live_capture.is_some() {
             return Err(Error::Protocol("native capture is still pending"));
@@ -58,6 +66,14 @@ impl Prepared {
     /// save, canonical edit or publication acknowledgement. Failure cancels the
     /// same lease and leaves its disposal with the existing owner.
     pub fn poll_state_capture_on_worker(&mut self) -> Result<Option<NativeDeviceState>> {
+        if let Some(control) = self.control.as_mut() {
+            let result = control.poll_state_capture_on_control();
+            if control.is_faulted() {
+                self.faulted = true;
+                self.lease.cancel_native();
+            }
+            return result;
+        }
         self.require_live_epoch()?;
         let pending = self
             .live_capture
@@ -78,6 +94,9 @@ impl Prepared {
     }
 
     pub(super) fn check_live_capture_deadline(&self) -> Result<()> {
+        if let Some(control) = self.control.as_ref() {
+            control.check_deadlines()?;
+        }
         if self
             .live_capture
             .is_some_and(|pending| Instant::now() >= pending.until)

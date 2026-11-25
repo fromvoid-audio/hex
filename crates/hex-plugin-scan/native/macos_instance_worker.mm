@@ -76,7 +76,7 @@ public:
 
     void end_stream() { live_until_={}; }
 
-    void before_read(int channel) {
+    void before_read(int channel,int wake_fd=-1) {
         if(idle_.count()==0) return;
         auto now=std::chrono::steady_clock::now();
         if(live_until_<=now) { leave(); return; }
@@ -86,9 +86,10 @@ public:
             now=std::chrono::steady_clock::now();
             if(live_until_<=now) { leave(); return; }
             const auto wait=std::chrono::ceil<std::chrono::milliseconds>(live_until_-now);
-            pollfd input{channel,POLLIN,0};
-            const int ready=::poll(&input,1,static_cast<int>(wait.count()));
-            if(ready>0 && (input.revents&POLLIN)) return;
+            pollfd inputs[2]={{channel,POLLIN,0},{wake_fd,POLLIN,0}};
+            const nfds_t count=wake_fd>=0?2:1;
+            const int ready=::poll(inputs,count,static_cast<int>(wait.count()));
+            if(ready>0 && ((inputs[0].revents&POLLIN) || (wake_fd>=0 && (inputs[1].revents&POLLIN)))) return;
             if(ready<0 && errno==EINTR) continue;
             leave();
             return;
@@ -263,16 +264,35 @@ struct Module {
     }
     static std::string hex(const uint8_t* p,size_t count) { return wire::hex(p,count); }
 };
-int isolate_channel() {
-    const auto channel=::dup(STDIN_FILENO);if(channel<0) return -1;
+struct IsolatedChannels {
+    int audio=-1;
+    int control=-1;
+};
+IsolatedChannels isolate_channel() {
+    const auto channel=::dup(STDIN_FILENO);if(channel<0) return {};
+    int control=-1;
+    int kind=0;socklen_t size=sizeof kind;
+    if(::getsockopt(STDERR_FILENO,SOL_SOCKET,SO_TYPE,&kind,&size)==0 && kind==SOCK_STREAM) {
+        control=::dup(STDERR_FILENO);
+        const int enabled=1;
+        if(control<0 || ::fcntl(control,F_SETFD,FD_CLOEXEC)<0 ||
+            ::setsockopt(control,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof enabled)!=0) {
+            if(control>=0) ::close(control);
+            ::close(channel);
+            return {};
+        }
+    }
     const int quiet=::open("/dev/null",O_RDWR|O_CLOEXEC);
     const int enabled=1;
     if(quiet<0 || ::fcntl(channel,F_SETFD,FD_CLOEXEC)<0 ||
         ::setsockopt(channel,SOL_SOCKET,SO_NOSIGPIPE,&enabled,sizeof enabled)!=0 ||
         ::dup2(quiet,STDIN_FILENO)<0 || ::dup2(quiet,STDOUT_FILENO)<0 || ::dup2(quiet,STDERR_FILENO)<0) {
-        if(quiet>=0) ::close(quiet);::close(channel);return -1;
+        if(quiet>=0) ::close(quiet);
+        if(control>=0) ::close(control);
+        ::close(channel);
+        return {};
     }
-    ::close(quiet);return channel;
+    ::close(quiet);return {channel,control};
 }
 // Supervised clients provide an independent cancellation socket on stdout.
 // Start before any foreign entry: even a hung bundleEntry/unload cannot stop
@@ -394,7 +414,18 @@ int main(int argc,char** argv) {
     // cleanup registered by subsequently loaded SDK modules, not just main.
     static CancellationGuardian guardian;
     if(supervised && !guardian.start()) return Configuration;
-    const int channel=isolate_channel();if(channel<0) return Configuration;
+    const auto channels=isolate_channel();
+    const int channel=channels.audio;
+    const int control_channel=channels.control;
+    if(channel<0) return Configuration;
+    struct FdGuard {
+        int fd=-1;
+        ~FdGuard() { if(fd>=0) ::close(fd); }
+    } control_channel_guard{control_channel};
+    CFRunLoopRef main_runloop=CFRunLoopGetCurrent();
+    const auto wake_main=[&] {
+        if(main_runloop) CFRunLoopWakeUp(main_runloop);
+    };
     const auto* message_diagnostics=std::getenv("HEX_VST3_MESSAGE_DIAGNOSTICS");
     const bool trace_messages=message_diagnostics && !std::strcmp(message_diagnostics,"1");
     Module module;hex_instance::Instance instance;
@@ -493,6 +524,7 @@ int main(int argc,char** argv) {
                 { std::lock_guard<std::mutex> lock(startup_mutex);
                   uint32_t clear=0;worker_failure.compare_exchange_strong(clear,code); }
                 startup_changed.notify_all();
+                wake_main();
             };
             // One serialized epoch mailbox, never a second request reader. The
             // processing lane is stopped and waiting at every epoch SDK step.
@@ -549,6 +581,220 @@ int main(int argc,char** argv) {
             };
             hex_instance::ModalEditorRequest modal_editor_request(service_modal_editor_request);
             if(!modal_editor_request) { failure=HostControl;throw Refusal{}; }
+            struct CompletedEdit {hex_instance::EditEvent edit{};uint64_t first_frame=0;};
+            struct CompletedEditRing {
+                enum : size_t { capacity=hex_instance::HOST_EDIT_COUNT*2 };
+                std::array<CompletedEdit,capacity> entries{};
+                std::atomic<uint64_t> written{0},read{0};
+                size_t size() const {
+                    const auto w=written.load(std::memory_order_acquire);
+                    const auto r=read.load(std::memory_order_acquire);
+                    return static_cast<size_t>(w-r);
+                }
+                size_t free_slots() const {
+                    const auto used=size();
+                    return used>=hex_instance::HOST_EDIT_COUNT?0:hex_instance::HOST_EDIT_COUNT-used;
+                }
+                bool push(const CompletedEdit& entry) {
+                    const auto w=written.load(std::memory_order_relaxed);
+                    const auto r=read.load(std::memory_order_acquire);
+                    if(w-r>=capacity) return false;
+                    entries[w%capacity]=entry;
+                    written.store(w+1,std::memory_order_release);
+                    return true;
+                }
+                size_t drain(std::array<CompletedEdit,hex_instance::HOST_EDIT_COUNT>& out) {
+                    const auto r=read.load(std::memory_order_relaxed);
+                    const auto w=written.load(std::memory_order_acquire);
+                    const size_t count=std::min<size_t>(static_cast<size_t>(w-r),out.size());
+                    for(size_t n=0;n<count;++n) out[n]=entries[(r+n)%capacity];
+                    if(count) read.store(r+count,std::memory_order_release);
+                    return count;
+                }
+            } completed_edits_ring;
+            struct WakePipe {
+                int fds[2]={-1,-1};
+                bool open() {
+                    if(::pipe(fds)!=0) return false;
+                    for(int fd : fds) {
+                        const int flags=::fcntl(fd,F_GETFL,0);
+                        if(::fcntl(fd,F_SETFD,FD_CLOEXEC)<0 || flags<0 || ::fcntl(fd,F_SETFL,flags|O_NONBLOCK)<0) {
+                            close();return false;
+                        }
+                    }
+                    return true;
+                }
+                void signal() const {
+                    const uint8_t b=1;
+                    if(fds[1]>=0) (void)::write(fds[1],&b,1);
+                }
+                void drain() const {
+                    uint8_t buf[16];
+                    if(fds[0]>=0) while(::read(fds[0],buf,sizeof buf)>0) {}
+                }
+                void close() {
+                    for(int& fd : fds) { if(fd>=0) { ::close(fd); fd=-1; } }
+                }
+                ~WakePipe() { close(); }
+            } wake_pipe;
+            if(!wake_pipe.open()) { failure=HostControl;throw Refusal{}; }
+            std::atomic<uint64_t> blocks_atomic{0},frames_atomic{0};
+            std::atomic<uint64_t> live_graph{config->binding[2]},live_epoch{config->binding[3]};
+            uint64_t audio_edit_query_operation=0,audio_page_operation=0,audio_live_operation=0;
+            uint64_t control_edit_query_operation=0,control_page_operation=0,control_live_operation=0;
+            std::atomic<bool> parameter_feedback_pending{false};
+            std::atomic<bool> worker_in_poll{false};
+            std::atomic<uint64_t> boundary_drain_seq{0};
+            auto live_started=std::chrono::steady_clock::now();
+            const auto send_edit_receipts=[&](int reply_fd,const wire::Config& reply_config,
+                uint64_t reply_blocks,uint64_t reply_frames,const wire::Packet& packet,uint64_t& op_counter) {
+                if(op_counter==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=op_counter+1) return false;
+                if(packet.observe_latency) instance.observe_latency_restarts();
+                std::array<CompletedEdit,hex_instance::HOST_EDIT_COUNT> batch{};
+                const size_t count=completed_edits_ring.drain(batch);
+                const uint64_t stamped_blocks=reply_fd==control_channel?blocks_atomic.load(std::memory_order_acquire):reply_blocks;
+                const uint64_t stamped_frames=reply_fd==control_channel?frames_atomic.load(std::memory_order_acquire):reply_frames;
+                if(reply_fd==control_channel && stamped_blocks<packet.request_sequence) return false;
+                wire::Bytes body;reply_config.stamp(body);wire::number(body,stamped_blocks,8);wire::number(body,stamped_frames,8);
+                const auto ready=instance.ready_parameter_edits();
+                const auto pending=instance.pending_parameter_edits();
+                wire::number(body,packet.capture_operation,8);wire::number(body,pending,2);wire::number(body,ready,2);wire::number(body,count,2);
+                for(size_t n=0;n<count;++n) {
+                    const auto& record=batch[n];const auto& value=record.edit;
+                    wire::number(body,value.sequence,8);wire::number(body,value.gesture,8);
+                    uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
+                    wire::number(body,value.id,4);wire::number(body,value.kind,4);wire::number(body,record.first_frame,8);
+                }
+                if(packet.observe_latency) wire::number(body,instance.latency_restart(),8);
+                if(!wire::send(reply_fd,packet.observe_latency?"HXVIGE02":"HXVIGE01",body)) return false;
+                op_counter=packet.capture_operation;
+                return true;
+            };
+            const auto send_page_reply=[&](int reply_fd,const wire::Config& reply_config,
+                uint64_t reply_blocks,uint64_t reply_frames,const wire::Packet& request,bool poll,uint64_t& op_counter) {
+                auto state=page_stage.load(std::memory_order_acquire);
+                if(!poll) {
+                    if(state!=PageIdle || op_counter==std::numeric_limits<uint64_t>::max() ||
+                        request.capture_operation!=op_counter+1) return false;
+                    page_query=request.parameter_query;
+                    op_counter=request.capture_operation;
+                    const bool visibility=page_query.kind==hex_instance::EDITOR_VISIBILITY;
+                    const bool needs_feedback=!visibility && parameter_feedback_pending.load(std::memory_order_acquire);
+                    page_stage.store(needs_feedback?PageFeedbackPending:PageRequested,std::memory_order_release);
+                    if(needs_feedback) wake_pipe.signal();
+                    else wake_main();
+                    if(visibility || hex_instance::closes_open_editor(page_query.kind))
+                        modal_editor_request.notify();
+                } else if(state==PageIdle || request.capture_operation!=op_counter ||
+                          !(request.parameter_query==page_query)) return false;
+                if(state==PageFailed) {control_failure(page_failure);return false;}
+                const bool complete=poll && state==PageComplete;
+                wire::Bytes body;reply_config.stamp(body);wire::number(body,reply_blocks,8);wire::number(body,reply_frames,8);
+                wire::number(body,op_counter,8);
+                if(complete && page_query.kind==hex_instance::SEAL_EDITOR_EDITS) {
+                    wire::number(body,5,1);wire::number(body,editor_edits_sealed?1:0,1);
+                } else if(complete && page_query.kind==hex_instance::READ_EDITOR_FRONTIER) {
+                    wire::number(body,6,1);wire::number(body,editor_frontier,8);
+                } else if(complete && hex_instance::editor_admission_request(page_query.kind)) {
+                    wire::number(body,7,1);wire::number(body,page_query.kind,1);
+                    wire::number(body,page_query.revision,8);
+                    wire::number(body,editor_admission_changed?1:0,1);
+                    if(editor_admission_changed && page_query.kind==hex_instance::HOLD_EDITOR_ADMISSION)
+                        wire::number(body,editor_frontier,8);
+                } else if(complete && hex_instance::editor_request(page_query.kind)) {
+                    wire::number(body,4,1);
+                    if(detached_editor_position) {
+                        const bool has_size=detached_editor_position->has_size();
+                        wire::number(body,has_size?5:3,1);
+                        uint64_t x=0,y=0;
+                        std::memcpy(&x,&detached_editor_position->x,8);
+                        std::memcpy(&y,&detached_editor_position->y,8);
+                        wire::number(body,x,8);wire::number(body,y,8);
+                        if(has_size) {
+                            wire::number(body,detached_editor_position->width,2);
+                            wire::number(body,detached_editor_position->height,2);
+                        }
+                    } else wire::number(body,static_cast<uint8_t>(editor_state),1);
+                } else if(complete) {
+                    wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
+                    wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
+                    if(!parameter_page.changed && parameter_page.conversion) {
+                        const auto& value=parameter_page.converted;
+                        wire::number(body,value.id,4);wire::number(body,value.status,1);
+                        uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
+                        const auto kind=std::isnan(value.plain)?3:(std::isinf(value.plain)?(value.plain<0?1:2):0);
+                        wire::number(body,kind,1);
+                        const double plain=kind?0:value.plain;std::memcpy(&bits,&plain,8);wire::number(body,bits,8);
+                        wire::number(body,value.formatted?1:0,1);
+                        for(const auto unit:value.display) wire::number(body,static_cast<uint16_t>(unit),2);
+                    } else if(!parameter_page.changed) {
+                        wire::number(body,parameter_page.first,2);wire::number(body,parameter_page.count,1);
+                        const auto number=[&](double value) {
+                            uint64_t bits=0;std::memcpy(&bits,&value,8);wire::number(body,bits,8);
+                        };
+                        const auto plain=[&](double value) {
+                            const auto kind=std::isnan(value)?3:(std::isinf(value)?(value<0?1:2):0);
+                            wire::number(body,kind,1);number(kind?0:value);
+                        };
+                        const auto text=[&](const String128& value) {
+                            for(const auto unit:value) wire::number(body,static_cast<uint16_t>(unit),2);
+                        };
+                        for(uint16 n=0;n<parameter_page.count;++n) {
+                            const auto& value=parameter_page.parameters[n];const auto& info=value.info;
+                            wire::number(body,info.id,4);wire::number(body,static_cast<uint32>(info.flags),4);
+                            wire::number(body,static_cast<uint32>(info.stepCount),4);wire::number(body,static_cast<uint32>(info.unitId),4);
+                            number(value.normalized);number(info.defaultNormalizedValue);
+                            plain(value.plain);plain(value.default_plain);
+                            text(info.title);text(info.shortTitle);text(info.units);
+                            wire::number(body,(value.formatted?1:0)|(value.default_formatted?2:0),1);
+                            text(value.display);text(value.default_display);
+                            wire::number(body,value.editor_sequence,8);
+                        }
+                        for(const auto byte:parameter_page.descriptor_signature) wire::number(body,byte,1);
+                    }
+                } else wire::number(body,0,1);
+                if(!wire::send(reply_fd,"HXVIMD03",body)) return false;
+                if(complete) page_stage.store(PageIdle,std::memory_order_release);
+                return true;
+            };
+            const auto handle_live_capture=[&](int reply_fd,const wire::Config& reply_config,
+                uint64_t reply_blocks,uint64_t reply_frames,const wire::Packet& packet,int received,uint64_t& op_counter) {
+                const auto stage=live_stage.load(std::memory_order_acquire);
+                if(received==6) {
+                    if(stage!=LiveIdle || op_counter==std::numeric_limits<uint64_t>::max() ||
+                        packet.capture_operation!=op_counter+1) { control_failure(ProtocolFailure);return false; }
+                    op_counter=packet.capture_operation;
+                    live_started=std::chrono::steady_clock::now();
+                    const bool needs_feedback=parameter_feedback_pending.load(std::memory_order_acquire) || instance.pending_parameter_edits();
+                    live_stage.store(needs_feedback?LiveFeedbackPending:LiveRequested,std::memory_order_release);
+                    if(needs_feedback) wake_pipe.signal();
+                    else wake_main();
+                } else if(stage==LiveIdle || packet.capture_operation!=op_counter) {
+                    control_failure(ProtocolFailure);return false;
+                }
+                if(received==7 && stage==LiveFailed) { control_failure(live_failure);return false; }
+                if(received==7 && stage==LiveOverflow) {
+                    if(!send_state_overflow(reply_fd,reply_config,reply_blocks,reply_frames,op_counter,live_overflow)) std::_Exit(Cancelled);
+                    live_stage.store(LiveIdle,std::memory_order_release);
+                    return true;
+                }
+                auto pending=LiveFeedbackPending;
+                if(received==7 && stage==LiveFeedbackPending &&
+                    std::chrono::steady_clock::now()-live_started>=live_settle_limit &&
+                    live_stage.compare_exchange_strong(pending,LiveIdle,std::memory_order_acq_rel)) {
+                    if(!send_still_changing(reply_fd,reply_config,reply_blocks,reply_frames,op_counter)) std::_Exit(Cancelled);
+                    return true;
+                }
+                const bool complete=received==7 && stage==LiveComplete;
+                wire::Bytes body;reply_config.stamp(body);
+                wire::number(body,reply_blocks,8);wire::number(body,reply_frames,8);wire::number(body,op_counter,8);
+                wire::number(body,complete?1:0,1);
+                const auto payload=complete?state_payload(reply_config,live_state):wire::Bytes{};
+                wire::number(body,payload.size(),4);body.insert(body.end(),payload.begin(),payload.end());
+                if(!wire::send(reply_fd,"HXVLCA02",body)) std::_Exit(Cancelled);
+                if(complete) live_stage.store(LiveIdle,std::memory_order_release);
+                return true;
+            };
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -559,11 +805,8 @@ int main(int argc,char** argv) {
                     started=instance.start_processing();if(!started) worker_failure.store(Processing);
                     startup.store(started?1:2,std::memory_order_release);
                     { std::unique_lock<std::mutex> lock(startup_mutex);startup_changed.wait(lock,[&]{return go;}); }
-                    struct CompletedEdit {hex_instance::EditEvent edit{};uint64_t first_frame=0;};
-                    std::array<CompletedEdit,hex_instance::HOST_EDIT_COUNT> completed_edits{};
-                    size_t completed_edit_count=0;uint64_t edit_query_operation=0;
                     const auto complete_edit=[&](const hex_instance::EditEvent& event) {
-                        completed_edits[completed_edit_count++]={event,frames};instance.complete_parameter_edit();
+                        (void)completed_edits_ring.push({event,frames});instance.complete_parameter_edit();
                     };
                     hex_instance::EditorTouch editor_touch;
                     const auto drain_edit_boundaries=[&] {
@@ -571,9 +814,9 @@ int main(int argc,char** argv) {
                         // Keep its hold terminal even if the ordered reader gets it
                         // before the next real PCM call. Only PCM can restore sound.
                         hex_instance::EditEvent event{};
-                        while(completed_edit_count<completed_edits.size() && instance.peek_parameter_edit(event) && event.kind!=hex_instance::Perform) {
+                        while(completed_edits_ring.free_slots()>0 && instance.peek_parameter_edit(event) && event.kind!=hex_instance::Perform) {
                             if(event.cohort) {
-                                if(event.batch_remaining>completed_edits.size()-completed_edit_count) break;
+                                if(event.batch_remaining>completed_edits_ring.free_slots()) break;
                                 bool boundary_only=true;
                                 for(size_t n=0;n<event.batch_remaining;++n) {
                                     hex_instance::EditEvent next{};
@@ -588,22 +831,8 @@ int main(int argc,char** argv) {
                         }
                     };
                     const auto read_edit_receipts=[&](const wire::Packet& packet) {
-                        if(edit_query_operation==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=edit_query_operation+1) return false;
-                        if(packet.observe_latency) instance.observe_latency_restarts();
                         drain_edit_boundaries();
-                        wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
-                        const auto ready=instance.ready_parameter_edits();
-                        const auto pending=instance.pending_parameter_edits();
-                        wire::number(body,packet.capture_operation,8);wire::number(body,pending,2);wire::number(body,ready,2);wire::number(body,completed_edit_count,2);
-                        for(size_t n=0;n<completed_edit_count;++n) {
-                            const auto& record=completed_edits[n];const auto& value=record.edit;
-                            wire::number(body,value.sequence,8);wire::number(body,value.gesture,8);
-                            uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
-                            wire::number(body,value.id,4);wire::number(body,value.kind,4);wire::number(body,record.first_frame,8);
-                        }
-                        if(packet.observe_latency) wire::number(body,instance.latency_restart(),8);
-                        if(!wire::send(channel,packet.observe_latency?"HXVIGE02":"HXVIGE01",body)) return false;
-                        ++edit_query_operation;completed_edit_count=0;return true;
+                        return send_edit_receipts(channel,*config,blocks,frames,packet,audio_edit_query_operation);
                     };
                     std::array<hex_instance::EditEvent,hex_instance::HOST_EDIT_COUNT> applying_edits{};size_t applying_edit_count=0;
                     std::array<bool,hex_instance::HOST_EDIT_COUNT> editor_capture{};
@@ -688,9 +917,9 @@ int main(int argc,char** argv) {
                             std::optional<ParamID> dense=std::nullopt) {
                         applying_edit_count=0;hex_instance::EditEvent event{};
                         size_t remaining_group=0;
-                        while(completed_edit_count+applying_edit_count<completed_edits.size() && instance.peek_parameter_edit(event)) {
+                        while(applying_edit_count<completed_edits_ring.free_slots() && instance.peek_parameter_edit(event)) {
                             if(!remaining_group && event.cohort) {
-                                const auto available=completed_edits.size()-completed_edit_count-applying_edit_count;
+                                const auto available=completed_edits_ring.free_slots()-applying_edit_count;
                                 if(event.batch_remaining>available) break;
                                 switch(preflight_group(event,later_points,later,touch,dense)) {
                                     case BatchFit::Wait: return true;
@@ -759,7 +988,7 @@ int main(int argc,char** argv) {
                     const auto flush_idle_editor=[&] {
                         // Leave a full receipt batch for its reader to consume.
                         // The next poll can apply another fixed-size batch.
-                        if(completed_edit_count==completed_edits.size() || !instance.ready_parameter_edits()) return true;
+                        if(completed_edits_ring.free_slots()==0 || !instance.ready_parameter_edits()) return true;
                         instance.refresh_processing_parameters(processing_parameters);
                         if(!parameter_input.reset(0,false) || !parameter_output.reset(0,true) || !stage_edits()) return false;
                         if(parameter_input.size()) {
@@ -789,7 +1018,7 @@ int main(int argc,char** argv) {
                             std::unique_lock<std::mutex> lock(startup_mutex);
                             flush_operation=packet.capture_operation;flush_disposition=disposition;
                             flush_while_idle=idle;epoch_stage=FlushRequested;
-                            startup_changed.notify_all();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
+                            startup_changed.notify_all();wake_main();startup_changed.wait(lock,[&]{return epoch_stage==FlushSent || worker_failure.load();});
                             if(idle) epoch_stage=Idle;
                             return worker_failure.load();
                         };
@@ -828,93 +1057,8 @@ int main(int argc,char** argv) {
                         return acknowledge(result==hex_instance::FlushResult::Applied?1:0);
                     };
                     uint64_t idle_flushes=0;
-                    uint64_t page_operation=0;
                     const auto page_reply=[&](const wire::Packet& request,bool poll) {
-                        auto state=page_stage.load(std::memory_order_acquire);
-                        if(!poll) {
-                            if(state!=PageIdle || page_operation==std::numeric_limits<uint64_t>::max() ||
-                                request.capture_operation!=page_operation+1) return false;
-                            page_query=request.parameter_query;
-                            ++page_operation;
-                            // Only visibility can finish before preceding PCM
-                            // feedback is published. Cancellation may unblock
-                            // that publication but does not complete a close.
-                            const bool visibility=page_query.kind==hex_instance::EDITOR_VISIBILITY;
-                            const bool needs_feedback=!visibility && parameter_feedback.count;
-                            page_stage.store(needs_feedback?PageFeedbackPending:PageRequested,std::memory_order_release);
-                            if(visibility || hex_instance::closes_open_editor(page_query.kind))
-                                modal_editor_request.notify();
-                        } else if(state==PageIdle || request.capture_operation!=page_operation ||
-                                  !(request.parameter_query==page_query)) return false;
-                        if(state==PageFailed) {worker_failure.store(page_failure);return false;}
-                        const bool complete=poll && state==PageComplete;
-                        wire::Bytes body;config->stamp(body);wire::number(body,blocks,8);wire::number(body,frames,8);
-                        wire::number(body,page_operation,8);
-                        if(complete && page_query.kind==hex_instance::SEAL_EDITOR_EDITS) {
-                            wire::number(body,5,1);wire::number(body,editor_edits_sealed?1:0,1);
-                        } else if(complete && page_query.kind==hex_instance::READ_EDITOR_FRONTIER) {
-                            wire::number(body,6,1);wire::number(body,editor_frontier,8);
-                        } else if(complete && hex_instance::editor_admission_request(page_query.kind)) {
-                            wire::number(body,7,1);wire::number(body,page_query.kind,1);
-                            wire::number(body,page_query.revision,8);
-                            wire::number(body,editor_admission_changed?1:0,1);
-                            if(editor_admission_changed && page_query.kind==hex_instance::HOLD_EDITOR_ADMISSION)
-                                wire::number(body,editor_frontier,8);
-                        } else if(complete && hex_instance::editor_request(page_query.kind)) {
-                            wire::number(body,4,1);
-                            if(detached_editor_position) {
-                                const bool has_size=detached_editor_position->has_size();
-                                wire::number(body,has_size?5:3,1);
-                                uint64_t x=0,y=0;
-                                std::memcpy(&x,&detached_editor_position->x,8);
-                                std::memcpy(&y,&detached_editor_position->y,8);
-                                wire::number(body,x,8);wire::number(body,y,8);
-                                if(has_size) {
-                                    wire::number(body,detached_editor_position->width,2);
-                                    wire::number(body,detached_editor_position->height,2);
-                                }
-                            } else wire::number(body,static_cast<uint8_t>(editor_state),1);
-                        } else if(complete) {
-                            wire::number(body,parameter_page.changed?2:(parameter_page.conversion?3:1),1);
-                            wire::number(body,parameter_page.revision,8);wire::number(body,parameter_page.total,2);
-                            if(!parameter_page.changed && parameter_page.conversion) {
-                                const auto& value=parameter_page.converted;
-                                wire::number(body,value.id,4);wire::number(body,value.status,1);
-                                uint64_t bits=0;std::memcpy(&bits,&value.normalized,8);wire::number(body,bits,8);
-                                const auto kind=std::isnan(value.plain)?3:(std::isinf(value.plain)?(value.plain<0?1:2):0);
-                                wire::number(body,kind,1);
-                                const double plain=kind?0:value.plain;std::memcpy(&bits,&plain,8);wire::number(body,bits,8);
-                                wire::number(body,value.formatted?1:0,1);
-                                for(const auto unit:value.display) wire::number(body,static_cast<uint16_t>(unit),2);
-                            } else if(!parameter_page.changed) {
-                                wire::number(body,parameter_page.first,2);wire::number(body,parameter_page.count,1);
-                                const auto number=[&](double value) {
-                                    uint64_t bits=0;std::memcpy(&bits,&value,8);wire::number(body,bits,8);
-                                };
-                                const auto plain=[&](double value) {
-                                    const auto kind=std::isnan(value)?3:(std::isinf(value)?(value<0?1:2):0);
-                                    wire::number(body,kind,1);number(kind?0:value);
-                                };
-                                const auto text=[&](const String128& value) {
-                                    for(const auto unit:value) wire::number(body,static_cast<uint16>(unit),2);
-                                };
-                                for(uint16 n=0;n<parameter_page.count;++n) {
-                                    const auto& value=parameter_page.parameters[n];const auto& info=value.info;
-                                    wire::number(body,info.id,4);wire::number(body,static_cast<uint32>(info.flags),4);
-                                    wire::number(body,static_cast<uint32>(info.stepCount),4);wire::number(body,static_cast<uint32>(info.unitId),4);
-                                    number(value.normalized);number(info.defaultNormalizedValue);
-                                    plain(value.plain);plain(value.default_plain);
-                                    text(info.title);text(info.shortTitle);text(info.units);
-                                    wire::number(body,(value.formatted?1:0)|(value.default_formatted?2:0),1);
-                                    text(value.display);text(value.default_display);
-                                    wire::number(body,value.editor_sequence,8);
-                                }
-                                for(const auto byte:parameter_page.descriptor_signature) wire::number(body,byte,1);
-                            }
-                        } else wire::number(body,0,1);
-                        if(!wire::send(channel,"HXVIMD03",body)) return false;
-                        if(complete) page_stage.store(PageIdle,std::memory_order_release);
-                        return true;
+                        return send_page_reply(channel,*config,blocks,frames,request,poll,audio_page_operation);
                     };
                     wire::Packet packet{};
                     hex_instance::InputNotes input_notes;
@@ -926,8 +1070,6 @@ int main(int argc,char** argv) {
                     const auto input_silence=config->inputs?0u:(uint64_t{1}<<input.numChannels)-1;
                     input.channelBuffers32=input_pointers;output.channelBuffers32=output_pointers;
                     ProcessData data{};data.processMode=process_mode;data.symbolicSampleSize=kSample32;
-                    uint64_t live_operation=0;
-                    auto live_started=std::chrono::steady_clock::now();
                     data.numInputs=input.numChannels?1:0;data.numOutputs=1;data.inputs=data.numInputs?&input:nullptr;data.outputs=&output;
                     const auto release_held_notes=[&] {
                         const auto count=held_notes.release_into(packet.notes);
@@ -961,9 +1103,37 @@ int main(int argc,char** argv) {
                     // This keeps the failure reply paired with that exchange
                     // instead of racing a later write against child exit.
                     WorkerDeadline deadline(*config,try_worker_deadline);
+                    const auto flush_pending_feedback_to_main=[&] {
+                        instance.publish_parameter_feedback(parameter_feedback);
+                        parameter_feedback_pending.store(parameter_feedback.count!=0,std::memory_order_release);
+                        if(page_stage.load(std::memory_order_acquire)==PageFeedbackPending && !parameter_feedback.count) {
+                            page_stage.store(PageRequested,std::memory_order_release);
+                            wake_main();
+                        }
+                        if(live_stage.load(std::memory_order_acquire)==LiveFeedbackPending && !parameter_feedback.count && !instance.pending_parameter_edits()) {
+                            live_stage.store(LiveRequested,std::memory_order_release);
+                            wake_main();
+                        }
+                    };
                     while(started && (!worker_failure.load() || live_stage.load(std::memory_order_acquire)==LiveFailed || page_stage.load(std::memory_order_acquire)==PageFailed)) {
                         phase.store(1,std::memory_order_release); // receiving a complete frame
-                        deadline.before_read(channel);
+                        worker_in_poll.store(true,std::memory_order_release);
+                        deadline.before_read(channel,wake_pipe.fds[0]);
+                        bool audio_ready=false;
+                        while(!audio_ready) {
+                            pollfd inputs[2]={{channel,POLLIN,0},{wake_pipe.fds[0],POLLIN,0}};
+                            const int ready=::poll(inputs,2,-1);
+                            if(ready<0 && errno==EINTR) continue;
+                            if(inputs[1].revents&POLLIN) {
+                                wake_pipe.drain();
+                                drain_edit_boundaries();
+                                flush_pending_feedback_to_main();
+                                boundary_drain_seq.fetch_add(1,std::memory_order_release);
+                                if(!(inputs[0].revents&(POLLIN|POLLHUP|POLLERR))) continue;
+                            }
+                            audio_ready=true;
+                        }
+                        worker_in_poll.store(false,std::memory_order_release);
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(received==2 || received==3) { deadline.end_stream(); deadline.leave(); }
                         if(worker_failure.load()) break;
@@ -971,11 +1141,7 @@ int main(int argc,char** argv) {
                         // custody even when the next request is save capture;
                         // retain the ordered receipt until its consumer reads.
                         drain_edit_boundaries();
-                        instance.publish_parameter_feedback(parameter_feedback);
-                        if(page_stage.load(std::memory_order_acquire)==PageFeedbackPending && !parameter_feedback.count)
-                            page_stage.store(PageRequested,std::memory_order_release);
-                        if(live_stage.load(std::memory_order_acquire)==LiveFeedbackPending && !parameter_feedback.count && !instance.pending_parameter_edits())
-                            live_stage.store(LiveRequested,std::memory_order_release);
+                        flush_pending_feedback_to_main();
                         if(received==10 || received==11) {
                             if(!page_reply(packet,received==11)) {if(!worker_failure.load())worker_failure.store(ProtocolFailure);break;}
                             continue;
@@ -993,38 +1159,7 @@ int main(int argc,char** argv) {
                             continue;
                         }
                         if(received==6 || received==7) {
-                            const auto stage=live_stage.load(std::memory_order_acquire);
-                            if(received==6) {
-                                if(stage!=LiveIdle || live_operation==std::numeric_limits<uint64_t>::max() ||
-                                    packet.capture_operation!=live_operation+1) { worker_failure.store(ProtocolFailure);break; }
-                                live_operation=packet.capture_operation;live_started=std::chrono::steady_clock::now();
-                                live_stage.store(parameter_feedback.count || instance.pending_parameter_edits()?LiveFeedbackPending:LiveRequested,std::memory_order_release);
-                            } else if(stage==LiveIdle || packet.capture_operation!=live_operation) {
-                                worker_failure.store(ProtocolFailure);break;
-                            }
-                            if(received==7 && stage==LiveFailed) { worker_failure.store(live_failure);break; }
-                            if(received==7 && stage==LiveOverflow) {
-                                if(!send_state_overflow(channel,*config,blocks,frames,live_operation,live_overflow)) std::_Exit(Cancelled);
-                                live_stage.store(LiveIdle,std::memory_order_release);
-                                continue;
-                            }
-                            // Only this worker leaves FeedbackPending, and main
-                            // never touches it, so retiring here cannot race a capture.
-                            auto pending=LiveFeedbackPending;
-                            if(received==7 && stage==LiveFeedbackPending &&
-                                std::chrono::steady_clock::now()-live_started>=live_settle_limit &&
-                                live_stage.compare_exchange_strong(pending,LiveIdle,std::memory_order_acq_rel)) {
-                                if(!send_still_changing(channel,*config,blocks,frames,live_operation)) std::_Exit(Cancelled);
-                                continue;
-                            }
-                            const bool complete=received==7 && stage==LiveComplete;
-                            wire::Bytes body;config->stamp(body);
-                            wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,live_operation,8);
-                            wire::number(body,complete?1:0,1);
-                            const auto payload=complete?state_payload(*config,live_state):wire::Bytes{};
-                            wire::number(body,payload.size(),4);body.insert(body.end(),payload.begin(),payload.end());
-                            if(!wire::send(channel,"HXVLCA02",body)) std::_Exit(Cancelled);
-                            if(complete) live_stage.store(LiveIdle,std::memory_order_release);
+                            if(!handle_live_capture(channel,*config,blocks,frames,packet,received,audio_live_operation)) break;
                             continue;
                         }
                         if((received==2 || received==3) && live_stage.load(std::memory_order_acquire)!=LiveIdle) {
@@ -1047,7 +1182,7 @@ int main(int argc,char** argv) {
                             started=false;
                             {
                                 std::unique_lock<std::mutex> lock(startup_mutex);
-                                epoch_stage=FactsRequested;startup_changed.notify_all();
+                                epoch_stage=FactsRequested;startup_changed.notify_all();wake_main();
                                 startup_changed.wait(lock,[&]{return epoch_stage==FactsSent || worker_failure.load();});
                             }
                             if(worker_failure.load()) break;
@@ -1063,7 +1198,7 @@ int main(int argc,char** argv) {
                                     {
                                         std::unique_lock<std::mutex> lock(startup_mutex);
                                         reactivate_operation=packet.capture_operation;epoch_stage=ReactivateRequested;
-                                        startup_changed.notify_all();
+                                        startup_changed.notify_all();wake_main();
                                         startup_changed.wait(lock,[&]{return epoch_stage==ReactivateSent || worker_failure.load();});
                                     }
                                     if(worker_failure.load()) break;
@@ -1089,7 +1224,7 @@ int main(int argc,char** argv) {
                                 {
                                     std::unique_lock<std::mutex> lock(startup_mutex);
                                     capture_operation=packet.capture_operation;epoch_stage=CaptureRequested;
-                                    startup_changed.notify_all();
+                                    startup_changed.notify_all();wake_main();
                                     startup_changed.wait(lock,[&]{return epoch_stage==CaptureSent || worker_failure.load();});
                                 }
                                 if(worker_failure.load()) break;
@@ -1103,7 +1238,7 @@ int main(int argc,char** argv) {
                                 std::unique_lock<std::mutex> lock(startup_mutex);
                                 next_graph=packet.next_graph;next_epoch=packet.next_epoch;
                                 next_presentation=packet.resumed_presentation;
-                                epoch_stage=ResumeRequested;startup_changed.notify_all();
+                                epoch_stage=ResumeRequested;startup_changed.notify_all();wake_main();
                                 startup_changed.wait(lock,[&]{return epoch_stage==ResumeConfigured || worker_failure.load();});
                             }
                             if(worker_failure.load()) break;
@@ -1112,7 +1247,7 @@ int main(int argc,char** argv) {
                             if(!started) { worker_failure.store(Resume);break; }
                             {
                                 std::unique_lock<std::mutex> lock(startup_mutex);
-                                epoch_stage=Restarted;startup_changed.notify_all();
+                                epoch_stage=Restarted;startup_changed.notify_all();wake_main();
                                 startup_changed.wait(lock,[&]{return epoch_stage==ResumeSent || worker_failure.load();});
                             }
                             if(worker_failure.load()) break;
@@ -1316,13 +1451,15 @@ int main(int argc,char** argv) {
                             if(worker_failure.load()) break;
                         }
                         for(size_t n=0;n<applying_edit_count;++n) complete_edit(applying_edits[n]);
-                        instance.publish_parameter_feedback(parameter_feedback);
+                        flush_pending_feedback_to_main();
                         if(!packet.write(channel)) { worker_failure.store(Cancelled);break; }
                         deadline.pcm_replied();
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
                         slice_clock.replied(blocks);
 #endif
                         ++blocks;frames+=packet.frames;
+                        blocks_atomic.store(blocks,std::memory_order_release);
+                        frames_atomic.store(frames,std::memory_order_release);
                         pcm_since_main_pump.store(true,std::memory_order_relaxed);
                         if(trace_messages) {
                             diagnostic_pcm_blocks.store(blocks,std::memory_order_relaxed);
@@ -1343,6 +1480,8 @@ int main(int argc,char** argv) {
                     error(channel,&*config,Unexpected);std::_Exit(Unexpected);
                 }
                 done.store(true,std::memory_order_release);
+                if(control_channel>=0) ::shutdown(control_channel,SHUT_RDWR);
+                wake_main();
             });
             // Ready means the actual worker's fallible setProcessing succeeded,
             // not merely that a control-side configuration was copied.
@@ -1354,11 +1493,87 @@ int main(int argc,char** argv) {
             accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD05",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
+            std::thread control_thread;
+            if(accepted && control_channel>=0) {
+                control_thread=std::thread([&] {
+                    if(!offline) (void)pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED,0);
+                    std::unique_ptr<wire::Packet> control_packet(new(std::nothrow) wire::Packet{});
+                    if(!control_packet) { control_failure(HostControl); return; }
+                    wire::Config control_config=*config;
+                    while(!done.load(std::memory_order_acquire)) {
+                        const auto received=control_packet->read(control_channel,control_config,0,0,false,&live_graph,&live_epoch);
+                        control_config.binding[2]=live_graph.load(std::memory_order_acquire);
+                        control_config.binding[3]=live_epoch.load(std::memory_order_acquire);
+                        if(received==0) break;
+                        const bool pending_page_fail=received==11 && page_stage.load(std::memory_order_acquire)==PageFailed;
+                        const bool pending_live_fail=received==7 && live_stage.load(std::memory_order_acquire)==LiveFailed;
+                        if(worker_failure.load() && !pending_page_fail && !pending_live_fail) {
+                            error(control_channel,&control_config,worker_failure.load());
+                            break;
+                        }
+                        if(received<0) {
+                            control_failure(ProtocolFailure);
+                            error(control_channel,&control_config,ProtocolFailure);
+                            break;
+                        }
+                        if(received==10 || received==11) {
+                            if(received==11 && page_stage.load(std::memory_order_acquire)==PageFeedbackPending &&
+                                worker_in_poll.load(std::memory_order_acquire)) {
+                                wake_pipe.signal();
+                            }
+                            if(!send_page_reply(control_channel,control_config,control_packet->request_sequence,
+                                control_packet->request_frame,*control_packet,received==11,control_page_operation)) {
+                                const auto code=worker_failure.load()?worker_failure.load():ProtocolFailure;
+                                control_failure(code);
+                                error(control_channel,&control_config,code);
+                                break;
+                            }
+                            continue;
+                        }
+                        if(received==6 || received==7) {
+                            if(received==7 && live_stage.load(std::memory_order_acquire)==LiveFeedbackPending &&
+                                worker_in_poll.load(std::memory_order_acquire)) {
+                                wake_pipe.signal();
+                            }
+                            if(!handle_live_capture(control_channel,control_config,control_packet->request_sequence,
+                                control_packet->request_frame,*control_packet,received,control_live_operation)) {
+                                const auto code=worker_failure.load()?worker_failure.load():ProtocolFailure;
+                                error(control_channel,&control_config,code);
+                                break;
+                            }
+                            continue;
+                        }
+                        if(received==9) {
+                            if(instance.ready_parameter_edits()>0 &&
+                                worker_in_poll.load(std::memory_order_acquire)) {
+                                const auto before=boundary_drain_seq.load(std::memory_order_acquire);
+                                wake_pipe.signal();
+                                if(completed_edits_ring.size()==0) {
+                                    const auto deadline_at=std::chrono::steady_clock::now()+std::chrono::milliseconds(2);
+                                    while(boundary_drain_seq.load(std::memory_order_acquire)==before &&
+                                        worker_in_poll.load(std::memory_order_acquire) &&
+                                        std::chrono::steady_clock::now()<deadline_at) {
+                                        std::this_thread::sleep_for(std::chrono::microseconds(50));
+                                    }
+                                }
+                            }
+                            if(!send_edit_receipts(control_channel,control_config,0,0,*control_packet,control_edit_query_operation)) {
+                                const auto code=worker_failure.load()?worker_failure.load():ProtocolFailure;
+                                control_failure(code);
+                                error(control_channel,&control_config,code);
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+                });
+            }
             // Pump the helper main lane, never the Hex callback. Unsupported
             // restart/control requests cannot be silently acknowledged as applied.
             // Foreign timers and controller calls can also autorelease work
             // on turns that do not visit the editor's AppKit event pump.
-            auto next_message_report=std::chrono::steady_clock::time_point::min();
+            auto next_message_report=std::chrono::steady_clock::now();
+            next_message_report=std::chrono::steady_clock::time_point::min();
             constexpr auto quiet_pcm_window=std::chrono::milliseconds(40);
             constexpr double quiet_main_wait=0.008;
             const double pcm_only_wait=std::clamp(config->maximum/config->rate/3.0,0.001,0.002);
@@ -1622,6 +1837,8 @@ int main(int argc,char** argv) {
                         // acknowledged transition changes its wire binding;
                         // no old queued request is accepted under the new one.
                         config->binding[2]=next_graph;config->binding[3]=next_epoch;
+                        live_graph.store(next_graph,std::memory_order_release);
+                        live_epoch.store(next_epoch,std::memory_order_release);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeConfigured;startup_changed.notify_all();
                     } else if(stage==Restarted) {
@@ -1659,7 +1876,10 @@ int main(int argc,char** argv) {
                     CFRunLoopRunInMode(kCFRunLoopDefaultMode,wait,true);
                 } catch(...) { control_failure(Unexpected); }
             }
-            worker.join();failure=worker_failure.load()&0xFF;
+            worker.join();
+            if(control_channel>=0) ::shutdown(control_channel,SHUT_RDWR);
+            if(control_thread.joinable()) control_thread.join();
+            failure=worker_failure.load()&0xFF;
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
             if(normal_stop && !failure) slice_clock.publish_after_join();
 #endif
