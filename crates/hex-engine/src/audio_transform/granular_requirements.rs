@@ -48,12 +48,13 @@ impl StreamedGranularRequirement {
             return Err(Invalid("granular requirement source facts differ"));
         }
         let root = &self.inner.root;
-        raw.with_granular(
+        raw.with_warped(
             &root.region,
             &root.map,
             root.mode,
             root.pitch_cents,
             root.law,
+            &root.attacks,
         )
     }
     /// Listed DATA bound for an independent root copy, excluding the retained
@@ -102,6 +103,11 @@ impl StreamedGranularRequirement {
                 .output_end,
         )
         .map_err(warp_error)?;
+        let mut attacks = Vec::new();
+        attacks
+            .try_reserve_exact(root.attacks.len())
+            .map_err(|_| Invalid("granular attacks reservation failed"))?;
+        attacks.extend_from_slice(&root.attacks);
         let copied = StreamedGranularRoot {
             metadata,
             region,
@@ -109,6 +115,7 @@ impl StreamedGranularRequirement {
             mode: root.mode,
             pitch_cents: root.pitch_cents,
             law: root.law,
+            attacks,
         };
         if cancel.load(Ordering::Acquire) {
             return Err(Invalid("audio preparation cancelled"));

@@ -305,3 +305,175 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
     let report = control.shutdown(pages).expect("measured runtime shutdown");
     assert!(report.accounting_complete);
 }
+
+#[test]
+fn warmed_beats_complex_and_complex_pro_stream_pages_are_allocation_free() {
+    use hex_engine::audio_transform::StreamedGranularRoot;
+    use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion};
+    use hex_stream::{
+        GranularBankAllowance, GranularSourcePreparationLimits, GranularWorkerAllowance,
+        GranularWorkerBank, VerifiedGranularSource,
+    };
+    use hex_warp::{MapSegment, Mode, Resampler, SourceRegion, Tail, TimeMap};
+
+    let wav = FixtureWav::create();
+    let limits = VerifiedWavReaderLimits::new(
+        WavReaderLimits::new(1024 * 1024, SOURCE_FRAMES as u64, 32, 32_768),
+        1024 * 1024,
+    );
+    let verified = VerifiedWavReader::open(&wav.0, limits).expect("verified fixture");
+    let mut editor = Editor::new(Project::new(RATE).expect("project"), 4).expect("editor");
+    let Created::Asset(asset) = editor
+        .execute(Command::AddAsset {
+            path: wav.0.clone(),
+            sample_rate: RATE,
+            frames: SOURCE_FRAMES as u64,
+        })
+        .expect("asset")
+    else {
+        panic!("asset");
+    };
+    let raw = StreamedSourceMetadata::new(
+        StreamSourceKey::new(92, asset),
+        RATE,
+        RATE,
+        SOURCE_FRAMES as u64,
+        SOURCE_FRAMES as u64,
+        0,
+        *verified.fingerprint(),
+    )
+    .expect("raw metadata");
+    let modes = [
+        Mode::Beats {
+            division_frames: None,
+            tail: Tail::Forward,
+            decay: 100,
+        },
+        Mode::Complex,
+        Mode::ComplexPro {
+            formants: 70,
+            envelope: 128,
+        },
+    ];
+    let mut granular_sources = Vec::new();
+    let mut derived_metas = Vec::new();
+    for mode in modes {
+        let reader = VerifiedWavReader::open(&wav.0, limits).expect("reader");
+        let kernel = ResampleKernel::with_version(RATE, RATE, ResampleVersion::V1).unwrap();
+        let plan = ResamplePlan::with_kernel(
+            kernel,
+            SOURCE_FRAMES as u64,
+            SOURCE_FRAMES as u64,
+            16_384,
+            STREAM_PAGE_FRAMES,
+        )
+        .unwrap();
+        let region = SourceRegion::new(
+            SOURCE_FRAMES as u64,
+            0,
+            SOURCE_FRAMES as u64,
+            0,
+            true,
+            vec![],
+        )
+        .unwrap();
+        let map = TimeMap::new_streamed(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: SOURCE_FRAMES as u64,
+                source_start_q32: 0,
+                source_end_q32: (SOURCE_FRAMES as i128) << 32,
+            }],
+            SOURCE_FRAMES as u64,
+        )
+        .unwrap();
+        let root =
+            StreamedGranularRoot::new_warped(&raw, region, map, mode, 0, Resampler::V1, vec![])
+                .expect("warped root");
+        let source = VerifiedGranularSource::prepare_from_reader_on_control(
+            raw.clone(),
+            root,
+            reader,
+            plan,
+            GranularSourcePreparationLimits {
+                source_scratch_frames: 16_384,
+                checkpoint_entries: 4,
+                checkpoint_budget: 4 * 1024 * 1024,
+                max_processing_bytes: 16 * 1024 * 1024,
+                max_construction_peak_bytes: 128 * 1024 * 1024,
+            },
+            || false,
+        )
+        .expect("prepared warped source");
+        derived_metas.push(source.metadata().clone());
+        granular_sources.push(source);
+    }
+
+    let bank = GranularWorkerBank::try_new_on_control(
+        granular_sources,
+        GranularBankAllowance {
+            max_sources: 4,
+            max_data_bytes: 96 * 1024 * 1024,
+        },
+    )
+    .expect("bank");
+    let definition = SourceDefinition::new(wav.0.clone(), raw, limits);
+    let runtime = StreamRuntime::spawn_with_granular_sources(
+        StreamConfig::with_pool_pages(8),
+        vec![definition],
+        vec![],
+        bank,
+        GranularWorkerAllowance {
+            max_data_bytes: 128 * 1024 * 1024,
+            max_shared_handles: 64,
+        },
+    )
+    .expect("spawn warped runtime");
+    let (mut control, mut pages) = runtime.split().ok().expect("split runtime");
+    control
+        .wait_until_ready(Duration::from_secs(5))
+        .expect("catalog ready");
+
+    let page_keys: Vec<_> = derived_metas
+        .iter()
+        .map(|meta| hex_stream::PageKey {
+            source: meta.key(),
+            page_index: 0,
+        })
+        .collect();
+    for key in &page_keys {
+        pages.request_page(key.source, key.page_index);
+        assert!(
+            wait_for_pages(&mut pages, &[*key]),
+            "warped worker did not prepare Beats/Complex/ComplexPro page 0"
+        );
+    }
+
+    for meta in &derived_metas {
+        let clip = Clip::streamed_region(Arc::new(meta.clone()), 0, 64, 0, 64, false)
+            .expect("warped clip");
+        let project = EngineProject::new(
+            RATE,
+            vec![Track::new(vec![clip], 1.0, false).expect("track")],
+        )
+        .expect("engine project");
+        let mut renderer = Renderer::new(&project);
+        renderer.play();
+        let mut actual = [[0.0; 2]; 64];
+        let mut render_failed = false;
+        let info = measure(|| {
+            pages.pump_ready(4);
+            render_failed = renderer.render_with_pages(&mut actual, &mut pages).is_err();
+        });
+        assert!(!render_failed, "warmed warped render failed");
+        assert_no_allocation(info);
+        assert!(actual.iter().flatten().all(|s| s.is_finite()));
+
+        let mut hit = false;
+        let page_info = measure(|| hit = pages.page(meta.key(), 0).is_some());
+        assert!(hit);
+        assert_no_allocation(page_info);
+    }
+    let report = control.shutdown(pages).expect("shutdown warped runtime");
+    assert!(report.accounting_complete);
+}

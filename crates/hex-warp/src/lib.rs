@@ -9,6 +9,8 @@
 //! resource/work bounds and retain original source identity.
 mod beats;
 pub use beats::detect_transients;
+mod beats_sequential;
+pub use beats_sequential::{BeatsCheckpoint, SequentialBeats, SequentialBeatsConfig};
 pub mod fft;
 mod granular;
 pub use granular::{GrainAnalysis, GrainDecision, GrainSynthesis, analyze_grain};
@@ -22,8 +24,12 @@ mod resample;
 pub use resample::{PitchWindow, RepitchWindow, Resampler, V2_MAX_TAPS};
 mod source_region;
 mod spectral;
+mod spectral_sequential;
 pub use source_region::SourceRegion;
+pub use spectral_sequential::{SequentialSpectral, SequentialSpectralConfig, SpectralCheckpoint};
+mod warp_sequential;
 use std::fmt;
+pub use warp_sequential::{SequentialWarp, SequentialWarpConfig, WarpCheckpoint};
 
 pub type Frame = [f32; 2];
 pub const MAX_OUTPUT_FRAMES: usize = 16_777_216;
