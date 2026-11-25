@@ -107,7 +107,7 @@ fn device_fold_return_header_respects_numeric_focus_and_restores_body(cx: &mut T
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
         view.selected_track = None;
-        view.focused_return = Some(bus);
+        view.session_grid.focused_return = Some(bus);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);

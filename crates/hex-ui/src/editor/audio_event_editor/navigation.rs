@@ -62,11 +62,11 @@ impl EditorView {
             return;
         };
         let owner = (clip_id, self.project_generation);
-        if self.audio_event_editor.owner != Some(owner) {
-            let clipboard = self.audio_event_editor.clipboard.take();
-            let pending = self.audio_event_editor.pending.take();
-            let source_view = self.audio_event_editor.source_view;
-            self.audio_event_editor = State {
+        if self.audio_detail.event.owner != Some(owner) {
+            let clipboard = self.audio_detail.event.clipboard.take();
+            let pending = self.audio_detail.event.pending.take();
+            let source_view = self.audio_detail.event.source_view;
+            self.audio_detail.event = State {
                 owner: Some(owner),
                 revision,
                 cursor: editor_bounds(&root).0,
@@ -76,12 +76,12 @@ impl EditorView {
                 ..State::default()
             };
         }
-        let remember_coordinates = self.audio_event_editor.revision != revision
-            || self.audio_event_editor.frame_clip.is_none();
-        if self.audio_event_editor.revision != revision
+        let remember_coordinates = self.audio_detail.event.revision != revision
+            || self.audio_detail.event.frame_clip.is_none();
+        if self.audio_detail.event.revision != revision
             && let Some(state) = self.state.as_ref()
             && let Some(current) = state.project.clip(clip_id)
-            && let Some(previous) = self.audio_event_editor.frame_clip.as_ref()
+            && let Some(previous) = self.audio_detail.event.frame_clip.as_ref()
             && let Some(shift) = current.audio_event_coordinate_shift_from(previous)
             && shift != 0
         {
@@ -98,7 +98,7 @@ impl EditorView {
             let camera_delta = scope_offset(&root)
                 .zip(scope_offset(&previous_root))
                 .map_or(0, |(next, before)| next - before);
-            let state = &mut self.audio_event_editor;
+            let state = &mut self.audio_detail.event;
             let translate_camera = |view: &mut Viewport, negative: &mut u64| {
                 let start = i128::from(view.start) - i128::from(*negative) + camera_delta;
                 view.start = u64::try_from(start.max(0)).unwrap_or(u64::MAX);
@@ -129,8 +129,8 @@ impl EditorView {
                 .start_grip
                 .map(|(raw, offset, length)| (shifted(raw), offset, length));
         }
-        if (self.audio_event_editor.revision != revision
-            || self.audio_event_editor.frame_bounds.is_none())
+        if (self.audio_detail.event.revision != revision
+            || self.audio_detail.event.frame_bounds.is_none())
             && let Some(tempo) = self.state.as_ref().map(|s| s.project.tempo_map())
         {
             let (first, end) = editor_bounds(&root);
@@ -138,7 +138,8 @@ impl EditorView {
                 root.root_frame_at(first, tempo),
                 root.root_frame_at(end, tempo),
             ) {
-                self.audio_event_editor
+                self.audio_detail
+                    .event
                     .install_frame_space(&root, (first, end));
                 let current = self.state.as_ref().and_then(|s| {
                     let clip = s.project.clip(clip_id)?;
@@ -149,7 +150,7 @@ impl EditorView {
                     Some((position, root.root_frame_at(position, tempo).ok()?))
                 });
                 let window = self.event_frame_window(&root);
-                let old_start = self.audio_event_editor.canonical_start;
+                let old_start = self.audio_detail.event.canonical_start;
                 if current != old_start
                     && let (Some((_, old_frame)), Some((position, frame))) = (old_start, current)
                     && window
@@ -158,7 +159,8 @@ impl EditorView {
                 {
                     let local = i128::from(frame) - i128::from(first);
                     let start = if let Some((_, offset, length)) = self
-                        .audio_event_editor
+                        .audio_detail
+                        .event
                         .start_grip
                         .filter(|(point, _, _)| *point == position)
                     {
@@ -178,12 +180,12 @@ impl EditorView {
                         length: window.length,
                     });
                 }
-                self.audio_event_editor.canonical_start = current;
+                self.audio_detail.event.canonical_start = current;
             }
         }
-        if self.audio_event_editor.revision != revision {
+        if self.audio_detail.event.revision != revision {
             let (first, last) = content_bounds(&root);
-            let state = &mut self.audio_event_editor;
+            let state = &mut self.audio_detail.event;
             state.gesture = None;
             state.cursor = state.cursor.clamp(first, last);
             // Retained-root selections survive moving loop bounds.
@@ -195,7 +197,7 @@ impl EditorView {
             state.revision = revision;
         }
         if remember_coordinates {
-            self.audio_event_editor.frame_clip = self
+            self.audio_detail.event.frame_clip = self
                 .state
                 .as_ref()
                 .and_then(|state| state.project.clip(clip_id))
@@ -229,7 +231,8 @@ impl EditorView {
             .map_or(0, |a| a.playback_frames())
     }
     pub(in crate::editor) fn audio_source_viewport(&self) -> SignedFrameViewport {
-        self.audio_event_editor
+        self.audio_detail
+            .event
             .source_viewport
             .unwrap_or_else(|| Viewport::fit(self.source_extent()).into())
     }
@@ -237,7 +240,7 @@ impl EditorView {
         if !self.event_context_current() {
             return None;
         }
-        if self.audio_event_editor.source_view {
+        if self.audio_detail.event.source_view {
             let clip = self.state.as_ref()?.project.clip(self.detail_clip_id()?)?;
             Some((
                 self.audio_source_viewport(),
@@ -250,7 +253,7 @@ impl EditorView {
             let tempo = self.state.as_ref()?.project.tempo_map();
             let first = root.root_frame_at(editor_bounds(&root).0, tempo).ok()?;
             let cursor = i128::from(
-                root.root_frame_at(self.audio_event_editor.cursor, tempo)
+                root.root_frame_at(self.audio_detail.event.cursor, tempo)
                     .ok()?,
             ) - i128::from(first);
             Some((
@@ -262,8 +265,8 @@ impl EditorView {
         }
     }
     fn set_audio_navigation(&mut self, viewport: SignedFrameViewport) {
-        if self.audio_event_editor.source_view {
-            self.audio_event_editor.source_viewport = Some(viewport);
+        if self.audio_detail.event.source_view {
+            self.audio_detail.event.source_viewport = Some(viewport);
         } else {
             self.store_event_camera(viewport);
         }
@@ -275,13 +278,13 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.audio_navigation_idle() || self.audio_event_editor.source_view != source {
+        if !self.audio_navigation_idle() || self.audio_detail.event.source_view != source {
             return false;
         }
         let Some(bounds) = (if source {
-            self.audio_event_editor.source_bounds
+            self.audio_detail.event.source_bounds
         } else {
-            self.audio_event_editor.bounds
+            self.audio_detail.event.bounds
         }) else {
             return false;
         };
@@ -294,12 +297,12 @@ impl EditorView {
         let Some((viewport, minimum, maximum, _)) = self.audio_navigation() else {
             return false;
         };
-        let Some(owner) = self.audio_event_editor.owner else {
+        let Some(owner) = self.audio_detail.event.owner else {
             return false;
         };
         let pan = Pan {
             owner,
-            revision: self.audio_event_editor.revision,
+            revision: self.audio_detail.event.revision,
             source,
             bounds,
             origin,
@@ -325,18 +328,18 @@ impl EditorView {
                     return;
                 };
                 let _ = entity.update(cx, |view, cx| {
-                    if view.audio_event_editor.pan != Some(pan) {
+                    if view.audio_detail.event.pan != Some(pan) {
                         return;
                     }
-                    if !view.clip_view_open
-                        || view.device_panel_active
-                        || !view.audio_event_focus.is_focused(window)
-                        || view.audio_event_editor.owner != Some(pan.owner)
-                        || view.audio_event_editor.revision != pan.revision
-                        || view.audio_event_editor.source_view != pan.source
+                    if !view.audio_detail.clip_view_open
+                        || view.device_panel.active
+                        || !view.audio_detail.focus.is_focused(window)
+                        || view.audio_detail.event.owner != Some(pan.owner)
+                        || view.audio_detail.event.revision != pan.revision
+                        || view.audio_detail.event.source_view != pan.source
                         || !view.event_context_current()
                     {
-                        view.audio_event_editor.pan = None;
+                        view.audio_detail.event.pan = None;
                     } else {
                         let x = f32::from(position.x);
                         if x.is_finite() {
@@ -349,7 +352,7 @@ impl EditorView {
                             }
                         }
                         if released.is_some() || !x.is_finite() {
-                            view.audio_event_editor.pan = None;
+                            view.audio_detail.event.pan = None;
                         }
                     }
                     cx.notify();
@@ -357,8 +360,8 @@ impl EditorView {
             },
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
-                    if view.audio_event_editor.pan == Some(pan) {
-                        view.audio_event_editor.pan = None;
+                    if view.audio_detail.event.pan == Some(pan) {
+                        view.audio_detail.event.pan = None;
                         cx.notify();
                     }
                 });
@@ -367,8 +370,8 @@ impl EditorView {
         ) {
             return false;
         }
-        self.audio_event_focus.focus(window);
-        self.audio_event_editor.pan = Some(pan);
+        self.audio_detail.focus.focus(window);
+        self.audio_detail.event.pan = Some(pan);
         true
     }
 
@@ -379,15 +382,15 @@ impl EditorView {
         window: &mut Window,
         owner: gpui::EntityId,
     ) {
-        if let Some(pan) = self.audio_event_editor.pan
+        if let Some(pan) = self.audio_detail.event.pan
             && pan.source == source
             && pan.bounds == bounds
-            && self.audio_event_editor.owner == Some(pan.owner)
-            && self.audio_event_editor.revision == pan.revision
-            && self.clip_view_open
-            && !self.device_panel_active
-            && self.audio_event_focus.is_focused(window)
-            && self.audio_event_editor.source_view == source
+            && self.audio_detail.event.owner == Some(pan.owner)
+            && self.audio_detail.event.revision == pan.revision
+            && self.audio_detail.clip_view_open
+            && !self.device_panel.active
+            && self.audio_detail.focus.is_focused(window)
+            && self.audio_detail.event.source_view == source
             && self.event_context_current()
         {
             window.renew_pointer_capture(owner, gpui::CursorStyle::ClosedHand);
@@ -395,11 +398,11 @@ impl EditorView {
     }
 
     pub(super) fn audio_navigation_idle(&self) -> bool {
-        self.audio_event_editor.pan.is_none()
+        self.audio_detail.event.pan.is_none()
             && !self.clip_loop_held()
             && !self.edit_pending()
-            && self.audio_event_editor.pending.is_none()
-            && self.audio_event_editor.gesture.is_none()
+            && self.audio_detail.event.pending.is_none()
+            && self.audio_detail.event.gesture.is_none()
             && self.context_menu.is_none()
     }
     pub(in crate::editor) fn event_zoom(&mut self, inward: bool) {
@@ -427,11 +430,11 @@ impl EditorView {
         if !self.audio_navigation_idle() {
             return;
         }
-        if self.audio_event_editor.source_view {
-            self.audio_event_editor.source_viewport = None;
+        if self.audio_detail.event.source_view {
+            self.audio_detail.event.source_viewport = None;
         } else {
-            self.audio_event_editor.viewport = None;
-            self.audio_event_editor.negative_pan = 0;
+            self.audio_detail.event.viewport = None;
+            self.audio_detail.event.negative_pan = 0;
             if let Some((_, root, _)) = self.event_context()
                 && content_bounds(&root) != editor_bounds(&root)
             {
@@ -442,7 +445,7 @@ impl EditorView {
 
     pub(in crate::editor) fn fit_selected_audio_clip(&mut self) {
         self.sync_audio_navigation();
-        if self.audio_event_editor.source_view {
+        if self.audio_detail.event.source_view {
             if self.event_context_current() && self.audio_navigation_idle() {
                 self.fit_audio_source(false);
             }
@@ -456,10 +459,10 @@ impl EditorView {
             return false;
         }
         if back {
-            let Some(prior) = self.audio_event_editor.source_fit_back.take() else {
+            let Some(prior) = self.audio_detail.event.source_fit_back.take() else {
                 return false;
             };
-            self.audio_event_editor.source_viewport = prior;
+            self.audio_detail.event.source_viewport = prior;
         } else {
             return self.fit_audio_source(true);
         }
@@ -487,9 +490,9 @@ impl EditorView {
             return false;
         }
         if remember {
-            self.audio_event_editor.source_fit_back = Some(self.audio_event_editor.source_viewport);
+            self.audio_detail.event.source_fit_back = Some(self.audio_detail.event.source_viewport);
         }
-        self.audio_event_editor.source_viewport = Some(next);
+        self.audio_detail.event.source_viewport = Some(next);
         true
     }
     pub(in crate::editor) fn audio_navigation_wheel(
@@ -499,7 +502,7 @@ impl EditorView {
         window: &Window,
         cx: &Context<Self>,
     ) -> bool {
-        if source != self.audio_event_editor.source_view
+        if source != self.audio_detail.event.source_view
             || !self.audio_navigation_idle()
             || cx.has_active_drag()
             || window.is_pointer_dragging()
@@ -507,9 +510,9 @@ impl EditorView {
             return false;
         }
         let Some(bounds) = (if source {
-            self.audio_event_editor.source_bounds
+            self.audio_detail.event.source_bounds
         } else {
-            self.audio_event_editor.bounds
+            self.audio_detail.event.bounds
         }) else {
             return false;
         };
@@ -534,9 +537,9 @@ impl EditorView {
             return false;
         };
         let wheel = if source {
-            &mut self.audio_event_editor.source_wheel
+            &mut self.audio_detail.event.source_wheel
         } else {
-            &mut self.audio_event_editor.wheel
+            &mut self.audio_detail.event.wheel
         };
         *wheel = (*wheel + dy.clamp(-320.0, 320.0)).clamp(-320.0, 320.0);
         for _ in 0..4 {

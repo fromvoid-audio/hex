@@ -306,7 +306,7 @@ fn automation_key_preserves_typing_midi_and_held_edits(cx: &mut TestAppContext) 
         assert!(!v.automation_view.enabled);
         assert!(v.browser.search.read(cx).text().contains('a'));
     });
-    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window)));
     visual.simulate_keystrokes("a shift-a");
     editor.read_with(&visual, |v, _| assert!(!v.automation_view.enabled));
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));

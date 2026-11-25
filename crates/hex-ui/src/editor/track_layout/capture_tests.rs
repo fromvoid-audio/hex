@@ -205,7 +205,7 @@ fn track_size_capture_loss_restores_full_snapshot_before_late_up(cx: &mut TestAp
                     original.1
                 );
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
             });
         }
     }

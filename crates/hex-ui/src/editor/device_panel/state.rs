@@ -126,6 +126,37 @@ pub(in crate::editor) struct DevicePanelState {
     pub(super) add_menu_target: Option<device_add::Target>,
     pub(super) add_search: Option<device_picker::Search>,
     pub(super) message: Option<String>,
+    pub(in crate::editor) active: bool,
+    pub(in crate::editor) gesture: hex_session::device_gesture::GestureClient,
+    pub(in crate::editor) gesture_barriers: std::collections::VecDeque<Request>,
+    pub(in crate::editor) catalog_barrier: super::super::device_gesture::CatalogBarrierState,
+    pub(in crate::editor) insert_confirmation:
+        Option<super::super::plugin_effect::DeviceConfirmation>,
+    pub(in crate::editor) confirmation_restore_focus:
+        Option<super::super::plugin_effect::DeviceConfirmationFocusRestore>,
+    /// Vst3 devices the current output reports as degraded.
+    pub(in crate::editor) degraded_plugins: crate::editor_backend::DegradedDevices,
+    /// Degraded vst3 devices with an in-flight per-plugin reload request.
+    pub(in crate::editor) reloading_plugins: std::collections::BTreeSet<DeviceId>,
+    pub(in crate::editor) plugin_editor_windows: Vec<u64>,
+    pub(in crate::editor) pending_plugin_effect:
+        Option<super::super::plugin_effect::PendingPluginEffect>,
+    pub(in crate::editor) failed_plugin_proposal:
+        Option<super::super::plugin_effect::FailedPluginProposal>,
+    pub(in crate::editor) proposed_plugin_action_focus: Option<gpui::FocusHandle>,
+    pub(in crate::editor) sampler_load: super::super::sampler_load::State,
+    pub(in crate::editor) sampler_parameter: super::super::sampler_parameter::State,
+    // Streamed documents replace their sampler output stopped; this frame
+    // resumes playback once that edit settles (Pulse #3784).
+    pub(in crate::editor) sampler_edit_resume: Option<u64>,
+    pub(in crate::editor) sample_recorder: super::super::sample_recorder::Recorder,
+    pub(in crate::editor) project_spectrum: super::super::project_spectrum::ProjectSpectrumState,
+    // One existing read-only view per transient protocol, never a prepared graph/resource set.
+    pub(in crate::editor) resident_preview: Option<hex_session::service::DevicePreview>,
+    pub(in crate::editor) arrangement_drop_preview:
+        Option<super::super::arrangement_device_drop::ArrangementDevicePreview>,
+    pub(in crate::editor) active_native_drag: Option<drag::NativeDeviceDrag>,
+    pub(in crate::editor) preset_dialog_open: bool,
 }
 
 pub(in crate::editor) struct OperatorPreviewInventory {
@@ -381,7 +412,8 @@ pub(in crate::editor) fn device_layout_style() -> ControlStyle {
 /// A source-owned Sampler edit retains its visible owner until its terminal.
 pub(in crate::editor) fn source_sampler_edit_active(view: &EditorView) -> bool {
     matches!(view.device_panel.owner, Some(DevicePanelOwner::Source(_)))
-        && (view.sampler_parameter_pending() || view.sampler_parameter.numeric_draft_active())
+        && (view.sampler_parameter_pending()
+            || view.device_panel.sampler_parameter.numeric_draft_active())
 }
 
 /// Commit every live numeric draft before a save, panel transition, or destructive edit.
@@ -448,7 +480,8 @@ pub(super) fn finalize_controls_except(
     }
     let mut first_error = None;
     let active = view
-        .device_gesture
+        .device_panel
+        .gesture
         .snapshot()
         .map(|snapshot| snapshot.target);
     let mut controls = Vec::new();
@@ -496,10 +529,11 @@ pub(super) fn finalize_controls_except(
             let active_gesture_matches = match parameter_key.as_ref() {
                 Some((_, lease)) => gesture_adapter::owns_numeric_gesture(view, target, lease),
                 None => {
-                    view.device_gesture
+                    view.device_panel
+                        .gesture
                         .snapshot()
                         .is_some_and(|snapshot| snapshot.target == target)
-                        && !view.device_gesture.has_pending_terminal()
+                        && !view.device_panel.gesture.has_pending_terminal()
                 }
             };
             if finalized.previous != finalized.value || active_gesture_matches {
@@ -611,9 +645,14 @@ pub(in crate::editor) fn retire_removed_send_controls(
         if let Some(control) = view.device_panel.send_controls.remove(&key) {
             control.entity.update(cx, |control, cx| control.cancel(cx));
         }
-        if view.device_gesture.snapshot().is_some_and(|snapshot| {
-            snapshot.target == target && !view.device_gesture.has_pending_terminal()
-        }) {
+        if view
+            .device_panel
+            .gesture
+            .snapshot()
+            .is_some_and(|snapshot| {
+                snapshot.target == target && !view.device_panel.gesture.has_pending_terminal()
+            })
+        {
             let _ = view.cancel_device_gesture();
         }
     }
@@ -720,8 +759,8 @@ pub(in crate::editor) fn source_owner_current(
     view: &EditorView,
     source: hex_project::SourceId,
 ) -> bool {
-    if !view.clip_view_open
-        || !view.device_panel_active
+    if !view.audio_detail.clip_view_open
+        || !view.device_panel.active
         || view.device_panel.owner != Some(DevicePanelOwner::Source(source))
     {
         return false;
@@ -884,8 +923,8 @@ mod graph_capture_tests {
     fn settled(view: &EditorView) -> bool {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     }
 
     #[gpui::test]

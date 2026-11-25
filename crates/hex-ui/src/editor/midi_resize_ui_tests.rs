@@ -63,7 +63,7 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
         });
-        visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+        visual.update(|window, cx| editor.update(cx, |v, _| v.midi_editor.focus.focus(window)));
         // Trailing ends snap only while cmd is held; leading edges keep the grid.
         let snap = if leading {
             Modifiers::default()
@@ -93,7 +93,7 @@ fn group_edges_anchor_each_opposite_edge_and_commit_once_after_release(cx: &mut 
                 assert_eq!((note.channel(), note.velocity()), (2, 93));
             }
             assert_eq!((notes[0].pitch(), notes[1].pitch()), (60, 64));
-            assert_eq!(v.midi_selection.len(), 2);
+            assert_eq!(v.midi_editor.selection.len(), 2);
             v.state.as_ref().unwrap().project.snapshot()
         });
         for _ in 0..3 {
@@ -131,8 +131,8 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
         });
         pump(&editor, &mut visual);
         editor.update(&mut visual, |v, cx| {
-            v.midi_selection.clear();
-            v.piano_beat_span = BeatTime::from_quarters(16).unwrap();
+            v.midi_editor.selection.clear();
+            v.midi_editor.piano_beat_span = BeatTime::from_quarters(16).unwrap();
             cx.notify();
         });
         visual.run_until_parked();
@@ -146,9 +146,9 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                     generation: v.project_generation,
                     revision: state.revision,
                     clip,
-                    beat_start: v.piano_beat_start,
-                    beat_span: v.piano_beat_span.raw(),
-                    pitch: v.piano_pitch,
+                    beat_start: v.midi_editor.piano_beat_start,
+                    beat_span: v.midi_editor.piano_beat_span.raw(),
+                    pitch: v.midi_editor.piano_pitch,
                 },
                 source.notes(),
             );
@@ -164,7 +164,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                 note.id(),
                 left,
                 right,
-                (geometry.y + 0.5 / f32::from(v.piano_pitch.test_row_count()))
+                (geometry.y + 0.5 / f32::from(v.midi_editor.piano_pitch.test_row_count()))
                     * (f32::from(roll.size.height) - 2.0),
                 state.project.snapshot(),
             )
@@ -173,7 +173,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
         visual.simulate_click(center, Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.primary(), Some(id));
+            assert_eq!(v.midi_editor.selection.primary(), Some(id));
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
         let down = roll.origin
@@ -214,7 +214,7 @@ fn explicitly_selected_tiny_note_edges_resize_with_matching_hover_and_stable_id(
                 BeatTime::ONE.raw() / 64 + BeatTime::ONE.raw() / 4
             );
             assert_eq!((note.pitch(), note.channel(), note.velocity()), (60, 3, 55));
-            assert_eq!(v.midi_selection.primary(), Some(id));
+            assert_eq!(v.midi_editor.selection.primary(), Some(id));
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
@@ -256,8 +256,8 @@ fn group_leading_resize_paints_and_commits_the_same_destructive_prefix(cx: &mut 
             .unwrap()
             .notes();
         let victim = notes[0].id();
-        v.midi_selection.set_single(notes[1].id());
-        v.midi_selection.toggle(notes[2].id()).unwrap();
+        v.midi_editor.selection.set_single(notes[1].id());
+        v.midi_editor.selection.toggle(notes[2].id()).unwrap();
         cx.notify();
         (victim, v.state.as_ref().unwrap().project.snapshot())
     });

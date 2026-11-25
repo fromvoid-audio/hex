@@ -60,16 +60,19 @@ fn at(
             + point(
                 px(1.0)
                     + (roll.size.width - px(2.0))
-                        * ((beat * BeatTime::ONE.raw() as f64 - v.piano_beat_start as f64)
-                            / v.piano_beat_span.raw() as f64) as f32,
+                        * ((beat * BeatTime::ONE.raw() as f64
+                            - v.midi_editor.piano_beat_start as f64)
+                            / v.midi_editor.piano_beat_span.raw() as f64)
+                            as f32,
                 px(1.0)
                     + (roll.size.height - px(2.0))
                         * (f32::from(
-                            v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count()
+                            v.midi_editor.piano_pitch.first_test_pitch()
+                                + v.midi_editor.piano_pitch.test_row_count()
                                 - 1
                                 - pitch,
                         ) + 0.5)
-                        / f32::from(v.piano_pitch.test_row_count()),
+                        / f32::from(v.midi_editor.piano_pitch.test_row_count()),
             )
     })
 }
@@ -157,7 +160,7 @@ fn repeated_keyboard_copy_tracks_only_acknowledged_new_ids_and_roundtrips(cx: &m
     let mut history =
         vec![editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot())];
     for repeat in 1..=3 {
-        let old_selected = editor.read_with(&visual, |v, _| v.midi_selection.ids().to_vec());
+        let old_selected = editor.read_with(&visual, |v, _| v.midi_editor.selection.ids().to_vec());
         visual.simulate_keystrokes("cmd-d");
         pump(&editor, &mut visual);
         visual.run_until_parked();
@@ -171,14 +174,15 @@ fn repeated_keyboard_copy_tracks_only_acknowledged_new_ids_and_roundtrips(cx: &m
             assert!(all.contains(note));
         }
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.len(), 2);
+            assert_eq!(v.midi_editor.selection.len(), 2);
             assert!(
-                v.midi_selection
+                v.midi_editor
+                    .selection
                     .ids()
                     .iter()
                     .all(|id| !old_selected.contains(id))
             );
-            for (index, id) in v.midi_selection.ids().iter().enumerate() {
+            for (index, id) in v.midi_editor.selection.ids().iter().enumerate() {
                 let note = all.iter().find(|n| n.id() == *id).unwrap();
                 assert_eq!(
                     note.start().raw(),
@@ -247,12 +251,12 @@ fn option_drag_copies_single_and_group_with_preview_cancel_and_source_growth(
             visual.simulate_keystrokes("cmd-a");
         } else {
             editor.update(&mut visual, |v, cx| {
-                v.midi_selection.set_single(originals[0].id());
+                v.midi_editor.selection.set_single(originals[0].id());
                 cx.notify();
             });
         }
         editor.update(&mut visual, |v, cx| {
-            v.piano_beat_span = BeatTime::from_quarters(8).unwrap();
+            v.midi_editor.piano_beat_span = BeatTime::from_quarters(8).unwrap();
             cx.notify();
         });
         visual.run_until_parked();
@@ -292,13 +296,13 @@ fn option_drag_copies_single_and_group_with_preview_cancel_and_source_growth(
             assert!(all.contains(original));
         }
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.len(), if group { 2 } else { 1 });
+            assert_eq!(v.midi_editor.selection.len(), if group { 2 } else { 1 });
             let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
             assert_eq!(
                 source.source_length().raw(),
                 BeatTime::ONE.raw() * if group { 23 } else { 19 } / 4
             );
-            for id in v.midi_selection.ids() {
+            for id in v.midi_editor.selection.ids() {
                 let copy = all.iter().find(|n| n.id() == *id).unwrap();
                 let original = originals
                     .iter()
@@ -358,11 +362,11 @@ fn console_copy_keeps_arrangement_isolated_and_invalid_empty_requests_do_not_edi
         };
         let clip = clip.id();
         v.mode = super::super::EditorMode::Session;
-        v.selected_scene = Some(scene);
-        v.selected_cell = Some((track, scene));
+        v.session_grid.selected_scene = Some(scene);
+        v.session_grid.selected_cell = Some((track, scene));
         v.selected_clip = Some(clip);
-        v.piano_view_clip = None;
-        v.midi_selection.clear();
+        v.midi_editor.piano_view_clip = None;
+        v.midi_editor.selection.clear();
         cx.notify();
         clip
     });
@@ -415,8 +419,8 @@ fn console_copy_keeps_arrangement_isolated_and_invalid_empty_requests_do_not_edi
         ] {
             assert!(insertions(&[invalid], 1).is_err());
         }
-        v.midi_selection.set_single(note.id());
-        v.midi_snap_grid = super::super::midi_drag::MidiGrid::Off;
+        v.midi_editor.selection.set_single(note.id());
+        v.midi_editor.snap_grid = super::super::midi_drag::MidiGrid::Off;
         cx.notify();
     });
     visual.run_until_parked();
@@ -427,10 +431,10 @@ fn console_copy_keeps_arrangement_isolated_and_invalid_empty_requests_do_not_edi
     let all = notes(&editor, &visual, clip);
     assert_eq!(all.len(), 3);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.len(), 1);
+        assert_eq!(v.midi_editor.selection.len(), 1);
         let copy = all
             .iter()
-            .find(|n| Some(n.id()) == v.midi_selection.primary())
+            .find(|n| Some(n.id()) == v.midi_editor.selection.primary())
             .unwrap();
         assert_eq!(copy.start().raw(), BeatTime::ONE.raw() * 3 / 4);
         assert_eq!(copy.velocity(), 37);
@@ -470,7 +474,7 @@ fn copy_collision_keeps_left_prefix_and_focus_or_real_revision_cancels_preview(
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
     });
-    visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.update(cx, |v, _| v.midi_editor.focus.focus(window)));
     visual.simulate_mouse_down(down, MouseButton::Left, alt);
     visual.simulate_mouse_move(end, Some(MouseButton::Left), alt);
     editor.update(&mut visual, |v, _| {
@@ -492,7 +496,7 @@ fn copy_collision_keeps_left_prefix_and_focus_or_real_revision_cancels_preview(
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after_external)
     });
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.set_single(original.id());
+        v.midi_editor.selection.set_single(original.id());
         cx.notify();
     });
     visual.run_until_parked();

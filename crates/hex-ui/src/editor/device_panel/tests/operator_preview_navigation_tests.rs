@@ -121,7 +121,7 @@ fn operator_replacement_and_navigation_preserve_untouched_rounded_values(cx: &mu
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -135,7 +135,7 @@ fn operator_replacement_and_navigation_preserve_untouched_rounded_values(cx: &mu
             original,
             "view navigation preserves exact canonical sound state and history"
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
     // Enter on an untouched draft follows the same exact-value contract as a
     // page-change barrier. Explicitly typing the displayed value is an edit.

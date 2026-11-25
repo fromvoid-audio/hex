@@ -14,17 +14,21 @@ pub(crate) struct Binding {
 }
 impl EditorView {
     pub(crate) fn clip_numeric_editing(&self, cx: &Context<Self>) -> bool {
-        self.audio_clip_controls.editing(cx) && self.audio_clip_controls_key_is_current()
-            || self.sample_bpm_control.as_ref().is_some_and(|binding| {
-                self.detail_audio_clip_data()
-                    .is_some_and(|selection| selection.1 == binding.key.0)
-                    && self.project_generation == binding.key.1
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == binding.key.2)
-                    && binding.entity.read(cx).is_editing()
-            })
+        self.audio_detail.clip_controls.editing(cx) && self.audio_clip_controls_key_is_current()
+            || self
+                .audio_detail
+                .sample_bpm_control
+                .as_ref()
+                .is_some_and(|binding| {
+                    self.detail_audio_clip_data()
+                        .is_some_and(|selection| selection.1 == binding.key.0)
+                        && self.project_generation == binding.key.1
+                        && self
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| state.revision == binding.key.2)
+                        && binding.entity.read(cx).is_editing()
+                })
     }
 }
 pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorView>) -> Div {
@@ -52,14 +56,19 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
         });
     let value = f64::from(value.micro_bpm()) / 1_000_000.0;
     let key = (id, view.project_generation, state.revision);
-    if view.sample_bpm_control.as_ref().is_some_and(|binding| {
-        binding.key != key
-            && (!view.audio_clip_controls.has_pending()
-                || (binding.key.0, binding.key.1) != (key.0, key.1))
-    }) {
+    if view
+        .audio_detail
+        .sample_bpm_control
+        .as_ref()
+        .is_some_and(|binding| {
+            binding.key != key
+                && (!view.audio_detail.clip_controls.has_pending()
+                    || (binding.key.0, binding.key.1) != (key.0, key.1))
+        })
+    {
         view.retire_sample_bpm_control();
     }
-    let binding = if let Some(binding) = view.sample_bpm_control.as_ref() {
+    let binding = if let Some(binding) = view.audio_detail.sample_bpm_control.as_ref() {
         binding
     } else {
         let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm"))
@@ -121,7 +130,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 );
                 cx.notify();
             });
-        view.sample_bpm_control.insert(Binding {
+        view.audio_detail.sample_bpm_control.insert(Binding {
             key,
             focus: gpui::Focusable::focus_handle(&entity, cx),
             entity,
@@ -224,11 +233,15 @@ mod ui_tests {
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("nan");
         visual.simulate_keystrokes("enter");
-        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+        editor.read_with(cx, |view, _| {
+            assert!(view.test_probes.last_enqueued_edit.is_none())
+        });
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input("60");
         visual.simulate_keystrokes("escape");
-        editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+        editor.read_with(cx, |view, _| {
+            assert!(view.test_probes.last_enqueued_edit.is_none())
+        });
         visual.simulate_event(gpui::MouseDownEvent {
             position: bounds.center(),
             button: MouseButton::Left,
@@ -241,11 +254,11 @@ mod ui_tests {
         visual.simulate_input("60");
         editor.read_with(cx, |view, _| {
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "draft does not reach worker"
             )
         });
         visual.simulate_keystrokes("enter");
-        editor.read_with(cx, |view, _| assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::SetAudioClipSampleBpm { clip: id, tempo }) if id == clip && tempo.micro_bpm() == 60_000_000)));
+        editor.read_with(cx, |view, _| assert!(matches!(view.test_probes.last_enqueued_edit, Some(hex_project::Command::SetAudioClipSampleBpm { clip: id, tempo }) if id == clip && tempo.micro_bpm() == 60_000_000)));
     }
 }

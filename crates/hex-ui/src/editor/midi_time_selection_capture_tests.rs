@@ -50,7 +50,8 @@ fn open(cx: &mut TestAppContext, selector: &'static str) -> Fixture {
     visual.simulate_resize(size(px(1280.), px(800.)));
     visual.run_until_parked();
     if selector != "midi-source-ruler" {
-        visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
+        visual
+            .update(|window, cx| editor.update(cx, |view, _| view.midi_editor.focus.focus(window)));
         visual.simulate_event(KeyDownEvent {
             keystroke: Keystroke::parse("2").unwrap(),
             is_held: false,
@@ -90,7 +91,11 @@ fn time_selection_owns_three_surfaces_and_releases_input_after_range(cx: &mut Te
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
         assert!(
-            editor.read_with(&visual, |v, _| v.midi_time_selection.gesture.is_some()),
+            editor.read_with(&visual, |v, _| v
+                .midi_editor
+                .time_selection
+                .gesture
+                .is_some()),
             "{surface}"
         );
         let outside = point(px(640.), px(10.));
@@ -131,7 +136,7 @@ fn time_selection_owns_three_surfaces_and_releases_input_after_range(cx: &mut Te
             visual.run_until_parked();
         }
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_time_selection.gesture.is_none());
+            assert!(v.midi_editor.time_selection.gesture.is_none());
             assert_eq!(
                 v.midi_time_selection_bounds(),
                 Some((
@@ -178,7 +183,7 @@ fn time_selection_loss_preserves_prior_range_without_stale_release(cx: &mut Test
             let prior = editor.read_with(&visual, |v, _| {
                 (
                     v.midi_time_selection_bounds(),
-                    v.midi_marker,
+                    v.midi_editor.marker,
                     v.state.as_ref().unwrap().project.snapshot(),
                 )
             });
@@ -192,11 +197,11 @@ fn time_selection_loss_preserves_prior_range_without_stale_release(cx: &mut Test
                     cx.notify();
                 }),
                 "viewport" => editor.update(&mut visual, |v, cx| {
-                    v.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
+                    v.midi_editor.piano_beat_start = i128::from(hex_project::BeatTime::ONE.raw());
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "window" => visual.deactivate_window(),
@@ -232,7 +237,10 @@ fn time_selection_loss_preserves_prior_range_without_stale_release(cx: &mut Test
             visual.run_until_parked();
             assert_eq!(actions.get(), 0, "{surface}/{loss}: trailing release");
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_time_selection.gesture.is_none(), "{surface}/{loss}");
+                assert!(
+                    v.midi_editor.time_selection.gesture.is_none(),
+                    "{surface}/{loss}"
+                );
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), prior.2);
                 assert!(!v.edit_pending());
                 if loss != "generation" {
@@ -240,12 +248,12 @@ fn time_selection_loss_preserves_prior_range_without_stale_release(cx: &mut Test
                 }
                 if loss == "generation" {
                     assert_eq!(
-                        v.midi_marker,
+                        v.midi_editor.marker,
                         Some(0),
                         "new project resets insertion cursor"
                     );
                 } else {
-                    assert_eq!(v.midi_marker, prior.1, "{surface}/{loss}");
+                    assert_eq!(v.midi_editor.marker, prior.1, "{surface}/{loss}");
                 }
             });
         }

@@ -57,9 +57,9 @@ fn selected_clip_warp_toggle_is_visible_and_dispatches_transient_beats(cx: &mut 
         visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             if enabled {
-                assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: None }) if *id == clip));
+                assert!(matches!(&view.test_probes.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: None }) if *id == clip));
             } else {
-                assert!(matches!(&view.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) }) if *id == clip && settings.mode == modes()[0]));
+                assert!(matches!(&view.test_probes.last_enqueued_edit, Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) }) if *id == clip && settings.mode == modes()[0]));
             }
         });
     }
@@ -91,14 +91,16 @@ fn selected_long_clip_warp_toggle_enables_tones(cx: &mut TestAppContext) {
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
         view.selected_clip = Some(clip);
-        view.clip_view_open = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let toggle = visual.debug_bounds("audio-clip-warp-toggle").unwrap();
     visual.simulate_click(toggle.center(), Modifiers::default());
-    let edit = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    let edit = editor.read_with(cx, |view, _| {
+        view.test_probes.last_enqueued_edit.clone().unwrap()
+    });
     assert!(matches!(&edit,
         Command::SetAudioClipWarp { clip: id, settings: Some(settings) }
         if *id == clip && matches!(settings.mode, WarpMode::Tones { .. })
@@ -134,7 +136,7 @@ fn assert_mode_choice(cx: &mut TestAppContext, requested: usize) {
     visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(matches!(&view.last_enqueued_edit,
+        assert!(matches!(&view.test_probes.last_enqueued_edit,
         Some(Command::SetAudioClipWarp{clip:id,settings:Some(settings)})
         if *id == clip && if requested == 0 { matches!(settings.mode,WarpMode::Beats{decay:60,..}) }
             else { settings.mode == modes()[requested] }))
@@ -209,7 +211,7 @@ fn selected_clip_beats_controls_are_visible_and_dispatch_existing_loop_envelope_
         visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
-            assert!(matches!(&view.last_enqueued_edit,
+            assert!(matches!(&view.test_probes.last_enqueued_edit,
                 Some(Command::SetAudioClipWarp { clip: id, settings: Some(settings) })
                 if *id == clip && matches!(settings.mode, WarpMode::Beats { tail, decay, .. } if tail == expected_tail && decay == expected_decay)));
         });
@@ -318,7 +320,7 @@ fn bounded_audio_detail_fixture(
                 view.mode = super::super::EditorMode::Arrangement;
                 view.selected_track = Some(track);
                 view.selected_clip = Some(clip);
-                view.clip_view_open = true;
+                view.audio_detail.clip_view_open = true;
                 cx.notify();
             });
             editor
@@ -492,7 +494,9 @@ fn shift_selected_warp_applies_to_every_clip_with_its_own_source_region(cx: &mut
     let bounds = visual.debug_bounds("audio-clip-warp-toggle").unwrap();
     visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
-    let command = editor.read_with(cx, |view, _| view.last_enqueued_edit.clone().unwrap());
+    let command = editor.read_with(cx, |view, _| {
+        view.test_probes.last_enqueued_edit.clone().unwrap()
+    });
     let before = model.project().clone();
     model.execute(command).unwrap();
     for id in [first, second] {

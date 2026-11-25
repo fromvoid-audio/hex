@@ -100,7 +100,7 @@ impl EditorView {
         source: hex_project::SourceId,
         path: PathBuf,
     ) -> Result<Target, &'static str> {
-        if self.edit_pending() || self.sampler_parameter.numeric_draft_active() {
+        if self.edit_pending() || self.device_panel.sampler_parameter.numeric_draft_active() {
             return Err("wait for the pending edit before loading a sampler");
         }
         if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
@@ -178,7 +178,8 @@ impl EditorView {
     ) {
         use super::context_menu::EditorContextAction;
         use crate::context_menu::{MenuItem, PopupMenu};
-        let (label, action) = if let Some(pending) = self.sampler_load.pending.as_ref() {
+        let (label, action) = if let Some(pending) = self.device_panel.sampler_load.pending.as_ref()
+        {
             (
                 "cancel sampler load",
                 EditorContextAction::CancelSamplerLoad {
@@ -237,11 +238,12 @@ impl EditorView {
         cx.notify();
     }
     fn browser_sampler_drag_current(&self, drag: &drag::BrowserAudioDrag) -> bool {
-        self.active_browser_audio_drag
+        self.browser
+            .active_audio_drag
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.destination, &drag.destination))
-            && !self.opening_project
-            && !self.close_prompt_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
             && Some(self.browser.scan_generation()) == drag.browser_generation
             && drag.project_generation == self.project_generation
             && self
@@ -261,7 +263,9 @@ impl EditorView {
         if !self.browser_sampler_drag_current(drag) {
             return Err("sample drop canceled · project or browser changed");
         }
-        if self.sampler_load.pending.is_some() || self.sampler_replacement_pending_id().is_some() {
+        if self.device_panel.sampler_load.pending.is_some()
+            || self.sampler_replacement_pending_id().is_some()
+        {
             return Err("sampler load is already pending");
         }
         self.check_device_append_ready(cx)?;
@@ -368,7 +372,7 @@ impl EditorView {
             Err("project sample cannot be loaded into sampler yet")
         } else if !self.browser_sampler_drag_current(drag) {
             Err("sample drop canceled · project or browser changed")
-        } else if self.sampler_load.pending.is_some()
+        } else if self.device_panel.sampler_load.pending.is_some()
             || self.sampler_replacement_pending_id().is_some()
         {
             Err("sampler load is already pending")
@@ -390,7 +394,7 @@ impl EditorView {
         match target {
             Ok(target) => {
                 self.load_first_sampler(target, cx);
-                if self.sampler_load.pending.is_some()
+                if self.device_panel.sampler_load.pending.is_some()
                     || self.sampler_replacement_pending_id().is_some()
                 {
                     self.stop_browser_preview_for_drop();
@@ -404,7 +408,7 @@ impl EditorView {
     }
 
     pub(super) fn load_first_sampler(&mut self, target: Target, cx: &mut Context<Self>) {
-        if self.sampler_load.pending.is_some() {
+        if self.device_panel.sampler_load.pending.is_some() {
             self.error = Some("sampler load is already pending".into());
             return;
         }
@@ -444,7 +448,7 @@ impl EditorView {
         path: PathBuf,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(id) = self.sampler_load.serial.checked_add(1) else {
+        let Some(id) = self.device_panel.sampler_load.serial.checked_add(1) else {
             self.error = Some("sampler load request id exhausted".into());
             cx.notify();
             return false;
@@ -466,10 +470,10 @@ impl EditorView {
         };
         let queued = self.enqueue(request);
         if queued {
-            self.sampler_load.serial = id;
+            self.device_panel.sampler_load.serial = id;
             self.status = loading;
             self.error = None;
-            self.sampler_load.pending = Some(Pending {
+            self.device_panel.sampler_load.pending = Some(Pending {
                 id,
                 generation,
                 track,
@@ -481,7 +485,7 @@ impl EditorView {
     }
     pub(super) fn cancel_first_sampler_load(&mut self, request_id: Option<u64>) {
         self.cancel_sampler_replacement(request_id);
-        if let Some(pending) = self.sampler_load.pending.as_ref()
+        if let Some(pending) = self.device_panel.sampler_load.pending.as_ref()
             && request_id.is_none_or(|id| id == pending.id)
         {
             pending.cancel.store(true, Ordering::Release);
@@ -490,10 +494,11 @@ impl EditorView {
     }
     pub(super) fn retire_first_sampler_load(&mut self) {
         self.cancel_first_sampler_load(None);
-        self.sampler_load.pending = None;
+        self.device_panel.sampler_load.pending = None;
     }
     pub(super) fn first_sampler_pending_matches(&self, id: u64) -> bool {
-        self.sampler_load
+        self.device_panel
+            .sampler_load
             .pending
             .as_ref()
             .is_some_and(|p| p.id == id)
@@ -505,14 +510,20 @@ impl EditorView {
         succeeded: bool,
     ) {
         let Some(done) = completion else { return };
-        if !self.sampler_load.pending.as_ref().is_some_and(|p| {
-            p.id == done.request_id
-                && p.generation == done.project_generation
-                && p.track == done.track
-        }) {
+        if !self
+            .device_panel
+            .sampler_load
+            .pending
+            .as_ref()
+            .is_some_and(|p| {
+                p.id == done.request_id
+                    && p.generation == done.project_generation
+                    && p.track == done.track
+            })
+        {
             return;
         }
-        let pending = self.sampler_load.pending.take();
+        let pending = self.device_panel.sampler_load.pending.take();
         if done.project_generation != self.project_generation {
             return;
         }

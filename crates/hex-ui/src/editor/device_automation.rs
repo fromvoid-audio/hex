@@ -886,7 +886,7 @@ impl EditorView {
             DeviceAutomationTarget::HostInputGain => hex_engine::DEVICE_INPUT_GAIN.id,
             DeviceAutomationTarget::HostOutputGain => hex_engine::DEVICE_OUTPUT_GAIN.id,
             DeviceAutomationTarget::Vst3 { parameter } => {
-                let Some(snapshot) = self.device_gesture.snapshot() else {
+                let Some(snapshot) = self.device_panel.gesture.snapshot() else {
                     return entry.base;
                 };
                 if !self.state.as_ref().is_some_and(|state| {

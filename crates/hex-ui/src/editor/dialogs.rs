@@ -170,12 +170,12 @@ impl EditorView {
             self.error = Some("project path exceeds the 4096-byte limit".into());
             return;
         }
-        if self.opening_project
-            || self.project_open.busy()
-            || self.close_prompt_open
-            || self.saving_project
-            || self.save_dialog_open
-            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+        if self.persistence.opening_project
+            || self.persistence.project_open.busy()
+            || self.persistence.close_prompt_open
+            || self.persistence.saving_project
+            || self.persistence.save_dialog_open
+            || (self.gain_recorder.blocks_edits() || self.midi_editor.recorder.blocks_edits())
         {
             self.error =
                 Some("finish the current project action before opening another project".into());
@@ -185,8 +185,8 @@ impl EditorView {
             self.error = Some("project is still loading".into());
             return;
         }
-        self.pending_open_path = Some(path);
-        self.pending_open_mode = Some(mode);
+        self.persistence.pending_open_path = Some(path);
+        self.persistence.pending_open_mode = Some(mode);
         self.status = "opening selected project".into();
         self.error = None;
     }
@@ -227,13 +227,13 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.opening_project
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
-            || self.close_prompt_open
-            || self.saving_project
-            || self.save_dialog_open
-            || (self.gain_recorder.blocks_edits() || self.midi_recorder.blocks_edits())
+        if self.persistence.opening_project
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
+            || self.persistence.close_prompt_open
+            || self.persistence.saving_project
+            || self.persistence.save_dialog_open
+            || (self.gain_recorder.blocks_edits() || self.midi_editor.recorder.blocks_edits())
         {
             return;
         }
@@ -274,7 +274,7 @@ impl EditorView {
     }
 
     pub(super) fn begin_open_request(&mut self, request: Request) {
-        if self.project_open.busy() {
+        if self.persistence.project_open.busy() {
             self.error =
                 Some("finish the current project action before replacing the project".into());
             return;
@@ -285,15 +285,15 @@ impl EditorView {
             }
             _ => None,
         };
-        self.pending_open_path = None;
-        self.pending_open_mode = None;
+        self.persistence.pending_open_path = None;
+        self.persistence.pending_open_mode = None;
         self.cancel_duplicate_chain();
         if self.enqueue(request) {
-            self.requested_audio_mode = requested_mode;
-            self.opening_project = true;
+            self.persistence.requested_audio_mode = requested_mode;
+            self.persistence.opening_project = true;
             self.pending_audio_commands.clear();
             self.pending_seek_ticket = None;
-            self.pending_session_ticket = None;
+            self.session_grid.pending_session_ticket = None;
             self.play_intent.clear();
             self.status = "opening project · editing paused".into();
         }

@@ -260,7 +260,7 @@ impl Drop for Broadcast {
 
 impl EditorView {
     pub(super) fn tuning_mts_controls(&self, cx: &mut Context<Self>) -> Div {
-        let broadcast = &self.tuning.broadcast;
+        let broadcast = &self.settings.tuning.broadcast;
         let force_owner = broadcast.force_claim_owner();
         let (label, selector, active) = if force_owner.is_some() {
             ("force claim mts", "tuning-mts-force-claim", false)
@@ -280,9 +280,9 @@ impl EditorView {
                     .debug_selector(move || selector.into())
                     .on_click(cx.listener(move |view, _, _, cx| {
                         if let Some(owner) = force_owner {
-                            view.tuning.broadcast.force_claim(owner);
+                            view.settings.tuning.broadcast.force_claim(owner);
                         } else if let Some(state) = view.state.as_ref() {
-                            view.tuning.broadcast.toggle(
+                            view.settings.tuning.broadcast.toggle(
                                 view.project_generation,
                                 state.revision,
                                 state.project.tuning(),
@@ -312,8 +312,8 @@ fn blocked_mts_replaces_broadcast_with_one_direct_force_claim(cx: &mut gpui::Tes
         Default::default(),
     );
     editor.update(cx, |view, cx| {
-        view.tuning.open = true;
-        let broadcast = &mut view.tuning.broadcast;
+        view.settings.tuning.open = true;
+        let broadcast = &mut view.settings.tuning.broadcast;
         broadcast.handle = Some(publisher.clone());
         broadcast.owner = Some(owner);
         // Inject the blocked receipt without touching the installed MTS library.
@@ -341,10 +341,10 @@ fn blocked_mts_replaces_broadcast_with_one_direct_force_claim(cx: &mut gpui::Tes
         // The idle publisher rejects the request from the injected UI receipt.
         // This observes dispatch without resetting the machine's shared MTS state.
         assert_eq!(
-            view.tuning.broadcast.error,
+            view.settings.tuning.broadcast.error,
             Some(hex_mts::ControlError::Stale.to_string())
         );
-        assert_eq!(view.tuning.broadcast.force_claim_owner(), None);
+        assert_eq!(view.settings.tuning.broadcast.force_claim_owner(), None);
     });
 }
 
@@ -378,11 +378,11 @@ mod auto_broadcast_tests {
             let done = editor.update(cx, |view, cx| {
                 view.tick(cx);
                 view.state.is_some()
-                    && view.tuning.client.snapshot().is_none()
+                    && view.settings.tuning.client.snapshot().is_none()
                     && view.worker_requests_pending == 0
                     && view.pending_requests.is_empty()
-                    && !view.saving_project
-                    && !view.opening_project
+                    && !view.persistence.saving_project
+                    && !view.persistence.opening_project
             });
             if done {
                 cx.run_until_parked();
@@ -437,7 +437,7 @@ mod auto_broadcast_tests {
 
         // Open tuning and click "enable tuning".
         editor.update(&mut visual, |view, cx| {
-            view.tuning.open = true;
+            view.settings.tuning.open = true;
             view.sync_tuning(cx);
             cx.notify();
         });
@@ -449,7 +449,7 @@ mod auto_broadcast_tests {
 
         editor.read_with(&visual, |view, _| {
             assert!(view.state.as_ref().unwrap().project.tuning().enabled());
-            assert!(view.tuning.broadcast.owner.is_some());
+            assert!(view.settings.tuning.broadcast.owner.is_some());
         });
         let enabled_snapshot = wait_mts(&publisher, |s| s.state == State::Active);
         assert_eq!(enabled_snapshot.desired, enabled_snapshot.published);
@@ -457,8 +457,8 @@ mod auto_broadcast_tests {
 
         // Close tuning, save the project, then switch to a fresh project with tuning off.
         editor.update(&mut visual, |view, cx| {
-            view.tuning.open = false;
-            view.saving_project = true;
+            view.settings.tuning.open = false;
+            view.persistence.saving_project = true;
             assert!(view.enqueue(Request::SaveNew(path.clone())));
             cx.notify();
         });
@@ -474,7 +474,7 @@ mod auto_broadcast_tests {
         settle(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
             assert!(!view.state.as_ref().unwrap().project.tuning().enabled());
-            assert!(view.tuning.broadcast.owner.is_none());
+            assert!(view.settings.tuning.broadcast.owner.is_none());
         });
         wait_mts(&publisher, |s| {
             s.state == State::Disabled && s.owner.is_none()
@@ -487,9 +487,9 @@ mod auto_broadcast_tests {
         });
         settle(&editor, &mut visual);
         let reloaded_generation = editor.read_with(&visual, |view, _| {
-            assert!(!view.tuning.open);
+            assert!(!view.settings.tuning.open);
             assert!(view.state.as_ref().unwrap().project.tuning().enabled());
-            assert!(view.tuning.broadcast.owner.is_some());
+            assert!(view.settings.tuning.broadcast.owner.is_some());
             view.project_generation
         });
         let reloaded_snapshot = wait_mts(&publisher, |s| {
@@ -501,7 +501,7 @@ mod auto_broadcast_tests {
 
         // Shut down the worker cleanly after dropping the window's ownership.
         editor.update(&mut visual, |view, _| {
-            view.tuning.broadcast.disable();
+            view.settings.tuning.broadcast.disable();
         });
         wait_mts(&publisher, |s| s.state == State::Disabled);
         worker.shutdown();
@@ -693,10 +693,10 @@ mod tests {
         let (_, editor) =
             crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
         let (key, begin) = editor.update(cx, |view, _| {
-            view.tuning.broadcast.observe(0, 0, original);
-            let key = view.tuning.client.begin(0, original).unwrap();
-            let request = view.tuning.client.next_request().unwrap();
-            view.tuning.client.mark_submitted();
+            view.settings.tuning.broadcast.observe(0, 0, original);
+            let key = view.settings.tuning.client.begin(0, original).unwrap();
+            let request = view.settings.tuning.client.next_request().unwrap();
+            view.settings.tuning.client.mark_submitted();
             (key, request)
         });
         service.submit(Request::TuningGesture(begin)).unwrap();
@@ -709,9 +709,9 @@ mod tests {
         scale.set_reference(60, 333.0, 0).unwrap();
         let tuning = ProjectTuning::new(true, scale, original.audition()).unwrap();
         let (sequence, change) = editor.update(cx, |view, _| {
-            let sequence = view.tuning.client.change(tuning).unwrap();
-            let request = view.tuning.client.next_request().unwrap();
-            view.tuning.client.mark_submitted();
+            let sequence = view.settings.tuning.client.change(tuning).unwrap();
+            let request = view.settings.tuning.client.next_request().unwrap();
+            view.settings.tuning.client.mark_submitted();
             (sequence, request)
         });
         service.submit(Request::TuningGesture(change)).unwrap();
@@ -721,14 +721,16 @@ mod tests {
             view.receive(preview);
             assert!(view.pending_playback.is_some());
             assert_eq!(
-                view.tuning.broadcast.accepted,
+                view.settings.tuning.broadcast.accepted,
                 Some(original),
                 "worker acceptance is not the callback's applied receipt"
             );
         });
         // Seed a previously applied preview in the control observer. A rejected
         // nonterminal update must not restore the older canonical table.
-        editor.update(cx, |view, _| view.tuning.broadcast.observe(0, 0, tuning));
+        editor.update(cx, |view, _| {
+            view.settings.tuning.broadcast.observe(0, 0, tuning)
+        });
         service
             .submit(Request::TuningGesture(TuningGestureRequest::Change {
                 key,
@@ -740,12 +742,12 @@ mod tests {
         assert!(!refused.tuning_gesture_ack.as_ref().unwrap().accepted);
         editor.update(cx, |view, _| {
             view.receive(refused);
-            assert_eq!(view.tuning.broadcast.accepted, Some(tuning));
+            assert_eq!(view.settings.tuning.broadcast.accepted, Some(tuning));
         });
         let commit = editor.update(cx, |view, _| {
-            view.tuning.client.finish(tuning).unwrap();
-            let request = view.tuning.client.next_request().unwrap();
-            view.tuning.client.mark_submitted();
+            view.settings.tuning.client.finish(tuning).unwrap();
+            let request = view.settings.tuning.client.next_request().unwrap();
+            view.settings.tuning.client.mark_submitted();
             request
         });
         service.submit(Request::TuningGesture(commit)).unwrap();
@@ -755,12 +757,12 @@ mod tests {
         editor.update(cx, |view, _| {
             view.receive(committed);
             assert_eq!(
-                view.tuning.broadcast.accepted,
+                view.settings.tuning.broadcast.accepted,
                 Some(tuning),
                 "canonical commit remains available without an audio output"
             );
-            assert_eq!(view.tuning.broadcast.revision, committed_revision);
-            assert!(view.tuning.client.snapshot().is_none());
+            assert_eq!(view.settings.tuning.broadcast.revision, committed_revision);
+            assert!(view.settings.tuning.client.snapshot().is_none());
         });
     }
 
@@ -777,9 +779,9 @@ mod tests {
             crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
-                view.tuning.broadcast.tick(cx);
-                view.tuning.open = true;
-                view.tuning.focus.focus(window);
+                view.settings.tuning.broadcast.tick(cx);
+                view.settings.tuning.open = true;
+                view.settings.tuning.focus.focus(window);
                 view.sync_tuning(cx);
                 cx.notify();
             });
@@ -798,7 +800,7 @@ mod tests {
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
             assert!(!view.state.as_ref().unwrap().unsaved);
-            assert!(!view.tuning.value.enabled());
+            assert!(!view.settings.tuning.value.enabled());
         });
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| view.close_tuning(window, cx));
@@ -809,7 +811,8 @@ mod tests {
             "closing tuning does not silently disable explicit broadcast"
         );
         editor.update(cx, |view, _| {
-            view.tuning
+            view.settings
+                .tuning
                 .broadcast
                 .observe(1, 0, ProjectTuning::default())
         });

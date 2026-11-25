@@ -24,7 +24,7 @@ pub(in crate::editor) fn instrument_actions(
         actions
     };
     let actions = if device.state().type_id().as_str() == Ok("hex.vst3")
-        && !view.degraded_plugins.contains(id.value())
+        && !view.device_panel.degraded_plugins.contains(id.value())
     {
         actions.child(vst3_editor_button(view, id, selected, cx))
     } else {
@@ -128,7 +128,7 @@ pub(in crate::editor) fn device_actions(
         actions = actions.child(content);
     }
     if device.state().type_id().as_str() == Ok("hex.vst3")
-        && !view.degraded_plugins.contains(id.value())
+        && !view.device_panel.degraded_plugins.contains(id.value())
     {
         actions = actions.child(vst3_editor_button(view, id, selected, cx));
     }
@@ -166,7 +166,10 @@ pub(in crate::editor) fn vst3_editor_button(
     selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
-    let open = view.plugin_editor_windows.contains(&id.value());
+    let open = view
+        .device_panel
+        .plugin_editor_windows
+        .contains(&id.value());
     action_button(
         format!("device-vst3-editor-{}", id.value()),
         "↗",

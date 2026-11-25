@@ -144,7 +144,7 @@ fn adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_an
         assert_eq!(view.snap_grid.density(), AdaptiveGridDensity::Fine);
         assert!(view.context_menu.is_none());
         assert_eq!(*view.state.as_ref().unwrap().project, original);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         let _ = app;
     });
     visual.update(|window, cx| {
@@ -236,7 +236,7 @@ fn arrangement_waveform_scale_toggle_is_view_local_and_checked(cx: &mut TestAppC
                 WaveformAmplitudeScale::Decibel
             );
             assert_eq!(
-                view.clip_waveform_geometry_cache.amplitude_scale(),
+                view.audio_detail.waveform_geometry_cache.amplitude_scale(),
                 WaveformAmplitudeScale::Linear
             );
             view.open_arranger_grid_context_menu(position, window, cx);
@@ -300,7 +300,7 @@ fn adaptive_grid_menu_disabled_choice_and_stale_project_refusal_are_ui_only(
                 cx,
             );
             assert_eq!(view.snap_grid.density(), AdaptiveGridDensity::Coarse);
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         })
     });
 }
@@ -352,7 +352,7 @@ fn adaptive_grid_menu_choice_renders_the_same_landmark_used_by_keyboard_edit(
         );
         visual.simulate_keystrokes("right");
         editor.read_with(cx, |view, _| {
-            assert!(matches!(view.last_enqueued_edit,
+            assert!(matches!(view.test_probes.last_enqueued_edit,
             Some(hex_project::Command::MoveClip {start,..}) if start==next))
         });
     }
@@ -389,7 +389,7 @@ fn adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle(cx: &m
             assert_eq!(view.snap_grid.is_off(), off);
             assert_eq!(view.snap_grid.density(), AdaptiveGridDensity::Coarse);
             assert_eq!(*view.state.as_ref().unwrap().project, original);
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
 }
@@ -433,9 +433,9 @@ fn grid_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(cx: &mu
         assert_eq!(view.browser.places, vec![owner.0.join("samples")]);
         [
             view.browser.test_preferences_path().to_owned(),
-            view.recent_projects.test_path().to_owned(),
-            view.theme_settings.test_path().to_owned(),
-            view.project_directory.test_path().to_owned(),
+            view.settings.recent_projects.test_path().to_owned(),
+            view.settings.theme.test_path().to_owned(),
+            view.settings.project_directory.test_path().to_owned(),
         ]
     });
     for (path, name) in paths.iter().zip([
@@ -527,7 +527,7 @@ fn plus_minus_adjust_adaptive_density_with_clamped_limits_and_visible_snap_landm
                 assert_eq!(view.snap_grid.density(), density);
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
                 assert_eq!(view.viewport, Some(Viewport::fit(length)));
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
                 let (grid, viewport, width) = view.nudge_grid_context(false).unwrap();
                 let project = &view.state.as_ref().unwrap().project;
                 let next = grid
@@ -575,7 +575,7 @@ fn plus_minus_adjust_adaptive_density_with_clamped_limits_and_visible_snap_landm
         });
         visual.simulate_keystrokes("right");
         editor.read_with(&visual, |view, _| {
-            assert!(matches!(view.last_enqueued_edit, Some(hex_project::Command::MoveClip { start, .. }) if start == next));
+            assert!(matches!(view.test_probes.last_enqueued_edit, Some(hex_project::Command::MoveClip { start, .. }) if start == next));
         });
     }
 }
@@ -598,11 +598,11 @@ fn plus_minus_preserve_text_numeric_piano_and_session_input_and_command_zoom(
             editor.update(cx, |view, cx| {
                 view.selected_track = Some(track);
                 view.selected_clip = Some(clip);
-                view.clip_view_open = true;
+                view.audio_detail.clip_view_open = true;
                 match target {
                     0 => view.browser.search.read(cx).focus(window),
                     1 => view.begin_clip_name(window, cx),
-                    3 => view.midi_focus.focus(window),
+                    3 => view.midi_editor.focus.focus(window),
                     4 => {
                         view.mode = EditorMode::Session;
                         view.focus.focus(window);
@@ -621,13 +621,13 @@ fn plus_minus_preserve_text_numeric_piano_and_session_input_and_command_zoom(
                 assert!(view.project_tempo_editing(cx))
             });
         }
-        let piano_grid = editor.read_with(&visual, |view, _| view.midi_snap_grid);
+        let piano_grid = editor.read_with(&visual, |view, _| view.midi_editor.snap_grid);
         visual.simulate_keystrokes("+ -");
         visual.run_until_parked();
         editor.read_with(&visual, |view, cx| {
             assert_eq!(view.snap_grid, SnapGrid::Adaptive, "input target {target}");
-            assert_eq!(view.midi_snap_grid, piano_grid);
-            assert!(view.last_enqueued_edit.is_none());
+            assert_eq!(view.midi_editor.snap_grid, piano_grid);
+            assert!(view.test_probes.last_enqueued_edit.is_none());
             if target == 0 {
                 assert_eq!(view.browser.search.read(cx).text(), "+-");
             }
@@ -635,7 +635,7 @@ fn plus_minus_preserve_text_numeric_piano_and_session_input_and_command_zoom(
         if target == 1 {
             visual.simulate_keystrokes("enter");
             editor.read_with(&visual, |view, _| {
-                assert!(matches!(&view.last_enqueued_edit, Some(hex_project::Command::RenameClip { name, .. }) if name == "+-"));
+                assert!(matches!(&view.test_probes.last_enqueued_edit, Some(hex_project::Command::RenameClip { name, .. }) if name == "+-"));
             });
         } else if target == 2 {
             editor.update(&mut visual, |view, cx| {

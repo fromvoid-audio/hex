@@ -59,7 +59,7 @@ impl EditorView {
             && self
                 .pending_requests
                 .iter()
-                .chain(self.device_gesture_barriers.iter())
+                .chain(self.device_panel.gesture_barriers.iter())
                 .all(|r| matches!(r, Request::Edit(Command::ToggleDeviceBypass { .. })))
     }
 
@@ -76,7 +76,7 @@ impl EditorView {
         let mut queued = self
             .pending_requests
             .iter()
-            .chain(self.device_gesture_barriers.iter())
+            .chain(self.device_panel.gesture_barriers.iter())
             .chain(
                 self.recovery
                     .deferred_edit

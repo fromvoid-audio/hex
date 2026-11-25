@@ -140,7 +140,10 @@ fn numeric_text_owns_uppercase_space_and_direct_solo_actions(cx: &mut TestAppCon
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.revision, revision + 1);
         assert!(!state.project.track(track).unwrap().soloed());
-        assert!(view.last_transport_command.is_none(), "space remains text");
+        assert!(
+            view.test_probes.last_transport_command.is_none(),
+            "space remains text"
+        );
     });
 }
 
@@ -184,7 +187,7 @@ fn numeric_clipboard_cancel_commit_and_single_undo_preserve_owner(cx: &mut TestA
     editor.update(cx, |view, cx| assert!(super::finalize_controls(view, cx)));
     pump_until(&editor, cx, |view| {
         view.state.as_ref().unwrap().revision > revision
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
             && view.worker_requests_pending == 0
     });
     editor.read_with(cx, |view, _| {
@@ -224,7 +227,7 @@ fn numeric_clipboard_cancel_commit_and_single_undo_preserve_owner(cx: &mut TestA
     visual.simulate_keystrokes("enter");
     pump_until(&editor, cx, |view| {
         view.state.as_ref().unwrap().revision == revision + 3
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(

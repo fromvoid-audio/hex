@@ -92,8 +92,8 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
         });
     }
     let Some(binding) = slot else { return div() };
-    let enabled = !view.opening_project
-        && !view.close_prompt_open
+    let enabled = !view.persistence.opening_project
+        && !view.persistence.close_prompt_open
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty();
     binding

@@ -97,15 +97,15 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) {
-        if self.opening_project || self.close_prompt_open {
+        if self.persistence.opening_project || self.persistence.close_prompt_open {
             return;
         }
         let selection = self.state.as_ref().and_then(|state| {
             super::session_navigation::resolve_visible_navigation(
                 &state.project,
                 &self.arrangement_focus.projection.console_indices,
-                self.selected_cell,
-                self.selected_scene,
+                self.session_grid.selected_cell,
+                self.session_grid.selected_scene,
                 direction,
             )
         });
@@ -155,7 +155,7 @@ impl EditorView {
             return;
         };
         let revision = state.revision;
-        if self.selected_cell.is_some_and(|(track, _)| {
+        if self.session_grid.selected_cell.is_some_and(|(track, _)| {
             !self
                 .arrangement_focus
                 .projection
@@ -173,47 +173,51 @@ impl EditorView {
         }
         let Some(target) = super::session_navigation::resolve_enter_target(
             &state.project,
-            self.selected_cell,
-            self.selected_scene,
+            self.session_grid.selected_cell,
+            self.session_grid.selected_scene,
         ) else {
             return;
         };
         match target {
             super::session_navigation::EnterTarget::LaunchClip { track, clip } => {
-                self.launch_clip(track, clip, revision, self.session_quantization);
+                self.launch_clip(track, clip, revision, self.session_grid.quantization);
             }
             super::session_navigation::EnterTarget::StopTrack(track) => {
                 self.queue_session_command(
                     SessionPlaybackCommand::StopTrack {
                         track,
-                        quantization: self.session_quantization,
+                        quantization: self.session_grid.quantization,
                     },
                     revision,
                 );
             }
             super::session_navigation::EnterTarget::LaunchScene(scene) => {
-                self.launch_scene(scene, revision, self.session_quantization);
+                self.launch_scene(scene, revision, self.session_grid.quantization);
             }
         }
     }
 
     pub(super) fn duplicate_selected_scene(&mut self) {
-        let Some((scene, revision, generation)) = self.selected_scene.and_then(|scene| {
-            self.state
-                .as_ref()
-                .map(|state| (scene, state.revision, self.project_generation))
-        }) else {
+        let Some((scene, revision, generation)) =
+            self.session_grid.selected_scene.and_then(|scene| {
+                self.state
+                    .as_ref()
+                    .map(|state| (scene, state.revision, self.project_generation))
+            })
+        else {
             return;
         };
         self.duplicate_scene_if_current(scene, revision, generation);
     }
 
     pub(super) fn move_selected_scene(&mut self, direction: super::session_navigation::Direction) {
-        let Some((scene, revision, generation)) = self.selected_scene.and_then(|scene| {
-            self.state
-                .as_ref()
-                .map(|state| (scene, state.revision, self.project_generation))
-        }) else {
+        let Some((scene, revision, generation)) =
+            self.session_grid.selected_scene.and_then(|scene| {
+                self.state
+                    .as_ref()
+                    .map(|state| (scene, state.revision, self.project_generation))
+            })
+        else {
             return;
         };
         self.move_scene_if_current(scene, direction, revision, generation);
@@ -228,7 +232,7 @@ impl EditorView {
         if self.scene_edit_is_current(scene, revision, generation)
             && self.enqueue(Request::Edit(Command::DuplicateScene(scene)))
         {
-            self.pending_scene_duplicate = Some(super::PendingSceneDuplicate {
+            self.session_grid.pending_scene_duplicate = Some(super::PendingSceneDuplicate {
                 source_scene: scene,
                 project_generation: generation,
                 select_on_completion: true,
@@ -237,7 +241,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_scene_duplicate_selection(&mut self) {
-        if let Some(intent) = &mut self.pending_scene_duplicate {
+        if let Some(intent) = &mut self.session_grid.pending_scene_duplicate {
             intent.select_on_completion = false;
         }
     }
@@ -264,8 +268,8 @@ impl EditorView {
 
     fn scene_edit_is_current(&self, scene: SceneId, revision: u64, generation: u64) -> bool {
         self.mode == EditorMode::Session
-            && self.selected_cell.is_none()
-            && self.selected_scene == Some(scene)
+            && self.session_grid.selected_cell.is_none()
+            && self.session_grid.selected_scene == Some(scene)
             && self.project_generation == generation
             && self.state.as_ref().is_some_and(|state| {
                 state.revision == revision
@@ -273,11 +277,11 @@ impl EditorView {
             })
             && !self.edit_pending()
             && self.recovery.generation().is_none()
-            && self.pending_open_path.is_none()
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.export_pending
-            && !self.saving_project
+            && self.persistence.pending_open_path.is_none()
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.persistence.export_pending
+            && !self.persistence.saving_project
     }
 
     pub(super) fn session_track_page(
@@ -290,7 +294,7 @@ impl EditorView {
             Arc::new(TrackPage::capture_with_proposals(
                 project,
                 visible,
-                self.session_track_start,
+                self.session_grid.track_start,
                 visible_columns,
                 &self.track_proposal_anchors(),
             ))
@@ -308,14 +312,14 @@ impl EditorView {
         let Some(index) = anchor_ordinal(state.project.tracks(), visible, before) else {
             return;
         };
-        let columns = self.session_visible_columns.max(1);
+        let columns = self.session_grid.visible_columns.max(1);
         let range = super::console_track_page::visible_track_range(
             visible.len(),
-            self.session_track_start,
+            self.session_grid.track_start,
             columns,
         );
         if index < range.start || index > range.end {
-            self.session_track_start = index.min(visible.len().saturating_sub(columns));
+            self.session_grid.track_start = index.min(visible.len().saturating_sub(columns));
         }
     }
 
@@ -323,9 +327,9 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        let page = self.session_track_page(&state.project, self.session_visible_columns);
+        let page = self.session_track_page(&state.project, self.session_grid.visible_columns);
         if page.proposal_index(proposal).is_some() {
-            self.session_track_start = page.range.start;
+            self.session_grid.track_start = page.range.start;
         }
     }
 
@@ -345,7 +349,7 @@ impl EditorView {
             )
         });
         let route_snapshot = self.audio.as_ref().and_then(|audio| {
-            self.session_routes.matching_snapshot(
+            self.session_grid.routes.matching_snapshot(
                 audio.control.output_identity()?,
                 audible,
                 revision,
@@ -356,8 +360,12 @@ impl EditorView {
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
         let routes_ready = route_snapshot.is_some_and(|snapshot| {
-            self.session_routes
-                .routes_available(snapshot, &state.project, revision, generation)
+            self.session_grid.routes.routes_available(
+                snapshot,
+                &state.project,
+                revision,
+                generation,
+            )
         });
         let available_width = self.workspace_body_width(window);
         super::device_panel::retire_removed_send_controls(self, cx);
@@ -367,7 +375,7 @@ impl EditorView {
             .pending_return(generation)
             .or_else(|| self.track_gain_controls.pending_return_gain(generation, cx))
             .or_else(|| pending_send.map(|(_, id)| id));
-        let return_page = self.console_returns.page(
+        let return_page = self.session_grid.console_returns.page(
             &state.project,
             generation,
             available_width - TRACK_COLUMN_WIDTH - SCENE_HEADER_WIDTH - 12.0,
@@ -378,7 +386,7 @@ impl EditorView {
             / TRACK_COLUMN_WIDTH)
             .floor()
             .max(1.0) as usize;
-        self.session_visible_columns = visible_columns;
+        self.session_grid.visible_columns = visible_columns;
         let indices = &self.arrangement_focus.projection.console_indices;
         if let Some(index) = pending_send.and_then(|(track, _)| {
             indices.iter().position(|&index| {
@@ -389,11 +397,11 @@ impl EditorView {
         }) {
             let range = super::console_track_page::visible_track_range(
                 indices.len(),
-                self.session_track_start,
+                self.session_grid.track_start,
                 visible_columns,
             );
             if index < range.start || index >= range.end {
-                self.session_track_start = index.saturating_sub(visible_columns - 1);
+                self.session_grid.track_start = index.saturating_sub(visible_columns - 1);
             }
         }
         let track_count = indices.len();
@@ -493,8 +501,8 @@ impl EditorView {
                                         event.modifiers(),
                                         window,
                                     );
-                                    view.selected_cell = None;
-                                    view.selected_scene = None;
+                                    view.session_grid.selected_cell = None;
+                                    view.session_grid.selected_scene = None;
                                     click_focus.focus(window);
                                     cx.notify();
                                 },
@@ -692,7 +700,7 @@ impl EditorView {
         )
         .flex_1()
         .min_h_0()
-        .track_scroll(self.session_scene_scroll.clone());
+        .track_scroll(self.session_grid.scene_scroll.clone());
 
         let route_feedback = if routes_ready {
             None
@@ -761,8 +769,9 @@ impl EditorView {
     ) -> Div {
         let revision = self.state.as_ref().map(|state| state.revision);
         let generation = self.project_generation;
-        let selected_scene = self.selected_scene;
+        let selected_scene = self.session_grid.selected_scene;
         let selected_track = self
+            .session_grid
             .selected_cell
             .map(|cell| cell.0)
             .or(self.selected_track);
@@ -784,7 +793,8 @@ impl EditorView {
                     "session-page-previous",
                     cx.listener(move |view, _, _, cx| {
                         if !view.track_reorder_active() && view.track_view_change_available(cx) {
-                            view.session_track_start = page_start.saturating_sub(page_size.max(1));
+                            view.session_grid.track_start =
+                                page_start.saturating_sub(page_size.max(1));
                         }
                         cx.notify();
                     }),
@@ -819,7 +829,7 @@ impl EditorView {
                     if let (Some(scene), Some(revision)) = (selected_scene, revision)
                         && view.session_callback_current(revision, generation)
                     {
-                        view.launch_scene(scene, revision, view.session_quantization);
+                        view.launch_scene(scene, revision, view.session_grid.quantization);
                     }
                     cx.notify();
                 }),
@@ -838,7 +848,7 @@ impl EditorView {
                                     track,
                                     quantization: LaunchQuantization::Immediate,
                                 },
-                                view.session_quantization,
+                                view.session_grid.quantization,
                             ),
                             revision,
                         );
@@ -859,7 +869,7 @@ impl EditorView {
                                 SessionPlaybackCommand::StopAllClips {
                                     quantization: LaunchQuantization::Immediate,
                                 },
-                                view.session_quantization,
+                                view.session_grid.quantization,
                             ),
                             revision,
                         );
@@ -880,7 +890,7 @@ impl EditorView {
                                 SessionPlaybackCommand::BackToArrangement {
                                     quantization: LaunchQuantization::Immediate,
                                 },
-                                view.session_quantization,
+                                view.session_grid.quantization,
                             ),
                             revision,
                         );
@@ -889,7 +899,7 @@ impl EditorView {
                     cx.notify();
                 }),
             ));
-        if self.selected_cell.is_none()
+        if self.session_grid.selected_cell.is_none()
             && let (Some(scene), Some(revision)) = (selected_scene, revision)
         {
             let can_move_up = self.state.as_ref().is_some_and(|state| {
@@ -976,7 +986,7 @@ impl EditorView {
                 "session-page-next",
                 cx.listener(move |view, _, _, cx| {
                     if !view.track_reorder_active() && view.track_view_change_available(cx) {
-                        view.session_track_start = page_start
+                        view.session_grid.track_start = page_start
                             .saturating_add(page_size.max(1))
                             .min(track_count.saturating_sub(page_size));
                     }
@@ -1003,7 +1013,7 @@ impl EditorView {
             );
         }
 
-        if let Some((track, scene)) = self.selected_cell {
+        if let Some((track, scene)) = self.session_grid.selected_cell {
             let is_empty_destination = self.state.as_ref().is_some_and(|state| {
                 state.project.track(track).is_some()
                     && state.project.session_cell(track, scene).is_none()
@@ -1118,7 +1128,7 @@ impl EditorView {
             .scenes()
             .get(index + 1)
             .map(|scene| scene.id());
-        let selected = self.selected_scene == Some(scene_id);
+        let selected = self.session_grid.selected_scene == Some(scene_id);
         let mut row = div()
             .w_full()
             .h(px(SCENE_ROW_HEIGHT))
@@ -1142,7 +1152,7 @@ impl EditorView {
             let track_id = track.id();
             let content = state.project.session_cell(track_id, scene_id);
             let route = self.route_entry_for_track(track_id.value(), route_snapshot, routes_ready);
-            let selected_cell = self.selected_cell == Some((track_id, scene_id));
+            let selected_cell = self.session_grid.selected_cell == Some((track_id, scene_id));
             let mut cell = div()
                 .id(ElementId::Name(
                     format!("session-cell-{}-{}", track_id.value(), scene_id.value()).into(),
@@ -1262,7 +1272,7 @@ impl EditorView {
                                             track_id,
                                             clip_id,
                                             revision,
-                                            view.session_quantization,
+                                            view.session_grid.quantization,
                                         );
                                     }
                                     cx.notify();
@@ -1389,7 +1399,7 @@ impl EditorView {
                                             track_id,
                                             clip_id,
                                             revision,
-                                            view.session_quantization,
+                                            view.session_grid.quantization,
                                         );
                                     }
                                     cx.notify();
@@ -1448,7 +1458,7 @@ impl EditorView {
                                             track: track_id,
                                             quantization: LaunchQuantization::Immediate,
                                         },
-                                        view.session_quantization,
+                                        view.session_grid.quantization,
                                     ),
                                     revision,
                                 );
@@ -1543,7 +1553,7 @@ impl EditorView {
                             view.focus.focus(window);
                             view.advance_selection_intent();
                             view.select_session_scene(scene_id);
-                            view.launch_scene(scene_id, revision, view.session_quantization);
+                            view.launch_scene(scene_id, revision, view.session_grid.quantization);
                         }
                         cx.notify();
                     }),
@@ -1754,7 +1764,8 @@ impl EditorView {
         if !routes_ready {
             return None;
         }
-        self.session_routes
+        self.session_grid
+            .routes
             .entry_for_track(snapshot, routes_ready, track_id)
     }
 
@@ -1858,19 +1869,19 @@ impl EditorView {
                         .any(|track| track.clips().iter().any(|clip| clip.id() == selected))
             })
         {
-            self.session_copy_source = Some(selected);
+            self.session_grid.copy_source = Some(selected);
         }
-        self.selected_scene = Some(scene);
-        self.selected_cell = Some((track, scene));
+        self.session_grid.selected_scene = Some(scene);
+        self.session_grid.selected_cell = Some((track, scene));
         self.selected_track = Some(track);
         self.selected_clip = Some(clip);
         self.mode = EditorMode::Session;
-        self.midi_selection.clear();
+        self.midi_editor.selection.clear();
         self.cancel_midi_note_gesture();
         self.cancel_midi_stroke();
-        self.midi_group_gesture = None;
-        self.midi_hit_cycle = None;
-        self.piano_beat_start = 0;
+        self.midi_editor.group_gesture = None;
+        self.midi_editor.hit_cycle = None;
+        self.midi_editor.piano_beat_start = 0;
         self.fit_clip_editor_to_selected_clip();
         self.reveal_session_position(Some(track), Some(scene));
     }
@@ -1889,24 +1900,24 @@ impl EditorView {
                         .any(|track| track.clips().iter().any(|clip| clip.id() == selected))
             })
         {
-            self.session_copy_source = Some(selected);
+            self.session_grid.copy_source = Some(selected);
         }
-        self.selected_scene = Some(scene);
-        self.selected_cell = None;
+        self.session_grid.selected_scene = Some(scene);
+        self.session_grid.selected_cell = None;
         self.selected_track = None;
         self.selected_clip = None;
         self.mode = EditorMode::Session;
-        self.midi_selection.clear();
+        self.midi_editor.selection.clear();
         self.cancel_midi_note_gesture();
         self.cancel_midi_stroke();
-        self.midi_group_gesture = None;
-        self.midi_hit_cycle = None;
+        self.midi_editor.group_gesture = None;
+        self.midi_editor.hit_cycle = None;
         self.reveal_session_position(None, Some(scene));
     }
 
     pub(super) fn select_session_cell(&mut self, track: TrackId, scene: SceneId) {
         self.cancel_duplicate_chain();
-        if self.selected_cell != Some((track, scene)) {
+        if self.session_grid.selected_cell != Some((track, scene)) {
             self.zoom_fit.clear_clip();
         }
         self.cancel_scene_duplicate_selection();
@@ -1920,18 +1931,18 @@ impl EditorView {
                         .any(|track| track.clips().iter().any(|clip| clip.id() == selected))
             })
         {
-            self.session_copy_source = Some(selected);
+            self.session_grid.copy_source = Some(selected);
         }
-        self.selected_scene = Some(scene);
-        self.selected_cell = Some((track, scene));
+        self.session_grid.selected_scene = Some(scene);
+        self.session_grid.selected_cell = Some((track, scene));
         self.selected_track = Some(track);
         self.selected_clip = None;
         self.mode = EditorMode::Session;
-        self.midi_selection.clear();
+        self.midi_editor.selection.clear();
         self.cancel_midi_note_gesture();
         self.cancel_midi_stroke();
-        self.midi_group_gesture = None;
-        self.midi_hit_cycle = None;
+        self.midi_editor.group_gesture = None;
+        self.midi_editor.hit_cycle = None;
         self.reveal_session_position(Some(track), Some(scene));
     }
 
@@ -1968,15 +1979,16 @@ impl EditorView {
             return;
         };
         if let Some(index) = track_index.filter(|_| !self.track_reorder_active()) {
-            let page_size = self.session_visible_columns.max(1);
-            if index < self.session_track_start
-                || index >= self.session_track_start.saturating_add(page_size)
+            let page_size = self.session_grid.visible_columns.max(1);
+            if index < self.session_grid.track_start
+                || index >= self.session_grid.track_start.saturating_add(page_size)
             {
-                self.session_track_start = index / page_size * page_size;
+                self.session_grid.track_start = index / page_size * page_size;
             }
         }
         if let Some(index) = scene_index {
-            self.session_scene_scroll
+            self.session_grid
+                .scene_scroll
                 .scroll_to_item(index, gpui::ScrollStrategy::Top);
         }
     }
@@ -2002,7 +2014,7 @@ impl EditorView {
                 .as_ref()
                 .is_some_and(|state| state.project.midi_clip(selected).is_some())
         {
-            self.session_copy_source = Some(selected);
+            self.session_grid.copy_source = Some(selected);
         }
         self.mode = mode;
     }
@@ -2057,7 +2069,8 @@ impl EditorView {
             return;
         };
         let Some(source) = self
-            .session_copy_source
+            .session_grid
+            .copy_source
             .or(self.selected_clip)
             .filter(|clip| state.project.midi_clip(*clip).is_some())
         else {
@@ -2096,7 +2109,8 @@ impl EditorView {
             return;
         };
         let Some(source) = self
-            .session_copy_source
+            .session_grid
+            .copy_source
             .or(self.selected_clip)
             .filter(|clip| {
                 state

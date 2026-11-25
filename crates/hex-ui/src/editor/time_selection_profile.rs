@@ -184,7 +184,7 @@ impl Profile {
     }
     fn ready(&self, cx: &App) -> bool {
         let view = self.editor.read(cx);
-        !view.opening_project && Self::pending(view) == 0 && view.state.is_some()
+        !view.persistence.opening_project && Self::pending(view) == 0 && view.state.is_some()
     }
     fn finish(&mut self, error: Option<String>, _cx: &mut Context<Self>) -> bool {
         let header = "tracks,operation,iteration,warmup,selection_start_frame,selection_end_frame,selection_first_paint_us,selection_following_frame_us,operation_first_paint_us,operation_first_following_frame_us,operation_ui_completion_paint_us,operation_completion_following_frame_us,project_revision,failures\n";
@@ -222,7 +222,7 @@ impl Profile {
                     self.stage,
                     window.is_window_active(),
                     Self::pending(self.editor.read(cx)),
-                    self.editor.read(cx).opening_project,
+                    self.editor.read(cx).persistence.opening_project,
                     self.editor.read(cx).state.is_some(),
                     self.editor.read(cx).main_track_lane_bounds,
                     self.editor.read(cx).main_track_lane_epoch,

@@ -298,16 +298,17 @@ fn same_command(a: &Command, b: &Command) -> bool {
 }
 fn sync(view: &mut EditorView, window: ClipWindow) {
     let key = (window.clip, window.generation, window.revision);
-    if view.audio_clip_controls.capture != Some(window)
-        && (view.audio_clip_controls.pending.is_none()
+    if view.audio_detail.clip_controls.capture != Some(window)
+        && (view.audio_detail.clip_controls.pending.is_none()
             || view
-                .audio_clip_controls
+                .audio_detail
+                .clip_controls
                 .key
                 .is_none_or(|old| old.0 != key.0 || old.1 != key.1))
     {
-        view.audio_clip_controls.retire_bindings();
-        view.audio_clip_controls.key = Some(key);
-        view.audio_clip_controls.capture = Some(window);
+        view.audio_detail.clip_controls.retire_bindings();
+        view.audio_detail.clip_controls.key = Some(key);
+        view.audio_detail.clip_controls.capture = Some(window);
     }
 }
 fn submit(view: &mut EditorView, window: ClipWindow, command: Command) {
@@ -329,7 +330,7 @@ pub(crate) fn queue(view: &mut EditorView, generation: u64, command: Command) {
     let Request::Edit(command) = &request else {
         return;
     };
-    view.audio_clip_controls.pending = Some(Pending {
+    view.audio_detail.clip_controls.pending = Some(Pending {
         command: command.clone(),
         receipt: Receipt::new(generation),
     });
@@ -472,7 +473,7 @@ pub(super) fn number(
     cx: &mut Context<EditorView>,
 ) -> Div {
     sync(view, window);
-    if !view.audio_clip_controls.numbers.contains_key(&field) {
+    if !view.audio_detail.clip_controls.numbers.contains_key(&field) {
         let horizon = view
             .state
             .as_ref()
@@ -520,23 +521,24 @@ pub(super) fn number(
                 match e.phase {
                     NumericEventPhase::Change | NumericEventPhase::Commit
                         if clip_window_is_current(view, window)
-                            && !view.audio_clip_controls.has_pending()
+                            && !view.audio_detail.clip_controls.has_pending()
                             && e.value.is_finite() =>
                     {
-                        view.audio_clip_controls.gain_preview =
+                        view.audio_detail.clip_controls.gain_preview =
                             hex_project::ClipGain::new((e.value * 1000.0).round() as i32)
                                 .ok()
                                 .map(|gain| (window, gain));
                         if e.phase == NumericEventPhase::Change && e.gesture.is_some() {
-                            let audition =
-                                view.audio_clip_controls.gain_preview.and_then(|(_, gain)| {
+                            let audition = view.audio_detail.clip_controls.gain_preview.and_then(
+                                |(_, gain)| {
                                     view.clip_gain_audition_edit(window.clip, window.gain, gain)
-                                });
+                                },
+                            );
                             view.set_held_gain_audition(audition);
                         }
                     }
                     NumericEventPhase::Cancel => {
-                        view.audio_clip_controls.gain_preview = None;
+                        view.audio_detail.clip_controls.gain_preview = None;
                         view.set_held_gain_audition(None);
                     }
                     _ => {}
@@ -547,30 +549,32 @@ pub(super) fn number(
                 match e.phase {
                     NumericEventPhase::Change | NumericEventPhase::Commit
                         if clip_window_is_current(view, window)
-                            && !view.audio_clip_controls.has_pending()
+                            && !view.audio_detail.clip_controls.has_pending()
                             && e.value.is_finite() =>
                     {
-                        let had_preview = view.audio_clip_controls.has_play_start_preview();
+                        let had_preview = view.audio_detail.clip_controls.has_play_start_preview();
                         let command = absolute_command(window, Field::PlayStart, e.value, false);
-                        view.audio_clip_controls.play_start_preview = command.and_then(|cmd| {
-                            let edit =
-                                hex_session::service::PlayStartEdit::from_audio_command(&cmd)?;
-                            let preview = view.state.as_ref().and_then(|state| {
-                                let mut editor =
-                                    hex_project::Editor::new((*state.project).clone(), 1).ok()?;
-                                editor.execute(cmd).ok()?;
-                                editor.project().clip(window.clip).cloned()
+                        view.audio_detail.clip_controls.play_start_preview =
+                            command.and_then(|cmd| {
+                                let edit =
+                                    hex_session::service::PlayStartEdit::from_audio_command(&cmd)?;
+                                let preview = view.state.as_ref().and_then(|state| {
+                                    let mut editor =
+                                        hex_project::Editor::new((*state.project).clone(), 1)
+                                            .ok()?;
+                                    editor.execute(cmd).ok()?;
+                                    editor.project().clip(window.clip).cloned()
+                                });
+                                Some((window, edit, preview))
                             });
-                            Some((window, edit, preview))
-                        });
-                        cleared_play_start_preview =
-                            had_preview && view.audio_clip_controls.play_start_preview.is_none();
+                        cleared_play_start_preview = had_preview
+                            && view.audio_detail.clip_controls.play_start_preview.is_none();
                         if e.phase == NumericEventPhase::Change && e.gesture.is_some() {
                             view.sync_held_play_start_audition();
                         }
                     }
                     NumericEventPhase::Cancel => {
-                        view.audio_clip_controls.play_start_preview = None;
+                        view.audio_detail.clip_controls.play_start_preview = None;
                         view.sync_held_play_start_audition();
                     }
                     _ => {}
@@ -615,7 +619,7 @@ pub(super) fn number(
                             view.service.retire_arrangement_play_start_audition();
                         }
                     }
-                } else if !view.audio_clip_controls.has_pending() {
+                } else if !view.audio_detail.clip_controls.has_pending() {
                     view.retire_clip_detail();
                     if cleared_play_start_preview {
                         view.sync_held_play_start_audition();
@@ -625,7 +629,7 @@ pub(super) fn number(
             }
             cx.notify();
         });
-        view.audio_clip_controls.numbers.insert(
+        view.audio_detail.clip_controls.numbers.insert(
             field,
             Number {
                 focus: entity.focus_handle(cx),
@@ -634,7 +638,7 @@ pub(super) fn number(
             },
         );
     }
-    let Some(binding) = view.audio_clip_controls.numbers.get(&field) else {
+    let Some(binding) = view.audio_detail.clip_controls.numbers.get(&field) else {
         return div();
     };
     let available = match field {
@@ -710,7 +714,7 @@ pub(super) fn toggle(
         window.looping()
     };
     if let std::collections::btree_map::Entry::Vacant(entry) =
-        view.audio_clip_controls.toggles.entry(warp)
+        view.audio_detail.clip_controls.toggles.entry(warp)
     {
         let label = if warp { "warp" } else { "loop" };
         let Ok(config) = ToggleConfig::new(
@@ -730,7 +734,7 @@ pub(super) fn toggle(
         entity.update(cx, |t, cx| t.set_tab_navigation(true, cx));
         let sub = cx.subscribe(&entity, move |view, _, _: &ToggleChanged, cx| {
             if view.edit_pending() || !clip_window_is_current(view, window) {
-                if !view.audio_clip_controls.has_pending() {
+                if !view.audio_detail.clip_controls.has_pending() {
                     view.retire_clip_detail();
                 }
                 cx.notify();
@@ -760,7 +764,7 @@ pub(super) fn toggle(
             _subscription: sub,
         });
     }
-    let Some(binding) = view.audio_clip_controls.toggles.get(&warp) else {
+    let Some(binding) = view.audio_detail.clip_controls.toggles.get(&warp) else {
         return div();
     };
     binding.entity.update(cx, |t, cx| {
@@ -797,12 +801,12 @@ pub(super) fn toggle(
 }
 impl EditorView {
     pub(crate) fn retire_clip_detail(&mut self) -> bool {
-        if self.audio_clip_controls.has_gain_preview() {
+        if self.audio_detail.clip_controls.has_gain_preview() {
             self.set_held_gain_audition(None);
             self.service.retire_arrangement_gain_audition();
         }
-        let had_play_start = self.audio_clip_controls.has_play_start_preview();
-        let changed = self.audio_clip_controls.reset();
+        let had_play_start = self.audio_detail.clip_controls.has_play_start_preview();
+        let changed = self.audio_detail.clip_controls.reset();
         if had_play_start {
             self.sync_held_play_start_audition();
             self.service.retire_arrangement_play_start_audition();
@@ -812,12 +816,15 @@ impl EditorView {
     }
 
     pub(crate) fn retire_sample_bpm_control(&mut self) {
-        if let Some(binding) = self.sample_bpm_control.take() {
-            self.audio_clip_controls.retired_focus.push(RetiredFocus {
-                focus: binding.focus,
-                target: Target::Bpm,
-                key: Some(binding.key),
-            });
+        if let Some(binding) = self.audio_detail.sample_bpm_control.take() {
+            self.audio_detail
+                .clip_controls
+                .retired_focus
+                .push(RetiredFocus {
+                    focus: binding.focus,
+                    target: Target::Bpm,
+                    key: Some(binding.key),
+                });
         }
     }
     pub(crate) fn restore_clip_control_focus(
@@ -825,7 +832,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let retired = std::mem::take(&mut self.audio_clip_controls.retired_focus);
+        let retired = std::mem::take(&mut self.audio_detail.clip_controls.retired_focus);
         for RetiredFocus {
             focus: old,
             target,
@@ -841,16 +848,22 @@ impl EditorView {
             let focus = if current {
                 match target {
                     Target::Number(field) => self
-                        .audio_clip_controls
+                        .audio_detail
+                        .clip_controls
                         .numbers
                         .get(&field)
                         .map(|n| n.focus.clone()),
                     Target::Switch(warp) => self
-                        .audio_clip_controls
+                        .audio_detail
+                        .clip_controls
                         .toggles
                         .get(&warp)
                         .map(|t| t.focus.clone()),
-                    Target::Bpm => self.sample_bpm_control.as_ref().map(|b| b.focus.clone()),
+                    Target::Bpm => self
+                        .audio_detail
+                        .sample_bpm_control
+                        .as_ref()
+                        .map(|b| b.focus.clone()),
                 }
             } else {
                 None
@@ -861,7 +874,8 @@ impl EditorView {
         }
     }
     pub(crate) fn audio_clip_controls_key_is_current(&self) -> bool {
-        self.audio_clip_controls
+        self.audio_detail
+            .clip_controls
             .key
             .is_some_and(|(clip, generation, revision)| {
                 generation == self.project_generation
@@ -870,12 +884,17 @@ impl EditorView {
             })
     }
     pub(crate) fn retire_abandoned_clip_detail(&mut self) -> bool {
-        let abandoned = self.audio_clip_controls.pending.as_ref().is_some_and(|p| {
-            p.receipt.is_queued()
-                && !self
-                    .queued_requests()
-                    .any(|r| self.audio_clip_controls.matches(r))
-        });
+        let abandoned = self
+            .audio_detail
+            .clip_controls
+            .pending
+            .as_ref()
+            .is_some_and(|p| {
+                p.receipt.is_queued()
+                    && !self
+                        .queued_requests()
+                        .any(|r| self.audio_detail.clip_controls.matches(r))
+            });
         abandoned && self.retire_clip_detail()
     }
 }
@@ -953,20 +972,20 @@ mod ui_tests {
             visual.run_until_parked();
             editor.read_with(cx, |v, _| {
                 assert_eq!(v.state.as_ref().unwrap().project, before.project);
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
             });
             visual.simulate_keystrokes("escape");
             visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(cx, |v, cx| {
                 assert_eq!(
-                    v.audio_clip_controls.numbers[&Field::Position]
+                    v.audio_detail.clip_controls.numbers[&Field::Position]
                         .entity
                         .read(cx)
                         .value(),
                     before.project.clip(clip).unwrap().start() as f64
                 );
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
             });
             visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
@@ -977,10 +996,10 @@ mod ui_tests {
                     v.worker_requests_pending, 1,
                     "one release, one canonical request"
                 );
-                assert!(v.audio_clip_controls.has_pending());
+                assert!(v.audio_detail.clip_controls.has_pending());
                 (
-                    v.last_enqueued_edit.clone().unwrap(),
-                    v.audio_clip_controls.numbers[&Field::Position]
+                    v.test_probes.last_enqueued_edit.clone().unwrap(),
+                    v.audio_detail.clip_controls.numbers[&Field::Position]
                         .entity
                         .read(cx)
                         .value(),
@@ -1000,10 +1019,10 @@ mod ui_tests {
                 });
                 visual.run_until_parked();
                 editor.read_with(cx, |v, cx| {
-                    assert!(v.audio_clip_controls.has_pending());
+                    assert!(v.audio_detail.clip_controls.has_pending());
                     assert_eq!(v.state.as_ref().unwrap().project, before.project);
                     assert_eq!(
-                        v.audio_clip_controls.numbers[&Field::Position]
+                        v.audio_detail.clip_controls.numbers[&Field::Position]
                             .entity
                             .read(cx)
                             .value(),
@@ -1029,7 +1048,7 @@ mod ui_tests {
             });
             visual.run_until_parked();
             editor.read_with(cx, |v, cx| {
-                assert!(!v.audio_clip_controls.has_pending());
+                assert!(!v.audio_detail.clip_controls.has_pending());
                 let canonical = v
                     .state
                     .as_ref()
@@ -1039,7 +1058,7 @@ mod ui_tests {
                     .unwrap()
                     .start() as f64;
                 assert_eq!(
-                    v.audio_clip_controls.numbers[&Field::Position]
+                    v.audio_detail.clip_controls.numbers[&Field::Position]
                         .entity
                         .read(cx)
                         .value(),
@@ -1112,7 +1131,7 @@ mod ui_tests {
                     spectrum_error: None,
                     mode: DocumentAudioMode::Resident,
                 });
-                v.audio_event_editor.source_view = true;
+                v.audio_detail.event.source_view = true;
                 window_cx.notify();
             });
             let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1120,7 +1139,7 @@ mod ui_tests {
 
             let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
             let initial_value = editor.read_with(&visual, |v, cx| {
-                v.audio_clip_controls.numbers[&Field::PlayStart]
+                v.audio_detail.clip_controls.numbers[&Field::PlayStart]
                     .entity
                     .read(cx)
                     .value()
@@ -1147,7 +1166,7 @@ mod ui_tests {
             editor.read_with(&visual, |v, _| {
                 let state = v.state.as_ref().unwrap();
                 assert_eq!(state.project, before.project);
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
                 assert_eq!(v.worker_requests_pending, 0);
                 let held = v
                     .service
@@ -1167,7 +1186,7 @@ mod ui_tests {
                             if c == clip && source_offset > 0
                     ));
                 }
-                assert!(v.audio_clip_controls.has_play_start_preview());
+                assert!(v.audio_detail.clip_controls.has_play_start_preview());
                 assert!(v.audio_scope_preview_active(clip, state));
                 let canonical = state.project.clip(clip).unwrap();
                 let displayed = v.audio_scope_display_clip(canonical, state);
@@ -1190,16 +1209,16 @@ mod ui_tests {
                         .held_arrangement_play_start_audition_for_test()
                         .is_none()
                 );
-                assert!(!v.audio_clip_controls.has_play_start_preview());
+                assert!(!v.audio_detail.clip_controls.has_play_start_preview());
                 assert!(!v.audio_scope_preview_active(clip, state));
                 assert_eq!(
-                    v.audio_clip_controls.numbers[&Field::PlayStart]
+                    v.audio_detail.clip_controls.numbers[&Field::PlayStart]
                         .entity
                         .read(cx)
                         .value(),
                     initial_value
                 );
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
                 assert_eq!(state.project, before.project);
             });
             assert_eq!(
@@ -1214,13 +1233,13 @@ mod ui_tests {
             visual.run_until_parked();
             let (command, final_value) = editor.read_with(&visual, |v, cx| {
                 assert_eq!(v.worker_requests_pending, 1);
-                assert!(v.audio_clip_controls.has_pending());
+                assert!(v.audio_detail.clip_controls.has_pending());
                 assert!(
                     v.service
                         .held_arrangement_play_start_audition_for_test()
                         .is_none()
                 );
-                let cmd = v.last_enqueued_edit.clone().unwrap();
+                let cmd = v.test_probes.last_enqueued_edit.clone().unwrap();
                 if looping {
                     assert!(
                         matches!(cmd, Command::SetClipSourcePhase { clip: c, .. } if c == clip)
@@ -1230,7 +1249,7 @@ mod ui_tests {
                 }
                 (
                     cmd,
-                    v.audio_clip_controls.numbers[&Field::PlayStart]
+                    v.audio_detail.clip_controls.numbers[&Field::PlayStart]
                         .entity
                         .read(cx)
                         .value(),
@@ -1251,11 +1270,11 @@ mod ui_tests {
                 visual.run_until_parked();
                 editor.read_with(&visual, |v, cx| {
                     let state = v.state.as_ref().unwrap();
-                    assert!(v.audio_clip_controls.has_pending());
+                    assert!(v.audio_detail.clip_controls.has_pending());
                     assert_eq!(state.project, before.project);
                     assert!(v.audio_scope_preview_active(clip, state));
                     assert_eq!(
-                        v.audio_clip_controls.numbers[&Field::PlayStart]
+                        v.audio_detail.clip_controls.numbers[&Field::PlayStart]
                             .entity
                             .read(cx)
                             .value(),
@@ -1286,8 +1305,8 @@ mod ui_tests {
             visual.run_until_parked();
             editor.read_with(&visual, |v, cx| {
                 let state = v.state.as_ref().unwrap();
-                assert!(!v.audio_clip_controls.has_pending());
-                assert!(!v.audio_clip_controls.has_play_start_preview());
+                assert!(!v.audio_detail.clip_controls.has_pending());
+                assert!(!v.audio_detail.clip_controls.has_play_start_preview());
                 let canonical_clip = state.project.clip(clip).unwrap();
                 let canonical = if looping {
                     canonical_clip
@@ -1297,7 +1316,7 @@ mod ui_tests {
                     canonical_clip.source_offset() as f64
                 };
                 assert_eq!(
-                    v.audio_clip_controls.numbers[&Field::PlayStart]
+                    v.audio_detail.clip_controls.numbers[&Field::PlayStart]
                         .entity
                         .read(cx)
                         .value(),

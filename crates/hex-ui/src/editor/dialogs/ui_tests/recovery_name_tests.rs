@@ -15,7 +15,7 @@ fn manual_recovery_cannot_consume_selected_open_before_reconcile(cx: &mut TestAp
     let _subscription = cx.update(|cx| {
         cx.observe(&editor, move |editor, cx| {
             if !editor.read_with(cx, |view, _| {
-                view.pending_open_path.as_ref() == Some(&chosen)
+                view.persistence.pending_open_path.as_ref() == Some(&chosen)
             }) || seen.replace(true)
             {
                 return;
@@ -30,11 +30,11 @@ fn manual_recovery_cannot_consume_selected_open_before_reconcile(cx: &mut TestAp
                     ] {
                         view.project_recovery_dialog(kind, window, cx);
                         assert_eq!(
-                            view.pending_open_path.as_ref(),
+                            view.persistence.pending_open_path.as_ref(),
                             Some(&chosen),
                             "manual recovery must not steal a selected Open"
                         );
-                        assert!(!view.opening_project);
+                        assert!(!view.persistence.opening_project);
                     }
                 })
             })
@@ -178,7 +178,7 @@ fn rename_open(cx: &mut TestAppContext, clip: bool, answer: &str, initially_clea
         });
         visual.run_until_parked();
         pump(&editor, cx, |view| {
-            settled(view) && !view.project_open.busy()
+            settled(view) && !view.persistence.project_open.busy()
         });
         if answer == "save as failure" {
             editor.read_with(cx, |view, _| assert!(view.error.is_some()));
@@ -284,14 +284,14 @@ fn invalid_name_refuses_open_without_consuming_draft(cx: &mut TestAppContext) {
     editor.read_with(cx, |view, _| {
         assert!(view.track_name.is_editing());
         assert_eq!(view.state.as_ref().unwrap().project, before);
-        assert!(!view.project_open.busy());
+        assert!(!view.persistence.project_open.busy());
     });
     visual.simulate_keystrokes("escape");
     visual.dispatch_action(OpenProject);
     assert!(cx.did_prompt_for_paths());
     cx.simulate_paths_selection(None);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    editor.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
 }
 
 #[gpui::test]
@@ -314,8 +314,8 @@ fn recovery_actions_refuse_while_open_picker_is_active(cx: &mut TestAppContext) 
         visual.update(|window, cx| window.dispatch_action(action, cx));
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert!(view.project_open.busy());
-            assert!(!view.opening_project);
+            assert!(view.persistence.project_open.busy());
+            assert!(!view.persistence.opening_project);
             assert_eq!(
                 view.error.as_deref(),
                 Some("finish the current project operation first")
@@ -329,5 +329,5 @@ fn recovery_actions_refuse_while_open_picker_is_active(cx: &mut TestAppContext) 
     }
     cx.simulate_paths_selection(None);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    editor.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
 }

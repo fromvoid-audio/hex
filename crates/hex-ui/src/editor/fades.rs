@@ -26,8 +26,8 @@ impl EditorView {
         let retained = clip.audio_edit().is_some();
         let inherited = retained || fade_is_inherited(fade, duration);
         let admitted = fade_edit_admitted(
-            self.opening_project,
-            self.close_prompt_open,
+            self.persistence.opening_project,
+            self.persistence.close_prompt_open,
             self.worker_requests_pending,
             self.pending_requests.len(),
         );
@@ -155,8 +155,8 @@ impl EditorView {
 
     fn adjust_selected_fade(&mut self, fade_in: bool, increase: bool) {
         if !fade_edit_admitted(
-            self.opening_project,
-            self.close_prompt_open,
+            self.persistence.opening_project,
+            self.persistence.close_prompt_open,
             self.worker_requests_pending,
             self.pending_requests.len(),
         ) {
@@ -220,8 +220,8 @@ impl EditorView {
 
     fn reset_selected_fades(&mut self) {
         if !fade_edit_admitted(
-            self.opening_project,
-            self.close_prompt_open,
+            self.persistence.opening_project,
+            self.persistence.close_prompt_open,
             self.worker_requests_pending,
             self.pending_requests.len(),
         ) {
@@ -254,8 +254,8 @@ impl EditorView {
 
     fn report_fade_edit_blocked(&mut self) {
         if let Some(reason) = fade_edit_block_reason(
-            self.opening_project,
-            self.close_prompt_open,
+            self.persistence.opening_project,
+            self.persistence.close_prompt_open,
             self.worker_requests_pending,
             self.pending_requests.len(),
         ) {

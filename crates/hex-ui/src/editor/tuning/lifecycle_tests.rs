@@ -45,7 +45,7 @@ fn window(cx: &mut TestAppContext) -> (AnyWindowHandle, Entity<EditorView>) {
     let initial = next(&result.1, cx);
     result.1.update(cx, |view, _| {
         view.receive(initial);
-        view.tuning.open = true;
+        view.settings.tuning.open = true;
     });
     result
 }
@@ -57,7 +57,8 @@ fn tuning(hz: f64) -> ProjectTuning {
 }
 fn begin(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     editor.update(cx, |view, _| {
-        view.tuning
+        view.settings
+            .tuning
             .client
             .begin(
                 view.project_generation,
@@ -75,7 +76,7 @@ fn begin(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
 fn preview(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     begin(editor, cx);
     editor.update(cx, |view, _| {
-        view.tuning.client.change(tuning(333.0)).unwrap();
+        view.settings.tuning.client.change(tuning(333.0)).unwrap();
         assert!(view.pump_tuning_gesture());
     });
     let event = next(editor, cx);
@@ -91,13 +92,13 @@ fn settle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     loop {
         let done = editor.update(cx, |view, cx| {
             view.tick(cx);
-            view.tuning.client.snapshot().is_none()
+            view.settings.tuning.client.snapshot().is_none()
                 && view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture.snapshot().is_none()
-                && view.device_gesture_barriers.is_empty()
-                && view.tuning.deferred_library.is_none()
-                && view.tuning.library_pending.is_none()
+                && view.device_panel.gesture.snapshot().is_none()
+                && view.device_panel.gesture_barriers.is_empty()
+                && view.settings.tuning.deferred_library.is_none()
+                && view.settings.tuning.library_pending.is_none()
         });
         if done {
             return;
@@ -118,15 +119,15 @@ fn review_lifecycle_save_waits_for_latest_local_tuning_terminal(cx: &mut TestApp
                 .resize_with(UI_REQUEST_CAPACITY, || Request::Undo);
             assert!(!view.enqueue(Request::SaveNew(path.clone())));
             assert!(
-                !view.tuning.client.has_pending_terminal(),
+                !view.settings.tuning.client.has_pending_terminal(),
                 "overflow must not finalize a draft"
             );
             view.pending_requests.clear();
-            view.tuning.client.change(tuning(444.0)).unwrap();
+            view.settings.tuning.client.change(tuning(444.0)).unwrap();
             if reserve_terminal {
-                view.tuning.client.finish(tuning(444.0)).unwrap();
+                view.settings.tuning.client.finish(tuning(444.0)).unwrap();
             }
-            view.saving_project = true;
+            view.persistence.saving_project = true;
             assert!(view.enqueue(Request::SaveNew(path.clone())));
         });
         settle(&editor, cx);
@@ -156,8 +157,8 @@ fn review_lifecycle_close_and_quit_confirm_acknowledged_uncommitted_tuning(
                 } else {
                     assert!(!view.request_window_close(window, cx));
                 }
-                assert!(view.automation_close_preflight.frozen());
-                assert!(view.tuning.client.has_pending_terminal());
+                assert!(view.persistence.automation_close_preflight.frozen());
+                assert!(view.settings.tuning.client.has_pending_terminal());
             });
         })
         .unwrap();
@@ -169,7 +170,7 @@ fn review_lifecycle_close_and_quit_confirm_acknowledged_uncommitted_tuning(
             let state = view.state.as_ref().unwrap();
             assert!(state.unsaved);
             assert_eq!(state.project.tuning(), tuning(333.0));
-            assert!(!view.close_prompt_open);
+            assert!(!view.persistence.close_prompt_open);
         });
     }
 }
@@ -182,7 +183,7 @@ fn review_lifecycle_stop_cancels_late_audition_preparation_and_publication(
     input.set_key(0, Some((60, 100, 1))).unwrap();
     editor.update(cx, |view, _| {
         view.pending_playback = None;
-        view.tuning.audition_input = Some(Arc::clone(&input));
+        view.settings.tuning.audition_input = Some(Arc::clone(&input));
         view.service
             .submit(Request::PrepareTuningAudition {
                 revision: view.state.as_ref().unwrap().revision,
@@ -203,7 +204,7 @@ fn review_lifecycle_stop_cancels_late_audition_preparation_and_publication(
     }
     editor.update(cx, |view, _| {
         view.receive(late);
-        assert!(view.tuning.audition_input.is_none());
+        assert!(view.settings.tuning.audition_input.is_none());
         assert!(view.pending_playback.is_none());
     });
 }
@@ -257,23 +258,23 @@ fn review_lifecycle_failed_tuning_terminal_refuses_save_as_and_deferred_export(
     scale.set_reference(0, 20_000.0, 0).unwrap();
     let invalid = ProjectTuning::new(true, scale, hex_tuning::Audition::default()).unwrap();
     editor.update(cx, |view, _| {
-        view.tuning.client.finish(invalid).unwrap();
-        view.tuning.deferred_library = Some((
+        view.settings.tuning.client.finish(invalid).unwrap();
+        view.settings.tuning.deferred_library = Some((
             hex_session::tuning_gesture::TuningLibraryOperation::Export {
                 path: export_path.clone(),
                 name: "invalid draft".into(),
             },
             None,
         ));
-        view.saving_project = true;
+        view.persistence.saving_project = true;
         assert!(view.enqueue(Request::SaveNew(project_path.clone())));
     });
     settle(&editor, cx);
     editor.read_with(cx, |view, _| {
-        assert!(view.tuning.error.is_some());
-        assert!(!view.saving_project);
+        assert!(view.settings.tuning.error.is_some());
+        assert!(!view.persistence.saving_project);
         assert!(
-            view.tuning.deferred_library.is_none(),
+            view.settings.tuning.deferred_library.is_none(),
             "failed commit must not leave a future stale write"
         );
     });
@@ -295,18 +296,21 @@ fn review_final_empty_project_replacement_confirms_active_tuning_draft(cx: &mut 
                 let mode = hex_session::DocumentAudioMode::Resident;
                 if new_project {
                     view.new_project(mode, window, cx);
-                    assert!(view.project_open.busy());
+                    assert!(view.persistence.project_open.busy());
                 } else {
                     let path = scratch.0.join("other.sqlite");
                     view.choose_project(path.clone(), mode);
-                    assert_eq!(view.pending_open_path.as_ref(), Some(&path));
+                    assert_eq!(view.persistence.pending_open_path.as_ref(), Some(&path));
                 }
                 assert!(
-                    !view.opening_project,
+                    !view.persistence.opening_project,
                     "first request must obtain replacement confirmation"
                 );
-                assert!(!view.tuning.client.has_pending_terminal());
-                assert_eq!(view.tuning.client.snapshot().unwrap().tuning, tuning(333.0));
+                assert!(!view.settings.tuning.client.has_pending_terminal());
+                assert_eq!(
+                    view.settings.tuning.client.snapshot().unwrap().tuning,
+                    tuning(333.0)
+                );
             })
         })
         .unwrap();
@@ -316,11 +320,11 @@ fn review_final_empty_project_replacement_confirms_active_tuning_draft(cx: &mut 
 fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut TestAppContext) {
     let (_, editor) = window(cx);
     editor.update(cx, |view, cx| {
-        let original = view.tuning.value;
+        let original = view.settings.tuning.value;
         let mut scale = original.scale();
         assert!(scale.move_degree(1, 1.0));
         let current = ProjectTuning::new(false, scale, original.audition()).unwrap();
-        view.tuning.value = current;
+        view.settings.tuning.value = current;
         view.tuning_numeric(
             Field::Period,
             NumericControlEvent {
@@ -331,11 +335,11 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             cx,
         );
         assert!(
-            view.tuning.error.is_some(),
+            view.settings.tuning.error.is_some(),
             "structurally rejected compression needs an explanation"
         );
-        assert_eq!(view.tuning.value, current);
-        assert!(view.tuning.client.snapshot().is_none());
+        assert_eq!(view.settings.tuning.value, current);
+        assert!(view.settings.tuning.client.snapshot().is_none());
         view.tuning_numeric(
             Field::Period,
             NumericControlEvent {
@@ -345,8 +349,8 @@ fn review_final_period_refusal_preserves_the_draft_and_reports_recovery(cx: &mut
             },
             cx,
         );
-        assert!(view.tuning.error.is_none());
-        assert_eq!(view.tuning.value.scale().period_cents(), 1800.0);
+        assert!(view.settings.tuning.error.is_none());
+        assert_eq!(view.settings.tuning.value.scale().period_cents(), 1800.0);
     });
 }
 
@@ -414,7 +418,7 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
                 );
             }
             assert!(
-                view.device_gesture.has_pending_terminal(),
+                view.device_panel.gesture.has_pending_terminal(),
                 "library barrier must reserve the latest local device terminal"
             );
             assert!(view.enqueue(Request::Edit(Command::AddTrack {
@@ -434,11 +438,12 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
                     .gain(),
                 0.3
             );
-            assert!(view.device_gesture.snapshot().is_none());
-            assert!(view.tuning.library_pending.is_none());
+            assert!(view.device_panel.gesture.snapshot().is_none());
+            assert!(view.settings.tuning.library_pending.is_none());
             if action == "old dialog export" {
                 assert!(
-                    view.tuning
+                    view.settings
+                        .tuning
                         .error
                         .as_deref()
                         .is_some_and(|message| message.contains("changed project revision"))
@@ -446,9 +451,9 @@ fn review_final_tuning_library_waits_for_latest_device_terminal(cx: &mut TestApp
                 assert!(!path.exists());
             } else {
                 assert!(
-                    view.tuning.error.is_none(),
+                    view.settings.tuning.error.is_none(),
                     "{action}: {:?}",
-                    view.tuning.error
+                    view.settings.tuning.error
                 );
                 if action == "current export" {
                     assert!(std::fs::metadata(&path).unwrap().len() > 0);
@@ -485,9 +490,9 @@ fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppConte
     let input = cx
         .update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
-                view.tuning.open = true;
-                view.tuning.audition_keyboard.enabled = true;
-                view.tuning.focus.focus(window);
+                view.settings.tuning.open = true;
+                view.settings.tuning.audition_keyboard.enabled = true;
+                view.settings.tuning.focus.focus(window);
                 assert!(view.tuning_audition_down(
                     &gpui::KeyDownEvent {
                         keystroke: gpui::Keystroke::parse("a").unwrap(),
@@ -497,7 +502,8 @@ fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppConte
                     cx,
                 ));
                 Arc::clone(
-                    view.tuning
+                    view.settings
+                        .tuning
                         .audition_input
                         .as_ref()
                         .expect("owned preparation"),
@@ -525,12 +531,13 @@ fn review_audition_worker_failure_survives_the_normal_tick(cx: &mut TestAppConte
     }
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.tuning.error.as_deref(),
+            view.settings.tuning.error.as_deref(),
             Some("tuning audition preparation is stale or unavailable"),
         );
-        assert!(view.tuning.audition_input.is_none());
+        assert!(view.settings.tuning.audition_input.is_none());
         assert!(
-            view.tuning
+            view.settings
+                .tuning
                 .audition_keyboard
                 .desired_notes()
                 .iter()

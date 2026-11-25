@@ -104,7 +104,7 @@ fn sidebar_menu_keyboard_saves_default_to_configured_disk_and_retires_when_hidde
     visual.simulate_click(button.center(), Modifiers::default());
     visual.run_until_parked();
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -263,11 +263,11 @@ fn device_preset_rendered_save_cancel_and_stale_dialog_preserve_project(cx: &mut
     assert!(load.origin.x >= frame.origin.x && load.right() <= frame.right());
     click_save(&mut visual, device);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(view.preset_dialog_open));
+    editor.read_with(cx, |view, _| assert!(view.device_panel.preset_dialog_open));
     cx.simulate_new_path_selection(|_| None);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(!view.preset_dialog_open);
+        assert!(!view.device_panel.preset_dialog_open);
         assert_eq!(view.state.as_ref().unwrap().project, original);
         assert_eq!(view.state.as_ref().unwrap().revision, revision);
         assert_eq!(view.worker_requests_pending, 0);
@@ -364,14 +364,14 @@ fn device_preset_return_owner_exposes_actions_and_cancel_keeps_sends(cx: &mut Te
     let original = state.project.clone();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     click_save(&mut visual, device);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(view.preset_dialog_open));
+    editor.read_with(cx, |view, _| assert!(view.device_panel.preset_dialog_open));
     cx.simulate_new_path_selection(|_| None);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -473,7 +473,7 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            !view.preset_dialog_open,
+            !view.device_panel.preset_dialog_open,
             "invalid current draft must refuse save"
         );
         assert_eq!(view.state.as_ref().unwrap().project, original);

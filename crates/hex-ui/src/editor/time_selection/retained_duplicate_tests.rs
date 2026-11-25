@@ -91,7 +91,7 @@ fn fixture_with_recovery(
         });
         visual.run_until_parked();
         if editor.read_with(&visual, |view, _| {
-            view.state.is_some() && !view.audio_import_settings.is_loading()
+            view.state.is_some() && !view.settings.audio_import.is_loading()
         }) {
             break;
         }
@@ -1014,8 +1014,8 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
         visual.update(|window, cx| {
             editor.update(cx, |view, cx| {
                 view.set_mode(EditorMode::Arrangement);
-                view.selected_cell = None;
-                view.selected_scene = None;
+                view.session_grid.selected_cell = None;
+                view.session_grid.selected_scene = None;
                 view.focus.focus(window);
                 cx.notify();
             })
@@ -1046,12 +1046,12 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
                 view.selection_intent_epoch, epoch,
                 "refused click keeps intent"
             );
-            assert!(view.selected_cell.is_none());
+            assert!(view.session_grid.selected_cell.is_none());
         });
         if navigate {
             visual.simulate_keystrokes("right right");
             editor.read_with(&visual, |view, _| {
-                assert_eq!(view.selected_cell, Some((tracks[1], scene)));
+                assert_eq!(view.session_grid.selected_cell, Some((tracks[1], scene)));
                 assert_eq!(view.selected_clip, Some(session_clip));
             });
         }
@@ -1079,7 +1079,7 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
             );
             let range = view.normalized_time_selection().unwrap();
             if navigate {
-                assert_eq!(view.selected_cell, Some((tracks[1], scene)));
+                assert_eq!(view.session_grid.selected_cell, Some((tracks[1], scene)));
                 assert_eq!(view.selected_track, Some(tracks[1]));
                 assert_eq!(
                     view.selected_clip,
@@ -1118,7 +1118,9 @@ fn console_navigation_without_target_keeps_pending_copy_intent(cx: &mut TestAppC
     visual.simulate_keystrokes("tab right");
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.mode, EditorMode::Session);
-        assert!(view.selected_cell.is_none() && view.selected_scene.is_none());
+        assert!(
+            view.session_grid.selected_cell.is_none() && view.session_grid.selected_scene.is_none()
+        );
         assert_eq!(
             view.selection_intent_epoch, epoch,
             "no target cannot consume selection intent"

@@ -62,7 +62,7 @@ impl EditorView {
             cx.notify();
             return;
         }
-        if self.midi_focus.is_focused(window) {
+        if self.midi_editor.focus.is_focused(window) {
             if !self.duplicate_midi_time_selection() {
                 self.duplicate_piano_notes();
             }
@@ -73,13 +73,13 @@ impl EditorView {
             cx.notify();
             return;
         }
-        if !self.focus.is_focused(window) && !self.midi_focus.is_focused(window) {
+        if !self.focus.is_focused(window) && !self.midi_editor.focus.is_focused(window) {
             return;
         }
         if self.mode == super::EditorMode::Session
-            && !self.midi_focus.is_focused(window)
-            && self.selected_cell.is_none()
-            && self.selected_scene.is_some()
+            && !self.midi_editor.focus.is_focused(window)
+            && self.session_grid.selected_cell.is_none()
+            && self.session_grid.selected_scene.is_some()
         {
             self.duplicate_selected_scene();
         } else if kind == super::duplicate::DuplicateKind::Independent {
@@ -208,6 +208,7 @@ impl EditorView {
             .child(self.project_title_label());
         let scan_status = self.plugin_scan_status();
         let plugin_status = self
+            .device_panel
             .pending_plugin_effect
             .as_ref()
             .map(|pending| pending.status.as_str())
@@ -241,6 +242,7 @@ impl EditorView {
         } else {
             let status = plugin_status.unwrap_or(&self.status);
             let feedback_paint = self
+                .device_panel
                 .pending_plugin_effect
                 .as_ref()
                 .and_then(|pending| pending.trace.as_ref())
@@ -281,10 +283,10 @@ impl EditorView {
                     .children(feedback_paint),
             );
         }
-        if let Some(control) = &self.bounce_control {
+        if let Some(control) = &self.persistence.bounce_control {
             let phase = if control.is_cancelled() {
                 "cancelling bounce"
-            } else if self.bounce_fraction == 1.0 {
+            } else if self.persistence.bounce_fraction == 1.0 {
                 "finishing bounce"
             } else {
                 "bouncing audio · escape cancels"
@@ -305,11 +307,11 @@ impl EditorView {
                         })
                         .into()
                     })
-                    .when(self.bounce_fraction > 0.0, |bar| {
+                    .when(self.persistence.bounce_fraction > 0.0, |bar| {
                         bar.child(
                             div()
                                 .debug_selector(|| "bounce-progress-fill".into())
-                                .w(relative(self.bounce_fraction))
+                                .w(relative(self.persistence.bounce_fraction))
                                 .h_full()
                                 .bg(rgb(theme::color(theme::PaletteRole::Primary))),
                         )
@@ -407,7 +409,7 @@ impl EditorView {
             );
         }
         bar = bar.child(self.controller_input_row(cx));
-        if self.audio_batch.is_some() {
+        if self.persistence.audio_batch.is_some() {
             bar = bar.child(
                 div()
                     .id("cancel-audio-import")
@@ -455,8 +457,9 @@ impl EditorView {
         let recovery_pending = self.recovery.generation().is_some();
         let activity = [
             recovery_pending.then_some("audio recovery pending"),
-            (self.export_pending && !showing_export_progress).then_some("export pending"),
-            self.saving_project.then_some("save pending"),
+            (self.persistence.export_pending && !showing_export_progress)
+                .then_some("export pending"),
+            self.persistence.saving_project.then_some("save pending"),
         ]
         .into_iter()
         .flatten()
@@ -639,7 +642,7 @@ impl Render for EditorView {
         self.reconcile_track_resize(window, cx);
         self.reconcile_track_reorder(window);
         super::browser_input::restyle(&self.browser.search, cx);
-        if let Some(input) = &self.tuning.name {
+        if let Some(input) = &self.settings.tuning.name {
             super::browser_input::restyle(input, cx);
         }
         self.reconcile_clip_name(window, cx);
@@ -663,7 +666,10 @@ impl Render for EditorView {
         self.reconcile_fade_gesture();
         self.reconcile_clip_gain();
         self.reconcile_gain_audition();
-        if self.clip_view_open && self.gain_lane.track.is_some() && !self.automation_view.enabled {
+        if self.audio_detail.clip_view_open
+            && self.gain_lane.track.is_some()
+            && !self.automation_view.enabled
+        {
             self.cancel_gain_draft(cx);
             self.gain_lane.track = None;
         }
@@ -690,16 +696,16 @@ impl Render for EditorView {
             "hex_source_name hex_text_editing"
         } else if super::device_panel::picker_is_open(self) {
             "hex_device_picker_root"
-        } else if self.changelog.is_open() {
+        } else if self.settings.changelog.is_open() {
             "hex_changelog"
         } else if self.track_name.is_editing() {
             "hex_track_name hex_text_editing"
         } else if self.clip_name_edit.is_some() || self.sections.naming() || self.locators.naming()
         {
             "hex_clip_name hex_text_editing"
-        } else if self.tuning.open {
+        } else if self.settings.tuning.open {
             "hex_tuning"
-        } else if self.theme_settings.open {
+        } else if self.settings.theme.open {
             "hex_theme_settings"
         } else if self.controller_input_is_open() {
             "hex_controller_input"
@@ -784,7 +790,7 @@ impl Render for EditorView {
             .on_drag_move::<super::drag::BrowserAudioDrag>(move |_, _, cx| {
                 console_drag_entity.update(cx, |view, cx| {
                     if view.mode == super::EditorMode::Session
-                        && let Some(drag) = view.active_browser_audio_drag.as_ref()
+                        && let Some(drag) = view.browser.active_audio_drag.as_ref()
                         && matches!(
                             drag.destination.get(),
                             Some(super::drag::BrowserDropDestination::Console(_))
@@ -808,7 +814,7 @@ impl Render for EditorView {
             ))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
                 if event.button == MouseButton::Left
-                    && let Some(drag) = view.active_browser_audio_drag.clone()
+                    && let Some(drag) = view.browser.active_audio_drag.clone()
                 {
                     cx.defer_in(window, move |view, _, cx| {
                         // Child drop receivers run before this deferred cleanup.
@@ -847,7 +853,7 @@ impl Render for EditorView {
                             cx.notify();
                         }
                     }
-                    view.tuning.shift = event.modifiers.shift;
+                    view.settings.tuning.shift = event.modifiers.shift;
                     if view.option_held != event.modifiers.alt {
                         view.option_held = event.modifiers.alt;
                         let pos = window.mouse_position();
@@ -860,10 +866,11 @@ impl Render for EditorView {
                                     && px_y >= lane.top
                                     && px_y < lane.top + lane.height
                             });
-                        let over_audio_event_editor = view.clip_view_open
-                            && !view.device_panel_active
+                        let over_audio_event_editor = view.audio_detail.clip_view_open
+                            && !view.device_panel.active
                             && view
-                                .audio_event_editor
+                                .audio_detail
+                                .event
                                 .bounds
                                 .is_some_and(|bounds| bounds.contains(&pos));
                         let option_affects_view = view.hovered_arrangement_clip.is_some()
@@ -872,22 +879,27 @@ impl Render for EditorView {
                             || view.time_selection.is_some()
                             || view.clip_gain.has_displayed()
                             || view.active_clip_drag.is_some()
-                            || view.active_browser_audio_drag.is_some()
+                            || view.browser.active_audio_drag.is_some()
                             || view.active_trim_drag.is_some()
-                            || view.active_midi_trim_drag.is_some()
-                            || view.active_native_device_drag.is_some()
+                            || view.midi_editor.active_trim_drag.is_some()
+                            || view.device_panel.active_native_drag.is_some()
                             || over_audio_event_editor
                             || over_track_lane;
                         if option_affects_view {
                             cx.notify();
                         }
                     }
-                    if view.active_native_device_drag.as_ref().is_some_and(|drag| {
-                        matches!(
-                            drag.source,
-                            super::drag::NativeDeviceDragSource::Existing { .. }
-                        )
-                    }) {
+                    if view
+                        .device_panel
+                        .active_native_drag
+                        .as_ref()
+                        .is_some_and(|drag| {
+                            matches!(
+                                drag.source,
+                                super::drag::NativeDeviceDragSource::Existing { .. }
+                            )
+                        })
+                    {
                         cx.set_active_drag_cursor_style(
                             if event.modifiers.alt {
                                 gpui::CursorStyle::DragCopy
@@ -960,7 +972,7 @@ impl Render for EditorView {
                         cx.notify();
                     }
                     view.cancel_trim_gesture(cx);
-                    if let Some(drag) = view.active_midi_trim_drag.take() {
+                    if let Some(drag) = view.midi_editor.active_trim_drag.take() {
                         drag.preview.borrow_mut().take();
                         cx.notify();
                     }
@@ -1030,8 +1042,8 @@ impl Render for EditorView {
                     cx.stop_propagation();
                     cx.notify();
                 }
-                if event.keystroke.key == "f" && view.audio_event_editor.fade_key_held {
-                    view.audio_event_editor.fade_key_held = false;
+                if event.keystroke.key == "f" && view.audio_detail.event.fade_key_held {
+                    view.audio_detail.event.fade_key_held = false;
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -1204,7 +1216,7 @@ impl Render for EditorView {
                 if view.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
-                } else if view.active_native_device_drag.is_some() {
+                } else if view.device_panel.active_native_drag.is_some() {
                     cx.stop_active_drag(window);
                     view.cancel_active_native_device_drag();
                     cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
@@ -1221,7 +1233,7 @@ impl Render for EditorView {
             )
             .capture_action(
                 cx.trace(|view, _: &hex_widgets::NumericEscape, window, cx| {
-                    if view.theme_settings.open {
+                    if view.settings.theme.open {
                         view.cancel_theme_settings(window, cx);
                         cx.stop_propagation();
                     } else if view.cancel_gain_draft(cx) {
@@ -1258,7 +1270,7 @@ impl Render for EditorView {
                     cx.notify();
                     return;
                 }
-                if view.pending_plugin_effect.is_some() {
+                if view.device_panel.pending_plugin_effect.is_some() {
                     view.cancel_plugin_effect();
                     cx.stop_propagation();
                     cx.notify();
@@ -1315,18 +1327,19 @@ impl Render for EditorView {
                 }
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
-                if view.midi_focus.is_focused(window) {
+                if view.midi_editor.focus.is_focused(window) {
                     view.cancel_midi_audition();
                 }
                 let midi_canceled = view.cancel_midi_note_gesture();
                 let time_selection_canceled = view.cancel_time_selection_gesture()
                     | view.cancel_clip_paint()
                     | view.cancel_section_pointer();
-                let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
-                    view.midi_selection.clear() | view.clear_midi_time_selection()
-                } else {
-                    false
-                };
+                let selection_cleared =
+                    if !midi_canceled && view.midi_editor.focus.is_focused(window) {
+                        view.midi_editor.selection.clear() | view.clear_midi_time_selection()
+                    } else {
+                        false
+                    };
                 let drag_stopped = cx.stop_active_drag(window);
                 let device_drag_stopped = view.cancel_active_native_device_drag();
                 let pan_canceled =
@@ -1351,9 +1364,9 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ToggleMidiDrawMode, _, cx| {
-                view.midi_draw_mode = !view.midi_draw_mode;
+                view.midi_editor.draw_mode = !view.midi_editor.draw_mode;
                 view.cancel_midi_note_gesture();
-                view.midi_group_gesture = None;
+                view.midi_editor.group_gesture = None;
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &ImportAudio, _, cx| view.import_dialog(cx)))
@@ -1433,7 +1446,7 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 match super::session_navigation::arrow_target(
                     view.mode,
-                    view.midi_focus.is_focused(window),
+                    view.midi_editor.focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
                         view.navigate_piano_cursor(false);
@@ -1459,7 +1472,7 @@ impl Render for EditorView {
                 view.cancel_duplicate_chain();
                 match super::session_navigation::arrow_target(
                     view.mode,
-                    view.midi_focus.is_focused(window),
+                    view.midi_editor.focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
                         view.navigate_piano_cursor(true);
@@ -1483,9 +1496,9 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, _: &TrimLeft, window, cx| {
                 view.cancel_duplicate_chain();
-                if view.midi_focus.is_focused(window) {
-                    if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary()
+                if view.midi_editor.focus.is_focused(window) {
+                    if view.midi_editor.selection.len() == 1 {
+                        if let Some(note) = view.midi_editor.selection.primary()
                             && let Some(state) = view.state.as_ref()
                         {
                             view.update_note_field(
@@ -1495,7 +1508,7 @@ impl Render for EditorView {
                                 super::midi::NoteField::Duration(-1),
                             );
                         }
-                    } else if view.midi_selection.len() > 1 {
+                    } else if view.midi_editor.selection.len() > 1 {
                         view.adjust_selected_group_current(
                             super::midi_group_drag::GroupParameter::Duration(-1),
                         );
@@ -1512,9 +1525,9 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, _: &TrimRight, window, cx| {
                 view.cancel_duplicate_chain();
-                if view.midi_focus.is_focused(window) {
-                    if view.midi_selection.len() == 1 {
-                        if let Some(note) = view.midi_selection.primary()
+                if view.midi_editor.focus.is_focused(window) {
+                    if view.midi_editor.selection.len() == 1 {
+                        if let Some(note) = view.midi_editor.selection.primary()
                             && let Some(state) = view.state.as_ref()
                         {
                             view.update_note_field(
@@ -1524,7 +1537,7 @@ impl Render for EditorView {
                                 super::midi::NoteField::Duration(1),
                             );
                         }
-                    } else if view.midi_selection.len() > 1 {
+                    } else if view.midi_editor.selection.len() > 1 {
                         view.adjust_selected_group_current(
                             super::midi_group_drag::GroupParameter::Duration(1),
                         );
@@ -1594,7 +1607,7 @@ impl Render for EditorView {
                         &view.group_selection_route(window),
                     );
                 }
-                if view.audio_event_focus.is_focused(window) {
+                if view.audio_detail.focus.is_focused(window) {
                     view.event_group_selected();
                 } else if view.section_has_focus(window) {
                     if !view.merge_sections(window) {
@@ -1650,10 +1663,10 @@ impl Render for EditorView {
                 let target = super::session_grid::resolve_delete_target(
                     view.state.as_ref().map(|state| state.project.as_ref()),
                     view.mode,
-                    view.midi_focus.is_focused(window),
-                    !view.midi_selection.is_empty(),
-                    view.selected_cell,
-                    view.selected_scene,
+                    view.midi_editor.focus.is_focused(window),
+                    !view.midi_editor.selection.is_empty(),
+                    view.session_grid.selected_cell,
+                    view.session_grid.selected_scene,
                     view.selected_clip,
                 );
                 match target {
@@ -1674,10 +1687,10 @@ impl Render for EditorView {
                         if view.enqueue(SessionRequest::Edit(Command::RemoveScene(scene))) {
                             view.cancel_duplicate_chain();
                             view.cancel_midi_note_gesture();
-                            view.selected_scene = None;
-                            view.selected_cell = None;
+                            view.session_grid.selected_scene = None;
+                            view.session_grid.selected_cell = None;
                             view.selected_clip = None;
-                            view.midi_selection.clear();
+                            view.midi_editor.selection.clear();
                         }
                     }
                     // A focused track header owns Delete; a clip selection
@@ -1704,7 +1717,7 @@ impl Render for EditorView {
                 cx.trace(|view, _: &super::LaunchSessionSelection, window, cx| {
                     if super::session_navigation::session_editor_has_focus(
                         view.mode,
-                        view.midi_focus.is_focused(window),
+                        view.midi_editor.focus.is_focused(window),
                     ) {
                         view.launch_session_selection();
                     }
@@ -1750,7 +1763,7 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::MoveSceneUp, window, cx| {
                 if super::session_navigation::session_editor_has_focus(
                     view.mode,
-                    view.midi_focus.is_focused(window),
+                    view.midi_editor.focus.is_focused(window),
                 ) {
                     view.move_selected_scene(super::session_navigation::Direction::Up);
                 }
@@ -1759,7 +1772,7 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::MoveSceneDown, window, cx| {
                 if super::session_navigation::session_editor_has_focus(
                     view.mode,
-                    view.midi_focus.is_focused(window),
+                    view.midi_editor.focus.is_focused(window),
                 ) {
                     view.move_selected_scene(super::session_navigation::Direction::Down);
                 }
@@ -1868,7 +1881,7 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &PreviousTrack, window, cx| {
                 match super::session_navigation::arrow_target(
                     view.mode,
-                    view.midi_focus.is_focused(window),
+                    view.midi_editor.focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
                         view.transpose_selected_note(true);
@@ -1885,7 +1898,7 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &NextTrack, window, cx| {
                 match super::session_navigation::arrow_target(
                     view.mode,
-                    view.midi_focus.is_focused(window),
+                    view.midi_editor.focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
                         view.transpose_selected_note(false);
@@ -1904,13 +1917,13 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &MidiOctaveUp, window, cx| {
-                if view.midi_focus.is_focused(window) {
+                if view.midi_editor.focus.is_focused(window) {
                     view.transpose_selected_note_by(12);
                 }
                 cx.notify();
             }))
             .on_action(cx.trace(|view, _: &MidiOctaveDown, window, cx| {
-                if view.midi_focus.is_focused(window) {
+                if view.midi_editor.focus.is_focused(window) {
                     view.transpose_selected_note_by(-12);
                 }
                 cx.notify();

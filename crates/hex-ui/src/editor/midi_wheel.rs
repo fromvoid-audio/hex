@@ -32,24 +32,24 @@ impl EditorView {
         else {
             return false;
         };
-        let mut viewport = self.piano_pitch;
+        let mut viewport = self.midi_editor.piano_pitch;
         if pitch != 0.0 {
             let Some(row_height) = viewport.row_height_pixels(bounds[3]) else {
                 return false;
             };
-            self.piano_pitch_scroll_accum =
-                (self.piano_pitch_scroll_accum + pitch).clamp(-bounds[3], bounds[3]);
-            let steps = (self.piano_pitch_scroll_accum / row_height).trunc();
-            self.piano_pitch_scroll_accum -= steps * row_height;
+            self.midi_editor.piano_pitch_scroll_accum =
+                (self.midi_editor.piano_pitch_scroll_accum + pitch).clamp(-bounds[3], bounds[3]);
+            let steps = (self.midi_editor.piano_pitch_scroll_accum / row_height).trunc();
+            self.midi_editor.piano_pitch_scroll_accum -= steps * row_height;
             let (target, clamped) = viewport.scroll_rows(steps as i16);
             if clamped {
                 // Do not bank motion against a MIDI edge.
-                self.piano_pitch_scroll_accum = 0.0;
+                self.midi_editor.piano_pitch_scroll_accum = 0.0;
             }
             viewport = target;
         }
-        let span = self.piano_beat_span.raw();
-        let mut start = self.piano_beat_start;
+        let span = self.midi_editor.piano_beat_span.raw();
+        let mut start = self.midi_editor.piano_beat_start;
         if time != 0.0 && span > 0 {
             let ticks = (f64::from(time) / f64::from(bounds[2]) * span as f64)
                 .round()
@@ -57,13 +57,18 @@ impl EditorView {
             let next = start - ticks;
             start = super::midi_scene::clamp_start(next, span);
         }
-        if (viewport, start) == (self.piano_pitch, self.piano_beat_start) {
+        if (viewport, start)
+            == (
+                self.midi_editor.piano_pitch,
+                self.midi_editor.piano_beat_start,
+            )
+        {
             return false;
         }
         // Viewport-bound gesture state is retired, as for every other navigation.
         self.cancel_midi_note_gesture();
-        self.piano_pitch = viewport;
-        self.piano_beat_start = start;
+        self.midi_editor.piano_pitch = viewport;
+        self.midi_editor.piano_beat_start = start;
         true
     }
 }

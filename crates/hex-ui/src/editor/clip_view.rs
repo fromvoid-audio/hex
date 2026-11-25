@@ -16,13 +16,15 @@ impl EditorView {
     /// Only the focused, visible Arrangement editor lends its local cursor
     /// to the project transport. The original-source view has a different clock.
     pub(super) fn focused_clip_editor_play_start(&self, window: &gpui::Window) -> Option<u64> {
-        if self.mode != EditorMode::Arrangement || !self.clip_view_open || self.device_panel_active
+        if self.mode != EditorMode::Arrangement
+            || !self.audio_detail.clip_view_open
+            || self.device_panel.active
         {
             return None;
         }
-        if self.midi_focus.is_focused(window) {
+        if self.midi_editor.focus.is_focused(window) {
             self.midi_editor_cursor_play_start()
-        } else if self.audio_event_focus.is_focused(window) {
+        } else if self.audio_detail.focus.is_focused(window) {
             self.audio_editor_cursor_play_start()
         } else {
             None
@@ -31,7 +33,7 @@ impl EditorView {
 
     /// One shared picker in the status bar, leaving the editor surface for content.
     pub(super) fn clip_detail_controls(&mut self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let open = self.clip_view_open;
+        let open = self.audio_detail.clip_view_open;
         let mut row = div()
             .id("clip-view-toggle-row")
             .h(px(18.0))
@@ -51,7 +53,7 @@ impl EditorView {
                 .px(px(5.0))
                 .flex()
                 .items_center()
-                .text_color(rgb(if self.device_panel_active {
+                .text_color(rgb(if self.device_panel.active {
                     theme::color(theme::PaletteRole::Muted)
                 } else {
                     theme::color(theme::PaletteRole::Secondary)
@@ -61,7 +63,7 @@ impl EditorView {
                 .child(theme::text("clip"))
                 .on_click(cx.listener(|view, _, window, cx| {
                     if view.focus_clip_details(window, cx) {
-                        view.clip_view_open = true;
+                        view.audio_detail.clip_view_open = true;
                     }
                     cx.notify();
                 })),
@@ -75,7 +77,7 @@ impl EditorView {
                 .px(px(5.0))
                 .flex()
                 .items_center()
-                .text_color(rgb(if self.device_panel_active {
+                .text_color(rgb(if self.device_panel.active {
                     theme::color(theme::PaletteRole::SecondaryText)
                 } else {
                     theme::color(theme::PaletteRole::Muted)
@@ -85,12 +87,12 @@ impl EditorView {
                 .child(theme::text("devices"))
                 .on_click(cx.listener(|view, _, window, cx| {
                     if super::device_panel::finalize_controls(view, cx) {
-                        if let Some(owner) = view.focused_return {
+                        if let Some(owner) = view.session_grid.focused_return {
                             view.focus_return_details(owner, window, cx);
                         } else {
                             view.focus_track_details(window);
                         }
-                        view.clip_view_open = true;
+                        view.audio_detail.clip_view_open = true;
                     }
                     cx.notify();
                 })),
@@ -120,25 +122,25 @@ impl EditorView {
                         })
                         .child(theme::text(if open { "⌄" } else { "⌃" }))
                         .on_click(cx.listener(|view, _, window, cx| {
-                            if view.clip_view_open
+                            if view.audio_detail.clip_view_open
                                 && !super::device_panel::finalize_controls(view, cx)
                             {
                                 cx.notify();
                                 return;
                             }
-                            view.clip_view_open = !view.clip_view_open;
-                            if !view.clip_view_open {
-                                view.audio_event_editor.gesture = None;
+                            view.audio_detail.clip_view_open = !view.audio_detail.clip_view_open;
+                            if !view.audio_detail.clip_view_open {
+                                view.audio_detail.event.gesture = None;
                                 view.cancel_midi_note_gesture();
                                 cancel_eq8_audition(view);
-                                if view.midi_focus.is_focused(window)
-                                    || view.audio_event_focus.is_focused(window)
+                                if view.midi_editor.focus.is_focused(window)
+                                    || view.audio_detail.focus.is_focused(window)
                                 {
                                     view.focus.focus(window);
                                 }
                             }
                             view.device_panel.navigation.cancel();
-                            if view.device_panel_active {
+                            if view.device_panel.active {
                                 view.focus.focus(window);
                             }
                             cx.notify();
@@ -198,13 +200,13 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.device_panel_active && !super::device_panel::finalize_controls(self, cx) {
+        if self.device_panel.active && !super::device_panel::finalize_controls(self, cx) {
             return false;
         }
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
-        self.device_panel_active = false;
-        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
+        self.device_panel.active = false;
+        if self.midi_editor.focus.is_focused(window) || self.audio_detail.focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -214,10 +216,10 @@ impl EditorView {
     pub(super) fn focus_track_details(&mut self, window: &mut gpui::Window) {
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
-        self.focused_return = None;
-        self.device_panel_active = true;
-        self.detail_context = None;
-        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
+        self.session_grid.focused_return = None;
+        self.device_panel.active = true;
+        self.audio_detail.detail_context = None;
+        if self.midi_editor.focus.is_focused(window) || self.audio_detail.focus.is_focused(window) {
             self.focus.focus(window);
         }
     }
@@ -230,14 +232,14 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.device_panel_active && !super::device_panel::finalize_controls(self, cx) {
+        if self.device_panel.active && !super::device_panel::finalize_controls(self, cx) {
             return false;
         }
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
-        self.focused_return = Some(return_track);
-        self.device_panel_active = true;
-        if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
+        self.session_grid.focused_return = Some(return_track);
+        self.device_panel.active = true;
+        if self.midi_editor.focus.is_focused(window) || self.audio_detail.focus.is_focused(window) {
             self.focus.focus(window);
         }
         true
@@ -267,34 +269,41 @@ impl EditorView {
         self.reconcile_piano_pan();
         self.reconcile_midi_ruler();
         self.reconcile_audio_loop();
-        let open = self.clip_view_open;
+        let open = self.audio_detail.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.detail_clip_id()
                 .is_some_and(|clip| state.project.midi_source(clip).is_some())
         });
         // A conversion can retain ClipId while changing its source kind. Retire
         // that MIDI viewport too, even when no new MIDI editor is rendered.
-        if self.piano_view_clip.is_some_and(|(generation, clip)| {
-            generation != self.project_generation
-                || self.detail_clip_id() != Some(clip)
-                || !selected_midi
-        }) {
-            self.piano_view_clip = None;
-            self.piano_zoom_wheel_accum = 0.0;
+        if self
+            .midi_editor
+            .piano_view_clip
+            .is_some_and(|(generation, clip)| {
+                generation != self.project_generation
+                    || self.detail_clip_id() != Some(clip)
+                    || !selected_midi
+            })
+        {
+            self.midi_editor.piano_view_clip = None;
+            self.midi_editor.piano_zoom_wheel_accum = 0.0;
         }
         let has_session_audio = self.mode == EditorMode::Session
-            && self.selected_cell.is_some_and(|(track, scene)| {
-                self.state.as_ref().is_some_and(|state| {
-                    matches!(
-                        state.project.session_cell(track, scene),
-                        Some(hex_project::SessionCellContent::Audio(_))
-                    )
-                })
-            });
+            && self
+                .session_grid
+                .selected_cell
+                .is_some_and(|(track, scene)| {
+                    self.state.as_ref().is_some_and(|state| {
+                        matches!(
+                            state.project.session_cell(track, scene),
+                            Some(hex_project::SessionCellContent::Audio(_))
+                        )
+                    })
+                });
         let natural = if has_session_audio {
             super::session_audio_panel::DETAIL_HEIGHT
         } else if selected_midi {
-            CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
+            CLIP_DETAIL_BODY_HEIGHT + self.midi_editor.velocity.visible_height()
         } else {
             CLIP_DETAIL_BODY_HEIGHT
         };
@@ -303,25 +312,26 @@ impl EditorView {
         } else {
             super::clip_detail_resize::MIN_HEIGHT
                 + if selected_midi {
-                    self.midi_velocity.visible_height()
+                    self.midi_editor.velocity.visible_height()
                 } else {
                     0.0
                 }
         };
-        let preferred = self.clip_detail_resize.preferred(natural, minimum);
-        self.project_spectrum.detail_height = open.then_some(if self.device_panel_active {
-            super::device_panel::DEVICE_PANEL_HEIGHT
-        } else {
-            preferred
-        });
+        let preferred = self.audio_detail.detail_resize.preferred(natural, minimum);
+        self.device_panel.project_spectrum.detail_height =
+            open.then_some(if self.device_panel.active {
+                super::device_panel::DEVICE_PANEL_HEIGHT
+            } else {
+                preferred
+            });
         // Below a useful content size, keep real controls/canvas intact in the
         // existing scroll viewport rather than letting intrinsic children crush tracks.
-        self.clip_detail_body_height = self
+        self.audio_detail.detail_body_height = self
             .project_spectrum_detail_height(window, preferred)
             .max(minimum);
         self.reconcile_piano_pitch_zoom(window, cx);
         let detail = if open {
-            if self.device_panel_active {
+            if self.device_panel.active {
                 Some(
                     super::device_panel::view(self, Some(window), cx)
                         .map(|element| div().child(element)),
@@ -341,8 +351,9 @@ impl EditorView {
             None
         };
         if detail.is_none() {
-            self.project_spectrum.detail_height = None;
-            self.clip_detail_body_height = self.project_spectrum_detail_height(window, preferred);
+            self.device_panel.project_spectrum.detail_height = None;
+            self.audio_detail.detail_body_height =
+                self.project_spectrum_detail_height(window, preferred);
         }
         let mut panel = div()
             .w_full()
@@ -351,15 +362,15 @@ impl EditorView {
             .flex_col()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .children(
-                (open && !self.device_panel_active).then(|| self.clip_detail_resize_handle(cx)),
+                (open && !self.device_panel.active).then(|| self.clip_detail_resize_handle(cx)),
             )
             .debug_selector(|| "clip-view".into());
         if open {
             if let Some(detail) = detail {
-                let preferred = if self.device_panel_active {
+                let preferred = if self.device_panel.active {
                     super::device_panel::DEVICE_PANEL_HEIGHT
                 } else {
-                    self.clip_detail_body_height
+                    self.audio_detail.detail_body_height
                 };
                 let height = self.project_spectrum_detail_height(window, preferred);
                 if height < preferred {
@@ -380,7 +391,7 @@ impl EditorView {
                     div()
                         .h(px(self.project_spectrum_detail_height(
                             window,
-                            self.clip_detail_body_height,
+                            self.audio_detail.detail_body_height,
                         )))
                         .flex_shrink_0()
                         .px(px(6.0))

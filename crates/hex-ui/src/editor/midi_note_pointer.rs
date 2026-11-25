@@ -42,7 +42,7 @@ impl EditorView {
             generation: c.generation,
             revision: c.revision,
             selected_clip: c.clip,
-            selected_note: self.midi_selection.primary(),
+            selected_note: self.midi_editor.selection.primary(),
             pending: c.pending,
             beat_start: c.beat_start,
             beat_span: c.beat_span,
@@ -56,11 +56,11 @@ impl EditorView {
             generation: self.project_generation,
             revision: self.state.as_ref()?.revision,
             clip,
-            selection_epoch: self.midi_selection.epoch(),
-            beat_start: self.piano_beat_start,
-            beat_span: self.piano_beat_span.raw(),
-            pitch: self.piano_pitch,
-            grid: self.midi_snap_grid,
+            selection_epoch: self.midi_editor.selection.epoch(),
+            beat_start: self.midi_editor.piano_beat_start,
+            beat_span: self.midi_editor.piano_beat_span.raw(),
+            pitch: self.midi_editor.piano_pitch,
+            grid: self.midi_editor.snap_grid,
             bounds,
             pending: self.midi_canvas_edit_blocked(),
         })
@@ -69,7 +69,7 @@ impl EditorView {
     /// to update/release; cancellation must still find a now-stale held draft.
     fn owns_note_pointer(&self, key: Key) -> bool {
         let f = key.frame;
-        if let Some(g) = &self.midi_group_gesture {
+        if let Some(g) = &self.midi_editor.group_gesture {
             let c = g.captured_context();
             return c.generation == f.generation
                 && c.revision >= f.revision
@@ -82,7 +82,7 @@ impl EditorView {
                 && g.kind() == key.kind
                 && g.preview(key.note).is_some();
         }
-        self.midi_note_gesture.as_ref().is_some_and(|g| {
+        self.midi_editor.note_gesture.as_ref().is_some_and(|g| {
             g.note == key.note
                 && kind(g.kind) == key.kind
                 && g.revision >= f.revision
@@ -107,8 +107,8 @@ impl EditorView {
         if !self.owns_note_pointer(key) {
             return false;
         }
-        self.midi_note_gesture = None;
-        self.midi_group_gesture = None;
+        self.midi_editor.note_gesture = None;
+        self.midi_editor.group_gesture = None;
         self.cancel_midi_audition();
         true
     }
@@ -147,11 +147,11 @@ impl EditorView {
                     if !view.owns_note_pointer(key) {
                         return;
                     }
-                    if !view.clip_view_open
-                        || view.device_panel_active
-                        || view.midi_draw_mode
+                    if !view.audio_detail.clip_view_open
+                        || view.device_panel.active
+                        || view.midi_editor.draw_mode
                         || view.context_menu.is_some()
-                        || !view.midi_focus.is_focused(window)
+                        || !view.midi_editor.focus.is_focused(window)
                         || !f32::from(position.x).is_finite()
                         || !f32::from(position.y).is_finite()
                     {
@@ -195,9 +195,9 @@ impl EditorView {
         else {
             return self.cancel_note_pointer(key) | changed;
         };
-        if let Some(g) = &mut self.midi_group_gesture {
+        if let Some(g) = &mut self.midi_editor.group_gesture {
             if !g.is_current(context) {
-                self.midi_group_gesture = None;
+                self.midi_editor.group_gesture = None;
                 return true;
             }
             let prev_pitch_delta = g.pitch_delta();
@@ -211,15 +211,15 @@ impl EditorView {
             }
             return changed;
         }
-        let current = self
-            .midi_note_gesture
-            .as_ref()
-            .is_some_and(|g| midi_drag::is_current(g, self.note_pointer_single_context(context)));
+        let current =
+            self.midi_editor.note_gesture.as_ref().is_some_and(|g| {
+                midi_drag::is_current(g, self.note_pointer_single_context(context))
+            });
         if !current {
-            return self.midi_note_gesture.take().is_some() | changed;
+            return self.midi_editor.note_gesture.take().is_some() | changed;
         }
         let mut audition_note = None;
-        if let Some(g) = &mut self.midi_note_gesture {
+        if let Some(g) = &mut self.midi_editor.note_gesture {
             let prev_pitch = g.preview.pitch;
             let updated =
                 midi_drag::update_with_modifier(g, point[0], point[1], modifiers.platform);
@@ -245,7 +245,7 @@ impl EditorView {
             return;
         };
         let clip = key.frame.clip;
-        if let Some(mut g) = self.midi_group_gesture.take() {
+        if let Some(mut g) = self.midi_editor.group_gesture.take() {
             let prev_pitch_delta = g.pitch_delta();
             let updated = g.update(point, modifiers.platform);
             if updated
@@ -261,7 +261,9 @@ impl EditorView {
             {
                 let already_auditioned = g.kind() == HitKind::Move
                     && g.preview_audition_bank().is_some_and(|(notes, len)| {
-                        self.midi_audition.active_matches_bank(clip, &notes[..len])
+                        self.midi_editor
+                            .audition
+                            .active_matches_bank(clip, &notes[..len])
                     });
                 if g.is_copy() {
                     match g.copied_notes() {
@@ -309,7 +311,7 @@ impl EditorView {
             }
             return;
         }
-        let Some(mut g) = self.midi_note_gesture.take() else {
+        let Some(mut g) = self.midi_editor.note_gesture.take() else {
             return;
         };
         if !midi_drag::is_current(&g, self.note_pointer_single_context(context))
@@ -325,7 +327,8 @@ impl EditorView {
         if !midi_drag::is_noop(&g) {
             let already_auditioned = matches!(g.kind, GestureKind::Move { .. })
                 && self
-                    .midi_audition
+                    .midi_editor
+                    .audition
                     .active_matches_bank(clip, &[(g.preview.pitch, g.velocity)]);
             let command = if g.source_prefix > 0 {
                 Command::UpdateMidiNotesWithSourcePrefix {
@@ -385,11 +388,11 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut Window,
     ) {
-        if !self.clip_view_open
-            || self.device_panel_active
-            || self.midi_draw_mode
+        if !self.audio_detail.clip_view_open
+            || self.device_panel.active
+            || self.midi_editor.draw_mode
             || self.context_menu.is_some()
-            || !self.midi_focus.is_focused(window)
+            || !self.midi_editor.focus.is_focused(window)
         {
             return;
         }
@@ -399,10 +402,11 @@ impl EditorView {
         // A held click remains owned while unrelated preparation is pending;
         // update/release still apply their original pending-command validation.
         c.pending = false;
-        let held = if let Some(g) = &self.midi_group_gesture {
+        let held = if let Some(g) = &self.midi_editor.group_gesture {
             g.is_current(c).then(|| cursor(g.kind(), g.is_copy()))
         } else {
-            self.midi_note_gesture
+            self.midi_editor
+                .note_gesture
                 .as_ref()
                 .filter(|g| midi_drag::is_current(g, self.note_pointer_single_context(c)))
                 .map(|g| cursor(kind(g.kind), false))

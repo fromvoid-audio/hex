@@ -201,8 +201,8 @@ impl Pending {
                 .as_ref()
                 .is_some_and(|s| self.revision.checked_add(1) == Some(s.revision))
             && view.mode == EditorMode::Arrangement
-            && !view.opening_project
-            && !view.close_prompt_open
+            && !view.persistence.opening_project
+            && !view.persistence.close_prompt_open
             && view.recovery.generation().is_none()
     }
 }
@@ -238,7 +238,10 @@ impl EditorView {
     }
 
     pub(super) fn arrangement_paste_view(&self) -> Option<&Arc<ViewState>> {
-        if self.mode != EditorMode::Arrangement || self.opening_project || self.close_prompt_open {
+        if self.mode != EditorMode::Arrangement
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+        {
             return None;
         }
         self.committed_paste_view.as_ref()
@@ -254,8 +257,8 @@ impl EditorView {
             p.generation != self.project_generation
                 || p.epoch != self.clip_selection.epoch
                 || p.primary != self.selected_clip
-                || self.opening_project
-                || self.close_prompt_open
+                || self.persistence.opening_project
+                || self.persistence.close_prompt_open
                 || self.mode != EditorMode::Arrangement
                 || (self.recovery.generation().is_some() && !deferred_for_self)
                 || (p.remaining.is_none() && !self.queued_requests().any(|r| p.matches(r)))

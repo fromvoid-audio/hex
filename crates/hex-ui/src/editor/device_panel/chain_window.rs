@@ -205,13 +205,13 @@ pub(super) fn must_mount(
         || panel.controls.keys().any(|key| key.device == device && super::parameter_rows::pinned(view, *key, window, cx))
         || panel.pending_values.keys().any(|key| key.device == device)
         || panel.vst3_parameters.has_active_control(device, cx)
-        || view.device_gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target,
+        || view.device_panel.gesture.snapshot().is_some_and(|snapshot| matches!(snapshot.target,
             GestureTarget::DeviceParameter { device: target, .. }
             | GestureTarget::DeviceParameterPair { device: target, .. }
             | GestureTarget::DeviceParameterSnapshot { device: target }
             | GestureTarget::EqNodeCreation { device: target }
             | GestureTarget::PluginParameter { device: target, .. } if target == device))
-        || view.active_native_device_drag.as_ref().is_some_and(|drag| {
+        || view.device_panel.active_native_drag.as_ref().is_some_and(|drag| {
             matches!(drag.source, drag::NativeDeviceDragSource::Existing { device: source, .. } if source == device)
                 || drag.destination.get().is_some_and(|target| target.before == Some(device) || target.replace == Some(device))
                 || drag.return_destination.get().is_some_and(|target| target.anchor() == Some(device))

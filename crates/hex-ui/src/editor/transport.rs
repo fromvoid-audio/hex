@@ -194,7 +194,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "●",
-                    self.midi_recorder.label(),
+                    self.midi_editor.recorder.label(),
                     |view, _, cx| {
                         view.toggle_midi_recording();
                         cx.notify();
@@ -203,14 +203,14 @@ impl EditorView {
                 )
                 .rounded(px(hex_widgets::TOGGLE_CORNER_RADIUS))
                 .text_color(rgb(theme::color(
-                    if self.midi_recorder.blocks_edits() {
+                    if self.midi_editor.recorder.blocks_edits() {
                         theme::PaletteRole::Recording
                     } else {
                         theme::PaletteRole::Muted
                     },
                 ))),
             )
-            .children(self.midi_recorder.blocks_edits().then(|| {
+            .children(self.midi_editor.recorder.blocks_edits().then(|| {
                 self.control_icon(
                     "×",
                     "discard retained midi take",
@@ -570,7 +570,7 @@ impl EditorView {
 
     fn launch_quantization_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         hex_widgets::action(
-            theme::text(format!("{} ▾", self.session_quantization.label())),
+            theme::text(format!("{} ▾", self.session_grid.quantization.label())),
             theme::action_style(),
         )
         .id("global-launch-quantization")
@@ -610,7 +610,7 @@ impl EditorView {
             icon_grid: None,
             selected: hex_engine::LaunchQuantization::GLOBAL_CHOICES
                 .iter()
-                .position(|choice| *choice == self.session_quantization)
+                .position(|choice| *choice == self.session_grid.quantization)
                 .unwrap_or(0),
             focus,
             previous_focus,
@@ -619,7 +619,7 @@ impl EditorView {
                 .map(|quantization| crate::context_menu::MenuItem {
                     label: quantization.label(),
                     swatch: None,
-                    checked: self.session_quantization == quantization,
+                    checked: self.session_grid.quantization == quantization,
                     action: super::context_menu::EditorContextAction::LaunchQuantization {
                         generation: self.project_generation,
                         quantization,

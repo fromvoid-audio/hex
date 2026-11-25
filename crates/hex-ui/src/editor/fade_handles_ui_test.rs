@@ -70,7 +70,7 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
             "fade handles take precedence inside an existing time selection"
         );
         assert!(
-            view.last_enqueued_edit.is_none(),
+            view.test_probes.last_enqueued_edit.is_none(),
             "preview does not enqueue project work"
         );
     });
@@ -82,7 +82,8 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let command = editor.read_with(&visual, |view, _| {
         assert!(view.active_fade_drag.is_none());
-        view.last_enqueued_edit
+        view.test_probes
+            .last_enqueued_edit
             .clone()
             .expect("canonical release edit")
     });
@@ -136,7 +137,9 @@ fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_hand
             view.snap_grid = super::super::musical_time::SnapGrid::Off
         });
         if kind == Handle::InBottom {
-            visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
+            visual.update(|window, cx| {
+                editor.update(cx, |view, _| view.midi_editor.focus.focus(window))
+            });
         }
         visual.run_until_parked();
         let selector: &'static str =
@@ -180,7 +183,7 @@ fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_hand
         let before = canonical.project().clip(clip).unwrap();
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.last_enqueued_edit.is_none(),
+                view.test_probes.last_enqueued_edit.is_none(),
                 "pointer preview never queues edits"
             );
             if matches!(kind, Handle::InBottom | Handle::OutBottom) {
@@ -204,7 +207,10 @@ fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_hand
         }
         visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
         let command = editor.read_with(&visual, |view, _| {
-            view.last_enqueued_edit.clone().expect("release edit")
+            view.test_probes
+                .last_enqueued_edit
+                .clone()
+                .expect("release edit")
         });
         let mut result = hex_project::Editor::new(canonical.project().clone(), 8).unwrap();
         result.execute(command.clone()).unwrap();
@@ -278,7 +284,7 @@ fn fade_escape_focus_loss_and_stale_revision_cancel_without_edits(cx: &mut TestA
                 visual.simulate_keystrokes("escape");
             } else if cancel == 1 {
                 visual.update(|window, cx| {
-                    editor.update(cx, |view, _| view.midi_focus.focus(window))
+                    editor.update(cx, |view, _| view.midi_editor.focus.focus(window))
                 });
             } else {
                 editor.update(&mut visual, |view, _| view.project_generation += 1);
@@ -287,9 +293,9 @@ fn fade_escape_focus_loss_and_stale_revision_cancel_without_edits(cx: &mut TestA
             editor.read_with(&visual, |view, _| {
                 assert!(view.active_fade_drag.is_none());
                 assert!(
-                    view.last_enqueued_edit.is_none(),
+                    view.test_probes.last_enqueued_edit.is_none(),
                     "cancel {cancel}: {:?}",
-                    view.last_enqueued_edit
+                    view.test_probes.last_enqueued_edit
                 );
             });
         }
@@ -385,7 +391,10 @@ fn f_exposes_editable_handles_for_a_split_whose_retained_fades_are_outside_the_c
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let edit = editor.read_with(&visual, |view, _| {
-        view.last_enqueued_edit.clone().expect("local fade edit")
+        view.test_probes
+            .last_enqueued_edit
+            .clone()
+            .expect("local fade edit")
     });
     canonical.execute(edit).unwrap();
     let source = canonical.project().clip(middle).unwrap();
@@ -460,7 +469,9 @@ fn lower_handles_noop_return_to_origin_and_release_modifier_use_one_trim(cx: &mu
         if no_op {
             // Clicking an old inward endpoint must not absorb its silent offset.
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-            assert!(editor.read_with(&visual, |view, _| view.last_enqueued_edit.is_none()));
+            assert!(editor.read_with(&visual, |view, _| {
+                view.test_probes.last_enqueued_edit.is_none()
+            }));
             visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
         }
         let moved = point(target.x + px(13.0), target.y);
@@ -471,7 +482,7 @@ fn lower_handles_noop_return_to_origin_and_release_modifier_use_one_trim(cx: &mu
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
                 assert!(view.active_fade_drag.is_none());
-                assert!(view.last_enqueued_edit.is_none());
+                assert!(view.test_probes.last_enqueued_edit.is_none());
             });
         } else {
             let snapped = editor.read_with(&visual, |view, _| {
@@ -485,8 +496,9 @@ fn lower_handles_noop_return_to_origin_and_release_modifier_use_one_trim(cx: &mu
                     ..Modifiers::default()
                 },
             );
-            let command =
-                editor.read_with(&visual, |view, _| view.last_enqueued_edit.clone().unwrap());
+            let command = editor.read_with(&visual, |view, _| {
+                view.test_probes.last_enqueued_edit.clone().unwrap()
+            });
             let Command::TrimClipFadeEdge {
                 frame,
                 edge: TrimEdge::Left,
@@ -535,7 +547,7 @@ fn held_f_neutral_lower_handle_resizes_without_authoring_a_ramp(cx: &mut TestApp
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let preview = editor.read_with(&visual, |view, _| {
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         view.fade_trim_preview(clip).unwrap().clone()
     });
     assert!(preview.start() > 0);
@@ -543,7 +555,9 @@ fn held_f_neutral_lower_handle_resizes_without_authoring_a_ramp(cx: &mut TestApp
     assert!(preview.retained_fade().is_neutral());
     key(&mut visual, false, "f");
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
-    let command = editor.read_with(&visual, |view, _| view.last_enqueued_edit.clone().unwrap());
+    let command = editor.read_with(&visual, |view, _| {
+        view.test_probes.last_enqueued_edit.clone().unwrap()
+    });
     assert!(matches!(command, Command::TrimClipFadeEdge { .. }));
     canonical.execute(command).unwrap();
     assert_eq!(canonical.project().clip(clip).unwrap(), &preview);
@@ -589,7 +603,9 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 ] {
                     visual.simulate_mouse_down(target, MouseButton::Left, modifiers);
                     visual.simulate_mouse_up(target, MouseButton::Left, modifiers);
-                    assert!(editor.read_with(&visual, |view, _| view.last_enqueued_edit.is_none()));
+                    assert!(editor.read_with(&visual, |view, _| {
+                        view.test_probes.last_enqueued_edit.is_none()
+                    }));
                 }
                 visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
                 let dx = editor.read_with(&visual, |view, _| {
@@ -629,7 +645,7 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 visual.simulate_modifiers_change(command);
                 visual.run_until_parked();
                 let snapped = editor.read_with(&visual, |view, _| {
-                    assert!(view.last_enqueued_edit.is_none());
+                    assert!(view.test_probes.last_enqueued_edit.is_none());
                     assert_eq!(
                         view.active_fade_drag.as_ref().unwrap().trim_frame,
                         Some(expected_snapped_frame)
@@ -644,7 +660,7 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 visual.run_until_parked();
                 editor.read_with(&visual, |view, _| {
                     assert_eq!(view.fade_trim_preview(clip), Some(&free));
-                    assert!(view.last_enqueued_edit.is_none());
+                    assert!(view.test_probes.last_enqueued_edit.is_none());
                     assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
                 });
                 // Mouse-up can carry a newer modifier than the last modifier event.
@@ -680,9 +696,12 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 );
                 let edit = editor.read_with(&visual, |view, _| {
                     assert!(view.active_fade_drag.is_none());
-                    view.last_enqueued_edit.clone().unwrap_or_else(|| {
-                        panic!("{kind:?}/{grid:?}/{release_snapped}: release must enqueue")
-                    })
+                    view.test_probes
+                        .last_enqueued_edit
+                        .clone()
+                        .unwrap_or_else(|| {
+                            panic!("{kind:?}/{grid:?}/{release_snapped}: release must enqueue")
+                        })
                 });
                 assert!(matches!(edit, Command::TrimClipFadeEdge { .. }));
                 canonical.execute(edit).unwrap();
@@ -743,7 +762,7 @@ fn lower_source_limits_are_noops_with_and_without_command(cx: &mut TestAppContex
                 visual.simulate_mouse_up(beyond_source, MouseButton::Left, modifiers);
                 editor.read_with(&visual, |view, _| {
                     assert!(view.active_fade_drag.is_none());
-                    assert!(view.last_enqueued_edit.is_none());
+                    assert!(view.test_probes.last_enqueued_edit.is_none());
                     assert_eq!(view.worker_requests_pending, 0);
                 });
             }
@@ -849,7 +868,9 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
             let frame = if out { 84_000 } else { 12_000 };
             assert_ne!(preview.gain_at(frame), fade.gain_at(frame));
             visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-            let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
+            let command = editor.read_with(&visual, |v, _| {
+                v.test_probes.last_enqueued_edit.clone().unwrap()
+            });
             model.execute(command).unwrap();
             assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
             assert!(model.undo());
@@ -1191,7 +1212,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
         assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
         assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
         // Reset only the test edit trace after the expected earlier commit.
-        v.last_enqueued_edit = None;
+        v.test_probes.last_enqueued_edit = None;
         v.state.as_ref().unwrap().project.snapshot()
     });
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
@@ -1203,7 +1224,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     }
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), replacement);
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
         assert!(v.error.is_none() && !v.state.as_ref().unwrap().can_undo);
         assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
         assert!(v.pending_requests.is_empty() && v.worker_requests_pending == 0);
@@ -1324,7 +1345,9 @@ fn sample_zoomed_short_curves_follow_subframe_pointer_motion(cx: &mut TestAppCon
             fade.gain_at(if out { 95_998 } else { 1 })
         );
         visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-        let command = editor.read_with(&visual, |v, _| v.last_enqueued_edit.clone().unwrap());
+        let command = editor.read_with(&visual, |v, _| {
+            v.test_probes.last_enqueued_edit.clone().unwrap()
+        });
         model.execute(command).unwrap();
         assert_eq!(model.project().clip(clip).unwrap().retained_fade(), preview);
     }
@@ -1426,7 +1449,10 @@ fn hover_revealed_handle_on_a_fade_free_clip_drags_one_fade_without_moving_clip(
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let edit = editor.read_with(&visual, |view, _| {
         assert!(view.active_fade_drag.is_none());
-        view.last_enqueued_edit.clone().expect("one fade edit")
+        view.test_probes
+            .last_enqueued_edit
+            .clone()
+            .expect("one fade edit")
     });
     let mut canonical = hex_project::Editor::new(
         editor.read_with(&visual, |v, _| (*v.state.as_ref().unwrap().project).clone()),
@@ -1637,7 +1663,7 @@ fn fade_capture_stays_visible_when_dragging_into_the_header(cx: &mut TestAppCont
     editor.read_with(cx, |view, _| {
         assert!(view.active_fade_drag.is_none());
         assert!(matches!(
-            view.last_enqueued_edit,
+            view.test_probes.last_enqueued_edit,
             Some(Command::SetClipFadeEnvelope { .. })
         ));
         assert!(view.active_clip_drag.is_none());

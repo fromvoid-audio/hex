@@ -16,8 +16,8 @@ fn receive_worker(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext, in
             } else {
                 view.worker_requests_pending == 0
                     && view.pending_requests.is_empty()
-                    && view.audio_batch.is_none()
-                    && view.pending_browser_insertions.is_empty()
+                    && view.persistence.audio_batch.is_none()
+                    && view.browser.pending_insertions.is_empty()
             }
         });
         if done {
@@ -62,9 +62,15 @@ fn fixture(
         assert!(std::sync::Arc::ptr_eq(&directory, &view.test_environment));
         for (actual, name) in [
             (view.browser.test_preferences_path(), "browser.json"),
-            (view.recent_projects.test_path(), "recent-projects.json"),
-            (view.theme_settings.test_path(), "theme.json"),
-            (view.project_directory.test_path(), "project-directory.json"),
+            (
+                view.settings.recent_projects.test_path(),
+                "recent-projects.json",
+            ),
+            (view.settings.theme.test_path(), "theme.json"),
+            (
+                view.settings.project_directory.test_path(),
+                "project-directory.json",
+            ),
         ] {
             assert_eq!(actual, directory.root().join("config").join(name));
         }
@@ -175,7 +181,8 @@ fn project_sample_drag_places_resident_asset_on_arrangement(cx: &mut TestAppCont
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let drag = view
-            .active_browser_audio_drag
+            .browser
+            .active_audio_drag
             .as_ref()
             .expect("project sample drag");
         assert_eq!(drag.project_asset, Some(asset));
@@ -186,7 +193,7 @@ fn project_sample_drag_places_resident_asset_on_arrangement(cx: &mut TestAppCont
         .expect("held preview");
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     let terminal = editor.update(&mut *visual, |view, cx| {
-        assert!(view.pending_sample_drop.is_some());
+        assert!(view.browser.pending_sample_drop.is_some());
         let deadline = crate::test_wait::hang_deadline();
         loop {
             if let Ok(event) = view.service.try_event() {
@@ -210,7 +217,7 @@ fn project_sample_drag_places_resident_asset_on_arrangement(cx: &mut TestAppCont
     }
     editor.update(&mut *visual, |view, cx| {
         view.receive(terminal);
-        assert!(view.pending_sample_drop.is_none());
+        assert!(view.browser.pending_sample_drop.is_none());
         cx.notify();
     });
     editor.read_with(cx, |view, _| {
@@ -384,7 +391,7 @@ fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite
     // not retarget the captured metadata even if the service has already decoded.
     editor.update(visual, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_track,
+            view.test_probes.last_enqueued_import_to_track,
             Some((path.clone(), track, 100, true))
         );
         view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[1].id());
@@ -477,7 +484,11 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
         visual.simulate_keystrokes("enter");
         editor.update(visual, |view, _| {
             assert_eq!(
-                view.last_enqueued_import_to_track.as_ref().unwrap().2,
+                view.test_probes
+                    .last_enqueued_import_to_track
+                    .as_ref()
+                    .unwrap()
+                    .2,
                 expected
             );
             view.snap_grid = SnapGrid::Off;
@@ -583,7 +594,7 @@ fn browser_insert_refuses_stale_target_busy_session_grid_and_missing_file_atomic
             match refusal {
                 0 => view.selected_track = Some(track),
                 1 => view.selected_track = None,
-                2 => view.opening_project = true,
+                2 => view.persistence.opening_project = true,
                 3 => view.mode = crate::editor::EditorMode::Session,
                 4 => {
                     view.input_quantization = hex_project::InputQuantization::Adaptive;
@@ -636,7 +647,7 @@ fn browser_insert_enter_in_query_cannot_enqueue_sample_or_commit_ime(cx: &mut Te
     visual.simulate_keystrokes("enter");
     receive_worker(&editor, cx, false);
     editor.read_with(cx, |view, _| {
-        assert!(view.last_enqueued_import_to_track.is_none())
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none())
     });
     use gpui::EntityInputHandler;
     visual.update(|window, cx| {
@@ -665,7 +676,7 @@ fn browser_insert_enter_in_query_cannot_enqueue_sample_or_commit_ime(cx: &mut Te
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, before.project);
         assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
-        assert!(view.last_enqueued_import_to_track.is_none());
+        assert!(view.test_probes.last_enqueued_import_to_track.is_none());
     });
 }
 
@@ -695,7 +706,10 @@ fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppCon
             );
             assert_eq!(view.worker_requests_pending, 0, "{grid:?}");
             assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
-            assert!(view.audio_batch.is_none() && view.last_enqueued_import_to_track.is_none());
+            assert!(
+                view.persistence.audio_batch.is_none()
+                    && view.test_probes.last_enqueued_import_to_track.is_none()
+            );
             let state = view.state.as_ref().unwrap();
             assert_eq!(state.project, before.project);
             assert_eq!(
@@ -771,7 +785,7 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
             visual.simulate_keystrokes("enter");
             editor.read_with(visual, |view, _| {
                 assert_eq!(
-                    view.last_enqueued_import_to_track,
+                    view.test_probes.last_enqueued_import_to_track,
                     Some((path.clone(), track, expected, true))
                 );
             });
@@ -803,7 +817,7 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
                         .is_empty()
                 );
                 assert_eq!(view.worker_requests_pending, 0);
-                assert!(view.pending_requests.is_empty() && view.audio_batch.is_none());
+                assert!(view.pending_requests.is_empty() && view.persistence.audio_batch.is_none());
             });
             eprintln!("ACTUAL_DENSITY_INPUT {density:?} quantized={quantized} frame={expected}");
         }
@@ -863,7 +877,11 @@ fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
         assert_eq!(
-            view.last_enqueued_import_to_track.as_ref().unwrap().2,
+            view.test_probes
+                .last_enqueued_import_to_track
+                .as_ref()
+                .unwrap()
+                .2,
             12_000
         );
         view.set_input_quantization(hex_project::InputQuantization::Sixteenth);
@@ -898,27 +916,27 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.audio_batch.is_some());
-        assert!(view.browser_insertion_flight.is_some());
-        assert!(view.pending_browser_insertions.is_empty());
+        assert!(view.persistence.audio_batch.is_some());
+        assert!(view.browser.insertion_flight.is_some());
+        assert!(view.browser.pending_insertions.is_empty());
         view.offline_cursor = 2_000;
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.pending_browser_insertions.len(), 1);
+        assert_eq!(view.browser.pending_insertions.len(), 1);
         view.offline_cursor = 3_000;
     });
     visual.simulate_keystrokes("enter");
     editor.read_with(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.pending_browser_insertions.len(), 2);
+        assert_eq!(view.browser.pending_insertions.len(), 2);
     });
     receive_worker(&editor, visual, false);
     editor.read_with(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.browser_insertion_flight.is_none());
-        assert!(view.pending_browser_insertions.is_empty());
+        assert!(view.browser.insertion_flight.is_none());
+        assert!(view.browser.pending_insertions.is_empty());
         let starts: Vec<_> = view
             .state
             .as_ref()
@@ -950,9 +968,9 @@ fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut 
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, cx| {
-        assert_eq!(view.pending_browser_insertions.len(), 1);
+        assert_eq!(view.browser.pending_insertions.len(), 1);
         assert!(view.cancel_audio_batch(cx));
-        assert!(view.pending_browser_insertions.is_empty());
+        assert!(view.browser.pending_insertions.is_empty());
     });
     receive_worker(&editor, visual, false);
     editor.update(visual, |view, _| {
@@ -969,7 +987,7 @@ fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut 
             "cancelled queued insertion must not commit"
         );
         view.error = None;
-        view.save_dialog_open = true;
+        view.persistence.save_dialog_open = true;
         view.offline_cursor = 4_000;
     });
     visual.simulate_keystrokes("enter");
@@ -978,7 +996,7 @@ fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut 
             view.error.as_deref(),
             Some("sample insertion refused · arrangement is busy")
         );
-        assert!(view.pending_browser_insertions.is_empty());
+        assert!(view.browser.pending_insertions.is_empty());
     });
 }
 
@@ -998,14 +1016,14 @@ fn accepted_browser_paths_survive_a_modal_place_change_and_unrelated_refusal(
         view.insert_browser_audio(path, cx);
         view.offline_cursor = 3_000;
         view.insert_browser_audio(directory.root().join("missing.wav"), cx);
-        assert_eq!(view.pending_browser_insertions.len(), 2);
-        view.save_dialog_open = true;
+        assert_eq!(view.browser.pending_insertions.len(), 2);
+        view.persistence.save_dialog_open = true;
     });
     let deadline = crate::test_wait::hang_deadline();
     loop {
         let settled = editor.update(visual, |view, cx| {
             view.tick(cx);
-            view.audio_batch.is_none()
+            view.persistence.audio_batch.is_none()
         });
         if settled {
             break;
@@ -1014,7 +1032,7 @@ fn accepted_browser_paths_survive_a_modal_place_change_and_unrelated_refusal(
         std::thread::yield_now();
     }
     editor.update(visual, |view, _| {
-        assert_eq!(view.pending_browser_insertions.len(), 2);
+        assert_eq!(view.browser.pending_insertions.len(), 2);
         assert!(view.enqueue(Request::CopyClips(Vec::new())));
     });
     loop {
@@ -1033,8 +1051,8 @@ fn accepted_browser_paths_survive_a_modal_place_change_and_unrelated_refusal(
             view.error.is_some(),
             "unrelated worker refused the empty copy"
         );
-        assert_eq!(view.pending_browser_insertions.len(), 2);
-        view.save_dialog_open = false;
+        assert_eq!(view.browser.pending_insertions.len(), 2);
+        view.persistence.save_dialog_open = false;
         view.browser.section = BrowserSection::Place(directory.root().join("other"));
         view.browser.error = Some("unavailable place".into());
     });
@@ -1070,15 +1088,15 @@ fn replacing_project_retires_accepted_browser_paths(cx: &mut TestAppContext) {
     let generation = editor.update(visual, |view, cx| {
         view.insert_browser_audio(path.clone(), cx);
         view.insert_browser_audio(path, cx);
-        assert_eq!(view.pending_browser_insertions.len(), 1);
-        view.save_dialog_open = true;
+        assert_eq!(view.browser.pending_insertions.len(), 1);
+        view.persistence.save_dialog_open = true;
         view.project_generation
     });
     let deadline = crate::test_wait::hang_deadline();
     loop {
         if editor.update(visual, |view, cx| {
             view.tick(cx);
-            view.audio_batch.is_none()
+            view.persistence.audio_batch.is_none()
         }) {
             break;
         }
@@ -1090,13 +1108,13 @@ fn replacing_project_retires_accepted_browser_paths(cx: &mut TestAppContext) {
             mode: hex_session::DocumentAudioMode::Resident,
             reservation: None,
         }));
-        view.save_dialog_open = false;
+        view.persistence.save_dialog_open = false;
     });
     receive_worker(&editor, visual, false);
     editor.read_with(visual, |view, _| {
         assert!(view.project_generation > generation);
         assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
-        assert!(view.pending_browser_insertions.is_empty());
+        assert!(view.browser.pending_insertions.is_empty());
     });
 }
 
@@ -1129,7 +1147,7 @@ fn queued_file_and_project_sample_keep_each_enter_taps_warp_setting(cx: &mut Tes
         view.set_auto_warp_imports_for_test(false);
         view.offline_cursor = 4_000;
         view.insert_browser_audio(path, cx);
-        assert_eq!(view.pending_browser_insertions.len(), 3);
+        assert_eq!(view.browser.pending_insertions.len(), 3);
     });
     receive_worker(&editor, visual, false);
     editor.read_with(visual, |view, _| {

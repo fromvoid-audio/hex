@@ -490,7 +490,7 @@ impl EditorView {
     pub(in crate::editor) fn queued_requests(&self) -> impl Iterator<Item = &Request> {
         self.pending_requests
             .iter()
-            .chain(self.device_gesture_barriers.iter())
+            .chain(self.device_panel.gesture_barriers.iter())
             .chain(
                 self.recovery
                     .deferred_edit
@@ -505,7 +505,7 @@ impl EditorView {
             self.pending_loop = None;
         }
         if self.recovery.holds_clip_play_start() {
-            self.clip_loop.retire_deferred_play_start();
+            self.audio_detail.clip_loop.retire_deferred_play_start();
         }
         if self.recovery.holds_mixer_edit() {
             self.track_gain_controls.retire_deferred_recovery();
@@ -516,7 +516,7 @@ impl EditorView {
             return;
         };
         if edit.kind == DeferredEditKind::SampleDrop {
-            self.pending_sample_drop = None;
+            self.browser.pending_sample_drop = None;
         }
         if edit.kind == DeferredEditKind::TimeDuplicate {
             self.pending_time_range_move = None;
@@ -550,7 +550,7 @@ impl EditorView {
         self.audio.is_some()
             && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.stopped_playback_restore.is_none()
-            && !self.degraded_plugins.is_empty()
+            && !self.device_panel.degraded_plugins.is_empty()
     }
 
     /// True only when the audio output itself has a device/render fault requiring
@@ -565,13 +565,13 @@ impl EditorView {
     }
 
     fn has_degraded_stranded_device_gesture(&self) -> bool {
-        let Some(snapshot) = self.device_gesture.snapshot() else {
+        let Some(snapshot) = self.device_panel.gesture.snapshot() else {
             return false;
         };
         (self.has_output_fault_requiring_recovery() || self.has_degraded_vst3_output())
-            && self.device_gesture.is_recovery_pending()
-            && !self.device_gesture.has_pending_requests()
-            && self.device_gesture_barriers.is_empty()
+            && self.device_panel.gesture.is_recovery_pending()
+            && !self.device_panel.gesture.has_pending_requests()
+            && self.device_panel.gesture_barriers.is_empty()
             && snapshot.key.generation == self.project_generation
             && !self.owns_vst3_recording(snapshot.key)
     }
@@ -700,11 +700,11 @@ impl EditorView {
             && is_track_switch_edit(&request)
             && self.has_degraded_stranded_device_gesture())
         .then(|| {
-            let snapshot = self.device_gesture.snapshot()?;
+            let snapshot = self.device_panel.gesture.snapshot()?;
             Some(StrandedGestureRecovery {
                 key: snapshot.key,
-                reconcilable: self.device_gesture.reconcilable_snapshot(),
-                had_stranded_commit: self.device_gesture.has_stranded_commit(),
+                reconcilable: self.device_panel.gesture.reconcilable_snapshot(),
+                had_stranded_commit: self.device_panel.gesture.has_stranded_commit(),
                 is_plugin: matches!(
                     snapshot.target,
                     hex_session::device_gesture::GestureTarget::PluginParameter { .. }
@@ -995,10 +995,10 @@ impl EditorView {
     }
 
     pub(super) fn recover_audio_at(&mut self, position: u64) {
-        if self.close_prompt_open
-            || self.opening_project
-            || self.save_dialog_open
-            || self.export_dialog_open
+        if self.persistence.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             self.error = Some("finish the current dialog before restarting audio".into());
             return;
@@ -1020,7 +1020,7 @@ impl EditorView {
                 return;
             }
         };
-        self.playback_settings.pending = None;
+        self.settings.playback.pending = None;
         self.offline_cursor = position;
         if !self.retire_audio_preserving_gain_take() {
             self.clear_recovery();
@@ -1054,10 +1054,10 @@ impl EditorView {
             self.route_follow = None;
             return false;
         }
-        if self.close_prompt_open
-            || self.opening_project
-            || self.save_dialog_open
-            || self.export_dialog_open
+        if self.persistence.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
             || self.state.is_none()
             || self.seek_pending()
             || self.recovery.generation().is_some()
@@ -1219,7 +1219,7 @@ impl EditorView {
     }
 
     pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
-        self.playback_settings.pending = None;
+        self.settings.playback.pending = None;
         let error = error.into();
         let lost_stranded_commit = self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
             edit.stranded_gesture
@@ -1259,15 +1259,15 @@ impl EditorView {
         self.applied_project_revision = None;
         self.pending_audio_commands.clear();
         self.pending_seek_ticket = None;
-        self.pending_session_ticket = None;
+        self.session_grid.pending_session_ticket = None;
         self.play_intent.clear();
         self.pending_playback = None;
         self.pending_resident_publication = None;
         self.clear_route_telemetry();
         self.observed_rejected_action = 0;
         self.observed_rejected_revision = 0;
-        self.observed_session_capability = None;
-        self.session_capability_message = None;
+        self.session_grid.observed_capability = None;
+        self.session_grid.capability_message = None;
     }
 
     /// Scheduled cursor: the frame edits, insertion, zoom anchors and transport

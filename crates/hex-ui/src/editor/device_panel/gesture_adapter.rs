@@ -41,9 +41,13 @@ pub fn dispatch_numeric_gesture(
     // Delayed events from a different control must never address whichever
     // gesture happens to be active now. Incarnation checks remain with bindings.
     if phase != NumericEventPhase::Begin
-        && !view.device_gesture.snapshot().is_some_and(|snapshot| {
-            snapshot.target == target && snapshot.key.generation == view.project_generation
-        })
+        && !view
+            .device_panel
+            .gesture
+            .snapshot()
+            .is_some_and(|snapshot| {
+                snapshot.target == target && snapshot.key.generation == view.project_generation
+            })
     {
         return Ok(());
     }
@@ -65,15 +69,15 @@ pub fn commit_owned_numeric_edit(
     }
     if !finalized.explicit_edit
         && finalized.value == finalized.previous
-        && view.device_gesture.snapshot().is_none()
+        && view.device_panel.gesture.snapshot().is_none()
     {
         return Ok(());
     }
     let previous = ParameterValue::Float(finalized.previous as f32);
     let value = ParameterValue::Float(finalized.value as f32);
-    let active = view.device_gesture.snapshot();
+    let active = view.device_panel.gesture.snapshot();
     if active.is_some_and(|snapshot| snapshot.target != target)
-        || view.device_gesture.has_pending_terminal()
+        || view.device_panel.gesture.has_pending_terminal()
         || (matches!(
             target,
             GestureTarget::MainGain
@@ -175,7 +179,8 @@ pub(in crate::editor) fn dispatch_bound_numeric_gesture(
         }
         view.begin_device_gesture(target, value)?;
         lease.set(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .snapshot()
                 .map(|snapshot| NumericGestureKey::Canonical(snapshot.key)),
         );
@@ -201,12 +206,16 @@ pub(in crate::editor) fn owns_numeric_gesture(
     lease: &NumericGestureLease,
 ) -> bool {
     owns_native_automation(view, target, lease)
-        || (!view.device_gesture.has_pending_terminal()
-            && view.device_gesture.snapshot().is_some_and(|snapshot| {
-                Some(NumericGestureKey::Canonical(snapshot.key)) == lease.get()
-                    && snapshot.target == target
-                    && snapshot.key.generation == view.project_generation
-            }))
+        || (!view.device_panel.gesture.has_pending_terminal()
+            && view
+                .device_panel
+                .gesture
+                .snapshot()
+                .is_some_and(|snapshot| {
+                    Some(NumericGestureKey::Canonical(snapshot.key)) == lease.get()
+                        && snapshot.target == target
+                        && snapshot.key.generation == view.project_generation
+                }))
 }
 
 pub(super) fn commit_bound_numeric_edit(
@@ -223,14 +232,15 @@ pub(super) fn commit_bound_numeric_edit(
         lease.set(None);
         return Ok(());
     }
-    let active = view.device_gesture.snapshot();
+    let active = view.device_panel.gesture.snapshot();
     if active.is_none() && !finalized.explicit_edit && finalized.value == finalized.previous {
         return Ok(());
     }
     if active.is_none() {
         view.begin_device_gesture(target, ParameterValue::Float(finalized.previous as f32))?;
         lease.set(
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .snapshot()
                 .map(|snapshot| NumericGestureKey::Canonical(snapshot.key)),
         );

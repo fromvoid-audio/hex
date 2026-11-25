@@ -78,7 +78,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
         assert!(control.origin.x + control.size.width <= body.origin.x + body.size.width);
     }
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -95,7 +95,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
     assert_eq!(return_card.size, card.size);
     assert!(return_graph.size.height >= px(50.0));
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -111,7 +111,8 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         let gesture = view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .expect("active shared-control gesture");
         let expected = hex_engine::patch_native_device_parameter(
@@ -129,8 +130,8 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     editor.read_with(cx, |view, _| {
         assert_ne!(
@@ -217,8 +218,8 @@ fn compressor_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
     );
     editor.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -300,7 +301,7 @@ fn removing_return_compressor_retires_preview_without_changing_owner(cx: &mut Te
     let state = receive_service_event(&service).state;
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -316,7 +317,7 @@ fn removing_return_compressor_retires_preview_without_changing_owner(cx: &mut Te
     });
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.focused_return, Some(return_track));
+        assert_eq!(view.session_grid.focused_return, Some(return_track));
         assert!(
             compressor_panel::cached_curve(view, device).is_none(),
             "removed Return preview must retire immediately"
@@ -362,7 +363,7 @@ fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
     let mix_id = hex_lattice_contract::ParameterId::from_static(7);
     for (owner, device) in [(None, track_device), (Some(return_track), return_device)] {
         editor.update(cx, |view, cx| {
-            view.focused_return = owner;
+            view.session_grid.focused_return = owner;
             cx.notify();
         });
         visual.run_until_parked();
@@ -387,7 +388,11 @@ fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
         visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            let gesture = view.device_gesture.snapshot().expect("real mix gesture");
+            let gesture = view
+                .device_panel
+                .gesture
+                .snapshot()
+                .expect("real mix gesture");
             assert_ne!(gesture.value, ParameterValue::Float(1.0));
             let expected =
                 hex_engine::patch_native_device_parameter(&before, mix_id, gesture.value).unwrap();
@@ -401,8 +406,8 @@ fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture.snapshot().is_none()
-                && view.device_gesture_barriers.is_empty()
+                && view.device_panel.gesture.snapshot().is_none()
+                && view.device_panel.gesture_barriers.is_empty()
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(
@@ -440,7 +445,7 @@ fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
                     &before
                 );
                 assert!(
-                    view.device_gesture.snapshot().is_none(),
+                    view.device_panel.gesture.snapshot().is_none(),
                     "invalid text cannot begin an edit"
                 );
             });
@@ -453,8 +458,8 @@ fn compressor_mix_track_and_return_real_gesture_cancel_history_and_save_open(
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture.snapshot().is_none()
-                && view.device_gesture_barriers.is_empty()
+                && view.device_panel.gesture.snapshot().is_none()
+                && view.device_panel.gesture_barriers.is_empty()
         });
         let changed = editor.read_with(cx, |view, _| {
             view.state
@@ -560,7 +565,7 @@ fn compressor_mode_menu_track_return_cancel_commit_preview_history_and_reopen(
     visual.simulate_resize(size(px(880.0), px(540.0)));
     for (owner, device) in [(None, device), (Some(return_track), return_device)] {
         editor.update(cx, |view, cx| {
-            view.focused_return = owner;
+            view.session_grid.focused_return = owner;
             cx.notify();
         });
         visual.run_until_parked();

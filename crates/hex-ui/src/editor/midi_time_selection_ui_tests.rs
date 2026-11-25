@@ -20,10 +20,13 @@ fn assert_visible(
 ) {
     editor.read_with(visual, |v, _| {
         assert_eq!(v.midi_time_selection_bounds(), Some((first, last)));
-        assert!(v.piano_beat_start <= i128::from(first));
-        assert!(v.piano_beat_start + i128::from(v.piano_beat_span.raw()) >= i128::from(last));
+        assert!(v.midi_editor.piano_beat_start <= i128::from(first));
         assert!(
-            v.midi_selection.is_empty(),
+            v.midi_editor.piano_beat_start + i128::from(v.midi_editor.piano_beat_span.raw())
+                >= i128::from(last)
+        );
+        assert!(
+            v.midi_editor.selection.is_empty(),
             "time selection never reduces to a note"
         );
     });
@@ -184,7 +187,7 @@ fn note_selection_takes_duplicate_ownership_and_active_tuning_terminal_rebases_r
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_time_selection_bounds().is_none());
-        assert_eq!(v.midi_selection.len(), 1);
+        assert_eq!(v.midi_editor.selection.len(), 1);
     });
     visual.simulate_keystrokes("cmd-d");
     pump(&editor, &mut visual);
@@ -207,8 +210,16 @@ fn note_selection_takes_duplicate_ownership_and_active_tuning_terminal_rebases_r
     // callers to finish first would miss this real enqueue path.
     editor.update(&mut visual, |v, _| {
         let tuning = v.state.as_ref().unwrap().project.tuning();
-        v.tuning.client.begin(v.project_generation, tuning).unwrap();
-        v.tuning.client.change(tuning.with_enabled(true)).unwrap();
+        v.settings
+            .tuning
+            .client
+            .begin(v.project_generation, tuning)
+            .unwrap();
+        v.settings
+            .tuning
+            .client
+            .change(tuning.with_enabled(true))
+            .unwrap();
         assert!(v.duplicate_midi_time_selection());
     });
     pump(&editor, &mut visual);
@@ -225,7 +236,7 @@ fn note_selection_takes_duplicate_ownership_and_active_tuning_terminal_rebases_r
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_time_selection_bounds().is_none());
-        assert_eq!(v.midi_selection.len(), 1);
+        assert_eq!(v.midi_editor.selection.len(), 1);
     });
 }
 
@@ -254,7 +265,7 @@ fn reversed_ruler_selection_snaps_and_cancel_or_stale_render_keeps_baseline(
         visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         assert_visible(&editor, &mut visual, beat, 3 * beat);
-        visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+        visual.update(|window, cx| editor.update(cx, |v, _| v.midi_editor.focus.focus(window)));
     }
     drag(&mut visual, 0.11, 0.41);
     assert_visible(&editor, &mut visual, beat / 2, 7 * beat / 4);
@@ -277,7 +288,7 @@ fn reversed_ruler_selection_snaps_and_cancel_or_stale_render_keeps_baseline(
     });
     // Mutate the view before repaint; old pixels must not capture a new range.
     editor.update(&mut visual, |v, _| {
-        v.piano_beat_start = i128::from(BeatTime::ONE.raw())
+        v.midi_editor.piano_beat_start = i128::from(BeatTime::ONE.raw())
     });
     visual.simulate_mouse_down(first, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(last, Some(MouseButton::Left), Modifiers::default());
@@ -404,10 +415,10 @@ fn console_range_copy_keeps_arrangement_source_isolated(cx: &mut TestAppContext)
         };
         let clip = clip.id();
         v.mode = super::super::EditorMode::Session;
-        v.selected_scene = Some(scene);
-        v.selected_cell = Some((track, scene));
+        v.session_grid.selected_scene = Some(scene);
+        v.session_grid.selected_cell = Some((track, scene));
         v.selected_clip = Some(clip);
-        v.piano_view_clip = None;
+        v.midi_editor.piano_view_clip = None;
         cx.notify();
         clip
     });

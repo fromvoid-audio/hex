@@ -53,14 +53,15 @@ impl Creation {
 impl EditorView {
     pub(super) fn midi_minimum_creation_gate(&self) -> Option<u64> {
         let state = self.state.as_ref()?;
-        if let Some(creation) = self.midi_creation.as_ref()
+        if let Some(creation) = self.midi_editor.creation.as_ref()
             && creation.context.generation == self.project_generation
             && creation.context.revision == state.revision
         {
             return Some(creation.minimum_gate);
         }
         if let Some(gate) = self
-            .midi_stroke
+            .midi_editor
+            .stroke
             .as_ref()
             .and_then(|stroke| stroke.minimum_gate_for(self.project_generation, state.revision))
         {
@@ -133,13 +134,16 @@ impl EditorView {
         if !self.capture_midi_creation(creation.key(), window, cx) {
             return false;
         }
-        self.midi_creation = Some(creation);
+        self.midi_editor.creation = Some(creation);
         let _ = self.audition_midi_preview_bank(context.clip, &[(note.pitch, note.velocity)]);
         true
     }
 
     fn owns_midi_creation_capture(&self, key: CaptureKey) -> bool {
-        self.midi_creation.as_ref().is_some_and(|g| g.key() == key)
+        self.midi_editor
+            .creation
+            .as_ref()
+            .is_some_and(|g| g.key() == key)
     }
     fn capture_midi_creation(
         &self,
@@ -168,14 +172,14 @@ impl EditorView {
                     if !view.owns_midi_creation_capture(key) {
                         return;
                     }
-                    if !view.clip_view_open
-                        || view.device_panel_active
+                    if !view.audio_detail.clip_view_open
+                        || view.device_panel.active
                         || view.context_menu.is_some()
-                        || !view.midi_focus.is_focused(window)
+                        || !view.midi_editor.focus.is_focused(window)
                         || !f32::from(position.x).is_finite()
                         || !f32::from(position.y).is_finite()
                     {
-                        view.midi_creation = None;
+                        view.midi_editor.creation = None;
                         view.cancel_midi_audition();
                         cx.notify();
                         return;
@@ -211,7 +215,7 @@ impl EditorView {
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view.owns_midi_creation_capture(key) {
-                        view.midi_creation = None;
+                        view.midi_editor.creation = None;
                         view.cancel_midi_audition();
                         cx.notify();
                     }
@@ -230,12 +234,12 @@ impl EditorView {
         owner: gpui::EntityId,
         window: &mut Window,
     ) {
-        if self.clip_view_open
-            && !self.device_panel_active
+        if self.audio_detail.clip_view_open
+            && !self.device_panel.active
             && self.context_menu.is_none()
-            && self.midi_focus.is_focused(window)
+            && self.midi_editor.focus.is_focused(window)
             && !self.edit_pending()
-            && let Some(g) = self.midi_creation.as_ref()
+            && let Some(g) = self.midi_editor.creation.as_ref()
             && g.context.bounds == bounds
             && g.context.clip == clip
             && g.context.generation == self.project_generation
@@ -243,12 +247,12 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_some_and(|s| s.revision == g.context.revision)
-            && self.piano_beat_start == g.context.view_start
-            && self.piano_beat_span.raw() == g.context.view_span
-            && self.piano_pitch == g.context.pitch
-            && self.midi_snap_grid == g.context.grid
-            && self.midi_draw_mode == g.context.draw_mode
-            && self.midi_draw_pitch_locked == g.context.pitch_locked
+            && self.midi_editor.piano_beat_start == g.context.view_start
+            && self.midi_editor.piano_beat_span.raw() == g.context.view_span
+            && self.midi_editor.piano_pitch == g.context.pitch
+            && self.midi_editor.snap_grid == g.context.grid
+            && self.midi_editor.draw_mode == g.context.draw_mode
+            && self.midi_editor.draw_pitch_locked == g.context.pitch_locked
         {
             window.renew_pointer_capture(owner, gpui::CursorStyle::ResizeRight);
         }
@@ -263,13 +267,13 @@ impl EditorView {
         let Some(current) =
             self.current_stroke_context(midi_draw::canvas_bounds(bounds), modifiers)
         else {
-            return self.midi_creation.take().is_some();
+            return self.midi_editor.creation.take().is_some();
         };
         let Some(length) = current.authoring_length() else {
-            return self.midi_creation.take().is_some();
+            return self.midi_editor.creation.take().is_some();
         };
         let pending = self.edit_pending();
-        let Some(creation) = self.midi_creation.as_mut() else {
+        let Some(creation) = self.midi_editor.creation.as_mut() else {
             return false;
         };
         if pending
@@ -277,7 +281,7 @@ impl EditorView {
             || !midi_draw::same_rendered_frame(current, creation.context)
             || !x.is_finite()
         {
-            self.midi_creation = None;
+            self.midi_editor.creation = None;
             return true;
         }
         creation.dragged |= if current.effective_grid == midi_drag::MidiGrid::Off {
@@ -293,7 +297,7 @@ impl EditorView {
                 current.bounds.width,
                 creation.minimum_gate,
             ) else {
-                self.midi_creation = None;
+                self.midi_editor.creation = None;
                 return true;
             };
             let duration = BeatTime::from_raw(gate);
@@ -303,7 +307,7 @@ impl EditorView {
         }
         let Some(raw) = midi_drag::beat_at_point(x, bounds, current.view_start, current.view_span)
         else {
-            self.midi_creation = None;
+            self.midi_editor.creation = None;
             return true;
         };
         let start = creation.preview.start.raw();
@@ -329,15 +333,16 @@ impl EditorView {
         modifiers: StrokeModifiers,
     ) {
         if !inside {
-            self.midi_creation = None;
+            self.midi_editor.creation = None;
             self.cancel_midi_audition();
             return;
         }
         self.update_midi_creation(bounds, x, modifiers);
-        if let Some(creation) = self.midi_creation.take() {
+        if let Some(creation) = self.midi_editor.creation.take() {
             let note = creation.preview;
             let already_auditioned = self
-                .midi_audition
+                .midi_editor
+                .audition
                 .active_matches_bank(creation.context.clip, &[(note.pitch, note.velocity)]);
             let grows =
                 note.start.raw().saturating_add(note.duration.raw()) > creation.context.clip_length;

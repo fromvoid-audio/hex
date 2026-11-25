@@ -44,8 +44,8 @@ fn committed_draw_selects_actual_authored_ids_with_last_primary_after_later_fram
             .collect();
         ids.sort_unstable();
         assert!(ids.len() > 1);
-        assert_eq!(v.midi_selection.ids(), ids.as_slice());
-        assert_eq!(v.midi_selection.primary(), ids.last().copied());
+        assert_eq!(v.midi_editor.selection.ids(), ids.as_slice());
+        assert_eq!(v.midi_editor.selection.primary(), ids.last().copied());
         ids
     });
     visual.simulate_mouse_move(
@@ -60,8 +60,8 @@ fn committed_draw_selects_actual_authored_ids_with_last_primary_after_later_fram
     )));
     let centers = editor.read_with(&visual, |view, _| {
         let project = &view.state.as_ref().unwrap().project;
-        let rows = view.piano_pitch.test_row_count();
-        let top_pitch = view.piano_pitch.first_test_pitch() + rows - 1;
+        let rows = view.midi_editor.piano_pitch.test_row_count();
+        let top_pitch = view.midi_editor.piano_pitch.first_test_pitch() + rows - 1;
         ids.iter()
             .map(|id| {
                 let note = project.midi_note(*id).unwrap();
@@ -105,8 +105,8 @@ fn committed_draw_selects_actual_authored_ids_with_last_primary_after_later_fram
     }
     check_outline(&mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), ids.as_slice());
-        assert_eq!(v.midi_selection.primary(), ids.last().copied());
+        assert_eq!(v.midi_editor.selection.ids(), ids.as_slice());
+        assert_eq!(v.midi_editor.selection.primary(), ids.last().copied());
     });
 }
 #[gpui::test]
@@ -123,12 +123,12 @@ fn cancelled_held_creation_and_draw_keep_valid_selection(cx: &mut TestAppContext
         })))
     });
     pump(&editor, &mut visual);
-    let baseline = editor.read_with(&visual, |v, _| v.midi_selection.primary().unwrap());
+    let baseline = editor.read_with(&visual, |v, _| v.midi_editor.selection.primary().unwrap());
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let at = point(roll.origin.x + roll.size.width * 0.5, roll.center().y);
     for draw in [false, true] {
         editor.update(&mut visual, |v, cx| {
-            v.midi_draw_mode = draw;
+            v.midi_editor.draw_mode = draw;
             cx.notify();
         });
         visual.run_until_parked();
@@ -143,8 +143,8 @@ fn cancelled_held_creation_and_draw_keep_valid_selection(cx: &mut TestAppContext
         visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.primary(), Some(baseline));
-            assert_eq!(v.midi_selection.ids(), &[baseline]);
+            assert_eq!(v.midi_editor.selection.primary(), Some(baseline));
+            assert_eq!(v.midi_editor.selection.ids(), &[baseline]);
         });
     }
 }
@@ -187,14 +187,14 @@ fn changed_selection_before_actual_ack_cannot_be_replaced_by_created_note(cx: &m
     let event = next(&editor, &visual);
     assert!(matches!(event.created, Some(Created::Note(_))));
     editor.update(&mut visual, |v, cx| {
-        v.midi_selection.set_single(old);
+        v.midi_editor.selection.set_single(old);
         v.receive(event);
         cx.notify();
     });
     visual.run_until_parked();
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.primary(), Some(old))
+        assert_eq!(v.midi_editor.selection.primary(), Some(old))
     });
 }
 
@@ -214,12 +214,24 @@ fn tuning_before_creation(cx: &mut TestAppContext, cancel: bool) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     editor.update(&mut visual, |v, _| {
         let tuning = v.state.as_ref().unwrap().project.tuning();
-        v.tuning.client.begin(v.project_generation, tuning).unwrap();
-        v.tuning.client.change(tuning.with_enabled(true)).unwrap();
+        v.settings
+            .tuning
+            .client
+            .begin(v.project_generation, tuning)
+            .unwrap();
+        v.settings
+            .tuning
+            .client
+            .change(tuning.with_enabled(true))
+            .unwrap();
         if cancel {
-            v.tuning.client.cancel().unwrap();
+            v.settings.tuning.client.cancel().unwrap();
         } else {
-            v.tuning.client.finish(tuning.with_enabled(true)).unwrap();
+            v.settings
+                .tuning
+                .client
+                .finish(tuning.with_enabled(true))
+                .unwrap();
         }
         assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
             clip,
@@ -251,8 +263,8 @@ fn tuning_before_creation(cx: &mut TestAppContext, cancel: bool) {
             .unwrap()
             .notes();
         assert_eq!(notes.len(), 1);
-        assert_eq!(v.midi_selection.primary(), Some(notes[0].id()));
-        assert!(v.pending_created_note_selection.is_none());
+        assert_eq!(v.midi_editor.selection.primary(), Some(notes[0].id()));
+        assert!(v.midi_editor.pending_created_note_selection.is_none());
     });
 }
 #[gpui::test]
@@ -269,7 +281,7 @@ fn focus_loss_and_failed_creation_cannot_replace_valid_baseline(cx: &mut TestApp
         })))
     });
     pump(&editor, &mut visual);
-    let baseline = editor.read_with(&visual, |v, _| v.midi_selection.primary().unwrap());
+    let baseline = editor.read_with(&visual, |v, _| v.midi_editor.selection.primary().unwrap());
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
             clip,
@@ -289,9 +301,9 @@ fn focus_loss_and_failed_creation_cannot_replace_valid_baseline(cx: &mut TestApp
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.primary(), Some(baseline))
+        assert_eq!(v.midi_editor.selection.primary(), Some(baseline))
     });
-    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window)));
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
             clip,
@@ -310,7 +322,7 @@ fn focus_loss_and_failed_creation_cannot_replace_valid_baseline(cx: &mut TestApp
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.primary(), Some(baseline))
+        assert_eq!(v.midi_editor.selection.primary(), Some(baseline))
     });
 }
 
@@ -320,7 +332,7 @@ fn source_growth_creation_uses_returned_identity_and_preserves_one_history_actio
 ) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     editor.update(&mut visual, |v, cx| {
-        v.piano_beat_span = BeatTime::from_quarters(16).unwrap();
+        v.midi_editor.piano_beat_span = BeatTime::from_quarters(16).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -351,8 +363,8 @@ fn source_growth_creation_uses_returned_identity_and_preserves_one_history_actio
     });
     pump(&editor, &mut visual);
     let after = editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), &[last]);
-        assert_eq!(v.midi_selection.primary(), Some(last));
+        assert_eq!(v.midi_editor.selection.ids(), &[last]);
+        assert_eq!(v.midi_editor.selection.primary(), Some(last));
         let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
         let note = v.state.as_ref().unwrap().project.midi_note(last).unwrap();
         assert!(source.source_length().raw() >= note.start().raw() + note.duration().raw());
@@ -372,7 +384,7 @@ fn source_growth_creation_uses_returned_identity_and_preserves_one_history_actio
                 .notes()
                 .is_empty()
         );
-        assert!(v.midi_selection.is_empty());
+        assert!(v.midi_editor.selection.is_empty());
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
@@ -394,12 +406,24 @@ fn unrelated_source_reply_cannot_rebase_or_claim_a_tuning_queued_creation(cx: &m
         })))
     });
     pump(&editor, &mut visual);
-    let baseline = editor.read_with(&visual, |v, _| v.midi_selection.primary().unwrap());
+    let baseline = editor.read_with(&visual, |v, _| v.midi_editor.selection.primary().unwrap());
     editor.update(&mut visual, |v, _| {
         let tuning = v.state.as_ref().unwrap().project.tuning();
-        v.tuning.client.begin(v.project_generation, tuning).unwrap();
-        v.tuning.client.change(tuning.with_enabled(true)).unwrap();
-        v.tuning.client.finish(tuning.with_enabled(true)).unwrap();
+        v.settings
+            .tuning
+            .client
+            .begin(v.project_generation, tuning)
+            .unwrap();
+        v.settings
+            .tuning
+            .client
+            .change(tuning.with_enabled(true))
+            .unwrap();
+        v.settings
+            .tuning
+            .client
+            .finish(tuning.with_enabled(true))
+            .unwrap();
         assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
             clip,
             start: BeatTime::from_quarters(3).unwrap(),
@@ -425,12 +449,12 @@ fn unrelated_source_reply_cannot_rebase_or_claim_a_tuning_queued_creation(cx: &m
     assert!(matches!(event.created, Some(Created::Note(_))));
     editor.update(&mut visual, |v, cx| {
         v.receive(event);
-        assert!(v.pending_created_note_selection.is_none());
+        assert!(v.midi_editor.pending_created_note_selection.is_none());
         cx.notify();
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.primary(), Some(baseline));
+        assert_eq!(v.midi_editor.selection.primary(), Some(baseline));
         assert_eq!(
             v.state
                 .as_ref()
@@ -459,7 +483,7 @@ fn clip_switch_before_delayed_ack_preserves_the_new_context_selection(cx: &mut T
         })))
     });
     pump(&editor, &mut visual);
-    let original = editor.read_with(&visual, |v, _| v.midi_selection.primary().unwrap());
+    let original = editor.read_with(&visual, |v, _| v.midi_editor.selection.primary().unwrap());
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
             track: v.selected_track.unwrap(),
@@ -480,10 +504,10 @@ fn clip_switch_before_delayed_ack_preserves_the_new_context_selection(cx: &mut T
         })))
     });
     pump(&editor, &mut visual);
-    let other_note = editor.read_with(&visual, |v, _| v.midi_selection.primary().unwrap());
+    let other_note = editor.read_with(&visual, |v, _| v.midi_editor.selection.primary().unwrap());
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = Some(clip);
-        v.midi_selection.set_single(original);
+        v.midi_editor.selection.set_single(original);
         cx.notify();
     });
     visual.run_until_parked();
@@ -500,7 +524,7 @@ fn clip_switch_before_delayed_ack_preserves_the_new_context_selection(cx: &mut T
     let event = next(&editor, &visual);
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = Some(other);
-        v.midi_selection.set_single(other_note);
+        v.midi_editor.selection.set_single(other_note);
         cx.notify();
     });
     visual.run_until_parked();
@@ -511,7 +535,7 @@ fn clip_switch_before_delayed_ack_preserves_the_new_context_selection(cx: &mut T
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.detail_clip_id(), Some(other));
-        assert_eq!(v.midi_selection.ids(), &[other_note]);
+        assert_eq!(v.midi_editor.selection.ids(), &[other_note]);
     });
 }
 #[gpui::test]
@@ -550,9 +574,9 @@ fn rapid_batches_use_each_real_canonical_range_and_malformed_ranges_preserve_bas
         });
         pump(&editor, &mut visual);
         previous = editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.ids(), &[first, last]);
-            assert_eq!(v.midi_selection.primary(), Some(last));
-            v.midi_selection.ids().to_vec()
+            assert_eq!(v.midi_editor.selection.ids(), &[first, last]);
+            assert_eq!(v.midi_editor.selection.primary(), Some(last));
+            v.midi_editor.selection.ids().to_vec()
         });
         if offset == 0 {
             first_batch = previous.clone();
@@ -590,7 +614,7 @@ fn rapid_batches_use_each_real_canonical_range_and_malformed_ranges_preserve_bas
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), previous.as_slice());
+        assert_eq!(v.midi_editor.selection.ids(), previous.as_slice());
         assert!(v.error.as_deref().unwrap().contains("incomplete"));
     });
 }

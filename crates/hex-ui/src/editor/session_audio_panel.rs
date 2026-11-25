@@ -20,7 +20,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
         return None;
     }
     let edit_pending = view.edit_pending();
-    let (track, scene) = view.selected_cell?;
+    let (track, scene) = view.session_grid.selected_cell?;
     let state = view.state.as_ref()?;
     let SessionCellContent::Audio(clip) = state.project.session_cell(track, scene)? else {
         return None;
@@ -54,7 +54,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     let mut row = div()
         .id("session-audio-source-panel")
         .w_full()
-        .h(px(view.clip_detail_body_height))
+        .h(px(view.audio_detail.detail_body_height))
         .flex_shrink_0()
         .flex()
         .items_center()
@@ -276,7 +276,7 @@ impl EditorView {
         {
             return None;
         }
-        let snapshot = self.session_routes.matching_snapshot(
+        let snapshot = self.session_grid.routes.matching_snapshot(
             audio.control.output_identity()?,
             Some((
                 audible.audio_revision,
@@ -287,7 +287,8 @@ impl EditorView {
             self.project_generation,
         )?;
         let route = self
-            .session_routes
+            .session_grid
+            .routes
             .entry_for_track(snapshot, true, track.value())?;
         if route.owner
             != (SessionRouteOwner::Session {
@@ -355,7 +356,7 @@ fn session_audio_loop_button(
                 || !source_window_is_current(
                     window,
                     view.project_generation,
-                    view.selected_cell,
+                    view.session_grid.selected_cell,
                     state.revision,
                     &state.project,
                 )
@@ -423,7 +424,7 @@ fn gain_adjust_button(
             source_window_is_current(
                 window,
                 view.project_generation,
-                view.selected_cell,
+                view.session_grid.selected_cell,
                 state.revision,
                 &state.project,
             )
@@ -515,7 +516,7 @@ fn source_adjust_button(
                 source_window_is_current(
                     window,
                     view.project_generation,
-                    view.selected_cell,
+                    view.session_grid.selected_cell,
                     state.revision,
                     &state.project,
                 )
@@ -734,7 +735,7 @@ mod tests {
                     document_path: None,
                 }));
                 view.mode = EditorMode::Session;
-                view.selected_cell = Some((track, scene));
+                view.session_grid.selected_cell = Some((track, scene));
                 view.worker_requests_pending = 1;
                 view.focus.focus(window);
                 window_cx.notify();
@@ -797,10 +798,10 @@ mod tests {
             };
             let id = c.id();
             v.mode = EditorMode::Session;
-            v.selected_cell = Some((track, scene));
+            v.session_grid.selected_cell = Some((track, scene));
             v.selected_clip = Some(id);
-            v.clip_view_open = true;
-            v.device_panel_active = false;
+            v.audio_detail.clip_view_open = true;
+            v.device_panel.active = false;
             cx.notify();
             id
         });

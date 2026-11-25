@@ -204,16 +204,16 @@ impl EditorView {
             && !self.sections.naming()
             && !self.track_name.is_editing()
             && self.context_menu.is_none()
-            && !self.opening_project
-            && !self.close_prompt_open
-            && !self.save_dialog_open
-            && !self.export_dialog_open
+            && !self.persistence.opening_project
+            && !self.persistence.close_prompt_open
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
             && self.active_clip_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
-            && self.active_native_device_drag.is_none()
+            && self.browser.active_audio_drag.is_none()
+            && self.device_panel.active_native_drag.is_none()
             && self.active_trim_drag.is_none()
             && self.active_fade_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
+            && self.midi_editor.active_trim_drag.is_none()
     }
 
     /// Select an exact captured extent without snapping, seeking or an edit.
@@ -450,16 +450,16 @@ impl EditorView {
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.locked_play_start_drag_active()
         {
             return false;
@@ -499,16 +499,16 @@ impl EditorView {
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.locked_play_start_drag_active()
         {
             return false;
@@ -592,16 +592,16 @@ impl EditorView {
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.locked_play_start_drag_active()
         {
             return false;
@@ -668,10 +668,10 @@ impl EditorView {
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.close_prompt_open
-            || self.opening_project
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return true;
         }
@@ -754,10 +754,10 @@ impl EditorView {
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             return true;
         }
@@ -864,7 +864,7 @@ impl EditorView {
     /// its own undo step.
     pub(super) fn duplicate_time_selection(&mut self, window: &Window) -> bool {
         if self.mode != EditorMode::Arrangement
-            || self.midi_focus.is_focused(window)
+            || self.midi_editor.focus.is_focused(window)
             || !self.focus.is_focused(window)
         {
             return false;
@@ -919,17 +919,17 @@ impl EditorView {
     }
 
     fn time_duplicate_input_blocked(&self) -> bool {
-        self.opening_project
-            || self.close_prompt_open
-            || self.automation_close_preflight.frozen()
+        self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.automation_close_preflight.frozen()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.clip_name_edit.is_some()
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
     }
 
     pub(super) fn start_time_duplicate(&mut self, range: hex_project::TimeRange, repeats: u8) {
@@ -1073,7 +1073,7 @@ impl EditorView {
             return;
         }
         if self.mode != EditorMode::Arrangement
-            || self.midi_focus.is_focused(window)
+            || self.midi_editor.focus.is_focused(window)
             || !self.focus.is_focused(window)
         {
             return;
@@ -1112,7 +1112,7 @@ impl EditorView {
 
     fn paste_or_insert_time_selection(&mut self, insert: bool, window: &Window) {
         if self.mode != EditorMode::Arrangement
-            || self.midi_focus.is_focused(window)
+            || self.midi_editor.focus.is_focused(window)
             || !self.focus.is_focused(window)
         {
             return;
@@ -1155,7 +1155,7 @@ impl EditorView {
 
     pub(super) fn delete_time_selection(&mut self, window: &Window) -> bool {
         if self.mode != EditorMode::Arrangement
-            || self.midi_focus.is_focused(window)
+            || self.midi_editor.focus.is_focused(window)
             || !self.focus.is_focused(window)
         {
             return false;
@@ -1181,8 +1181,8 @@ impl EditorView {
             return false;
         };
         if self.mode != EditorMode::Arrangement
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || !matches!(observation.kind, ArrangementEditViewKind::TimeRangeCopy)
             || observation.project_generation != self.project_generation
             || observation.first_previous_revision != observation.previous_revision
@@ -1239,7 +1239,7 @@ impl EditorView {
             || self.time_duplicate_input_blocked()
             || self.worker_requests_pending != 1
             || !self.pending_requests.is_empty()
-            || !self.device_gesture_barriers.is_empty()
+            || !self.device_panel.gesture_barriers.is_empty()
         {
             return;
         }
@@ -1310,8 +1310,8 @@ impl EditorView {
         let pending = self.pending_time_range_move.as_ref()?;
         let state = self.state.as_ref()?;
         if self.mode != EditorMode::Arrangement
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || state.revision != pending.source_revision
         {
             return None;
@@ -1503,10 +1503,10 @@ impl EditorView {
             || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.close_prompt_open
-            || self.opening_project
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.persistence.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
         {
             self.time_selection_gesture = None;
             return false;

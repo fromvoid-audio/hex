@@ -51,16 +51,18 @@ fn position(
         point(
             bounds.origin.x
                 + bounds.size.width
-                    * (((beat * BeatTime::ONE.raw() as f64) - v.piano_beat_start as f64)
-                        / v.piano_beat_span.raw() as f64) as f32,
+                    * (((beat * BeatTime::ONE.raw() as f64)
+                        - v.midi_editor.piano_beat_start as f64)
+                        / v.midi_editor.piano_beat_span.raw() as f64) as f32,
             bounds.origin.y
                 + bounds.size.height
                     * ((f32::from(
-                        v.piano_pitch.first_test_pitch() + v.piano_pitch.test_row_count()
+                        v.midi_editor.piano_pitch.first_test_pitch()
+                            + v.midi_editor.piano_pitch.test_row_count()
                             - 1
                             - pitch,
                     ) + 0.5)
-                        / f32::from(v.piano_pitch.test_row_count())),
+                        / f32::from(v.midi_editor.piano_pitch.test_row_count())),
         )
     })
 }
@@ -193,13 +195,15 @@ fn an_inflight_note_edit_does_not_audition_after_the_speaker_is_reenabled(cx: &m
     let at = position(&mut visual, &editor, 0.55, 62);
     super::creation_tests::double_down(&mut visual, at, Modifiers::default());
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-    editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_some()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.midi_editor.pending_drag.is_some())
+    });
     toggle(&mut visual);
     toggle(&mut visual);
     pump(&editor, &mut visual);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_audition.enabled);
+        assert!(v.midi_editor.audition.enabled);
         assert!(
             v.midi_clip()
                 .unwrap()
@@ -229,7 +233,7 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
     assert_ne!(visual.rendered_background(AUDITION), Some(disabled_fill));
     assert!(visual.debug_bounds("midi-audition-speaker").is_some());
-    editor.read_with(&visual, |v, _| assert!(v.midi_audition.enabled));
+    editor.read_with(&visual, |v, _| assert!(v.midi_editor.audition.enabled));
     pump(&editor, &mut visual);
     assert_audition_silent(&editor, &visual);
     // A note click from Arrangement focus must retain the new piano intent.
@@ -278,7 +282,7 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     visual.simulate_click(b, Modifiers::default());
     pump(&editor, &mut visual);
     let (request, before_marquee_id) = editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.len(), 1);
+        assert_eq!(v.midi_editor.selection.len(), 1);
         (
             v.computer_keyboard.request_id,
             v.computer_keyboard
@@ -308,7 +312,7 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     pump(&editor, &mut visual);
     let chord = editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request);
-        assert_eq!(v.midi_selection.len(), 2);
+        assert_eq!(v.midi_editor.selection.len(), 2);
         let input = v.computer_keyboard.input.as_ref().unwrap();
         assert_eq!(
             input.live_audition_id(),
@@ -336,7 +340,7 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     toggle(&mut visual);
     pump(&editor, &mut visual);
     assert_eq!(visual.debug_bounds(AUDITION), Some(button_bounds));
-    editor.read_with(&visual, |v, _| assert!(!v.midi_audition.enabled));
+    editor.read_with(&visual, |v, _| assert!(!v.midi_editor.audition.enabled));
     assert!(chord.is_cancelled());
     editor.read_with(&visual, |v, _| {
         assert!(v.computer_keyboard.input.is_none());
@@ -451,7 +455,7 @@ fn over_capacity_selection_refuses_the_whole_chord_without_project_changes(
     visual.simulate_keystrokes("cmd-a");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_selection.len() > 17);
+        assert!(v.midi_editor.selection.len() > 17);
         assert!(v.error.as_deref().unwrap().contains("17"));
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -475,7 +479,7 @@ fn clip_owner_wins_over_track_selection_and_stop_or_source_loss_cannot_retrigger
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = Some(clip);
-        v.clip_view_open = true;
+        v.audio_detail.clip_view_open = true;
         v.selected_track = v
             .state
             .as_ref()
@@ -548,7 +552,7 @@ fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mu
 
     let (mut visual, editor, _environment, _) = authored(cx);
     // Settle the Arrangement-to-detail focus handoff before admitting input.
-    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window)));
     visual.run_until_parked();
     let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
     let mut playback = editor.update(&mut visual, |v, _| {
@@ -639,7 +643,7 @@ fn configured_controller_keeps_its_root_during_note_and_marquee_audition(cx: &mu
             v.computer_keyboard.input.as_ref().unwrap(),
             &input
         ));
-        assert!(v.midi_selection.len() >= 2);
+        assert!(v.midi_editor.selection.len() >= 2);
     });
     assert!(
         render().iter().flatten().any(|sample| *sample != 0.0),
@@ -783,7 +787,7 @@ fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repain
     };
     for velocity in [false, true] {
         editor.update(&mut visual, |v, cx| {
-            v.midi_selection.set_single(baseline);
+            v.midi_editor.selection.set_single(baseline);
             cx.notify();
         });
         visual.run_until_parked();
@@ -792,7 +796,7 @@ fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repain
         visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.ids(), [first, baseline]);
+            assert_eq!(v.midi_editor.selection.ids(), [first, baseline]);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
         pump(&editor, &mut visual); // Real preparation completes while capture stays held.
@@ -811,7 +815,7 @@ fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repain
         }
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.computer_keyboard.request_id, request);
-            assert!(v.midi_marquee.is_some() || v.velocity_marquee_active());
+            assert!(v.midi_editor.marquee.is_some() || v.velocity_marquee_active());
             assert!(Arc::ptr_eq(
                 &first_input,
                 v.computer_keyboard.input.as_ref().unwrap()
@@ -851,7 +855,7 @@ fn held_marquees_select_and_audition_only_new_contacts_without_release_or_repain
                 v.computer_keyboard.input.as_ref().unwrap()
             ));
             assert_eq!(reentered.live_audition_id(), reentered_id);
-            assert_eq!(v.midi_selection.ids(), [first, baseline]);
+            assert_eq!(v.midi_editor.selection.ids(), [first, baseline]);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
     }
@@ -861,7 +865,7 @@ fn canceling_held_marquee_revokes_unreceived_real_preparation_and_restores_basel
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, _environment, _) = authored(cx);
-    let baseline = editor.read_with(&visual, |v, _| v.midi_selection.shared_ids());
+    let baseline = editor.read_with(&visual, |v, _| v.midi_editor.selection.shared_ids());
     toggle(&mut visual);
     let shift = Modifiers {
         shift: true,
@@ -883,7 +887,7 @@ fn canceling_held_marquee_revokes_unreceived_real_preparation_and_restores_basel
         editor.read_with(&visual, |v, _| {
             assert!(v.edit_pending());
             assert!(
-                v.midi_marquee.is_some() || v.velocity_marquee_active(),
+                v.midi_editor.marquee.is_some() || v.velocity_marquee_active(),
                 "its own pending preparation must not cancel live capture"
             );
         });
@@ -896,9 +900,9 @@ fn canceling_held_marquee_revokes_unreceived_real_preparation_and_restores_basel
         visual.run_until_parked();
         assert_audition_silent(&editor, &visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_selection.ids(), baseline.as_ref());
+            assert_eq!(v.midi_editor.selection.ids(), baseline.as_ref());
             assert!(!v.velocity_marquee_active());
-            assert!(v.midi_marquee.is_none());
+            assert!(v.midi_editor.marquee.is_none());
         });
     }
 }
@@ -916,7 +920,7 @@ fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
     visual.simulate_mouse_move(one, Some(MouseButton::Left), shift);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.len(), 2);
+        assert_eq!(v.midi_editor.selection.len(), 2);
         assert!(v.computer_keyboard.input.is_none());
         assert_eq!(v.computer_keyboard.request_id, 0);
     });
@@ -941,7 +945,7 @@ fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
     });
     pump(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
-        v.piano_pitch = crate::editor::PitchViewport::from_rows(24, 72).unwrap();
+        v.midi_editor.piano_pitch = crate::editor::PitchViewport::from_rows(24, 72).unwrap();
         cx.notify();
     });
     visual.run_until_parked();
@@ -952,7 +956,7 @@ fn marquee_audition_off_is_silent_and_new_contact_overflow_refuses_whole_batch(
     visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.len(), 18);
+        assert_eq!(v.midi_editor.selection.len(), 18);
         assert!(v.error.as_deref().unwrap().contains("at most 17"));
     });
     assert_audition_silent(&editor, &visual);
@@ -968,7 +972,7 @@ fn explicit_note_actions_adopt_live_membership_and_retire_both_pointer_owners(
     let (mut visual, editor, _environment, clip) = authored(cx);
     let (baseline, before) = editor.read_with(&visual, |v, _| {
         (
-            v.midi_selection.primary().unwrap(),
+            v.midi_editor.selection.primary().unwrap(),
             v.state.as_ref().unwrap().project.snapshot(),
         )
     });
@@ -980,9 +984,9 @@ fn explicit_note_actions_adopt_live_membership_and_retire_both_pointer_owners(
         for velocity in [false, true] {
             editor.update(&mut visual, |v, cx| {
                 if group {
-                    v.midi_selection.set_single(baseline);
+                    v.midi_editor.selection.set_single(baseline);
                 } else {
-                    v.midi_selection.clear();
+                    v.midi_editor.selection.clear();
                 }
                 cx.notify();
             });
@@ -994,8 +998,8 @@ fn explicit_note_actions_adopt_live_membership_and_retire_both_pointer_owners(
             visual.simulate_keystrokes("right");
             pump(&editor, &mut visual);
             editor.read_with(&visual, |v, _| {
-                assert_eq!(v.midi_selection.len(), if group { 2 } else { 1 });
-                assert!(v.midi_marquee.is_none());
+                assert_eq!(v.midi_editor.selection.len(), if group { 2 } else { 1 });
+                assert!(v.midi_editor.marquee.is_none());
                 assert!(!v.velocity_marquee_active());
                 let notes = v
                     .state
@@ -1032,9 +1036,9 @@ fn explicit_note_actions_adopt_live_membership_and_retire_both_pointer_owners(
             visual.simulate_keystrokes("cmd-a");
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_marquee.is_none());
+                assert!(v.midi_editor.marquee.is_none());
                 assert!(!v.velocity_marquee_active());
-                assert_eq!(v.midi_selection.len(), 2);
+                assert_eq!(v.midi_editor.selection.len(), 2);
             });
             visual.simulate_mouse_up(one, MouseButton::Left, shift);
             visual.run_until_parked();
@@ -1077,8 +1081,8 @@ fn real_project_replacement_cancels_live_marquee_without_reviving_old_selection_
         editor.read_with(&visual, |v, _| {
             assert!(v.project_generation > generation);
             assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
-            assert!(v.midi_selection.is_empty());
-            assert!(v.midi_marquee.is_none());
+            assert!(v.midi_editor.selection.is_empty());
+            assert!(v.midi_editor.marquee.is_none());
             assert!(!v.velocity_marquee_active());
             assert!(v.computer_keyboard.input.is_none());
         });
@@ -1111,7 +1115,10 @@ fn mouse_down_click_and_vertical_drag_audition_immediately_without_waiting_for_r
     let click_input = assert_audition_bank(&editor, &visual, &[(60, 37)]);
     let down_id = click_input.live_audition_id();
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_note_gesture.is_some(), "drag gesture stays active");
+        assert!(
+            v.midi_editor.note_gesture.is_some(),
+            "drag gesture stays active"
+        );
         assert_eq!(
             v.computer_keyboard.request_id, prepared_request,
             "no extra PrepareComputerKeyboard on mouse-down"
@@ -1186,7 +1193,7 @@ fn double_click_creation_and_draw_mode_audition_immediately_on_mouse_down_and_dr
     let created_input = assert_audition_bank(&editor, &visual, &[(62, 100)]);
     let create_id = created_input.live_audition_id();
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_creation.is_some());
+        assert!(v.midi_editor.creation.is_some());
         assert_eq!(v.computer_keyboard.request_id, request);
     });
     // Canceling creation with Escape silences audition immediately.

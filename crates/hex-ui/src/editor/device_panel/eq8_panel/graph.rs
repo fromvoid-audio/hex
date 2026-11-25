@@ -172,12 +172,12 @@ fn handle_graph_event(
         if let Some(panel) = view.device_panel.eq8_panels.get_mut(&device) {
             panel.collapse_band = None;
         }
-        if view.device_gesture.snapshot().is_some() {
+        if view.device_panel.gesture.snapshot().is_some() {
             view.device_panel.message = Some("wait for the current device edit, then retry".into());
             return;
         }
     }
-    let Some(snapshot) = view.device_gesture.snapshot() else {
+    let Some(snapshot) = view.device_panel.gesture.snapshot() else {
         if event.phase != hex_widgets::ResponseGraphPhase::Begin {
             return;
         }
@@ -280,7 +280,7 @@ fn handle_graph_event(
     else {
         return;
     };
-    if target_device != device || view.device_gesture.has_pending_terminal() {
+    if target_device != device || view.device_panel.gesture.has_pending_terminal() {
         return;
     }
     if event.phase == hex_widgets::ResponseGraphPhase::Cancel {

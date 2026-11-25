@@ -46,8 +46,8 @@ fn retained_source_path_indicator_is_rendered_with_the_existing_chain(cx: &mut T
             crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
         editor.update(cx, |view, cx| {
             view.selected_track = Some(track);
-            view.device_panel_active = true;
-            view.clip_view_open = true;
+            view.device_panel.active = true;
+            view.audio_detail.clip_view_open = true;
             cx.notify();
         });
         let mut visual = VisualTestContext::from_window(window, cx);
@@ -186,7 +186,7 @@ fn device_shell_outline_is_visible_rounded_and_tracks_selection_across_owners(
     let (service, state, track, return_id, device, _) = actor_return_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_id);
+        view.session_grid.focused_return = Some(return_id);
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);

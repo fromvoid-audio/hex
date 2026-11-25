@@ -24,7 +24,7 @@ fn held_chord_steps_across_ack_release_rest_growth_and_history(cx: &mut TestAppC
         visual.simulate_keystrokes("right");
         editor.read_with(&visual, |v, _| {
             assert_eq!(
-                v.midi_marker,
+                v.midi_editor.marker,
                 Some(index * BeatTime::ONE.raw() / 4),
                 "acceptance does not advance before ACK"
             );
@@ -40,7 +40,10 @@ fn held_chord_steps_across_ack_release_rest_growth_and_history(cx: &mut TestAppC
                 .unwrap()
                 .notes();
             assert_eq!(notes.len(), (index as usize + 1) * 2);
-            assert_eq!(v.midi_marker, Some((index + 1) * BeatTime::ONE.raw() / 4));
+            assert_eq!(
+                v.midi_editor.marker,
+                Some((index + 1) * BeatTime::ONE.raw() / 4)
+            );
             assert_eq!(v.computer_keyboard.physical_notes().count(), 2);
             for note in notes {
                 assert_eq!(note.velocity(), 100);
@@ -52,7 +55,7 @@ fn held_chord_steps_across_ack_release_rest_growth_and_history(cx: &mut TestAppC
     visual.simulate_keystrokes("left");
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, Some(BeatTime::ONE.raw() / 4));
+        assert_eq!(v.midi_editor.marker, Some(BeatTime::ONE.raw() / 4));
         assert_eq!(
             v.state.as_ref().unwrap().project.snapshot(),
             authored,
@@ -60,7 +63,7 @@ fn held_chord_steps_across_ack_release_rest_growth_and_history(cx: &mut TestAppC
         );
     });
     editor.update(&mut visual, |v, _| {
-        v.midi_marker = Some(BeatTime::ONE.raw() / 2)
+        v.midi_editor.marker = Some(BeatTime::ONE.raw() / 2)
     });
     // Octave changes do not change the identity of already held keys; a modified
     // key-up still releases the original physical key and its old pitch.
@@ -94,12 +97,12 @@ fn held_chord_steps_across_ack_release_rest_growth_and_history(cx: &mut TestAppC
             before,
             "rest has no project edit"
         );
-        assert_eq!(v.midi_marker, Some(BeatTime::ONE.raw()));
+        assert_eq!(v.midi_editor.marker, Some(BeatTime::ONE.raw()));
         assert!(!v.edit_pending());
     });
     // The same canonical extent command grows a short source once for the chord.
     editor.update(&mut visual, |v, cx| {
-        v.midi_marker = Some(4 * BeatTime::ONE.raw());
+        v.midi_editor.marker = Some(4 * BeatTime::ONE.raw());
         cx.notify();
     });
     visual.run_until_parked();
@@ -166,7 +169,7 @@ fn failed_or_stale_step_cannot_advance_and_focus_loss_releases_physical_input(
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let cursor = u64::MAX - (BeatTime::ONE.raw() / 4) + 1;
     editor.update(&mut visual, |v, cx| {
-        v.midi_marker = Some(cursor);
+        v.midi_editor.marker = Some(cursor);
         cx.notify();
     });
     visual.run_until_parked();
@@ -177,22 +180,22 @@ fn failed_or_stale_step_cannot_advance_and_focus_loss_releases_physical_input(
             v.error.is_some(),
             "overflow must fail before submitting an edit"
         );
-        assert_eq!(v.midi_marker, Some(cursor));
+        assert_eq!(v.midi_editor.marker, Some(cursor));
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     editor.update(&mut visual, |v, cx| {
-        v.midi_marker = Some(0);
+        v.midi_editor.marker = Some(0);
         cx.notify();
     });
     visual.run_until_parked();
     visual.simulate_keystrokes("right");
     editor.update(&mut visual, |v, _| {
-        v.midi_marker = Some(2 * BeatTime::ONE.raw());
+        v.midi_editor.marker = Some(2 * BeatTime::ONE.raw());
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            v.midi_marker,
+            v.midi_editor.marker,
             Some(2 * BeatTime::ONE.raw()),
             "late receipt cannot replace a newer cursor"
         );
@@ -283,7 +286,8 @@ fn active_tuning_gesture_cannot_queue_a_step_behind_an_implicit_commit(cx: &mut 
     visual.simulate_click(button.center(), Modifiers::default());
     editor.update(&mut visual, |v, _| {
         let original = v.state.as_ref().unwrap().project.tuning();
-        v.tuning
+        v.settings
+            .tuning
             .client
             .begin(v.project_generation, original)
             .unwrap();
@@ -291,12 +295,12 @@ fn active_tuning_gesture_cannot_queue_a_step_behind_an_implicit_commit(cx: &mut 
     visual.simulate_keystrokes("right");
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            v.midi_marker,
+            v.midi_editor.marker,
             Some(0),
             "tuning must quiesce before any step, including a rest"
         );
-        assert!(v.last_enqueued_edit.is_none());
-        assert!(v.tuning.client.snapshot().is_some());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
+        assert!(v.settings.tuning.client.snapshot().is_some());
     });
     visual.simulate_event(KeyDownEvent {
         keystroke: Keystroke::parse("a").unwrap(),
@@ -304,9 +308,9 @@ fn active_tuning_gesture_cannot_queue_a_step_behind_an_implicit_commit(cx: &mut 
     });
     visual.simulate_keystrokes("right");
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_marker, Some(0));
+        assert_eq!(v.midi_editor.marker, Some(0));
         assert!(
-            v.last_enqueued_edit.is_none(),
+            v.test_probes.last_enqueued_edit.is_none(),
             "held notes must not queue behind a tuning commit"
         );
     });
@@ -341,7 +345,7 @@ fn stepping_into_a_long_chord_truncates_old_notes_without_right_tails_and_undo_r
         });
     }
     editor.update(&mut visual, |v, _| {
-        v.midi_marker = Some(BeatTime::ONE.raw())
+        v.midi_editor.marker = Some(BeatTime::ONE.raw())
     });
     visual.simulate_keystrokes("right");
     pump(&editor, &mut visual);
@@ -366,7 +370,7 @@ fn stepping_into_a_long_chord_truncates_old_notes_without_right_tails_and_undo_r
             }
             assert!(note.start().raw() + note.duration().raw() <= BeatTime::ONE.raw() * 5 / 4);
         }
-        assert_eq!(v.midi_marker, Some(BeatTime::ONE.raw() * 5 / 4));
+        assert_eq!(v.midi_editor.marker, Some(BeatTime::ONE.raw() * 5 / 4));
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
     pump(&editor, &mut visual);

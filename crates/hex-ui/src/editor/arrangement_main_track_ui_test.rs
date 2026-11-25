@@ -186,10 +186,10 @@ fn focusing_a_return_keeps_regular_selection_and_project_scope(cx: &mut TestAppC
     visual.run_until_parked();
     view.read_with(cx, |view, _| {
         assert_eq!(view.selected_track, Some(track));
-        assert_eq!(view.focused_return, Some(return_track));
+        assert_eq!(view.session_grid.focused_return, Some(return_track));
         assert!(view.time_selection_project_scope);
-        assert!(view.device_panel_active);
-        assert!(view.clip_view_open);
+        assert!(view.device_panel.active);
+        assert!(view.audio_detail.clip_view_open);
     });
     assert!(visual.debug_bounds("device-panel").is_some());
 }
@@ -285,7 +285,7 @@ fn main_gain_slider_composes_with_lane_selection_in_both_views(cx: &mut TestAppC
     });
     editor.update(cx, |view, cx| {
         view.mode = super::EditorMode::Session;
-        view.last_enqueued_edit = None;
+        view.test_probes.last_enqueued_edit = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -343,7 +343,7 @@ fn main_lane_drag_selects_all_tracks_and_copy_uses_project_scope(cx: &mut TestAp
     }
     visual.simulate_keystrokes("cmd-c");
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.last_time_request, Some(("copy", None)));
+        assert_eq!(view.test_probes.last_time_request, Some(("copy", None)));
     });
 }
 
@@ -402,7 +402,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             assert!(view.begin_main_time_range_move_gesture(x, handle_y));
             assert!(view.update_time_range_move_gesture(x, handle_y, true));
             assert!(view.finish_time_range_move_gesture());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
 
             assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             // Inside Main's right edge but outside the narrower regular lane:
@@ -584,7 +584,7 @@ fn main_selection_handle_option_drag_copies_the_project_rectangle(cx: &mut TestA
     visual.simulate_mouse_up(destination, MouseButton::Left, option);
     editor.read_with(cx, |view, _| {
         assert!(matches!(
-            view.last_enqueued_edit.as_ref(),
+            view.test_probes.last_enqueued_edit.as_ref(),
             Some(Command::CopyTimeRangeTo { range, track, .. })
                 if range.tracks() == track_ids && *track == track_ids[0]
         ));
@@ -1073,7 +1073,10 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                             v.active_clip_drag.as_ref().map(|drag| drag.clip),
                             Some(clip)
                         );
-                        assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+                        assert!(
+                            v.active_trim_drag.is_none()
+                                && v.midi_editor.active_trim_drag.is_none()
+                        );
                     });
                     visual.simulate_keystrokes("escape");
                     visual.simulate_mouse_up(

@@ -114,9 +114,9 @@ impl Choice {
             return;
         }
         if view.edit_pending()
-            || view.sampler_parameter.numeric_draft_active()
-            || view.tuning.client.snapshot().is_some()
-            || view.tuning.client.has_pending_requests()
+            || view.device_panel.sampler_parameter.numeric_draft_active()
+            || view.settings.tuning.client.snapshot().is_some()
+            || view.settings.tuning.client.has_pending_requests()
         {
             view.error = Some("source assignment canceled · finish the current edit".into());
             cx.notify();
@@ -249,8 +249,8 @@ pub(in crate::editor) fn focus_from_workspace(view: &EditorView, window: &mut Wi
     let Some(track) = view.selected_track() else {
         return false;
     };
-    if !view.clip_view_open
-        || !view.device_panel_active
+    if !view.audio_detail.clip_view_open
+        || !view.device_panel.active
         || view.device_panel.owner != Some(DevicePanelOwner::Track(track))
         || !view.track_selection.only_or_empty(track)
         || !view.state.as_ref().is_some_and(|state| {
@@ -283,9 +283,9 @@ fn open(
         return;
     }
     if view.edit_pending()
-        || view.sampler_parameter.numeric_draft_active()
-        || view.tuning.client.snapshot().is_some()
-        || view.tuning.client.has_pending_requests()
+        || view.device_panel.sampler_parameter.numeric_draft_active()
+        || view.settings.tuning.client.snapshot().is_some()
+        || view.settings.tuning.client.has_pending_requests()
     {
         view.error = Some("finish the current edit before assigning a source".into());
         cx.notify();

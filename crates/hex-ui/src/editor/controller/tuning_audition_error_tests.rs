@@ -27,8 +27,8 @@ fn review_current_audition_worker_refusal_is_visible_but_stale_owner_is_ignored(
     let active = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
     editor.update(cx, |view, _| {
         view.state = Some(Arc::clone(&initial.state));
-        view.tuning.open = true;
-        view.tuning.audition_input = Some(Arc::clone(&active));
+        view.settings.tuning.open = true;
+        view.settings.tuning.audition_input = Some(Arc::clone(&active));
     });
     for (input, stale) in [(old, true), (Arc::clone(&active), false)] {
         service
@@ -51,12 +51,12 @@ fn review_current_audition_worker_refusal_is_visible_but_stale_owner_is_ignored(
             if stale {
                 assert!(view.error.is_none());
                 assert!(Arc::ptr_eq(
-                    view.tuning.audition_input.as_ref().unwrap(),
+                    view.settings.tuning.audition_input.as_ref().unwrap(),
                     &active
                 ));
             } else {
-                assert!(view.tuning.error.is_some());
-                assert!(view.tuning.audition_input.is_none());
+                assert!(view.settings.tuning.error.is_some());
+                assert!(view.settings.tuning.audition_input.is_none());
             }
         });
     }

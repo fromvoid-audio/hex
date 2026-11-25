@@ -158,7 +158,7 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
             };
             v.mode = super::EditorMode::Session;
             v.selected_track = Some(track);
-            v.selected_cell = Some((track, scene));
+            v.session_grid.selected_cell = Some((track, scene));
             cx.notify();
             clip
         });

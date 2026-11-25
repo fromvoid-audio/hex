@@ -46,7 +46,7 @@ struct Fixture {
 fn open(cx: &mut TestAppContext, button: MouseButton) -> Fixture {
     let (mut visual, editor, environment, _) = fixture(cx);
     editor.update(&mut visual, |v, cx| {
-        v.midi_pan.enabled = button == MouseButton::Left;
+        v.midi_editor.pan.enabled = button == MouseButton::Left;
         cx.notify();
     });
     let actions = Rc::new(Cell::new(0));
@@ -73,10 +73,10 @@ fn open(cx: &mut TestAppContext, button: MouseButton) -> Fixture {
 fn viewport(editor: &Entity<EditorView>, visual: &VisualTestContext) -> (i128, BeatTime, u8, u8) {
     editor.read_with(visual, |v, _| {
         (
-            v.piano_beat_start,
-            v.piano_beat_span,
-            v.piano_pitch.first_test_pitch(),
-            v.piano_pitch.test_row_count(),
+            v.midi_editor.piano_beat_start,
+            v.midi_editor.piano_beat_span,
+            v.midi_editor.piano_pitch.first_test_pitch(),
+            v.midi_editor.piano_pitch.test_row_count(),
         )
     })
 }
@@ -91,13 +91,13 @@ fn piano_pan_can_begin_and_repaint_far_beyond_source_without_edit(cx: &mut TestA
     } = open(cx, MouseButton::Middle);
     let start = BeatTime::from_quarters(1024).unwrap();
     let before = editor.update(&mut visual, |v, cx| {
-        v.piano_beat_start = i128::from(start.raw());
+        v.midi_editor.piano_beat_start = i128::from(start.raw());
         cx.notify();
         v.state.as_ref().unwrap().project.snapshot()
     });
     visual.run_until_parked();
     visual.simulate_mouse_down(from, MouseButton::Middle, Modifiers::default());
-    assert!(editor.read_with(&visual, |v, _| v.midi_pan.gesture.is_some()));
+    assert!(editor.read_with(&visual, |v, _| v.midi_editor.pan.gesture.is_some()));
     visual.simulate_mouse_move(to, MouseButton::Middle, Modifiers::default());
     visual.simulate_mouse_up(to, MouseButton::Middle, Modifiers::default());
     for _ in 0..3 {
@@ -106,7 +106,7 @@ fn piano_pan_can_begin_and_repaint_far_beyond_source_without_edit(cx: &mut TestA
         assert!(viewport(&editor, &visual).0 > i128::from(start.raw()));
     }
     editor.read_with(&visual, |v, _| {
-        assert!(v.midi_pan.gesture.is_none());
+        assert!(v.midi_editor.pan.gesture.is_none());
         assert!(!v.edit_pending());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -125,7 +125,7 @@ fn piano_pan_owns_both_buttons_and_finishes_outside_without_edit(cx: &mut TestAp
         } = open(cx, button);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_mouse_down(from, button, Modifiers::default());
-        assert!(editor.read_with(&visual, |v, _| v.midi_pan.gesture.is_some()));
+        assert!(editor.read_with(&visual, |v, _| v.midi_editor.pan.gesture.is_some()));
         let outside = point(px(640.), px(10.));
         visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
         visual.simulate_event(gpui::ScrollWheelEvent {
@@ -160,7 +160,7 @@ fn piano_pan_owns_both_buttons_and_finishes_outside_without_edit(cx: &mut TestAp
         assert!(!visual.update(|w, _| w.is_pointer_dragging()));
         assert_eq!(viewport(&editor, &visual), final_view);
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_pan.gesture.is_none());
+            assert!(v.midi_editor.pan.gesture.is_none());
             assert!(!v.edit_pending());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -205,7 +205,7 @@ fn piano_pan_loss_keeps_last_navigation_and_blocks_late_release(cx: &mut TestApp
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "bounds" => visual.simulate_resize(size(px(1000.), px(700.))),
@@ -242,7 +242,7 @@ fn piano_pan_loss_keeps_last_navigation_and_blocks_late_release(cx: &mut TestApp
             visual.run_until_parked();
             assert_eq!(actions.get(), 0, "{button:?}/{loss}: trailing release");
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_pan.gesture.is_none(), "{button:?}/{loss}");
+                assert!(v.midi_editor.pan.gesture.is_none(), "{button:?}/{loss}");
                 assert!(!v.edit_pending());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });

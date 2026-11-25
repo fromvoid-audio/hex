@@ -458,11 +458,11 @@ impl EditorView {
         device: DeviceId,
         kind: DeviceAutomationTarget,
     ) {
-        if self.automation_close_preflight.frozen()
+        if self.persistence.automation_close_preflight.frozen()
             || self.automation_take_recovery.unresolved()
             || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
@@ -526,11 +526,11 @@ impl EditorView {
         class: [u8; 16],
         parameter: u32,
     ) {
-        if self.automation_close_preflight.frozen()
+        if self.persistence.automation_close_preflight.frozen()
             || self.automation_take_recovery.unresolved()
             || self.native_automation_recorder.busy()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
             || self.device_gesture_pending()
             || self.edit_pending()
@@ -576,7 +576,7 @@ impl EditorView {
         &mut self,
         origin: PluginParameterOrigin,
     ) -> Result<GestureKey, &'static str> {
-        if self.automation_close_preflight.frozen() {
+        if self.persistence.automation_close_preflight.frozen() {
             return Err("close is pending · automation recording is unavailable");
         }
         if self.native_automation_recorder.busy() || self.automation_take_recovery.unresolved() {
@@ -594,7 +594,7 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(Acquire));
         let desired_playing = self.play_intent.desired_playing(playing);
         self.native_automation_recorder.begin_plugin(
-            &mut self.device_gesture,
+            &mut self.device_panel.gesture,
             origin,
             class,
             playing,
@@ -667,7 +667,7 @@ impl EditorView {
         if self.audio_recorder.blocks_edits() {
             return Err("finish the audio recording before automation recording");
         }
-        if self.automation_close_preflight.frozen() {
+        if self.persistence.automation_close_preflight.frozen() {
             return Err("close is pending · automation recording is unavailable");
         }
         if self.native_automation_recorder.busy() {
@@ -702,7 +702,7 @@ impl EditorView {
         }
         if self.device_gesture_pending()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
+            || self.midi_editor.recorder.blocks_edits()
         {
             return Err("another gesture owns the current source");
         }

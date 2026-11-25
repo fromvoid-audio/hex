@@ -33,32 +33,38 @@ impl State {
 }
 impl EditorView {
     pub(super) fn cancel_clip_detail_resize(&mut self, cx: &mut Context<Self>) -> bool {
-        let Some(resize) = self.clip_detail_resize.resize.take() else {
+        let Some(resize) = self.audio_detail.detail_resize.resize.take() else {
             return false;
         };
-        self.clip_detail_resize.preferred = resize.preferred;
-        self.clip_view_open = true;
+        self.audio_detail.detail_resize.preferred = resize.preferred;
+        self.audio_detail.clip_view_open = true;
         cx.notify();
         true
     }
     pub(super) fn reconcile_clip_detail_resize(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self.clip_detail_resize.resize.as_ref().is_some_and(|r| {
-            r.generation != self.project_generation
-                || !r.gesture.matches_window(window)
-                || self.device_panel_active
-                || !self.focus.is_focused(window)
-        }) {
+        if self
+            .audio_detail
+            .detail_resize
+            .resize
+            .as_ref()
+            .is_some_and(|r| {
+                r.generation != self.project_generation
+                    || !r.gesture.matches_window(window)
+                    || self.device_panel.active
+                    || !self.focus.is_focused(window)
+            })
+        {
             self.cancel_clip_detail_resize(cx);
         }
     }
     fn resize_clip_detail(&mut self, delta: f32, window: &Window, cx: &mut Context<Self>) -> bool {
         self.reconcile_clip_detail_resize(window, cx);
-        let Some(resize) = self.clip_detail_resize.resize.as_ref() else {
+        let Some(resize) = self.audio_detail.detail_resize.resize.as_ref() else {
             return false;
         };
         if delta == 0.0 {
-            self.clip_detail_resize.preferred = resize.preferred;
-            self.clip_view_open = true;
+            self.audio_detail.detail_resize.preferred = resize.preferred;
+            self.audio_detail.clip_view_open = true;
             cx.notify();
             return true;
         }
@@ -67,31 +73,34 @@ impl EditorView {
             return self.cancel_clip_detail_resize(cx);
         }
         let session_audio = self.mode == super::EditorMode::Session
-            && self.selected_cell.is_some_and(|(track, scene)| {
-                self.state.as_ref().is_some_and(|state| {
-                    matches!(
-                        state.project.session_cell(track, scene),
-                        Some(hex_project::SessionCellContent::Audio(_))
-                    )
-                })
-            });
+            && self
+                .session_grid
+                .selected_cell
+                .is_some_and(|(track, scene)| {
+                    self.state.as_ref().is_some_and(|state| {
+                        matches!(
+                            state.project.session_cell(track, scene),
+                            Some(hex_project::SessionCellContent::Audio(_))
+                        )
+                    })
+                });
         let minimum = if session_audio {
             super::session_audio_panel::DETAIL_HEIGHT
         } else {
             MIN_HEIGHT
                 + if self.midi_clip().is_some() {
-                    self.midi_velocity.visible_height()
+                    self.midi_editor.velocity.visible_height()
                 } else {
                     0.0
                 }
         };
-        self.clip_view_open = requested >= COLLAPSE_HEIGHT.min(minimum / 2.0);
-        if !self.clip_view_open {
-            self.clip_detail_resize.preferred = resize.preferred;
+        self.audio_detail.clip_view_open = requested >= COLLAPSE_HEIGHT.min(minimum / 2.0);
+        if !self.audio_detail.clip_view_open {
+            self.audio_detail.detail_resize.preferred = resize.preferred;
         } else {
             // Keep the piano useful even with an expanded velocity lane. The
             // shared workspace budget caps the viewport in smaller windows.
-            self.clip_detail_resize.preferred = Some(
+            self.audio_detail.detail_resize.preferred = Some(
                 self.project_spectrum_detail_height(window, requested.max(minimum))
                     .max(minimum),
             );
@@ -102,7 +111,13 @@ impl EditorView {
     pub(super) fn clip_detail_splitter_input(&self, cx: &Context<Self>) -> SplitterInput<Self> {
         SplitterInput::new(
             cx.entity(),
-            |view| view.clip_detail_resize.resize.as_ref().map(|r| r.gesture),
+            |view| {
+                view.audio_detail
+                    .detail_resize
+                    .resize
+                    .as_ref()
+                    .map(|r| r.gesture)
+            },
             Self::clip_detail_splitter_event,
         )
     }
@@ -115,25 +130,25 @@ impl EditorView {
         match event {
             SplitterEvent::Begin(gesture) => {
                 self.cancel_midi_note_gesture();
-                self.audio_event_editor.gesture = None;
+                self.audio_detail.event.gesture = None;
                 self.cancel_project_spectrum_resize(cx);
                 window.focus(&self.focus);
-                self.clip_detail_resize.resize = Some(Resize {
+                self.audio_detail.detail_resize.resize = Some(Resize {
                     gesture,
-                    height: self.clip_detail_body_height,
-                    preferred: self.clip_detail_resize.preferred,
+                    height: self.audio_detail.detail_body_height,
+                    preferred: self.audio_detail.detail_resize.preferred,
                     generation: self.project_generation,
                 });
                 cx.notify();
                 true
             }
             SplitterEvent::Change(delta) | SplitterEvent::Commit(delta) => {
-                if self.clip_detail_resize.resize.is_none() {
+                if self.audio_detail.detail_resize.resize.is_none() {
                     return false;
                 }
                 self.resize_clip_detail(delta, window, cx);
                 if matches!(event, SplitterEvent::Commit(_)) {
-                    self.clip_detail_resize.resize = None;
+                    self.audio_detail.detail_resize.resize = None;
                     cx.notify();
                 }
                 true

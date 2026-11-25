@@ -121,7 +121,7 @@ fn midi_source_handles_capture_input_without_holding_clip_loop_receipt(cx: &mut 
         let outside = point(px(640.), px(10.));
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        assert!(editor.read_with(&visual, |v, _| v.midi_ruler.held()));
+        assert!(editor.read_with(&visual, |v, _| v.midi_editor.ruler.held()));
         visual.simulate_mouse_down(outside, MouseButton::Right, Modifiers::default());
         visual.simulate_event(ScrollWheelEvent {
             position: outside,
@@ -141,7 +141,8 @@ fn midi_source_handles_capture_input_without_holding_clip_loop_receipt(cx: &mut 
         visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(visual.rendered_cursor_style(), Some(cursor(handle)));
-        let preview = editor.read_with(&visual, |v, _| v.midi_ruler.gesture.unwrap().preview);
+        let preview =
+            editor.read_with(&visual, |v, _| v.midi_editor.ruler.gesture.unwrap().preview);
         visual.simulate_mouse_up(
             point(moved.x, px(10.)),
             MouseButton::Left,
@@ -154,7 +155,7 @@ fn midi_source_handles_capture_input_without_holding_clip_loop_receipt(cx: &mut 
             editor.update(&mut visual, |_, cx| cx.notify());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(!v.midi_ruler.held());
+                assert!(!v.midi_editor.ruler.held());
                 assert_eq!(v.pending_clip_loop_midi(clip), Some(preview));
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
@@ -218,7 +219,7 @@ fn midi_source_capture_loss_discards_only_held_preview_before_late_up(cx: &mut T
                     cx.notify();
                 }),
                 "hidden" => editor.update(&mut visual, |v, cx| {
-                    v.clip_view_open = false;
+                    v.audio_detail.clip_view_open = false;
                     cx.notify();
                 }),
                 "focus" => visual.update(|w, cx| {
@@ -242,7 +243,7 @@ fn midi_source_capture_loss_discards_only_held_preview_before_late_up(cx: &mut T
             visual.run_until_parked();
             assert_eq!(actions.get(), 0, "handle={handle:?} loss={loss}");
             editor.read_with(&visual, |v, _| {
-                assert!(!v.midi_ruler.held(), "handle={handle:?} loss={loss}");
+                assert!(!v.midi_editor.ruler.held(), "handle={handle:?} loss={loss}");
                 assert!(!v.edit_pending(), "handle={handle:?} loss={loss}");
                 assert_eq!(v.worker_requests_pending, 0);
                 assert!(v.pending_requests.is_empty());
@@ -281,7 +282,7 @@ fn profile_midi_ruler_pointer(cx: &mut TestAppContext) {
         for round in 0..warmup + samples {
             visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
-            assert!(editor.read_with(&visual, |v, _| v.midi_ruler.held()));
+            assert!(editor.read_with(&visual, |v, _| v.midi_editor.ruler.held()));
             let clock = std::time::Instant::now();
             let mut at = start;
             for step in 0..8 {
@@ -303,7 +304,7 @@ fn profile_midi_ruler_pointer(cx: &mut TestAppContext) {
             visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(!v.midi_ruler.held());
+                assert!(!v.midi_editor.ruler.held());
                 assert!(!v.edit_pending());
                 assert!(v.pending_requests.is_empty());
                 assert_eq!(v.worker_requests_pending, 0);

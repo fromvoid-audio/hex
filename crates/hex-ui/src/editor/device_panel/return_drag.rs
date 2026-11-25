@@ -167,11 +167,13 @@ fn render_return_drop_target(
         });
     let show_replace_pad = replacement.is_some()
         && view
-            .active_native_device_drag
+            .device_panel
+            .active_native_drag
             .as_ref()
             .is_some_and(|drag| drag.source.is_catalog_vst3_effect());
     let active = view
-        .active_native_device_drag
+        .device_panel
+        .active_native_drag
         .as_ref()
         .and_then(|drag| drag.return_destination.get());
     let selector = before.map_or_else(

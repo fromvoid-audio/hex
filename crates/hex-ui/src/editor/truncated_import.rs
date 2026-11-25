@@ -234,9 +234,9 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         if self.truncated_import.prompting
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
         {
             return;
         }

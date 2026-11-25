@@ -229,8 +229,8 @@ fn operator_section_activation_and_invalid_draft_keep_focus_and_state(cx: &mut T
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     visual.run_until_parked();
     let authored = editor.read_with(cx, |view, _| {
@@ -724,7 +724,7 @@ fn operator_lfo_and_routing_widgets_have_one_focus_group_and_release_previous_gr
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_ne!(
@@ -824,7 +824,7 @@ fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppCo
     pump_until(&editor, cx, |v| {
         v.worker_requests_pending == 0
             && v.pending_requests.is_empty()
-            && v.device_gesture.snapshot().is_none()
+            && v.device_panel.gesture.snapshot().is_none()
     });
     let changed = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
     assert_ne!(changed, original);
@@ -856,8 +856,8 @@ fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppCo
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
@@ -870,8 +870,8 @@ fn operator_filter_shared_controls_focus_commit_undo_and_redo(cx: &mut TestAppCo
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     let changed = editor.read_with(cx, |view, _| {
         let project = view.state.as_ref().unwrap().project.clone();

@@ -128,7 +128,7 @@ impl ColumnFrame {
             revision,
             window: window.window_handle().window_id(),
             size: window.bounds().size,
-            page: view.session_track_start,
+            page: view.session_grid.track_start,
             fold_revision: view.arrangement_focus.projection.fold_revision(),
         }
     }
@@ -138,7 +138,7 @@ impl ColumnFrame {
             && self.size == window.bounds().size
     }
     pub(super) fn current_view(self, view: &EditorView) -> bool {
-        self.current_view_without_page(view) && self.page == view.session_track_start
+        self.current_view_without_page(view) && self.page == view.session_grid.track_start
     }
     fn current_view_without_page(self, view: &EditorView) -> bool {
         view.mode == EditorMode::Session
@@ -156,12 +156,12 @@ impl ColumnFrame {
         page: usize,
     ) -> bool {
         self.current_view_without_page(view)
-            && view.session_track_start == page
+            && view.session_grid.track_start == page
             && self.window == window.window_handle().window_id()
             && self.size == window.bounds().size
     }
     pub(super) fn current_transition_view(self, view: &EditorView, page: usize) -> bool {
-        self.current_view_without_page(view) && view.session_track_start == page
+        self.current_view_without_page(view) && view.session_grid.track_start == page
     }
 }
 impl EditorView {
@@ -242,7 +242,7 @@ impl EditorView {
                 if !event.bounds.contains(&event.event.position) { return; }
                 cx.stop_propagation();
                 if let Some(drag) = event.dragged_item().downcast_ref::<NativeDeviceDrag>() {
-                    drag.destination.set(None); drag.return_destination.set(None); view.arrangement_device_preview = None;
+                    drag.destination.set(None); drag.return_destination.set(None); view.device_panel.arrangement_drop_preview = None;
                 }
                 cx.notify();
             }))
@@ -313,9 +313,10 @@ impl EditorView {
     ) -> bool {
         self.native_device_drag_is_current(drag)
             && !matches!(drag.source, NativeDeviceDragSource::Existing { .. })
-            && self.pending_plugin_effect.is_none()
+            && self.device_panel.pending_plugin_effect.is_none()
             && self
-                .active_native_device_drag
+                .device_panel
+                .active_native_drag
                 .as_ref()
                 .is_some_and(|active| std::rc::Rc::ptr_eq(&active.destination, &drag.destination))
             && self.state.as_ref().is_some_and(|state| {
@@ -323,18 +324,18 @@ impl EditorView {
                     && before.is_none_or(|id| state.project.track(id).is_some())
             })
             && !self.edit_pending()
-            && !self.save_dialog_open
-            && !self.export_dialog_open
-            && !self.export_pending
+            && !self.persistence.save_dialog_open
+            && !self.persistence.export_dialog_open
+            && !self.persistence.export_pending
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
-            && self.device_gesture_barriers.is_empty()
-            && self.device_gesture.snapshot().is_none()
+            && self.device_panel.gesture_barriers.is_empty()
+            && self.device_panel.gesture.snapshot().is_none()
             && !self.device_panel.has_pending_draft(cx)
             && !self.track_gain_controls.has_pending_draft(cx)
             && !self.gain_numeric_editing(cx)
             && self.gain_lane.draft.is_none()
             && !self.gain_recorder.blocks_edits()
-            && !self.midi_recorder.blocks_edits()
+            && !self.midi_editor.recorder.blocks_edits()
     }
 }

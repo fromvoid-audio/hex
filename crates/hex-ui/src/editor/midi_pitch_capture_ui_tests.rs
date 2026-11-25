@@ -52,7 +52,7 @@ fn key_zoom_owns_input_and_uses_outside_release_without_project_edit(cx: &mut Te
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let gutter = visual.debug_bounds("midi-piano-keys").unwrap();
     let down = gutter.center();
-    let prior = editor.read_with(&visual, |v, _| v.piano_pitch);
+    let prior = editor.read_with(&visual, |v, _| v.midi_editor.piano_pitch);
     let expected = prior
         .zoom_at(f32::from(gutter.size.height), 0.5, 120.0)
         .unwrap();
@@ -82,8 +82,8 @@ fn key_zoom_owns_input_and_uses_outside_release_without_project_edit(cx: &mut Te
     visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
     repaint(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert!(v.piano_pitch_zoom.is_none());
-        assert_eq!(v.piano_pitch, expected);
+        assert!(v.midi_editor.piano_pitch_zoom.is_none());
+        assert_eq!(v.midi_editor.piano_pitch, expected);
         assert!(!v.edit_pending());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -117,7 +117,7 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let gutter = visual.debug_bounds("midi-piano-keys").unwrap();
         let down = gutter.center();
-        let prior = editor.read_with(&visual, |v, _| v.piano_pitch);
+        let prior = editor.read_with(&visual, |v, _| v.midi_editor.piano_pitch);
         let expected = prior
             .zoom_at(f32::from(gutter.size.height), 0.5, 120.0)
             .unwrap();
@@ -126,7 +126,9 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         repaint(&editor, &mut visual);
-        editor.read_with(&visual, |v, _| assert_eq!(v.piano_pitch, expected));
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.midi_editor.piano_pitch, expected)
+        });
         match loss {
             "button" => visual.simulate_mouse_move(outside, None, Modifiers::default()),
             "escape" => visual.simulate_keystrokes("escape"),
@@ -182,11 +184,11 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
             }),
             "bounds" => visual.simulate_resize(gpui::size(px(1400.), px(900.))),
             "hidden" => editor.update(&mut visual, |v, cx| {
-                v.clip_view_open = false;
+                v.audio_detail.clip_view_open = false;
                 cx.notify();
             }),
             "device" => editor.update(&mut visual, |v, cx| {
-                v.device_panel_active = true;
+                v.device_panel.active = true;
                 cx.notify();
             }),
             "window" => visual.deactivate_window(),
@@ -195,17 +197,17 @@ fn key_zoom_loss_keeps_last_view_and_suppresses_trailing_release(cx: &mut TestAp
         repaint(&editor, &mut visual);
         let retired = editor.read_with(&visual, |v, _| {
             if !matches!(loss, "generation" | "source" | "bounds") {
-                assert_eq!(v.piano_pitch, expected, "{loss}");
+                assert_eq!(v.midi_editor.piano_pitch, expected, "{loss}");
             }
-            v.piano_pitch
+            v.midi_editor.piano_pitch
         });
         if loss != "focus" && loss != "invalid" {
             visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
         }
         assert_eq!(actions.get(), 0, "{loss}: trailing up");
         editor.read_with(&visual, |v, _| {
-            assert!(v.piano_pitch_zoom.is_none(), "{loss}");
-            assert_eq!(v.piano_pitch, retired, "{loss}");
+            assert!(v.midi_editor.piano_pitch_zoom.is_none(), "{loss}");
+            assert_eq!(v.midi_editor.piano_pitch, retired, "{loss}");
             assert!(!v.edit_pending());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });

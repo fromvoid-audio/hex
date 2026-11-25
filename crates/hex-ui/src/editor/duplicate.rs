@@ -86,7 +86,7 @@ impl DuplicateIntent {
 impl EditorView {
     fn duplicate_target(&self) -> Option<Target> {
         if self.mode == EditorMode::Session {
-            let (track, scene) = self.selected_cell?;
+            let (track, scene) = self.session_grid.selected_cell?;
             let clip = match self.state.as_ref()?.project.session_cell(track, scene)? {
                 SessionCellContent::Midi(c) => c.id(),
                 SessionCellContent::Audio(c) => c.id(),
@@ -105,7 +105,7 @@ impl EditorView {
         pending.active
             && pending.generation == self.project_generation
             && self.selection_intent_epoch == Some(pending.selection_epoch)
-            && !self.opening_project
+            && !self.persistence.opening_project
             && self.recovery.generation().is_none()
             && match (&pending.target, self.duplicate_target()) {
                 (
@@ -130,7 +130,9 @@ impl EditorView {
         self.duplicate_selected_with_kind(DuplicateKind::Independent);
     }
     pub(super) fn duplicate_selected_with_kind(&mut self, kind: DuplicateKind) {
-        if self.close_prompt_open || self.automation_close_preflight.frozen() {
+        if self.persistence.close_prompt_open
+            || self.persistence.automation_close_preflight.frozen()
+        {
             self.error = Some("finish the close action before editing".into());
             return;
         }
@@ -341,7 +343,7 @@ impl EditorView {
         let pending = self.duplicate_intent.pending.as_ref()?;
         let current = self.state.as_ref()?;
         if self.mode != EditorMode::Arrangement
-            || self.opening_project
+            || self.persistence.opening_project
             || self.project_generation != pending.generation
             || current.revision != pending.revision
         {
@@ -438,7 +440,7 @@ impl EditorView {
         }
     }
     pub(super) fn make_selected_clips_unique(&mut self) {
-        if self.edit_pending() || self.close_prompt_open {
+        if self.edit_pending() || self.persistence.close_prompt_open {
             return;
         }
         let ids = match self.duplicate_target() {

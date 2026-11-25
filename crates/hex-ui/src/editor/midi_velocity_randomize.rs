@@ -33,8 +33,8 @@ impl EditorView {
             generation: self.project_generation,
             revision: self.state.as_ref()?.revision,
             clip: self.detail_midi_clip_data()?,
-            selection_epoch: self.midi_selection.epoch(),
-            amount: self.midi_velocity_randomize.amount,
+            selection_epoch: self.midi_editor.selection.epoch(),
+            amount: self.midi_editor.velocity_randomize.amount,
         })
     }
     pub(super) fn randomize_selected_velocities(&mut self, captured: Context) {
@@ -45,13 +45,13 @@ impl EditorView {
                 .as_ref()
                 .is_none_or(|s| s.revision != captured.revision)
             || self.detail_midi_clip_data() != Some(captured.clip)
-            || self.midi_selection.epoch() != captured.selection_epoch
-            || self.midi_velocity_randomize.amount != captured.amount
-            || self.midi_selection.is_empty()
+            || self.midi_editor.selection.epoch() != captured.selection_epoch
+            || self.midi_editor.velocity_randomize.amount != captured.amount
+            || self.midi_editor.selection.is_empty()
         {
             return;
         }
-        let Some(seed) = self.midi_velocity_randomize.seed.checked_add(1) else {
+        let Some(seed) = self.midi_editor.velocity_randomize.seed.checked_add(1) else {
             self.error = Some("velocity randomizer seed exhausted".into());
             return;
         };
@@ -69,7 +69,7 @@ impl EditorView {
                         channel: note.channel(),
                         velocity: note.velocity(),
                     }),
-                    self.midi_selection.ids(),
+                    self.midi_editor.selection.ids(),
                 )?;
                 randomized(
                     &originals,
@@ -86,10 +86,10 @@ impl EditorView {
                     clip: captured.clip,
                     notes,
                 })) {
-                    self.midi_velocity_randomize.seed = seed;
+                    self.midi_editor.velocity_randomize.seed = seed;
                 }
             }
-            Ok(None) => self.midi_velocity_randomize.seed = seed,
+            Ok(None) => self.midi_editor.velocity_randomize.seed = seed,
             Err(error) => self.error = Some(error.into()),
         }
     }

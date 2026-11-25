@@ -38,7 +38,7 @@ impl EditorView {
             // Only current Main ownership makes those IDs a play-start source.
             if self.mode != super::EditorMode::Arrangement
                 || self.selected_track.is_some()
-                || self.focused_return.is_some()
+                || self.session_grid.focused_return.is_some()
                 || self.device_panel.main_selected != Some(self.project_generation)
             {
                 return None;
@@ -127,7 +127,7 @@ mod tests {
                 pulse_color: 0xffffff,
                 pulse_started: Instant::now(),
             });
-            view.last_transport_command = None;
+            view.test_probes.last_transport_command = None;
             cx.notify();
         });
         visual.run_until_parked();
@@ -147,7 +147,7 @@ mod tests {
         let expected = editor.read_with(&visual, |view, _| {
             assert_eq!(view.sections.selected_ids(), &[ids[1]]);
             assert_eq!(
-                view.last_transport_command, None,
+                view.test_probes.last_transport_command, None,
                 "selection never dispatches a transport jump"
             );
             let expected = view
@@ -168,7 +168,10 @@ mod tests {
         visual.simulate_keystrokes("space");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.last_transport_command, Some(PlayFrom(expected)))
+            assert_eq!(
+                view.test_probes.last_transport_command,
+                Some(PlayFrom(expected))
+            )
         });
         let first = editor.read_with(&visual, |view, _| position(view, 2));
         let shift = Modifiers {
@@ -243,7 +246,7 @@ mod tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(&mut visual, |view, cx| {
             view.section_autoplay = false;
-            view.last_transport_command = None;
+            view.test_probes.last_transport_command = None;
             cx.notify();
         });
         visual.run_until_parked();
@@ -317,7 +320,7 @@ mod tests {
             assert_eq!(view.sections.selected, Some(copy));
             assert_eq!(view.playback_start_frame(), 15 * 24_000);
             assert_eq!(
-                view.last_transport_command, None,
+                view.test_probes.last_transport_command, None,
                 "neither edit seeks playback"
             );
         });
@@ -359,7 +362,7 @@ mod tests {
                 None,
                 "deleted selection cannot keep supplying a start"
             );
-            assert_eq!(view.last_transport_command, None);
+            assert_eq!(view.test_probes.last_transport_command, None);
         });
     }
 }

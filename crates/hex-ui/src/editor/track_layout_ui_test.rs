@@ -161,7 +161,7 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
             viewport
         );
         assert!((view.drag_lanes[&track].width - f32::from(lane.size.width)).abs() <= 1.0);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(!view.state.as_ref().unwrap().unsaved);
         assert!(!view.track_resize_active());
     });
@@ -311,7 +311,7 @@ fn bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned(cx: &mut Test
     let menu = bounds(&mut visual, "return-send-menu", track);
     assert!(menu.size.height > px(0.0));
     editor.update(&mut visual, |view, cx| {
-        view.send_menu_track = None;
+        view.session_grid.send_menu_track = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -333,7 +333,7 @@ fn bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned(cx: &mut Test
         px((f32::from(body.size.height) / 22.0).floor() * 22.0)
     );
     editor.read_with(&visual, |view, _| {
-        assert!(view.last_enqueued_edit.is_none())
+        assert!(view.test_probes.last_enqueued_edit.is_none())
     });
 }
 
@@ -401,7 +401,7 @@ fn resize_capture_cancels_on_escape_lost_button_window_change_and_stale_revision
         );
         editor.read_with(&visual, |view, _| {
             assert!(!view.track_resize_active());
-            assert!(view.last_enqueued_edit.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
     // A no-op round trip and Escape during width preview preserve the prior width.
@@ -514,7 +514,7 @@ fn empty_project_main_header_width_handle_uses_current_window_limit(cx: &mut Tes
     );
     assert!(main.size.width >= px(TRACK_HEADER_WIDTH));
     editor.read_with(&visual, |view, _| {
-        assert!(view.last_enqueued_edit.is_none())
+        assert!(view.test_probes.last_enqueued_edit.is_none())
     });
     let browser_width = visual
         .debug_bounds("resize-browser-hit-region")
@@ -838,7 +838,7 @@ fn h_overview_roundtrip_preserves_distinct_heights_and_pinned_return_main_rows(
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
         assert_eq!(view.worker_requests_pending, 0);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
 }
 
@@ -887,7 +887,7 @@ fn command_h_resets_track_heights_and_exits_overview(cx: &mut TestAppContext) {
     assert_heights(&mut visual, &tracks, &[88.0, 44.0]);
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), original);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     });
 }
 
@@ -931,7 +931,7 @@ fn h_overview_single_and_option_resizes_are_temporary_and_reentry_starts_compact
     visual.simulate_keystrokes("h");
     assert_heights(&mut visual, &tracks, &[88.0, 132.0, 44.0]);
     editor.read_with(&visual, |view, _| {
-        assert!(view.last_enqueued_edit.is_none())
+        assert!(view.test_probes.last_enqueued_edit.is_none())
     });
 }
 
@@ -970,19 +970,19 @@ fn h_overview_defers_to_text_numeric_modal_nested_focus_and_resize_capture(
     assert_heights(&mut visual, &tracks, &[44.0]);
     visual.simulate_keystrokes("escape");
     visual.update(|window, cx| {
-        editor.read_with(cx, |view, _| view.midi_focus.focus(window));
+        editor.read_with(cx, |view, _| view.midi_editor.focus.focus(window));
     });
     visual.simulate_keystrokes("h");
     assert_heights(&mut visual, &tracks, &[44.0]);
     focus_workspace(&mut visual, &editor);
     editor.update(&mut visual, |view, cx| {
-        view.close_prompt_open = true;
+        view.persistence.close_prompt_open = true;
         cx.notify();
     });
     visual.simulate_keystrokes("h");
     assert_heights(&mut visual, &tracks, &[44.0]);
     editor.update(&mut visual, |view, cx| {
-        view.close_prompt_open = false;
+        view.persistence.close_prompt_open = false;
         cx.notify();
     });
     focus_workspace(&mut visual, &editor);
@@ -1226,7 +1226,7 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
             (scroll.item_ix, scroll.offset_in_item)
         );
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.4);
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
     }); // Vertical fitting remains available when time already fits exactly.
     editor.update(&mut visual, |view, cx| {
         view.viewport = Some(super::Viewport {

@@ -88,7 +88,7 @@ fn optional_oscillator_controls_resize_the_real_rail_and_commit_native_history(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(

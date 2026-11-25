@@ -103,8 +103,8 @@ fn held_device_drag_updates_the_receiver_and_reuses_clip_paint(cx: &mut TestAppC
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(&mut visual, |view, cx| {
         view.browser.section = super::super::browser::BrowserSection::Instruments;
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -306,7 +306,11 @@ fn busy_to_idle_rebuilds_handles_and_pending_mouse_down_keeps_identity(cx: &mut 
     });
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            view.worker_requests_pending = 1;
+            // A device-gesture barrier blocks arrangement drag admission while
+            // keeping cached ClipContents active (#13244 scoped custody).
+            view.device_panel
+                .gesture_barriers
+                .push_back(hex_session::service::Request::Undo);
             cx.notify();
         });
         window.draw(cx).clear();
@@ -320,7 +324,7 @@ fn busy_to_idle_rebuilds_handles_and_pending_mouse_down_keeps_identity(cx: &mut 
     );
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            view.worker_requests_pending = 0;
+            view.device_panel.gesture_barriers.clear();
             cx.notify();
         });
         window.draw(cx).clear();

@@ -35,22 +35,22 @@ fn pitch_is_a_dial_and_cancel_keeps_canonical_audio_unchanged(cx: &mut TestAppCo
     visual.run_until_parked();
     editor.read_with(cx, |v, cx| {
         assert_ne!(
-            v.audio_clip_controls.numbers[&Field::Pitch]
+            v.audio_detail.clip_controls.numbers[&Field::Pitch]
                 .entity
                 .read(cx)
                 .value(),
             0.
         );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
     });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-        assert!(v.last_enqueued_edit.is_none());
-        assert!(!v.audio_clip_controls.has_pending());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
+        assert!(!v.audio_detail.clip_controls.has_pending());
     });
 }
 
@@ -74,11 +74,11 @@ fn pitch_release_keeps_its_draft_until_accepted_or_refused_ack(cx: &mut TestAppC
         visual.run_until_parked();
         let (command, final_value) = editor.read_with(cx, |v,cx| {
             assert_eq!(v.worker_requests_pending,1);
-            assert!(v.audio_clip_controls.has_pending());
-            let value=v.audio_clip_controls.numbers[&Field::Pitch].entity.read(cx).value();
+            assert!(v.audio_detail.clip_controls.has_pending());
+            let value=v.audio_detail.clip_controls.numbers[&Field::Pitch].entity.read(cx).value();
             assert_ne!(value,0.);
-            assert!(matches!(v.last_enqueued_edit,Some(Command::SetAudioClipPitch {clip:id,cents}) if id==clip && f64::from(cents)==value));
-            (v.last_enqueued_edit.clone().unwrap(),value)
+            assert!(matches!(v.test_probes.last_enqueued_edit,Some(Command::SetAudioClipPitch {clip:id,cents}) if id==clip && f64::from(cents)==value));
+            (v.test_probes.last_enqueued_edit.clone().unwrap(),value)
         });
         for _ in 0..2 {
             let mut event =
@@ -90,9 +90,9 @@ fn pitch_release_keeps_its_draft_until_accepted_or_refused_ack(cx: &mut TestAppC
             });
             visual.run_until_parked();
             editor.read_with(cx, |v, cx| {
-                assert!(v.audio_clip_controls.has_pending());
+                assert!(v.audio_detail.clip_controls.has_pending());
                 assert_eq!(
-                    v.audio_clip_controls.numbers[&Field::Pitch]
+                    v.audio_detail.clip_controls.numbers[&Field::Pitch]
                         .entity
                         .read(cx)
                         .value(),
@@ -118,8 +118,10 @@ fn pitch_release_keeps_its_draft_until_accepted_or_refused_ack(cx: &mut TestAppC
         });
         visual.run_until_parked();
         editor.read_with(cx, |v, cx| {
-            assert!(!v.audio_clip_controls.has_pending());
-            let control = v.audio_clip_controls.numbers[&Field::Pitch].entity.read(cx);
+            assert!(!v.audio_detail.clip_controls.has_pending());
+            let control = v.audio_detail.clip_controls.numbers[&Field::Pitch]
+                .entity
+                .read(cx);
             assert_eq!(control.value(), if accepted { final_value } else { 0. });
             assert_eq!(
                 control.display_text(),
@@ -162,7 +164,7 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
             .unwrap()
     });
     editor.update(cx, |v, cx| {
-        v.clip_view_open = true;
+        v.audio_detail.clip_view_open = true;
         v.selected_clip = Some(clip);
         v.selected_track = v
             .state
@@ -298,7 +300,7 @@ fn pitch_knob_real_worker_history_entry_reset_group_scope_and_save_reopen(cx: &m
     });
     pump(&editor, &mut visual);
     editor.update(cx, |v, cx| {
-        v.clip_view_open = true;
+        v.audio_detail.clip_view_open = true;
         v.viewport = Some(super::super::super::viewport::Viewport::fit(
             v.state.as_ref().unwrap().timeline_frames,
         ));
@@ -364,9 +366,12 @@ fn pitch_source_replacement_cancels_held_draft_and_repitch_keeps_transpose_unava
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |v, cx| {
-        assert!(v.last_enqueued_edit.is_none() && !v.audio_clip_controls.has_pending());
+        assert!(
+            v.test_probes.last_enqueued_edit.is_none()
+                && !v.audio_detail.clip_controls.has_pending()
+        );
         assert_eq!(
-            v.audio_clip_controls.numbers[&Field::Pitch]
+            v.audio_detail.clip_controls.numbers[&Field::Pitch]
                 .entity
                 .read(cx)
                 .value(),
@@ -415,10 +420,13 @@ fn pitch_source_replacement_cancels_held_draft_and_repitch_keeps_transpose_unava
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |v, cx| {
-        assert!(v.last_enqueued_edit.is_none() && !v.audio_clip_controls.has_pending());
+        assert!(
+            v.test_probes.last_enqueued_edit.is_none()
+                && !v.audio_detail.clip_controls.has_pending()
+        );
         assert_eq!(pitch(&v.state.as_ref().unwrap().project, clip), 0);
         assert_eq!(
-            v.audio_clip_controls.numbers[&Field::Pitch]
+            v.audio_detail.clip_controls.numbers[&Field::Pitch]
                 .entity
                 .read(cx)
                 .value(),

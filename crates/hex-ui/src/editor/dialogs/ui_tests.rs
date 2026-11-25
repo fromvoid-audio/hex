@@ -50,7 +50,7 @@ fn native_new_action_survives_editor_focus_loss(cx: &mut TestAppContext) {
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.opening_project || view.project_open.busy(),
+            view.persistence.opening_project || view.persistence.project_open.busy(),
             "native New action was silently lost without a focused editor element"
         )
     });
@@ -71,7 +71,7 @@ fn native_open_action_survives_editor_focus_loss(cx: &mut TestAppContext) {
     assert!(cx.did_prompt_for_paths());
     cx.simulate_paths_selection(None);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    editor.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
 }
 
 fn pump(
@@ -99,10 +99,10 @@ fn pump(
 }
 fn settled(view: &EditorView) -> bool {
     view.state.is_some()
-        && !view.audio_import_settings.is_loading()
+        && !view.settings.audio_import.is_loading()
         && view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && !view.opening_project
+        && !view.persistence.opening_project
 }
 fn add_track(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
     pump(editor, cx, settled);
@@ -141,9 +141,9 @@ fn project_actions_preserve_confirmation_and_dispatch_once_after_rerender(cx: &m
     visual.dispatch_action(NewProject);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.project_open.busy());
+        assert!(view.persistence.project_open.busy());
         assert!(
-            !view.opening_project,
+            !view.persistence.opening_project,
             "one click must not confirm its own replacement"
         );
         assert_eq!(view.state.as_ref().unwrap().project, before.0.project);
@@ -256,15 +256,15 @@ fn project_fallback_targets_only_active_editor_not_another_window(cx: &mut TestA
     });
     cx.update(|cx| cx.dispatch_action(&NewProject));
     second_visual.run_until_parked();
-    first.read_with(cx, |view, _| assert!(!view.project_open.busy()));
-    second.read_with(cx, |view, _| assert!(view.project_open.busy()));
+    first.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
+    second.read_with(cx, |view, _| assert!(view.persistence.project_open.busy()));
     let unrelated = *cx.add_window(|_, _| gpui::Empty);
     cx.update_window(unrelated, |_, window, _| window.activate_window())
         .unwrap();
     cx.update(|cx| cx.dispatch_action(&NewProject));
     second_visual.run_until_parked();
-    second.read_with(cx, |view, _| assert!(!view.opening_project));
-    first.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    second.read_with(cx, |view, _| assert!(!view.persistence.opening_project));
+    first.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
 }
 
 #[gpui::test]
@@ -282,8 +282,8 @@ fn project_menu_without_active_or_after_closed_window_cannot_touch_another_edito
     first_visual.deactivate_window();
     cx.update(|cx| cx.dispatch_action(&NewProject));
     first_visual.run_until_parked();
-    first.read_with(cx, |view, _| assert!(!view.project_open.busy()));
-    second.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    first.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
+    second.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
     first_visual.update(|window, _| window.remove_window());
     cx.update_window(second_handle, |_, window, _| {
         window.activate_window();
@@ -292,7 +292,7 @@ fn project_menu_without_active_or_after_closed_window_cannot_touch_another_edito
     .unwrap();
     cx.update(|cx| cx.dispatch_action(&NewProject));
     cx.run_until_parked();
-    second.read_with(cx, |view, _| assert!(view.project_open.busy()));
+    second.read_with(cx, |view, _| assert!(view.persistence.project_open.busy()));
 }
 
 #[gpui::test]
@@ -310,19 +310,19 @@ fn focused_file_action_keeps_one_confirmation_and_pending_project_action_refuses
     });
     visual.dispatch_action(NewProject);
     editor.read_with(cx, |view, _| {
-        assert!(view.project_open.busy());
+        assert!(view.persistence.project_open.busy());
         assert!(
-            !view.opening_project,
+            !view.persistence.opening_project,
             "focused handler and fallback must not both run"
         );
     });
     editor.update(cx, |view, _| {
-        view.opening_project = true;
+        view.persistence.opening_project = true;
         view.cancel_open_after_save();
     });
     visual.update(|window, _| window.blur());
     visual.dispatch_action(NewProject);
-    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    editor.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
 }
 
 #[gpui::test]
@@ -339,7 +339,7 @@ fn unfocused_streaming_file_actions_preserve_explicit_mode_refusal(cx: &mut Test
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
     visual.dispatch_action(super::super::NewStreamingProject);
     // If content requires confirmation, the second invocation confirms only this mode.
-    if editor.read_with(cx, |view, _| view.project_open.busy()) {
+    if editor.read_with(cx, |view, _| view.persistence.project_open.busy()) {
         visual.dispatch_action(super::super::NewStreamingProject);
     }
     editor.read_with(cx, |view, _| {
@@ -361,7 +361,7 @@ fn unfocused_streaming_file_actions_preserve_explicit_mode_refusal(cx: &mut Test
             view.document_audio_mode,
             hex_session::DocumentAudioMode::Resident
         );
-        assert!(!view.opening_project);
+        assert!(!view.persistence.opening_project);
     });
 }
 
@@ -396,7 +396,7 @@ fn one_open_action_offers_save_discard_cancel_after_selecting_a_file(cx: &mut Te
         )));
         view.save_project(cx);
         assert!(
-            !view.save_dialog_open,
+            !view.persistence.save_dialog_open,
             "confirmation cannot stack an unrelated Save As"
         );
     });
@@ -404,7 +404,7 @@ fn one_open_action_offers_save_discard_cancel_after_selecting_a_file(cx: &mut Te
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, before.project);
-        assert!(!view.opening_project);
+        assert!(!view.persistence.opening_project);
     });
 }
 
@@ -465,8 +465,8 @@ fn assert_document_unchanged(
             (after.can_undo, after.can_redo, after.unsaved),
             (before.can_undo, before.can_redo, before.unsaved)
         );
-        assert!(!view.opening_project);
-        assert!(!view.project_open.busy());
+        assert!(!view.persistence.opening_project);
+        assert!(!view.persistence.project_open.busy());
     });
 }
 
@@ -802,7 +802,7 @@ fn one_open_stale_picker_or_confirmation_cannot_replace_a_new_project(cx: &mut T
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
-            assert!(!view.project_open.busy());
+            assert!(!view.persistence.project_open.busy());
             assert_eq!(view.project_generation, generation + 1);
         });
     }
@@ -815,8 +815,9 @@ fn begin_tuning_preview(
 ) {
     pump(editor, cx, settled);
     editor.update(cx, |view, _| {
-        view.tuning.open = true;
-        view.tuning
+        view.settings.tuning.open = true;
+        view.settings
+            .tuning
             .client
             .begin(
                 view.project_generation,
@@ -826,14 +827,14 @@ fn begin_tuning_preview(
         assert!(view.pump_tuning_gesture());
     });
     pump(editor, cx, |view| {
-        settled(view) && !view.tuning.client.has_pending_requests()
+        settled(view) && !view.settings.tuning.client.has_pending_requests()
     });
     editor.update(cx, |view, _| {
-        view.tuning.client.change(tuning).unwrap();
+        view.settings.tuning.client.change(tuning).unwrap();
         assert!(view.pump_tuning_gesture());
     });
     pump(editor, cx, |view| {
-        settled(view) && !view.tuning.client.has_pending_requests()
+        settled(view) && !view.settings.tuning.client.has_pending_requests()
     });
 }
 
@@ -855,7 +856,9 @@ fn returned_open_failed_load_preserves_acknowledged_tuning_draft_and_history(
         let draft = changed_tuning(60, 333.0);
         begin_tuning_preview(&editor, cx, draft);
         let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
-        let snapshot = editor.read_with(cx, |view, _| view.tuning.client.snapshot().unwrap());
+        let snapshot = editor.read_with(cx, |view, _| {
+            view.settings.tuning.client.snapshot().unwrap()
+        });
         let path = directory.0.join(if malformed {
             "malformed.hex"
         } else {
@@ -872,11 +875,14 @@ fn returned_open_failed_load_preserves_acknowledged_tuning_draft_and_history(
         pump(&editor, cx, |view| settled(view) && view.error.is_some());
         editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.tuning.client.snapshot(),
+                view.settings.tuning.client.snapshot(),
                 Some(snapshot),
                 "failed load must not retire or commit the user's tuning draft"
             );
-            assert_eq!(view.tuning.client.snapshot().unwrap().tuning, draft);
+            assert_eq!(
+                view.settings.tuning.client.snapshot().unwrap().tuning,
+                draft
+            );
         });
         assert_document_unchanged(&editor, cx, &before);
     }
@@ -946,7 +952,7 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     begin_tuning_preview(&editor, cx, changed_tuning(0, 20_000.0));
     editor.read_with(cx, |view, _| {
         assert!(
-            view.tuning.error.is_some(),
+            view.settings.tuning.error.is_some(),
             "actual worker must reject the unplayable preview"
         )
     });
@@ -957,7 +963,7 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     cx.simulate_prompt_answer("save");
     visual.run_until_parked();
     pump(&editor, cx, |view| {
-        settled(view) && !view.saving_project && view.tuning.error.is_some()
+        settled(view) && !view.persistence.saving_project && view.settings.tuning.error.is_some()
     });
     assert_document_unchanged(&editor, cx, &before);
     assert_eq!(std::fs::read(&current_path).unwrap(), before_bytes);
@@ -971,11 +977,11 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     assert!(cx.did_prompt_for_paths());
     cx.simulate_paths_selection(None);
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(!view.project_open.busy()));
+    editor.read_with(cx, |view, _| assert!(!view.persistence.project_open.busy()));
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             assert!(!view.request_window_close(window, cx));
-            assert!(view.automation_close_preflight.frozen());
+            assert!(view.persistence.automation_close_preflight.frozen());
         });
     });
     super::super::close::wait_for_close_prompt(&editor, cx);
@@ -984,10 +990,10 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     visual.dispatch_action(NewProject);
     editor.read_with(cx, |view, _| {
         assert!(
-            view.project_open.busy(),
+            view.persistence.project_open.busy(),
             "New remains reachable after refused Save"
         );
-        assert!(!view.opening_project);
+        assert!(!view.persistence.opening_project);
     });
 }
 
@@ -1010,7 +1016,7 @@ fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
     visual.dispatch_action(OpenProject);
     assert!(cx.did_prompt_for_paths());
     editor.update(cx, |view, _| {
-        assert!(view.project_open.busy());
+        assert!(view.persistence.project_open.busy());
         assert!(!view.enqueue(Request::Edit(hex_project::Command::AddTrack {
             name: "must not be inserted".into()
         })));
@@ -1052,7 +1058,7 @@ fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
     visual.run_until_parked();
     pump(&editor, cx, settled);
     editor.read_with(cx, |view, _| {
-        assert!(!view.project_open.busy());
+        assert!(!view.persistence.project_open.busy());
         assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
     });
 }
@@ -1078,7 +1084,9 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
     let _subscription = cx.update(|cx| {
         cx.observe(&editor, move |editor, cx| {
             editor.update(cx, |view, _| {
-                if view.pending_open_path.as_ref() != Some(&chosen) || seen.replace(true) {
+                if view.persistence.pending_open_path.as_ref() != Some(&chosen)
+                    || seen.replace(true)
+                {
                     return;
                 }
                 assert!(!view.enqueue(Request::Edit(hex_project::Command::AddTrack {
@@ -1091,12 +1099,12 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
                     generation: recovery
                 }));
                 assert_eq!(
-                    view.pending_open_path.as_ref(),
+                    view.persistence.pending_open_path.as_ref(),
                     Some(&chosen),
                     "owned recovery must not consume the picker-selected Open intent"
                 );
                 assert_eq!(
-                    view.pending_open_mode,
+                    view.persistence.pending_open_mode,
                     Some(hex_session::DocumentAudioMode::Resident)
                 );
             });
@@ -1112,7 +1120,7 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.project_open.busy()
+            && view.persistence.project_open.busy()
     });
     visual.run_until_parked();
     assert!(
@@ -1140,7 +1148,9 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
         assert_eq!(state.document_path.as_ref(), Some(&path));
         assert_eq!(view.project_generation, old_generation + 1);
         assert!(!state.can_undo && !state.unsaved);
-        assert!(view.pending_open_path.is_none() && !view.project_open.busy());
+        assert!(
+            view.persistence.pending_open_path.is_none() && !view.persistence.project_open.busy()
+        );
     });
 }
 
@@ -1227,7 +1237,7 @@ fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestApp
         editor.read_with(cx, |view, _| {
             let state = view.state.as_ref().unwrap();
             assert!(state.project.tracks().is_empty() && !state.can_undo && !state.unsaved);
-            assert!(state.document_path.is_none() && !view.project_open.busy());
+            assert!(state.document_path.is_none() && !view.persistence.project_open.busy());
             assert_eq!(
                 view.document_audio_mode,
                 hex_session::DocumentAudioMode::Resident
@@ -1286,7 +1296,7 @@ fn one_new_cancelled_or_failed_save_aborts_continuation_before_a_later_save(
         cx.simulate_new_path_selection(|_| failure.then_some(collision.clone()));
         visual.run_until_parked();
         pump(&editor, cx, |view| {
-            settled(view) && !view.save_dialog_open && !view.saving_project
+            settled(view) && !view.persistence.save_dialog_open && !view.persistence.saving_project
         });
         assert_document_unchanged(&editor, cx, &before);
         assert_eq!(
@@ -1301,13 +1311,13 @@ fn one_new_cancelled_or_failed_save_aborts_continuation_before_a_later_save(
         visual.run_until_parked();
         pump(&editor, cx, |view| {
             settled(view)
-                && !view.saving_project
+                && !view.persistence.saving_project
                 && view.state.as_ref().unwrap().document_path.is_some()
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(view.project_generation, generation);
             assert_eq!(view.state.as_ref().unwrap().project, before.project);
-            assert!(!view.project_open.busy());
+            assert!(!view.persistence.project_open.busy());
         });
         assert!(saved.with_extension("").join("later.hex").is_file());
     }
@@ -1333,7 +1343,7 @@ fn one_new_waits_for_admitted_edits_and_stale_answers_cannot_replace_again(
             editor.update(cx, |view, cx| {
                 view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
                 view.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
-                assert!(view.project_open.busy() && !view.opening_project);
+                assert!(view.persistence.project_open.busy() && !view.persistence.opening_project);
             })
         });
         pump(&editor, cx, settled);
@@ -1371,7 +1381,7 @@ fn one_new_waits_for_admitted_edits_and_stale_answers_cannot_replace_again(
         editor.read_with(cx, |view, _| {
             assert_eq!(view.project_generation, generation + 1);
             assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
-            assert!(!view.project_open.busy());
+            assert!(!view.persistence.project_open.busy());
         });
     }
 }

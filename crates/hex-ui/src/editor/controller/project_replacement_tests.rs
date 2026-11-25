@@ -225,19 +225,19 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             view.receive(event(Arc::clone(&project), 1, true));
             view.project_generation = 1;
             view.selected_track = Some(track);
-            view.clip_view_open = true;
-            view.device_panel_active = true;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = true;
             assert!(view.spectrum_target_is_visible_and_current(target));
             assert!(view.processor_audition_target_is_visible_and_current(audition_target));
 
-            view.clip_view_open = false;
+            view.audio_detail.clip_view_open = false;
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
-            view.clip_view_open = true;
-            view.device_panel_active = false;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = false;
             assert!(!view.spectrum_target_is_visible_and_current(target));
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
-            view.device_panel_active = true;
+            view.device_panel.active = true;
 
             view.selected_track = Some(other_track);
             assert!(!view.spectrum_target_is_visible_and_current(target));
@@ -321,14 +321,17 @@ fn only_successful_open_response_promotes_the_worker_document_path(cx: &mut Test
                 view.record_opened_project(path, cx);
             }
             assert_eq!(
-                view.recent_projects.projects.paths(),
+                view.settings.recent_projects.projects.paths(),
                 std::slice::from_ref(&actual_path)
             );
 
             let failure_path = std::env::temp_dir().join("failed-open-request.hex");
             let failure = open_response(event(project, 2, false), Some(failure_path), true);
             assert!(view.receive(failure).is_none());
-            assert_eq!(view.recent_projects.projects.paths(), &[actual_path]);
+            assert_eq!(
+                view.settings.recent_projects.projects.paths(),
+                &[actual_path]
+            );
         })
         .expect("recent open response");
 }
@@ -352,24 +355,27 @@ fn worker_snapshots_and_undo_keep_the_last_user_detail_focus(cx: &mut TestAppCon
             view.receive(event(Arc::clone(&project), 1, true));
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
-            view.clip_view_open = true;
-            view.device_panel_active = false;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = false;
 
             view.receive(event(Arc::clone(&without_clip), 2, false));
             assert_eq!(view.selected_clip, None, "snapshot removes stale selection");
             assert!(
-                !view.device_panel_active,
+                !view.device_panel.active,
                 "snapshot does not replace clip focus"
             );
-            assert!(view.clip_view_open, "selection removal leaves pane open");
+            assert!(
+                view.audio_detail.clip_view_open,
+                "selection removal leaves pane open"
+            );
 
-            view.device_panel_active = true;
+            view.device_panel.active = true;
             view.receive(event(project, 3, false));
             assert!(
-                view.device_panel_active,
+                view.device_panel.active,
                 "undo snapshot does not replace track focus"
             );
-            assert!(view.clip_view_open, "undo leaves pane open");
+            assert!(view.audio_detail.clip_view_open, "undo leaves pane open");
         })
         .expect("receive snapshot and undo events");
 }

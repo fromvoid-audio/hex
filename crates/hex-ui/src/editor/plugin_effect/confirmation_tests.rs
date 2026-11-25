@@ -333,7 +333,8 @@ fn confirmation_modal_renders_centered_isolates_backdrop_and_answers_clicks(
     let (cancel_focused, editor_focused) = visual.update(|window, cx| {
         editor.read_with(cx, |view, _| {
             let cancel_focused = view
-                .device_insert_confirmation
+                .device_panel
+                .insert_confirmation
                 .as_ref()
                 .and_then(|c| c.action_focus.as_ref())
                 .is_some_and(|[cancel, _]| cancel.is_focused(window));
@@ -515,7 +516,8 @@ fn confirmation_modal_keyboard_precedence_expiry_and_project_replace(cx: &mut Te
     visual.run_until_parked();
     let proceed_focused = visual.update(|window, cx| {
         editor.read_with(cx, |view, _| {
-            view.device_insert_confirmation
+            view.device_panel
+                .insert_confirmation
                 .as_ref()
                 .and_then(|c| c.action_focus.as_ref())
                 .is_some_and(|[_, proceed]| proceed.is_focused(window))
@@ -559,9 +561,9 @@ fn confirmation_modal_keyboard_precedence_expiry_and_project_replace(cx: &mut Te
     for flag in 0..3 {
         editor.update(&mut visual, |view, cx| {
             match flag {
-                0 => view.opening_project = true,
-                1 => view.close_prompt_open = true,
-                _ => view.save_dialog_open = true,
+                0 => view.persistence.opening_project = true,
+                1 => view.persistence.close_prompt_open = true,
+                _ => view.persistence.save_dialog_open = true,
             }
             cx.notify();
         });
@@ -575,9 +577,9 @@ fn confirmation_modal_keyboard_precedence_expiry_and_project_replace(cx: &mut Te
             "precedence suppression must not cancel pending offer"
         );
         editor.update(&mut visual, |view, cx| {
-            view.opening_project = false;
-            view.close_prompt_open = false;
-            view.save_dialog_open = false;
+            view.persistence.opening_project = false;
+            view.persistence.close_prompt_open = false;
+            view.persistence.save_dialog_open = false;
             cx.notify();
         });
         visual.run_until_parked();
@@ -614,7 +616,9 @@ fn confirmation_modal_keyboard_precedence_expiry_and_project_replace(cx: &mut Te
     editor.update(&mut visual, |_, cx| cx.notify());
     visual.run_until_parked();
     assert!(visual.debug_bounds("device-insert-confirmation").is_none());
-    assert!(editor.read_with(&visual, |view, _| view.device_insert_confirmation.is_none()));
+    assert!(editor.read_with(&visual, |view, _| {
+        view.device_panel.insert_confirmation.is_none()
+    }));
     assert!(
         visual.update(|window, _| editor_focus.is_focused(window)),
         "expired offer retirement must restore previous editor focus"
@@ -646,12 +650,12 @@ fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut T
 
     // Point playback_settings at an isolated temporary path and load defaults cleanly.
     editor.update(&mut visual, |view, cx| {
-        view.playback_settings.path = Some(prefs_path.clone());
-        view.playback_settings.loading = false;
-        view.playback_settings.saving = false;
-        view.playback_settings.writable = true;
-        view.playback_settings.error = None;
-        view.playback_settings.preferences = hex_preferences::PlaybackPreferences {
+        view.settings.playback.path = Some(prefs_path.clone());
+        view.settings.playback.loading = false;
+        view.settings.playback.saving = false;
+        view.settings.playback.writable = true;
+        view.settings.playback.error = None;
+        view.settings.playback.preferences = hex_preferences::PlaybackPreferences {
             note_chase: false,
             live_mode: true,
         };
@@ -667,7 +671,7 @@ fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut T
         .expect("live mode toggle must render in Hex Settings");
     visual.simulate_click(toggle_bounds.center(), Modifiers::default());
     let deadline = Instant::now() + Duration::from_secs(2);
-    while editor.read_with(&visual, |view, _| view.playback_settings.saving) {
+    while editor.read_with(&visual, |view, _| view.settings.playback.saving) {
         assert!(Instant::now() < deadline, "live mode save did not settle");
         visual.run_until_parked();
         std::thread::sleep(Duration::from_millis(2));
@@ -709,7 +713,9 @@ fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut T
         visual.debug_bounds("device-insert-confirmation").is_none(),
         "non-live mode must not show confirmation modal"
     );
-    assert!(editor.read_with(&visual, |view, _| view.device_insert_confirmation.is_none()));
+    assert!(editor.read_with(&visual, |view, _| {
+        view.device_panel.insert_confirmation.is_none()
+    }));
 
     // Reopen Settings and toggle Live Mode back ON; verify persistence and modal prompting.
     visual.simulate_keystrokes("cmd-,");
@@ -717,7 +723,7 @@ fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut T
     let toggle_bounds = visual.debug_bounds("live mode settings").unwrap();
     visual.simulate_click(toggle_bounds.center(), Modifiers::default());
     let deadline = Instant::now() + Duration::from_secs(2);
-    while editor.read_with(&visual, |view, _| view.playback_settings.saving) {
+    while editor.read_with(&visual, |view, _| view.settings.playback.saving) {
         assert!(
             Instant::now() < deadline,
             "live mode re-enable save did not settle"
@@ -732,8 +738,8 @@ fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut T
 
     // Non-writable/error state disables clicks and renders status row.
     editor.update(&mut visual, |view, cx| {
-        view.playback_settings.writable = false;
-        view.playback_settings.error = Some("could not save playback settings · read-only".into());
+        view.settings.playback.writable = false;
+        view.settings.playback.error = Some("could not save playback settings · read-only".into());
         cx.notify();
     });
     visual.run_until_parked();
@@ -743,7 +749,7 @@ fn live_mode_settings_toggle_persists_and_controls_confirmation_modal(cx: &mut T
     visual.run_until_parked();
     assert!(
         editor.read_with(&visual, |view, _| view.live_mode_enabled()
-            && !view.playback_settings.saving),
+            && !view.settings.playback.saving),
         "disabled live mode row must ignore clicks"
     );
 

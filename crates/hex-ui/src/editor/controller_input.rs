@@ -294,8 +294,8 @@ impl EditorView {
     /// establish a floor, excluding keys pressed while the editor was unfocused.
     pub(super) fn sync_hardware_step_context(&mut self, window: &Window) {
         let live_owner = (window.is_window_active()
-            && self.midi_focus.is_focused(window)
-            && self.clip_view_open)
+            && self.midi_editor.focus.is_focused(window)
+            && self.audio_detail.clip_view_open)
             .then(|| {
                 self.selected_track
                     .zip(self.detail_clip_id())
@@ -310,7 +310,7 @@ impl EditorView {
         if self.controller_input.live_floor_pending {
             self.controller_input.discard_live_prefix();
         }
-        let owner = live_owner.filter(|_| self.midi_step.enabled);
+        let owner = live_owner.filter(|_| self.midi_editor.step.enabled);
         if owner != self.controller_input.step_owner {
             self.controller_input.step_owner = owner;
             self.controller_input.discard_step_prefix();
@@ -912,7 +912,7 @@ impl EditorView {
         self.refresh_controller_inputs(cx);
     }
     pub(super) fn controller_input_overlay(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if self.theme_settings.open {
+        if self.settings.theme.open {
             return None;
         }
         let focus = self.controller_input.menu_focus.as_ref()?;
@@ -1207,7 +1207,9 @@ fn controller_input_menu_preserves_viewport_and_dismisses_without_editor_actions
     );
     visual.run_until_parked();
     assert!(visual.debug_bounds("controller-input-panel").is_none());
-    editor.read_with(cx, |view, _| assert!(view.last_enqueued_edit.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.test_probes.last_enqueued_edit.is_none())
+    });
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -1297,7 +1299,7 @@ fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let input = Arc::new(hex_midi::HeldNoteInput::default());
     editor.update(&mut visual, |view, cx| {
-        view.midi_step.enabled = true;
+        view.midi_editor.step.enabled = true;
         view.controller_input.channel = 2;
         view.controller_input.held_notes = Some(Arc::clone(&input));
         view.controller_input.target = view.controller_target();
@@ -1323,7 +1325,7 @@ fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
         visual.simulate_keystrokes("right");
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                view.midi_marker,
+                view.midi_editor.marker,
                 Some(step * hex_project::BeatTime::ONE.raw() / 4)
             )
         });
@@ -1346,7 +1348,7 @@ fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
                 [(60, 37, 2), (64, 93, 2)]
             );
             assert_eq!(
-                view.midi_marker,
+                view.midi_editor.marker,
                 Some((step + 1) * hex_project::BeatTime::ONE.raw() / 4)
             );
         });
@@ -1356,7 +1358,7 @@ fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.midi_marker,
+            view.midi_editor.marker,
             Some(3 * hex_project::BeatTime::ONE.raw() / 4)
         );
         assert!(!view.edit_pending());
@@ -1406,7 +1408,7 @@ fn hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest(
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let input = Arc::new(hex_midi::HeldNoteInput::default());
     editor.update(&mut visual, |view, cx| {
-        view.midi_step.enabled = true;
+        view.midi_editor.step.enabled = true;
         view.controller_input.held_notes = Some(Arc::clone(&input));
         view.controller_input.target = view.controller_target();
         cx.notify();
@@ -1445,7 +1447,7 @@ fn hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest(
     visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
     visual.run_until_parked();
     send(&[67, 70]);
-    visual.update(|window, cx| editor.update(cx, |view, _| view.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.update(cx, |view, _| view.midi_editor.focus.focus(window)));
     visual.run_until_parked();
     send(&[69, 80]);
     visual.simulate_keystrokes("right");
@@ -1463,12 +1465,12 @@ fn hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest(
             [64, 69]
         );
     });
-    let marker = editor.read_with(&visual, |view, _| view.midi_marker);
+    let marker = editor.read_with(&visual, |view, _| view.midi_editor.marker);
     input.cancel();
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.midi_marker, marker);
+        assert_eq!(view.midi_editor.marker, marker);
         assert!(!view.edit_pending());
         assert!(view.error.is_some());
     });
@@ -1479,7 +1481,7 @@ fn hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest(
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.midi_marker, marker,
+            view.midi_editor.marker, marker,
             "retiring the failed endpoint must not turn its chord into a rest"
         );
         assert!(!view.edit_pending());
@@ -1496,11 +1498,11 @@ fn hardware_step_full_pitch_bank_combines_computer_priority_and_grows_once(
     let (mut visual, editor, _environment, clip) = fixture(cx);
     let input = Arc::new(hex_midi::HeldNoteInput::default());
     editor.update(&mut visual, |view, cx| {
-        view.midi_step.enabled = true;
+        view.midi_editor.step.enabled = true;
         view.controller_input.channel = 2;
         view.controller_input.held_notes = Some(Arc::clone(&input));
         view.controller_input.target = view.controller_target();
-        view.midi_marker = Some(8 * hex_project::BeatTime::ONE.raw());
+        view.midi_editor.marker = Some(8 * hex_project::BeatTime::ONE.raw());
         cx.notify();
     });
     visual.run_until_parked();
@@ -1595,7 +1597,7 @@ fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui
     });
     pump(&editor, &mut visual);
     editor.update(&mut visual, |view, cx| {
-        view.midi_step.enabled = true;
+        view.midi_editor.step.enabled = true;
         view.controller_input.held_notes = Some(Arc::default());
         view.controller_input.target = view.controller_target();
         cx.notify();
@@ -1618,11 +1620,11 @@ fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui
             "a stale device lease cannot supply even an empty rest snapshot"
         );
     });
-    let marker = editor.read_with(&visual, |view, _| view.midi_marker);
+    let marker = editor.read_with(&visual, |view, _| view.midi_editor.marker);
     visual.simulate_keystrokes("right");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.midi_marker, marker);
+        assert_eq!(view.midi_editor.marker, marker);
         assert!(
             view.state
                 .as_ref()

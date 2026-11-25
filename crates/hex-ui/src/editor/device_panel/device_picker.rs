@@ -413,8 +413,8 @@ fn step(
 
 /// One visible modal owner; a hidden detail pane never blocks the workspace.
 pub(in crate::editor) fn is_open(view: &EditorView) -> bool {
-    view.clip_view_open
-        && view.device_panel_active
+    view.audio_detail.clip_view_open
+        && view.device_panel.active
         && view.device_panel.add_menu_is_open(view.state.as_deref())
 }
 pub(in crate::editor) fn overlay(

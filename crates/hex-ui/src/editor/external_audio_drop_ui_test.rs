@@ -38,14 +38,16 @@ fn external_audio_drop_uses_regular_lane_and_gap_import_contracts(cx: &mut TestA
         editor.read_with(cx, |view, _| {
             if gap {
                 let (retained, before, _) = view
+                    .test_probes
                     .last_enqueued_import_to_new_track
                     .as_ref()
                     .expect("gap creates track");
                 assert_eq!(retained, &path);
                 assert_eq!(*before, Some(target));
-                assert!(view.last_enqueued_import_to_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_track.is_none());
             } else {
                 let (retained, track, start, overwrite) = view
+                    .test_probes
                     .last_enqueued_import_to_track
                     .as_ref()
                     .expect("existing lane import");
@@ -53,7 +55,7 @@ fn external_audio_drop_uses_regular_lane_and_gap_import_contracts(cx: &mut TestA
                 assert_eq!(*track, target);
                 assert!(*start > 0);
                 assert!(*overwrite);
-                assert!(view.last_enqueued_import_to_new_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_new_track.is_none());
             }
         });
     }
@@ -88,11 +90,11 @@ fn external_audio_drop_refuses_main_stale_geometry_busy_and_empty_paths(cx: &mut
                     view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
                 }
                 if refusal == 2 {
-                    view.opening_project = true;
+                    view.persistence.opening_project = true;
                 }
                 view.drop_external_audio_paths(&paths, window, cx);
-                assert!(view.last_enqueued_import_to_track.is_none());
-                assert!(view.last_enqueued_import_to_new_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_new_track.is_none());
                 assert!(view.error.is_some());
                 assert_eq!(
                     view.state.as_ref().expect("project").project.tracks().len(),
@@ -137,12 +139,13 @@ fn external_audio_drop_in_empty_or_trailing_space_appends_one_track(cx: &mut Tes
             editor.update(cx, |view, cx| {
                 view.drop_external_audio_paths(std::slice::from_ref(&path), window, cx);
                 let (retained, before, _) = view
+                    .test_probes
                     .last_enqueued_import_to_new_track
                     .as_ref()
                     .expect("append one new track");
                 assert_eq!(retained, &path);
                 assert_eq!(*before, None);
-                assert!(view.last_enqueued_import_to_track.is_none());
+                assert!(view.test_probes.last_enqueued_import_to_track.is_none());
                 assert!(view.error.is_none());
             });
         })
@@ -210,7 +213,7 @@ fn receive_worker(
             if initial {
                 view.state.as_ref().is_some_and(|s| s.revision == 0)
             } else {
-                view.worker_requests_pending == 0 && view.audio_batch.is_none()
+                view.worker_requests_pending == 0 && view.persistence.audio_batch.is_none()
             }
         });
         if done {
@@ -251,7 +254,7 @@ fn external_audio_batch_ui_to_real_service_orders_media_and_whole_undo_redo(
     cx.update_window(handle, |_, window, cx| {
         editor.update(cx, |view, cx| {
             view.drop_external_audio_paths(&paths, window, cx);
-            assert!(view.audio_batch.is_some());
+            assert!(view.persistence.audio_batch.is_some());
             assert!(view.error.is_none());
             assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 0);
         })
@@ -263,7 +266,7 @@ fn external_audio_batch_ui_to_real_service_orders_media_and_whole_undo_redo(
         assert_eq!(state.revision, 1);
         assert!(state.unsaved);
         assert_eq!(state.waveforms.len(), 2);
-        assert!(view.audio_batch.is_none());
+        assert!(view.persistence.audio_batch.is_none());
         assert_eq!(state.project.tracks().len(), 2);
         for (i, t) in state.project.tracks().iter().enumerate() {
             let clip = &t.clips()[0];
@@ -334,7 +337,7 @@ fn external_audio_batch_ui_to_real_service_bad_member_and_stale_context_are_atom
                     view.project_generation = 1;
                 }
                 view.drop_external_audio_paths(&[good.clone(), bad.clone()], window, cx);
-                assert!(view.audio_batch.is_some());
+                assert!(view.persistence.audio_batch.is_some());
             })
         })
         .unwrap();
@@ -347,7 +350,7 @@ fn external_audio_batch_ui_to_real_service_bad_member_and_stale_context_are_atom
             assert!(!s.unsaved);
             assert!(!s.can_undo);
             assert!(view.error.is_some());
-            assert!(view.audio_batch.is_none());
+            assert!(view.persistence.audio_batch.is_none());
         });
     }
 }
@@ -385,7 +388,7 @@ fn external_audio_cancel_button_reaches_real_worker_without_fifo_cancel_command(
     // Render actual queued metadata before submission, so cancellation wins
     // deterministically rather than depending on filesystem/thread speed.
     editor.update(cx, |view, cx| {
-        view.audio_batch = Some(Arc::clone(&control));
+        view.persistence.audio_batch = Some(Arc::clone(&control));
         view.poll_audio_batch();
         cx.notify();
     });
@@ -405,7 +408,7 @@ fn external_audio_cancel_button_reaches_real_worker_without_fifo_cancel_command(
         assert!(s.waveforms.is_empty());
         assert!(!s.unsaved);
         assert!(!s.can_undo);
-        assert!(view.audio_batch.is_none());
+        assert!(view.persistence.audio_batch.is_none());
         assert!(view.error.as_ref().unwrap().contains("canceled"));
     });
     assert_eq!(

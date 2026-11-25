@@ -263,7 +263,7 @@ impl EditorView {
         {
             return Ok(value as f64);
         }
-        if let Some(pending) = self.sampler_parameter.pending.as_ref()
+        if let Some(pending) = self.device_panel.sampler_parameter.pending.as_ref()
             && let PendingTarget::Parameter(target) = pending.target
             && target.owner == owner
             && target.device == device.id()
@@ -273,7 +273,7 @@ impl EditorView {
         {
             return Ok(value);
         }
-        if let Some(control) = self.sampler_parameter.controls.get(&parameter)
+        if let Some(control) = self.device_panel.sampler_parameter.controls.get(&parameter)
             && control.target.owner == owner
             && control.target.device == device.id()
             && control.target.current(self)
@@ -326,18 +326,24 @@ impl EditorView {
         })
     }
     pub(super) fn sampler_parameter_pending(&self) -> bool {
-        self.sampler_parameter.pending.is_some()
+        self.device_panel.sampler_parameter.pending.is_some()
     }
     pub(super) fn retire_sampler_parameter(&mut self) {
-        if let Some(p) = self.sampler_parameter.pending.take() {
+        if let Some(p) = self.device_panel.sampler_parameter.pending.take() {
             p.cancel.store(true, Ordering::Release);
         }
-        for control in std::mem::take(&mut self.sampler_parameter.controls).into_values() {
-            self.sampler_parameter.retired_focus.push(control.focus);
+        for control in
+            std::mem::take(&mut self.device_panel.sampler_parameter.controls).into_values()
+        {
+            self.device_panel
+                .sampler_parameter
+                .retired_focus
+                .push(control.focus);
         }
     }
     pub(super) fn restore_sampler_parameter_focus(&mut self, window: &mut gpui::Window) {
         if self
+            .device_panel
             .sampler_parameter
             .retired_focus
             .drain(..)
@@ -347,21 +353,27 @@ impl EditorView {
         }
     }
     pub(super) fn tick_sampler_parameter(&mut self) -> bool {
-        if self.sampler_parameter.pending.as_ref().is_some_and(|p| {
-            if matches!(
-                p.target,
-                PendingTarget::Replacement {
-                    owner: hex_project::InstrumentAssetOwner::Source(_),
-                    ..
+        if self
+            .device_panel
+            .sampler_parameter
+            .pending
+            .as_ref()
+            .is_some_and(|p| {
+                if matches!(
+                    p.target,
+                    PendingTarget::Replacement {
+                        owner: hex_project::InstrumentAssetOwner::Source(_),
+                        ..
+                    }
+                ) {
+                    // Cancellation requests the worker to stop; only its exact
+                    // terminal retires source-view custody.
+                    false
+                } else {
+                    p.cancel.load(Ordering::Acquire) || !p.target.current(self)
                 }
-            ) {
-                // Cancellation requests the worker to stop; only its exact
-                // terminal retires source-view custody.
-                false
-            } else {
-                p.cancel.load(Ordering::Acquire) || !p.target.current(self)
-            }
-        }) {
+            })
+        {
             self.retire_sampler_parameter();
             return true;
         }
@@ -369,12 +381,13 @@ impl EditorView {
     }
     pub(super) fn finish_sampler_parameter(&mut self, complete: Option<u64>) {
         if self
+            .device_panel
             .sampler_parameter
             .pending
             .as_ref()
             .is_some_and(|p| Some(p.id) == complete)
         {
-            self.sampler_parameter.pending = None;
+            self.device_panel.sampler_parameter.pending = None;
         }
     }
     fn submit_sampler_parameter(&mut self, target: Target, value: f64) {
@@ -382,11 +395,11 @@ impl EditorView {
             self.error = Some("sampler edit target changed or another edit is pending".into());
             return;
         }
-        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
+        let Some(id) = self.device_panel.sampler_parameter.serial.checked_add(1) else {
             self.error = Some("sampler edit request identity exhausted".into());
             return;
         };
-        self.sampler_parameter.serial = id;
+        self.device_panel.sampler_parameter.serial = id;
         let cancel = Arc::new(AtomicBool::new(false));
         let request = hex_session::service::SamplerParameterEdit {
             request_id: id,
@@ -401,7 +414,7 @@ impl EditorView {
         if self.enqueue(Request::SamplerEdit(
             hex_session::service::SamplerEdit::Parameter(request),
         )) {
-            self.sampler_parameter.pending = Some(Pending {
+            self.device_panel.sampler_parameter.pending = Some(Pending {
                 target: PendingTarget::Parameter(target),
                 id,
                 cancel,
@@ -414,6 +427,7 @@ impl EditorView {
     pub(super) fn cancel_sampler_drafts(&mut self, cx: &mut Context<Self>) -> bool {
         let boundary_cancelled = super::device_panel::cancel_sampler_boundary(self);
         let controls = self
+            .device_panel
             .sampler_parameter
             .controls
             .values_mut()
@@ -433,16 +447,24 @@ impl EditorView {
         cancelled
     }
     pub(super) fn sampler_replacement_pending_id(&self) -> Option<u64> {
-        self.sampler_parameter
+        self.device_panel
+            .sampler_parameter
             .pending
             .as_ref()
             .filter(|p| matches!(p.target, PendingTarget::Replacement { .. }))
             .map(|p| p.id)
     }
     pub(super) fn cancel_sampler_replacement(&mut self, id: Option<u64>) {
-        if let Some(pending) = self.sampler_parameter.pending.as_ref().filter(|p| {
-            matches!(p.target, PendingTarget::Replacement { .. }) && id.is_none_or(|id| id == p.id)
-        }) {
+        if let Some(pending) = self
+            .device_panel
+            .sampler_parameter
+            .pending
+            .as_ref()
+            .filter(|p| {
+                matches!(p.target, PendingTarget::Replacement { .. })
+                    && id.is_none_or(|id| id == p.id)
+            })
+        {
             pending.cancel.store(true, Ordering::Release);
             self.status = "cancelling sample replacement".into();
         }
@@ -467,7 +489,7 @@ impl EditorView {
             self.error = Some("wait for the pending edit before replacing its sample".into());
             return;
         }
-        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
+        let Some(id) = self.device_panel.sampler_parameter.serial.checked_add(1) else {
             self.error = Some("sampler edit request identity exhausted".into());
             return;
         };
@@ -482,13 +504,13 @@ impl EditorView {
             path,
             cancel: Arc::clone(&cancel),
         };
-        self.sampler_parameter.serial = id;
+        self.device_panel.sampler_parameter.serial = id;
         if self.enqueue(Request::SamplerEdit(
             hex_session::service::SamplerEdit::Replacement(request),
         )) {
             self.status = "loading sample into sampler".into();
             self.error = None;
-            self.sampler_parameter.pending = Some(Pending {
+            self.device_panel.sampler_parameter.pending = Some(Pending {
                 target: PendingTarget::Replacement {
                     generation,
                     revision,
@@ -570,6 +592,7 @@ impl EditorView {
             parameter,
         );
         if self
+            .device_panel
             .sampler_parameter
             .controls
             .get(&parameter)
@@ -580,8 +603,16 @@ impl EditorView {
                     || c.bounds != (min, max)
             })
         {
-            if let Some(control) = self.sampler_parameter.controls.remove(&parameter) {
-                self.sampler_parameter.retired_focus.push(control.focus);
+            if let Some(control) = self
+                .device_panel
+                .sampler_parameter
+                .controls
+                .remove(&parameter)
+            {
+                self.device_panel
+                    .sampler_parameter
+                    .retired_focus
+                    .push(control.focus);
             }
             let config = NumericSpec::new(
                 min,
@@ -669,6 +700,7 @@ impl EditorView {
                 &entity,
                 move |view, emitter, event: &NumericControlEvent, cx| {
                     let Some(control) = view
+                        .device_panel
                         .sampler_parameter
                         .controls
                         .get_mut(&parameter)
@@ -696,7 +728,7 @@ impl EditorView {
                     cx.notify();
                 },
             );
-            self.sampler_parameter.controls.insert(
+            self.device_panel.sampler_parameter.controls.insert(
                 parameter,
                 Control {
                     target,
@@ -709,7 +741,12 @@ impl EditorView {
                 },
             );
         }
-        if let Some(control) = self.sampler_parameter.controls.get_mut(&parameter) {
+        if let Some(control) = self
+            .device_panel
+            .sampler_parameter
+            .controls
+            .get_mut(&parameter)
+        {
             control.target = target;
         }
         let active = hex_engine::sampler_parameter_active_on_control(parameter, device.state())
@@ -718,7 +755,7 @@ impl EditorView {
             || self.gain_lane.draft.is_some()
             || self.gain_lane.numeric_draft_active();
         let availability = hex_widgets::ControlAvailability::for_edit(active, busy);
-        let Some(control) = self.sampler_parameter.controls.get(&parameter) else {
+        let Some(control) = self.device_panel.sampler_parameter.controls.get(&parameter) else {
             return div().into_any_element();
         };
         let entity = control.entity.clone();

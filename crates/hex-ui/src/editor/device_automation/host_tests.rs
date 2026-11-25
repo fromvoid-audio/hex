@@ -181,11 +181,11 @@ pub(in crate::editor) fn window_with_gain(
             editor.update(cx, |view, cx| {
                 view.state = Some(initial_state);
                 view.selected_track = Some(track);
-                view.device_panel_active = true;
-                view.clip_view_open = true;
+                view.device_panel.active = true;
+                view.audio_detail.clip_view_open = true;
                 match owner {
                     Owner::Main => super::super::device_panel::select_main(view, window, cx),
-                    Owner::Return(id) => view.focused_return = Some(id),
+                    Owner::Return(id) => view.session_grid.focused_return = Some(id),
                     Owner::Track(_) => {}
                     Owner::Source(_) => panic!("source has no automation lane"),
                 }
@@ -1279,7 +1279,7 @@ fn invalid_gain_text_blocks_starting_an_automation_gesture(cx: &mut TestAppConte
     let target =
         DeviceAutomationTarget::Parameter(hex_lattice_contract::ParameterId::from_static(1));
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         view.gain_lane.track = Some(track);
         view.gain_lane.selected = Some(BeatTime::from_raw(2));
         cx.notify();
@@ -1371,7 +1371,8 @@ fn utility_gain_value(
         )
         .unwrap();
         (
-            view.device_gesture
+            view.device_panel
+                .gesture
                 .snapshot()
                 .map(|snapshot| snapshot.value),
             canonical,
@@ -1539,19 +1540,20 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
             metadata_revision: 1,
             initial: PluginParameterValue::new(0.2).unwrap(),
         };
-        view.device_gesture.begin_plugin(origin).unwrap()
+        view.device_panel.gesture.begin_plugin(origin).unwrap()
     });
     editor.update(&mut visual, |view, _| {
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         assert_eq!(request.phase(), GesturePhase::Begin);
         acknowledge_plugin(view, wrong_target, GesturePhase::Begin, 0);
         let sequence = view
-            .device_gesture
+            .device_panel
+            .gesture
             .change_plugin(PluginParameterValue::new(0.9).unwrap())
             .unwrap();
-        view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(view, wrong_target, GesturePhase::Change, sequence);
         let entry = view
             .automation_view
@@ -1562,9 +1564,9 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
             .unwrap()
             .clone();
         assert_eq!(view.live_device_automation_base(&entry), 0.2);
-        view.device_gesture.cancel().unwrap();
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.cancel().unwrap();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(view, wrong_target, GesturePhase::Cancel, request.sequence());
     });
     visual.run_until_parked();
@@ -1572,7 +1574,8 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
 
     // A matching raw ID from a different generation also has no display authority.
     let wrong_generation = editor.update(&mut visual, |view, _| {
-        view.device_gesture
+        view.device_panel
+            .gesture
             .begin_plugin(PluginParameterOrigin {
                 context: hex_engine::AudioSourceContext {
                     project_generation: generation.saturating_add(1),
@@ -1587,8 +1590,8 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
             .unwrap()
     });
     editor.update(&mut visual, |view, _| {
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(
             view,
             wrong_generation,
@@ -1596,11 +1599,12 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
             request.sequence(),
         );
         let sequence = view
-            .device_gesture
+            .device_panel
+            .gesture
             .change_plugin(PluginParameterValue::new(0.8).unwrap())
             .unwrap();
-        view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(view, wrong_generation, GesturePhase::Change, sequence);
         let entry = view
             .automation_view
@@ -1611,9 +1615,9 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
             .unwrap()
             .clone();
         assert_eq!(view.live_device_automation_base(&entry), 0.2);
-        view.device_gesture.cancel().unwrap();
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.cancel().unwrap();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(
             view,
             wrong_generation,
@@ -1627,7 +1631,8 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
     let key = editor.update(&mut visual, |view, cx| {
         view.automation_view.enabled = true;
         let key = view
-            .device_gesture
+            .device_panel
+            .gesture
             .begin_plugin(PluginParameterOrigin {
                 context: hex_engine::AudioSourceContext {
                     project_generation: generation,
@@ -1640,8 +1645,8 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
                 initial: PluginParameterValue::new(0.2).unwrap(),
             })
             .unwrap();
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(view, key, GesturePhase::Begin, request.sequence());
         cx.notify();
         key
@@ -1649,11 +1654,12 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
     for expected in [0.35, 0.65] {
         editor.update(&mut visual, |view, cx| {
             let sequence = view
-                .device_gesture
+                .device_panel
+                .gesture
                 .change_plugin(PluginParameterValue::new(expected).unwrap())
                 .unwrap();
-            view.device_gesture.next_request().unwrap();
-            view.device_gesture.mark_submitted();
+            view.device_panel.gesture.next_request().unwrap();
+            view.device_panel.gesture.mark_submitted();
             acknowledge_plugin(view, key, GesturePhase::Change, sequence);
             cx.notify();
         });
@@ -1664,11 +1670,12 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
 
     let final_value = 0.8;
     let terminal_sequence = editor.update(&mut visual, |view, cx| {
-        view.device_gesture
+        view.device_panel
+            .gesture
             .finish_plugin(PluginParameterValue::new(final_value).unwrap())
             .unwrap();
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         assert_eq!(request.phase(), GesturePhase::Commit);
         cx.notify();
         request.sequence()
@@ -1678,7 +1685,8 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
         visual.run_until_parked();
         assert_eq!(
             editor.read_with(&visual, |view, _| view
-                .device_gesture
+                .device_panel
+                .gesture
                 .snapshot()
                 .and_then(|snapshot| snapshot.plugin_value)
                 .map(PluginParameterValue::normalized)),
@@ -1728,7 +1736,7 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
                 reason: None,
             })
         );
-        assert!(view.device_gesture.snapshot().is_some());
+        assert!(view.device_panel.gesture.snapshot().is_some());
         let committed_entry = view
             .automation_view
             .devices
@@ -1761,7 +1769,7 @@ fn vst3_dotted_guide_tracks_raw_zero_through_delayed_commit_ack(cx: &mut TestApp
     let committed = vst3_dotted_top(&mut visual, device, 0).unwrap();
     assert!((f32::from(committed) - top_for(final_value)).abs() < 0.5);
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(
             view.state
                 .as_ref()
@@ -1856,7 +1864,7 @@ fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut
     for _ in 0..3 {
         editor.update(&mut visual, |view, cx| {
             assert!(
-                view.device_gesture.snapshot().is_some(),
+                view.device_panel.gesture.snapshot().is_some(),
                 "ack still delayed"
             );
             cx.notify();
@@ -1867,7 +1875,7 @@ fn last_touched_dotted_line_follows_gesture_preview_through_delayed_ack(cx: &mut
     }
     pump(&mut visual, &editor);
     editor.read_with(&visual, |view, _| {
-        assert!(view.device_gesture.snapshot().is_none())
+        assert!(view.device_panel.gesture.snapshot().is_none())
     });
     assert_eq!(
         utility_gain_value(&mut visual, &editor, device).1,
@@ -1918,7 +1926,7 @@ fn native_parameter_click_selects_lane_without_an_edit_or_mode_change(cx: &mut T
             }),
             "a press without pointer movement selects the balance lane"
         );
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
     });
     assert!(
         visual
@@ -1933,7 +1941,7 @@ fn native_parameter_click_selects_lane_without_an_edit_or_mode_change(cx: &mut T
         let state = view.state.as_ref().unwrap();
         assert_eq!(state.revision, revision);
         assert_eq!(state.project, before);
-        assert!(view.device_gesture.snapshot().is_none());
+        assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(view.pending_requests.is_empty());
     });
 }
@@ -2152,7 +2160,7 @@ fn host_trim_lane_controls_edit_their_exact_stage_and_offer_record_arm(cx: &mut 
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            let snapshot = view.device_gesture.snapshot();
+            let snapshot = view.device_panel.gesture.snapshot();
             assert!(matches!(snapshot.map(|gesture| gesture.target),
                 Some(hex_session::device_gesture::GestureTarget::DeviceParameter { device: id, parameter })
                 if id == device && parameter == descriptor.id), "{snapshot:?} / {:?}", view.error);
@@ -2242,7 +2250,7 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
     };
     editor.update(&mut visual, |view, _| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
+        view.device_panel.active = true;
         view.device_panel.owner = Some(Owner::Track(track));
         view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         view.audio = Some(crate::EditorAudio {
@@ -2312,7 +2320,7 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
             .store(true, Release);
         let key = view.begin_vst3_parameter_gesture(origin).unwrap();
         assert_eq!(
-            view.device_gesture.next_request(),
+            view.device_panel.gesture.next_request(),
             Some(GestureRequest::BeginPlugin {
                 key,
                 origin,
@@ -2323,13 +2331,14 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
         // proves actual worker adoption. The final value must not become the
         // preview's base simply because the take committed.
         assert!(view.remember_touched_vst3(Owner::Track(track), device, &row, cx));
-        view.device_gesture.mark_submitted();
+        view.device_panel.gesture.mark_submitted();
         acknowledge_plugin(view, key, GesturePhase::Begin, 0);
-        view.device_gesture
+        view.device_panel
+            .gesture
             .finish_plugin(PluginParameterValue::new(0.75).unwrap())
             .unwrap();
-        let request = view.device_gesture.next_request().unwrap();
-        view.device_gesture.mark_submitted();
+        let request = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
         assert_eq!(request.phase(), GesturePhase::Commit);
         acknowledge_plugin(view, key, GesturePhase::Commit, request.sequence());
         assert_eq!(view.automation_view.devices.main[0].base, 0.25);
@@ -2669,7 +2678,7 @@ fn utility_gain_lane_centers_zero_db_allows_attenuation_drag_and_curved_insertio
 fn asymmetric_bipolar_lanes_center_zero_db_vertically(cx: &mut TestAppContext) {
     let (mut visual, editor, owner, _, device) = window(cx, "hex.saturator", Slot::Track);
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         cx.notify();
     });
     visual.run_until_parked();

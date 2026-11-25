@@ -19,17 +19,17 @@ pub(super) use admission::State;
 impl EditorView {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn set_auto_warp_imports_for_test(&mut self, enabled: bool) {
-        self.audio_import_settings.loading = false;
-        self.audio_import_settings.preferences.auto_warp_beats = enabled;
+        self.settings.audio_import.loading = false;
+        self.settings.audio_import.preferences.auto_warp_beats = enabled;
     }
 
     pub(super) fn capture_audio_import_policy(&self, request: Request) -> Result<Request, String> {
-        let mut request = self.audio_import_settings.capture(
+        let mut request = self.settings.audio_import.capture(
             request,
             AudioBatchContext {
                 project_generation: self.project_generation,
                 revision: self.state.as_ref().map_or(0, |state| state.revision),
-                active_gesture: self.device_gesture.snapshot().is_some(),
+                active_gesture: self.device_panel.gesture.snapshot().is_some(),
             },
         )?;
         if let Request::ImportAudioBatch {
@@ -40,8 +40,12 @@ impl EditorView {
             ..
         } = &mut request
         {
-            options.new_track_gain =
-                Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
+            options.new_track_gain = Some(
+                self.settings
+                    .track_defaults
+                    .captured_gain()
+                    .map_err(str::to_owned)?,
+            );
         }
         if let Request::InsertProjectSample {
             destination:
@@ -51,14 +55,23 @@ impl EditorView {
             ..
         } = &mut request
         {
-            *new_track_gain = Some(self.track_defaults.captured_gain().map_err(str::to_owned)?);
+            *new_track_gain = Some(
+                self.settings
+                    .track_defaults
+                    .captured_gain()
+                    .map_err(str::to_owned)?,
+            );
         }
         match request {
             Request::Import(path) => Ok(Request::ImportToNewTrackWithGain {
                 path,
                 before_track: None,
                 start: 0,
-                gain: self.track_defaults.captured_gain().map_err(str::to_owned)?,
+                gain: self
+                    .settings
+                    .track_defaults
+                    .captured_gain()
+                    .map_err(str::to_owned)?,
             }),
             Request::ImportToNewTrack {
                 path,
@@ -68,17 +81,21 @@ impl EditorView {
                 path,
                 before_track,
                 start,
-                gain: self.track_defaults.captured_gain().map_err(str::to_owned)?,
+                gain: self
+                    .settings
+                    .track_defaults
+                    .captured_gain()
+                    .map_err(str::to_owned)?,
             }),
             request => Ok(request),
         }
     }
 
     pub(super) fn start_audio_import_preferences_load(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.audio_import_settings.path.clone() else {
-            self.audio_import_settings.loading = false;
-            self.audio_import_settings.writable = false;
-            self.audio_import_settings.error =
+        let Some(path) = self.settings.audio_import.path.clone() else {
+            self.settings.audio_import.loading = false;
+            self.settings.audio_import.writable = false;
+            self.settings.audio_import.error =
                 Some("audio import settings unavailable · home directory is unset".into());
             return;
         };
@@ -95,7 +112,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.audio_import_settings;
+                let state = &mut view.settings.audio_import;
                 state.loading = false;
                 match result {
                     Ok(preferences) => state.preferences = preferences,
@@ -116,7 +133,7 @@ impl EditorView {
     }
 
     fn toggle_audio_import_warp(&mut self, cx: &mut Context<Self>) {
-        let state = &mut self.audio_import_settings;
+        let state = &mut self.settings.audio_import;
         if state.loading || state.saving || !state.writable {
             return;
         }
@@ -144,7 +161,7 @@ impl EditorView {
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
-                let state = &mut view.audio_import_settings;
+                let state = &mut view.settings.audio_import;
                 state.saving = false;
                 match result {
                     Ok(()) => state.preferences = preferences,
@@ -165,7 +182,7 @@ impl EditorView {
     }
 
     pub(super) fn audio_import_settings_row(&self, cx: &mut Context<Self>) -> Div {
-        let state = &self.audio_import_settings;
+        let state = &self.settings.audio_import;
         let style = super::device_panel::control_style();
         let label = if state.loading {
             "auto-warp imported audio to beats · loading…"

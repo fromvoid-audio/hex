@@ -243,10 +243,10 @@ impl EditorView {
         else {
             return;
         };
-        let audition = if self.midi_audition.enabled && !already_auditioned {
+        let audition = if self.midi_editor.audition.enabled && !already_auditioned {
             preview.audition(clip, &command).map(|intent| {
                 self.cancel_midi_audition();
-                (self.midi_selection.epoch(), intent)
+                (self.midi_editor.selection.epoch(), intent)
             })
         } else {
             None
@@ -260,7 +260,7 @@ impl EditorView {
             preview,
             audition,
         };
-        self.pending_midi_drag.entries.push_back(entry);
+        self.midi_editor.pending_drag.entries.push_back(entry);
         let fallback_command = command.clone();
         if !self.enqueue(Request::Edit(command)) {
             self.retire_unsubmitted_midi_drag(&Request::Edit(fallback_command));
@@ -268,8 +268,9 @@ impl EditorView {
     }
 
     pub(super) fn displayed_midi_note_gesture(&self) -> Option<NoteGesture> {
-        self.midi_note_gesture.or_else(|| {
-            self.pending_midi_drag
+        self.midi_editor.note_gesture.or_else(|| {
+            self.midi_editor
+                .pending_drag
                 .entries
                 .iter()
                 .rev()
@@ -287,7 +288,7 @@ impl EditorView {
     /// edit wins for each note without flickering earlier in-flight notes.
     pub(super) fn displayed_midi_single_previews(&self) -> Vec<(NoteId, NotePreview, u64)> {
         let mut previews: Vec<(NoteId, NotePreview, u64)> = Vec::new();
-        for pending in &self.pending_midi_drag.entries {
+        for pending in &self.midi_editor.pending_drag.entries {
             if let Frozen::Single(note) = &pending.preview
                 && pending.displayed(self)
             {
@@ -298,7 +299,7 @@ impl EditorView {
                 }
             }
         }
-        if let Some(note) = self.midi_note_gesture {
+        if let Some(note) = self.midi_editor.note_gesture {
             if let Some(existing) = previews.iter_mut().find(|(id, _, _)| *id == note.note) {
                 *existing = (note.note, note.preview, note.source_prefix);
             } else {
@@ -316,7 +317,7 @@ impl EditorView {
         clip: ClipId,
         note_id: NoteId,
     ) -> Option<(NotePreview, u64)> {
-        for pending in self.pending_midi_drag.entries.iter().rev() {
+        for pending in self.midi_editor.pending_drag.entries.iter().rev() {
             if pending.clip != clip || !pending.displayed(self) {
                 continue;
             }
@@ -343,8 +344,9 @@ impl EditorView {
     }
 
     pub(super) fn displayed_midi_group_gesture(&self) -> Option<&GroupGesture> {
-        self.midi_group_gesture.as_ref().or_else(|| {
-            self.pending_midi_drag
+        self.midi_editor.group_gesture.as_ref().or_else(|| {
+            self.midi_editor
+                .pending_drag
                 .entries
                 .iter()
                 .rev()
@@ -359,14 +361,14 @@ impl EditorView {
 
     pub(super) fn displayed_midi_group_previews(&self) -> Vec<(Arc<[GroupNote]>, GroupGesture)> {
         let mut groups = Vec::new();
-        for pending in &self.pending_midi_drag.entries {
+        for pending in &self.midi_editor.pending_drag.entries {
             if let Frozen::Group(group) = &pending.preview
                 && pending.displayed(self)
             {
                 groups.push((group.shared_originals(), group.clone()));
             }
         }
-        if let Some(group) = &self.midi_group_gesture {
+        if let Some(group) = &self.midi_editor.group_gesture {
             groups.push((group.shared_originals(), group.clone()));
         }
         groups
@@ -375,18 +377,23 @@ impl EditorView {
     /// Held input and accepted display custody are distinct. Only the existing
     /// ordinary receipt/source owner can retire a released creation preview.
     pub(super) fn displayed_midi_creation(&self) -> Option<MidiNoteInsert> {
-        self.midi_creation.as_ref().map(|c| c.preview).or_else(|| {
-            self.pending_midi_drag
-                .entries
-                .iter()
-                .rev()
-                .find_map(|pending| {
-                    let Frozen::Creation(note) = &pending.preview else {
-                        return None;
-                    };
-                    pending.displayed(self).then_some(*note)
-                })
-        })
+        self.midi_editor
+            .creation
+            .as_ref()
+            .map(|c| c.preview)
+            .or_else(|| {
+                self.midi_editor
+                    .pending_drag
+                    .entries
+                    .iter()
+                    .rev()
+                    .find_map(|pending| {
+                        let Frozen::Creation(note) = &pending.preview else {
+                            return None;
+                        };
+                        pending.displayed(self).then_some(*note)
+                    })
+            })
     }
 
     /// Released velocity values follow source/receipt custody, independent of
@@ -395,7 +402,8 @@ impl EditorView {
         &self,
         clip: ClipId,
     ) -> Option<&super::midi_velocity::Gesture> {
-        self.pending_midi_drag
+        self.midi_editor
+            .pending_drag
             .entries
             .iter()
             .rev()
@@ -412,11 +420,13 @@ impl EditorView {
     pub(super) fn displayed_midi_stroke_preview(
         &self,
     ) -> Option<Arc<super::midi_stroke::StrokePreview>> {
-        self.midi_stroke
+        self.midi_editor
+            .stroke
             .as_ref()
             .map(|stroke| stroke.shared_preview())
             .or_else(|| {
-                self.pending_midi_drag
+                self.midi_editor
+                    .pending_drag
                     .entries
                     .iter()
                     .rev()
@@ -430,7 +440,8 @@ impl EditorView {
     }
 
     pub(super) fn pending_midi_drag_matches(&self, request: &Request) -> bool {
-        self.pending_midi_drag
+        self.midi_editor
+            .pending_drag
             .entries
             .iter()
             .any(|p| p.matches(request))
@@ -438,7 +449,8 @@ impl EditorView {
 
     pub(super) fn midi_drag_submitted(&mut self) {
         if let Some(pending) = self
-            .pending_midi_drag
+            .midi_editor
+            .pending_drag
             .entries
             .iter_mut()
             .find(|p| p.receipt.is_queued())
@@ -452,9 +464,9 @@ impl EditorView {
     /// snapshot atomically; earlier completions and background events do not.
     pub(super) fn midi_drag_request_complete(&mut self, event: &Event) -> Option<EditAudition> {
         let request_complete = event.request_complete && !event.plugin_parameter_observation;
-        let mut remaining = VecDeque::with_capacity(self.pending_midi_drag.entries.len());
+        let mut remaining = VecDeque::with_capacity(self.midi_editor.pending_drag.entries.len());
         let mut completed = Vec::new();
-        while let Some(mut pending) = self.pending_midi_drag.entries.pop_front() {
+        while let Some(mut pending) = self.midi_editor.pending_drag.entries.pop_front() {
             let disposition = pending.receipt.observe(
                 self.project_generation,
                 event.project_replaced,
@@ -466,7 +478,7 @@ impl EditorView {
                 completed.push((pending, disposition));
             }
         }
-        self.pending_midi_drag.entries = remaining;
+        self.midi_editor.pending_drag.entries = remaining;
 
         let mut completed_clips: Vec<ClipId> = Vec::new();
         let mut audition_result = None;
@@ -492,7 +504,7 @@ impl EditorView {
                     })
                 && let Some(source) = source_identity(&event.state.project, clip)
             {
-                self.midi_origin_history.record_prefix(
+                self.midi_editor.origin_history.record_prefix(
                     self.project_generation,
                     clip,
                     &pending.source,
@@ -501,12 +513,12 @@ impl EditorView {
                 );
             }
             if let Some((epoch, audition)) = pending.audition
-                && self.midi_audition.enabled
-                && self.clip_view_open
-                && !self.opening_project
-                && !self.close_prompt_open
+                && self.midi_editor.audition.enabled
+                && self.audio_detail.clip_view_open
+                && !self.persistence.opening_project
+                && !self.persistence.close_prompt_open
                 && self.detail_clip_id() == Some(pending.clip)
-                && self.midi_selection.epoch() == epoch
+                && self.midi_editor.selection.epoch() == epoch
                 && self
                     .state
                     .as_ref()
@@ -523,7 +535,7 @@ impl EditorView {
         if !event.project_replaced && event.error.is_none() {
             for clip in completed_clips {
                 if let Some(new_source) = source_identity(&event.state.project, clip) {
-                    for pending in &mut self.pending_midi_drag.entries {
+                    for pending in &mut self.midi_editor.pending_drag.entries {
                         if pending.clip == clip && pending.generation == self.project_generation {
                             pending.source = new_source.clone();
                         }
@@ -539,7 +551,7 @@ impl EditorView {
     /// Keep an in-progress held note drag alive when a non-conflicting canonical
     /// revision lands (e.g. an earlier note move or clip duplicate completes).
     fn rebase_held_midi_gestures(&mut self, project: &Project, revision: u64) {
-        if let Some(gesture) = self.midi_note_gesture.as_mut()
+        if let Some(gesture) = self.midi_editor.note_gesture.as_mut()
             && gesture.generation == self.project_generation
             && gesture.revision < revision
             && let Some(source) = project.midi_source(gesture.clip)
@@ -555,7 +567,7 @@ impl EditorView {
         {
             gesture.revision = revision;
         }
-        if let Some(gesture) = self.midi_group_gesture.as_mut()
+        if let Some(gesture) = self.midi_editor.group_gesture.as_mut()
             && gesture.captured_context().generation == self.project_generation
             && gesture.captured_context().revision < revision
             && let Some(clip) = gesture.captured_context().clip
@@ -577,25 +589,26 @@ impl EditorView {
     }
 
     pub(super) fn cancel_pending_midi_edit_audition(&mut self) {
-        for pending in &mut self.pending_midi_drag.entries {
+        for pending in &mut self.midi_editor.pending_drag.entries {
             pending.audition = None;
         }
     }
 
     pub(super) fn retire_pending_midi_drag(&mut self) -> bool {
-        let had = !self.pending_midi_drag.entries.is_empty();
-        self.pending_midi_drag.entries.clear();
+        let had = !self.midi_editor.pending_drag.entries.is_empty();
+        self.midi_editor.pending_drag.entries.clear();
         had
     }
 
     pub(super) fn retire_unsubmitted_midi_drag(&mut self, request: &Request) -> bool {
         if let Some(index) = self
-            .pending_midi_drag
+            .midi_editor
+            .pending_drag
             .entries
             .iter()
             .position(|p| p.matches(request))
         {
-            self.pending_midi_drag.entries.remove(index);
+            self.midi_editor.pending_drag.entries.remove(index);
             true
         } else {
             false
@@ -603,9 +616,9 @@ impl EditorView {
     }
 
     pub(super) fn retire_abandoned_midi_drag(&mut self) -> bool {
-        let before = self.pending_midi_drag.entries.len();
+        let before = self.midi_editor.pending_drag.entries.len();
         let mut kept = VecDeque::with_capacity(before);
-        while let Some(pending) = self.pending_midi_drag.entries.pop_front() {
+        while let Some(pending) = self.midi_editor.pending_drag.entries.pop_front() {
             let abandoned = !pending.source_current(self)
                 || (pending.receipt.is_queued()
                     && !self.queued_requests().any(|r| pending.matches(r)));
@@ -613,7 +626,7 @@ impl EditorView {
                 kept.push_back(pending);
             }
         }
-        self.pending_midi_drag.entries = kept;
-        self.pending_midi_drag.entries.len() != before
+        self.midi_editor.pending_drag.entries = kept;
+        self.midi_editor.pending_drag.entries.len() != before
     }
 }

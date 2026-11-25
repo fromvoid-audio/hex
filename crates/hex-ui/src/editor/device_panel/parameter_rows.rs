@@ -196,7 +196,8 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
 pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: &App) -> bool {
     view.device_panel.pending_values.contains_key(&key)
         || view
-            .device_gesture
+            .device_panel
+            .gesture
             .snapshot()
             .is_some_and(|snapshot| match snapshot.target {
                 GestureTarget::DeviceParameter { device, parameter } => {

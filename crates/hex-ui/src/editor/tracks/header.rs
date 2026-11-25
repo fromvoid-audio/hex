@@ -731,6 +731,7 @@ impl EditorView {
             .and_then(|drag| drag.preview.get())
             .filter(|preview| preview.target_track == track_id);
         let browser_preview = self
+            .browser
             .pending_sample_drop
             .as_ref()
             .and_then(|drop| drop.preview)
@@ -834,6 +835,7 @@ impl EditorView {
                         }
                     }
                 } else if let Some(waveform) = self
+                    .browser
                     .pending_sample_drop
                     .as_ref()
                     .and_then(|drop| drop.metadata.clone())
@@ -1408,18 +1410,18 @@ impl EditorView {
         .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
         .on_click(cx.listener(move |view, _, _, cx| {
             cx.stop_propagation();
-            let next = if view.send_menu_track == Some(track_id) {
+            let next = if view.session_grid.send_menu_track == Some(track_id) {
                 None
             } else {
                 Some(track_id)
             };
-            if next != view.send_menu_track
+            if next != view.session_grid.send_menu_track
                 && !crate::editor::device_panel::finalize_controls(view, cx)
             {
                 cx.notify();
                 return;
             }
-            view.send_menu_track = next;
+            view.session_grid.send_menu_track = next;
             cx.notify();
         }));
         // Keep the working switches above the resize gutter, with numeric

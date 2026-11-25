@@ -68,19 +68,21 @@ pub(crate) fn fixture_view(
                 .collect();
             crate::PluginEffectTestView {
                 state: view.state.clone(),
-                pending: view.pending_plugin_effect.is_some(),
+                pending: view.device_panel.pending_plugin_effect.is_some(),
                 queued_requests: view.worker_requests_pending
                     + view.pending_requests.len()
-                    + view.device_gesture_barriers.len(),
+                    + view.device_panel.gesture_barriers.len(),
                 parameter_controls,
                 parameter_query_pending,
                 parameter_touches,
                 parameter_gesture: view
-                    .device_gesture
+                    .device_panel
+                    .gesture
                     .snapshot()
                     .and_then(|snapshot| snapshot.plugin_value)
                     .map(|value| value.normalized()),
                 operation: view
+                    .device_panel
                     .pending_plugin_effect
                     .as_ref()
                     .map(|pending| Arc::downgrade(&pending.control)),
@@ -250,19 +252,23 @@ impl EditorView {
         &self,
     ) -> Option<(&PluginProposal, &Arc<PluginEffectControl>, Option<&str>)> {
         if let Some(pending) = self
+            .device_panel
             .pending_plugin_effect
             .as_ref()
             .filter(|pending| !pending.control.is_cancelled())
         {
             return Some((&pending.proposal, &pending.control, None));
         }
-        self.failed_plugin_proposal.as_ref().map(|failed| {
-            (
-                &failed.proposal,
-                &failed.control,
-                Some(failed.error.as_str()),
-            )
-        })
+        self.device_panel
+            .failed_plugin_proposal
+            .as_ref()
+            .map(|failed| {
+                (
+                    &failed.proposal,
+                    &failed.control,
+                    Some(failed.error.as_str()),
+                )
+            })
     }
 
     pub(super) fn proposed_plugin_track(&self) -> Option<Anchor> {
@@ -294,6 +300,7 @@ impl EditorView {
 
     pub(super) fn restore_proposed_plugin_focus(&self, window: &mut Window) {
         if self
+            .device_panel
             .proposed_plugin_action_focus
             .as_ref()
             .is_some_and(|focus| focus.is_focused(window))
@@ -311,7 +318,7 @@ impl EditorView {
             PluginEffectDestination::NewTrack { .. } => match self.mode {
                 EditorMode::Arrangement => true,
                 EditorMode::Session => self.state.as_ref().is_some_and(|state| {
-                    self.session_track_page(&state.project, self.session_visible_columns)
+                    self.session_track_page(&state.project, self.session_grid.visible_columns)
                         .proposal_index(TrackProposal::Device {
                             before_empty: proposal.before_empty,
                         })
@@ -319,8 +326,8 @@ impl EditorView {
                 }),
             },
             _ => {
-                self.clip_view_open
-                    && self.device_panel_active
+                self.audio_detail.clip_view_open
+                    && self.device_panel.active
                     && self
                         .state
                         .as_ref()
@@ -387,19 +394,21 @@ impl EditorView {
         let tooltip = super::display_error::DisplayError::from(detail);
         let control = Arc::clone(control);
         let focus = self
+            .device_panel
             .proposed_plugin_action_focus
             .get_or_insert_with(|| cx.focus_handle().tab_index(0).tab_stop(true))
             .clone();
         let action = move |view: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
             if failed {
                 if view
+                    .device_panel
                     .failed_plugin_proposal
                     .as_ref()
                     .is_some_and(|track| Arc::ptr_eq(&track.control, &control))
                 {
-                    view.failed_plugin_proposal = None;
+                    view.device_panel.failed_plugin_proposal = None;
                 }
-            } else if let Some(pending) = &view.pending_plugin_effect
+            } else if let Some(pending) = &view.device_panel.pending_plugin_effect
                 && Arc::ptr_eq(&pending.control, &control)
             {
                 pending.control.cancel();
@@ -502,17 +511,18 @@ impl EditorView {
             return;
         }
         let previous_focus = self
-            .device_insert_confirmation
+            .device_panel
+            .insert_confirmation
             .as_ref()
             .and_then(|current| current.previous_focus.clone());
         let mut next = DeviceConfirmation::new(offer);
         next.previous_focus = previous_focus;
-        self.device_confirmation_restore_focus = None;
-        self.device_insert_confirmation = Some(next);
+        self.device_panel.confirmation_restore_focus = None;
+        self.device_panel.insert_confirmation = Some(next);
     }
 
     pub(super) fn clear_device_confirmation_on_project_replace(&mut self) {
-        if let Some(confirmation) = self.device_insert_confirmation.take() {
+        if let Some(confirmation) = self.device_panel.insert_confirmation.take() {
             let mut retired = Vec::with_capacity(3);
             if let Some(modal) = &confirmation.modal_focus {
                 retired.push(modal.clone());
@@ -520,7 +530,7 @@ impl EditorView {
             if let Some(actions) = &confirmation.action_focus {
                 retired.extend(actions.iter().cloned());
             }
-            self.device_confirmation_restore_focus = Some(DeviceConfirmationFocusRestore {
+            self.device_panel.confirmation_restore_focus = Some(DeviceConfirmationFocusRestore {
                 target: self.focus.clone(),
                 retired,
             });
@@ -528,8 +538,8 @@ impl EditorView {
     }
 
     pub(super) fn restore_device_confirmation_focus(&mut self, window: &mut Window, cx: &App) {
-        if self.device_insert_confirmation.is_none()
-            && let Some(restore) = self.device_confirmation_restore_focus.take()
+        if self.device_panel.insert_confirmation.is_none()
+            && let Some(restore) = self.device_panel.confirmation_restore_focus.take()
             && (window.focused(cx).is_none()
                 || restore
                     .retired
@@ -545,9 +555,14 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::Stateful<Div>> {
-        let pending = self.device_insert_confirmation.as_ref()?.offer.is_pending();
+        let pending = self
+            .device_panel
+            .insert_confirmation
+            .as_ref()?
+            .offer
+            .is_pending();
         if !pending {
-            let retired = self.device_insert_confirmation.take();
+            let retired = self.device_panel.insert_confirmation.take();
             if let Some(confirmation) = retired
                 && (confirmation.has_focus(window) || window.focused(cx).is_none())
             {
@@ -557,20 +572,20 @@ impl EditorView {
                     .unwrap_or_else(|| self.focus.clone());
                 target.focus(window);
             }
-            self.device_confirmation_restore_focus = None;
+            self.device_panel.confirmation_restore_focus = None;
             return None;
         }
-        if self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
+        if self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
             || self.update_preparing()
         {
-            if let Some(confirmation) = self.device_insert_confirmation.as_mut() {
+            if let Some(confirmation) = self.device_panel.insert_confirmation.as_mut() {
                 confirmation.focused_once = false;
             }
             return None;
         }
-        let confirmation = self.device_insert_confirmation.as_mut()?;
+        let confirmation = self.device_panel.insert_confirmation.as_mut()?;
         let title = device_confirmation_title(confirmation.offer.operation());
         // Keep the choice on the editor through repaint and native focus
         // changes. Only the matching button/key action answers the worker's offer.
@@ -732,7 +747,7 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(confirmation) = self.device_insert_confirmation.as_ref()
+        if let Some(confirmation) = self.device_panel.insert_confirmation.as_ref()
             && confirmation.offer.submission() == submission
             && confirmation.offer.is_pending()
         {
@@ -741,8 +756,8 @@ impl EditorView {
             } else {
                 confirmation.offer.cancel();
             }
-            let retired = self.device_insert_confirmation.take();
-            self.device_confirmation_restore_focus = None;
+            let retired = self.device_panel.insert_confirmation.take();
+            self.device_panel.confirmation_restore_focus = None;
             let target = retired
                 .and_then(|confirmation| confirmation.previous_focus.clone())
                 .unwrap_or_else(|| self.focus.clone());
@@ -753,19 +768,24 @@ impl EditorView {
     }
 
     pub(super) fn cancel_plugin_effect(&self) {
-        if let Some(pending) = &self.pending_plugin_effect {
+        if let Some(pending) = &self.device_panel.pending_plugin_effect {
             pending.control.cancel();
         }
     }
 
     pub(super) fn plugin_effect_complete(&mut self, event: &hex_session::service::Event) {
-        let Some(terminal) = self.pending_plugin_effect.as_ref().and_then(|pending| {
-            event
-                .plugin_effect_complete
-                .iter()
-                .chain(event.device_insert_proposal_complete.iter())
-                .find(|terminal| Arc::ptr_eq(&pending.control, &terminal.control))
-        }) else {
+        let Some(terminal) = self
+            .device_panel
+            .pending_plugin_effect
+            .as_ref()
+            .and_then(|pending| {
+                event
+                    .plugin_effect_complete
+                    .iter()
+                    .chain(event.device_insert_proposal_complete.iter())
+                    .find(|terminal| Arc::ptr_eq(&pending.control, &terminal.control))
+            })
+        else {
             return;
         };
         if terminal.accepted
@@ -809,7 +829,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let gain = match self.track_defaults.captured_gain() {
+        let gain = match self.settings.track_defaults.captured_gain() {
             Ok(gain) => gain,
             Err(error) => {
                 self.error = Some(error.into());
@@ -839,8 +859,8 @@ impl EditorView {
         error: Option<&str>,
     ) -> bool {
         let settled = Self::settle_device_proposal(
-            &mut self.pending_plugin_effect,
-            &mut self.failed_plugin_proposal,
+            &mut self.device_panel.pending_plugin_effect,
+            &mut self.device_panel.failed_plugin_proposal,
             control,
             installed,
             error,
@@ -1036,7 +1056,7 @@ impl EditorView {
         destination: PluginEffectDestination,
         before: Option<hex_project::DeviceId>,
     ) -> bool {
-        if self.pending_plugin_effect.is_some() {
+        if self.device_panel.pending_plugin_effect.is_some() {
             self.error = Some("wait for the pending device insertion".into());
             return false;
         }
@@ -1051,7 +1071,7 @@ impl EditorView {
             return false;
         }
         let status = format!("loading device · {name}");
-        self.pending_plugin_effect = Some(PendingPluginEffect {
+        self.device_panel.pending_plugin_effect = Some(PendingPluginEffect {
             control,
             trace: None,
             status,
@@ -1063,7 +1083,7 @@ impl EditorView {
                 before_empty: self.next_empty_track_id,
             },
         });
-        self.failed_plugin_proposal = None;
+        self.device_panel.failed_plugin_proposal = None;
         self.error = None;
         true
     }
@@ -1152,7 +1172,7 @@ impl EditorView {
                 return;
             }
         };
-        if self.pending_plugin_effect.is_some() {
+        if self.device_panel.pending_plugin_effect.is_some() {
             self.error = Some("wait for the pending device insertion".into());
             return;
         }
@@ -1198,7 +1218,7 @@ impl EditorView {
             };
             let status = format!("{loading} · {}", selection.class_name);
             self.status.clone_from(&status);
-            self.pending_plugin_effect = Some(PendingPluginEffect {
+            self.device_panel.pending_plugin_effect = Some(PendingPluginEffect {
                 control,
                 trace: trace.map(Rc::new),
                 status,
@@ -1210,7 +1230,7 @@ impl EditorView {
                     before_empty: self.next_empty_track_id,
                 },
             });
-            self.failed_plugin_proposal = None;
+            self.device_panel.failed_plugin_proposal = None;
             self.error = None;
         }
     }

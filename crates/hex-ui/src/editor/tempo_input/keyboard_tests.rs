@@ -67,7 +67,10 @@ fn focused_project_arrows_adjust_local_draft_then_commit_exact_micro_bpm(cx: &mu
             "Up changes the focused BPM draft by one"
         );
         assert!(numeric.is_editing());
-        assert!(view.last_enqueued_edit.is_none(), "arrow draft stays local");
+        assert!(
+            view.test_probes.last_enqueued_edit.is_none(),
+            "arrow draft stays local"
+        );
     });
     visual.simulate_keystrokes("shift-down");
     editor.read_with(&visual, |view, cx| {
@@ -202,14 +205,14 @@ fn project_steps_preserve_bounds_precision_cancel_invalid_and_composition(cx: &m
     visual.simulate_keystrokes("escape");
     assert_eq!(project_text(&editor, &visual), "120");
     editor.read_with(&visual, |view, _| {
-        assert!(view.last_enqueued_edit.is_none());
+        assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(!view.state.as_ref().unwrap().can_undo);
     });
     // Returning to root focus keeps arrows out of the BPM owner.
     visual.update(|window, cx| editor.update(cx, |view, _| view.focus.focus(window)));
     visual.simulate_keystrokes("up down cmd-up cmd-down");
     editor.read_with(&visual, |view, _| {
-        assert!(view.last_enqueued_edit.is_none())
+        assert!(view.test_probes.last_enqueued_edit.is_none())
     });
 }
 
@@ -251,7 +254,7 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
         clip
     });
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = true;
+        view.audio_detail.clip_view_open = true;
         let bounds = view.state.as_ref().unwrap().project.clip(clip).unwrap();
         let settings = hex_project::default_audio_warp(
             bounds,
@@ -299,7 +302,7 @@ fn sample_bpm_uses_same_arrow_policy_and_actual_canonical_history(cx: &mut TestA
     editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(tempo(view), 120_023_456);
-        assert!(matches!(view.last_enqueued_edit, Some(Command::SetAudioClipSampleBpm{clip: actual, ..}) if actual==clip));
+        assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::SetAudioClipSampleBpm{clip: actual, ..}) if actual==clip));
     });
     let changed = editor.read_with(&visual, |view, _| {
         format!("{:?}", view.state.as_ref().unwrap().project)

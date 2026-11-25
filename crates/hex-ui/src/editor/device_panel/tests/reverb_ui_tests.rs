@@ -192,7 +192,7 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
     visual.simulate_resize(size(px(1920.0), px(1080.0)));
     visual.run_until_parked();
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -201,7 +201,7 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
 
     for (owner, id) in [(None, device), (Some(return_track), return_device)] {
         editor.update(cx, |view, cx| {
-            view.focused_return = owner;
+            view.session_grid.focused_return = owner;
             cx.notify();
         });
         visual.run_until_parked();
@@ -264,8 +264,8 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             pump_until(&editor, cx, |view| {
                 view.worker_requests_pending == 0
                     && view.pending_requests.is_empty()
-                    && view.device_gesture_barriers.is_empty()
-                    && view.device_gesture.snapshot().is_none()
+                    && view.device_panel.gesture_barriers.is_empty()
+                    && view.device_panel.gesture.snapshot().is_none()
             });
             editor.read_with(cx, |view, _| {
                 let project = &view.state.as_ref().unwrap().project;

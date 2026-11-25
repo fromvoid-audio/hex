@@ -98,7 +98,7 @@ impl super::EditorView {
     /// Same synchronous receive as canonical installation, including history.
     pub(super) fn advance_midi_origin_view(&mut self, event: &hex_session::service::Event) {
         if event.project_replaced {
-            self.midi_origin_history.clear();
+            self.midi_editor.origin_history.clear();
             return;
         }
         let Some(clip) = self.detail_clip_id() else {
@@ -115,18 +115,20 @@ impl super::EditorView {
         else {
             return;
         };
-        let delta = self
-            .midi_origin_history
-            .advance(self.project_generation, clip, &old, &new);
+        let delta =
+            self.midi_editor
+                .origin_history
+                .advance(self.project_generation, clip, &old, &new);
         if delta == 0 {
             return;
         }
-        self.piano_beat_start = super::midi_scene::clamp_start(
-            self.piano_beat_start.saturating_add(delta),
-            self.piano_beat_span.raw(),
+        self.midi_editor.piano_beat_start = super::midi_scene::clamp_start(
+            self.midi_editor.piano_beat_start.saturating_add(delta),
+            self.midi_editor.piano_beat_span.raw(),
         );
-        self.midi_marker = self
-            .midi_marker
+        self.midi_editor.marker = self
+            .midi_editor
+            .marker
             .and_then(|raw| u64::try_from(i128::from(raw).saturating_add(delta)).ok());
         self.shift_midi_time_selection_origin(delta);
         self.zoom_fit

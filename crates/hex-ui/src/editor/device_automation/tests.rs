@@ -94,8 +94,8 @@ mod native {
         visual.update(|window, cx| {
             entity.update(cx, |view, cx| {
                 view.select_track(track, window);
-                view.device_panel_active = true;
-                view.clip_view_open = true;
+                view.device_panel.active = true;
+                view.audio_detail.clip_view_open = true;
                 cx.notify();
             })
         });
@@ -182,7 +182,7 @@ mod native {
                 .unwrap();
                 view.automation_menu_action(Action::Show(entry, true), window, cx);
                 view.browser.section = super::super::super::browser::BrowserSection::Instruments;
-                view.clip_view_open = false;
+                view.audio_detail.clip_view_open = false;
                 cx.notify();
             })
         });
@@ -224,7 +224,7 @@ mod native {
         visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
         entity.read_with(&visual, |view, _| {
             assert_eq!(
-                view.last_enqueued_arrangement_device_drop,
+                view.test_probes.last_enqueued_arrangement_device_drop,
                 Some(
                     hex_session::service::ArrangementDeviceDestination::ExistingTrack {
                         track,
@@ -338,7 +338,7 @@ mod native {
                         .all(|device| device.automation().is_empty())
                 );
                 assert_eq!(view.worker_requests_pending, 0);
-                view.clip_view_open = false;
+                view.audio_detail.clip_view_open = false;
                 cx.notify();
             })
         });
@@ -491,8 +491,8 @@ mod native {
         visual.update(|window, cx| {
             entity.update(cx, |view, cx| {
                 view.select_track(track, window);
-                view.device_panel_active = true;
-                view.clip_view_open = true;
+                view.device_panel.active = true;
+                view.audio_detail.clip_view_open = true;
                 cx.notify();
             })
         });
@@ -580,7 +580,7 @@ mod native {
                         .automation()
                         .is_empty()
                 );
-                view.clip_view_open = false;
+                view.audio_detail.clip_view_open = false;
                 cx.notify();
             })
         });

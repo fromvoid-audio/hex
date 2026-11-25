@@ -40,8 +40,8 @@ fn idle(editor: &Entity<EditorView>, cx: &mut TestAppContext) {
     pump_until(editor, cx, |v| {
         v.worker_requests_pending == 0
             && v.pending_requests.is_empty()
-            && v.device_gesture.snapshot().is_none()
-            && v.device_gesture_barriers.is_empty()
+            && v.device_panel.gesture.snapshot().is_none()
+            && v.device_panel.gesture_barriers.is_empty()
     });
 }
 
@@ -125,8 +125,8 @@ fn visible_native_controls_follow_applied_automation_without_writing_the_project
     visual.simulate_resize(size(px(1500.0), px(650.0)));
     editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(track);
-        view.device_panel_active = true;
-        view.clip_view_open = true;
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -208,7 +208,7 @@ fn visible_native_controls_follow_applied_automation_without_writing_the_project
         "the active control keeps its draft"
     );
     editor.read_with(&visual, |view, _| {
-        let draft = view.device_gesture.snapshot().unwrap().value;
+        let draft = view.device_panel.gesture.snapshot().unwrap().value;
         let (graph, _) = rattle_panel::displayed(view, drive.device).unwrap();
         assert_eq!(ParameterValue::Float(graph), draft);
         assert!((graph - 0.8).abs() > 0.01);
@@ -221,7 +221,8 @@ fn visible_native_controls_follow_applied_automation_without_writing_the_project
             if view.tick(cx) {
                 cx.notify();
             }
-            view.device_gesture.snapshot().is_none() && view.device_gesture_barriers.is_empty()
+            view.device_panel.gesture.snapshot().is_none()
+                && view.device_panel.gesture_barriers.is_empty()
         });
         if settled {
             break;
@@ -305,7 +306,7 @@ fn rattle_track_return_panel_fits_and_drive_draft_commits_one_undo(cx: &mut Test
     visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |v, _| {
-        let g = v.device_gesture.snapshot().unwrap();
+        let g = v.device_panel.gesture.snapshot().unwrap();
         let ParameterValue::Float(value) = g.value else {
             panic!("drive")
         };
@@ -379,7 +380,7 @@ fn rattle_track_return_panel_fits_and_drive_draft_commits_one_undo(cx: &mut Test
     idle(&editor, cx);
     let return_device = editor.update(cx, |v, cx| {
         let id = v.state.as_ref().unwrap().project.return_tracks()[0].devices()[0].id();
-        v.focused_return = Some(return_track);
+        v.session_grid.focused_return = Some(return_track);
         cx.notify();
         id
     });
@@ -444,7 +445,7 @@ fn rattle_display_reads_authored_automation_and_manual_draft_precedence(cx: &mut
     visual.simulate_mouse_move(to, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |v, _| {
-        let ParameterValue::Float(value) = v.device_gesture.snapshot().unwrap().value else {
+        let ParameterValue::Float(value) = v.device_panel.gesture.snapshot().unwrap().value else {
             panic!("drive")
         };
         assert_eq!(rattle_panel::displayed(v, device).unwrap().0, value);

@@ -42,7 +42,7 @@ enum Phase {
 
 impl EditorView {
     pub(super) fn select_update(&mut self, action: UpdateAction, cx: &mut Context<Self>) {
-        if !matches!(self.update_flow.phase, Phase::Idle) {
+        if !matches!(self.persistence.update_flow.phase, Phase::Idle) {
             self.error = Some("finish the current update action".into());
             return;
         }
@@ -50,35 +50,37 @@ impl EditorView {
             self.error = Some("local updates are unavailable in this build".into());
             return;
         };
-        let Some(id) = self.update_flow.next_id.checked_add(1) else {
+        let Some(id) = self.persistence.update_flow.next_id.checked_add(1) else {
             self.error = Some("update request limit reached".into());
             return;
         };
-        self.update_flow.next_id = id;
+        self.persistence.update_flow.next_id = id;
         if client.send(UpdateCommand::Select(id)).is_err() {
             self.error = Some("update worker is unavailable".into());
             return;
         }
-        self.update_flow.phase = Phase::Selecting { id, action };
+        self.persistence.update_flow.phase = Phase::Selecting { id, action };
         self.status = "checking update".into();
         self.error = None;
         cx.notify();
     }
 
     pub(super) fn cancel_update(&mut self, id: u64, cx: &Context<Self>) {
-        self.automation_close_preflight.cancel_update(id);
+        self.persistence
+            .automation_close_preflight
+            .cancel_update(id);
         if let Some(client) = cx.try_global::<crate::UpdateClient>() {
             let _ = client.send(UpdateCommand::Cancel(id));
         }
-        self.update_flow.ready.take();
-        self.update_flow.save_under_close_hold = None;
-        self.update_flow.phase = Phase::Idle;
+        self.persistence.update_flow.ready.take();
+        self.persistence.update_flow.save_under_close_hold = None;
+        self.persistence.update_flow.phase = Phase::Idle;
         // An OS termination waiting on this preparation does not quit.
         super::close::quit_refused(cx);
     }
 
     pub(super) fn cancel_requested_update(&mut self, cx: &mut Context<Self>) {
-        let id = match self.update_flow.phase {
+        let id = match self.persistence.update_flow.phase {
             Phase::Idle => return,
             Phase::Selecting { id, .. }
             | Phase::Armed { id }
@@ -91,12 +93,12 @@ impl EditorView {
     }
 
     pub(super) fn update_armed(&self) -> bool {
-        matches!(self.update_flow.phase, Phase::Armed { .. })
+        matches!(self.persistence.update_flow.phase, Phase::Armed { .. })
     }
 
     pub(super) fn update_label(&self) -> Option<&'static str> {
-        match self.update_flow.phase {
-            Phase::Idle if self.update_flow.available => Some("update available"),
+        match self.persistence.update_flow.phase {
+            Phase::Idle if self.persistence.update_flow.available => Some("update available"),
             Phase::Selecting { .. } => Some("checking update"),
             Phase::Armed { .. } => Some("update on quit"),
             Phase::Saving { .. } => Some("saving for update"),
@@ -107,17 +109,17 @@ impl EditorView {
 
     pub(super) fn update_blocks_close(&self) -> bool {
         matches!(
-            self.update_flow.phase,
+            self.persistence.update_flow.phase,
             Phase::Selecting { .. } | Phase::Saving { .. } | Phase::Preparing { .. }
         )
     }
 
     pub(super) fn update_preparing(&self) -> bool {
-        matches!(self.update_flow.phase, Phase::Preparing { .. })
+        matches!(self.persistence.update_flow.phase, Phase::Preparing { .. })
     }
 
     pub(super) fn prepare_update_quit(&mut self, discard: bool, cx: &mut Context<Self>) -> bool {
-        let Phase::Armed { id } = self.update_flow.phase else {
+        let Phase::Armed { id } = self.persistence.update_flow.phase else {
             return false;
         };
         self.begin_update_prepare(id, None, discard, cx);
@@ -145,7 +147,7 @@ impl EditorView {
             .try_global::<crate::UpdateClient>()
             .is_some_and(|client| client.send(UpdateCommand::Prepare { id, action }).is_ok());
         if sent {
-            self.update_flow.phase = Phase::Preparing {
+            self.persistence.update_flow.phase = Phase::Preparing {
                 id,
                 saved,
                 discard,
@@ -167,7 +169,7 @@ impl EditorView {
         let Phase::Saving {
             id,
             correlation: None,
-        } = self.update_flow.phase
+        } = self.persistence.update_flow.phase
         else {
             return None;
         };
@@ -184,14 +186,14 @@ impl EditorView {
             || !self.pending_requests.is_empty()
             || self.device_gesture_pending()
             || self.gain_recorder.blocks_edits()
-            || self.midi_recorder.blocks_edits()
-            || self.export_pending
-            || self.project_open.busy()
-            || self.pending_open_path.is_some()
-            || self.close_prompt_open
+            || self.midi_editor.recorder.blocks_edits()
+            || self.persistence.export_pending
+            || self.persistence.project_open.busy()
+            || self.persistence.pending_open_path.is_some()
+            || self.persistence.close_prompt_open
             || self.duplicate_intent.is_pending()
-            || self.pending_plugin_effect.is_some()
-            || self.tuning.client.snapshot().is_some()
+            || self.device_panel.pending_plugin_effect.is_some()
+            || self.settings.tuning.client.snapshot().is_some()
         {
             self.error = Some("finish pending edits before saving and restarting".into());
             return Some(false);
@@ -227,7 +229,7 @@ impl EditorView {
         match self.service.submit_correlated_save(request, correlation) {
             Ok(()) => {
                 self.worker_submitted();
-                self.update_flow.phase = Phase::Saving {
+                self.persistence.update_flow.phase = Phase::Saving {
                     id,
                     correlation: Some(correlation),
                 };
@@ -247,20 +249,23 @@ impl EditorView {
         confirmation_required: bool,
         cx: &mut Context<Self>,
     ) {
-        if let Some(expected) = self.update_flow.save_under_close_hold
+        if let Some(expected) = self.persistence.update_flow.save_under_close_hold
             && correlation == Some(expected)
         {
-            self.update_flow.save_under_close_hold = None;
+            self.persistence.update_flow.save_under_close_hold = None;
             let context = AudioSourceContext {
                 project_generation: expected.project_generation,
                 editor_revision: expected.revision,
             };
             if success
                 && self
+                    .persistence
                     .automation_close_preflight
                     .update_safe(expected.request_id, context)
             {
-                self.automation_close_preflight.mark_vst3_edits_saved();
+                self.persistence
+                    .automation_close_preflight
+                    .mark_vst3_edits_saved();
             } else {
                 self.cancel_update(expected.request_id, cx);
                 self.error = Some("vst3 state save did not complete · update cancelled".into());
@@ -270,15 +275,15 @@ impl EditorView {
         let Phase::Saving {
             id,
             correlation: Some(expected),
-        } = self.update_flow.phase
+        } = self.persistence.update_flow.phase
         else {
             return;
         };
         if correlation != Some(expected) {
             return;
         }
-        if confirmation_required && self.save_dialog_open {
-            self.update_flow.phase = Phase::Saving {
+        if confirmation_required && self.persistence.save_dialog_open {
+            self.persistence.update_flow.phase = Phase::Saving {
                 id,
                 correlation: None,
             };
@@ -306,15 +311,16 @@ impl EditorView {
             return false;
         };
         if let Some(ready) = client.take_ready() {
-            if matches!(self.update_flow.phase, Phase::Preparing { id, .. } if id == ready.id) {
-                self.update_flow.ready = Some(ready);
+            if matches!(self.persistence.update_flow.phase, Phase::Preparing { id, .. } if id == ready.id)
+            {
+                self.persistence.update_flow.ready = Some(ready);
             } else {
                 drop(ready);
             }
             return true;
         }
-        if matches!(self.update_flow.phase, Phase::Idle) {
-            if !self.update_flow.reported_result
+        if matches!(self.persistence.update_flow.phase, Phase::Idle) {
+            if !self.persistence.update_flow.reported_result
                 && let UpdateStatus::PreviousResult { message, failed } = client.status()
             {
                 if failed {
@@ -322,33 +328,33 @@ impl EditorView {
                 } else {
                     self.status = message.into();
                 }
-                self.update_flow.reported_result =
+                self.persistence.update_flow.reported_result =
                     client.send(UpdateCommand::DismissResult).is_ok();
                 return true;
             }
             let available = client.status() == UpdateStatus::Available;
-            if self.update_flow.available != available {
-                self.update_flow.available = available;
+            if self.persistence.update_flow.available != available {
+                self.persistence.update_flow.available = available;
                 return true;
             }
         }
-        match (&self.update_flow.phase, client.status()) {
+        match (&self.persistence.update_flow.phase, client.status()) {
             (Phase::Selecting { id, action }, UpdateStatus::Selected(selected))
                 if *id == selected =>
             {
                 let (id, action) = (*id, *action);
                 match action {
                     UpdateAction::InstallOnQuit => {
-                        self.update_flow.phase = Phase::Armed { id };
+                        self.persistence.update_flow.phase = Phase::Armed { id };
                         self.status = "update selected · install on quit".into();
                     }
                     UpdateAction::SaveAndRestart => {
-                        self.update_flow.phase = Phase::Saving {
+                        self.persistence.update_flow.phase = Phase::Saving {
                             id,
                             correlation: None,
                         };
                         self.save_project(cx);
-                        if !self.saving_project && !self.save_dialog_open {
+                        if !self.persistence.saving_project && !self.persistence.save_dialog_open {
                             self.cancel_update(id, cx);
                         }
                     }
@@ -361,7 +367,7 @@ impl EditorView {
                     correlation: None,
                 },
                 _,
-            ) if !self.saving_project && !self.save_dialog_open => {
+            ) if !self.persistence.saving_project && !self.persistence.save_dialog_open => {
                 let id = *id;
                 self.cancel_update(id, cx);
                 true
@@ -380,12 +386,15 @@ impl EditorView {
     }
 
     pub(super) fn reconcile_update_ready(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.automation_close_preflight.awaiting_update()
-            || self.update_flow.save_under_close_hold.is_some()
+        if self
+            .persistence
+            .automation_close_preflight
+            .awaiting_update()
+            || self.persistence.update_flow.save_under_close_hold.is_some()
         {
             return;
         }
-        let Some(ready) = self.update_flow.ready.take() else {
+        let Some(ready) = self.persistence.update_flow.ready.take() else {
             return;
         };
         cx.defer_in(window, move |view, window, cx| {
@@ -395,7 +404,7 @@ impl EditorView {
                 discard,
                 generation,
                 revision,
-            } = view.update_flow.phase
+            } = view.persistence.update_flow.phase
             else {
                 return;
             };
@@ -407,22 +416,25 @@ impl EditorView {
                 view.worker_requests_pending,
                 view.pending_requests.len(),
                 view.duplicate_intent.is_pending(),
-                view.opening_project,
-                view.export_pending,
+                view.persistence.opening_project,
+                view.persistence.export_pending,
                 view.device_gesture_pending()
-                    || view.pending_plugin_effect.is_some()
+                    || view.device_panel.pending_plugin_effect.is_some()
                     || view.device_panel.has_pending_draft(cx)
-                    || view.tuning.client.snapshot().is_some(),
-            ) && !view.project_open.busy()
-                && view.pending_open_path.is_none()
-                && !view.save_dialog_open
-                && !view.close_prompt_open
-                && !view.automation_close_preflight.blocks_update_approval()
+                    || view.settings.tuning.client.snapshot().is_some(),
+            ) && !view.persistence.project_open.busy()
+                && view.persistence.pending_open_path.is_none()
+                && !view.persistence.save_dialog_open
+                && !view.persistence.close_prompt_open
+                && !view
+                    .persistence
+                    .automation_close_preflight
+                    .blocks_update_approval()
                 && !window.is_pointer_dragging()
                 && !view.gain_recorder.blocks_edits()
                 && !view.native_automation_recorder.busy()
                 && !view.automation_take_recovery.unresolved()
-                && !view.midi_recorder.blocks_edits();
+                && !view.midi_editor.recorder.blocks_edits();
             let same_document = view.project_generation == generation
                 && view
                     .state
@@ -458,8 +470,12 @@ impl EditorView {
                 project_generation: generation,
                 editor_revision: revision,
             };
-            if !view.automation_close_preflight.update_safe(id, context) {
-                view.update_flow.ready = Some(ready);
+            if !view
+                .persistence
+                .automation_close_preflight
+                .update_safe(id, context)
+            {
+                view.persistence.update_flow.ready = Some(ready);
                 if let Err(reason) = view.begin_update_automation_close(id, window, cx) {
                     view.cancel_update(id, cx);
                     view.error = Some(reason.into());
@@ -467,7 +483,12 @@ impl EditorView {
                 }
                 return;
             }
-            if !discard && view.automation_close_preflight.admitted_vst3_edits() {
+            if !discard
+                && view
+                    .persistence
+                    .automation_close_preflight
+                    .admitted_vst3_edits()
+            {
                 // Save and Restart may have captured state before a late SDK
                 // callback. Save through the existing projector again while
                 // this source's admission holds are still in force.
@@ -478,9 +499,9 @@ impl EditorView {
                         .is_ok()
                 {
                     view.worker_submitted();
-                    view.saving_project = true;
-                    view.update_flow.save_under_close_hold = Some(correlation);
-                    view.update_flow.ready = Some(ready);
+                    view.persistence.saving_project = true;
+                    view.persistence.update_flow.save_under_close_hold = Some(correlation);
+                    view.persistence.update_flow.ready = Some(ready);
                     view.wake_poll();
                 } else {
                     drop(ready);
@@ -557,14 +578,14 @@ mod tests {
                     editor.update(cx, |view, cx| {
                         view.receive(event);
                         let revision = view.state.as_ref().unwrap().revision;
-                        view.update_flow.phase = Phase::Preparing {
+                        view.persistence.update_flow.phase = Phase::Preparing {
                             id: 7,
                             saved: None,
                             discard: true,
                             generation: view.project_generation,
                             revision,
                         };
-                        view.update_flow.ready = Some(UpdateReady {
+                        view.persistence.update_flow.ready = Some(UpdateReady {
                             id: 7,
                             approval: if helper_refused {
                                 Box::new(Refusal)
@@ -574,12 +595,12 @@ mod tests {
                         });
                         view.reconcile_update_ready(window, cx);
                         cx.defer_in(window, move |view, _, cx| {
-                            assert!(view.automation_close_preflight.frozen());
+                            assert!(view.persistence.automation_close_preflight.frozen());
                             if blocked_custody || helper_refused {
                                 view.tick_automation_close(cx);
                             } else {
                                 view.cancel_requested_update(cx);
-                                assert!(!view.automation_close_preflight.frozen());
+                                assert!(!view.persistence.automation_close_preflight.frozen());
                             }
                         });
                     });
@@ -612,9 +633,14 @@ mod tests {
                 cx.run_until_parked();
             }
             assert!(!approved.load(Ordering::SeqCst));
-            assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
-            assert!(editor.read_with(cx, |view, _| !view.automation_close_preflight.frozen()));
-            assert!(editor.read_with(cx, |view, _| view.update_flow.ready.is_none()));
+            assert!(editor.read_with(cx, |view, _| matches!(
+                view.persistence.update_flow.phase,
+                Phase::Idle
+            )));
+            assert!(editor.read_with(cx, |view, _| {
+                !view.persistence.automation_close_preflight.frozen()
+            }));
+            assert!(editor.read_with(cx, |view, _| view.persistence.update_flow.ready.is_none()));
             assert_eq!(cx.windows().len(), 1);
             cx.update_window(handle, |_, window, _| window.remove_window())
                 .unwrap();
@@ -657,7 +683,7 @@ mod tests {
                 editor.update(cx, |view, cx| {
                     view.state = Some(state);
                     let actual = view.state.as_ref().unwrap().revision;
-                    view.update_flow.phase = Phase::Preparing {
+                    view.persistence.update_flow.phase = Phase::Preparing {
                         id: 1,
                         saved: Some(SaveCorrelation {
                             request_id: 1,
@@ -668,7 +694,7 @@ mod tests {
                         generation: view.project_generation,
                         revision: actual,
                     };
-                    view.update_flow.ready = Some(UpdateReady {
+                    view.persistence.update_flow.ready = Some(UpdateReady {
                         id: 1,
                         approval: Box::new(Approval(marker)),
                     });
@@ -679,12 +705,15 @@ mod tests {
             .unwrap();
         cx.run_until_parked();
         assert!(!approved.load(Ordering::SeqCst));
-        assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
+        assert!(editor.read_with(cx, |view, _| matches!(
+            view.persistence.update_flow.phase,
+            Phase::Idle
+        )));
         let marker = approved.clone();
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
                 let revision = view.state.as_ref().unwrap().revision;
-                view.update_flow.phase = Phase::Preparing {
+                view.persistence.update_flow.phase = Phase::Preparing {
                     id: 2,
                     saved: Some(SaveCorrelation {
                         request_id: 2,
@@ -696,7 +725,7 @@ mod tests {
                     revision,
                 };
                 view.mark_theme_save_pending_for_update_test();
-                view.update_flow.ready = Some(UpdateReady {
+                view.persistence.update_flow.ready = Some(UpdateReady {
                     id: 2,
                     approval: Box::new(Approval(marker)),
                 });
@@ -709,7 +738,10 @@ mod tests {
             !approved.load(Ordering::SeqCst),
             "pending theme save must not approve shutdown"
         );
-        assert!(editor.read_with(cx, |view, _| matches!(view.update_flow.phase, Phase::Idle)));
+        assert!(editor.read_with(cx, |view, _| matches!(
+            view.persistence.update_flow.phase,
+            Phase::Idle
+        )));
         std::fs::remove_file(path).unwrap();
     }
 
@@ -827,7 +859,7 @@ mod tests {
         });
         cx.run_until_parked();
         assert!(editor.read_with(cx, |view, _| {
-            view.update_flow.save_under_close_hold.is_some()
+            view.persistence.update_flow.save_under_close_hold.is_some()
         }));
         assert!(!approved.load(Ordering::SeqCst));
         while !approved.load(Ordering::SeqCst) {

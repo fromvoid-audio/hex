@@ -13,7 +13,7 @@ fn lane_size_owns_input_uses_final_release_and_never_edits_project(cx: &mut Test
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     for (delta, expected) in [(-20., 84.), (-1000., 128.), (1000., 40.)] {
         editor.update(&mut visual, |v, cx| {
-            v.midi_velocity.height = 64.;
+            v.midi_editor.velocity.height = 64.;
             cx.notify();
         });
         repaint(&editor, &mut visual);
@@ -42,8 +42,8 @@ fn lane_size_owns_input_uses_final_release_and_never_edits_project(cx: &mut Test
         visual.simulate_mouse_up(outside, MouseButton::Right, Modifiers::default());
         repaint(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.midi_velocity.height, expected);
-            assert!(v.midi_velocity.resize.is_none());
+            assert_eq!(v.midi_editor.velocity.height, expected);
+            assert!(v.midi_editor.velocity.resize.is_none());
             assert!(!v.edit_pending());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -97,7 +97,7 @@ fn lane_size_loss_keeps_last_height_without_leaking_release(cx: &mut TestAppCont
         visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
         repaint(&editor, &mut visual);
         assert_eq!(
-            editor.read_with(&visual, |v, _| v.midi_velocity.height),
+            editor.read_with(&visual, |v, _| v.midi_editor.velocity.height),
             84.
         );
         match loss {
@@ -134,7 +134,7 @@ fn lane_size_loss_keeps_last_height_without_leaking_release(cx: &mut TestAppCont
                 cx.notify();
             }),
             "hidden" => editor.update(&mut visual, |v, cx| {
-                v.midi_velocity.open = false;
+                v.midi_editor.velocity.open = false;
                 cx.notify();
             }),
             "window" => visual.deactivate_window(),
@@ -146,8 +146,11 @@ fn lane_size_loss_keeps_last_height_without_leaking_release(cx: &mut TestAppCont
         }
         assert_eq!(actions.get(), 0, "{loss}: trailing release");
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_velocity.resize.is_none(), "{loss}");
-            assert_eq!(v.midi_velocity.height, 84., "{loss}: keep last height");
+            assert!(v.midi_editor.velocity.resize.is_none(), "{loss}");
+            assert_eq!(
+                v.midi_editor.velocity.height, 84.,
+                "{loss}: keep last height"
+            );
             assert!(!v.edit_pending());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });

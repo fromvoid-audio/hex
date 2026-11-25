@@ -44,8 +44,8 @@ fn modal_captures_workspace_gestures_shortcuts_scroll_and_context_lifecycle(
         visual.simulate_resize(size(px(dimensions.0), px(dimensions.1)));
         editor.update(&mut visual, |view, cx| {
             view.mode = crate::editor::EditorMode::Arrangement;
-            view.clip_view_open = true;
-            view.device_panel_active = true;
+            view.audio_detail.clip_view_open = true;
+            view.device_panel.active = true;
             view.viewport = Some(crate::editor::viewport::Viewport {
                 start: 0,
                 length: 192_000,

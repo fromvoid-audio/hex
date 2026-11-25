@@ -129,9 +129,15 @@ pub(super) fn fixture_with_bounce_media(
                 assert!(Arc::ptr_eq(&files, &view.test_environment));
                 for (path, name) in [
                     (view.browser.test_preferences_path(), "browser.json"),
-                    (view.recent_projects.test_path(), "recent-projects.json"),
-                    (view.theme_settings.test_path(), "theme.json"),
-                    (view.project_directory.test_path(), "project-directory.json"),
+                    (
+                        view.settings.recent_projects.test_path(),
+                        "recent-projects.json",
+                    ),
+                    (view.settings.theme.test_path(), "theme.json"),
+                    (
+                        view.settings.project_directory.test_path(),
+                        "project-directory.json",
+                    ),
                 ] {
                     assert_eq!(path, directory.join("config").join(name));
                 }
@@ -252,7 +258,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
         editor.read_with(&visual, |v, _| {
             assert!(
                 matches!(
-                    v.last_enqueued_edit,
+                    v.test_probes.last_enqueued_edit,
                     Some(Command::SetLoopRegion {
                         start: 1,
                         end: 48_000,
@@ -260,7 +266,7 @@ fn loop_keys_toggle_matching_or_absent_selection_and_compare_exact_frames(cx: &m
                     })
                 ),
                 "exact selection command: {:?}, selection: {:?}, error: {:?}",
-                v.last_enqueued_edit,
+                v.test_probes.last_enqueued_edit,
                 v.time_selection,
                 v.error
             );
@@ -460,14 +466,14 @@ fn w_focus_empty_stale_pending_and_musical_keyboard_guards(cx: &mut TestAppConte
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     visual.simulate_keystrokes("cmd-shift-l");
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(v.changelog.is_open()));
+    editor.read_with(&visual, |v, _| assert!(v.settings.changelog.is_open()));
     visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().revision, revision)
     });
     visual.simulate_keystrokes("escape");
-    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window)));
     visual.run_until_parked();
     visual.simulate_keystrokes("w");
     pump(&editor, &mut visual);
@@ -809,7 +815,7 @@ fn selection_loop_time_selection_precedes_clip_and_protects_stale_and_owned_focu
             "browser input owns focus"
         )
     });
-    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_focus.focus(window)));
+    visual.update(|window, cx| editor.read_with(cx, |v, _| v.midi_editor.focus.focus(window)));
     visual.run_until_parked();
     visual.simulate_keystrokes("l");
     pump(&editor, &mut visual);
@@ -920,7 +926,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.selected_clip, Some(session_id));
-        assert_eq!(v.selected_cell, Some((track, scene)));
+        assert_eq!(v.session_grid.selected_cell, Some((track, scene)));
     });
     let position = visual
         .debug_bounds("workspace-view-toggle")
@@ -1017,8 +1023,8 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.worker_requests_pending, 0, "{native} / {key}");
                 assert!(v.pending_requests.is_empty());
-                assert_eq!(v.active_native_device_drag.is_some(), native);
-                assert_eq!(v.active_browser_audio_drag.is_some(), !native);
+                assert_eq!(v.device_panel.active_native_drag.is_some(), native);
+                assert_eq!(v.browser.active_audio_drag.is_some(), !native);
                 assert!(v.state.as_ref().unwrap().project.loop_region().is_none());
             });
         }
@@ -1499,7 +1505,7 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
         plot.top() + plot.size.height * 0.4,
     );
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+    editor.update(&mut visual, |v, _| v.test_probes.last_enqueued_edit = None);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
@@ -1512,7 +1518,7 @@ fn section_loop_focus_respects_held_foreground_automation_input(cx: &mut TestApp
             v.worker_requests_pending, 0,
             "held curve cannot submit a section loop/focus"
         );
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
         assert!(!v.arrangement_focus.projection.enabled);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -1590,7 +1596,7 @@ fn command_l_toggles_active_loop_preserves_bounds_and_keeps_selection_play_origi
     visual.simulate_keystrokes("space");
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(36_000)),
             "an enabled loop does not override the time-selection start"
         )
@@ -1790,7 +1796,7 @@ fn enabling_the_loop_retires_a_point_cursor_until_a_new_click(cx: &mut TestAppCo
     visual.simulate_keystrokes("space");
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.last_transport_command,
+            view.test_probes.last_transport_command,
             Some(hex_engine::playback::PlaybackCommand::PlayFrom(24_000))
         )
     });

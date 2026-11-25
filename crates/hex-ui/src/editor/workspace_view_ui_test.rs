@@ -27,7 +27,10 @@ fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAp
         visual.update(|window, _| window.activate_window());
         visual.run_until_parked();
         let (track, scene) = editor.read_with(&visual, |v, _| {
-            (v.selected_track.unwrap(), v.selected_scene.unwrap())
+            (
+                v.selected_track.unwrap(),
+                v.session_grid.selected_scene.unwrap(),
+            )
         });
         for console in [false, true] {
             let selector = if console {
@@ -53,13 +56,17 @@ fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAp
                 (
                     v.selected_clip_ids(),
                     v.time_selection,
-                    v.selected_scene,
-                    v.selected_cell,
+                    v.session_grid.selected_scene,
+                    v.session_grid.selected_cell,
                     v.selected_track,
                     v.track_scroll.offset(),
-                    v.session_track_start,
+                    v.session_grid.track_start,
                     v.viewport,
-                    (v.clip_view_open, v.device_panel_active, v.offline_cursor),
+                    (
+                        v.audio_detail.clip_view_open,
+                        v.device_panel.active,
+                        v.offline_cursor,
+                    ),
                 )
             });
             let origin = if console {
@@ -99,9 +106,9 @@ fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAp
                     assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
                     assert_eq!(v.worker_requests_pending, 0);
                     assert!(v.pending_requests.is_empty());
-                    assert_eq!((v.selected_clip_ids(), v.time_selection, v.selected_scene, v.selected_cell,
-                        v.selected_track, v.track_scroll.offset(), v.session_track_start, v.viewport,
-                        (v.clip_view_open, v.device_panel_active, v.offline_cursor)), view_state);
+                    assert_eq!((v.selected_clip_ids(), v.time_selection, v.session_grid.selected_scene, v.session_grid.selected_cell,
+                        v.selected_track, v.track_scroll.offset(), v.session_grid.track_start, v.viewport,
+                        (v.audio_detail.clip_view_open, v.device_panel.active, v.offline_cursor)), view_state);
                 }));
             }
             if !console {
@@ -268,13 +275,13 @@ fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &m
         editor.read_with(&visual, |v, _| {
             assert!(v.clip_paint_gesture.is_some());
             assert!(v.time_selection_gesture.is_none());
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
         });
         visual.simulate_keystrokes("tab");
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.mode, EditorMode::Arrangement);
             assert!(v.clip_paint_gesture.is_some());
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
             assert_eq!(v.worker_requests_pending, 0);
         });
         visual.run_until_parked();
@@ -286,10 +293,10 @@ fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &m
         editor.read_with(&visual, |v, _| {
             assert!(!v.clip_paint_held());
             if cancel {
-                assert!(v.last_enqueued_edit.is_none());
+                assert!(v.test_probes.last_enqueued_edit.is_none());
                 assert_eq!(v.worker_requests_pending, 0);
             } else {
-                let command = v.last_enqueued_edit.clone().unwrap();
+                let command = v.test_probes.last_enqueued_edit.clone().unwrap();
                 assert!(
                     matches!(command, hex_project::Command::PlaceMidiClipWithOverwrite {
                     track: target, length, ..
@@ -414,8 +421,8 @@ fn fixture(
                 let track_id = track.id();
                 let clip = track.clips()[0].id();
                 let scene = event.state.project.scenes()[0].id();
-                v.selected_scene = Some(scene);
-                v.selected_cell = Some((track_id, scene));
+                v.session_grid.selected_scene = Some(scene);
+                v.session_grid.selected_cell = Some((track_id, scene));
                 v.selected_track = Some(track_id);
                 v.selected_clip = Some(clip);
                 v.clip_selection.only(track_id, clip);
@@ -442,14 +449,16 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
     let selection = editor.read_with(&visual, |v, _| (v.selected_clip_ids(), v.time_selection));
-    let console_selection = editor.read_with(&visual, |v, _| (v.selected_scene, v.selected_cell));
+    let console_selection = editor.read_with(&visual, |v, _| {
+        (v.session_grid.selected_scene, v.session_grid.selected_cell)
+    });
     editor.update(&mut visual, |v, cx| {
         v.viewport = Some(super::viewport::Viewport {
             start: 1000,
             length: 24_000,
         });
-        v.session_track_start = 2;
-        v.clip_view_open = false;
+        v.session_grid.track_start = 2;
+        v.audio_detail.clip_view_open = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -468,10 +477,13 @@ fn workspace_tab_switches_both_directions_without_edit_or_view_state_loss(cx: &m
                 length: 24_000
             })
         );
-        assert_eq!(v.session_track_start, 2);
-        assert!(!v.clip_view_open);
+        assert_eq!(v.session_grid.track_start, 2);
+        assert!(!v.audio_detail.clip_view_open);
         assert_eq!((v.selected_clip_ids(), v.time_selection), selection);
-        assert_eq!((v.selected_scene, v.selected_cell), console_selection);
+        assert_eq!(
+            (v.session_grid.selected_scene, v.session_grid.selected_cell),
+            console_selection
+        );
         assert_eq!(v.state.as_ref().unwrap().project, before.project);
         assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
         assert_eq!(v.worker_requests_pending, 0);
@@ -511,9 +523,9 @@ fn workspace_tab_leaves_browser_numeric_and_nested_focus_in_charge(cx: &mut Test
         visual.update(|window, cx| {
             editor.update(cx, |v, _| {
                 if audio {
-                    v.audio_event_focus.focus(window);
+                    v.audio_detail.focus.focus(window);
                 } else {
-                    v.midi_focus.focus(window);
+                    v.midi_editor.focus.focus(window);
                 }
             })
         });
@@ -536,13 +548,13 @@ fn workspace_tab_respects_modifiers_and_retained_root_modal_state(cx: &mut TestA
             editor.update(cx, |v, cx| {
                 v.focus.focus(window);
                 match guard {
-                    0 => v.close_prompt_open = true,
-                    1 => v.save_dialog_open = true,
-                    2 => v.export_dialog_open = true,
-                    3 => v.preset_dialog_open = true,
-                    4 => v.opening_project = true,
-                    5 => v.theme_settings.open = true,
-                    6 => v.tuning.open = true,
+                    0 => v.persistence.close_prompt_open = true,
+                    1 => v.persistence.save_dialog_open = true,
+                    2 => v.persistence.export_dialog_open = true,
+                    3 => v.device_panel.preset_dialog_open = true,
+                    4 => v.persistence.opening_project = true,
+                    5 => v.settings.theme.open = true,
+                    6 => v.settings.tuning.open = true,
                     _ => {
                         assert!(v.start_open_picker().is_some());
                     }
@@ -553,15 +565,15 @@ fn workspace_tab_respects_modifiers_and_retained_root_modal_state(cx: &mut TestA
         visual.simulate_keystrokes("tab");
         editor.update(&mut visual, |v, cx| {
             assert_eq!(v.mode, EditorMode::Arrangement, "guard {guard}");
-            v.close_prompt_open = false;
-            v.save_dialog_open = false;
-            v.export_dialog_open = false;
-            v.preset_dialog_open = false;
-            v.opening_project = false;
-            v.theme_settings.open = false;
-            v.tuning.open = false;
+            v.persistence.close_prompt_open = false;
+            v.persistence.save_dialog_open = false;
+            v.persistence.export_dialog_open = false;
+            v.device_panel.preset_dialog_open = false;
+            v.persistence.opening_project = false;
+            v.settings.theme.open = false;
+            v.settings.tuning.open = false;
             if guard == 7 {
-                assert!(v.project_open.busy());
+                assert!(v.persistence.project_open.busy());
                 v.cancel_open_after_save();
             }
             assert_eq!(v.worker_requests_pending, 0);
@@ -591,7 +603,7 @@ fn workspace_review_tab_preserves_selected_open_confirmation_until_cancel(cx: &m
     assert!(before.unsaved);
     editor.update(&mut visual, |v, cx| {
         v.choose_project(target, hex_session::DocumentAudioMode::Resident);
-        assert!(v.pending_open_path.is_some());
+        assert!(v.persistence.pending_open_path.is_some());
         cx.notify();
     });
     visual.run_until_parked();
@@ -599,25 +611,25 @@ fn workspace_review_tab_preserves_selected_open_confirmation_until_cancel(cx: &m
     visual.update(|window, cx| {
         editor.update(cx, |v, _| {
             assert!(
-                v.pending_open_path.is_none(),
+                v.persistence.pending_open_path.is_none(),
                 "render transferred the selected path into its owned intent"
             );
-            assert!(v.project_open.busy());
-            assert!(!v.opening_project);
+            assert!(v.persistence.project_open.busy());
+            assert!(!v.persistence.opening_project);
             v.focus.focus(window);
         })
     });
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.mode, EditorMode::Arrangement);
-        assert!(v.project_open.busy());
+        assert!(v.persistence.project_open.busy());
         assert_eq!(v.state.as_ref().unwrap().project, before.project);
         assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
         assert_eq!(v.worker_requests_pending, 0);
     });
     cx.simulate_prompt_answer("cancel");
     visual.run_until_parked();
-    editor.read_with(&visual, |v, _| assert!(!v.project_open.busy()));
+    editor.read_with(&visual, |v, _| assert!(!v.persistence.project_open.busy()));
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
     visual.simulate_keystrokes("tab");
     editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
@@ -852,7 +864,7 @@ fn workspace_three_returns_held_left_before_drag_preserves_capture(cx: &mut Test
         visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert!(v.pointer_down.is_none());
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
         });
         visual.simulate_keystrokes("tab");
         editor.read_with(&visual, |v, _| assert_eq!(v.mode, EditorMode::Session));
@@ -884,7 +896,7 @@ fn workspace_three_returns_plain_clip_click_retires_pending_pointer(cx: &mut Tes
             v.pointer_down.is_none(),
             "ordinary clip click did not retire original press"
         );
-        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.test_probes.last_enqueued_edit.is_none());
         assert_eq!(v.worker_requests_pending, 0);
     });
 }
@@ -932,7 +944,7 @@ fn workspace_three_returns_delayed_click_preserves_other_pointer_identity(cx: &m
         visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.pointer_down, Some(retained), "mismatch={mismatch}");
-            assert!(v.last_enqueued_edit.is_none());
+            assert!(v.test_probes.last_enqueued_edit.is_none());
             assert_eq!(v.worker_requests_pending, 0);
             assert!(v.pending_requests.is_empty());
         });
@@ -1090,10 +1102,10 @@ fn workspace_navigation_controls_fit_edges_and_preserve_state(cx: &mut TestAppCo
                 v.selected_track,
                 v.selected_clip_ids(),
                 v.time_selection,
-                v.selected_cell,
+                v.session_grid.selected_cell,
                 v.viewport,
-                v.clip_view_open,
-                v.device_panel_active,
+                v.audio_detail.clip_view_open,
+                v.device_panel.active,
                 v.mode,
                 v.browser.open,
             )
@@ -1122,10 +1134,10 @@ fn workspace_navigation_controls_fit_edges_and_preserve_state(cx: &mut TestAppCo
                     v.selected_track,
                     v.selected_clip_ids(),
                     v.time_selection,
-                    v.selected_cell,
+                    v.session_grid.selected_cell,
                     v.viewport,
-                    v.clip_view_open,
-                    v.device_panel_active,
+                    v.audio_detail.clip_view_open,
+                    v.device_panel.active,
                     v.mode,
                     v.browser.open
                 ),

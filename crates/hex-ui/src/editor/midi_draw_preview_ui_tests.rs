@@ -3,7 +3,8 @@ use super::*;
 fn geometry(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<[i32; 4]> {
     let b = visual.debug_bounds("midi-note-roll").unwrap();
     let row_height = editor.read_with(&*visual, |v, _| {
-        v.piano_pitch
+        v.midi_editor
+            .piano_pitch
             .row_height_pixels(f32::from(b.size.height) - 2.0)
             .unwrap()
     });
@@ -31,10 +32,10 @@ fn geometry(editor: &Entity<EditorView>, visual: &mut VisualTestContext) -> Vec<
 }
 fn configure(editor: &Entity<EditorView>, visual: &mut VisualTestContext, span: u64) {
     editor.update(&mut *visual, |v, cx| {
-        v.midi_draw_mode = true;
-        v.midi_snap_grid = super::super::midi_drag::MidiGrid::Sixteenth;
-        v.piano_beat_span = BeatTime::from_quarters(span).unwrap();
-        v.midi_selection.clear();
+        v.midi_editor.draw_mode = true;
+        v.midi_editor.snap_grid = super::super::midi_drag::MidiGrid::Sixteenth;
+        v.midi_editor.piano_beat_span = BeatTime::from_quarters(span).unwrap();
+        v.midi_editor.selection.clear();
         cx.notify();
     });
     repaint(editor, visual);
@@ -112,7 +113,7 @@ fn released_draw_erase_overwrite_and_extension_keep_geometry_until_real_terminal
                 "{case}: released preview"
             );
             editor.read_with(&visual, |v, _| {
-                assert!(v.midi_stroke.is_none());
+                assert!(v.midi_editor.stroke.is_none());
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
         }
@@ -127,7 +128,7 @@ fn released_draw_erase_overwrite_and_extension_keep_geometry_until_real_terminal
             "{case}: canonical installation"
         );
         let after = editor.read_with(&visual, |v, _| {
-            assert!(v.pending_midi_drag.is_none());
+            assert!(v.midi_editor.pending_drag.is_none());
             if case == "extend" {
                 assert!(
                     v.state
@@ -163,15 +164,27 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
     let held = geometry(&editor, &mut visual);
     editor.update(&mut visual, |v, _| {
         let tuning = v.state.as_ref().unwrap().project.tuning();
-        v.tuning.client.begin(v.project_generation, tuning).unwrap();
-        v.tuning.client.change(tuning.with_enabled(true)).unwrap();
-        v.tuning.client.finish(tuning.with_enabled(true)).unwrap();
+        v.settings
+            .tuning
+            .client
+            .begin(v.project_generation, tuning)
+            .unwrap();
+        v.settings
+            .tuning
+            .client
+            .change(tuning.with_enabled(true))
+            .unwrap();
+        v.settings
+            .tuning
+            .client
+            .finish(tuning.with_enabled(true))
+            .unwrap();
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     repaint(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.pending_requests.len(), 1);
-        let command = v.last_enqueued_edit.clone().unwrap();
+        let command = v.test_probes.last_enqueued_edit.clone().unwrap();
         assert!(v.pending_midi_drag_matches(&Request::Edit(command.clone())));
         let Command::EditMidiNotes {
             clip: c,
@@ -221,7 +234,9 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
     for _ in 0..3 {
         repaint(&editor, &mut visual);
         assert_eq!(geometry(&editor, &mut visual), held);
-        editor.read_with(&visual, |v, _| assert!(v.pending_midi_drag.is_some()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.midi_editor.pending_drag.is_some())
+        });
     }
     editor.update(&mut visual, |v, cx| {
         v.receive(reply);
@@ -229,7 +244,7 @@ fn queued_draw_batch_matches_only_its_exact_variant_and_survives_earlier_termina
     });
     repaint(&editor, &mut visual);
     let after = editor.read_with(&visual, |v, _| {
-        assert!(v.pending_midi_drag.is_none());
+        assert!(v.midi_editor.pending_drag.is_none());
         v.state.as_ref().unwrap().project.snapshot()
     });
     assert_eq!(geometry(&editor, &mut visual), held);

@@ -283,6 +283,12 @@ pub(super) struct BrowserState {
             String,
         >,
     >,
+    pub(in crate::editor) insertion_flight: Option<insertion::BrowserInsertionFlight>,
+    pub(in crate::editor) pending_insertions:
+        std::collections::VecDeque<insertion::PendingBrowserInsertion>,
+    pub(in crate::editor) active_audio_drag: Option<drag::BrowserAudioDrag>,
+    pub(in crate::editor) pending_sample_drop:
+        Option<super::pending_sample_drop::PendingSampleDrop>,
 }
 
 impl BrowserState {
@@ -368,6 +374,10 @@ impl BrowserState {
             preview_in_flight: None,
             preview_pending: None,
             device_catalog: None,
+            insertion_flight: None,
+            pending_insertions: std::collections::VecDeque::new(),
+            active_audio_drag: None,
+            pending_sample_drop: None,
         }
     }
 

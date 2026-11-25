@@ -84,7 +84,7 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
     };
     let (track_frame, _) = assert_panel(&mut visual, device);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -92,7 +92,7 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
     assert_eq!(return_frame.size, track_frame.size);
 
     editor.update(cx, |view, cx| {
-        view.focused_return = None;
+        view.session_grid.focused_return = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -109,8 +109,8 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture.snapshot().is_none()
-            && view.device_gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("state");
@@ -202,8 +202,8 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
         pump_until(&editor, cx, |view| {
             view.worker_requests_pending == 0
                 && view.pending_requests.is_empty()
-                && view.device_gesture_barriers.is_empty()
-                && view.device_gesture.snapshot().is_none()
+                && view.device_panel.gesture_barriers.is_empty()
+                && view.device_panel.gesture.snapshot().is_none()
         });
         editor.read_with(cx, |view, _| {
             assert_eq!(
@@ -254,7 +254,7 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
 
     // Removing the Return owner must retire the same shared controls.
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_track);
+        view.session_grid.focused_return = Some(return_track);
         cx.notify();
     });
     visual.run_until_parked();
@@ -268,8 +268,8 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
     pump_until(&editor, cx, |view| {
         view.worker_requests_pending == 0
             && view.pending_requests.is_empty()
-            && view.device_gesture_barriers.is_empty()
-            && view.device_gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
     });
     editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("state");
@@ -345,7 +345,7 @@ fn auto_pan_waveform_menu_track_return_cancel_commit_preview_history_and_reopen(
     visual.simulate_resize(size(px(880.0), px(540.0)));
     for (owner, device) in [(None, device), (Some(return_track), return_device)] {
         editor.update(cx, |view, cx| {
-            view.focused_return = owner;
+            view.session_grid.focused_return = owner;
             cx.notify();
         });
         visual.run_until_parked();
@@ -475,7 +475,7 @@ fn auto_pan_preview_uses_effective_pending_choice_without_processing_in_paint(
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let visual = VisualTestContext::from_window(handle, cx);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(return_id);
+        view.session_grid.focused_return = Some(return_id);
         cx.notify();
     });
     visual.run_until_parked();
@@ -534,7 +534,7 @@ fn auto_pan_unchanged_render_reuses_provider_preview(cx: &mut TestAppContext) {
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let mut visual = VisualTestContext::from_window(handle, cx);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(bus);
+        view.session_grid.focused_return = Some(bus);
         cx.notify();
     });
     visual.run_until_parked();
@@ -579,7 +579,7 @@ fn auto_pan_cache_pending_retirement_error_and_device_lifecycle(cx: &mut TestApp
     let (handle, editor) = actor_editor_window(cx, service, state, track);
     let visual = VisualTestContext::from_window(handle, cx);
     editor.update(cx, |view, cx| {
-        view.focused_return = Some(bus);
+        view.session_grid.focused_return = Some(bus);
         cx.notify();
     });
     visual.run_until_parked();

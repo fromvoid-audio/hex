@@ -58,7 +58,7 @@ fn open_hosted_editor_window(
         })
         .expect("hosted root window");
     let deadline = crate::test_wait::hang_deadline();
-    while editor.read_with(cx, |view, _| view.playback_settings.loading) {
+    while editor.read_with(cx, |view, _| view.settings.playback.loading) {
         cx.run_until_parked();
         assert!(Instant::now() < deadline, "playback settings did not load");
     }
@@ -157,8 +157,8 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
     let start = Instant::now();
     editor.update(&mut visual, |view, cx| {
         // Select the MIDI clip so Piano Roll is open alongside Arrangement.
-        view.clip_view_open = true;
-        view.device_panel_active = false;
+        view.audio_detail.clip_view_open = true;
+        view.device_panel.active = false;
         view.selected_track = Some(tracks[0]);
         view.selected_clip = Some(midi_clip);
         view.audio = Some(crate::EditorAudio {
@@ -382,7 +382,7 @@ fn idle_modifier_presses_do_not_rerender_root_editor_view(cx: &mut TestAppContex
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(720.0)));
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         cx.notify();
     });
     visual.run_until_parked();
@@ -425,7 +425,7 @@ fn single_track_clip_drag_retains_cached_scene_replay_on_untouched_tracks(cx: &m
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1200.0), px(720.0)));
     editor.update(&mut visual, |view, cx| {
-        view.clip_view_open = false;
+        view.audio_detail.clip_view_open = false;
         cx.notify();
     });
     visual.run_until_parked();

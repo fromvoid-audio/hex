@@ -493,7 +493,7 @@ impl super::EditorView {
         end: u64,
         merge_frames: u64,
     ) -> (Vec<(f32, f32, u8)>, PitchFit) {
-        let visible = match self.midi_visible_notes.try_borrow_mut() {
+        let visible = match self.midi_editor.visible_notes.try_borrow_mut() {
             Ok(mut cache) => cache.get(project, clip, start, end, merge_frames),
             Err(_) => visible_notes(project, clip, start, end, merge_frames)
                 .ok()
@@ -1261,14 +1261,16 @@ mod tests {
         visual.simulate_resize(gpui::size(gpui::px(2400.0), gpui::px(800.0)));
         publish(&mut visual, &view, None, start, end - start);
         let painted = |visual: &mut gpui::VisualTestContext| {
-            view.read_with(visual, |view, _| view.midi_tile_images.borrow().sprites)
+            view.read_with(visual, |view, _| {
+                view.midi_editor.tile_images.borrow().sprites
+            })
         };
         // One more completed rebuild of the resting row at the same window.
         let before = painted(&mut visual);
         publish(&mut visual, &view, None, start, end - start);
         let sprites = painted(&mut visual) - before;
         let blocks = view.read_with(&visual, |view, _| {
-            let cache = view.midi_visible_notes.borrow();
+            let cache = view.midi_editor.visible_notes.borrow();
             cache
                 .entries
                 .get(&id)
@@ -1355,7 +1357,8 @@ mod tests {
         visual.run_until_parked();
         let trim_end = view.read_with(&visual, |view, _| {
             let drag = view
-                .active_midi_trim_drag
+                .midi_editor
+                .active_trim_drag
                 .as_ref()
                 .expect("right MIDI trim");
             let preview = drag.preview.borrow().expect("trim preview");

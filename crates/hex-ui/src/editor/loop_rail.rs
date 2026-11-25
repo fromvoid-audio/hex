@@ -81,18 +81,18 @@ impl EditorView {
             || self.edit_pending()
             || self.context_menu.is_some()
             || super::device_panel::picker_is_open(self)
-            || self.theme_settings.open
-            || self.tuning.open
-            || self.opening_project
-            || self.close_prompt_open
-            || self.save_dialog_open
-            || self.export_dialog_open
+            || self.settings.theme.open
+            || self.settings.tuning.open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
+            || self.persistence.save_dialog_open
+            || self.persistence.export_dialog_open
             || self.active_clip_drag.is_some()
-            || self.active_browser_audio_drag.is_some()
-            || self.active_native_device_drag.is_some()
+            || self.browser.active_audio_drag.is_some()
+            || self.device_panel.active_native_drag.is_some()
             || self.active_trim_drag.is_some()
             || self.active_fade_drag.is_some()
-            || self.active_midi_trim_drag.is_some()
+            || self.midi_editor.active_trim_drag.is_some()
             || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
@@ -185,8 +185,8 @@ impl EditorView {
             || modifiers.control
             || self.context_menu.is_some()
             || super::device_panel::picker_is_open(self)
-            || self.opening_project
-            || self.close_prompt_open
+            || self.persistence.opening_project
+            || self.persistence.close_prompt_open
             || !x.is_finite()
             || !f32::from(position.y).is_finite()
         {
