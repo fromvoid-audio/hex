@@ -314,6 +314,9 @@ pub struct Event {
     /// A single-file import refused because its WAV data is truncated; a
     /// consumer may offer `Request::RecoverTruncatedImport`.
     pub import_truncation: Option<ImportTruncation>,
+    /// A submitted request has reached its terminal event. For edits this
+    /// acknowledges the canonical change. The journal checkpoint can finish
+    /// later and publish a separate recovery notice with this flag clear.
     pub request_complete: bool,
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
