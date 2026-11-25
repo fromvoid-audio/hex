@@ -5889,6 +5889,7 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     use hex_project::{Command, Created};
     use hex_session::service::{DeviceInsertOutcome, ViewState};
 
+    const REFERENCE_FRAMES: u32 = 16_384;
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(262_144);
@@ -5904,7 +5905,7 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     let destination = imported.state.project.tracks()[0].id();
     applied = h.applied(applied).0;
     h.run(Request::ImportToNewTrack {
-        path: files.constant_wav("unaffected.wav", 48_000, 32_768, &[0, 4096]),
+        path: files.constant_wav("unaffected.wav", 48_000, REFERENCE_FRAMES, &[0, 4096]),
         before_track: None,
         start: 0,
     });
@@ -6045,6 +6046,26 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     assert!(removed.state.project.device(device).is_none());
     let removed = apply(&mut h, &removed.state, Command::RemoveTrack(track));
     assert!(removed.state.project.track(track).is_none());
+
+    // The right-only clip ends at its authored frame plus the default limiter's
+    // 1.5 ms lookahead. A shifted or restarted output moves this edge.
+    let right_end = u64::from(REFERENCE_FRAMES) + 72;
+    let mut frame = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!(frame < right_end);
+    while frame <= right_end {
+        for sample in h.render() {
+            let right = if frame < right_end { 0.125 } else { 0.0 };
+            assert_eq!(sample, [0.25, right], "route timing at frame {frame}");
+            frame += 1;
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
