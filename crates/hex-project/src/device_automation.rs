@@ -38,10 +38,73 @@ impl AutomationValue {
         f32::from_bits(self.0)
     }
 }
+/// Validated segment curve tension in integer milliparts (`-1000..=1000`).
+/// `0` is linear, positive values bend convexly (ease-in), and negative values
+/// bend concavely (ease-out). Integer storage keeps `Eq` sound and NaN-free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CurveTension(i16);
+
+impl CurveTension {
+    pub const MIN_MILLIS: i16 = -1_000;
+    pub const MAX_MILLIS: i16 = 1_000;
+    pub const LINEAR: Self = Self(0);
+
+    pub fn from_millis(millis: i16) -> Result<Self, Invalid> {
+        if !(Self::MIN_MILLIS..=Self::MAX_MILLIS).contains(&millis) {
+            return Err(Invalid("curve tension must be within -1000..=1000 millis"));
+        }
+        Ok(Self(millis))
+    }
+
+    pub fn from_f32(value: f32) -> Result<Self, Invalid> {
+        if !value.is_finite() || !(-1.0..=1.0).contains(&value) {
+            return Err(Invalid("curve tension must be finite and within -1..1"));
+        }
+        let millis = (f64::from(value) * 1_000.0).round() as i16;
+        Self::from_millis(millis)
+    }
+
+    pub const fn millis(self) -> i16 {
+        self.0
+    }
+
+    pub fn as_f64(self) -> f64 {
+        f64::from(self.0) / 1_000.0
+    }
+
+    /// Monotonic normalized curve shaping over `fraction` in `0.0..=1.0`.
+    pub fn shape(self, fraction: f64) -> f64 {
+        let t = fraction.clamp(0.0, 1.0);
+        if self.0 == 0 || t <= 0.0 || t >= 1.0 {
+            return t;
+        }
+        let exponent = 2.0_f64.powf(self.as_f64() * 3.0);
+        t.powf(exponent).clamp(0.0, 1.0)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AutomationInterpolation {
     Step,
     Linear,
+    Curve(CurveTension),
+}
+
+impl AutomationInterpolation {
+    pub const fn curve_tension_millis(self) -> i16 {
+        match self {
+            Self::Step | Self::Linear => 0,
+            Self::Curve(tension) => tension.millis(),
+        }
+    }
+
+    pub fn interpolate(self, start: f64, end: f64, fraction: f64) -> f64 {
+        match self {
+            Self::Step => start,
+            Self::Linear => start + (end - start) * fraction.clamp(0.0, 1.0),
+            Self::Curve(tension) => start + (end - start) * tension.shape(fraction),
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 /// At a shared beat, the first point ends the incoming segment and the
@@ -126,11 +189,11 @@ fn base_sample(
     }
     let elapsed = beat.raw().checked_sub(left.beat.raw())?;
     let fraction = elapsed as f64 / span as f64;
-    let value = AutomationValue::new(
-        (f64::from(left.value.get())
-            + (f64::from(right.value.get()) - f64::from(left.value.get())) * fraction)
-            as f32,
-    )
+    let value = AutomationValue::new(left.outgoing.interpolate(
+        f64::from(left.value.get()),
+        f64::from(right.value.get()),
+        fraction,
+    ) as f32)
     .ok()?;
     Some((value, left.outgoing))
 }
@@ -323,6 +386,15 @@ impl Project {
     pub fn has_device_automation(&self) -> bool {
         self.automation_devices()
             .any(|device| !device.automation.is_empty())
+    }
+    pub fn has_curved_device_automation(&self) -> bool {
+        self.automation_devices().any(|device| {
+            device.automation.iter().any(|lane| {
+                lane.points
+                    .iter()
+                    .any(|point| matches!(point.outgoing, AutomationInterpolation::Curve(_)))
+            })
+        })
     }
     pub(crate) fn validate_device_automation(&self) -> Result<(), Invalid> {
         if self.native_sources.iter().any(|source| {

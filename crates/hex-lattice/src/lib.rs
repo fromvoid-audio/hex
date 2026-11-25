@@ -57,7 +57,7 @@ pub use parameter_automation::{
     NativeTransientOperation, NativeTransientValue, NormalizedAutomationValue,
     ParameterAutomationBlock, ParameterAutomationLane, ParameterAutomationPoint,
     ParameterAutomationTouchSpan, PreparedParameterAutomation, PreparedParameterAutomationLane,
-    PreparedParameterAutomationPoint,
+    PreparedParameterAutomationPoint, curve_shape,
 };
 pub use tail_split::{TailSplit, TailSplitObserver};
 mod resources;

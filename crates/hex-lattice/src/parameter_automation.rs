@@ -124,11 +124,23 @@ pub trait NativeParameterAutomation {
         Ok(())
     }
 }
+/// Monotonic normalized curve shaping matching `hex_project::CurveTension::shape`.
+#[inline]
+pub fn curve_shape(fraction: f64, tension_millis: i16) -> f64 {
+    let t = fraction.clamp(0.0, 1.0);
+    if tension_millis == 0 || t <= 0.0 || t >= 1.0 {
+        return t;
+    }
+    let exponent = 2.0_f64.powf((f64::from(tension_millis) / 1_000.0) * 3.0);
+    t.powf(exponent).clamp(0.0, 1.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParameterAutomationPoint {
     pub beat_raw: u64,
     pub normalized: f32,
     pub step: bool,
+    pub curve_tension_millis: i16,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParameterAutomationLane {
@@ -300,16 +312,16 @@ fn compile_points(
     let Some(first) = points.first() else {
         return Ok(None);
     };
-    if points
-        .iter()
-        .any(|point| !point.normalized.is_finite() || !(0.0..=1.0).contains(&point.normalized))
-        || points.windows(2).any(|pair| {
-            pair[0].beat_raw > pair[1].beat_raw
-                || (!allow_coincident && pair[0].beat_raw == pair[1].beat_raw)
-        })
-        || points
-            .windows(3)
-            .any(|run| run[0].beat_raw == run[2].beat_raw)
+    if points.iter().any(|point| {
+        !point.normalized.is_finite()
+            || !(0.0..=1.0).contains(&point.normalized)
+            || !(-1_000..=1_000).contains(&point.curve_tension_millis)
+    }) || points.windows(2).any(|pair| {
+        pair[0].beat_raw > pair[1].beat_raw
+            || (!allow_coincident && pair[0].beat_raw == pair[1].beat_raw)
+    }) || points
+        .windows(3)
+        .any(|run| run[0].beat_raw == run[2].beat_raw)
     {
         return Err(Error::InvalidParameterValue);
     }
@@ -1067,10 +1079,13 @@ impl ParameterAutomationBlock<'_> {
             {
                 let span = right.point.beat_raw.checked_sub(left.point.beat_raw)?;
                 let elapsed = beat.checked_sub(left.point.beat_raw)?;
+                let shaped = curve_shape(
+                    elapsed as f64 / span as f64,
+                    left.point.curve_tension_millis,
+                );
                 let normalized = (f64::from(left.point.normalized)
                     + (f64::from(right.point.normalized) - f64::from(left.point.normalized))
-                        * elapsed as f64
-                        / span as f64) as f32;
+                        * shaped) as f32;
                 lane.mapping.value(normalized).ok()
             }
             _ => Some(left.canonical),

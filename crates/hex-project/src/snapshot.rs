@@ -26,6 +26,10 @@ pub struct Snapshot {
     pub automatic_track_names: Vec<u64>,
     /// Strictly ascending receiver track IDs with a retained source path.
     pub retained_source_paths: Vec<u64>,
+    /// Strictly ascending track IDs with canonical balance, mute, or send automation lanes.
+    pub mixer_automation: Vec<crate::TrackMixerAutomationSnapshot>,
+    /// Strictly ascending ordinary track IDs carrying a persisted reversible freeze render.
+    pub frozen_tracks: Vec<crate::FrozenTrackSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub sidechains: Vec<crate::SidechainRouteSnapshot>,
@@ -323,6 +327,45 @@ impl Project {
                 .collect::<BTreeSet<_>>()
                 .into_iter()
                 .collect(),
+            mixer_automation: {
+                let mut entries: Vec<_> = self
+                    .tracks
+                    .iter()
+                    .filter(|track| track.has_mixer_automation())
+                    .map(|track| crate::TrackMixerAutomationSnapshot {
+                        track: track.id.0,
+                        balance: track.balance_lane.points.clone(),
+                        mute: track.mute_lane.points.clone(),
+                        sends: track
+                            .send_lanes
+                            .iter()
+                            .map(|(return_id, lane)| crate::SendAutomationSnapshot {
+                                return_track: return_id.value(),
+                                points: lane.points.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                entries.sort_by_key(|entry| entry.track);
+                entries
+            },
+            frozen_tracks: {
+                let mut entries: Vec<_> = self
+                    .tracks
+                    .iter()
+                    .filter_map(|track| {
+                        track.frozen.map(|freeze| crate::FrozenTrackSnapshot {
+                            track: track.id.0,
+                            asset: freeze.asset.value(),
+                            start: freeze.start,
+                            duration: freeze.duration,
+                            source_frames: freeze.source_frames,
+                        })
+                    })
+                    .collect();
+                entries.sort_by_key(|entry| entry.track);
+                entries
+            },
             import_provenance: self.import_provenance.clone(),
             sample_rate: self.sample_rate,
             sample_rate_mode: self.sample_rate_mode,
@@ -755,6 +798,35 @@ impl Project {
         let sidechains = std::mem::take(&mut snapshot.sidechains);
         let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
         let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
+        let mixer_automation_entries = std::mem::take(&mut snapshot.mixer_automation);
+        let frozen_track_entries = std::mem::take(&mut snapshot.frozen_tracks);
+        if mixer_automation_entries.len() > MAX_TRACKS
+            || mixer_automation_entries
+                .windows(2)
+                .any(|pair| pair[0].track >= pair[1].track)
+        {
+            return Err(Invalid(
+                "mixer automation entries must have unique ascending track ids",
+            ));
+        }
+        let mut mixer_automation_map: BTreeMap<u64, crate::TrackMixerAutomationSnapshot> =
+            mixer_automation_entries
+                .into_iter()
+                .map(|entry| (entry.track, entry))
+                .collect();
+        if frozen_track_entries.len() > MAX_TRACKS
+            || frozen_track_entries
+                .windows(2)
+                .any(|pair| pair[0].track >= pair[1].track)
+        {
+            return Err(Invalid(
+                "frozen tracks must have unique ascending track ids",
+            ));
+        }
+        let mut frozen_tracks_map: BTreeMap<u64, crate::FrozenTrackSnapshot> = frozen_track_entries
+            .into_iter()
+            .map(|entry| (entry.track, entry))
+            .collect();
         if retained_source_paths.len() > MAX_TRACKS
             || retained_source_paths
                 .windows(2)
@@ -1194,6 +1266,65 @@ impl Project {
                     gain: send.gain,
                 });
             }
+            let (balance_lane, mute_lane, send_lanes) =
+                if let Some(entry) = mixer_automation_map.remove(&track.id) {
+                    if entry.balance.is_empty() && entry.mute.is_empty() && entry.sends.is_empty() {
+                        return Err(Invalid("empty mixer automation entry is not allowed"));
+                    }
+                    let balance = crate::MixerAutomationLane::new(
+                        crate::MixerLaneTarget::Balance,
+                        entry.balance,
+                    )?;
+                    let mute =
+                        crate::MixerAutomationLane::new(crate::MixerLaneTarget::Mute, entry.mute)?;
+                    if entry.sends.len() > crate::MAX_RETURN_SENDS_PER_TRACK
+                        || entry
+                            .sends
+                            .windows(2)
+                            .any(|pair| pair[0].return_track >= pair[1].return_track)
+                    {
+                        return Err(Invalid(
+                            "send automation lanes must have unique ascending return ids",
+                        ));
+                    }
+                    let mut send_lanes = Vec::with_capacity(entry.sends.len());
+                    for send in entry.sends {
+                        if send.points.is_empty() {
+                            return Err(Invalid("empty send automation lane is not allowed"));
+                        }
+                        if !return_ids.contains(&send.return_track) {
+                            return Err(Invalid("send automation return target is missing"));
+                        }
+                        let return_id = crate::ReturnId(send.return_track);
+                        let lane = crate::MixerAutomationLane::new(
+                            crate::MixerLaneTarget::Send(return_id),
+                            send.points,
+                        )?;
+                        send_lanes.push((return_id, lane));
+                    }
+                    (balance, mute, send_lanes)
+                } else {
+                    (
+                        crate::MixerAutomationLane::default(),
+                        crate::MixerAutomationLane::default(),
+                        Vec::new(),
+                    )
+                };
+            let frozen = if let Some(entry) = frozen_tracks_map.remove(&track.id) {
+                if track.kind == crate::TrackKind::Group {
+                    return Err(Invalid("group tracks cannot be frozen directly"));
+                }
+                let state = crate::TrackFreezeState {
+                    asset: AssetId(entry.asset),
+                    start: entry.start,
+                    duration: entry.duration,
+                    source_frames: entry.source_frames,
+                };
+                state.validate(&assets)?;
+                Some(state)
+            } else {
+                None
+            };
             tracks.push(Track {
                 group_output_mutes: crate::group_output_mute::snapshot_ranges(
                     track.kind,
@@ -1208,6 +1339,10 @@ impl Project {
                     track.gain_touch_spans,
                     track.gain_touch_epoch,
                 )?,
+                balance_lane,
+                mute_lane,
+                send_lanes,
+                frozen,
                 id: TrackId(track.id),
                 name: track.name,
                 automatic_name: automatic_track_names.remove(&track.id),
@@ -1229,6 +1364,27 @@ impl Project {
         }
         if !retained_source_paths.is_empty() {
             return Err(Invalid("retained source path owner is missing"));
+        }
+        if !mixer_automation_map.is_empty() {
+            return Err(Invalid("mixer automation track owner is missing"));
+        }
+        if !frozen_tracks_map.is_empty() {
+            return Err(Invalid("frozen track owner is missing"));
+        }
+        let mut total_mixer_points = 0_usize;
+        for track in &tracks {
+            total_mixer_points = total_mixer_points
+                .checked_add(track.balance_lane.points.len())
+                .and_then(|n| n.checked_add(track.mute_lane.points.len()))
+                .ok_or(Invalid("mixer automation point count overflow"))?;
+            for (_, lane) in &track.send_lanes {
+                total_mixer_points = total_mixer_points
+                    .checked_add(lane.points.len())
+                    .ok_or(Invalid("mixer automation point count overflow"))?;
+            }
+        }
+        if total_mixer_points > crate::MAX_MIXER_AUTOMATION_POINTS {
+            return Err(Invalid("project mixer automation point limit reached"));
         }
         let mut scenes = Vec::with_capacity(snapshot.session.scenes.len());
         let mut scene_ids = BTreeSet::new();

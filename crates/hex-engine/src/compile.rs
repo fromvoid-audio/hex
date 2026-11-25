@@ -793,106 +793,166 @@ fn compile_project_inner<'a>(
             false
         };
         let mutable_instrument = built_in_limits.is_some();
-        let clips = track
-            .clips()
-            .iter()
-            .map(|clip| {
-                let asset = snapshot
-                    .asset(clip.asset())
-                    .ok_or(Invalid("project asset missing"))?;
-                // Offline media (missing at open) compiles to no playback: the clip
-                // stays in the project and renders silence with no callback work.
-                if snapshot.asset_offline(asset.id())
-                    || clip
-                        .retained_audio_roots()
-                        .any(|root| snapshot.asset_offline(root.clip.asset()))
-                {
-                    return Ok(None);
-                }
-                let bakes_musical_fade = clip.audio_edit().is_some_and(materializes_musical_outer_fade);
-                let (mut compiled, materialized) = if let Some(events) = clip.audio_edit()
-                    .and_then(|edit| edit.domain.events.as_ref())
-                    .filter(|events| !events.sources.is_empty())
-                {
-                    let mut sources = Vec::new();
-                    sources.try_reserve_exact(events.sources.len())
-                        .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
-                    for root in clip.retained_audio_roots() {
-                        sources.try_reserve(1)
-                            .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
-                        let asset = snapshot.asset(root.clip.asset())
-                            .ok_or(Invalid("grouped audio source asset missing"))?;
-                        let PreparedAudioSourceRef::Resident(audio) = resolve_source(asset, snapshot.sample_rate())? else {
-                            return Err(Invalid("grouped audio preparation requires resident sources; source changes were not committed"));
-                        };
-                        sources.push(crate::audio_transform::GroupSource { root, asset, audio });
-                    }
-                    (Some(transforms.compile_arrangement_group(clip, &sources)?), None)
-                } else {
-                    let source = resolve_source(asset, snapshot.sample_rate())?;
-                    if bakes_musical_fade {
-                        let (compiled, peaks) = transforms.capture_musical_peaks(musical_peak_limit, || {
-                            transforms.compile_clip(snapshot, clip, asset, source)
-                        })?;
-                        (compiled, Some(peaks))
-                    } else {
-                        (transforms.compile_clip(snapshot, clip, asset, source)?, None)
+        let is_frozen = track.frozen().is_some();
+        let clips = if let Some(freeze) = track.frozen() {
+            let asset = snapshot
+                .asset(freeze.asset)
+                .ok_or(Invalid("frozen track asset missing"))?;
+            if snapshot.asset_offline(asset.id()) {
+                Vec::new()
+            } else {
+                let source = resolve_source(asset, snapshot.sample_rate())?;
+                let clip = match source {
+                    PreparedAudioSourceRef::Resident(audio) => crate::Clip::region(
+                        audio.clone(),
+                        freeze.start,
+                        freeze.duration,
+                        0,
+                        freeze.source_frames,
+                        false,
+                    )?,
+                    PreparedAudioSourceRef::Streamed(stream)
+                    | PreparedAudioSourceRef::StreamedWithPitch(stream, _) => {
+                        crate::Clip::streamed_region(
+                            Arc::clone(stream),
+                            freeze.start,
+                            freeze.duration,
+                            0,
+                            freeze.source_frames,
+                            false,
+                        )?
                     }
                 };
-                let mut materialized = materialized.unwrap_or_default();
-                let mut neutral_musical_peaks = std::mem::take(&mut materialized.destination);
-                if let Some(compiled) = compiled.as_mut() {
-                    if !bakes_musical_fade && musical_peak_candidate(clip) {
-                        neutral_musical_peaks = transforms.capture_unbaked_musical_peaks(
-                            compiled, musical_peak_limit, &mut neutral_peak_budget,
-                        );
+                vec![clip]
+            }
+        } else {
+            track
+                .clips()
+                .iter()
+                .map(|clip| {
+                    let asset = snapshot
+                        .asset(clip.asset())
+                        .ok_or(Invalid("project asset missing"))?;
+                    // Offline media (missing at open) compiles to no playback: the clip
+                    // stays in the project and renders silence with no callback work.
+                    if snapshot.asset_offline(asset.id())
+                        || clip
+                            .retained_audio_roots()
+                            .any(|root| snapshot.asset_offline(root.clip.asset()))
+                    {
+                        return Ok(None);
                     }
-                    compiled.active = clip.active();
-                }
-                if let Some(compiled) = &compiled
-                    && let Some(audio) = &compiled.audio
-                    && (audio.frames._derived.is_some() || !neutral_musical_peaks.is_empty())
-                {
-                    let event_source_peaks = materialized.event_source.or_else(|| {
-                        clip.audio_edit()
-                            .filter(|edit| previews_event_source_peaks(edit))
-                            .and_then(|_| transforms.event_source_peaks(audio))
-                    });
-                    let repeat = crate::PreparedAudioRepeat::from_clip(compiled);
-                    let event_source_repeat = event_source_peaks.as_ref()
-                        .filter(|source| source.musical_clock().is_some())
-                        .and(materialized.event_source_repeat.or(repeat));
-                    let event_source_occurrences = materialized.event_source_occurrences.or_else(|| {
-                        clip.audio_edit()
-                            .filter(|edit| (edit.placement.is_some() || edit.content_view.is_some()) && matches!(edit.domain.clock, hex_project::AudioDomainClock::Beats(_)))
-                            .and_then(|_| transforms.event_source_occurrences(audio))
-                    });
-                    audio_clip_views
-                        .try_reserve(1)
-                        .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
-                    audio_clip_views.push(crate::PreparedAudioClipView {
-                        clip: clip.id(),
-                        audio: audio.clone(),
-                        offset: compiled.source_offset as u64,
-                        length: compiled.end - compiled.start,
-                        sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
-                        neutral_musical_peaks,
-                        event_source_peaks,
-                        event_source_repeat,
-                        event_source_occurrences,
-                        event_sources: (clip.has_retained_audio_roots()
-                            || clip.audio_edit().and_then(|edit| edit.domain.events.as_ref())
-                                .is_some_and(|events| !events.warp_sources.is_empty()))
-                            .then(|| transforms.event_sources(audio)).flatten(),
-                        repeat,
-                    });
-                }
-                Ok::<_, Invalid>(compiled)
-            })
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .flatten()
-            .collect();
+                    let bakes_musical_fade =
+                        clip.audio_edit().is_some_and(materializes_musical_outer_fade);
+                    let (mut compiled, materialized) = if let Some(events) = clip
+                        .audio_edit()
+                        .and_then(|edit| edit.domain.events.as_ref())
+                        .filter(|events| !events.sources.is_empty())
+                    {
+                        let mut sources = Vec::new();
+                        sources
+                            .try_reserve_exact(events.sources.len())
+                            .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
+                        for root in clip.retained_audio_roots() {
+                            sources
+                                .try_reserve(1)
+                                .map_err(|_| Invalid("grouped audio dependency allocation failed"))?;
+                            let asset = snapshot
+                                .asset(root.clip.asset())
+                                .ok_or(Invalid("grouped audio source asset missing"))?;
+                            let PreparedAudioSourceRef::Resident(audio) =
+                                resolve_source(asset, snapshot.sample_rate())?
+                            else {
+                                return Err(Invalid(
+                                    "grouped audio preparation requires resident sources; source changes were not committed",
+                                ));
+                            };
+                            sources.push(crate::audio_transform::GroupSource { root, asset, audio });
+                        }
+                        (Some(transforms.compile_arrangement_group(clip, &sources)?), None)
+                    } else {
+                        let source = resolve_source(asset, snapshot.sample_rate())?;
+                        if bakes_musical_fade {
+                            let (compiled, peaks) = transforms
+                                .capture_musical_peaks(musical_peak_limit, || {
+                                    transforms.compile_clip(snapshot, clip, asset, source)
+                                })?;
+                            (compiled, Some(peaks))
+                        } else {
+                            (
+                                transforms.compile_clip(snapshot, clip, asset, source)?,
+                                None,
+                            )
+                        }
+                    };
+                    let mut materialized = materialized.unwrap_or_default();
+                    let mut neutral_musical_peaks = std::mem::take(&mut materialized.destination);
+                    if let Some(compiled) = compiled.as_mut() {
+                        if !bakes_musical_fade && musical_peak_candidate(clip) {
+                            neutral_musical_peaks = transforms.capture_unbaked_musical_peaks(
+                                compiled,
+                                musical_peak_limit,
+                                &mut neutral_peak_budget,
+                            );
+                        }
+                        compiled.active = clip.active();
+                    }
+                    if let Some(compiled) = &compiled
+                        && let Some(audio) = &compiled.audio
+                        && (audio.frames._derived.is_some() || !neutral_musical_peaks.is_empty())
+                    {
+                        let event_source_peaks = materialized.event_source.or_else(|| {
+                            clip.audio_edit()
+                                .filter(|edit| previews_event_source_peaks(edit))
+                                .and_then(|_| transforms.event_source_peaks(audio))
+                        });
+                        let repeat = crate::PreparedAudioRepeat::from_clip(compiled);
+                        let event_source_repeat = event_source_peaks
+                            .as_ref()
+                            .filter(|source| source.musical_clock().is_some())
+                            .and(materialized.event_source_repeat.or(repeat));
+                        let event_source_occurrences =
+                            materialized.event_source_occurrences.or_else(|| {
+                                clip.audio_edit()
+                                    .filter(|edit| {
+                                        (edit.placement.is_some() || edit.content_view.is_some())
+                                            && matches!(
+                                                edit.domain.clock,
+                                                hex_project::AudioDomainClock::Beats(_)
+                                            )
+                                    })
+                                    .and_then(|_| transforms.event_source_occurrences(audio))
+                            });
+                        audio_clip_views
+                            .try_reserve(1)
+                            .map_err(|_| Invalid("audio waveform sidecar allocation failed"))?;
+                        audio_clip_views.push(crate::PreparedAudioClipView {
+                            clip: clip.id(),
+                            audio: audio.clone(),
+                            offset: compiled.source_offset as u64,
+                            length: compiled.end - compiled.start,
+                            sparse: compiled.metadata.as_deref().and_then(|m| m.sparse.clone()),
+                            neutral_musical_peaks,
+                            event_source_peaks,
+                            event_source_repeat,
+                            event_source_occurrences,
+                            event_sources: (clip.has_retained_audio_roots()
+                                || clip
+                                    .audio_edit()
+                                    .and_then(|edit| edit.domain.events.as_ref())
+                                    .is_some_and(|events| !events.warp_sources.is_empty()))
+                            .then(|| transforms.event_sources(audio))
+                            .flatten(),
+                            repeat,
+                        });
+                    }
+                    Ok::<_, Invalid>(compiled)
+                })
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .collect()
+        };
         let input_muted = solo.muted(track_index, track)?;
         let shared_source = track.source_id().filter(|source| {
             snapshot.source_contributors(*source).count() > 1
@@ -924,7 +984,7 @@ fn compile_project_inner<'a>(
                 previews.as_deref_mut(),
             )?;
         }
-        let instrument = if midi_source.midi_clips().is_empty() {
+        let instrument = if is_frozen || midi_source.midi_clips().is_empty() {
             None
         } else {
             let prepared_instrument = track
@@ -964,14 +1024,23 @@ fn compile_project_inner<'a>(
                 crate::midi_note_bank::MAX_ARRANGEMENT_NOTE_BANK_REFERENCES,
             )?;
         }
-        let effect_plan = compile_device_effects(
-            track,
-            snapshot,
-            registry,
-            &device_context,
-            native_input,
-            external_inputs,
-        )?;
+        let effect_plan = if is_frozen {
+            CompiledEffectPlan {
+                fused: None,
+                prefix: None,
+                suffix: None,
+                device_chain: Vec::new(),
+            }
+        } else {
+            compile_device_effects(
+                track,
+                snapshot,
+                registry,
+                &device_context,
+                native_input,
+                external_inputs,
+            )?
+        };
         let device_chain = effect_plan.device_chain;
         for device in &device_chain {
             if let Some(definition) = &device.definition {
@@ -994,21 +1063,56 @@ fn compile_project_inner<'a>(
                 }
             }
         }
-        let sends = track
-            .sends()
-            .iter()
-            .map(|send| {
-                let return_index = snapshot
-                    .return_tracks()
-                    .iter()
-                    .position(|candidate| candidate.id() == send.return_track())
-                    .ok_or(Invalid("send return target is missing during compile"))?;
-                Ok(crate::CompiledSend {
-                    return_index,
-                    gain: send.gain(),
-                })
-            })
-            .collect::<Result<Vec<_>, Invalid>>()?;
+        let mut sends = Vec::new();
+        let mut send_envelopes = Vec::new();
+        for send in track.sends() {
+            let return_index = snapshot
+                .return_tracks()
+                .iter()
+                .position(|candidate| candidate.id() == send.return_track())
+                .ok_or(Invalid("send return target is missing during compile"))?;
+            let env = match track.send_lane(send.return_track()) {
+                Some(lane) => {
+                    crate::mixer_envelope::PreparedMixerLane::prepare(lane, snapshot.tempo_map())?
+                }
+                None => None,
+            };
+            sends.push(crate::CompiledSend {
+                return_index,
+                gain: send.gain(),
+            });
+            send_envelopes.push(env);
+        }
+        for (return_id, lane) in track.send_lanes() {
+            let return_index = snapshot
+                .return_tracks()
+                .iter()
+                .position(|candidate| candidate.id() == *return_id)
+                .ok_or(Invalid(
+                    "send automation return target is missing during compile",
+                ))?;
+            if sends
+                .iter()
+                .any(|existing| existing.return_index == return_index)
+            {
+                continue;
+            }
+            let env =
+                crate::mixer_envelope::PreparedMixerLane::prepare(lane, snapshot.tempo_map())?;
+            sends.push(crate::CompiledSend {
+                return_index,
+                gain: 0.0,
+            });
+            send_envelopes.push(env);
+        }
+        let balance_envelope = crate::mixer_envelope::PreparedMixerLane::prepare(
+            track.balance_lane(),
+            snapshot.tempo_map(),
+        )?;
+        let mute_envelope = crate::mixer_envelope::PreparedMixerLane::prepare(
+            track.mute_lane(),
+            snapshot.tempo_map(),
+        )?;
         tracks.push(
             Track::with_audio_instrument_and_effects(
                 clips,
@@ -1016,7 +1120,11 @@ fn compile_project_inner<'a>(
                 muted,
                 track.balance(),
                 instrument,
-                track.instrument_position().unwrap_or(0),
+                if is_frozen {
+                    0
+                } else {
+                    track.instrument_position().unwrap_or(0)
+                },
                 effect_plan.fused,
                 effect_plan.prefix,
                 effect_plan.suffix,
@@ -1029,34 +1137,58 @@ fn compile_project_inner<'a>(
                 local_content_enabled,
             )
             .with_source_binding(
-                track.source_id(),
-                track
-                    .source_id()
-                    .and_then(|source| snapshot.native_source(source))
-                    .and_then(hex_project::NativeSource::receiver)
-                    .and_then(|receiver| {
-                        snapshot
-                            .tracks()
-                            .iter()
-                            .position(|track| track.id() == receiver)
-                    }),
+                if is_frozen { None } else { track.source_id() },
+                if is_frozen {
+                    None
+                } else {
+                    track
+                        .source_id()
+                        .and_then(|source| snapshot.native_source(source))
+                        .and_then(hex_project::NativeSource::receiver)
+                        .and_then(|receiver| {
+                            snapshot
+                                .tracks()
+                                .iter()
+                                .position(|track| track.id() == receiver)
+                        })
+                },
             )
-            .with_midi_source_index((source_index != track_index).then_some(source_index))
-            .with_instrument_config(track.instrument().filter(|_| track.receives_source_audio()))
+            .with_midi_source_index(if is_frozen {
+                None
+            } else {
+                (source_index != track_index).then_some(source_index)
+            })
+            .with_instrument_config(if is_frozen {
+                None
+            } else {
+                track.instrument().filter(|_| track.receives_source_audio())
+            })
             .with_tuning_identity(shared_contexts.tuning_identity())
-            .with_instrument_latency(instrument_latency, instrument_runtime_latency)
-            .with_mutable_instrument(
-                mutable_instrument && track.receives_source_audio(),
-                mutable_looping_source,
+            .with_instrument_latency(
+                if is_frozen {
+                    Some(0)
+                } else {
+                    instrument_latency
+                },
+                if is_frozen {
+                    Some(0)
+                } else {
+                    instrument_runtime_latency
+                },
             )
-            .with_foreign_instrument(foreign_instrument)
+            .with_mutable_instrument(
+                !is_frozen && mutable_instrument && track.receives_source_audio(),
+                !is_frozen && mutable_looping_source,
+            )
+            .with_foreign_instrument(if is_frozen { None } else { foreign_instrument })
             .with_sends(sends)
             .with_gain_envelope(
                 track.gain_lane(),
                 snapshot.tempo_map(),
                 track.balance(),
                 track.gain(),
-            )?,
+            )?
+            .with_mixer_envelopes(balance_envelope, mute_envelope, send_envelopes),
         );
     }
     validate_shared_arrangement_density(snapshot, &tracks, &source_instruments)?;

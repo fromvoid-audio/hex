@@ -201,6 +201,7 @@ fn unproved_donors_and_output_programs_apply_the_existing_exact_law() {
                         beat_raw: 0,
                         normalized: HostGain::from_db(-6.0).unwrap().normalized(),
                         step: true,
+                        curve_tension_millis: 0,
                     }],
                 )
                 .unwrap();
@@ -283,11 +284,13 @@ fn authored_output_gain_step_stays_sample_accurate_across_a_canonical_state_edit
                 beat_raw: 0,
                 normalized: HostGain::ZERO.normalized(),
                 step: true,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 100,
                 normalized: HostGain::from_db(-12.0).unwrap().normalized(),
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
     )

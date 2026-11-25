@@ -39,11 +39,13 @@ fn program(
                 beat_raw: 10,
                 normalized: 0.0,
                 step: false,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 20,
                 normalized: 1.0,
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
     )
@@ -194,6 +196,7 @@ fn constructor_refuses_invalid_domains_ranges_and_order_before_processing() {
         beat_raw: 0,
         normalized: 0.5,
         step: false,
+        curve_tension_millis: 0,
     };
     for normalized in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
         assert!(
@@ -346,11 +349,13 @@ fn bulk_matches_scalar_with_one_clock_query_and_overwrites_every_missing_slot() 
                 beat_raw: 10,
                 normalized: 0.0,
                 step: i == 2,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 20,
                 normalized: if i == 3 { 0.0 } else { 1.0 },
                 step: true,
+                curve_tension_millis: 0,
             },
         ]);
         lanes.push(ParameterAutomationLane {
@@ -410,16 +415,19 @@ fn host_program() -> PreparedParameterAutomation {
                 beat_raw: 10,
                 normalized: 0.0,
                 step: false,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 20,
                 normalized: 1.0,
                 step: true,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 0,
                 normalized: 0.5,
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
     )
@@ -465,7 +473,8 @@ fn host_lanes_are_not_provider_ids_and_use_content_clock_and_exact_physical_stor
             vec![ParameterAutomationPoint {
                 beat_raw: 0,
                 normalized: 0.5,
-                step: false
+                step: false,
+                curve_tension_millis: 0,
             }]
         )
         .is_err()
@@ -646,6 +655,7 @@ fn host_gain_uses_exact_integer_law_and_rejects_malformed_prepared_points() {
                 beat_raw: 0,
                 normalized,
                 step: false,
+                curve_tension_millis: 0,
             }],
         )
     };
@@ -692,26 +702,31 @@ fn mixed_cached_host_and_provider_rows_keep_bulk_provider_only_and_quote_all_sta
                 beat_raw: 10,
                 normalized: 0.0,
                 step: false,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 20,
                 normalized: 1.0,
                 step: true,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 0,
                 normalized: HostGain::ZERO.normalized(),
                 step: true,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 10,
                 normalized: 0.0,
                 step: false,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 20,
                 normalized: 1.0,
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
     )
@@ -891,21 +906,25 @@ fn transient_boolean_choice_and_other_provider_lanes_restore_the_current_curve()
                     beat_raw: 10,
                     normalized: 0.0,
                     step: false,
+                    curve_tension_millis: 0,
                 },
                 ParameterAutomationPoint {
                     beat_raw: 20,
                     normalized: 1.0,
                     step: true,
+                    curve_tension_millis: 0,
                 },
                 ParameterAutomationPoint {
                     beat_raw: 10,
                     normalized: 0.0,
                     step: false,
+                    curve_tension_millis: 0,
                 },
                 ParameterAutomationPoint {
                     beat_raw: 20,
                     normalized: 1.0,
                     step: true,
+                    curve_tension_millis: 0,
                 },
             ],
         )
@@ -1588,16 +1607,19 @@ fn host_gain_reads_preserve_unrounded_frames_and_existing_linear_precedence() {
                 beat_raw: 2,
                 normalized: left,
                 step: false,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 6,
                 normalized: right,
                 step: true,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 5,
                 normalized: touch,
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
         vec![ParameterAutomationTouchSpan {
@@ -1680,6 +1702,7 @@ fn native_automation_ramps_to_the_incoming_point_and_jumps_at_the_shared_beat() 
                 beat_raw,
                 normalized,
                 step: false,
+                curve_tension_millis: 0,
             })
             .to_vec(),
     )

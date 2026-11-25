@@ -381,6 +381,32 @@ pub enum Command {
     ClearTrackGainEnvelope {
         track: TrackId,
     },
+    /// Replace or clear a track mixer automation lane (balance/pan, mute, or send level).
+    SetTrackMixerAutomation {
+        track: TrackId,
+        target: crate::MixerLaneTarget,
+        points: Vec<crate::MixerAutomationPoint>,
+    },
+    /// Freeze an ordinary track by adopting a newly rendered project-rate WAV asset,
+    /// leaving all original clips, MIDI, instrument, devices, and automation intact.
+    FreezeTrack {
+        track: TrackId,
+        path: PathBuf,
+        start: u64,
+        duration: u64,
+        frames: u64,
+    },
+    /// Freeze an ordinary track using an already registered project-rate asset.
+    FreezeTrackWithAsset {
+        track: TrackId,
+        asset: AssetId,
+        start: u64,
+        duration: u64,
+    },
+    /// Unfreeze a frozen track, restoring live playback of its untouched original content.
+    UnfreezeTrack {
+        track: TrackId,
+    },
     /// Validate proposed metadata, then refuse non-legacy adoption until playback support.
     SetRouting(Vec<crate::RoutingEdge>),
     /// Add/change a post-fader stereo feed to a track input; zero removes it.

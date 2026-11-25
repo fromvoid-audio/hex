@@ -21,7 +21,12 @@ pub struct Track {
     pub(crate) has_streamed_clips: bool,
     pub(crate) mix: PreparedTrackMix,
     pub(crate) source_mix: PreparedTrackMix,
+    pub(crate) static_gain: f32,
+    pub(crate) static_balance: f32,
     pub(crate) gain_envelope: Option<gain_envelope::PreparedGainEnvelope>,
+    pub(crate) balance_envelope: Option<crate::mixer_envelope::PreparedMixerLane>,
+    pub(crate) mute_envelope: Option<crate::mixer_envelope::PreparedMixerLane>,
+    pub(crate) send_envelopes: Vec<Option<crate::mixer_envelope::PreparedMixerLane>>,
     pub(crate) instrument: Option<InstrumentTrack>,
     pub(crate) instrument_position: usize,
     pub(crate) ordered_prefix: Option<hex_lattice::StereoMatrix>,
@@ -293,7 +298,12 @@ impl Track {
             clips,
             mix: PreparedTrackMix::new(gain, balance, muted)?,
             source_mix: PreparedTrackMix::new(gain, balance, muted)?,
+            static_gain: gain,
+            static_balance: balance,
             gain_envelope: None,
+            balance_envelope: None,
+            mute_envelope: None,
+            send_envelopes: Vec::new(),
             instrument: None,
             instrument_position: 0,
             ordered_prefix: None,
@@ -352,7 +362,12 @@ impl Track {
             clips,
             mix,
             source_mix,
+            static_gain: gain,
+            static_balance: balance,
             gain_envelope: None,
+            balance_envelope: None,
+            mute_envelope: None,
+            send_envelopes: Vec::new(),
             instrument,
             instrument_position,
             ordered_prefix,
@@ -657,13 +672,68 @@ impl Track {
             .as_ref()
             .map_or(self.mix, |envelope| envelope.mix_with_gain(gain))
     }
+    pub(crate) fn with_mixer_envelopes(
+        mut self,
+        balance: Option<crate::mixer_envelope::PreparedMixerLane>,
+        mute: Option<crate::mixer_envelope::PreparedMixerLane>,
+        send_envelopes: Vec<Option<crate::mixer_envelope::PreparedMixerLane>>,
+    ) -> Self {
+        if balance.is_some() || mute.is_some() {
+            self.source_mix = PreparedTrackMix::identity();
+        }
+        self.balance_envelope = balance;
+        self.mute_envelope = mute;
+        self.send_envelopes = send_envelopes;
+        self
+    }
+
     pub(crate) fn has_gain_automation(&self) -> bool {
         self.gain_envelope.is_some()
+            || self.balance_envelope.is_some()
+            || self.mute_envelope.is_some()
     }
+
+    pub(crate) fn has_send_automation(&self) -> bool {
+        self.send_envelopes.iter().any(Option::is_some)
+    }
+
+    #[inline]
+    pub(crate) fn send_gain_at(&self, send_index: usize, frame: u64) -> f32 {
+        if let Some(Some(env)) = self.send_envelopes.get(send_index) {
+            return env.value_at(frame).clamp(0.0, 2.0);
+        }
+        self.sends.get(send_index).map_or(0.0, |send| send.gain)
+    }
+
     pub(crate) fn mix_at(&self, frame: u64) -> PreparedTrackMix {
-        self.gain_envelope
+        if self.balance_envelope.is_none() && self.mute_envelope.is_none() {
+            return self
+                .gain_envelope
+                .as_ref()
+                .map_or(self.mix, |envelope| envelope.mix_at(frame));
+        }
+        let gain = self
+            .gain_envelope
             .as_ref()
-            .map_or(self.mix, |envelope| envelope.mix_at(frame))
+            .map_or(self.static_gain, |envelope| envelope.value_at(frame));
+        let balance = self
+            .balance_envelope
+            .as_ref()
+            .map_or(self.static_balance, |env| {
+                env.value_at(frame).clamp(-1.0, 1.0)
+            });
+        let auto_muted = self
+            .mute_envelope
+            .as_ref()
+            .is_some_and(|env| env.value_at(frame) >= 0.5);
+        PreparedTrackMix {
+            channel_gain: [
+                gain * (1.0 - balance.max(0.0)),
+                gain * (1.0 + balance.min(0.0)),
+            ],
+            effects: self.mix.effects,
+            muted: self.mix.muted || auto_muted,
+        }
     }
     pub(crate) fn gain_touch_target_at(&self, frame: u64) -> Option<gain_envelope::TouchTarget> {
         self.gain_envelope.as_ref()?.touch_target_at(frame)

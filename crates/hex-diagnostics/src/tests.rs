@@ -145,6 +145,37 @@ fn queue_pressure_has_exact_sequence_gap_and_recovers_without_capacity_wait() {
 }
 
 #[test]
+fn burst_of_512_events_retains_all_records_before_explicit_overflow() {
+    const {
+        assert!(
+            EVENT_CAPACITY >= 512,
+            "burst headroom must be at least 512 records"
+        );
+    }
+    let (handle, receiver) = pair();
+    for index in 0..EVENT_CAPACITY {
+        handle
+            .record_typed(
+                if index % 2 == 0 {
+                    Level::Warn
+                } else {
+                    Level::Error
+                },
+                Category::Plugin,
+                "burst event",
+            )
+            .expect("within bounded burst headroom");
+    }
+    assert_eq!(handle.overflow_count(), 0);
+    assert_eq!(
+        handle.record_typed(Level::Info, Category::Plugin, "over cap"),
+        Err(PublishError::Full)
+    );
+    assert_eq!(handle.overflow_count(), 1);
+    assert_eq!(receiver.try_iter().count(), EVENT_CAPACITY);
+}
+
+#[test]
 fn contended_producer_waits_for_the_gate_and_loses_nothing() {
     let (handle, receiver) = pair();
     let gate = handle.shared.admission.lock().unwrap();

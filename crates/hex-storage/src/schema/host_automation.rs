@@ -80,15 +80,22 @@ pub(crate) fn encode(project: &Project) -> Result<serde_json::Value, StorageErro
                 points: lane
                     .points
                     .iter()
-                    .map(|p| Point {
-                        beat_raw: p.beat.raw(),
-                        value: p.value.get(),
-                        outgoing: match p.outgoing {
-                            AutomationInterpolation::Step => Interpolation::Step,
-                            AutomationInterpolation::Linear => Interpolation::Linear,
-                        },
+                    .map(|p| {
+                        Ok(Point {
+                            beat_raw: p.beat.raw(),
+                            value: p.value.get(),
+                            outgoing: match p.outgoing {
+                                AutomationInterpolation::Step => Interpolation::Step,
+                                AutomationInterpolation::Linear => Interpolation::Linear,
+                                AutomationInterpolation::Curve(_) => {
+                                    return Err(StorageError::Invalid(
+                                        "older schema cannot save curved automation",
+                                    ));
+                                }
+                            },
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, StorageError>>()?,
             });
         }
     }

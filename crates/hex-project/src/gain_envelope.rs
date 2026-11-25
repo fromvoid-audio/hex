@@ -54,6 +54,7 @@ impl Project {
             let track = self.track(id).ok_or(Invalid("track no longer exists"))?;
             if !track.gain_envelope().is_empty()
                 || !track.gain_lane.spans.is_empty()
+                || track.has_mixer_automation()
                 || track
                     .devices()
                     .iter()

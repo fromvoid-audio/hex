@@ -1152,6 +1152,13 @@ impl Project {
                 if self
                     .tracks
                     .iter()
+                    .any(|t| t.frozen.is_some_and(|freeze| freeze.asset == id))
+                {
+                    return Err(Invalid("media is still referenced by a frozen track"));
+                }
+                if self
+                    .tracks
+                    .iter()
                     .flat_map(Track::clips)
                     .any(|c| c.referenced_assets().any(|asset| asset == id))
                     || self.session.cells.iter().any(|cell| matches!(&cell.content, crate::SessionCellContent::Audio(clip) if clip.asset == id))
