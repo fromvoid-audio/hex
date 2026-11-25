@@ -5413,8 +5413,88 @@ fn confirmed_limiter_resumes_file_backed_audio_on_the_same_output() {
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
-fn removing_longer_main_limiter_requires_consent_and_keeps_the_same_output() {
-    confirmed_limiter_keeps_the_same_output(262_144, false, LimiterEdit::RemoveDevice);
+fn removing_longer_main_limiter_retains_the_running_pass_delay_without_consent() {
+    use hex_project::Command;
+    const MARKER_START: u64 = 8192;
+    const LOOKAHEAD_FRAMES: u64 = 144; // 3 ms at 48 kHz
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let mut applied = h.applied(0).0;
+    h.run(Request::Import(files.wav(48_000, 16_384)));
+    applied = h.applied(applied).0;
+    h.run(Request::ImportToNewTrack {
+        path: files.constant_wav("marker.wav", 48_000, 4096, &[4096]),
+        before_track: None,
+        start: MARKER_START,
+    });
+    applied = h.applied(applied).0;
+    let limiter = hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(
+        "hex.limiter",
+    ))
+    .unwrap();
+    let lookahead = hex_engine::native_device_descriptors(limiter.type_id())
+        .unwrap()
+        .iter()
+        .find(|descriptor| descriptor.label == "lookahead")
+        .unwrap()
+        .id;
+    let limiter = hex_engine::patch_native_device_parameter(
+        &limiter,
+        lookahead,
+        hex_session::device_gesture::ParameterValue::Choice(1),
+    )
+    .unwrap();
+    let inserted = h.run(Request::Edit(Command::InsertMainDevice {
+        before: None,
+        state: limiter,
+    }));
+    h.applied(applied);
+    let device = inserted.state.project.main_devices()[0].id();
+    h.audio
+        .as_ref()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    for _ in 0..4 {
+        h.render();
+    }
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    h.enable_confirmed_device_inserts();
+    let installed = install_running_device_edit(
+        &mut h,
+        "remove main limiter",
+        Request::Edit(Command::RemoveDevice(device)),
+        &inserted.state,
+    );
+    assert!(installed.state.project.main_devices().is_empty());
+    let status = h.audio.as_ref().unwrap().status().unwrap().clone();
+    assert!(status.playing.load(Acquire));
+    let expected_edge = MARKER_START + LOOKAHEAD_FRAMES;
+    let mut frame = status.position.load(Acquire);
+    assert!(
+        frame < MARKER_START,
+        "fixture marker played before the edit"
+    );
+    while frame <= expected_edge {
+        let block = h.render();
+        for (offset, sample) in block.into_iter().enumerate() {
+            let expected = if frame + (offset as u64) < expected_edge {
+                0.25
+            } else {
+                0.375
+            };
+            assert_eq!(
+                sample,
+                [expected; 2],
+                "output frame {}",
+                frame + offset as u64
+            );
+        }
+        frame += 64;
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -5430,7 +5510,7 @@ fn removing_track_with_limiter_requires_consent_and_keeps_the_same_output() {
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-fn install_running_device_move_for_history(
+fn install_running_device_edit(
     harness: &mut ResidentHarness,
     action: &str,
     request: Request,
@@ -5620,7 +5700,7 @@ fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
             .any(|lane| lane.abs() > 1e-4)
     );
 
-    let moved = install_running_device_move_for_history(
+    let moved = install_running_device_edit(
         &mut h,
         "move",
         Request::MoveTrackDevices {
@@ -5653,11 +5733,9 @@ fn assert_held_instrument_move_history(instrument: HeldMoveInstrument) {
         device
     );
 
-    let undone =
-        install_running_device_move_for_history(&mut h, "undo", Request::Undo, &moved.state);
+    let undone = install_running_device_edit(&mut h, "undo", Request::Undo, &moved.state);
     assert_eq!(undone.state.project, original.state.project);
-    let redone =
-        install_running_device_move_for_history(&mut h, "redo", Request::Redo, &undone.state);
+    let redone = install_running_device_edit(&mut h, "redo", Request::Redo, &undone.state);
     assert_eq!(redone.state.project, moved.state.project);
 }
 
@@ -5710,7 +5788,7 @@ fn utility_prefix_move_undo_and_redo_wait_for_the_running_audio_cut() {
     for _ in 0..8 {
         h.render();
     }
-    let moved = install_running_device_move_for_history(
+    let moved = install_running_device_edit(
         &mut h,
         "move",
         Request::MoveTrackDevices {
@@ -5732,11 +5810,9 @@ fn utility_prefix_move_undo_and_redo_wait_for_the_running_audio_cut() {
             .len(),
         2
     );
-    let undone =
-        install_running_device_move_for_history(&mut h, "undo", Request::Undo, &moved.state);
+    let undone = install_running_device_edit(&mut h, "undo", Request::Undo, &moved.state);
     assert_eq!(undone.state.project, original.state.project);
-    let redone =
-        install_running_device_move_for_history(&mut h, "redo", Request::Redo, &undone.state);
+    let redone = install_running_device_edit(&mut h, "redo", Request::Redo, &undone.state);
     assert_eq!(redone.state.project, moved.state.project);
 }
 
@@ -5784,7 +5860,7 @@ fn resident_discontiguous_reorder_history_restores_exact_order_at_each_audio_cut
     }
     assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
 
-    let reordered = install_running_device_move_for_history(
+    let reordered = install_running_device_edit(
         &mut h,
         "reorder",
         Request::ReorderDevices {
@@ -5800,19 +5876,10 @@ fn resident_discontiguous_reorder_history_restores_exact_order_at_each_audio_cut
     let order: Vec<_> = devices.iter().map(hex_project::Device::id).collect();
     assert_eq!(order, [second, fourth, first, third]);
     // This order cannot restore the original interleaving with a single reorder.
-    let undone = install_running_device_move_for_history(
-        &mut h,
-        "undo reorder",
-        Request::Undo,
-        &reordered.state,
-    );
+    let undone =
+        install_running_device_edit(&mut h, "undo reorder", Request::Undo, &reordered.state);
     assert_eq!(undone.state.project, original.state.project);
-    let redone = install_running_device_move_for_history(
-        &mut h,
-        "redo reorder",
-        Request::Redo,
-        &undone.state,
-    );
+    let redone = install_running_device_edit(&mut h, "redo reorder", Request::Redo, &undone.state);
     assert_eq!(redone.state.project, reordered.state.project);
 }
 
@@ -6108,7 +6175,6 @@ fn verified_file_native_removal(stop_during_fade: bool) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LimiterEdit {
     Insert,
-    RemoveDevice,
     CutDevice,
     RemoveTrack,
 }
@@ -6143,26 +6209,9 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
     );
     let (mut applied, _) = h.applied(applied);
     let limiter = || {
-        let default = hex_engine::default_native_device_state_for_class(
+        hex_engine::default_native_device_state_for_class(
             hex_engine::NativeDeviceClass::Effect,
             hex_engine::DeviceTypeId::from_static("hex.limiter"),
-        )
-        .unwrap();
-        if edit != LimiterEdit::RemoveDevice {
-            return default;
-        }
-        // The default 72-frame Main reduction fits the retained pass delay.
-        // At 48 kHz the 3 ms lookahead needs 144 frames and requires consent.
-        let lookahead = hex_engine::native_device_descriptors(default.type_id())
-            .unwrap()
-            .iter()
-            .find(|descriptor| descriptor.label == "lookahead")
-            .unwrap()
-            .id;
-        hex_engine::patch_native_device_parameter(
-            &default,
-            lookahead,
-            hex_session::device_gesture::ParameterValue::Choice(1),
         )
         .unwrap()
     };
@@ -6219,9 +6268,6 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
     for proceed in [false, true] {
         let request = match edit {
             LimiterEdit::Insert => Request::Edit(insert()),
-            LimiterEdit::RemoveDevice => {
-                Request::Edit(Command::RemoveDevice(before.project.main_devices()[0].id()))
-            }
             LimiterEdit::CutDevice => Request::DeviceClipboard {
                 project_generation: predecessor.context.project_generation,
                 revision: before.revision,
@@ -6246,8 +6292,7 @@ fn confirmed_limiter_keeps_the_same_output(frame_limit: u64, streamed: bool, edi
             offer.operation(),
             match edit {
                 LimiterEdit::Insert => GraphEditOperation::InsertDevice,
-                LimiterEdit::RemoveDevice | LimiterEdit::CutDevice =>
-                    GraphEditOperation::RemoveDevice,
+                LimiterEdit::CutDevice => GraphEditOperation::RemoveDevice,
                 LimiterEdit::RemoveTrack => GraphEditOperation::RemoveTrack,
             }
         );
