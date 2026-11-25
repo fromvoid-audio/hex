@@ -14,7 +14,7 @@ use hex_session::service::{
 use std::sync::{
     Arc, Mutex,
     atomic::{
-        AtomicBool, AtomicUsize,
+        AtomicBool, AtomicU64, AtomicUsize,
         Ordering::{AcqRel, Release},
     },
     mpsc::{SyncSender, TryRecvError, sync_channel},
@@ -908,7 +908,7 @@ struct Sink {
     seek_faults: Arc<SeekFaults>,
     cancel_next_fresh: Arc<AtomicBool>,
     cancellation_done: Arc<AtomicBool>,
-    section_fixture: bool,
+    section_wait_observed: Option<Arc<AtomicU64>>,
     section_fence: Option<(hex_audio::prepared::StoppedEditFence, Option<u64>)>,
     paused_monitor_enabled: bool,
     paused_monitor: Option<hex_engine::PausedMonitorStorageHold>,
@@ -921,7 +921,7 @@ pub(in crate::editor) fn worker_fixture_sink(
     events: SyncSender<EditorAudioEvent>,
     audition_ready: bool,
     consume_next_inherited_candidate: Arc<AtomicBool>,
-    section_fixture: bool,
+    section_wait_observed: Option<Arc<AtomicU64>>,
     paused_monitor_enabled: bool,
 ) -> Box<dyn WorkerAudioSink> {
     Box::new(Sink {
@@ -935,7 +935,7 @@ pub(in crate::editor) fn worker_fixture_sink(
         seek_faults: Arc::default(),
         cancel_next_fresh: Arc::new(AtomicBool::new(false)),
         cancellation_done: Arc::new(AtomicBool::new(false)),
-        section_fixture,
+        section_wait_observed,
         section_fence: None,
         paused_monitor_enabled,
         paused_monitor: None,
@@ -1287,7 +1287,8 @@ impl WorkerAudioSink for Sink {
         context: hex_engine::AudioSourceContext,
         _: bool,
     ) -> Result<(), String> {
-        if !self.section_fixture || self.section_fence.is_some() {
+        self.poll();
+        if self.section_wait_observed.is_none() || self.section_fence.is_some() {
             return Err("fixture section fence unavailable".into());
         }
         let control = self
@@ -1348,7 +1349,10 @@ impl WorkerAudioSink for Sink {
         &mut self,
     ) -> hex_session::service::ResidentPublicationReadiness {
         use hex_session::service::ResidentPublicationReadiness;
-        if !self.audition_ready && !self.paused_monitor_enabled {
+        if !self.audition_ready
+            && !self.paused_monitor_enabled
+            && self.section_wait_observed.is_none()
+        {
             return ResidentPublicationReadiness::NoOutput;
         }
         let Some(control) = self.output.publication.control() else {
@@ -1357,6 +1361,14 @@ impl WorkerAudioSink for Sink {
         let Some(output_identity) = control.output_identity() else {
             return ResidentPublicationReadiness::NoOutput;
         };
+        // Record the exact submission seen by the worker while the callback
+        // is held. The section history fixture uses this to drive the next block.
+        if let Some(observed) = &self.section_wait_observed
+            && let Some((_, Some(revision))) = self.section_fence
+            && control.status.publication_in_flight()
+        {
+            observed.store(revision, Release);
+        }
         if self.paused_monitor_enabled
             && let Some(source) = control.status.recording_source()
         {
@@ -1618,7 +1630,7 @@ impl WorkerAudioSink for Sink {
                 });
             }
         };
-        let revision = if self.section_fixture {
+        let revision = if self.section_wait_observed.is_some() {
             control.publish_with_admission_and_source_on_control(
                 playback,
                 policy,
@@ -1880,7 +1892,7 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             seek_faults: Arc::default(),
             cancel_next_fresh: Arc::clone(&cancel_next_fresh),
             cancellation_done: Arc::clone(&cancellation_done),
-            section_fixture: false,
+            section_wait_observed: None,
             section_fence: None,
             paused_monitor_enabled: false,
             paused_monitor: None,
@@ -2151,7 +2163,7 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
             seek_faults: Arc::clone(&seek_faults),
             cancel_next_fresh: Arc::new(AtomicBool::new(false)),
             cancellation_done: Arc::new(AtomicBool::new(false)),
-            section_fixture: false,
+            section_wait_observed: None,
             section_fence: None,
             paused_monitor_enabled: false,
             paused_monitor: None,

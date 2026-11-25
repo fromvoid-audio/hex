@@ -716,7 +716,19 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                     assert_eq!(read(view, device), before, "no held edit committed by seek");
                 });
                 visual.simulate_keystrokes("space");
+                editor.read_with(cx, |view, _| {
+                    assert_eq!(
+                        view.last_transport_command,
+                        Some(hex_engine::playback::PlaybackCommand::Pause)
+                    );
+                });
                 visual.simulate_keystrokes("escape");
+                // At this fixture's 48 kHz, Pause takes effect at the audible
+                // end of its 128-frame fade. UI gesture settlement can arrive first.
+                for _ in 0..2 {
+                    pump_output(&editor, cx, &mut output, &mut backend);
+                }
+                assert!(!backend.status().unwrap().playing.load(Acquire));
             }
             pump_actual_until(
                 &editor,
