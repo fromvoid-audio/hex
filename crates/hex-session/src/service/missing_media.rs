@@ -74,6 +74,9 @@ pub enum MediaUsage {
         track: String,
         device: String,
     },
+    FrozenTrack {
+        track: String,
+    },
 }
 
 impl MediaUsage {
@@ -83,6 +86,7 @@ impl MediaUsage {
             Self::ArrangementClip { track, clip } => format!("{track} · {clip}"),
             Self::SessionClip { track, scene, clip } => format!("{track} · {scene} · {clip}"),
             Self::Device { track, device } => format!("{track} · {device}"),
+            Self::FrozenTrack { track } => format!("{track} · frozen"),
         }
     }
 }
@@ -213,6 +217,14 @@ fn with_usages(project: &Project, mut missing: Vec<MissingMedia>) -> Vec<Missing
             }
         };
     for track in project.tracks() {
+        if let Some(frozen) = track.frozen() {
+            record(
+                frozen.asset.value(),
+                MediaUsage::FrozenTrack {
+                    track: track.name().to_owned(),
+                },
+            );
+        }
         for clip in track.clips() {
             record(
                 clip.asset().value(),

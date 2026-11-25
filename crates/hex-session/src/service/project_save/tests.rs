@@ -41,7 +41,7 @@ fn cancelled_folder_save_reports_the_retained_staging_path() {
     let error = super::save_as(
         parent.join("Song.hex"),
         false,
-        hex_project::Project::new(48_000).unwrap(),
+        Arc::new(hex_project::Project::new(48_000).unwrap()),
         None,
         &cancellation,
     )

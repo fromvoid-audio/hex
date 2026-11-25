@@ -6,11 +6,12 @@ use super::{DocumentHandle, RequestCancellation, SaveCurrentCommit, recovery, sa
 use hex_project::Project;
 use hex_storage::project_folder::{self, Destination, SAMPLES};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 pub(super) fn save_as(
     path: PathBuf,
     extension_added: bool,
-    project: Project,
+    project: Arc<Project>,
     recovery_path: Option<&Path>,
     cancellation: &RequestCancellation,
 ) -> Result<(DocumentHandle, SaveCurrentCommit), String> {
@@ -35,7 +36,7 @@ pub(super) fn save_as(
 /// Publish a desktop project copy without permission to replace any file.
 pub(super) fn save_copy(
     path: PathBuf,
-    project: Project,
+    project: Arc<Project>,
     recovery_path: Option<&Path>,
     cancellation: &RequestCancellation,
 ) -> Result<PathBuf, String> {
@@ -55,7 +56,7 @@ pub(super) fn save_copy(
 fn publish_as(
     path: PathBuf,
     replace_existing: bool,
-    project: Project,
+    project: Arc<Project>,
     recovery_path: Option<&Path>,
     cancellation: &RequestCancellation,
 ) -> Result<(DocumentHandle, SaveCurrentCommit), String> {
@@ -93,14 +94,14 @@ fn publish_as(
 }
 
 pub(super) struct Image {
-    pub(super) project: Project,
+    pub(super) project: Arc<Project>,
     root: Option<PathBuf>,
     samples: Vec<(PathBuf, PathBuf)>,
 }
 
 impl Image {
     pub(super) fn for_document(
-        project: Project,
+        project: Arc<Project>,
         path: &Path,
         recovery_path: Option<&Path>,
     ) -> Result<Self, String> {
@@ -109,25 +110,32 @@ impl Image {
     }
 
     fn new(
-        project: Project,
+        project: Arc<Project>,
         root: Option<&Path>,
         recovery_path: Option<&Path>,
     ) -> Result<Self, String> {
         let mut samples = Vec::new();
         let project = if root.is_some() {
             let generated = GeneratedRoots::new(recovery_path);
-            let mut snapshot = project.snapshot();
-            for asset in &mut snapshot.assets {
-                if let Some(relative) = generated.relative(&asset.path)? {
-                    let source =
-                        std::mem::replace(&mut asset.path, Path::new(SAMPLES).join(&relative));
-                    samples.push((source, relative));
+            let mut has_generated = false;
+            for asset in project.assets() {
+                if generated.relative(asset.path())?.is_some() {
+                    has_generated = true;
+                    break;
                 }
             }
-            if samples.is_empty() {
-                project
+            if has_generated {
+                let mut snapshot = project.snapshot();
+                for asset in &mut snapshot.assets {
+                    if let Some(relative) = generated.relative(&asset.path)? {
+                        let source =
+                            std::mem::replace(&mut asset.path, Path::new(SAMPLES).join(&relative));
+                        samples.push((source, relative));
+                    }
+                }
+                Arc::new(Project::from_snapshot(snapshot).map_err(display)?)
             } else {
-                Project::from_snapshot(snapshot).map_err(display)?
+                project
             }
         } else {
             project

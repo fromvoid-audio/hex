@@ -471,3 +471,46 @@ fn offline_media_relinks_in_place_as_one_undo_step_and_saves_new_paths() {
     assert!(!reopened.state.project.asset_offline(asset));
     assert_eq!(reopened.state.project.asset(asset).unwrap().path(), moved);
 }
+
+#[test]
+fn offline_media_report_records_frozen_track_usage() {
+    let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddTrack { name: "pad".into() })
+        .unwrap()
+    else {
+        panic!("track fixture");
+    };
+    editor
+        .execute(hex_project::Command::FreezeTrack {
+            track,
+            path: PathBuf::from("frozen/pad.wav"),
+            start: 120,
+            duration: 640,
+            frames: 640,
+        })
+        .unwrap();
+    let asset = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .frozen()
+        .unwrap()
+        .asset;
+    let project = editor
+        .project()
+        .clone()
+        .with_offline_assets([asset])
+        .unwrap();
+    let report = offline_media_report(&project, Some(Path::new("/tmp/project")));
+    assert_eq!(report.len(), 1);
+    assert_eq!(report[0].asset, asset);
+    assert_eq!(report[0].usage_count, 1);
+    assert_eq!(
+        report[0].usages,
+        vec![MediaUsage::FrozenTrack {
+            track: "pad".into()
+        }]
+    );
+    assert_eq!(report[0].usages[0].describe(), "pad · frozen");
+}
