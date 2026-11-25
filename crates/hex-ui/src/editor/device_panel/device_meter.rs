@@ -117,6 +117,152 @@ pub(in crate::editor) fn tick_hovered(view: &EditorView) -> bool {
         .is_some_and(MeterState::is_decaying)
 }
 
+/// Isolated GPUI entity for a single device's stereo output meter and live
+/// hover dBFS tooltip. Updating this entity on tick repaints only the hovered
+/// meter tooltip without re-executing `EditorView::render`.
+pub(in super::super) struct DeviceMeterView {
+    device: DeviceId,
+    levels: [f32; 2],
+    held: [f32; 2],
+    tooltip: gpui::SharedString,
+    colors: hex_widgets::MeterColors,
+    style: hex_widgets::ControlStyle,
+    editor: gpui::WeakEntity<EditorView>,
+}
+
+impl DeviceMeterView {
+    fn new(
+        device: DeviceId,
+        levels: [f32; 2],
+        held: [f32; 2],
+        tooltip: gpui::SharedString,
+        colors: hex_widgets::MeterColors,
+        style: hex_widgets::ControlStyle,
+        editor: gpui::WeakEntity<EditorView>,
+    ) -> Self {
+        Self {
+            device,
+            levels,
+            held,
+            tooltip,
+            colors,
+            style,
+            editor,
+        }
+    }
+
+    fn sync(
+        &mut self,
+        levels: [f32; 2],
+        held: [f32; 2],
+        tooltip: gpui::SharedString,
+        colors: hex_widgets::MeterColors,
+        style: hex_widgets::ControlStyle,
+    ) -> bool {
+        let same = self.levels[0].to_bits() == levels[0].to_bits()
+            && self.levels[1].to_bits() == levels[1].to_bits()
+            && self.held[0].to_bits() == held[0].to_bits()
+            && self.held[1].to_bits() == held[1].to_bits()
+            && self.tooltip == tooltip
+            && self.colors == colors
+            && self.style == style;
+        if same {
+            return false;
+        }
+        self.levels = levels;
+        self.held = held;
+        self.tooltip = tooltip;
+        self.colors = colors;
+        self.style = style;
+        true
+    }
+}
+
+impl gpui::Render for DeviceMeterView {
+    fn render(&mut self, _: &mut gpui::Window, _: &mut Context<Self>) -> impl IntoElement {
+        let id = self.device;
+        let editor = self.editor.clone();
+        div()
+            .id(ElementId::Name(
+                format!("device-{}-output-meter-hover", id.value()).into(),
+            ))
+            .on_hover(move |hovered: &bool, _, cx| {
+                let hovered = *hovered;
+                let _ = editor.update(cx, |view, cx| {
+                    let changed = if hovered {
+                        view.device_panel.hovered_meter.replace(id) != Some(id)
+                    } else if view.device_panel.hovered_meter == Some(id) {
+                        view.device_panel.hovered_meter = None;
+                        true
+                    } else {
+                        false
+                    };
+                    if changed {
+                        cx.notify();
+                    }
+                });
+            })
+            .flex_1()
+            .h_full()
+            .min_h_0()
+            .child(hex_widgets::stereo_peak_meter(
+                format!("device-{}-output-meter", id.value()).into(),
+                hex_widgets::StereoPeakMeter {
+                    levels: self.levels,
+                    held: self.held,
+                    tooltip: self.tooltip.clone(),
+                    colors: self.colors,
+                },
+                self.style,
+            ))
+    }
+}
+
+/// Refresh the hovered device meter's isolated entity directly on tick instead
+/// of forcing a 60 Hz full-window `EditorView::render`. Returns `true` only if
+/// no isolated entity is mounted yet.
+pub(in crate::editor) fn tick_hovered_isolated(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+) -> bool {
+    if !tick_hovered(view) {
+        return false;
+    }
+    let Some(id) = view.device_panel.hovered_meter else {
+        return false;
+    };
+    let Some(entity) = view.device_panel.meter_views.get(&id).cloned() else {
+        return true;
+    };
+    let Some(device) = view
+        .state
+        .as_ref()
+        .and_then(|state| state.project.device(id).cloned())
+    else {
+        return false;
+    };
+    let (levels, held, tooltip_peaks) = sample_levels(view, &device);
+    let tooltip = theme::text(tooltip_text(
+        tooltip_peaks,
+        held,
+        device.state().input_gain_db(),
+        device.state().output_gain_db(),
+    ));
+    let colors = theme::meter_colors();
+    let style = theme::control_style();
+    let changed = entity.update(cx, |meter, cx| {
+        let changed = meter.sync(levels, held, tooltip, colors, style);
+        if changed {
+            cx.notify();
+        }
+        changed
+    });
+    if changed {
+        view.playback_subviews.mark_tick_activity();
+    }
+    false
+}
+
 fn sample_levels(
     view: &mut EditorView,
     device: &hex_project::Device,
@@ -167,8 +313,34 @@ pub(super) fn render(
         device.state().input_gain_db(),
         device.state().output_gain_db(),
     );
-    let tooltip = tooltip_text(tooltip_peaks, held, input_trim, output_trim);
+    let tooltip = theme::text(tooltip_text(tooltip_peaks, held, input_trim, output_trim));
+    let colors = theme::meter_colors();
+    let style = theme::control_style();
     let id = device.id();
+    let weak_editor = cx.entity().downgrade();
+    let meter_entity = view
+        .device_panel
+        .meter_views
+        .entry(id)
+        .or_insert_with(|| {
+            cx.new(|_| {
+                DeviceMeterView::new(
+                    id,
+                    levels,
+                    held,
+                    tooltip.clone(),
+                    colors,
+                    style,
+                    weak_editor,
+                )
+            })
+        })
+        .clone();
+    meter_entity.update(cx, |meter, cx| {
+        if meter.sync(levels, held, tooltip, colors, style) {
+            cx.notify();
+        }
+    });
     div()
         .id(ElementId::Name(
             format!("device-{}-output-meter-strip", id.value()).into(),
@@ -193,34 +365,10 @@ pub(super) fn render(
         .py(px(4.0))
         .child(
             div()
-                .id(ElementId::Name(
-                    format!("device-{}-output-meter-hover", id.value()).into(),
-                ))
-                .on_hover(cx.listener(move |view, hovered: &bool, _, cx| {
-                    let changed = if *hovered {
-                        view.device_panel.hovered_meter.replace(id) != Some(id)
-                    } else if view.device_panel.hovered_meter == Some(id) {
-                        view.device_panel.hovered_meter = None;
-                        true
-                    } else {
-                        false
-                    };
-                    if changed {
-                        cx.notify();
-                    }
-                }))
                 .flex_1()
+                .w_full()
                 .min_h_0()
-                .child(hex_widgets::stereo_peak_meter(
-                    format!("device-{}-output-meter", device.id().value()).into(),
-                    hex_widgets::StereoPeakMeter {
-                        levels,
-                        held,
-                        tooltip: theme::text(tooltip),
-                        colors: theme::meter_colors(),
-                    },
-                    theme::control_style(),
-                )),
+                .child(view.device_overlay_slot_or_inline(meter_entity)),
         )
         .child(device_add::button(view, id, cx))
 }

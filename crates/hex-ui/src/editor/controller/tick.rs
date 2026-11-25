@@ -339,6 +339,7 @@ impl EditorView {
         visible_change |= self.tick_sample_recorder();
         visible_change |= self.retire_stale_spectrum_target();
         visible_change |= self.retire_stale_processor_audition_target();
+        let mut spectra_changed = false;
         if let Some(audio) = self.audio.as_mut() {
             let _ = audio.control.spectrum_retry_pending();
             let _ = audio.control.audition_retry_pending();
@@ -346,23 +347,29 @@ impl EditorView {
             let spectra = &mut self.device_panel.spectrum_scratch;
             audio.control.spectrum_latest_pairs_into(spectra);
             let results = &mut self.device_panel.spectrum_results;
-            let changed = results.len() != spectra.len()
+            spectra_changed = results.len() != spectra.len()
                 || spectra
                     .iter()
                     .any(|result| results.get(&result.output.stamp.target) != Some(result));
-            if changed {
+            if spectra_changed {
                 results.clear();
                 results.extend(
                     spectra
                         .drain(..)
                         .map(|result| (result.output.stamp.target, result)),
                 );
-                visible_change = true;
             }
             audio.control.reclaim_preview();
         } else if !self.device_panel.spectrum_results.is_empty() {
             self.device_panel.spectrum_results.clear();
-            visible_change = true;
+            spectra_changed = true;
+        }
+        if spectra_changed {
+            let (updated, needs_root) = crate::editor::device_panel::push_live_spectra(self, cx);
+            if updated {
+                self.playback_subviews.mark_tick_activity();
+            }
+            visible_change |= needs_root;
         }
         if (self.prepared_seek.is_some() || self.latched_seek_intent.is_some())
             && self.audio.as_ref().is_some_and(|audio| {
@@ -409,7 +416,7 @@ impl EditorView {
             visible_change |= pending_before != pending_after;
             let now = Instant::now();
             let track_meters_changed = self.tick_track_meters(now);
-            visible_change |= crate::editor::device_panel::tick_hovered_meter(self);
+            visible_change |= crate::editor::device_panel::tick_hovered_meter_isolated(self, cx);
             visible_change |= self.tick_track_performance(now);
             return self.observe_audio_frame_for_tick(
                 None,
@@ -1290,7 +1297,7 @@ impl EditorView {
         visible_change |= self.finish_audio_recovery_tick();
         let now = Instant::now();
         let track_meters_changed = self.tick_track_meters(now);
-        visible_change |= crate::editor::device_panel::tick_hovered_meter(self);
+        visible_change |= crate::editor::device_panel::tick_hovered_meter_isolated(self, cx);
         visible_change |= self.tick_track_performance(now);
         visible_change |= self.tick_latency_rebuild();
         visible_change |= self.tick_paused_republish();

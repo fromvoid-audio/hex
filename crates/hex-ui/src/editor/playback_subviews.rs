@@ -69,6 +69,22 @@ pub(super) struct EditCursorLineSlot {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(super) struct AudioDetailPlayheadSlot {
+    pub(super) selector: &'static str,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) clip_mask: Bounds<Pixels>,
+    pub(super) color: u32,
+    pub(super) clamp_right_edge: bool,
+}
+
+#[derive(Clone)]
+pub(super) struct DeviceOverlaySlot {
+    pub(super) view: AnyView,
+    pub(super) bounds: Bounds<Pixels>,
+    pub(super) clip_mask: Bounds<Pixels>,
+}
+
+#[derive(Clone, Copy, Debug)]
 pub(super) struct LockedMarkerSlot {
     pub(super) edge: hex_widgets::TimeMarkerEdge,
     pub(super) bounds: Bounds<Pixels>,
@@ -85,7 +101,9 @@ pub(super) struct PlaybackOverlaySlots {
     pub(super) arrangement_header_width: f32,
     pub(super) arrangement_viewport: Option<Viewport>,
     pub(super) piano_roll_playhead: Option<PianoRollPlayheadSlot>,
+    pub(super) audio_detail_playhead: Option<AudioDetailPlayheadSlot>,
     pub(super) meters: Vec<MeterSlot>,
+    pub(super) device_overlays: Vec<DeviceOverlaySlot>,
     pub(super) edit_cursor_lines: Vec<EditCursorLineSlot>,
     pub(super) locked_markers: Vec<LockedMarkerSlot>,
 }
@@ -99,7 +117,9 @@ impl PlaybackOverlaySlots {
         self.arrangement_main_top = None;
         self.arrangement_viewport = None;
         self.piano_roll_playhead = None;
+        self.audio_detail_playhead = None;
         self.meters.clear();
+        self.device_overlays.clear();
         self.edit_cursor_lines.clear();
         self.locked_markers.clear();
     }
@@ -596,6 +616,89 @@ impl Render for PianoRollPlayheadView {
     }
 }
 
+/// Isolated audio clip detail playhead overlay (Arrangement Events/Source + Session Audio).
+pub(super) struct AudioDetailPlayheadView {
+    fraction: Option<f32>,
+    slots: Rc<RefCell<PlaybackOverlaySlots>>,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    render_count: usize,
+}
+
+impl AudioDetailPlayheadView {
+    fn new(slots: Rc<RefCell<PlaybackOverlaySlots>>) -> Self {
+        Self {
+            fraction: None,
+            slots,
+            #[cfg(all(test, feature = "ui-test-support"))]
+            render_count: 0,
+        }
+    }
+
+    fn sync(&mut self, fraction: Option<f32>) -> bool {
+        if self.fraction.map(f32::to_bits) == fraction.map(f32::to_bits) {
+            return false;
+        }
+        self.fraction = fraction;
+        true
+    }
+}
+
+impl Render for AudioDetailPlayheadView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.render_count = self.render_count.saturating_add(1);
+        }
+        let mut container = div()
+            .debug_selector(|| "audio-detail-playback-layer".into())
+            .absolute()
+            .inset_0();
+        let Some(fraction) = self.fraction.filter(|f| f.is_finite()) else {
+            return container;
+        };
+        let Some(slot) = self
+            .slots
+            .try_borrow()
+            .ok()
+            .and_then(|slots| slots.audio_detail_playhead)
+        else {
+            return container;
+        };
+        let width = f32::from(slot.bounds.size.width);
+        let height = f32::from(slot.bounds.size.height);
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return container;
+        }
+        let clamped = fraction.clamp(0.0, 1.0);
+        let x = if slot.clamp_right_edge && clamped == 1.0 {
+            (width - 1.0).max(0.0)
+        } else {
+            width * clamped
+        };
+        let selector = slot.selector;
+        container = container.child(
+            div()
+                .absolute()
+                .left(slot.clip_mask.origin.x)
+                .top(slot.clip_mask.origin.y)
+                .w(slot.clip_mask.size.width)
+                .h(slot.clip_mask.size.height)
+                .overflow_hidden()
+                .child(
+                    div()
+                        .debug_selector(move || selector.into())
+                        .absolute()
+                        .left(slot.bounds.origin.x - slot.clip_mask.origin.x + px(x))
+                        .top(slot.bounds.origin.y - slot.clip_mask.origin.y)
+                        .w(px(1.0))
+                        .h(px(height))
+                        .bg(rgb(slot.color)),
+                ),
+        );
+        container
+    }
+}
+
 /// Isolated Console and Arrangement track/return/main stereo meters.
 pub(super) struct LiveMetersView {
     tracks: BTreeMap<TrackId, MeterReading>,
@@ -858,6 +961,49 @@ impl Render for ArrangementEditCursorView {
     }
 }
 
+/// Sibling host for live device-panel entities (`ResponseGraph` spectrum views
+/// and `DeviceMeterView` hover-decay meters) so 60 Hz entity notifications
+/// never mark ancestor `EditorView` dirty in GPUI's view tree.
+pub(super) struct DeviceOverlaysView {
+    slots: Rc<RefCell<PlaybackOverlaySlots>>,
+}
+
+impl DeviceOverlaysView {
+    fn new(slots: Rc<RefCell<PlaybackOverlaySlots>>) -> Self {
+        Self { slots }
+    }
+}
+
+impl Render for DeviceOverlaysView {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let mut container = div().absolute().inset_0();
+        let Ok(slots) = self.slots.try_borrow() else {
+            return container;
+        };
+        for slot in &slots.device_overlays {
+            container = container.child(
+                div()
+                    .absolute()
+                    .left(slot.clip_mask.origin.x)
+                    .top(slot.clip_mask.origin.y)
+                    .w(slot.clip_mask.size.width)
+                    .h(slot.clip_mask.size.height)
+                    .overflow_hidden()
+                    .child(
+                        div()
+                            .absolute()
+                            .left(slot.bounds.origin.x - slot.clip_mask.origin.x)
+                            .top(slot.bounds.origin.y - slot.clip_mask.origin.y)
+                            .w(slot.bounds.size.width)
+                            .h(slot.bounds.size.height)
+                            .child(slot.view.clone()),
+                    ),
+            );
+        }
+        container
+    }
+}
+
 /// Sibling playback overlay hosting all isolated 60 Hz playback entities.
 pub(super) struct PlaybackOverlayView {
     position_readout: Entity<TransportReadoutView>,
@@ -866,7 +1012,9 @@ pub(super) struct PlaybackOverlayView {
     arrangement_edit_cursor: Entity<ArrangementEditCursorView>,
     arrangement_playhead: Entity<ArrangementPlayheadView>,
     piano_roll_playhead: Entity<PianoRollPlayheadView>,
+    audio_detail_playhead: Entity<AudioDetailPlayheadView>,
     live_meters: Entity<LiveMetersView>,
+    device_overlays: Entity<DeviceOverlaysView>,
 }
 
 impl Render for PlaybackOverlayView {
@@ -875,7 +1023,9 @@ impl Render for PlaybackOverlayView {
             self.arrangement_edit_cursor.clone().into_any_element(),
             self.arrangement_playhead.clone().into_any_element(),
             self.piano_roll_playhead.clone().into_any_element(),
+            self.audio_detail_playhead.clone().into_any_element(),
             self.live_meters.clone().into_any_element(),
+            self.device_overlays.clone().into_any_element(),
             self.position_readout.clone().into_any_element(),
             self.cpu_meter.clone().into_any_element(),
             self.output_meter.clone().into_any_element(),
@@ -960,6 +1110,7 @@ pub(super) struct PlaybackSubviews {
     pub(super) arrangement_edit_cursor: Entity<ArrangementEditCursorView>,
     pub(super) arrangement_playhead: Entity<ArrangementPlayheadView>,
     pub(super) piano_roll_playhead: Entity<PianoRollPlayheadView>,
+    pub(super) audio_detail_playhead: Entity<AudioDetailPlayheadView>,
     pub(super) live_meters: Entity<LiveMetersView>,
     pub(super) overlay: Entity<PlaybackOverlayView>,
     tick_activity: Cell<bool>,
@@ -978,7 +1129,9 @@ impl PlaybackSubviews {
         let arrangement_edit_cursor = cx.new(|_| ArrangementEditCursorView::new(Rc::clone(&slots)));
         let arrangement_playhead = cx.new(|_| ArrangementPlayheadView::new(Rc::clone(&slots)));
         let piano_roll_playhead = cx.new(|_| PianoRollPlayheadView::new(Rc::clone(&slots)));
+        let audio_detail_playhead = cx.new(|_| AudioDetailPlayheadView::new(Rc::clone(&slots)));
         let live_meters = cx.new(|_| LiveMetersView::new(Rc::clone(&slots)));
+        let device_overlays = cx.new(|_| DeviceOverlaysView::new(Rc::clone(&slots)));
         let overlay = cx.new(|_| PlaybackOverlayView {
             position_readout: position_readout.clone(),
             cpu_meter: cpu_meter.clone(),
@@ -986,7 +1139,9 @@ impl PlaybackSubviews {
             arrangement_edit_cursor: arrangement_edit_cursor.clone(),
             arrangement_playhead: arrangement_playhead.clone(),
             piano_roll_playhead: piano_roll_playhead.clone(),
+            audio_detail_playhead: audio_detail_playhead.clone(),
             live_meters: live_meters.clone(),
+            device_overlays,
         });
         Self {
             slots,
@@ -998,6 +1153,7 @@ impl PlaybackSubviews {
             arrangement_edit_cursor,
             arrangement_playhead,
             piano_roll_playhead,
+            audio_detail_playhead,
             live_meters,
             overlay,
             tick_activity: Cell::new(false),
@@ -1027,6 +1183,7 @@ impl PlaybackSubviews {
             arrangement_edit_cursor: self.arrangement_edit_cursor.read(cx).render_count,
             arrangement_playhead: self.arrangement_playhead.read(cx).render_count,
             piano_roll_playhead: self.piano_roll_playhead.read(cx).render_count,
+            audio_detail_playhead: self.audio_detail_playhead.read(cx).render_count,
             live_meters: self.live_meters.read(cx).render_count,
         }
     }
@@ -1041,6 +1198,7 @@ pub(super) struct SubviewRenderCounts {
     pub(super) arrangement_edit_cursor: usize,
     pub(super) arrangement_playhead: usize,
     pub(super) piano_roll_playhead: usize,
+    pub(super) audio_detail_playhead: usize,
     pub(super) live_meters: usize,
 }
 
@@ -1104,17 +1262,27 @@ impl EditorView {
     }
 
     /// Panels that still draw a live playhead inline rather than via the
-    /// isolated Arrangement/Piano Roll playhead entities.
+    /// isolated Arrangement, Piano Roll, or Audio Detail playhead entities.
     pub(super) fn has_inline_playhead_panel(&self) -> bool {
         if !self.audio_detail.clip_view_open {
             return false;
         }
         if self.device_panel.active {
-            // Rattle draws a playhead indicator on its lane when visible.
-            return super::device_panel::has_rattle_preview(self);
+            // Rattle evaluates authored drive automation at the stopped playhead
+            // only (`rattle_panel.rs` filters on `!playing`); during playback it
+            // does not read the playhead and never needs root re-renders.
+            let playing = self
+                .audio_status()
+                .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
+            return !playing && super::device_panel::has_rattle_preview(self);
         }
-        // Arrangement/Session audio clip detail editors draw an inline playhead;
-        // Piano Roll uses the isolated `PianoRollPlayheadView`.
+        if self.uses_sibling_playback_overlay() {
+            // Audio clip detail playheads (Arrangement Events/Source + Session Audio)
+            // render in the isolated sibling `AudioDetailPlayheadView`.
+            return false;
+        }
+        // Fallback when `EditorView` is mounted directly without `EditorWindowRoot`:
+        // Arrangement/Session audio clip detail editors draw an inline playhead.
         self.detail_clip_id().is_some_and(|clip| {
             self.state.as_ref().is_some_and(|state| {
                 state.project.clip(clip).is_some()
@@ -1204,7 +1372,17 @@ impl EditorView {
             changed
         });
 
-        let any = readout_changed || arrangement_changed || piano_changed;
+        let audio_detail_fraction = self.audio_detail_playhead_fraction();
+        let audio_detail_entity = self.playback_subviews.audio_detail_playhead.clone();
+        let audio_detail_changed = audio_detail_entity.update(cx, |view, cx| {
+            let changed = view.sync(audio_detail_fraction);
+            if changed && notify {
+                cx.notify();
+            }
+            changed
+        });
+
+        let any = readout_changed || arrangement_changed || piano_changed || audio_detail_changed;
         if any && notify {
             self.playback_subviews.mark_tick_activity();
         }
@@ -1370,6 +1548,42 @@ impl EditorView {
             .piano_roll_playhead
             .clone()
             .into_any_element()
+    }
+
+    /// Host a live device-panel entity (e.g. EQ/EQ8 `ResponseGraph` or
+    /// `DeviceMeterView`) in the sibling [`PlaybackOverlayView`] when active,
+    /// leaving a sized placeholder inside `EditorView` so 60 Hz entity updates
+    /// never dirty `EditorView` in GPUI's view tree. Falls back to inline
+    /// mounting when a foreground overlay or nested cache gesture is active.
+    pub(super) fn device_overlay_slot_or_inline<V: 'static + Render>(
+        &self,
+        entity: Entity<V>,
+    ) -> AnyElement {
+        if self.uses_sibling_playback_overlay() {
+            let slots = Rc::clone(&self.playback_subviews.slots);
+            let view = AnyView::from(entity);
+            return div()
+                .relative()
+                .size_full()
+                .child(
+                    canvas(
+                        move |bounds, window, _| {
+                            if let Ok(mut slots) = slots.try_borrow_mut() {
+                                slots.device_overlays.push(DeviceOverlaySlot {
+                                    view: view.clone(),
+                                    bounds,
+                                    clip_mask: window.content_mask().bounds,
+                                });
+                            }
+                        },
+                        |_, _, _, _| (),
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+                .into_any_element();
+        }
+        entity.into_any_element()
     }
 
     pub(super) fn meter_slot_or_inline(&self, target: MeterTarget) -> Div {

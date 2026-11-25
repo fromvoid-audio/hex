@@ -71,6 +71,7 @@ pub(in crate::editor) struct DevicePanelState {
     pub(super) controls: HashMap<ParameterKey, ParameterControl>,
     pub(super) playback_values: automation_playback::Values,
     pub(super) meter_states: HashMap<DeviceId, device_meter::MeterState>,
+    pub(super) meter_views: HashMap<DeviceId, Entity<device_meter::DeviceMeterView>>,
     pub(super) hovered_meter: Option<DeviceId>,
     pub(super) send_controls: HashMap<SendControlKey, SendControl>,
     pub(super) views: HashMap<
@@ -711,6 +712,7 @@ pub(in crate::editor) fn clear_owner_state(
     view.device_panel.overdrive_previews.clear();
     view.device_panel.rattle_previews.clear();
     view.device_panel.meter_states.clear();
+    view.device_panel.meter_views.clear();
     view.device_panel.hovered_meter = None;
     view.device_panel.eq8_graph_gestures.clear();
     view.device_panel.spectrum_results.clear();

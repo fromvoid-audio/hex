@@ -125,15 +125,9 @@ impl ResponseGraphModel {
         if self.primary.len() < 2
             || self.primary.len() > MAX_CURVE_POINTS
             || self.secondary.len() != self.primary.len()
-            || self.analyzer.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
-            })
-            || self.input_analyzer.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
-            })
-            || self.analyzer_peak.as_ref().is_some_and(|curve| {
-                curve.len() < 2 || curve.len() > MAX_ANALYZER_POINTS || !valid_curve(curve)
-            })
+            || !valid_optional_analyzer(self.analyzer.as_deref())
+            || !valid_optional_analyzer(self.input_analyzer.as_deref())
+            || !valid_optional_analyzer(self.analyzer_peak.as_deref())
             || self.nodes.len() > MAX_NODES
             || !valid_curve(&self.primary)
             || !valid_curve(&self.secondary)
@@ -149,6 +143,12 @@ impl ResponseGraphModel {
         }
         Ok(())
     }
+}
+
+fn valid_optional_analyzer(curve: Option<&[[f32; 2]]>) -> bool {
+    curve.is_none_or(|points| {
+        points.len() >= 2 && points.len() <= MAX_ANALYZER_POINTS && valid_curve(points)
+    })
 }
 
 fn duplicate_node_ids(nodes: &[ResponseGraphNode]) -> bool {
@@ -185,6 +185,37 @@ pub struct ResponseGraphAnalyzerStyle {
     pub output: u32,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+struct StaticPathCacheKey {
+    origin_x_bits: u32,
+    origin_y_bits: u32,
+    width_bits: u32,
+    height_bits: u32,
+    style: ControlStyle,
+    curve_epoch: u64,
+}
+
+impl StaticPathCacheKey {
+    fn new(plot: Bounds<Pixels>, style: ControlStyle, curve_epoch: u64) -> Self {
+        Self {
+            origin_x_bits: f32::from(plot.origin.x).to_bits(),
+            origin_y_bits: f32::from(plot.origin.y).to_bits(),
+            width_bits: f32::from(plot.size.width).to_bits(),
+            height_bits: f32::from(plot.size.height).to_bits(),
+            style,
+            curve_epoch,
+        }
+    }
+}
+
+struct CachedStaticPaths {
+    key: StaticPathCacheKey,
+    grid: Option<gpui::Path<Pixels>>,
+    references: Vec<(gpui::Path<Pixels>, gpui::Hsla)>,
+    secondary: Option<gpui::Path<Pixels>>,
+    primary: Option<gpui::Path<Pixels>>,
+}
+
 /// Compact DSP-independent graph. The owner maps normalized graph points to
 /// domain values and sends the emitted drag phases through its normal edit API.
 /// Held node/creation input uses the shared Window pointer lease; wheel intent
@@ -196,6 +227,10 @@ pub struct ResponseGraph {
     style: ControlStyle,
     analyzer_style: Option<ResponseGraphAnalyzerStyle>,
     axes: Option<ResponseGraphAxes>,
+    curve_epoch: u64,
+    static_paths: Option<std::rc::Rc<CachedStaticPaths>>,
+    #[cfg(test)]
+    static_path_builds: usize,
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
@@ -274,6 +309,10 @@ impl ResponseGraph {
             style,
             analyzer_style: None,
             axes: None,
+            curve_epoch: 0,
+            static_paths: None,
+            #[cfg(test)]
+            static_path_builds: 0,
             bounds: None,
             drag: None,
             press: None,
@@ -308,6 +347,7 @@ impl ResponseGraph {
         }
         if self.axes != axes {
             self.axes = axes;
+            self.curve_epoch = self.curve_epoch.wrapping_add(1);
             self.refresh_creation_hint(cx);
             cx.notify();
         }
@@ -483,6 +523,7 @@ impl ResponseGraph {
         }
         if self.references.as_ref() != references.as_slice() {
             self.references = references.into();
+            self.curve_epoch = self.curve_epoch.wrapping_add(1);
             cx.notify();
         }
         Ok(())
@@ -490,6 +531,35 @@ impl ResponseGraph {
 
     pub fn references(&self) -> &[ResponseGraphReference] {
         &self.references
+    }
+
+    /// Update only the live analyzer traces without cloning or re-validating
+    /// static response curves, nodes, or re-tessellating cached grid/response
+    /// paths. Returns `Ok(true)` when any analyzer curve changed.
+    pub fn set_analyzers(
+        &mut self,
+        analyzer: Option<Vec<[f32; 2]>>,
+        input_analyzer: Option<Vec<[f32; 2]>>,
+        analyzer_peak: Option<Vec<[f32; 2]>>,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, &'static str> {
+        if !valid_optional_analyzer(analyzer.as_deref())
+            || !valid_optional_analyzer(input_analyzer.as_deref())
+            || !valid_optional_analyzer(analyzer_peak.as_deref())
+        {
+            return Err("invalid response graph analyzer");
+        }
+        if self.model.analyzer == analyzer
+            && self.model.input_analyzer == input_analyzer
+            && self.model.analyzer_peak == analyzer_peak
+        {
+            return Ok(false);
+        }
+        self.model.analyzer = analyzer;
+        self.model.input_analyzer = input_analyzer;
+        self.model.analyzer_peak = analyzer_peak;
+        cx.notify();
+        Ok(true)
     }
 
     pub fn set_model(
@@ -500,8 +570,9 @@ impl ResponseGraph {
     ) -> Result<(), &'static str> {
         model.validate()?;
         let style = style.validate()?;
-        if self.model.primary != model.primary
-            || self.model.secondary != model.secondary
+        let curves_changed =
+            self.model.primary != model.primary || self.model.secondary != model.secondary;
+        if curves_changed
             || self.model.analyzer != model.analyzer
             || self.model.input_analyzer != model.input_analyzer
             || self.model.analyzer_peak != model.analyzer_peak
@@ -509,6 +580,9 @@ impl ResponseGraph {
             || self.style != style
         {
             self.model = model;
+            if curves_changed {
+                self.curve_epoch = self.curve_epoch.wrapping_add(1);
+            }
             self.retire_missing_scroll_node(cx);
             self.style = style;
             self.refresh_creation_hint(cx);
@@ -516,6 +590,50 @@ impl ResponseGraph {
             cx.notify();
         }
         Ok(())
+    }
+
+    fn ensure_static_paths(
+        &mut self,
+        bounds: Bounds<Pixels>,
+    ) -> Option<std::rc::Rc<CachedStaticPaths>> {
+        let plot = axes::plot_bounds(bounds, self.axes.is_some());
+        if plot.size.width <= px(0.0) || plot.size.height <= px(0.0) {
+            return None;
+        }
+        let key = StaticPathCacheKey::new(plot, self.style, self.curve_epoch);
+        if let Some(cached) = &self.static_paths
+            && cached.key == key
+        {
+            return Some(std::rc::Rc::clone(cached));
+        }
+        let origin = plot.origin;
+        let width = plot.size.width;
+        let height = plot.size.height;
+        let grid = build_grid_path(origin, width, height, self.axes.as_ref());
+        let references = self
+            .references
+            .iter()
+            .filter_map(|reference| {
+                let path = build_curve_path(origin, width, height, &reference.points, px(0.8))?;
+                let color = gpui::Hsla::from(rgb(reference.color)).alpha(reference.opacity);
+                Some((path, color))
+            })
+            .collect();
+        let secondary = build_curve_path(origin, width, height, &self.model.secondary, px(0.75));
+        let primary = build_curve_path(origin, width, height, &self.model.primary, px(1.15));
+        let cached = std::rc::Rc::new(CachedStaticPaths {
+            key,
+            grid,
+            references,
+            secondary,
+            primary,
+        });
+        #[cfg(test)]
+        {
+            self.static_path_builds = self.static_path_builds.saturating_add(1);
+        }
+        self.static_paths = Some(std::rc::Rc::clone(&cached));
+        Some(cached)
     }
 
     /// Inject semantic analyzer colors without changing response appearance.
@@ -1288,9 +1406,6 @@ impl gpui::Render for ResponseGraph {
         }
         self.creation_hint_was_focused = focused;
         self.cancel_unfocused_creation(window, cx);
-        let references = self.references.clone();
-        let primary = self.model.primary.clone();
-        let secondary = self.model.secondary.clone();
         let analyzer = self.model.analyzer.clone();
         let input_analyzer = self.model.input_analyzer.clone();
         let analyzer_peak = self.model.analyzer_peak.clone();
@@ -1302,7 +1417,7 @@ impl gpui::Render for ResponseGraph {
         let circular_nodes = self.circular_nodes;
         let hovered_node = self.hovered_node;
         let style = self.style;
-        let axes = self.axes.clone();
+        let has_axes = self.axes.is_some();
         let labels = self
             .axes
             .as_ref()
@@ -1361,7 +1476,7 @@ impl gpui::Render for ResponseGraph {
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, app| {
-                        bounds_entity.update(app, |graph, cx| {
+                        let static_paths = bounds_entity.update(app, |graph, cx| {
                             let changed = graph.bounds.is_none_or(|old| old.size != bounds.size);
                             let moved = graph.bounds != Some(bounds);
                             graph.bounds = Some(bounds);
@@ -1372,29 +1487,26 @@ impl gpui::Render for ResponseGraph {
                             if changed && graph.axes.is_some() {
                                 cx.notify();
                             }
+                            graph.ensure_static_paths(bounds)
                         });
-                        paint_graph(
-                            bounds,
-                            axes.as_ref(),
-                            &primary,
-                            &secondary,
-                            &references,
-                            analyzer.as_deref(),
-                            input_analyzer.as_deref(),
-                            analyzer_peak.as_deref(),
-                            analyzer_style,
-                            &nodes,
-                            circular_nodes,
-                            hovered_node,
-                            style,
-                            window,
-                        );
-                        if let Some(band) = band {
-                            band.paint(
-                                axes::plot_bounds(bounds, axes.is_some()),
-                                style.accent,
+                        if let Some(static_paths) = static_paths {
+                            paint_graph(
+                                bounds,
+                                has_axes,
+                                &static_paths,
+                                analyzer.as_deref(),
+                                input_analyzer.as_deref(),
+                                analyzer_peak.as_deref(),
+                                analyzer_style,
+                                &nodes,
+                                circular_nodes,
+                                hovered_node,
+                                style,
                                 window,
                             );
+                        }
+                        if let Some(band) = band {
+                            band.paint(axes::plot_bounds(bounds, has_axes), style.accent, window);
                         }
                     },
                 )
@@ -1417,10 +1529,8 @@ impl gpui::Render for ResponseGraph {
 #[allow(clippy::too_many_arguments)]
 fn paint_graph(
     bounds: Bounds<Pixels>,
-    axes: Option<&ResponseGraphAxes>,
-    primary: &[[f32; 2]],
-    secondary: &[[f32; 2]],
-    references: &[ResponseGraphReference],
+    has_axes: bool,
+    static_paths: &CachedStaticPaths,
     analyzer: Option<&[[f32; 2]]>,
     input_analyzer: Option<&[[f32; 2]]>,
     analyzer_peak: Option<&[[f32; 2]]>,
@@ -1431,7 +1541,7 @@ fn paint_graph(
     style: ControlStyle,
     window: &mut Window,
 ) {
-    let bounds = axes::plot_bounds(bounds, axes.is_some());
+    let bounds = axes::plot_bounds(bounds, has_axes);
     let width = bounds.size.width;
     let height = bounds.size.height;
     if width <= px(0.0) || height <= px(0.0) {
@@ -1456,64 +1566,20 @@ fn paint_graph(
     .into_iter()
     .flatten();
     spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Fill, window);
-    let mut grid = PathBuilder::stroke(px(0.5));
-    if let Some(axes) = axes {
-        for (y, _) in &axes.vertical {
-            let y = origin.y + height * (1.0 - y);
-            grid.move_to(point(origin.x, y));
-            grid.line_to(point(origin.x + width, y));
-        }
-        for (x, _) in &axes.horizontal {
-            let x = origin.x + width * *x;
-            grid.move_to(point(x, origin.y));
-            grid.line_to(point(x, origin.y + height));
-        }
-    } else {
-        for division in 1..4 {
-            let y = origin.y + height * division as f32 / 4.0;
-            grid.move_to(point(origin.x, y));
-            grid.line_to(point(origin.x + width, y));
-        }
-        for division in 1..8 {
-            let x = origin.x + width * division as f32 / 8.0;
-            grid.move_to(point(x, origin.y));
-            grid.line_to(point(x, origin.y + height));
-        }
-    }
-    if let Ok(grid) = grid.build() {
-        window.paint_path(grid, rgb(style.rail));
+    if let Some(grid) = &static_paths.grid {
+        window.paint_path(grid.clone(), rgb(style.rail));
     }
     spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Peak, window);
     spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
-    for reference in references {
-        paint_curve(
-            origin,
-            width,
-            height,
-            &reference.points,
-            px(0.8),
-            gpui::Hsla::from(rgb(reference.color)).alpha(reference.opacity),
-            window,
-        );
+    for (path, color) in &static_paths.references {
+        window.paint_path(path.clone(), *color);
     }
-    paint_curve(
-        origin,
-        width,
-        height,
-        secondary,
-        px(0.75),
-        rgb(style.muted).into(),
-        window,
-    );
-    paint_curve(
-        origin,
-        width,
-        height,
-        primary,
-        px(1.15),
-        rgb(style.accent).into(),
-        window,
-    );
+    if let Some(secondary) = &static_paths.secondary {
+        window.paint_path(secondary.clone(), rgb(style.muted));
+    }
+    if let Some(primary) = &static_paths.primary {
+        window.paint_path(primary.clone(), rgb(style.accent));
+    }
     for node in nodes {
         let center = point(
             origin.x + width * node.position[0],
@@ -1583,15 +1649,46 @@ fn circular_node_quad(
     )
 }
 
-fn paint_curve(
+fn build_grid_path(
+    origin: Point<Pixels>,
+    width: Pixels,
+    height: Pixels,
+    axes: Option<&ResponseGraphAxes>,
+) -> Option<gpui::Path<Pixels>> {
+    let mut grid = PathBuilder::stroke(px(0.5));
+    if let Some(axes) = axes {
+        for (y, _) in &axes.vertical {
+            let y = origin.y + height * (1.0 - y);
+            grid.move_to(point(origin.x, y));
+            grid.line_to(point(origin.x + width, y));
+        }
+        for (x, _) in &axes.horizontal {
+            let x = origin.x + width * *x;
+            grid.move_to(point(x, origin.y));
+            grid.line_to(point(x, origin.y + height));
+        }
+    } else {
+        for division in 1..4 {
+            let y = origin.y + height * division as f32 / 4.0;
+            grid.move_to(point(origin.x, y));
+            grid.line_to(point(origin.x + width, y));
+        }
+        for division in 1..8 {
+            let x = origin.x + width * division as f32 / 8.0;
+            grid.move_to(point(x, origin.y));
+            grid.line_to(point(x, origin.y + height));
+        }
+    }
+    grid.build().ok()
+}
+
+fn build_curve_path(
     origin: Point<Pixels>,
     width: Pixels,
     height: Pixels,
     points: &[[f32; 2]],
     stroke_width: Pixels,
-    color: gpui::Hsla,
-    window: &mut Window,
-) {
+) -> Option<gpui::Path<Pixels>> {
     let mut path = PathBuilder::stroke(stroke_width);
     for (index, [x, y]) in points.iter().enumerate() {
         let point = point(origin.x + width * *x, origin.y + height * (1.0 - *y));
@@ -1601,9 +1698,7 @@ fn paint_curve(
             path.line_to(point);
         }
     }
-    if let Ok(path) = path.build() {
-        window.paint_path(path, color);
-    }
+    path.build().ok()
 }
 
 struct ResponseGraphCaptureElement {
@@ -1894,6 +1989,125 @@ mod tests {
         assert_eq!(cycle_node(None, 4, true), Some(3));
         assert_eq!(cycle_node(Some(0), 4, true), Some(3));
         assert_eq!(cycle_node(Some(2), 4, true), Some(1));
+    }
+
+    #[gpui::test]
+    fn set_analyzers_reuses_cached_static_paths_and_rebuilds_on_curve_or_size_change(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let style = ControlStyle {
+            background: 0x111111,
+            surface: 0x181818,
+            raised: 0x222222,
+            rail: 0x333333,
+            border: 0x444444,
+            text: 0xeeeeee,
+            muted: 0x888888,
+            accent: 0xffaa00,
+            accent_text: 0x111111,
+            numeric_fill: 0x2a2a2a,
+            hover_text: 0xffffff,
+            focus_marker: 0xffffff,
+            dial_rail: 0x333333,
+            hover: 0x2c2c2c,
+            selection: 0x445566,
+            invalid: 0xcc3333,
+            font_size: 11.0,
+            text_case: crate::TextCase::Lowercase,
+        };
+        let entity = cx.new(|cx| ResponseGraph::new(cx, "cache-test", style));
+        let bounds = Bounds {
+            origin: point(px(0.0), px(0.0)),
+            size: size(px(320.0), px(120.0)),
+        };
+
+        entity.update(cx, |graph, cx| {
+            graph
+                .set_model(
+                    ResponseGraphModel {
+                        primary: vec![[0.0, 0.25], [0.5, 0.75], [1.0, 0.5]],
+                        secondary: vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.5]],
+                        analyzer: None,
+                        input_analyzer: None,
+                        analyzer_peak: None,
+                        nodes: vec![],
+                    },
+                    style,
+                    cx,
+                )
+                .unwrap();
+            assert!(graph.ensure_static_paths(bounds).is_some());
+            assert_eq!(graph.static_path_builds, 1);
+
+            // Repeated frames at same size/style/epoch reuse cached paths.
+            assert!(graph.ensure_static_paths(bounds).is_some());
+            assert_eq!(graph.static_path_builds, 1);
+
+            // Analyzer-only updates validate and update traces without
+            // bumping curve_epoch or re-tessellating static paths.
+            let changed = graph
+                .set_analyzers(
+                    Some(vec![[0.0, 0.2], [1.0, 0.8]]),
+                    Some(vec![[0.0, 0.1], [1.0, 0.6]]),
+                    Some(vec![[0.0, 0.3], [1.0, 0.9]]),
+                    cx,
+                )
+                .unwrap();
+            assert!(changed);
+            assert!(graph.ensure_static_paths(bounds).is_some());
+            assert_eq!(graph.static_path_builds, 1);
+
+            // Identical analyzer update is a no-op.
+            assert!(
+                !graph
+                    .set_analyzers(
+                        Some(vec![[0.0, 0.2], [1.0, 0.8]]),
+                        Some(vec![[0.0, 0.1], [1.0, 0.6]]),
+                        Some(vec![[0.0, 0.3], [1.0, 0.9]]),
+                        cx,
+                    )
+                    .unwrap()
+            );
+
+            // Invalid analyzer points are refused without mutating state.
+            assert!(
+                graph
+                    .set_analyzers(Some(vec![[0.5, f32::NAN], [1.0, 0.5]]), None, None, cx)
+                    .is_err()
+            );
+            assert!(
+                graph
+                    .set_analyzers(Some(vec![[0.5, 0.5]]), None, None, cx)
+                    .is_err()
+            );
+            assert!(graph.analyzer_layers()[0].is_some());
+
+            // Resizing invalidates the static path cache.
+            let resized = Bounds {
+                origin: point(px(0.0), px(0.0)),
+                size: size(px(400.0), px(120.0)),
+            };
+            assert!(graph.ensure_static_paths(resized).is_some());
+            assert_eq!(graph.static_path_builds, 2);
+
+            // Changing primary response invalidates the static path cache.
+            graph
+                .set_model(
+                    ResponseGraphModel {
+                        primary: vec![[0.0, 0.8], [0.5, 0.2], [1.0, 0.6]],
+                        secondary: vec![[0.0, 0.5], [0.5, 0.5], [1.0, 0.5]],
+                        analyzer: None,
+                        input_analyzer: None,
+                        analyzer_peak: None,
+                        nodes: vec![],
+                    },
+                    style,
+                    cx,
+                )
+                .unwrap();
+            assert!(graph.ensure_static_paths(resized).is_some());
+            assert_eq!(graph.static_path_builds, 3);
+        });
     }
 }
 
