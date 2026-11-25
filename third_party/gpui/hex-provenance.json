@@ -197,7 +197,7 @@
   "patched_files": {
     "src/app/test_context.rs": "8b51ad6f65df259d04e81665f2ce8012e439b7934d338651bc15bac34deebd64",
     "src/bounds_tree.rs": "5e9af12feb307795e4e30129479105494b2005ac28bacebff0ce4d36cb584b21",
-    "src/elements/div.rs": "603be85f08df5b24336ded96b3a38c19459c38548aec5eaad1c2edf03f41bc46",
+    "src/elements/div.rs": "5820f236efb27fe60987fa0bc9cb6b0e73f416426d7dbe8f94fb3de7ab95dd49",
     "src/gpui.rs": "b26a450e27b580824e68b48cbceb200e39fa03ea8f8c39599d30e41784adc2f8",
     "src/interactive.rs": "dd5fdbffdd9c7c50af965163ba2380c4868708396a5cd82e4f529bdf99b9710a",
     "src/platform.rs": "dcd944460e8d55c49fc0f0c40df4a271baf04c3de74acd912927d1805cabb0bc",
@@ -214,7 +214,7 @@
     "src/scene.rs": "126ab3149054f6d4801301038d2925719dd2fa938ccf0f651ab54381f625a03e",
     "src/taffy.rs": "519afe0f4369cfb0cebd8442898dd11c52b52825d3e7128adcec71d841091e22",
     "src/view.rs": "106968c2296e1063d92c13bddd459a1416c7cbc6d45bfbaa6647316b9cd047bf",
-    "src/window.rs": "600636f1b39e13aac649fa71954933377f30efd32e043b4e98e4e2eef9ebc8b0",
+    "src/window.rs": "7af5bea44bf830510b43259bfb1b08f1da13f88c5c468a40a38af3ce5d4a987e",
     "src/app.rs": "a1ff1ed9c58337e2c2c8162c07b6f512852b8eafc4bca7333664536cb232de8f",
     "src/element.rs": "93dbbe830b6cc8fc961e50d2119a3ebf5680024b8e293ea54c3c7e16f1b7c365",
     "src/text_system.rs": "8ab7faae0a1cade0aefc92e824a7ff025c62c9bd7ac29da123de8b8655cf14eb",

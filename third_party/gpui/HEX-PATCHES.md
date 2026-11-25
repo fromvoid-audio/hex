@@ -543,3 +543,13 @@ carries the modal ranges for listeners and pointer capture renewals. A held
 pointer capture outside the modal retires through the existing cancellation
 path. The playback interruption confirmation opts in to keep raw canvas
 listeners from receiving its clicks and scrolls.
+
+25 November passive div prepaint extent skip (#8838): `Div::prepaint` only
+resolves direct-child layout bounds for parent `content_size` when an actual
+consumer is present — a `tracked_scroll_handle`, an active `scroll_offset`
+(untracked scrollable container), an `on_children_prepainted` listener, or an
+active inspector state under `cfg(any(feature = "inspector", debug_assertions))`.
+Passive containers omit the redundant parent extent fold while each child still
+resolves its own layout bounds once during its own prepaint. Tracked and
+untracked wheel scrolling, scroll clamping, listener bounds/order, and
+debug/inspector content size remain unchanged.

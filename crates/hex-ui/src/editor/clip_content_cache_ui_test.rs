@@ -14,6 +14,161 @@ fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut Te
 }
 
 #[gpui::test]
+fn passive_div_prepaint_preserves_child_geometry_listeners_and_scrolling(cx: &mut TestAppContext) {
+    use gpui::{
+        Bounds, Context, InteractiveElement, IntoElement, ParentElement, Render, ScrollDelta,
+        ScrollHandle, ScrollWheelEvent, StatefulInteractiveElement, Styled, TouchPhase, Window,
+        div,
+    };
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct PrepaintProbe {
+        listener_bounds: Rc<RefCell<Vec<Bounds<gpui::Pixels>>>>,
+        tracked: ScrollHandle,
+    }
+
+    impl Render for PrepaintProbe {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let listener_bounds = Rc::clone(&self.listener_bounds);
+            div()
+                .flex()
+                .flex_col()
+                .size_full()
+                // 1. Passive nested container (no scroll, no listener, no inspector).
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .w(px(200.0))
+                        .h(px(30.0))
+                        .child(
+                            div()
+                                .debug_selector(|| "passive-child-a".into())
+                                .w(px(80.0))
+                                .h(px(30.0)),
+                        )
+                        .child(
+                            div()
+                                .debug_selector(|| "passive-child-b".into())
+                                .w(px(120.0))
+                                .h(px(30.0)),
+                        ),
+                )
+                // 2. Container with explicit on_children_prepainted listener.
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .w(px(150.0))
+                        .h(px(20.0))
+                        .on_children_prepainted(move |bounds, _, _| {
+                            *listener_bounds.borrow_mut() = bounds;
+                        })
+                        .child(div().w(px(50.0)).h(px(20.0)))
+                        .child(div().w(px(100.0)).h(px(20.0))),
+                )
+                // 3. Tracked scrollable container.
+                .child(
+                    div()
+                        .id("tracked-scroll")
+                        .track_scroll(&self.tracked)
+                        .overflow_y_scroll()
+                        .w(px(100.0))
+                        .h(px(40.0))
+                        .children((0..5).map(|i| {
+                            div()
+                                .debug_selector(move || format!("tracked-item-{i}"))
+                                .w(px(100.0))
+                                .h(px(30.0))
+                        })),
+                )
+                // 4. Untracked scrollable container (scroll_offset without ScrollHandle).
+                .child(
+                    div()
+                        .id("untracked-scroll")
+                        .debug_selector(|| "untracked-scroll".into())
+                        .overflow_y_scroll()
+                        .w(px(100.0))
+                        .h(px(40.0))
+                        .children((0..5).map(|i| {
+                            div()
+                                .debug_selector(move || format!("untracked-item-{i}"))
+                                .w(px(100.0))
+                                .h(px(30.0))
+                        })),
+                )
+        }
+    }
+
+    let listener_bounds = Rc::new(RefCell::new(Vec::new()));
+    let tracked = ScrollHandle::new();
+    let probe_bounds = Rc::clone(&listener_bounds);
+    let probe_scroll = tracked.clone();
+    let (_view, visual) = cx.add_window_view(|_, _| PrepaintProbe {
+        listener_bounds: probe_bounds,
+        tracked: probe_scroll,
+    });
+    visual.run_until_parked();
+
+    // 1. Passive children keep exact resolved layout bounds.
+    let child_a = visual
+        .debug_bounds("passive-child-a")
+        .expect("passive child a");
+    let child_b = visual
+        .debug_bounds("passive-child-b")
+        .expect("passive child b");
+    assert_eq!(child_a.size.width, px(80.0));
+    assert_eq!(child_b.size.width, px(120.0));
+    assert_eq!(child_b.origin.x, child_a.origin.x + px(80.0));
+
+    // 2. Prepaint listener received exact child bounds in order.
+    let observed = listener_bounds.borrow();
+    assert_eq!(observed.len(), 2);
+    assert_eq!(observed[0].size.width, px(50.0));
+    assert_eq!(observed[1].size.width, px(100.0));
+    assert_eq!(observed[1].origin.x, observed[0].origin.x + px(50.0));
+    drop(observed);
+
+    // 3. Tracked scroll handle retains full content height (5 * 30 - 40 = 110) and programmatic scroll.
+    assert_eq!(tracked.children_count(), 5);
+    assert_eq!(tracked.max_offset().height, px(110.0));
+    tracked.scroll_to_bottom();
+    visual.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear();
+    });
+    assert_eq!(tracked.offset().y, px(-110.0));
+
+    // 4. Untracked scroll container scrolls on wheel input and clamps to true content extent (-110).
+    let item0_before = visual
+        .debug_bounds("untracked-item-0")
+        .expect("untracked item 0")
+        .origin
+        .y;
+    let scroll_center = visual
+        .debug_bounds("untracked-scroll")
+        .expect("untracked scroll")
+        .center();
+    visual.simulate_event(ScrollWheelEvent {
+        position: scroll_center,
+        delta: ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+        modifiers: Modifiers::default(),
+        touch_phase: TouchPhase::Moved,
+        direction_inverted_from_device: false,
+        is_momentum: false,
+        wheel_ticks: None,
+    });
+    visual.run_until_parked();
+    let item0_after = visual
+        .debug_bounds("untracked-item-0")
+        .expect("untracked item 0 after scroll")
+        .origin
+        .y;
+    assert_eq!(item0_before - item0_after, px(110.0));
+}
+
+#[gpui::test]
 fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut TestAppContext) {
     let (project, source, _, clip) = super::super::clip_drag_ui_test::audio_project();
     let before = project.clone();
