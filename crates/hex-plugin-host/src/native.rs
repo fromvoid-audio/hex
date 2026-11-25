@@ -283,6 +283,10 @@ impl Cancellation {
         self.cancelled.store(true, Ordering::Release);
         let _ = self.stream.shutdown(std::net::Shutdown::Write);
     }
+    /// Whether cancellation has been requested on control for this guardian.
+    pub fn is_cancelled_on_control(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
     fn check(&self) -> Result<()> {
         if self.cancelled.load(Ordering::Acquire) {
             Err(Error::Cancelled)

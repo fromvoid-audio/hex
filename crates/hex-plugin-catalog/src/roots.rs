@@ -1,5 +1,5 @@
 //! Bounded installed-location enumeration. Never loads code or enters bundles.
-use crate::{MAX_MODULES, path_valid};
+use crate::{MAX_MODULES, PluginFormat, path_valid};
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -14,20 +14,36 @@ pub struct Enumeration {
     pub skipped_links: usize,
 }
 
-/// Standard macOS local/user locations. No home or checkout fallback.
+/// Standard macOS local/user VST3 locations. No home or checkout fallback.
 pub fn macos_standard_paths() -> Result<Vec<PathBuf>, String> {
-    macos_scan_paths(true, true, None)
+    macos_standard_paths_for(PluginFormat::Vst3)
 }
 
-/// Resolve only the selected roots, before the bounded batch starts.
+/// Standard macOS local/user locations for the requested plugin format.
+pub fn macos_standard_paths_for(format: PluginFormat) -> Result<Vec<PathBuf>, String> {
+    macos_scan_paths_for(format, true, true, None)
+}
+
+/// Resolve only the selected VST3 roots, before the bounded batch starts.
 pub fn macos_scan_paths(
     system: bool,
     user: bool,
     custom: Option<PathBuf>,
 ) -> Result<Vec<PathBuf>, String> {
+    macos_scan_paths_for(PluginFormat::Vst3, system, user, custom)
+}
+
+/// Resolve only the selected roots for the requested plugin format.
+pub fn macos_scan_paths_for(
+    format: PluginFormat,
+    system: bool,
+    user: bool,
+    custom: Option<PathBuf>,
+) -> Result<Vec<PathBuf>, String> {
+    let folder = format.macos_folder_name();
     let mut roots = Vec::new();
     if system {
-        roots.push(PathBuf::from("/Library/Audio/Plug-Ins/VST3"));
+        roots.push(PathBuf::from(format!("/Library/Audio/Plug-Ins/{folder}")));
     }
     if user {
         let home = std::env::var_os("HOME")
@@ -36,15 +52,16 @@ pub fn macos_scan_paths(
         if !path_valid(&home) {
             return Err("user home path invalid".into());
         }
-        roots.push(home.join("Library/Audio/Plug-Ins/VST3"));
+        roots.push(home.join(format!("Library/Audio/Plug-Ins/{folder}")));
     }
     roots.extend(custom);
     Ok(roots)
 }
 
-fn existing_root(path: &Path) -> Result<bool, String> {
+fn existing_root(format: PluginFormat, path: &Path) -> Result<bool, String> {
+    let label = format.as_str();
     if !path_valid(path) {
-        return Err("invalid vst3 folder path".into());
+        return Err(format!("invalid {label} folder path"));
     }
     let mut prefix = PathBuf::new();
     for component in path.components() {
@@ -56,35 +73,47 @@ fn existing_root(path: &Path) -> Result<bool, String> {
             Ok(info) if info.is_dir() && !info.file_type().is_symlink() => {}
             Ok(_) => {
                 return Err(format!(
-                    "vst3 folder has linked or non-directory component: {}",
+                    "{label} folder has linked or non-directory component: {}",
                     prefix.display()
                 ));
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(e) => return Err(format!("vst3 folder unavailable: {e}")),
+            Err(e) => return Err(format!("{label} folder unavailable: {e}")),
         }
     }
     Ok(true)
 }
 
-/// At most three roots; stop before any foreign execution on traversal/cap failure.
+/// At most three VST3 roots; stop before any foreign execution on traversal/cap failure.
 /// Symlinks encountered within an existing root are counted and never followed.
 pub fn enumerate(
     roots: &[PathBuf],
+    cancelled: impl FnMut() -> bool,
+) -> Result<Enumeration, String> {
+    enumerate_for(PluginFormat::Vst3, roots, cancelled)
+}
+
+/// Format-neutral bounded enumeration for VST3 or CLAP bundles.
+/// Symlinks encountered within an existing root are counted and never followed.
+pub fn enumerate_for(
+    format: PluginFormat,
+    roots: &[PathBuf],
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<Enumeration, String> {
+    let label = format.as_str();
+    let extension = format.bundle_extension();
     if roots.is_empty() || roots.len() > 3 {
-        return Err("one to three vst3 folders required".into());
+        return Err(format!("one to three {label} folders required"));
     }
     let mut pending = Vec::new();
     for root in roots {
         if cancelled() {
             return Err("folder scan cancelled".into());
         }
-        if root.extension().and_then(|s| s.to_str()) == Some("vst3") {
-            return Err("select folders containing vst3 bundles".into());
+        if root.extension().and_then(|s| s.to_str()) == Some(extension) {
+            return Err(format!("select folders containing {label} bundles"));
         }
-        if existing_root(root)? && !pending.iter().any(|(path, _)| path == root) {
+        if existing_root(format, root)? && !pending.iter().any(|(path, _)| path == root) {
             pending.push((root.clone(), 0));
         }
     }
@@ -100,32 +129,35 @@ pub fn enumerate(
         }
         // Recheck before traversal; native module admission also independently
         // rejects linked/changed paths immediately before loading selected code.
-        if !existing_root(&directory)? {
-            return Err("vst3 folder disappeared during enumeration".into());
+        if !existing_root(format, &directory)? {
+            return Err(format!("{label} folder disappeared during enumeration"));
         }
         directories += 1;
         if directories > MAX_DIRECTORIES {
-            return Err("vst3 directory bound exceeded".into());
+            return Err(format!("{label} directory bound exceeded"));
         }
         let mut children = Vec::new();
-        for entry in fs::read_dir(&directory)
-            .map_err(|e| format!("vst3 folder listing failed at {}: {e}", directory.display()))?
-        {
+        for entry in fs::read_dir(&directory).map_err(|e| {
+            format!(
+                "{label} folder listing failed at {}: {e}",
+                directory.display()
+            )
+        })? {
             if cancelled() {
                 return Err("folder scan cancelled".into());
             }
             entries += 1;
             if entries > MAX_ENTRIES {
-                return Err("vst3 folder entry bound exceeded".into());
+                return Err(format!("{label} folder entry bound exceeded"));
             }
-            let entry = entry.map_err(|e| format!("vst3 folder entry failed: {e}"))?;
+            let entry = entry.map_err(|e| format!("{label} folder entry failed: {e}"))?;
             let path = entry.path();
             if !path_valid(&path) {
-                return Err("vst3 folder member path invalid or oversized".into());
+                return Err(format!("{label} folder member path invalid or oversized"));
             }
             let kind = entry
                 .file_type()
-                .map_err(|e| format!("vst3 folder member unavailable: {e}"))?;
+                .map_err(|e| format!("{label} folder member unavailable: {e}"))?;
             if kind.is_symlink() {
                 result.skipped_links += 1;
                 continue;
@@ -133,16 +165,16 @@ pub fn enumerate(
             if !kind.is_dir() {
                 continue;
             }
-            if path.extension().and_then(|v| v.to_str()) == Some("vst3") {
+            if path.extension().and_then(|v| v.to_str()) == Some(extension) {
                 if !result.bundles.contains(&path) {
                     result.bundles.push(path);
                 }
                 if result.bundles.len() > MAX_MODULES {
-                    return Err("vst3 bundle capacity exceeded".into());
+                    return Err(format!("{label} bundle capacity exceeded"));
                 }
             } else {
                 if depth == MAX_DEPTH {
-                    return Err("vst3 folder depth bound exceeded".into());
+                    return Err(format!("{label} folder depth bound exceeded"));
                 }
                 children.push(path);
             }
@@ -275,5 +307,28 @@ mod tests {
         assert!(result.catalog.is_none());
         assert!(result.status.contains("capacity"), "{}", result.status);
         assert_eq!(fs::read(file).unwrap(), before);
+    }
+
+    #[test]
+    fn clap_enumeration_discovers_only_clap_bundles_and_respects_symlink_and_depth_bounds() {
+        let f = Fixture::new();
+        let clap_a = f.0.join("A.clap");
+        let clap_b = f.0.join("vendor/B.clap");
+        let vst3 = f.0.join("C.vst3");
+        fs::create_dir_all(clap_b.join("Contents/Nested.clap")).unwrap();
+        fs::create_dir(&clap_a).unwrap();
+        fs::create_dir(&vst3).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&clap_a, f.0.join("Link.clap")).unwrap();
+
+        let clap_found =
+            enumerate_for(PluginFormat::Clap, std::slice::from_ref(&f.0), || false).unwrap();
+        assert_eq!(clap_found.bundles, vec![clap_a, clap_b]);
+        #[cfg(unix)]
+        assert_eq!(clap_found.skipped_links, 1);
+
+        let vst3_found =
+            enumerate_for(PluginFormat::Vst3, std::slice::from_ref(&f.0), || false).unwrap();
+        assert_eq!(vst3_found.bundles, vec![vst3]);
     }
 }

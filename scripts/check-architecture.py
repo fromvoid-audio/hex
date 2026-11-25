@@ -16,7 +16,7 @@ ALLOWED = {
     'hex-scan-supervisor': set(),
     'hex-clap-scan': {'hex-scan-supervisor'},
     'hex-plugin-scan': {'hex-scan-supervisor'},
-    'hex-plugin-catalog': {'hex-plugin-scan'},
+    'hex-plugin-catalog': {'hex-plugin-scan', 'hex-clap-scan'},
     'hex-plugin-state': {'hex-lattice-contract'},
     # Ordinary control/worker client; never callback, process-global signals or graph authority.
     'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract'},

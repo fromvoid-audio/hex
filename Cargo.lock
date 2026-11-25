@@ -2726,6 +2726,7 @@ name = "hex-plugin-catalog"
 version = "0.1.0"
 dependencies = [
  "fs2",
+ "hex-clap-scan",
  "hex-plugin-scan",
  "serde",
  "serde_json",
