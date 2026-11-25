@@ -57,6 +57,12 @@ pub enum LiveNoteEvent {
     PolyPressure { channel: u8, pitch: u8, value: u8 },
     /// Channel Control Change (including CC64 Sustain, CC11 Expression, and general CCs).
     ControlChange { channel: u8, cc: u8, value: u8 },
+    /// MPE per-note pitch bend (`-4800..=4800` cents) bound to the active note on
+    /// `(channel, pitch)`.
+    NotePitchBend { channel: u8, pitch: u8, cents: i16 },
+    /// MPE per-note slide / timbre (`0..=127`, CC74) bound to the active note on
+    /// `(channel, pitch)`.
+    NoteTimbre { channel: u8, pitch: u8, value: u8 },
     /// Release every live note owned by this input.
     #[default]
     AllNotesOff,
@@ -64,68 +70,98 @@ pub enum LiveNoteEvent {
 
 impl LiveNoteEvent {
     fn encode(self) -> Option<u64> {
-        let (kind, channel, pitch, velocity) = match self {
+        let (kind, channel, pitch, value) = match self {
             Self::NoteOn {
                 channel,
                 pitch,
                 velocity,
             } if channel <= 15 && pitch <= 127 && (1..=127).contains(&velocity) => {
-                (1_u64, channel, pitch, velocity)
+                (1_u64, channel, pitch, u16::from(velocity))
             }
             Self::NoteOff {
                 channel,
                 pitch,
                 velocity,
             } if channel <= 15 && pitch <= 127 && velocity <= 127 => {
-                (2_u64, channel, pitch, velocity)
+                (2_u64, channel, pitch, u16::from(velocity))
             }
             Self::AllNotesOff => (3_u64, 0, 0, 0),
             Self::PolyPressure {
                 channel,
                 pitch,
                 value,
-            } if channel <= 15 && pitch <= 127 && value <= 127 => (4_u64, channel, pitch, value),
+            } if channel <= 15 && pitch <= 127 && value <= 127 => {
+                (4_u64, channel, pitch, u16::from(value))
+            }
             Self::ControlChange { channel, cc, value }
                 if channel <= 15 && cc <= 127 && value <= 127 =>
             {
-                (5_u64, channel, cc, value)
+                (5_u64, channel, cc, u16::from(value))
+            }
+            Self::NotePitchBend {
+                channel,
+                pitch,
+                cents,
+            } if channel <= 15 && pitch <= 127 && (-4800..=4800).contains(&cents) => {
+                (6_u64, channel, pitch, (cents + 4800) as u16)
+            }
+            Self::NoteTimbre {
+                channel,
+                pitch,
+                value,
+            } if channel <= 15 && pitch <= 127 && value <= 127 => {
+                (7_u64, channel, pitch, u16::from(value))
             }
             _ => return None,
         };
         Some(
-            (kind << 18)
-                | (u64::from(channel) << 14)
-                | (u64::from(pitch) << 7)
-                | u64::from(velocity),
+            (kind << 28) | (u64::from(channel) << 24) | (u64::from(pitch) << 16) | u64::from(value),
         )
     }
 
     fn decode(word: u64) -> Option<Self> {
-        let kind = word >> 18;
-        let channel = ((word >> 14) & 0x0f) as u8;
-        let pitch = ((word >> 7) & 0x7f) as u8;
-        let velocity = (word & 0x7f) as u8;
+        if word >> 32 != 0 {
+            return None;
+        }
+        let kind = (word >> 28) & 0x0f;
+        let channel = ((word >> 24) & 0x0f) as u8;
+        let pitch_raw = (word >> 16) & 0xff;
+        if pitch_raw > 127 {
+            return None;
+        }
+        let pitch = pitch_raw as u8;
+        let value = (word & 0xffff) as u16;
         match kind {
-            1 if (1..=127).contains(&velocity) => Some(Self::NoteOn {
+            1 if (1..=127).contains(&value) => Some(Self::NoteOn {
                 channel,
                 pitch,
-                velocity,
+                velocity: value as u8,
             }),
-            2 => Some(Self::NoteOff {
+            2 if value <= 127 => Some(Self::NoteOff {
                 channel,
                 pitch,
-                velocity,
+                velocity: value as u8,
             }),
-            3 if word == (3_u64 << 18) => Some(Self::AllNotesOff),
-            4 => Some(Self::PolyPressure {
+            3 if word == (3_u64 << 28) => Some(Self::AllNotesOff),
+            4 if value <= 127 => Some(Self::PolyPressure {
                 channel,
                 pitch,
-                value: velocity,
+                value: value as u8,
             }),
-            5 => Some(Self::ControlChange {
+            5 if value <= 127 => Some(Self::ControlChange {
                 channel,
                 cc: pitch,
-                value: velocity,
+                value: value as u8,
+            }),
+            6 if value <= 9600 => Some(Self::NotePitchBend {
+                channel,
+                pitch,
+                cents: value as i16 - 4800,
+            }),
+            7 if value <= 127 => Some(Self::NoteTimbre {
+                channel,
+                pitch,
+                value: value as u8,
             }),
             _ => None,
         }
@@ -951,6 +987,59 @@ mod tests {
                 4_000_000,
             ),
             Err(LiveNotePublishError::InvalidEvent)
+        );
+    }
+
+    #[test]
+    fn mpe_note_pitch_bend_and_timbre_roundtrip_and_refuse_out_of_range() {
+        for &(ch, pitch, cents) in &[
+            (0_u8, 0_u8, -4800_i16),
+            (1, 60, 0),
+            (15, 127, 4800),
+            (7, 64, -1234),
+            (14, 72, 2345),
+        ] {
+            let ev = LiveNoteEvent::NotePitchBend {
+                channel: ch,
+                pitch,
+                cents,
+            };
+            assert_eq!(LiveNoteEvent::decode(ev.encode().unwrap()), Some(ev));
+        }
+        assert!(
+            LiveNoteEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 4801,
+            }
+            .encode()
+            .is_none()
+        );
+        assert!(
+            LiveNoteEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: -4801,
+            }
+            .encode()
+            .is_none()
+        );
+        for &(ch, pitch, value) in &[(1_u8, 60_u8, 0_u8), (15, 127, 127), (4, 48, 74)] {
+            let ev = LiveNoteEvent::NoteTimbre {
+                channel: ch,
+                pitch,
+                value,
+            };
+            assert_eq!(LiveNoteEvent::decode(ev.encode().unwrap()), Some(ev));
+        }
+        assert!(
+            LiveNoteEvent::NoteTimbre {
+                channel: 1,
+                pitch: 60,
+                value: 128,
+            }
+            .encode()
+            .is_none()
         );
     }
 }
