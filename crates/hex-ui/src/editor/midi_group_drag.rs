@@ -221,6 +221,7 @@ pub(super) struct GroupStart {
     pub(super) pitch: super::PitchViewport,
     pub(super) clip_length: u64,
     pub(super) grid: MidiGrid,
+    pub(super) grid_origin: u64,
 }
 
 #[derive(Clone)]
@@ -240,6 +241,10 @@ pub(super) struct GroupGesture {
     pitch: super::PitchViewport,
     clip_length: u64,
     grid: MidiGrid,
+    grid_origin: u64,
+    anchor_end: u64,
+    last_end_raw: i128,
+    snapped_to_grid: bool,
     delta: i128,
     pitch_delta: i16,
     source_prefix: u64,
@@ -285,6 +290,15 @@ impl GroupGesture {
             start.beat_span,
         )?;
         let pointer_pitch = midi_drag::pitch_at_point(start.pointer[1], start.bounds, start.pitch)?;
+        let anchor_end = start
+            .originals
+            .iter()
+            .map(|note| note.start.saturating_add(note.duration))
+            .min_by_key(|end| end.abs_diff(pointer_beat))
+            .unwrap_or(pointer_beat);
+        let snapped_to_grid = start.kind == HitKind::ResizeTrailing
+            && !start.copy
+            && midi_drag::is_on_grid(anchor_end, start.grid, start.grid_origin);
         Some(Self {
             copy: start.copy,
             kind: if start.copy {
@@ -305,6 +319,10 @@ impl GroupGesture {
             pitch: start.pitch,
             clip_length: start.clip_length,
             grid: start.grid,
+            grid_origin: start.grid_origin,
+            anchor_end,
+            last_end_raw: i128::from(anchor_end),
+            snapped_to_grid,
             delta: 0,
             pitch_delta: 0,
             source_prefix: 0,
@@ -334,13 +352,32 @@ impl GroupGesture {
         else {
             return false;
         };
-        let grid = if self.kind == HitKind::ResizeTrailing {
-            midi_drag::note_end_grid(self.grid, invert_snap)
+        let (grid, desired_delta) = if self.kind == HitKind::ResizeTrailing {
+            let raw_delta = pointer_beat - i128::from(self.pointer_beat);
+            let raw_end = i128::from(self.anchor_end) + raw_delta;
+            if let Some(step) = self.grid.step_raw()
+                && !self.snapped_to_grid
+                && midi_drag::hit_grid_line(self.last_end_raw, raw_end, step, self.grid_origin)
+            {
+                self.snapped_to_grid = true;
+            }
+            self.last_end_raw = raw_end;
+            let end_grid = midi_drag::note_end_grid(self.grid, invert_snap, self.snapped_to_grid);
+            let delta = if raw_delta == 0 && !self.snapped_to_grid {
+                0
+            } else {
+                let snapped_end =
+                    midi_drag::snap_signed_aligned(raw_end, end_grid, self.grid_origin);
+                snapped_end - i128::from(self.anchor_end)
+            };
+            (end_grid, delta)
         } else {
-            midi_drag::effective_grid(self.grid, invert_snap)
+            let grid = midi_drag::effective_grid(self.grid, invert_snap);
+            (
+                grid,
+                midi_drag::quantize_delta(pointer_beat - i128::from(self.pointer_beat), grid),
+            )
         };
-        let desired_delta =
-            midi_drag::quantize_delta(pointer_beat - i128::from(self.pointer_beat), grid);
         let (desired_delta, source_prefix) =
             if !self.copy && matches!(self.kind, HitKind::Move | HitKind::ResizeLeading) {
                 let first = self
@@ -481,6 +518,10 @@ impl GroupGesture {
             pitch: note.pitch,
             clip_length: note.clip_length,
             grid: note.grid,
+            grid_origin: note.grid_origin,
+            anchor_end: note.original.start.saturating_add(note.original.duration),
+            last_end_raw: i128::from(note.original.start.saturating_add(note.original.duration)),
+            snapped_to_grid: false,
             delta: i128::from(note.preview.start) - i128::from(note.original.start),
             pitch_delta: i16::from(note.preview.pitch) - i16::from(note.original.pitch),
             source_prefix: 0,
@@ -878,6 +919,7 @@ mod tests {
             pitch: crate::editor::PitchViewport::from_rows(pitch_low, 24).unwrap(),
             clip_length: CLIP,
             grid,
+            grid_origin: 0,
         })
         .expect("group gesture")
     }
@@ -939,31 +981,23 @@ mod tests {
     }
 
     #[test]
-    fn group_trailing_resize_is_free_by_default_and_snaps_while_cmd_is_held() {
+    fn group_trailing_resize_latches_on_grid_hit_and_unsnaps_with_cmd() {
         let beat = BeatTime::ONE.raw();
-        let fixture = fixture(&[(beat, beat / 2, 60), (2 * beat, beat / 4, 61)]);
-        let first = fixture.notes[0];
-        let second = fixture.notes[1];
+        let at = |x| crate::editor::midi_drag::beat_at_point(x, BOUNDS, 0, CLIP).unwrap();
+        let free = at(265.0) - at(250.0); // about +0.15 beat
+
+        // On-grid anchor (1.5 on 1/16 grid): snaps by default, unsnaps while Cmd is held.
+        let fixture_sixteenth = fixture(&[(beat, beat / 2, 60), (2 * beat, beat / 4, 61)]);
+        let first = fixture_sixteenth.notes[0];
+        let second = fixture_sixteenth.notes[1];
         let mut drag = gesture_of_kind(
             MidiGrid::Sixteenth,
-            fixture,
+            fixture_sixteenth,
             [250.0, 315.0],
             48,
             super::HitKind::ResizeTrailing,
         );
-        let at = |x| crate::editor::midi_drag::beat_at_point(x, BOUNDS, 0, CLIP).unwrap();
-        let free = at(265.0) - at(250.0); // about 0.15 beat
         assert!(drag.update([265.0, 315.0], false));
-        assert_eq!(
-            drag.preview(first.id).unwrap().duration,
-            first.duration + free
-        );
-        assert_eq!(
-            drag.preview(second.id).unwrap().duration,
-            second.duration + free
-        );
-        assert_eq!(drag.preview(first.id).unwrap().start, first.start);
-        assert!(drag.update([265.0, 315.0], true));
         assert_eq!(
             drag.preview(first.id).unwrap().duration,
             first.duration + beat / 4
@@ -972,10 +1006,54 @@ mod tests {
             drag.preview(second.id).unwrap().duration,
             second.duration + beat / 4
         );
-        assert!(drag.update([265.0, 315.0], false));
+        assert_eq!(drag.preview(first.id).unwrap().start, first.start);
+        assert!(drag.update([265.0, 315.0], true));
         assert_eq!(
             drag.preview(first.id).unwrap().duration,
             first.duration + free
+        );
+        assert_eq!(
+            drag.preview(second.id).unwrap().duration,
+            second.duration + free
+        );
+        assert!(drag.update([265.0, 315.0], false));
+        assert_eq!(
+            drag.preview(first.id).unwrap().duration,
+            first.duration + beat / 4
+        );
+
+        // Off-grid anchor (1.5 on Quarter grid): free until hitting 2.0, then stays snapped.
+        let fixture_quarter = fixture(&[(beat, beat / 2, 60), (2 * beat, beat / 2, 61)]);
+        let q_first = fixture_quarter.notes[0];
+        let q_second = fixture_quarter.notes[1];
+        let mut q_drag = gesture_of_kind(
+            MidiGrid::Quarter,
+            fixture_quarter,
+            [250.0, 315.0],
+            48,
+            super::HitKind::ResizeTrailing,
+        );
+        assert!(q_drag.update([265.0, 315.0], false));
+        assert_eq!(
+            q_drag.preview(q_first.id).unwrap().duration,
+            q_first.duration + free
+        );
+        // Cross 2.0 (x=300) -> latches snapped onto 2.0 (+0.5 beat delta).
+        assert!(q_drag.update([305.0, 315.0], false));
+        assert_eq!(
+            q_drag.preview(q_first.id).unwrap().duration,
+            q_first.duration + beat / 2
+        );
+        assert_eq!(
+            q_drag.preview(q_second.id).unwrap().duration,
+            q_second.duration + beat / 2
+        );
+        // Dragging back into (1.0, 2.0) stays snapped until Cmd is held.
+        assert!(!q_drag.update([265.0, 315.0], false));
+        assert!(q_drag.update([265.0, 315.0], true));
+        assert_eq!(
+            q_drag.preview(q_first.id).unwrap().duration,
+            q_first.duration + free
         );
     }
 

@@ -1204,6 +1204,7 @@ impl EditorView {
                                             pitch,
                                             clip_length: effective_clip_len,
                                             grid,
+                                            grid_origin: canonical_grid_origin,
                                         },
                                     );
                                     if let Some(gesture) = gesture
@@ -1257,6 +1258,7 @@ impl EditorView {
                                     clip_length: effective_clip_len,
                                     pitch,
                                     grid,
+                                    grid_origin: canonical_grid_origin,
                                 })
                                 .and_then(midi_drag::begin);
                                 if let Some(gesture) = gesture
@@ -1561,9 +1563,9 @@ impl EditorView {
             .children([self.midi_button(
                 grid.label(),
                 if cfg!(target_os = "macos") {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping · note ends drag free, hold cmd to snap"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold cmd to invert snapping · note ends drag free until hitting a grid line, then snap"
                 } else {
-                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping · note ends drag free, hold control to snap"
+                    "cycle midi grid: 1/4, 1/8, 1/16, 1/32, off · hold control to invert snapping · note ends drag free until hitting a grid line, then snap"
                 },
                 cx.listener(|v, _, _, cx| {
                     v.cycle_midi_grid();
