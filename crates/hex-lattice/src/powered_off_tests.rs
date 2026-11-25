@@ -89,7 +89,7 @@ fn powered_off_rejects_active_wrong_owner_and_unknown_configuration() {
 }
 
 #[test]
-fn return_power_off_requires_the_exact_aligned_owner_and_untrimmed_stage() {
+fn return_power_off_and_deletion_retain_the_exact_aligned_owner() {
     let binding = hex_lattice_contract::ForeignProcessorBinding {
         root: 1,
         instance: 7,
@@ -134,7 +134,10 @@ fn return_power_off_requires_the_exact_aligned_owner_and_untrimmed_stage() {
     let wrong = NativeRuntimeChain::new_prepared(vec![configured_main()]).unwrap();
     assert!(wrong.return_power_off_from(&original, 1).is_none());
     let deleted = NativeRuntimeChain::new_prepared(Vec::new()).unwrap();
-    assert!(deleted.return_power_off_from(&original, 1).is_none());
+    let removal = deleted.return_power_off_from(&original, 1).unwrap();
+    assert_eq!(removal.foreign_return_pass(), Some(binding));
+    assert_eq!(removal.foreign_return_pass_frames(), Some(512));
+    assert!(deleted.return_power_off_from(&original, 2).is_none());
 }
 
 #[test]
@@ -172,7 +175,7 @@ fn only_an_exact_off_placeholder_accepts_the_hosted_main_pass_cut() {
 }
 
 #[test]
-fn nonzero_hosted_main_pass_requires_exact_seven_frame_deletion_and_binding() {
+fn hosted_main_removal_and_power_off_require_the_exact_latency_and_binding() {
     let binding = hex_lattice_contract::ForeignProcessorBinding {
         root: 1,
         instance: 2,
@@ -184,10 +187,21 @@ fn nonzero_hosted_main_pass_requires_exact_seven_frame_deletion_and_binding() {
     let transition = removed.main_pass_removal_from(&before).unwrap();
     assert_eq!(transition.foreign_main_pass(), Some((binding, 519)));
     let off = NativeRuntimeChain::new_prepared(vec![configured_main()]).unwrap();
-    assert!(off.main_pass_removal_from(&before).is_none());
+    assert_eq!(
+        off.main_pass_removal_from(&before)
+            .unwrap()
+            .foreign_main_pass(),
+        Some((binding, 519))
+    );
     for frames in [6, 8] {
         let mut different = active_main_chain(frames, binding);
-        assert!(removed.main_pass_removal_from(&different).is_none());
+        assert_eq!(
+            removed
+                .main_pass_removal_from(&different)
+                .unwrap()
+                .foreign_main_pass(),
+            Some((binding, 512 + frames))
+        );
         assert!(!different.begin_native_removal(transition));
     }
     let mut different = active_main_chain(
