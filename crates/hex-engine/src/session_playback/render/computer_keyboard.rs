@@ -431,12 +431,14 @@ impl SessionPlayback {
                     capture.add(OutputCaptureId::Track(id), offset, frames)?;
                 }
             }
+            let mut no_wave = None;
             self.render_return_buses(
                 chunk,
                 offset,
                 None,
                 observer,
                 capture,
+                &mut no_wave,
                 ForeignRenderStage {
                     foreign: &mut hex_lattice::RefuseForeign,
                     external: None,

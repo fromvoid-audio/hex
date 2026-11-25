@@ -89,6 +89,7 @@ mod activation;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod activation_ui_test;
 mod arranger_navigation;
+mod audio_device_settings;
 mod audio_import_settings;
 mod audio_recording;
 pub(crate) mod changelog;
@@ -1604,6 +1605,11 @@ impl EditorView {
                 .as_ref()
                 .map(|path| path.with_file_name("playback.json")),
         );
+        let audio_device_settings = audio_device_settings::State::new(
+            theme_preferences_path
+                .as_ref()
+                .map(|path| path.with_file_name("audio-device.json")),
+        );
         let audio_import_settings = audio_import_settings::State::new(
             theme_preferences_path
                 .as_ref()
@@ -1691,6 +1697,7 @@ impl EditorView {
                 changelog: changelog::State::new(cx),
                 missing_media: None,
                 theme: theme_settings,
+                audio_device: audio_device_settings,
                 project_rate: project_rate_settings::State::default(),
                 audio_import: audio_import_settings,
                 playback: playback_settings,
@@ -1855,6 +1862,7 @@ impl EditorView {
         view.start_recent_projects_load(cx);
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
+        view.start_audio_device_preferences_load(cx);
         view.start_audio_import_preferences_load(cx);
         view.start_playback_preferences_load(cx);
         view.start_track_defaults_load(cx);

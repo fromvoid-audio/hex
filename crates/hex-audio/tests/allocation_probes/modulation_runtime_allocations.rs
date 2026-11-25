@@ -861,3 +861,188 @@ fn foreign_effect_graph_delivers_dense_values_without_allocating_or_freeing() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn multi_target_and_note_driven_foreign_modulation_allocate_nothing_on_callback() {
+    use hex_lattice::{
+        ForeignModulationSamples, ForeignModulationTarget, ForeignNote, ForeignProcessorNode,
+        ForeignProcessors, ForeignTargetModulationRoute, MAX_FOREIGN_MODULATION_TARGETS,
+        NativeInstrumentClock, NativeInstrumentEvent, NativeRuntimeChain,
+        PreparedForeignModulation, PreparedForeignProcessor, PreparedProcessorFactory,
+        PreparedRuntimeInstance, ProcessorChainOwner, StereoFrame, StereoMatrix,
+    };
+    use hex_lattice_contract::{DeviceTypeId, ForeignProcessorBinding, NativeDeviceState};
+
+    #[derive(Default)]
+    struct MultiEndpoint(usize);
+    impl ForeignProcessors for MultiEndpoint {
+        fn process_segment(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            _: usize,
+            _: &mut [StereoFrame],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        }
+        fn process_segment_with_modulations(
+            &mut self,
+            _: ForeignProcessorNode<'_>,
+            offset: usize,
+            frames: &mut [StereoFrame],
+            lanes: &[ForeignModulationSamples<'_>],
+            _: &[ForeignNote],
+            _: Option<&dyn NativeInstrumentClock>,
+        ) -> Result<(), DeviceContractError> {
+            assert_eq!(offset, self.0);
+            assert_eq!(lanes.len(), MAX_FOREIGN_MODULATION_TARGETS);
+            for (index, lane) in lanes.iter().enumerate() {
+                assert_eq!(lane.id, index as u32 * 2);
+                assert_eq!(lane.normalized.len(), frames.len());
+                black_box(lane.normalized);
+            }
+            self.0 += frames.len();
+            Ok(())
+        }
+        fn reject_callback(&mut self) {}
+    }
+
+    let targets: Vec<_> = (0..MAX_FOREIGN_MODULATION_TARGETS as u32)
+        .map(|i| ForeignModulationTarget {
+            raw_id: i * 2,
+            normalized_base: 0.5,
+        })
+        .collect();
+    let routes: Vec<_> = targets
+        .iter()
+        .map(|t| ForeignTargetModulationRoute {
+            target: t.raw_id,
+            source: 0,
+            amount: 0.25,
+            range: [-1.0, 1.0],
+        })
+        .collect();
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 21,
+        graph: 2,
+        epoch: 3,
+    };
+    let kind = DeviceTypeId::from_static("test.foreign.multi");
+    let modulation = PreparedForeignModulation::new_multi(
+        &targets,
+        &routes,
+        vec![
+            PreparedModulationSource::free(ModulationSourceId::new(1).unwrap(), 48_000.0, 7.0, 0.0)
+                .unwrap(),
+        ],
+        &[],
+        64,
+        false,
+    )
+    .unwrap()
+    .into_effect_modulation(binding)
+    .unwrap();
+    let mut chain = NativeRuntimeChain::new_prepared(vec![PreparedRuntimeInstance {
+        modulation: Some(modulation),
+        automation: Default::default(),
+        meter: Default::default(),
+        owner: ProcessorChainOwner::Main,
+        device_id: 21,
+        device_type: kind,
+        matrix: StereoMatrix::identity(),
+        bypassed: false,
+        sample_rate: 48_000,
+        configuration: Some(std::sync::Arc::new(
+            NativeDeviceState::new(kind, 1, vec![]).unwrap(),
+        )),
+        definition: Some(PreparedProcessorFactory::Foreign(
+            PreparedForeignProcessor::new(256, 0, 512)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap(),
+        )),
+    }])
+    .unwrap();
+
+    let inst_targets = [
+        ForeignModulationTarget {
+            raw_id: 1,
+            normalized_base: 0.25,
+        },
+        ForeignModulationTarget {
+            raw_id: 2,
+            normalized_base: 0.75,
+        },
+    ];
+    let inst_routes = [
+        ForeignTargetModulationRoute {
+            target: 1,
+            source: 0,
+            amount: 0.5,
+            range: [0.0, 1.0],
+        },
+        ForeignTargetModulationRoute {
+            target: 2,
+            source: 0,
+            amount: -0.5,
+            range: [0.0, 1.0],
+        },
+    ];
+    let mut inst_runtime = PreparedForeignModulation::new_multi(
+        &inst_targets,
+        &inst_routes,
+        vec![
+            PreparedModulationSource::note_counter(
+                ModulationSourceId::new(1).unwrap(),
+                48_000,
+                4,
+                1,
+                true,
+            )
+            .unwrap(),
+        ],
+        &[],
+        64,
+        true,
+    )
+    .unwrap()
+    .prepare(48_000)
+    .unwrap();
+
+    let mut endpoint = MultiEndpoint::default();
+    let mut pcm = [[0.25, -0.25]; 256];
+    let mut inst_pcm = [[0.0; 2]; 64];
+    let notes = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        pitch: 60,
+        velocity: 100,
+        occurrence_id: 1,
+    }];
+    let counts = allocation_counter::measure(|| {
+        chain.begin_block();
+        chain
+            .process_range_with_foreign(0..1, &mut pcm, 0, None, None, &mut endpoint)
+            .unwrap();
+        chain.commit_block();
+        inst_runtime.begin();
+        inst_runtime
+            .render_chunk_multi(&mut inst_pcm, Some(&notes), None, |_, lanes| {
+                assert_eq!(lanes.len(), 2);
+                black_box(lanes);
+                Ok(())
+            })
+            .unwrap();
+        inst_runtime.commit().unwrap();
+    });
+    assert_eq!(endpoint.0, 256);
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+}

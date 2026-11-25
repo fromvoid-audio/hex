@@ -13,6 +13,12 @@ pub use track_defaults::{
     TrackDefaults, load_track_defaults, save_track_defaults, track_defaults_path,
 };
 
+mod audio_device;
+pub use audio_device::{
+    AudioDevicePreferences, SUPPORTED_BUFFER_SIZES, SUPPORTED_SAMPLE_RATES,
+    audio_device_preferences_path, load_audio_device_preferences, save_audio_device_preferences,
+};
+
 mod audio_import;
 pub use audio_import::{
     AudioImportPreferences, audio_import_preferences_path, load_audio_import_preferences,

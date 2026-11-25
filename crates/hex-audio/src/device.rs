@@ -12,10 +12,7 @@ use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
 };
 use crate::{lifecycle, prepared};
-use cpal::{
-    FromSample, Sample, SizedSample,
-    traits::{DeviceTrait, HostTrait},
-};
+use cpal::{FromSample, Sample, SizedSample, traits::DeviceTrait};
 use hex_engine::Frame;
 use std::{
     sync::{
@@ -119,6 +116,95 @@ impl PreparedOutputKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct NegotiatedBufferPlan {
+    hardware_buffer: Option<u32>,
+    bridge: Option<BridgeStreamPlan>,
+}
+
+fn negotiate_output_buffer_plan(
+    supported: cpal::SupportedBufferSize,
+    requested_buffer: Option<u32>,
+    kind: PreparedOutputKind,
+    device_rate: u32,
+    project_rate: u32,
+) -> Result<NegotiatedBufferPlan, String> {
+    let Some(req) = requested_buffer else {
+        let bridge = kind.bridge_stream_plan(supported, device_rate, project_rate)?;
+        let hardware_buffer = bridge.and_then(|plan| plan.device_frames.map(u32::from));
+        return Ok(NegotiatedBufferPlan {
+            hardware_buffer,
+            bridge,
+        });
+    };
+    let cpal::SupportedBufferSize::Range { min, max } = supported else {
+        return Err("output device does not expose configurable buffer sizes".into());
+    };
+    if min == 0 || min > max {
+        return Err("output device reported an invalid buffer size range".into());
+    }
+    if req < min || req > max {
+        return Err(format!(
+            "output device does not support {req} frame buffer (supported {min}..={max})"
+        ));
+    }
+    let is_bridge = matches!(
+        kind,
+        PreparedOutputKind::Worker(WorkerOutputProfile::PluginBridge)
+            | PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge)
+    );
+    if !is_bridge {
+        return Ok(NegotiatedBufferPlan {
+            hardware_buffer: Some(req),
+            bridge: None,
+        });
+    }
+    let quantum = hex_plugin_host::transport::MAX_FRAMES as u16;
+    if device_rate == project_rate {
+        if req <= u32::from(quantum) {
+            let frames = u16::try_from(req)
+                .map_err(|_| "plugin callback size exceeds its supported range".to_owned())?;
+            return Ok(NegotiatedBufferPlan {
+                hardware_buffer: Some(req),
+                bridge: Some(BridgeStreamPlan {
+                    device_frames: Some(frames),
+                    project_quantum: frames,
+                    converting_device_rate: None,
+                }),
+            });
+        }
+        // Larger user-requested buffer (e.g. 512 or 1024): open hardware at `req`
+        // and sub-slice each physical callback into `<= quantum` plugin quanta.
+        return Ok(NegotiatedBufferPlan {
+            hardware_buffer: Some(req),
+            bridge: Some(BridgeStreamPlan {
+                device_frames: None,
+                project_quantum: quantum,
+                converting_device_rate: None,
+            }),
+        });
+    }
+    let cap = (u64::from(quantum) * u64::from(device_rate) / u64::from(project_rate))
+        .min(u64::from(quantum));
+    let fits_single_quantum = cap > 0 && u64::from(req) <= cap;
+    let device_frames = if fits_single_quantum {
+        Some(
+            u16::try_from(req)
+                .map_err(|_| "plugin callback size exceeds its supported range".to_owned())?,
+        )
+    } else {
+        None
+    };
+    Ok(NegotiatedBufferPlan {
+        hardware_buffer: Some(req),
+        bridge: Some(BridgeStreamPlan {
+            device_frames,
+            project_quantum: quantum,
+            converting_device_rate: device_frames.map(|_| device_rate),
+        }),
+    })
+}
+
 /// Worker-owned native output. Only take_client() may deliver its UI endpoint;
 /// configure the virgin publication Root before that one-way boundary.
 pub struct WorkerPreparedOutput {
@@ -127,6 +213,8 @@ pub struct WorkerPreparedOutput {
     client: Option<prepared::Client>,
     action_outcomes: Option<prepared::ActionOutcomeReader>,
     pub sample_rate: u32,
+    /// Explicitly configured hardware buffer size in frames, if fixed at open.
+    pub buffer_size_frames: Option<u32>,
     pub label: String,
     pub spectrum_error: Option<String>,
     /// Default route this output opened on, when the backend reported it.
@@ -180,6 +268,7 @@ pub(crate) struct Opened {
     client: Option<prepared::Client>,
     action_outcomes: Option<prepared::ActionOutcomeReader>,
     sample_rate: u32,
+    buffer_size_frames: Option<u32>,
     label: String,
     spectrum: Option<SpectrumReader>,
     spectrum_error: Option<String>,
@@ -205,6 +294,7 @@ impl Opened {
             client: Some(self.client.ok_or("worker command endpoint unavailable")?),
             action_outcomes: self.action_outcomes,
             sample_rate: self.sample_rate,
+            buffer_size_frames: self.buffer_size_frames,
             label: self.label,
             spectrum_error: self.spectrum_error,
             route: self.route,
@@ -216,13 +306,26 @@ pub(crate) fn open_prepared(
     lease: lifecycle::Lease,
     kind: PreparedOutputKind,
 ) -> Result<Opened, OutputOpenError> {
+    open_prepared_with_selection(
+        expected_sample_rate,
+        &crate::output_devices::OutputDeviceSelection::default(),
+        lease,
+        kind,
+    )
+}
+
+pub(crate) fn open_prepared_with_selection(
+    expected_sample_rate: Option<u32>,
+    selection: &crate::output_devices::OutputDeviceSelection,
+    lease: lifecycle::Lease,
+    kind: PreparedOutputKind,
+) -> Result<Opened, OutputOpenError> {
     let worker = matches!(
         kind,
         PreparedOutputKind::Worker(_) | PreparedOutputKind::WorkerReliable(_)
     );
-    let device = cpal::default_host()
-        .default_output_device()
-        .ok_or("no default audio output device")?;
+    let device =
+        crate::output_devices::resolve_output_device_on_control(selection.device_uid.as_deref())?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let route = crate::output_route::route_of(&device);
     let mut config = supported.config();
@@ -245,13 +348,19 @@ pub(crate) fn open_prepared(
         return Err(format!("unsupported output format: {sample_format:?}").into());
     }
 
-    // CPAL's CoreAudio fixed request changes a device-wide property. Make it
-    // explicit on the existing lifecycle open lane; ordinary native outputs
-    // retain Default, including devices reporting Unknown buffer ranges.
-    let bridge =
-        kind.bridge_stream_plan(*supported.buffer_size(), device_rate, config.sample_rate)?;
-    if let Some(frames) = bridge.and_then(|plan| plan.device_frames) {
-        config.buffer_size = cpal::BufferSize::Fixed(u32::from(frames));
+    // CPAL's CoreAudio fixed request changes a device-wide property. Apply it
+    // only when explicitly requested by the user's buffer preference or the
+    // plugin bridge profile.
+    let buffer_plan = negotiate_output_buffer_plan(
+        *supported.buffer_size(),
+        selection.buffer_size_frames,
+        kind,
+        device_rate,
+        config.sample_rate,
+    )?;
+    let bridge = buffer_plan.bridge;
+    if let Some(frames) = buffer_plan.hardware_buffer {
+        config.buffer_size = cpal::BufferSize::Fixed(frames);
     }
 
     let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
@@ -282,8 +391,12 @@ pub(crate) fn open_prepared(
                 )),
             )
         };
-    let channel_result =
-        prepared::channel_with_interface(config.sample_rate, capture, Some(device_rate));
+    let channel_result = prepared::channel_with_interface_and_buffer(
+        config.sample_rate,
+        capture,
+        Some(device_rate),
+        buffer_plan.hardware_buffer,
+    );
     let (mut control, mut callback) = match channel_result {
         Ok(channel) => channel,
         Err(error) => {
@@ -296,6 +409,9 @@ pub(crate) fn open_prepared(
             return Err(error.to_string().into());
         }
     };
+    if let Some(pool) = crate::worker_pool::AudioWorkerPool::for_hardware(config.sample_rate) {
+        callback.attach_worker_pool_on_control(pool);
+    }
     let action_outcomes = if matches!(kind, PreparedOutputKind::WorkerReliable(_)) {
         match control.enable_action_outcomes_on_control(&mut callback) {
             Ok(reader) => Some(reader),
@@ -367,14 +483,17 @@ pub(crate) fn open_prepared(
     .map_err(|error| error.to_string())?;
     stream_owner.set_stream(stream);
     stream_owner.play()?;
+    let buffer_suffix = buffer_plan
+        .hardware_buffer
+        .map_or_else(String::new, |frames| format!(" · {frames} frames"));
     let label = if config.sample_rate == device_rate {
         format!(
-            "coreaudio · {} hz · {} channels",
+            "coreaudio · {} hz{buffer_suffix} · {} channels",
             config.sample_rate, config.channels
         )
     } else {
         format!(
-            "coreaudio · {} hz converted to device {} hz · {} channels",
+            "coreaudio · {} hz converted to device {} hz{buffer_suffix} · {} channels",
             config.sample_rate, device_rate, config.channels
         )
     };
@@ -385,6 +504,7 @@ pub(crate) fn open_prepared(
         client,
         action_outcomes,
         sample_rate: config.sample_rate,
+        buffer_size_frames: buffer_plan.hardware_buffer,
         label,
         spectrum,
         spectrum_error,
@@ -919,6 +1039,7 @@ pub(crate) fn headless_worker_output_with_outcomes(
             client: Some(client),
             action_outcomes,
             sample_rate: rate,
+            buffer_size_frames: None,
             label: "headless constructor fixture".into(),
             spectrum_error: None,
             route: None,
@@ -946,7 +1067,10 @@ fn record_callback_timing(
 
 #[cfg(test)]
 mod tests {
-    use super::{callback_start_interval, copy_host_chunk, finish_host_chunk, mono_mean};
+    use super::{
+        PreparedOutputKind, WorkerOutputProfile, callback_start_interval, copy_host_chunk,
+        finish_host_chunk, mono_mean, negotiate_output_buffer_plan,
+    };
     use crate::gain_recording::{AbortReason, Receipt, Target};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
@@ -1586,6 +1710,73 @@ mod tests {
         host_copy_receipt_regression::<f32>();
         host_copy_receipt_regression::<i16>();
         host_copy_receipt_regression::<u16>();
+    }
+
+    #[test]
+    fn output_buffer_negotiation_supports_explicit_sizes_plugin_bridge_subslicing_and_refusals() {
+        let range = cpal::SupportedBufferSize::Range { min: 64, max: 1024 };
+
+        // DeviceDefault with explicit buffer size accepts valid range and refuses out-of-range.
+        let plan = negotiate_output_buffer_plan(
+            range,
+            Some(128),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::DeviceDefault),
+            48_000,
+            48_000,
+        )
+        .unwrap();
+        assert_eq!(plan.hardware_buffer, Some(128));
+        assert_eq!(plan.bridge, None);
+
+        let err = negotiate_output_buffer_plan(
+            cpal::SupportedBufferSize::Range { min: 128, max: 512 },
+            Some(64),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::DeviceDefault),
+            48_000,
+            48_000,
+        )
+        .unwrap_err();
+        assert!(err.contains("64") && err.contains("128..=512"));
+
+        let unknown_err = negotiate_output_buffer_plan(
+            cpal::SupportedBufferSize::Unknown,
+            Some(256),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::DeviceDefault),
+            48_000,
+            48_000,
+        )
+        .unwrap_err();
+        assert!(unknown_err.contains("configurable buffer sizes"));
+
+        // PluginBridge with buffer <= plugin quantum (128) keeps 1:1 quantum.
+        let bridge_small = negotiate_output_buffer_plan(
+            range,
+            Some(128),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge),
+            48_000,
+            48_000,
+        )
+        .unwrap();
+        assert_eq!(bridge_small.hardware_buffer, Some(128));
+        assert_eq!(bridge_small.bridge.unwrap().project_quantum, 128);
+        assert_eq!(bridge_small.bridge.unwrap().device_frames, Some(128));
+
+        // PluginBridge with larger buffer (512 or 1024) opens hardware at requested size
+        // while keeping plugin quantum bounded for safe callback sub-slicing.
+        let bridge_large = negotiate_output_buffer_plan(
+            range,
+            Some(1024),
+            PreparedOutputKind::WorkerReliable(WorkerOutputProfile::PluginBridge),
+            48_000,
+            48_000,
+        )
+        .unwrap();
+        assert_eq!(bridge_large.hardware_buffer, Some(1024));
+        assert_eq!(
+            bridge_large.bridge.unwrap().project_quantum,
+            hex_plugin_host::transport::MAX_FRAMES as u16
+        );
+        assert_eq!(bridge_large.bridge.unwrap().device_frames, None);
     }
 
     #[cfg(feature = "allocation-probe")]

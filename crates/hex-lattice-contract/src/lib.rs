@@ -16,6 +16,7 @@ mod device_assets;
 pub use automation_target::DeviceAutomationTarget;
 mod host_gain;
 mod modulation_source_id;
+pub mod modulator;
 pub use host_gain::HostGain;
 pub use modulation_source_id::{ModulationOutputId, ModulationSourceId};
 mod foreign_binding;

@@ -202,6 +202,7 @@ pub(in crate::editor) struct SettingsState {
     pub(in crate::editor) changelog: changelog::State,
     pub(in crate::editor) missing_media: Option<missing_media::Panel>,
     pub(in crate::editor) theme: theme_settings::ThemeSettingsState,
+    pub(in crate::editor) audio_device: super::audio_device_settings::State,
     pub(in crate::editor) project_rate: project_rate_settings::State,
     pub(in crate::editor) audio_import: super::audio_import_settings::State,
     pub(in crate::editor) playback: playback_settings::State,

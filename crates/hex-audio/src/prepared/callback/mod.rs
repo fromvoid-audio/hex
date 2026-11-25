@@ -5,8 +5,12 @@ mod custody;
 mod render_loop;
 mod telemetry_recording;
 
-pub use channel_init::{Callback, channel, channel_with_spectrum};
-pub(crate) use channel_init::{channel_with_interface, native_endpoint_bank_storage_quote};
+#[cfg(test)]
+pub(crate) use channel_init::channel_with_interface;
+pub use channel_init::{Callback, channel, channel_with_spectrum, channel_with_worker_pool};
+pub(crate) use channel_init::{
+    channel_with_interface_and_buffer, native_endpoint_bank_storage_quote,
+};
 
 #[cfg(feature = "worker-test-support")]
 use super::*;

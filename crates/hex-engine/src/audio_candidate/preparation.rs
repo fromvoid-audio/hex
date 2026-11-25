@@ -189,7 +189,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
                     class: [0x42; 16],
                     sample_rate: context.sample_rate,
                     quantum_frames: 16,
-                    dense_parameter: None,
+                    dense_parameters: &[],
                     parameters: &self.params,
                 }))
             }

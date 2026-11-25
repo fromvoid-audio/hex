@@ -126,7 +126,7 @@ fn linear_effect_programs_admit_in_flight_loop_wraps_when_the_budget_allows() {
         class: CLASS,
         sample_rate: tempo.sample_rate(),
         quantum_frames: 256,
-        dense_parameter: None,
+        dense_parameters: &[],
         parameters: &capabilities,
     };
     let prepare = |count, region| {
@@ -542,7 +542,7 @@ fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
         class: CLASS,
         sample_rate: 8000,
         quantum_frames: 8,
-        dense_parameter: None,
+        dense_parameters: &[],
         parameters: &capabilities,
     };
     let tempo = tempo();
@@ -842,7 +842,7 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
         class: CLASS,
         sample_rate: 8_000,
         quantum_frames: 8,
-        dense_parameter: Some(0),
+        dense_parameters: &[0],
         parameters: &capabilities,
     };
     let tempo = tempo();
@@ -872,7 +872,7 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
     );
     assert!(Program::prepare_source(&[mapped_envelope], source, &tempo, profile).is_err());
     let wrong = hex_lattice::ForeignAutomationSource {
-        dense_parameter: Some(2),
+        dense_parameters: &[2],
         ..source
     };
     assert!(Program::prepare_source(&[], wrong, &tempo, profile).is_err());

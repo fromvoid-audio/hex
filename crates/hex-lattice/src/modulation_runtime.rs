@@ -155,8 +155,20 @@ impl ModulationRuntime {
         clock: Option<&dyn crate::NativeInstrumentClock>,
         consume: impl FnOnce(&mut [crate::StereoFrame], &ModulationBlock<'_>) -> Result<(), Error>,
     ) -> Result<(), Error> {
+        self.render_audio_chunk_with_notes(input, tap, upstream, clock, None, consume)
+    }
+
+    pub(crate) fn render_audio_chunk_with_notes(
+        &mut self,
+        input: &mut [crate::StereoFrame],
+        tap: Option<&[crate::StereoFrame]>,
+        upstream: Option<&dyn NativeParameterAutomation>,
+        clock: Option<&dyn crate::NativeInstrumentClock>,
+        note_events: Option<&[NativeInstrumentEvent]>,
+        consume: impl FnOnce(&mut [crate::StereoFrame], &ModulationBlock<'_>) -> Result<(), Error>,
+    ) -> Result<(), Error> {
         let frames = input.len();
-        self.render_sources(frames, upstream, clock, tap.or(Some(input)), None)?;
+        self.render_sources(frames, upstream, clock, tap.or(Some(input)), note_events)?;
         self.consume_values(frames, upstream, |values| consume(input, values))
     }
 

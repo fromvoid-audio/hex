@@ -107,15 +107,19 @@ impl PreparedModulationState {
         self.foreign_effect
     }
 
+    pub(crate) fn chunk_frames(&self) -> usize {
+        self.chunk_frames
+    }
+
     pub(crate) fn prepare_foreign_effect(&self) -> Result<ForeignModulationRuntime, Error> {
         let target = self
             .foreign_effect
             .ok_or(Error::UnsupportedProcessingClass)?;
-        Ok(ForeignModulationRuntime::new(
-            target.raw_id,
-            target.normalized_base,
+        ForeignModulationRuntime::new(
+            target.as_slice(),
+            target.allows_note_events,
             self.prepare_bank()?,
-        ))
+        )
     }
 
     pub fn program(&self) -> &PreparedModulation {
@@ -125,10 +129,13 @@ impl PreparedModulationState {
     /// Requested runtime capacity before allocation; graph admission must also
     /// verify the actual capacities after construction.
     pub fn quoted_runtime_heap_bytes(&self) -> Option<usize> {
-        let inline = if self.foreign_effect.is_some() {
-            std::mem::size_of::<ForeignModulationRuntime>()
-        } else {
-            0
+        let foreign_bytes = match self.foreign_effect {
+            Some(target) => std::mem::size_of::<ForeignModulationRuntime>().checked_add(
+                usize::from(target.target_count)
+                    .checked_mul(self.chunk_frames)?
+                    .checked_mul(std::mem::size_of::<f64>())?,
+            )?,
+            None => 0,
         };
         ModulationSourceBank::quoted_heap_bytes(
             self.sources.len(),
@@ -139,7 +146,7 @@ impl PreparedModulationState {
         )?
         .checked_add(self.program.storage_bytes()?)?
         .checked_add(Self::quoted_source_route_bytes(self.source_routes.len())?)?
-        .checked_add(inline)
+        .checked_add(foreign_bytes)
     }
 
     pub(crate) fn matches_runtime(&self, runtime: &ModulationRuntime) -> bool {

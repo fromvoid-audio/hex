@@ -261,7 +261,8 @@ impl NativeRuntimeChain {
                     if effect.prepared.binding() != Some(target.binding)
                         || target.binding.instance != instance.device_id
                         || matches!(instance.owner, ProcessorChainOwner::Source(_))
-                        || effect.prepared.is_instrument_profile()
+                        || (effect.prepared.is_instrument_profile() && !target.allows_note_events)
+                        || (!effect.prepared.is_instrument_profile() && target.allows_note_events)
                         || usize::from(effect.prepared.quantum_frames())
                             > foreign_modulation::MAX_FOREIGN_MODULATION_CHUNK
                         || !instance.automation.parameter_ids().is_empty()
