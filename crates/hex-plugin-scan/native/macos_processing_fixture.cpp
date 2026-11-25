@@ -434,7 +434,8 @@ public:
         if(!control() || !context || bus) { ++observed.violations;return kInvalidArgument; }
         const int pressure_channel=edits_sent?1:2;
         if(!((cc==kAfterTouch && channel==pressure_channel) ||
-                (cc==kPitchBend && channel==3-pressure_channel))) return kResultFalse;
+                (cc==kPitchBend && channel==3-pressure_channel) ||
+                (cc==(edits_sent?kCtrlModWheel:kCtrlFilterResonance) && channel==pressure_channel))) return kResultFalse;
         id=parameter_id(fault);return kResultOk;
     }
     tresult PLUGIN_API initialize(FUnknown* host) override {
