@@ -30,7 +30,7 @@ use hex_plugin_scan::macos::{
 };
 use hex_plugin_state::{BinaryIdentity, ClassId, Identity};
 use std::{
-    io::{Cursor, Read},
+    io::Read,
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::Path,
     process::{Child, Command, ExitStatus, Stdio},
@@ -306,6 +306,7 @@ enum EditorTouchMode<'a> {
 /// the callback. Drop may wait for actual process retirement on that lane.
 pub struct Prepared {
     lease: Lease,
+    shm: Option<hex_shm_ring::HostRing>,
     config: Configuration,
     ready: Ready,
     limits: Limits,
@@ -334,6 +335,7 @@ pub struct Prepared {
 /// Derive the graph plan from `facts`, then consume it once through completion.
 pub struct Pending {
     lease: Lease,
+    shm: Option<hex_shm_ring::HostRing>,
     control_channel: Channel,
     control_packet: Packet,
     config: Configuration,
@@ -567,6 +569,7 @@ impl Pending {
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
+            .env("HEX_VST3_SHM_RING", "1")
             .env(
                 "HEX_VST3_TRANSPORT_SPACE",
                 if source.transport_space { "1" } else { "0" },
@@ -614,6 +617,9 @@ impl Pending {
             pending
                 .channel
                 .send(&config.startup_request()?, until, &mut || token.check())?;
+            let shm = pending
+                .channel
+                .create_and_send_shm_fd(until, &mut || token.check())?;
             pending
                 .channel
                 .read(&mut packet, until, &mut || token.check())?;
@@ -635,10 +641,10 @@ impl Pending {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
             }
-            Ok(facts)
+            Ok((facts, shm))
         })();
-        let facts = match prepared {
-            Ok(facts) => facts,
+        let (facts, shm) = match prepared {
+            Ok(pair) => pair,
             Err(cause) => {
                 return Err(PreparationFailure::native(
                     cause,
@@ -649,6 +655,7 @@ impl Pending {
         };
         Ok(Self {
             lease: pending,
+            shm: Some(shm),
             control_channel,
             control_packet,
             config,
@@ -774,6 +781,7 @@ impl Pending {
         );
         Ok(Prepared {
             lease: self.lease,
+            shm: self.shm,
             config: self.config,
             ready,
             limits: self.limits,
@@ -1207,6 +1215,9 @@ impl Prepared {
         );
         if result.is_err() {
             self.faulted = true;
+            if let Some(shm) = &self.shm {
+                shm.set_fault();
+            }
             self.lease.cancel_native();
         }
         result
@@ -1228,26 +1239,26 @@ impl Prepared {
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
         let bytes = self.packet.request_buffer()?;
-        let mut cursor = Cursor::new(&mut *bytes);
-        match (metadata, dense) {
-            (Some(metadata), Some(dense)) => crate::transport::wire::write_dense_authored(
-                &mut cursor,
+        let mut length = match (metadata, dense) {
+            (Some(metadata), Some(dense)) => {
+                crate::transport::wire::encode_dense_authored_into_slice(
+                    bytes,
+                    &block,
+                    dense,
+                    manual_parameter,
+                    &|id| metadata.step_count(id),
+                )
+            }
+            (Some(metadata), None) => crate::transport::wire::encode_authored_into_slice(
+                bytes,
                 &block,
-                dense,
                 manual_parameter,
                 &|id| metadata.step_count(id),
             ),
-            (Some(metadata), None) => crate::transport::wire::write_authored(
-                &mut cursor,
-                &block,
-                manual_parameter,
-                &|id| metadata.step_count(id),
-            ),
-            (None, None) => crate::transport::wire::write(&mut cursor, &block),
+            (None, None) => crate::transport::wire::encode_into_slice(bytes, &block),
             (None, Some(_)) => return Err(Error::Protocol("dense parameter metadata is missing")),
         }
         .map_err(Error::Io)?;
-        let mut length = cursor.position() as usize;
         if let Some(plan) = editor_touch {
             let mut append = |plan: &[u8], bit: u16| -> Result<()> {
                 let end = length + plan.len();
@@ -1276,10 +1287,15 @@ impl Prepared {
         let token = self.lease.cancellation.clone();
         self.lease
             .channel
-            .send(&bytes[..length], until, &mut || token.check())?;
-        self.lease
-            .channel
-            .read(&mut self.packet, until, &mut || token.check())?;
+            .send_pcm(&bytes[..length], self.shm.as_mut(), until, &mut || {
+                token.check()
+            })?;
+        self.lease.channel.read_with_shm(
+            &mut self.packet,
+            self.shm.as_mut(),
+            until,
+            &mut || token.check(),
+        )?;
         if self.packet.magic() == b"HXVIER01" {
             return Err(Error::Worker(protocol::error(
                 self.packet.body()?,

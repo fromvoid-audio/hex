@@ -142,6 +142,10 @@ fn native_source() -> String {
             include_bytes!("../../native/macos_state_stream.hpp"),
         ),
         (
+            "macos_instance_shm.hpp",
+            include_bytes!("../../native/macos_instance_shm.hpp"),
+        ),
+        (
             "macos_instance_wire.hpp",
             include_bytes!("../../native/macos_instance_wire.hpp"),
         ),

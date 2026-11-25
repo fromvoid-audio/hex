@@ -6,6 +6,7 @@
 #include "macos_parameters.hpp"
 #include "macos_editor_touch.hpp"
 #include "macos_parameter_page.hpp"
+#include "macos_instance_shm.hpp"
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include "public.sdk/source/vst/utility/midiconvert.h"
@@ -259,9 +260,24 @@ struct Packet {
     // The audio lane reads with check_sequence=true; the dedicated control
     // channel reads non-DSP control requests with check_sequence=false.
     int read(int fd,const Config& config,uint64_t sequence,uint64_t frame,bool check_sequence=true,
-             const std::atomic<uint64_t>* live_graph=nullptr,const std::atomic<uint64_t>* live_epoch=nullptr) {
-        auto* p=bytes.data();const auto received=read_exact(fd,p,header_size);
-        if(received!=1) return received;
+             const std::atomic<uint64_t>* live_graph=nullptr,const std::atomic<uint64_t>* live_epoch=nullptr,
+             const hex_instance_shm::ShmRing* shm=nullptr) {
+        auto* p=bytes.data();
+        bool from_shm=false;
+        size_t shm_packet_len=0;
+        if(shm && shm->active()) {
+            const auto first=read_exact(fd,p,1);
+            if(first!=1) return first;
+            if(p[0]==hex_instance_shm::DOORBELL_BYTE) {
+                if(!shm->read_request(p,bytes.size(),shm_packet_len) || shm_packet_len<header_size) return -1;
+                from_shm=true;
+            } else {
+                if(read_exact(fd,p+1,header_size-1,true)!=1) return -1;
+            }
+        } else {
+            const auto received=read_exact(fd,p,header_size);
+            if(received!=1) return received;
+        }
         stop=!std::memcmp(p,"HXVE",4);
         const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4),capture=!std::memcmp(p,"HXVC",4);
         const bool edit_query=!std::memcmp(p,"HXVG",4);
@@ -269,6 +285,7 @@ struct Packet {
         const bool page_start=!std::memcmp(p,"HXVM",4),page_poll=!std::memcmp(p,"HXVN",4);
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
+        if(from_shm && !pcm) return -1;
         const auto wire_version=number(p+4,2);
         const bool guarded_flush=flush && wire_version==3;
         reply_parameter_count=0;
@@ -378,7 +395,9 @@ struct Packet {
         const auto payload_bytes=frames*8+note_count*note_bytes+parameter_count*point_bytes+clock_bytes+
             timing_change_count*timing_change_bytes+dense_bytes;
         const auto touch_bytes=group_touch?editor_group_bytes:(touch?editor_touch_bytes:0);
-        if(read_exact(fd,p+header_size,payload_bytes+touch_bytes,true)!=1) return -1;
+        if(from_shm) {
+            if(header_size+payload_bytes+touch_bytes!=shm_packet_len) return -1;
+        } else if(read_exact(fd,p+header_size,payload_bytes+touch_bytes,true)!=1) return -1;
         if(touch_bytes) {
             const auto* raw=p+header_size+payload_bytes;
             hex_instance::EditorTouchPlanSet plan{};
@@ -622,7 +641,7 @@ struct Packet {
         put(point+24,edit.id,4);put(point+28,0,4);
         ++reply_editor_count;return true;
     }
-    bool write(int fd) {
+    bool write(int fd,const hex_instance_shm::ShmRing* shm=nullptr) {
         bytes[4]=reply_parameter_count?2:1;
         bytes[5]=static_cast<uint8_t>(((observe_editor_pcm?editor_pcm_bit:0)|
             (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0))|
@@ -646,6 +665,11 @@ struct Packet {
         if(observe_sdk_timing) {
             if(size+8>bytes.size()) return false;
             put(bytes.data()+size,sdk_process_ns,8);size+=8;
+        }
+        if(shm && shm->active()) {
+            if(!shm->write_reply(bytes.data(),size)) return false;
+            const uint8_t doorbell=hex_instance_shm::DOORBELL_BYTE;
+            return write_exact(fd,&doorbell,1);
         }
         return write_exact(fd,bytes.data(),size);
     }

@@ -2,7 +2,7 @@
 use crate::{Error, Result, protocol};
 use std::{
     io::{Read, Write},
-    os::unix::net::UnixStream,
+    os::{fd::AsFd, unix::net::UnixStream},
     time::{Duration, Instant},
 };
 
@@ -18,6 +18,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(10);
 const PCM_BYTES: usize =
     crate::transport::wire::MAX_DENSE_PACKET_BYTES + protocol::EditorTouchPlanSet::WIRE_BYTES;
 const _: () = assert!(PCM_BYTES <= protocol::PACKET_LIMIT);
+const _: () = assert!(PCM_BYTES <= hex_shm_ring::SLOT_CAPACITY);
 
 pub(crate) struct Packet {
     bytes: Vec<u8>,
@@ -65,8 +66,56 @@ impl Channel {
             .map_err(|e| Error::IoAt("socket blocking mode", e))?;
         Ok(Self { stream })
     }
+    /// Create a bounded shared-memory PCM ring, transfer its descriptor once
+    /// over `SCM_RIGHTS` before foreign module entry, and immediately close the
+    /// transient descriptor so steady-state instances hold zero extra FDs.
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub fn create_and_send_shm_fd(
+        &mut self,
+        until: Instant,
+        check: &mut impl FnMut() -> Result<()>,
+    ) -> Result<hex_shm_ring::HostRing> {
+        let (ring, fd) = hex_shm_ring::HostRing::create()
+            .map_err(|e| Error::IoAt("create shared-memory audio ring", e))?;
+        loop {
+            check()?;
+            deadline(until)?;
+            match hex_shm_ring::send_shm_fd(&self.stream, fd.as_fd()) {
+                Ok(()) => {
+                    drop(fd);
+                    check()?;
+                    return Ok(ring);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    self.wait(rustix::event::PollFlags::OUT, until)?;
+                }
+                Err(e) => return Err(Error::IoAt("send shared-memory descriptor", e)),
+            }
+        }
+    }
     pub fn close(&self) {
         let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+    /// Write one audio-quantum PCM request into the bounded shared-memory ring
+    /// and signal the worker with a 1-byte doorbell write (1 syscall, zero socket
+    /// payload copy). Falls back to direct socket send when SHM is not attached.
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub fn send_pcm(
+        &mut self,
+        bytes: &[u8],
+        shm: Option<&mut hex_shm_ring::HostRing>,
+        until: Instant,
+        check: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
+        if let Some(shm) = shm {
+            shm.write_request(bytes)
+                .map_err(|_| Error::Protocol("shared-memory request ring refused"))?;
+            let doorbell = [hex_shm_ring::DOORBELL_BYTE];
+            self.send(&doorbell, until, check)
+        } else {
+            self.send(bytes, until, check)
+        }
     }
     /// A complete direct reap does not require EOF from inherited descriptors,
     /// but bytes already queued after a terminal are never accepted as benign.
@@ -107,7 +156,60 @@ impl Channel {
         until: Instant,
         check: &mut impl FnMut() -> Result<()>,
     ) -> Result<()> {
+        self.read_with_shm(out, None, until, check)
+    }
+
+    /// Read either a 1-byte SHM doorbell reply (`0x01`) or a regular socket
+    /// control/error frame (`'H'...`).
+    pub fn read_with_shm(
+        &mut self,
+        out: &mut Packet,
+        shm: Option<&mut hex_shm_ring::HostRing>,
+        until: Instant,
+        check: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
         out.len = 0;
+        if let Some(shm) = shm {
+            let mut marker = [0_u8; 1];
+            loop {
+                check()?;
+                deadline(until)?;
+                match self.stream.read(&mut marker) {
+                    Ok(0) => {
+                        check()?;
+                        return Err(Error::Protocol("instance channel ended"));
+                    }
+                    Ok(1) => break,
+                    Ok(_) => return Err(Error::Protocol("unexpected marker read length")),
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        self.wait(rustix::event::PollFlags::IN, until)?
+                    }
+                    Err(e) => return Err(Error::Io(e)),
+                }
+            }
+            if marker[0] == hex_shm_ring::DOORBELL_BYTE {
+                let reply_buf = out.bytes.get_mut(..PCM_BYTES).ok_or(Error::Protocol(
+                    "shared-memory reply exceeds initialized packet storage",
+                ))?;
+                let len = shm
+                    .read_reply(reply_buf)
+                    .map_err(|_| Error::Protocol("shared-memory reply ring refused"))?;
+                if len < crate::transport::wire::HEADER_BYTES
+                    || &out.bytes[..4] != b"HXVB"
+                    || protocol::pcm_packet_extent(&out.bytes[..64])? != len
+                {
+                    return Err(Error::Protocol("malformed shared-memory pcm reply"));
+                }
+                out.len = len;
+                return check();
+            }
+            if marker[0] != b'H' {
+                return Err(Error::Protocol("unknown instance control frame"));
+            }
+            out.bytes[0] = b'H';
+            out.len = 1;
+        }
         let mut wanted = 4;
         loop {
             check()?;
@@ -532,5 +634,432 @@ mod send_tests {
         ));
         channel.close();
         assert_eq!(peer.read(&mut [0; 1]).unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod shm_tests {
+    use super::*;
+    use crate::transport::{Block, Events, MidiEvent, ParameterPoint, Parameters};
+    use hex_lattice_contract::ForeignProcessorBinding;
+
+    fn sample_block(frames: u16, sequence: u64) -> Block {
+        let mut block = Block {
+            binding: ForeignProcessorBinding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            sequence,
+            first_frame: sequence * u64::from(frames),
+            frames,
+            pcm: [[0.0; 2]; crate::transport::MAX_FRAMES],
+            events: Events::default(),
+            parameters: Parameters::default(),
+            timing: None,
+            timing_changes: Default::default(),
+        };
+        for i in 0..usize::from(frames) {
+            block.pcm[i] = [(i as f32) * 0.001, -((i as f32) * 0.0005)];
+        }
+        block
+            .events
+            .push(MidiEvent {
+                frame: 0,
+                bytes: [0x90, 60, 100],
+                len: 3,
+                note_id: None,
+                is_live: false,
+            })
+            .unwrap();
+        block
+            .parameters
+            .push(ParameterPoint {
+                frame: frames - 1,
+                id: 7,
+                normalized: 0.75,
+            })
+            .unwrap();
+        block
+    }
+
+    #[test]
+    fn shm_doorbell_round_trip_supports_64_128_and_256_quanta_with_one_byte_socket_signaling() {
+        for frames in [64_u16, 128, 256] {
+            let (host_stream, mut worker_stream) = UnixStream::pair().unwrap();
+            let mut channel = Channel::new(host_stream).unwrap();
+            let until = end_after(Duration::from_secs(2)).unwrap();
+            let mut host_ring = channel
+                .create_and_send_shm_fd(until, &mut || Ok(()))
+                .unwrap();
+
+            let worker_fd = hex_shm_ring::recv_shm_fd(&worker_stream).unwrap();
+            let mut worker_ring = hex_shm_ring::WorkerRing::from_fd(worker_fd).unwrap();
+
+            let mut host_packet = Packet::new().unwrap();
+            let mut worker_buf = vec![0_u8; hex_shm_ring::SLOT_CAPACITY];
+
+            // Run 12 exchanges per quantum (3x ring wraparound) verifying exact payload
+            // delivery and strictly 1-byte doorbell traffic on the socket.
+            for seq in 0..12_u64 {
+                let req = sample_block(frames, seq);
+                let req_len = crate::transport::wire::encode_into_slice(
+                    host_packet.request_buffer().unwrap(),
+                    &req,
+                )
+                .unwrap();
+                channel
+                    .send_pcm(
+                        &host_packet.bytes[..req_len],
+                        Some(&mut host_ring),
+                        until,
+                        &mut || Ok(()),
+                    )
+                    .unwrap();
+
+                let mut doorbell = [0_u8; 1];
+                worker_stream.read_exact(&mut doorbell).unwrap();
+                assert_eq!(doorbell[0], hex_shm_ring::DOORBELL_BYTE);
+                let got_len = worker_ring.read_request(&mut worker_buf).unwrap();
+                assert_eq!(got_len, req_len);
+                let decoded_req = crate::transport::wire::read(&mut &worker_buf[..got_len])
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(decoded_req.frames, frames);
+                assert_eq!(decoded_req.sequence, seq);
+                assert_eq!(
+                    decoded_req.pcm[..usize::from(frames)],
+                    req.pcm[..usize::from(frames)]
+                );
+
+                // Worker builds a reply (inverting polarity, clearing input notes).
+                let mut rep = decoded_req;
+                rep.events = Events::default();
+                for frame in &mut rep.pcm[..usize::from(frames)] {
+                    frame[0] = -frame[0];
+                    frame[1] = -frame[1];
+                }
+                let rep_len =
+                    crate::transport::wire::encode_into_slice(&mut worker_buf, &rep).unwrap();
+                worker_ring.write_reply(&worker_buf[..rep_len]).unwrap();
+                worker_stream
+                    .write_all(&[hex_shm_ring::DOORBELL_BYTE])
+                    .unwrap();
+
+                channel
+                    .read_with_shm(
+                        &mut host_packet,
+                        Some(&mut host_ring),
+                        until,
+                        &mut || Ok(()),
+                    )
+                    .unwrap();
+                assert_eq!(host_packet.len, rep_len);
+                let decoded_rep = crate::transport::wire::read(&mut host_packet.data())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(decoded_rep.frames, frames);
+                assert_eq!(decoded_rep.sequence, seq);
+                assert_eq!(
+                    decoded_rep.pcm[..usize::from(frames)],
+                    rep.pcm[..usize::from(frames)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn shm_channel_still_reads_socket_control_and_error_frames_and_refuses_hostile_shm_replies() {
+        let (host_stream, mut worker_stream) = UnixStream::pair().unwrap();
+        let mut channel = Channel::new(host_stream).unwrap();
+        let until = end_after(Duration::from_secs(2)).unwrap();
+        let mut host_ring = channel
+            .create_and_send_shm_fd(until, &mut || Ok(()))
+            .unwrap();
+        let mut worker_ring =
+            hex_shm_ring::WorkerRing::from_fd(hex_shm_ring::recv_shm_fd(&worker_stream).unwrap())
+                .unwrap();
+
+        // Worker sends an ordinary HXVIER01 socket error frame while SHM is attached.
+        let mut err_body = Vec::new();
+        err_body.extend(1_u16.to_le_bytes());
+        err_body.push(0);
+        err_body.extend(7_u32.to_le_bytes());
+        let err_frame = protocol::control(*b"HXVIER01", &err_body).unwrap();
+        worker_stream.write_all(&err_frame).unwrap();
+        let mut packet = Packet::new().unwrap();
+        channel
+            .read_with_shm(&mut packet, Some(&mut host_ring), until, &mut || Ok(()))
+            .unwrap();
+        assert_eq!(packet.magic(), b"HXVIER01");
+        assert_eq!(packet.body().unwrap(), err_body);
+
+        // Worker sends a doorbell pointing to a malformed SHM reply (wrong extent).
+        let mut bad_reply = [0_u8; 80];
+        bad_reply[..4].copy_from_slice(b"HXVB");
+        bad_reply[4..6].copy_from_slice(&1_u16.to_le_bytes());
+        bad_reply[6..8].copy_from_slice(&64_u16.to_le_bytes()); // claims 64 frames = 576 bytes, not 80
+        worker_ring.write_reply(&bad_reply).unwrap();
+        worker_stream
+            .write_all(&[hex_shm_ring::DOORBELL_BYTE])
+            .unwrap();
+        let err = channel
+            .read_with_shm(&mut packet, Some(&mut host_ring), until, &mut || Ok(()))
+            .unwrap_err();
+        assert!(matches!(err, Error::Protocol(_)), "{err:?}");
+
+        // Peer EOF is detected immediately on the doorbell socket.
+        drop(worker_stream);
+        let eof = channel
+            .read_with_shm(&mut packet, Some(&mut host_ring), until, &mut || Ok(()))
+            .unwrap_err();
+        assert!(matches!(eof, Error::Protocol("instance channel ended")));
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn steady_state_shm_pcm_exchange_performs_zero_heap_allocations() {
+        let (host_stream, mut worker_stream) = UnixStream::pair().unwrap();
+        let mut channel = Channel::new(host_stream).unwrap();
+        let until = end_after(Duration::from_secs(2)).unwrap();
+        let mut host_ring = channel
+            .create_and_send_shm_fd(until, &mut || Ok(()))
+            .unwrap();
+        let mut worker_ring =
+            hex_shm_ring::WorkerRing::from_fd(hex_shm_ring::recv_shm_fd(&worker_stream).unwrap())
+                .unwrap();
+
+        let worker = std::thread::spawn(move || {
+            let mut buf = vec![0_u8; hex_shm_ring::SLOT_CAPACITY];
+            let mut doorbell = [0_u8; 1];
+            for _ in 0..8 {
+                worker_stream.read_exact(&mut doorbell).unwrap();
+                let n = worker_ring.read_request(&mut buf).unwrap();
+                worker_ring.write_reply(&buf[..n]).unwrap();
+                worker_stream
+                    .write_all(&[hex_shm_ring::DOORBELL_BYTE])
+                    .unwrap();
+            }
+        });
+
+        let mut packet = Packet::new().unwrap();
+        let mut block = sample_block(128, 0);
+        // Echo replies carry zero MIDI events per protocol::pcm_packet_extent.
+        block.events = Events::default();
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..8 {
+                let len = crate::transport::wire::encode_into_slice(
+                    packet.request_buffer().unwrap(),
+                    &block,
+                )
+                .unwrap();
+                channel
+                    .send_pcm(
+                        &packet.bytes[..len],
+                        Some(&mut host_ring),
+                        until,
+                        &mut || Ok(()),
+                    )
+                    .unwrap();
+                channel
+                    .read_with_shm(&mut packet, Some(&mut host_ring), until, &mut || Ok(()))
+                    .unwrap();
+            }
+        });
+        worker.join().unwrap();
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn sixteen_parallel_shm_workers_exchange_quanta_cleanly() {
+        const PLUGINS: usize = 16;
+        const QUANTA: u64 = 16;
+        let frames = 128_u16;
+        let handles: Vec<_> = (0..PLUGINS)
+            .map(|plugin_idx| {
+                std::thread::spawn(move || {
+                    let (host_stream, mut worker_stream) = UnixStream::pair().unwrap();
+                    let mut channel = Channel::new(host_stream).unwrap();
+                    let until = end_after(Duration::from_secs(5)).unwrap();
+                    let mut host_ring = channel
+                        .create_and_send_shm_fd(until, &mut || Ok(()))
+                        .unwrap();
+                    let mut worker_ring = hex_shm_ring::WorkerRing::from_fd(
+                        hex_shm_ring::recv_shm_fd(&worker_stream).unwrap(),
+                    )
+                    .unwrap();
+                    let worker = std::thread::spawn(move || {
+                        let mut buf = vec![0_u8; hex_shm_ring::SLOT_CAPACITY];
+                        let mut doorbell = [0_u8; 1];
+                        for _ in 0..QUANTA {
+                            worker_stream.read_exact(&mut doorbell).unwrap();
+                            let n = worker_ring.read_request(&mut buf).unwrap();
+                            worker_ring.write_reply(&buf[..n]).unwrap();
+                            worker_stream
+                                .write_all(&[hex_shm_ring::DOORBELL_BYTE])
+                                .unwrap();
+                        }
+                    });
+                    let mut packet = Packet::new().unwrap();
+                    for seq in 0..QUANTA {
+                        let mut block = sample_block(frames, seq);
+                        block.binding.instance = (plugin_idx + 1) as u64;
+                        block.events = Events::default();
+                        let len = crate::transport::wire::encode_into_slice(
+                            packet.request_buffer().unwrap(),
+                            &block,
+                        )
+                        .unwrap();
+                        channel
+                            .send_pcm(
+                                &packet.bytes[..len],
+                                Some(&mut host_ring),
+                                until,
+                                &mut || Ok(()),
+                            )
+                            .unwrap();
+                        channel
+                            .read_with_shm(&mut packet, Some(&mut host_ring), until, &mut || Ok(()))
+                            .unwrap();
+                        let rep = crate::transport::wire::read(&mut packet.data())
+                            .unwrap()
+                            .unwrap();
+                        assert_eq!(rep.binding.instance, (plugin_idx + 1) as u64);
+                        assert_eq!(rep.sequence, seq);
+                        assert_eq!(rep.frames, frames);
+                    }
+                    worker.join().unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+    }
+
+    #[test]
+    #[ignore = "explicit release benchmark: cargo test -p hex-plugin-host --release bench_16_plugin_shm_vs_socket -- --ignored --nocapture"]
+    fn bench_16_plugin_shm_vs_socket() {
+        const PLUGINS: usize = 16;
+        const QUANTA: u64 = 500;
+        for frames in [64_u16, 128, 256] {
+            let deadline_ns = (u64::from(frames) * 1_000_000_000) / 48_000;
+            for use_shm in [false, true] {
+                let start = Instant::now();
+                let handles: Vec<_> = (0..PLUGINS)
+                    .map(|idx| {
+                        std::thread::spawn(move || {
+                            let (host_stream, mut worker_stream) = UnixStream::pair().unwrap();
+                            let mut channel = Channel::new(host_stream).unwrap();
+                            let until = end_after(Duration::from_secs(10)).unwrap();
+                            let (mut host_ring, mut worker_ring) = if use_shm {
+                                let hr = channel
+                                    .create_and_send_shm_fd(until, &mut || Ok(()))
+                                    .unwrap();
+                                let wr = hex_shm_ring::WorkerRing::from_fd(
+                                    hex_shm_ring::recv_shm_fd(&worker_stream).unwrap(),
+                                )
+                                .unwrap();
+                                (Some(hr), Some(wr))
+                            } else {
+                                (None, None)
+                            };
+                            let mut block = sample_block(frames, 0);
+                            block.binding.instance = (idx + 1) as u64;
+                            block.events = Events::default();
+                            let mut sample_buf = vec![0_u8; PCM_BYTES];
+                            let packet_len =
+                                crate::transport::wire::encode_into_slice(&mut sample_buf, &block)
+                                    .unwrap();
+                            let worker = std::thread::spawn(move || {
+                                let mut buf = vec![0_u8; hex_shm_ring::SLOT_CAPACITY];
+                                if let Some(mut ring) = worker_ring.take() {
+                                    let mut doorbell = [0_u8; 1];
+                                    for _ in 0..QUANTA {
+                                        worker_stream.read_exact(&mut doorbell).unwrap();
+                                        let n = ring.read_request(&mut buf).unwrap();
+                                        ring.write_reply(&buf[..n]).unwrap();
+                                        worker_stream
+                                            .write_all(&[hex_shm_ring::DOORBELL_BYTE])
+                                            .unwrap();
+                                    }
+                                } else {
+                                    for _ in 0..QUANTA {
+                                        worker_stream.read_exact(&mut buf[..packet_len]).unwrap();
+                                        worker_stream.write_all(&buf[..packet_len]).unwrap();
+                                    }
+                                }
+                            });
+                            let mut packet = Packet::new().unwrap();
+                            let mut latencies_ns = Vec::with_capacity(QUANTA as usize);
+                            let mut misses = 0_u64;
+                            for seq in 0..QUANTA {
+                                block.sequence = seq;
+                                block.first_frame = seq * u64::from(frames);
+                                let q_start = Instant::now();
+                                let len = crate::transport::wire::encode_into_slice(
+                                    packet.request_buffer().unwrap(),
+                                    &block,
+                                )
+                                .unwrap();
+                                channel
+                                    .send_pcm(
+                                        &packet.bytes[..len],
+                                        host_ring.as_mut(),
+                                        until,
+                                        &mut || Ok(()),
+                                    )
+                                    .unwrap();
+                                channel
+                                    .read_with_shm(
+                                        &mut packet,
+                                        host_ring.as_mut(),
+                                        until,
+                                        &mut || Ok(()),
+                                    )
+                                    .unwrap();
+                                let elapsed = q_start.elapsed().as_nanos() as u64;
+                                if elapsed > deadline_ns {
+                                    misses += 1;
+                                }
+                                latencies_ns.push(elapsed);
+                            }
+                            worker.join().unwrap();
+                            (latencies_ns, misses)
+                        })
+                    })
+                    .collect();
+                let mut all_ns = Vec::with_capacity(PLUGINS * QUANTA as usize);
+                let mut total_misses = 0_u64;
+                for handle in handles {
+                    let (mut ns, misses) = handle.join().unwrap();
+                    all_ns.append(&mut ns);
+                    total_misses += misses;
+                }
+                let wall = start.elapsed();
+                all_ns.sort_unstable();
+                let p50 = all_ns[all_ns.len() / 2];
+                let p95 = all_ns[(all_ns.len() * 95) / 100];
+                let p99 = all_ns[(all_ns.len() * 99) / 100];
+                let mode = if use_shm { "shm-ring" } else { "unix-sock" };
+                eprintln!(
+                    "bench 16x {mode} q={frames}: wall={:.2}ms p50={:.1}us p95={:.1}us p99={:.1}us misses={total_misses}/{}",
+                    wall.as_secs_f64() * 1e3,
+                    p50 as f64 / 1e3,
+                    p95 as f64 / 1e3,
+                    p99 as f64 / 1e3,
+                    all_ns.len()
+                );
+            }
+        }
     }
 }

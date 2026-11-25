@@ -31,5 +31,7 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 rtrb = "=0.3.4"
 
 [target.'cfg(unix)'.dependencies]
+# Bounded shared-memory SPSC audio-quantum ring buffer; isolates POSIX shm/mmap FFI.
+hex-shm-ring = { path = "../../third_party/hex-shm-ring", version = "=0.1.0" }
 # Bounded control/worker socket readiness only; no process/signal feature here.
 rustix = { version = "=1.1.5", features = ["event"] }
