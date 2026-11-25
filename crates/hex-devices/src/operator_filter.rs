@@ -173,6 +173,38 @@ impl Settings {
                 .ok_or(DeviceContractError::InvalidParameterValue)?,
         )
     }
+    /// Constructs an SVF frame directly from overridden continuous filter
+    /// parameters without copying or re-validating a `Settings` struct.
+    pub(crate) fn frame_with_overrides(
+        self,
+        rate: u32,
+        frequency_hz: f64,
+        resonance_pct: f64,
+        morph_pct: f64,
+    ) -> Option<Frame> {
+        if rate == 0
+            || !frequency_hz.is_finite()
+            || !resonance_pct.is_finite()
+            || !morph_pct.is_finite()
+        {
+            return None;
+        }
+        let mode = hex_dsp::SvfMode::from_index(self.words[1]).ok()?;
+        let frequency = frequency_hz
+            .clamp(20.0, 20_000.0)
+            .min(0.45 * f64::from(rate));
+        let resonance = resonance_pct.clamp(0.0, 100.0) / 100.0;
+        let morph = morph_pct.clamp(0.0, 100.0) / 100.0;
+        Some(Frame::clean_filter(
+            (std::f64::consts::PI * frequency / f64::from(rate)).tan(),
+            mode,
+            resonance,
+            morph,
+            f64::from(self.words[0]),
+            f64::from(self.words[2]),
+        ))
+    }
+
     fn prepare_at_rate(self, rate: u32) -> Result<Prepared, DeviceContractError> {
         // Authored frequency stays portable; the rate-specific ceiling is a
         // documented effective cutoff, not a rewrite of canonical state.
