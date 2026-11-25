@@ -1116,6 +1116,22 @@ impl Drop for Harness {
     }
 }
 
+// Edit completion and recovery publication have separate owners. Observe the
+// published project's contents because a previous revision can already exist.
+fn wait_for_recovery_project(path: &std::path::Path, expected: &hex_project::Project) {
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        if path.is_file() && hex_storage::load_journal(path).unwrap() == *expected {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "expected project was not journaled"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
     for retained_failure in [false, true] {
@@ -1170,11 +1186,11 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
     let edited = next();
     assert!(edited.error.is_none());
     assert!(edited.state.revision > initial.state.revision);
-    assert!(recovery.is_file()); // worker-backed startup retains automatic journals
+    wait_for_recovery_project(&recovery, &edited.state.project);
     let path = files.0.join("offline.hex");
     service.submit(Request::SaveNew(path.clone())).unwrap();
     assert!(next().error.is_none());
-    assert!(path.is_file());
+    assert_eq!(hex_storage::load(&path).unwrap(), *edited.state.project);
 }
 
 #[test]
