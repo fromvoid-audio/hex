@@ -151,7 +151,7 @@ impl GeometryLru {
         self.len
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -2702,7 +2702,7 @@ mod tests {
         assert!(faded_bottom[99].y < neutral_bottom[99].y);
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn key(origin: u64, bounds: Bounds<Pixels>) -> WaveformGeometryKey {
         waveform_geometry_key(
             &WaveformMapping::Source {
@@ -2715,7 +2715,7 @@ mod tests {
         )
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn coarse_key(clip_id: u64, first_frame: u64) -> WaveformGeometryKey {
         WaveformGeometryKey {
             reference_stereo: reference_stereo(),
@@ -2764,7 +2764,7 @@ mod tests {
         assert_eq!(current, key(0, bounds()));
     }
 
-    #[cfg(all(test, not(feature = "ui-test-support")))]
+    #[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]
     fn geometry(
         source: &CachedWaveform,
         origin: u64,
