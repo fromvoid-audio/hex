@@ -587,7 +587,9 @@ class NativeInstanceTests(unittest.TestCase):
         while time.monotonic() < end:
             magic, reply = self.instrument_block(session, [(0, 0xb1, 1, 127), (0, 0xb2, 74, 0)])
             self.assertEqual(magic, b"HXVB")
-            if struct.unpack_from("<16f", reply, 64) == (2.,) * 16:
+            # The fixture scales each later block by its sequence. Only the
+            # new assignment can raise the held note from the preceding zero.
+            if all(v > 0 for v in struct.unpack_from("<16f", reply, 64)):
                 break
         else:
             self.fail("CC1 on channel 1 did not replace CC74 on channel 2")
