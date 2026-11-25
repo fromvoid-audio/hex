@@ -735,6 +735,18 @@ fn instrument_expression_preserves_message_width_and_note_identity_on_the_wire()
         ..channel_pressure
     };
     block.events.push(bend).unwrap();
+    let cc = MidiEvent {
+        frame: 4,
+        bytes: [0xb2, 74, 64],
+        ..bend
+    };
+    let sequenced_cc = MidiEvent {
+        frame: 7,
+        is_live: false,
+        ..cc
+    };
+    block.events.push(cc).unwrap();
+    block.events.push(sequenced_cc).unwrap();
     assert!(effect.validate_block(&block, 0).is_err());
     instrument.validate_block(&block, 0).unwrap();
     let mut wire = Vec::new();
@@ -744,10 +756,18 @@ fn instrument_expression_preserves_message_width_and_note_identity_on_the_wire()
         .unwrap();
     assert_eq!(
         decoded.events.as_slice(),
-        &[pressure, channel_pressure, bend]
+        &[pressure, channel_pressure, bend, cc, sequenced_cc]
     );
 
     for invalid in [
+        MidiEvent {
+            bytes: [0xb2, 128, 64],
+            ..cc
+        },
+        MidiEvent {
+            note_id: pressure.note_id,
+            ..cc
+        },
         MidiEvent { len: 2, ..bend },
         MidiEvent {
             bytes: [0xe1, 9, 128],

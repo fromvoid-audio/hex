@@ -32,9 +32,7 @@ inline bool supports_authored_parameter_flags(int32 flags) {
     return (bits&ParameterInfo::kCanAutomate) && !(bits&~supported);
 }
 // A disengaged entry means the controller supplies no assignment for bus 0.
-struct ChannelAssignments {
-    std::optional<ParamID> pressure,bend;
-};
+using ChannelAssignments=std::array<std::optional<ParamID>,kCountCtrlNumber>;
 using InstrumentAssignments=std::array<ChannelAssignments,16>;
 struct ParameterSnapshot {
     InstrumentAssignments assignments{};
@@ -974,13 +972,12 @@ private:
             const auto found=controller->queryInterface(INLINE_UID_OF(IMidiMapping),reinterpret_cast<void**>(&mapping));
             if(found==kResultOk && mapping) {
                 for(int16 channel=0;channel<16;++channel) {
-                    const auto assigned=[&](CtrlNumber cc)->std::optional<ParamID> {
+                    auto& assignments=staged.assignments[channel];
+                    for(CtrlNumber cc=0;cc<kCountCtrlNumber;++cc) {
                         ParamID id=kNoParamId;
                         if(mapping->getMidiControllerAssignment(0,channel,cc,id)==kResultOk &&
-                                staged.index_for_id(id)) return id;
-                        return std::nullopt;
-                    };
-                    staged.assignments[channel]={assigned(kAfterTouch),assigned(kPitchBend)};
+                                staged.index_for_id(id)) assignments[cc]=id;
+                    }
                 }
                 mapping->release();
                 controller_maps_midi=true;
