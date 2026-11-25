@@ -1205,3 +1205,172 @@ fn per_note_expression_recording_delivers_distinct_occurrences_at_zero_callback_
             && n.event == hex_engine::midi_capture::MidiCaptureEvent::Off
     }));
 }
+
+#[test]
+fn mpe_sustain_reuse_stop_and_queue_overflow_make_zero_callback_allocations() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let fm4_state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_engine::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "mpe-sustain".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: fm4_state,
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let input = Arc::new(
+        control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_live_notes()
+            .unwrap(),
+    );
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    graph
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    let context = hex_engine::AudioSourceContext {
+        project_generation: 2,
+        editor_revision: 4,
+    };
+    control
+        .publish_with_admission_and_source_on_control(
+            graph,
+            prepared::PublicationPolicy::InheritRuntime,
+            context,
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 16], 2));
+
+    let live = input.live_notes().unwrap();
+    let token = live.begin_activation_on_control().unwrap();
+    use hex_engine::computer_keyboard::LiveNoteEvent;
+
+    // 1. Two expressive MPE notes + sustain down + pedal-on NoteOff + sustained expression + reuse + pedal lift.
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 64,
+            velocity: 96,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 700,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 1,
+            cc: 64,
+            value: 127,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 1,
+            pitch: 60,
+            value: 104,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 67,
+            velocity: 92,
+        },
+    ] {
+        live.publish(token, ev).unwrap();
+    }
+    // `deliver` wraps the callback render inside `counted(|| ...)` asserting zero total & signed-net allocations.
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+
+    // 2. Overflow the LiveNoteInput queue while sustained MPE notes are active -> zero callback allocations!
+    for step in 0..2048_i16 {
+        if live
+            .publish(
+                token,
+                LiveNoteEvent::NotePitchBend {
+                    channel: 1,
+                    pitch: 67,
+                    cents: (step % 64) * 10,
+                },
+            )
+            .is_err()
+        {
+            break;
+        }
+    }
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+
+    // 3. Re-arm fresh activation, sustain note, then trigger Priority Stop -> zero callback allocations!
+    let token_stop = live.begin_activation_on_control().unwrap();
+    live.publish(
+        token_stop,
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 64,
+            velocity: 100,
+        },
+    )
+    .unwrap();
+    live.publish(
+        token_stop,
+        LiveNoteEvent::ControlChange {
+            channel: 2,
+            cc: 64,
+            value: 127,
+        },
+    )
+    .unwrap();
+    live.publish(
+        token_stop,
+        LiveNoteEvent::NoteOff {
+            channel: 2,
+            pitch: 64,
+            velocity: 0,
+        },
+    )
+    .unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 16], 2));
+    control.command(hex_engine::PlaybackCommand::Stop).unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
+}

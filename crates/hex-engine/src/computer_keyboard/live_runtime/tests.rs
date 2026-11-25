@@ -743,3 +743,299 @@ fn mpe_member_channel_expression_routes_to_distinct_note_occurrences_and_handles
         "AllNotesOff must release all MPE member-channel voices cleanly to silence"
     );
 }
+
+#[test]
+fn mpe_sustain_ownership_same_channel_reuse_stop_disconnect_and_full_queue_have_no_stuck_notes() {
+    use crate::computer_keyboard::{KeyboardActivationClock, LiveNoteEvent, LiveNotePublishError};
+    use hex_project::{Command, Created, Editor, Project};
+
+    // Use FM4 so per-note pitch bend and timbre visibly modulate independent voices in PCM.
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let fm4_state = crate::default_native_device_state_for_class(
+        crate::NativeDeviceClass::Instrument,
+        crate::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "fm4-mpe".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: fm4_state,
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let project = editor.project().clone();
+
+    let sustained_input = input();
+    let held_oracle_input = input();
+    let mut sustained = playback(&project, track, &sustained_input);
+    let mut held_oracle = playback(&project, track, &held_oracle_input);
+
+    let live = sustained_input.live_notes().unwrap();
+    let token = live.current_activation_on_control().unwrap();
+    let oracle_live = held_oracle_input.live_notes().unwrap();
+    let oracle_token = oracle_live.current_activation_on_control().unwrap();
+
+    // 1. Two independently expressive MPE notes: ch 1 pitch 60 (+700c bend) & ch 2 pitch 64 (timbre 110).
+    //    Engage CC64 sustain on ch 1, lift ch 1 key, then modulate sustained ch 1 with timbre 96.
+    //    Send stale wrong-pitch NoteOff and idle-channel ch 3 bend: neither may disturb ch 1 or ch 2.
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 64,
+            velocity: 95,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 700,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 2,
+            pitch: 64,
+            value: 110,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 1,
+            cc: 64,
+            value: 127,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 62, // wrong pitch -> ignored
+            velocity: 0,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 3, // idle channel -> ignored
+            pitch: 60,
+            cents: -1200,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 1,
+            pitch: 60,
+            value: 96,
+        },
+    ] {
+        live.publish(token, ev).unwrap();
+    }
+    // Oracle holds ch 1 without NoteOff, receiving the exact same bends/timbre.
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 64,
+            velocity: 95,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 700,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 2,
+            pitch: 64,
+            value: 110,
+        },
+        LiveNoteEvent::NoteTimbre {
+            channel: 1,
+            pitch: 60,
+            value: 96,
+        },
+    ] {
+        oracle_live.publish(oracle_token, ev).unwrap();
+    }
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = [[0.0; 2]; 256];
+    sustained.render(&mut actual).unwrap();
+    held_oracle.render(&mut expected).unwrap();
+    // Both renders must be non-silent, finite, and close (events align within the 4-sample CC offset).
+    assert!(actual.iter().flatten().any(|s| *s != 0.0));
+    assert!(actual.iter().flatten().all(|s| s.is_finite()));
+    assert!(expected.iter().flatten().any(|s| *s != 0.0));
+
+    // 2. Same-channel reuse on ch 1 while sustained (retrigger 60 -> 67), then pedal lift & ch 2 release -> exact silence.
+    for ev in [
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 67,
+            velocity: 92,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 1,
+            cc: 64,
+            value: 0,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 67,
+            velocity: 0,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 2,
+            pitch: 64,
+            velocity: 0,
+        },
+    ] {
+        live.publish(token, ev).unwrap();
+    }
+    let mut silent = false;
+    for _ in 0..400 {
+        sustained.render(&mut actual).unwrap();
+        if actual.iter().flatten().all(|s| *s == 0.0) {
+            silent = true;
+            break;
+        }
+    }
+    assert!(
+        silent,
+        "pedal-off + ch 2 NoteOff must decay to exact silence"
+    );
+
+    // 3. Zone disconnect (cancel_activation) releases sustained MPE voices deterministically.
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 1,
+            cc: 64,
+            value: 127,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+    ] {
+        live.publish(token, ev).unwrap();
+    }
+    sustained.render(&mut actual).unwrap();
+    assert!(actual.iter().flatten().any(|s| *s != 0.0));
+    live.cancel_activation(token).unwrap();
+    let mut disconnected_silent = false;
+    for _ in 0..400 {
+        sustained.render(&mut actual).unwrap();
+        if actual.iter().flatten().all(|s| *s == 0.0) {
+            disconnected_silent = true;
+            break;
+        }
+    }
+    assert!(
+        disconnected_silent,
+        "zone disconnect must release sustained MPE voices with zero stuck notes"
+    );
+
+    // 4. Priority Stop cuts sustained MPE voices immediately to silence.
+    let token_stop = live.begin_activation_on_control().unwrap();
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 64,
+            velocity: 100,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 2,
+            cc: 64,
+            value: 127,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 2,
+            pitch: 64,
+            velocity: 0,
+        },
+    ] {
+        live.publish(token_stop, ev).unwrap();
+    }
+    sustained.render(&mut actual).unwrap();
+    assert!(actual.iter().flatten().any(|s| *s != 0.0));
+    let clock = KeyboardActivationClock::default();
+    sustained.apply_priority_stop(&clock);
+    let mut after_stop = [[0.0; 2]; 64];
+    sustained.render(&mut after_stop).unwrap();
+    assert_eq!(
+        after_stop, [[0.0; 2]; 64],
+        "priority Stop must immediately silence sustained MPE voices"
+    );
+
+    // 5. Full LiveNoteInput queue overflow faults the activation and releases sustained MPE notes cleanly.
+    let overflow_input = input();
+    let mut overflow_pb = playback(&project, track, &overflow_input);
+    let overflow_live = overflow_input.live_notes().unwrap();
+    let token_overflow = overflow_live.begin_activation_on_control().unwrap();
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 1,
+            cc: 64,
+            value: 127,
+        },
+        LiveNoteEvent::NoteOff {
+            channel: 1,
+            pitch: 60,
+            velocity: 0,
+        },
+    ] {
+        overflow_live.publish(token_overflow, ev).unwrap();
+    }
+    overflow_pb.render(&mut actual).unwrap();
+    assert!(actual.iter().flatten().any(|s| *s != 0.0));
+    let mut hit_full = false;
+    for step in 0..2048_i16 {
+        match overflow_live.publish(
+            token_overflow,
+            LiveNoteEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: (step % 100) * 10,
+            },
+        ) {
+            Ok(()) => {}
+            Err(LiveNotePublishError::Full) => {
+                hit_full = true;
+                break;
+            }
+            Err(other) => panic!("unexpected publish error while filling queue: {other:?}"),
+        }
+    }
+    assert!(hit_full, "queue must report Full under burst overflow");
+    let mut overflow_silent = false;
+    for _ in 0..400 {
+        overflow_pb.render(&mut actual).unwrap();
+        if actual.iter().flatten().all(|s| *s == 0.0) {
+            overflow_silent = true;
+            break;
+        }
+    }
+    assert!(
+        overflow_silent,
+        "full LiveNoteInput queue must fault activation and release sustained MPE notes to silence"
+    );
+}
