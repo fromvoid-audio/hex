@@ -4533,8 +4533,20 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
     editor.update(&mut visual, |view, cx| {
         view.history_action(Request::Undo, cx)
     });
+    // A user can press Redo as soon as Undo is visible, before the callback
+    // installs its graph. Render the Undo lease once, then hold that installation.
     loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        let requested = editor.read_with(&visual, |view, _| {
+            view.audio_status().unwrap().stopped_edit_pending()
+        });
+        if requested {
+            break;
+        }
+        assert!(Instant::now() < deadline, "undo lease request");
+        std::thread::yield_now();
+    }
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    loop {
         let undone = editor.update(&mut visual, |view, cx| {
             view.tick(cx);
             view.state
@@ -4558,16 +4570,33 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
             if copy_kind == 2 { 3 } else { 2 }
         )
     });
-    editor.update(&mut visual, |view, cx| {
-        view.history_action(Request::Redo, cx)
+    let previous_audio_revision = editor.update(&mut visual, |view, cx| {
+        let source = view.audio_status().unwrap().recording_source().unwrap();
+        assert_eq!(source.context.editor_revision, revision + 2);
+        view.history_action(Request::Redo, cx);
+        source.audio_revision
     });
+    let observed = fixture.section_wait_observed.as_ref().unwrap();
+    while observed.load(Acquire) <= previous_audio_revision {
+        assert!(
+            Instant::now() < deadline,
+            "Redo admission behind the unapplied Undo graph"
+        );
+        std::thread::yield_now();
+    }
     loop {
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let redone = editor.update(&mut visual, |view, cx| {
             view.tick(cx);
+            assert!(view.error.is_none(), "redo failed: {:?}", view.error);
             view.state
                 .as_ref()
                 .is_some_and(|state| state.revision == revision + 4)
+                && view
+                    .audio_status()
+                    .unwrap()
+                    .recording_source()
+                    .is_some_and(|source| source.context.editor_revision == revision + 4)
         });
         if redone {
             break;
