@@ -1,5 +1,7 @@
 //! Opt-in optimized baseline using the actual resident callback and original
 //! VST3 fixture. Setup, output validation and pacing stay outside render timing.
+mod track_switch;
+
 use super::super::resident_lifecycle::finish_replacement;
 use super::*;
 use hex_engine::{DeviceTypeId, default_native_device_state};
@@ -20,6 +22,7 @@ enum PlaybackProfile {
     Paced,
     Resume,
     Contended,
+    TrackSwitch { paired: bool },
 }
 
 #[test]
@@ -58,7 +61,7 @@ fn dense_sixteen_vst3_contended_deadline_profile() {
     profile(16, 44_100, PlaybackProfile::Contended);
 }
 
-fn fixture(files: &Files, rate: u32) -> PathBuf {
+fn fixture(files: &Files, rate: u32, profile: PlaybackProfile) -> PathBuf {
     let wav = files.wav(rate, SOURCE_FRAMES);
     let mut editor = Editor::new(Project::new(rate).unwrap(), 1).unwrap();
     let Created::Imported { asset, track, .. } = editor
@@ -74,6 +77,9 @@ fn fixture(files: &Files, rate: u32) -> PathBuf {
     else {
         panic!("profile import");
     };
+    let switch_profile = matches!(profile, PlaybackProfile::TrackSwitch { .. });
+    let clips_per_track = if switch_profile { 32 } else { 1 };
+    let segment_frames = u64::from(SOURCE_FRAMES) * 64 / clips_per_track;
     for index in 0..TRACKS {
         let track = if index == 0 {
             track
@@ -92,23 +98,27 @@ fn fixture(files: &Files, rate: u32) -> PathBuf {
             let clip = editor.project().track(track).unwrap().clips()[0].id();
             editor.execute(Command::RemoveClip(clip)).unwrap();
         }
-        editor
-            .execute(Command::PlaceClip {
-                track,
-                asset,
-                start: 0,
-                duration: u64::from(SOURCE_FRAMES) * 64,
-                source_offset: 0,
-                source_length: u64::from(SOURCE_FRAMES),
-                looping: true,
-            })
-            .unwrap();
+        for segment in 0..clips_per_track {
+            editor
+                .execute(Command::PlaceClip {
+                    track,
+                    asset,
+                    start: segment * segment_frames,
+                    duration: segment_frames,
+                    source_offset: 0,
+                    source_length: u64::from(SOURCE_FRAMES),
+                    looping: true,
+                })
+                .unwrap();
+        }
         editor
             .execute(Command::Gain { track, gain: 0.025 })
             .unwrap();
         for kind in [
             "hex.utility",
-            if index % 4 == 0 {
+            if index == 1 && switch_profile {
+                "hex.eq8"
+            } else if index % 4 == 0 {
                 "hex.reverb"
             } else {
                 "hex.saturator"
@@ -129,7 +139,10 @@ fn fixture(files: &Files, rate: u32) -> PathBuf {
 }
 
 fn profile(plugins: usize, rate: u32, profile: PlaybackProfile) {
-    let minimum_callback_spacing = profile != PlaybackProfile::Serial;
+    let minimum_callback_spacing = matches!(
+        profile,
+        PlaybackProfile::Paced | PlaybackProfile::Resume | PlaybackProfile::Contended
+    );
     let _native = native_fixture();
     require_release();
     let block: usize = std::env::var("HEX_PLAYBACK_PROFILE_BLOCK")
@@ -143,7 +156,7 @@ fn profile(plugins: usize, rate: u32, profile: PlaybackProfile) {
     let files = Files::new();
     let mut plugin_log = minimum_callback_spacing
         .then(|| hex_diagnostics::SessionLog::start(files.0.join("plugin-diagnostics")).unwrap());
-    let path = fixture(&files, rate);
+    let path = fixture(&files, rate, profile);
     let mut harness = if plugins == 0 {
         ResidentHarness::new()
     } else {
@@ -201,6 +214,11 @@ fn profile(plugins: usize, rate: u32, profile: PlaybackProfile) {
     control.command(PlaybackCommand::Play).unwrap();
 
     let budget = Duration::from_nanos(block as u64 * 1_000_000_000 / u64::from(rate));
+    if let PlaybackProfile::TrackSwitch { paired } = profile {
+        assert_eq!(block, PLUGIN_QUANTUM);
+        track_switch::measure(&mut harness, &state, paired, budget);
+        return;
+    }
     let (start_frame, worker_blocks_before_resume) = if profile == PlaybackProfile::Resume {
         assert_eq!(
             block, PLUGIN_QUANTUM,
