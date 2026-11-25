@@ -565,3 +565,41 @@ fn relocating_a_root_remaps_records_by_relative_path_for_incremental_reuse() {
     assert_eq!((rescan.reused, rescan.fingerprinted), (2, 0));
     assert_eq!(fingerprint(&rescan.catalog, &moved), Some(print));
 }
+
+#[test]
+fn catalog_indexes_persists_and_finds_rf64_aiff_and_flac_relink_candidates() {
+    let fixture = Fixture::new();
+    let rf64 = fixture.0.join("stems/long.rf64");
+    let aiff = fixture.0.join("stems/pad.aiff");
+    let flac = fixture.0.join("stems/drums.flac");
+    fs::create_dir_all(fixture.0.join("stems")).unwrap();
+    write(&rf64, b"synthetic-rf64-bytes");
+    write(&aiff, b"synthetic-aiff-bytes");
+    write(&flac, b"synthetic-flac-bytes");
+
+    let scan = scan_samples(std::slice::from_ref(&fixture.0));
+    let names: Vec<&str> = scan
+        .catalog
+        .entries()
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert_eq!(names, ["drums.flac", "long.rf64", "pad.aiff"]);
+    assert_eq!(scan.fingerprinted, 3);
+
+    // Save and reload catalog database cleanly with non-WAV extensions
+    let db_path = fixture.0.join("samples.db");
+    assert!(scan.catalog.save(&db_path).unwrap());
+    let reloaded = SampleCatalog::load(&db_path).unwrap();
+    assert_eq!(reloaded, scan.catalog);
+
+    // Relink lookup finds moved non-WAV formats by name & fingerprint
+    let flac_fp = fingerprint(&reloaded, &flac).unwrap();
+    let candidates = reloaded.find_candidates(&MissingSample {
+        file_name: std::ffi::OsStr::new("drums.flac"),
+        size: Some(b"synthetic-flac-bytes".len() as u64),
+        fingerprint: Some(flac_fp),
+    });
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].path, flac);
+}

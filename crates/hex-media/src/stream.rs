@@ -1,5 +1,5 @@
-//! Bounded control-side random-access WAV source decoding.
-use crate::{ImportError, wav};
+//! Bounded control-side random-access audio source decoding (WAV, RF64/BW64, AIFF/AIFC, FLAC).
+use crate::{ImportError, aiff, flac, media, wav};
 use hex_engine::Frame;
 use std::{
     fs::File,
@@ -44,7 +44,8 @@ impl WavReaderLimits {
 pub struct WavFrameReader {
     file: File,
     path: PathBuf,
-    layout: wav::Layout,
+    layout: media::MediaLayout,
+    flac_cursor: flac::FlacStreamCursor,
     captured_len: u64,
     captured_modified: SystemTime,
     max_window_frames: usize,
@@ -61,9 +62,9 @@ impl WavFrameReader {
             return Err(ImportError::LimitExceeded("input bytes"));
         }
         let captured_modified = before.modified()?;
-        let layout = wav::scan(&mut file, captured_len, limits.max_header_count)?;
-        layout.format.require_fixed_frames()?;
-        if layout.frames > limits.max_source_frames {
+        let layout = media::scan(&mut file, captured_len, limits.max_header_count)?;
+        layout.require_seekable()?;
+        if layout.frames() > limits.max_source_frames {
             return Err(ImportError::LimitExceeded("source frames"));
         }
         check_metadata(&file, captured_len, captured_modified)?;
@@ -76,6 +77,7 @@ impl WavFrameReader {
             file,
             path,
             layout,
+            flac_cursor: flac::FlacStreamCursor::default(),
             captured_len,
             captured_modified,
             max_window_frames: limits.max_window_frames,
@@ -123,11 +125,11 @@ impl WavFrameReader {
     }
 
     pub const fn sample_rate(&self) -> u32 {
-        self.layout.format.sample_rate
+        self.layout.sample_rate()
     }
 
     pub const fn source_frames(&self) -> u64 {
-        self.layout.frames
+        self.layout.frames()
     }
 
     pub const fn max_window_frames(&self) -> usize {
@@ -141,15 +143,15 @@ impl WavFrameReader {
 
     /// Original channel count before mono-to-stereo expansion.
     pub const fn source_channels(&self) -> u16 {
-        self.layout.format.channels
+        self.layout.source_channels()
     }
 
     pub const fn bits_per_sample(&self) -> u16 {
-        self.layout.format.bits_per_sample
+        self.layout.bits_per_sample()
     }
 
     pub const fn encoding(&self) -> u16 {
-        self.layout.format.encoding
+        self.layout.compat_encoding()
     }
 
     /// Decodes at most `output.len()` frames. The suffix beyond EOF is zeroed.
@@ -198,54 +200,114 @@ impl WavFrameReader {
         let requested_end = start_frame
             .checked_add(requested)
             .ok_or(ImportError::Invalid("requested frame range overflow"))?;
-        if start_frame > self.layout.frames {
+        if start_frame > self.layout.frames() {
             return Err(ImportError::Invalid("window starts beyond source end"));
         }
         check_metadata(&self.file, self.captured_len, self.captured_modified)?;
 
-        let available = self.layout.frames - start_frame;
-        let decode_count = usize::try_from(available.min(requested))
-            .map_err(|_| ImportError::Invalid("window frame count exceeds address space"))?;
-        let block_align = self.layout.format.block_align;
-        let frames_per_chunk = self.scratch.len() / block_align;
-        if frames_per_chunk == 0 {
-            return Err(ImportError::Invalid("decoder scratch is too small"));
-        }
-        let mut decoded = 0_usize;
-        while decoded < decode_count {
-            let count = (decode_count - decoded).min(frames_per_chunk);
-            let byte_count = count
-                .checked_mul(block_align)
-                .ok_or(ImportError::Invalid("window byte count overflow"))?;
-            let frame_offset = start_frame
-                .checked_add(
-                    u64::try_from(decoded)
-                        .map_err(|_| ImportError::Invalid("window offset overflow"))?,
-                )
-                .ok_or(ImportError::Invalid("window frame offset overflow"))?;
-            let byte_offset = frame_offset
-                .checked_mul(block_align as u64)
-                .and_then(|offset| self.layout.data_offset.checked_add(offset))
-                .ok_or(ImportError::Invalid("source byte offset overflow"))?;
-            let read_end =
-                byte_offset
-                    .checked_add(u64::try_from(byte_count).map_err(|_| {
-                        ImportError::Invalid("window byte count exceeds file offsets")
-                    })?)
-                    .ok_or(ImportError::Invalid("source byte range overflow"))?;
-            if read_end > self.captured_len {
-                return Err(ImportError::Invalid("source data exceeds captured file"));
+        let decode_count = match &self.layout {
+            media::MediaLayout::Flac(flac_layout) => flac::read_window(
+                &mut self.file,
+                flac_layout,
+                &mut self.flac_cursor,
+                self.captured_len,
+                start_frame,
+                output,
+                || false,
+            )?,
+            media::MediaLayout::Wav(wav_layout) => {
+                let available = wav_layout.frames - start_frame;
+                let decode_count = usize::try_from(available.min(requested)).map_err(|_| {
+                    ImportError::Invalid("window frame count exceeds address space")
+                })?;
+                let block_align = wav_layout.format.block_align;
+                let frames_per_chunk = self.scratch.len() / block_align;
+                if frames_per_chunk == 0 {
+                    return Err(ImportError::Invalid("decoder scratch is too small"));
+                }
+                let mut decoded = 0_usize;
+                while decoded < decode_count {
+                    let count = (decode_count - decoded).min(frames_per_chunk);
+                    let byte_count = count
+                        .checked_mul(block_align)
+                        .ok_or(ImportError::Invalid("window byte count overflow"))?;
+                    let frame_offset = start_frame
+                        .checked_add(
+                            u64::try_from(decoded)
+                                .map_err(|_| ImportError::Invalid("window offset overflow"))?,
+                        )
+                        .ok_or(ImportError::Invalid("window frame offset overflow"))?;
+                    let byte_offset = frame_offset
+                        .checked_mul(block_align as u64)
+                        .and_then(|offset| wav_layout.data_offset.checked_add(offset))
+                        .ok_or(ImportError::Invalid("source byte offset overflow"))?;
+                    let read_end = byte_offset
+                        .checked_add(u64::try_from(byte_count).map_err(|_| {
+                            ImportError::Invalid("window byte count exceeds file offsets")
+                        })?)
+                        .ok_or(ImportError::Invalid("source byte range overflow"))?;
+                    if read_end > self.captured_len {
+                        return Err(ImportError::Invalid("source data exceeds captured file"));
+                    }
+                    self.file.seek(SeekFrom::Start(byte_offset))?;
+                    self.file.read_exact(&mut self.scratch[..byte_count])?;
+                    for (index, frame) in self.scratch[..byte_count]
+                        .chunks_exact(block_align)
+                        .enumerate()
+                    {
+                        output[decoded + index] = wav::decode_frame(frame, wav_layout.format)?;
+                    }
+                    decoded += count;
+                }
+                decode_count
             }
-            self.file.seek(SeekFrom::Start(byte_offset))?;
-            self.file.read_exact(&mut self.scratch[..byte_count])?;
-            for (index, frame) in self.scratch[..byte_count]
-                .chunks_exact(block_align)
-                .enumerate()
-            {
-                output[decoded + index] = wav::decode_frame(frame, self.layout.format)?;
+            media::MediaLayout::Aiff(aiff_layout) => {
+                let available = aiff_layout.frames - start_frame;
+                let decode_count = usize::try_from(available.min(requested)).map_err(|_| {
+                    ImportError::Invalid("window frame count exceeds address space")
+                })?;
+                let block_align = aiff_layout.format.block_align;
+                let frames_per_chunk = self.scratch.len() / block_align;
+                if frames_per_chunk == 0 {
+                    return Err(ImportError::Invalid("decoder scratch is too small"));
+                }
+                let mut decoded = 0_usize;
+                while decoded < decode_count {
+                    let count = (decode_count - decoded).min(frames_per_chunk);
+                    let byte_count = count
+                        .checked_mul(block_align)
+                        .ok_or(ImportError::Invalid("window byte count overflow"))?;
+                    let frame_offset = start_frame
+                        .checked_add(
+                            u64::try_from(decoded)
+                                .map_err(|_| ImportError::Invalid("window offset overflow"))?,
+                        )
+                        .ok_or(ImportError::Invalid("window frame offset overflow"))?;
+                    let byte_offset = frame_offset
+                        .checked_mul(block_align as u64)
+                        .and_then(|offset| aiff_layout.data_offset.checked_add(offset))
+                        .ok_or(ImportError::Invalid("source byte offset overflow"))?;
+                    let read_end = byte_offset
+                        .checked_add(u64::try_from(byte_count).map_err(|_| {
+                            ImportError::Invalid("window byte count exceeds file offsets")
+                        })?)
+                        .ok_or(ImportError::Invalid("source byte range overflow"))?;
+                    if read_end > self.captured_len {
+                        return Err(ImportError::Invalid("source data exceeds captured file"));
+                    }
+                    self.file.seek(SeekFrom::Start(byte_offset))?;
+                    self.file.read_exact(&mut self.scratch[..byte_count])?;
+                    for (index, frame) in self.scratch[..byte_count]
+                        .chunks_exact(block_align)
+                        .enumerate()
+                    {
+                        output[decoded + index] = aiff::decode_frame(frame, aiff_layout.format)?;
+                    }
+                    decoded += count;
+                }
+                decode_count
             }
-            decoded += count;
-        }
+        };
         check_metadata(&self.file, self.captured_len, self.captured_modified)?;
         let _ = requested_end;
         Ok(decode_count)

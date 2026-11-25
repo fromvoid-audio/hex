@@ -1,5 +1,5 @@
-//! Content-verified random-access WAV reads over captured raw-file pages.
-use crate::{ImportError, WavReaderLimits, wav};
+//! Content-verified random-access audio reads (WAV, RF64/BW64, AIFF/AIFC, FLAC) over captured raw-file pages.
+use crate::{ImportError, WavReaderLimits, aiff, flac, media, wav};
 use hex_engine::Frame;
 use sha2::{Digest, Sha256};
 use std::{
@@ -103,7 +103,8 @@ impl VerifiedWavManifest {
 pub struct VerifiedWavReader {
     file: File,
     path: PathBuf,
-    layout: wav::Layout,
+    layout: media::MediaLayout,
+    flac_cursor: flac::FlacStreamCursor,
     max_header_count: usize,
     max_window_frames: usize,
     manifest: VerifiedWavManifest,
@@ -152,9 +153,9 @@ impl VerifiedWavReader {
             return Err(ImportError::LimitExceeded("verified page manifest bytes"));
         }
         let preliminary_layout =
-            wav::scan(&mut file, captured_len, limits.reader.max_header_count)?;
-        preliminary_layout.format.require_fixed_frames()?;
-        if preliminary_layout.frames > limits.reader.max_source_frames {
+            media::scan(&mut file, captured_len, limits.reader.max_header_count)?;
+        preliminary_layout.require_seekable()?;
+        if preliminary_layout.frames() > limits.reader.max_source_frames {
             return Err(ImportError::LimitExceeded("source frames"));
         }
         check_metadata(&file, captured_len, captured_modified)?;
@@ -273,21 +274,22 @@ impl VerifiedWavReader {
                 #[cfg(feature = "test-support")]
                 &mut page_read_failure_after,
             );
-            wav::scan(&mut verified, captured_len, limits.reader.max_header_count)
+            media::scan(&mut verified, captured_len, limits.reader.max_header_count)
                 .map_err(map_verified_error)?
         };
         if cancelled() {
             return Err(ImportError::Cancelled);
         }
         check_metadata(&file, captured_len, captured_modified)?;
-        layout.format.require_fixed_frames()?;
-        if layout.frames > limits.reader.max_source_frames {
+        layout.require_seekable()?;
+        if layout.frames() > limits.reader.max_source_frames {
             return Err(ImportError::LimitExceeded("source frames"));
         }
         Ok(Self {
             file,
             path,
             layout,
+            flac_cursor: flac::FlacStreamCursor::default(),
             max_header_count: limits.reader.max_header_count,
             max_window_frames: limits.reader.max_window_frames,
             manifest,
@@ -374,11 +376,11 @@ impl VerifiedWavReader {
     }
 
     pub fn sample_rate(&self) -> u32 {
-        self.layout.format.sample_rate
+        self.layout.sample_rate()
     }
 
     pub const fn source_frames(&self) -> u64 {
-        self.layout.frames
+        self.layout.frames()
     }
 
     pub const fn max_window_frames(&self) -> usize {
@@ -390,15 +392,15 @@ impl VerifiedWavReader {
     }
 
     pub const fn source_channels(&self) -> u16 {
-        self.layout.format.channels
+        self.layout.source_channels()
     }
 
     pub const fn bits_per_sample(&self) -> u16 {
-        self.layout.format.bits_per_sample
+        self.layout.bits_per_sample()
     }
 
     pub const fn encoding(&self) -> u16 {
-        self.layout.format.encoding
+        self.layout.compat_encoding()
     }
 
     /// Decodes a bounded source window. EOF suffixes are zeroed; any failure
@@ -461,7 +463,7 @@ impl VerifiedWavReader {
         start_frame
             .checked_add(requested)
             .ok_or(ImportError::Invalid("requested frame range overflow"))?;
-        if start_frame > self.layout.frames {
+        if start_frame > self.layout.frames() {
             return Err(ImportError::Invalid("window starts beyond source end"));
         }
         let (captured_len, captured_modified) =
@@ -485,53 +487,108 @@ impl VerifiedWavReader {
                 #[cfg(feature = "test-support")]
                 &mut self.page_read_failure_after,
             );
-            let layout = wav::scan(&mut verified, captured_len, self.max_header_count)
+            let layout = media::scan(&mut verified, captured_len, self.max_header_count)
                 .map_err(map_verified_error)?;
             if layout != self.layout {
                 return Err(ImportError::SourceChanged);
             }
-            if start_frame > layout.frames {
+            if start_frame > layout.frames() {
                 return Err(ImportError::Invalid("window starts beyond source end"));
             }
-            let available = layout.frames - start_frame;
-            let decode_count = usize::try_from(available.min(requested))
-                .map_err(|_| ImportError::Invalid("window frame count exceeds address space"))?;
-            let block_align = layout.format.block_align;
-            let frames_per_batch = DECODE_BATCH_BYTES
-                .checked_div(block_align)
-                .filter(|count| *count > 0)
-                .ok_or(ImportError::Invalid(
-                    "decoder batch cannot hold a complete frame",
-                ))?;
-            let mut frame_bytes = [0_u8; DECODE_BATCH_BYTES];
-            let byte_offset = start_frame
-                .checked_mul(block_align as u64)
-                .and_then(|offset| layout.data_offset.checked_add(offset))
-                .ok_or(ImportError::Invalid("source byte offset overflow"))?;
-            verified
-                .seek(SeekFrom::Start(byte_offset))
-                .map_err(map_io_error)?;
-            let decoded_output = output
-                .get_mut(..decode_count)
-                .ok_or(ImportError::Invalid("decoded window exceeds output"))?;
-            for destinations in decoded_output.chunks_mut(frames_per_batch) {
-                let byte_count = destinations
-                    .len()
-                    .checked_mul(block_align)
-                    .ok_or(ImportError::Invalid("decoded batch byte count overflow"))?;
-                let bytes = frame_bytes
-                    .get_mut(..byte_count)
-                    .ok_or(ImportError::Invalid("decoded batch exceeds scratch"))?;
-                // Preserve the verified reader's exact page/hash/metadata path;
-                // only amortize calls over a bounded group of complete frames.
-                verified.read_exact(bytes).map_err(map_io_error)?;
-                for (destination, frame) in
-                    destinations.iter_mut().zip(bytes.chunks_exact(block_align))
-                {
-                    *destination = wav::decode_frame(frame, layout.format)?;
+            match layout {
+                media::MediaLayout::Flac(flac_layout) => flac::read_window(
+                    &mut verified,
+                    &flac_layout,
+                    &mut self.flac_cursor,
+                    captured_len,
+                    start_frame,
+                    output,
+                    || false,
+                )
+                .map_err(map_verified_error)?,
+                media::MediaLayout::Wav(wav_layout) => {
+                    let available = wav_layout.frames - start_frame;
+                    let decode_count = usize::try_from(available.min(requested)).map_err(|_| {
+                        ImportError::Invalid("window frame count exceeds address space")
+                    })?;
+                    let block_align = wav_layout.format.block_align;
+                    let frames_per_batch = DECODE_BATCH_BYTES
+                        .checked_div(block_align)
+                        .filter(|count| *count > 0)
+                        .ok_or(ImportError::Invalid(
+                            "decoder batch cannot hold a complete frame",
+                        ))?;
+                    let mut frame_bytes = [0_u8; DECODE_BATCH_BYTES];
+                    let byte_offset = start_frame
+                        .checked_mul(block_align as u64)
+                        .and_then(|offset| wav_layout.data_offset.checked_add(offset))
+                        .ok_or(ImportError::Invalid("source byte offset overflow"))?;
+                    verified
+                        .seek(SeekFrom::Start(byte_offset))
+                        .map_err(map_io_error)?;
+                    let decoded_output = output
+                        .get_mut(..decode_count)
+                        .ok_or(ImportError::Invalid("decoded window exceeds output"))?;
+                    for destinations in decoded_output.chunks_mut(frames_per_batch) {
+                        let byte_count = destinations
+                            .len()
+                            .checked_mul(block_align)
+                            .ok_or(ImportError::Invalid("decoded batch byte count overflow"))?;
+                        let bytes = frame_bytes
+                            .get_mut(..byte_count)
+                            .ok_or(ImportError::Invalid("decoded batch exceeds scratch"))?;
+                        // Preserve the verified reader's exact page/hash/metadata path;
+                        // only amortize calls over a bounded group of complete frames.
+                        verified.read_exact(bytes).map_err(map_io_error)?;
+                        for (destination, frame) in
+                            destinations.iter_mut().zip(bytes.chunks_exact(block_align))
+                        {
+                            *destination = wav::decode_frame(frame, wav_layout.format)?;
+                        }
+                    }
+                    decode_count
+                }
+                media::MediaLayout::Aiff(aiff_layout) => {
+                    let available = aiff_layout.frames - start_frame;
+                    let decode_count = usize::try_from(available.min(requested)).map_err(|_| {
+                        ImportError::Invalid("window frame count exceeds address space")
+                    })?;
+                    let block_align = aiff_layout.format.block_align;
+                    let frames_per_batch = DECODE_BATCH_BYTES
+                        .checked_div(block_align)
+                        .filter(|count| *count > 0)
+                        .ok_or(ImportError::Invalid(
+                            "decoder batch cannot hold a complete frame",
+                        ))?;
+                    let mut frame_bytes = [0_u8; DECODE_BATCH_BYTES];
+                    let byte_offset = start_frame
+                        .checked_mul(block_align as u64)
+                        .and_then(|offset| aiff_layout.data_offset.checked_add(offset))
+                        .ok_or(ImportError::Invalid("source byte offset overflow"))?;
+                    verified
+                        .seek(SeekFrom::Start(byte_offset))
+                        .map_err(map_io_error)?;
+                    let decoded_output = output
+                        .get_mut(..decode_count)
+                        .ok_or(ImportError::Invalid("decoded window exceeds output"))?;
+                    for destinations in decoded_output.chunks_mut(frames_per_batch) {
+                        let byte_count = destinations
+                            .len()
+                            .checked_mul(block_align)
+                            .ok_or(ImportError::Invalid("decoded batch byte count overflow"))?;
+                        let bytes = frame_bytes
+                            .get_mut(..byte_count)
+                            .ok_or(ImportError::Invalid("decoded batch exceeds scratch"))?;
+                        verified.read_exact(bytes).map_err(map_io_error)?;
+                        for (destination, frame) in
+                            destinations.iter_mut().zip(bytes.chunks_exact(block_align))
+                        {
+                            *destination = aiff::decode_frame(frame, aiff_layout.format)?;
+                        }
+                    }
+                    decode_count
                 }
             }
-            decode_count
         };
         if cancelled() {
             return Err(ImportError::Cancelled);
@@ -873,6 +930,7 @@ impl VerifiedWavReader {
             file: _,
             path,
             layout: _,
+            flac_cursor: _,
             max_header_count: _,
             max_window_frames: _,
             manifest,
