@@ -635,13 +635,35 @@ impl SessionPlayback {
         output: &mut [Frame],
         pages: &mut P,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+    ) -> Result<(), SessionPlaybackError> {
+        self.render_with_pages_and_signal_observers_and_wave(output, pages, observer, project, None)
+    }
+
+    /// Borrowed-page counterpart that also dispatches eligible independent
+    /// native waves through `wave`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_pages_and_signal_observers_and_wave<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut project: Option<&mut ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
     ) -> Result<(), SessionPlaybackError> {
         self.candidate_admission_open = false;
         let capture = project
             .as_mut()
             .map(|tap| &mut **tap as &mut dyn CaptureSink);
-        self.render_internal(output, Some(pages), observer, capture, None)?;
+        self.render_internal_with_foreign_and_wave(
+            output,
+            Some(pages),
+            observer,
+            capture,
+            None,
+            &mut hex_lattice::RefuseForeign,
+            wave,
+        )?;
         if let Some(project) = project {
             project.main(output);
         }

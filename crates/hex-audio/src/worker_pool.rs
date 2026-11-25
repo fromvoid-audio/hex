@@ -284,6 +284,8 @@ pub struct AudioWorkerPool {
     slot_owners: [usize; MAX_WAVE_TASKS],
     staged: usize,
     sample_rate: u32,
+    #[cfg(test)]
+    waves_executed: usize,
 }
 
 impl AudioWorkerPool {
@@ -337,7 +339,14 @@ impl AudioWorkerPool {
             slot_owners: [0; MAX_WAVE_TASKS],
             staged: 0,
             sample_rate,
+            #[cfg(test)]
+            waves_executed: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn waves_executed(&self) -> usize {
+        self.waves_executed
     }
 
     /// Spawn a pool sized for the current machine (`available_parallelism - 1`, capped
@@ -442,6 +451,10 @@ impl WaveExecutor for AudioWorkerPool {
         }
 
         let total = self.staged;
+        #[cfg(test)]
+        {
+            self.waves_executed = self.waves_executed.saturating_add(1);
+        }
         let active_threads = (self.workers.len() + 1).min(total);
         let active_workers = active_threads - 1;
         let base_chunk = total / active_threads;
@@ -990,5 +1003,339 @@ mod tests {
             .expect("worker thread must exit cleanly on shutdown");
         assert!(!exited.load(Acquire));
         assert!(!shared.worker_exited.load(Acquire));
+    }
+
+    struct TempStreamWav {
+        path: std::path::PathBuf,
+        frames: u64,
+        rate: u32,
+    }
+
+    impl TempStreamWav {
+        fn new(frames: u32, rate: u32) -> Self {
+            use std::io::Write;
+            static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+            let seq = NEXT_ID.fetch_add(1, Relaxed);
+            let data_bytes = frames.checked_mul(4).unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "hex-worker-pool-stream-{}-{seq}.wav",
+                std::process::id()
+            ));
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut bytes = Vec::with_capacity(44 + data_bytes as usize);
+            bytes.extend_from_slice(b"RIFF");
+            bytes.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+            bytes.extend_from_slice(b"WAVEfmt ");
+            bytes.extend_from_slice(&16u32.to_le_bytes());
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&2u16.to_le_bytes());
+            bytes.extend_from_slice(&rate.to_le_bytes());
+            bytes.extend_from_slice(&rate.checked_mul(4).unwrap().to_le_bytes());
+            bytes.extend_from_slice(&4u16.to_le_bytes());
+            bytes.extend_from_slice(&16u16.to_le_bytes());
+            bytes.extend_from_slice(b"data");
+            bytes.extend_from_slice(&data_bytes.to_le_bytes());
+            for frame in 0..frames {
+                let phase = frame as f32 * 0.017;
+                let left = (phase.sin() * 6_000.0) as i16;
+                let right = ((phase * 1.13).cos() * 6_000.0) as i16;
+                bytes.extend_from_slice(&left.to_le_bytes());
+                bytes.extend_from_slice(&right.to_le_bytes());
+            }
+            file.write_all(&bytes).unwrap();
+            file.sync_all().unwrap();
+            Self {
+                path,
+                frames: u64::from(frames),
+                rate,
+            }
+        }
+
+        fn definition(
+            &self,
+            asset: hex_project::AssetId,
+            generation: u64,
+        ) -> hex_stream::SourceDefinition {
+            let limits = hex_media::VerifiedWavReaderLimits::new(
+                hex_media::WavReaderLimits::new(1024 * 1024, self.frames, 32, 32768),
+                1024 * 1024,
+            );
+            let verified = hex_media::VerifiedWavReader::open(&self.path, limits).unwrap();
+            let metadata = hex_engine::StreamedSourceMetadata::new(
+                hex_engine::StreamSourceKey::new(generation, asset),
+                self.rate,
+                self.rate,
+                self.frames,
+                self.frames,
+                hex_project::IDENTITY_CONVERSION,
+                *verified.fingerprint(),
+            )
+            .unwrap();
+            hex_stream::SourceDefinition::new(self.path.clone(), metadata, limits)
+        }
+    }
+
+    impl Drop for TempStreamWav {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    fn setup_streamed_callback(
+        worker_count: usize,
+        wav: &TempStreamWav,
+        track_count: usize,
+    ) -> (
+        crate::prepared::Control,
+        crate::prepared::Callback,
+        crate::AudioCandidateDomainToken,
+    ) {
+        const RATE: u32 = 48_000;
+        const GENERATION: u64 = 11;
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 128).unwrap();
+        let mut definitions = Vec::with_capacity(track_count);
+        let mut sources = BTreeMap::new();
+        for i in 0..track_count {
+            let Created::Imported { track, asset, .. } = editor
+                .execute(Command::ImportPreparedAudioTrack {
+                    name: format!("stream-{i}"),
+                    path: wav.path.clone(),
+                    source_sample_rate: RATE,
+                    source_frames: wav.frames,
+                    playback_frames: wav.frames,
+                    conversion_version: hex_project::IDENTITY_CONVERSION,
+                })
+                .unwrap()
+            else {
+                panic!("expected imported track");
+            };
+            let def = wav.definition(asset, GENERATION);
+            sources.insert(
+                asset,
+                hex_engine::compile::PreparedAudioSource::Streamed(Arc::new(def.metadata.clone())),
+            );
+            definitions.push(def);
+            for state in [
+                hex_devices::eq8::EQ8_DEFINITION.default_state().unwrap(),
+                hex_devices::filter::DEFINITION.default_state().unwrap(),
+                hex_devices::compressor::COMPRESSOR_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            ] {
+                editor
+                    .execute(Command::InsertDevice {
+                        track,
+                        before: None,
+                        state,
+                    })
+                    .unwrap();
+            }
+        }
+        let store = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+        let cancel = AtomicBool::new(false);
+        let resources =
+            hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+                &store,
+                editor.project(),
+                1_000_000,
+                &cancel,
+            )
+            .unwrap();
+        let revision =
+            hex_engine::PreparedRevision::prepare_with_prepared_audio_sources_and_device_resources(
+                editor.project(),
+                &sources,
+                GENERATION,
+                Arc::new(SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                100_000,
+                &cancel,
+            )
+            .unwrap();
+        let playback =
+            Playback::try_from_prepared_with_device_resources(Arc::new(revision), &resources)
+                .unwrap();
+
+        let (mut control, mut callback) = if worker_count == 0 {
+            crate::prepared::channel(RATE).unwrap()
+        } else {
+            crate::prepared::channel_with_worker_pool(RATE, worker_count).unwrap()
+        };
+        control.enable_native_custody().unwrap();
+        control
+            .configure_device_resource_publication_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 256,
+                    root_rows: 128,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 20_000_000,
+                },
+            )
+            .unwrap();
+        control
+            .configure_ordinary_streaming_on_control(
+                crate::AudioCandidateDomainReservation {
+                    max_retained_data_bytes: 32 * 1024 * 1024,
+                    max_construction_peak_data_bytes: 32 * 1024 * 1024,
+                },
+                track_count * 2,
+                65_536,
+            )
+            .unwrap();
+        let mut runtime = hex_stream::StreamRuntime::new(
+            hex_stream::StreamConfig::with_pool_pages(track_count * 4 + 4),
+            definitions,
+        )
+        .unwrap();
+        runtime
+            .wait_until_ready(Duration::from_secs(2))
+            .expect("stream runtime ready");
+        let domain_pair = runtime.split().ok().expect("split stream runtime");
+        let domain = control
+            .register_audio_candidate_domain_with_readiness(
+                domain_pair,
+                hex_stream::StreamReadinessReservation {
+                    extents_per_role: track_count * 2,
+                },
+            )
+            .unwrap_or_else(|_| panic!("register streamed domain"));
+        callback.begin_block();
+        control
+            .publish_with_admission_and_source_on_control(
+                playback,
+                crate::prepared::PublicationPolicy::InheritRuntime,
+                hex_engine::AudioSourceContext {
+                    project_generation: GENERATION,
+                    editor_revision: 1,
+                },
+                |_| Ok::<_, ()>(()),
+            )
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        (control, callback, domain)
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn wait_for_stream_playback(
+        control: &crate::prepared::Control,
+        callback: &mut crate::prepared::Callback,
+    ) {
+        let mut output = [[0.0_f32; 2]; 256];
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while control.status.position.load(Acquire) == 0 {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for streamed playback readiness"
+            );
+            thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn streamed_multi_track_worker_pool_matches_serial_bit_for_bit() {
+        let wav = TempStreamWav::new(4096, 48_000);
+        let (mut serial_control, mut serial_cb, serial_domain) =
+            setup_streamed_callback(0, &wav, 8);
+        let (mut parallel_control, mut parallel_cb, parallel_domain) =
+            setup_streamed_callback(3, &wav, 8);
+
+        // Wait for both independent stream workers to deliver initial pages and
+        // start playback before comparing synchronized blocks.
+        let mut serial_blocks = Vec::new();
+        let mut parallel_blocks = Vec::new();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while serial_blocks.len() < 4 {
+            let mut out = [[0.0_f32; 2]; 256];
+            let before = serial_control.status.position.load(Acquire);
+            serial_cb.begin_block();
+            serial_cb.render(&mut out).unwrap();
+            if serial_control.status.position.load(Acquire) > before {
+                serial_blocks.push(out);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "serial stream ready (applied={:?}, rejected={:?}, pos={})",
+                serial_control.status.applied_revision.load(Acquire),
+                serial_control.status.rejected_revision(),
+                serial_control.status.position.load(Acquire),
+            );
+            thread::yield_now();
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while parallel_blocks.len() < 4 {
+            let mut out = [[0.0_f32; 2]; 256];
+            let before = parallel_control.status.position.load(Acquire);
+            parallel_cb.begin_block();
+            parallel_cb.render(&mut out).unwrap();
+            if parallel_control.status.position.load(Acquire) > before {
+                parallel_blocks.push(out);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "parallel stream ready"
+            );
+            thread::yield_now();
+        }
+
+        assert!(
+            parallel_cb.wave_pool_waves_executed() > 0,
+            "streamed multi-track playback must dispatch parallel waves to AudioWorkerPool"
+        );
+        for (block_idx, (expected, actual)) in
+            serial_blocks.iter().zip(parallel_blocks.iter()).enumerate()
+        {
+            assert!(
+                expected.iter().flatten().any(|s| s.abs() > 1e-6),
+                "streamed block {block_idx} must contain audible signal"
+            );
+            for (frame_idx, (e, a)) in expected.iter().zip(actual.iter()).enumerate() {
+                assert_eq!(
+                    [e[0].to_bits(), e[1].to_bits()],
+                    [a[0].to_bits(), a[1].to_bits()],
+                    "streamed bit-exact mismatch at block {block_idx} frame {frame_idx}: expected={e:?}, actual={a:?}"
+                );
+            }
+        }
+        let _ = (serial_domain, parallel_domain);
+        serial_control.reclaim();
+        parallel_control.reclaim();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn streamed_multi_track_worker_pool_allocates_zero_bytes() {
+        let wav = TempStreamWav::new(4096, 48_000);
+        let (mut control, mut callback, _domain) = setup_streamed_callback(3, &wav, 8);
+        wait_for_stream_playback(&control, &mut callback);
+
+        let mut output = [[0.0_f32; 2]; 256];
+        let waves_before = callback.wave_pool_waves_executed();
+        let info = allocation_counter::measure(|| {
+            for _ in 0..4 {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            }
+        });
+        assert!(
+            callback.wave_pool_waves_executed() > waves_before,
+            "measured streamed blocks must dispatch parallel waves"
+        );
+        assert!(output.iter().flatten().any(|s| s.abs() > 1e-6));
+        assert_eq!(
+            (
+                info.count_total,
+                info.bytes_total,
+                info.count_current,
+                info.bytes_current,
+            ),
+            (0, 0, 0, 0),
+            "streamed parallel wave callback rendering must perform zero heap allocations/deallocations"
+        );
+        control.reclaim();
     }
 }

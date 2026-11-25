@@ -882,6 +882,7 @@ impl ActiveView<'_> {
             observer,
             None,
             None,
+            None,
         )
     }
     // The window/transport arguments and borrowed observation lanes have
@@ -896,6 +897,7 @@ impl ActiveView<'_> {
         mut observer: Option<&mut hex_engine::NodeSignalObserver<'_>>,
         mut project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
         mut foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
+        mut wave: Option<&mut dyn hex_engine::WaveExecutor>,
     ) -> StreamOutcome {
         if let Some(workspace) = self.state.streaming.as_mut() {
             workspace.capacity_conflict = false;
@@ -1120,22 +1122,27 @@ impl ActiveView<'_> {
                     .as_mut()
                     .ok_or(hex_engine::Invalid("stream current owner missing"))
                     .and_then(|runtime| {
+                        let wave = wave
+                            .as_mut()
+                            .map(|exec| &mut **exec as &mut dyn hex_engine::WaveExecutor);
                         if let Some(foreign) = foreign.as_mut() {
                             let mut window =
                                 crate::prepared::NativeEffectWindow::new(&mut **foreign, committed);
-                            runtime.render_with_foreign_processors(
+                            runtime.render_with_foreign_processors_and_wave(
                                 &mut output[committed..committed + rendered_frames],
                                 Some(&mut pages),
                                 observer,
                                 project_tap.as_mut(),
                                 &mut window,
+                                wave,
                             )
                         } else {
-                            runtime.render_with_pages_and_signal_observers(
+                            runtime.render_with_pages_and_signal_observers_and_wave(
                                 &mut output[committed..committed + rendered_frames],
                                 &mut pages,
                                 observer,
                                 project_tap.as_mut(),
+                                wave,
                             )
                         }
                     });

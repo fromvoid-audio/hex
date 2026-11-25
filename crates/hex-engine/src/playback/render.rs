@@ -671,8 +671,23 @@ impl Playback {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), Invalid> {
+        self.render_with_pages_and_signal_observers_and_wave(output, pages, observer, project, None)
+    }
+
+    /// Page-backed project/device observations that also execute eligible
+    /// independent native waves through `wave`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_pages_and_signal_observers_and_wave<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), Invalid> {
         let mut observer = observer;
         let mut project = project;
+        let mut wave = wave;
         self.render_declicked(output, |playback, output, offset| {
             let Some(runtime) = playback.session_runtime.as_mut() else {
                 if let Some(project) = project.as_deref_mut() {
@@ -688,7 +703,15 @@ impl Playback {
             with_part_offset(project.as_deref_mut(), offset, |project| {
                 with_shifted_observer(observer.as_deref_mut(), offset, |observer| {
                     runtime
-                        .render_with_pages_and_signal_observers(output, pages, observer, project)
+                        .render_with_pages_and_signal_observers_and_wave(
+                            output,
+                            pages,
+                            observer,
+                            project,
+                            wave.as_mut().map(|exec| {
+                                &mut **exec as &mut dyn crate::wave_executor::WaveExecutor
+                            }),
+                        )
                         .map_err(|error| Invalid(error.diagnostic_message()))
                 })
             })

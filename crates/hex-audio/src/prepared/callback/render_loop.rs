@@ -574,6 +574,10 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
         {
+            let wave = self
+                .wave_pool
+                .as_mut()
+                .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
             let mut outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
@@ -582,6 +586,7 @@ impl Callback {
                 node,
                 project.as_mut(),
                 foreign,
+                wave,
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();
@@ -681,6 +686,10 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
         {
+            let wave = self
+                .wave_pool
+                .as_mut()
+                .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
             let mut outcome = active.render_streamed_with_foreign(
                 &mut self.domain_pages,
                 self.stream_pending_play.is_some(),
@@ -689,6 +698,7 @@ impl Callback {
                 None,
                 None,
                 foreign,
+                wave,
             );
             let action_pending = active.has_stream_action();
             let capacity_conflict = active.capacity_conflict();

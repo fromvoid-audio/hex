@@ -36,6 +36,7 @@ mod device;
 pub mod input_capture;
 pub mod input_devices;
 mod open_outcome;
+pub mod output_devices;
 mod output_route;
 pub mod plugin_effects;
 pub mod plugin_worker;
@@ -44,17 +45,23 @@ pub mod rolling_recorder;
 pub mod sample_preview;
 pub mod sample_recording;
 pub use device::PluginOutputObservation;
-pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
+pub use device::{PluginBridgeQuantum, PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
 pub use lifecycle::{
     AudioLifecycleFailure, RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen,
     audio_lifecycle_failure, request_initial_open, request_recovery_open, request_worker_open,
     request_worker_open_with_profile, request_worker_open_with_reliable_action_outcomes,
+    request_worker_open_with_selection,
 };
 pub use open_outcome::{OutputOpenError, RateMismatch};
+pub use output_devices::{
+    OutputDeviceInfo, OutputDeviceSelection, OutputDevicesSnapshot, buffer_latency_ms,
+    probe_output_devices_on_control, probe_output_route_for_device_on_control,
+};
 pub use output_route::{OutputRoute, OutputRouteWatch, ROUTE_SAMPLE_INTERVAL};
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;
 mod candidate_custody;
+pub mod worker_pool;
 #[cfg(all(test, feature = "allocation-probe", feature = "stream-test-support"))]
 pub(crate) mod candidate_window_probe {
     use std::cell::Cell;

@@ -173,6 +173,20 @@ use std::{
 };
 pub use worker_pool::AudioWorkerPool;
 
+const LEGACY_NO_DEFAULT_OUTPUT_DEVICE: &str = "no default audio output device";
+const LEGACY_OUTPUT_HAS_NO_CHANNELS: &str = "output device has no channels";
+
+fn legacy_unsupported_output_format(format: cpal::SampleFormat) -> String {
+    format!(
+        "unsupported output format: {}",
+        format!("{format:?}").to_lowercase()
+    )
+}
+
+fn legacy_coreaudio_label(sample_rate: u32, channels: u16) -> String {
+    format!("coreaudio · {sample_rate} hz · {channels} channels")
+}
+
 pub struct AudioOutput {
     _stream: lifecycle::StreamOwner,
     pub commands: Producer<Command>,
@@ -185,11 +199,11 @@ impl AudioOutput {
         let lease = lifecycle::Lease::acquire()?;
         let device = cpal::default_host()
             .default_output_device()
-            .ok_or("No default audio output device")?;
+            .ok_or(LEGACY_NO_DEFAULT_OUTPUT_DEVICE)?;
         let supported = device.default_output_config().map_err(|e| e.to_string())?;
         let config = supported.config();
         if config.channels == 0 {
-            return Err("Output device has no channels".into());
+            return Err(LEGACY_OUTPUT_HAS_NO_CHANNELS.into());
         }
         let telemetry = Arc::new(Telemetry::default());
         let stop = Arc::new(AtomicBool::new(false));
@@ -220,7 +234,7 @@ impl AudioOutput {
                 telemetry.clone(),
                 stop.clone(),
             ),
-            other => return Err(format!("Unsupported output format: {other:?}")),
+            other => return Err(legacy_unsupported_output_format(other)),
         }
         .map_err(|e| e.to_string())?;
         if let Err(error) = stream.play() {
@@ -232,10 +246,7 @@ impl AudioOutput {
             commands,
             telemetry,
             stop,
-            label: format!(
-                "CoreAudio · {} Hz · {} channels",
-                config.sample_rate, config.channels
-            ),
+            label: legacy_coreaudio_label(config.sample_rate, config.channels),
         })
     }
     /// Stop wins over every command queued before the next callback; never queue-dependent.
@@ -330,6 +341,33 @@ mod tests {
         apply_controls(&mut engine, &mut consumer, false);
         engine.publish(&telemetry);
         assert!(telemetry.playing.load(Relaxed));
+    }
+
+    #[test]
+    fn legacy_audio_output_strings_are_lowercase() {
+        let label = legacy_coreaudio_label(48_000, 2);
+        let unsupported = legacy_unsupported_output_format(cpal::SampleFormat::F64);
+        assert_eq!(
+            LEGACY_NO_DEFAULT_OUTPUT_DEVICE,
+            "no default audio output device"
+        );
+        assert_eq!(
+            LEGACY_OUTPUT_HAS_NO_CHANNELS,
+            "output device has no channels"
+        );
+        assert_eq!(unsupported, "unsupported output format: f64");
+        assert_eq!(label, "coreaudio · 48000 hz · 2 channels");
+        for text in [
+            LEGACY_NO_DEFAULT_OUTPUT_DEVICE,
+            LEGACY_OUTPUT_HAS_NO_CHANNELS,
+            unsupported.as_str(),
+            label.as_str(),
+        ] {
+            assert!(
+                !text.chars().any(char::is_uppercase),
+                "app-owned audio string must be lowercase: {text:?}"
+            );
+        }
     }
 }
 

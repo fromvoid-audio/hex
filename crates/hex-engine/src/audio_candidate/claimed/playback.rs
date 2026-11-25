@@ -301,9 +301,20 @@ impl ClaimedAudioCandidateRuntime {
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
     ) -> Result<(), crate::Invalid> {
+        self.render_with_pages_and_signal_observers_and_wave(output, pages, observer, project, None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub fn render_with_pages_and_signal_observers_and_wave<P: crate::MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [crate::Frame],
+        pages: &mut P,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        wave: Option<&mut dyn crate::wave_executor::WaveExecutor>,
+    ) -> Result<(), crate::Invalid> {
         self.current_runtime_mut()
             .ok_or(crate::Invalid("candidate runtime is not current"))?
-            .render_with_pages_and_signal_observers(output, pages, observer, project)
+            .render_with_pages_and_signal_observers_and_wave(output, pages, observer, project, wave)
     }
     /// Match cancellation against the same prepared action/runtime's route targets.
     pub fn stream_action_targets_track(
