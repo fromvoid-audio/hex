@@ -5889,12 +5889,26 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     use hex_project::{Command, Created};
     use hex_session::service::{DeviceInsertOutcome, ViewState};
 
+    const REFERENCE_FRAMES: u32 = 16_384;
     let _native = native_fixture();
     let files = Files::new();
     let mut h = ResidentHarness::with_frame_limit(262_144);
     assert!(h.next().error.is_none());
     let (mut applied, _) = h.applied(0);
-    h.run(Request::Import(files.wav(48_000, 16_384)));
+    // Independent channels distinguish a fade on the moved route from an output cut.
+    let imported = h.run(Request::Import(files.constant_wav(
+        "destination.wav",
+        48_000,
+        32_768,
+        &[8192, 0],
+    )));
+    let destination = imported.state.project.tracks()[0].id();
+    applied = h.applied(applied).0;
+    h.run(Request::ImportToNewTrack {
+        path: files.constant_wav("unaffected.wav", 48_000, REFERENCE_FRAMES, &[0, 4096]),
+        before_track: None,
+        start: 0,
+    });
     applied = h.applied(applied).0;
     let state = |id| {
         hex_engine::default_native_device_state(hex_engine::DeviceTypeId::from_static(id)).unwrap()
@@ -5910,27 +5924,41 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert_ne!(h.render(), [[0.25; 2]; 64], "limiter must introduce delay");
+    assert_ne!(
+        h.render(),
+        [[0.25, 0.125]; 64],
+        "limiter must introduce delay"
+    );
     let deadline = Instant::now() + Duration::from_secs(1);
-    while h.render() != [[0.25; 2]; 64] {
+    while h.render() != [[0.25, 0.125]; 64] {
         assert!(Instant::now() < deadline, "compensated source never played");
     }
     h.enable_confirmed_device_inserts();
     let added = h.run(Request::Edit(Command::AddTrack {
         name: "empty".into(),
     }));
-    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    assert_eq!(h.render(), [[0.25, 0.125]; 64]);
     let Some(Created::Track(track)) = added.created else {
         panic!("empty track not created");
     };
     let apply = |h: &mut ResidentHarness, previous: &ViewState, command| {
+        let moving = matches!(command, Command::MoveDevice { .. });
+        let previous_source = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .recording_source()
+            .unwrap();
+        let mut rendered = Vec::new();
         h.service.submit(Request::Edit(command)).unwrap();
         let staged = h.next();
         assert!(!staged.request_complete);
         assert_eq!(staged.state.project, previous.project);
         let deadline = Instant::now() + Duration::from_secs(1);
         let installed = loop {
-            assert_eq!(h.render(), [[0.25; 2]; 64]);
+            rendered.extend(h.render());
             h.pump();
             if let Ok(event) = h.service.try_event() {
                 break event;
@@ -5942,12 +5970,47 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
             std::thread::sleep(Duration::from_millis(1));
         };
         assert!(installed.device_insert_confirmation.is_none());
-        assert_eq!(
-            installed.device_insert_complete.unwrap().outcome,
-            DeviceInsertOutcome::Installed
-        );
+        let receipt = installed.device_insert_complete.unwrap();
+        assert_eq!(receipt.outcome, DeviceInsertOutcome::Installed);
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        let active = status.recording_source().unwrap();
+        assert!(status.playing.load(Acquire));
+        assert_eq!(active.output_identity, previous_source.output_identity);
+        assert_eq!(active.output_identity, receipt.submission.output_identity);
+        assert_eq!(active.audio_revision, receipt.submission.audio_revision);
+        assert_eq!(active.context, receipt.submission.context);
         assert_eq!(installed.state.revision, previous.revision + 1);
-        assert_eq!(h.render(), [[0.25; 2]; 64]);
+        // Render past the Main limiter lookahead and the 240-frame route fade-in.
+        for _ in 0..8 {
+            rendered.extend(h.render());
+        }
+        assert!(
+            rendered.iter().all(|frame| frame[1] == 0.125),
+            "unaffected route interrupted"
+        );
+        if moving {
+            assert!(
+                rendered.iter().any(|frame| frame[0] == 0.0),
+                "moved route missed the cut"
+            );
+            assert!(
+                rendered
+                    .iter()
+                    .all(|frame| (0.0..=0.25).contains(&frame[0]))
+            );
+            assert!(
+                rendered
+                    .windows(2)
+                    .all(|pair| (pair[1][0] - pair[0][0]).abs() <= 0.25 / 240.0 + f32::EPSILON),
+                "moved route stepped across the cut"
+            );
+        } else {
+            assert!(
+                rendered.iter().all(|frame| frame[0] == 0.25),
+                "sounding route interrupted"
+            );
+        }
+        assert_eq!(h.render(), [[0.25, 0.125]; 64]);
         installed
     };
     let inserted = apply(
@@ -5962,7 +6025,6 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
     let Some(Created::Device(device)) = inserted.created else {
         panic!("utility not created");
     };
-    let destination = inserted.state.project.tracks()[0].id();
     let moved = apply(
         &mut h,
         &inserted.state,
@@ -5976,10 +6038,34 @@ fn ordinary_zero_latency_track_and_device_edits_keep_compensated_playback_runnin
         moved.state.project.track(destination).unwrap().devices()[0].id(),
         device
     );
+    assert_eq!(
+        moved.state.project.device(device).unwrap().state(),
+        inserted.state.project.device(device).unwrap().state()
+    );
     let removed = apply(&mut h, &moved.state, Command::RemoveDevice(device));
     assert!(removed.state.project.device(device).is_none());
     let removed = apply(&mut h, &removed.state, Command::RemoveTrack(track));
     assert!(removed.state.project.track(track).is_none());
+
+    // The right-only clip ends at its authored frame plus the default limiter's
+    // 1.5 ms lookahead. A shifted or restarted output moves this edge.
+    let right_end = u64::from(REFERENCE_FRAMES) + 72;
+    let mut frame = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .position
+        .load(Acquire);
+    assert!(frame < right_end);
+    while frame <= right_end {
+        for sample in h.render() {
+            let right = if frame < right_end { 0.125 } else { 0.0 };
+            assert_eq!(sample, [0.25, right], "route timing at frame {frame}");
+            frame += 1;
+        }
+    }
 }
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
