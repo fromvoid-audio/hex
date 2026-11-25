@@ -1283,3 +1283,85 @@ fn render_and_export_arrangement_with_distinct_session_only_audio_asset_from_out
     assert!(!missing_render.exists());
     assert!(!missing_export.exists());
 }
+
+#[test]
+fn render_and_export_support_frozen_tracks() {
+    let directory = TempDir::new();
+    let frozen_wav = directory.path().join("frozen-track.wav");
+    fs::write(&frozen_wav, wav(&[16_384, 16_384, -8_192, -8_192])).unwrap();
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "frozen-synth".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected track");
+    };
+    editor
+        .execute(Command::FreezeTrack {
+            track,
+            path: frozen_wav,
+            start: 0,
+            duration: 4,
+            frames: 4,
+        })
+        .unwrap();
+    hex_storage::save_new(directory.path().join("frozen.hex"), editor.project()).unwrap();
+
+    let rendered = run(
+        directory.path(),
+        &["render-project", "frozen.hex", "rendered-frozen.wav"],
+    );
+    assert!(
+        rendered.status.success(),
+        "render-project failed: {}",
+        String::from_utf8_lossy(&rendered.stderr)
+    );
+    let rendered_pcm = decode_wav_file(
+        directory.path().join("rendered-frozen.wav"),
+        Limits::new(4096, 16),
+    )
+    .expect("decode rendered frozen wav")
+    .audio()
+    .frames()
+    .to_vec();
+    assert_eq!(rendered_pcm.len(), 4);
+    assert!((rendered_pcm[0][0] - 0.5).abs() < 1e-3);
+    assert!((rendered_pcm[2][0] - (-0.25)).abs() < 1e-3);
+
+    let exported = run(
+        directory.path(),
+        &[
+            "export-project",
+            "frozen.hex",
+            "exported-frozen.wav",
+            "0",
+            "4",
+            "--format=float32",
+        ],
+    );
+    assert!(
+        exported.status.success(),
+        "export-project failed: {}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&exported.stdout);
+    assert!(
+        stdout.contains("48000 hz"),
+        "expected lowercase hz: {stdout}"
+    );
+    let exported_pcm = decode_wav_file(
+        directory.path().join("exported-frozen.wav"),
+        Limits::new(4096, 16),
+    )
+    .expect("decode exported frozen wav")
+    .audio()
+    .frames()
+    .to_vec();
+    assert_eq!(
+        exported_pcm,
+        [[0.5, 0.5], [0.5, 0.5], [-0.25, -0.25], [-0.25, -0.25]]
+    );
+}
