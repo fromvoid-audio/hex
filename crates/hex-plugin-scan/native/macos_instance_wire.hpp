@@ -288,7 +288,7 @@ struct Packet {
             (observe_editor_pcm?editor_pcm_bit:0)|(touch?editor_touch_bit:0)|
             (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0)|
             (observe_sdk_timing?sdk_timing_bit:0));
-        release_gates=quiesce && version==2 && !config.inputs;
+        release_gates=quiesce && version==2;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
         // Version 6 carries one to seven context changes (count in byte 12).
@@ -306,7 +306,7 @@ struct Packet {
         note_count=static_cast<size_t>(number(p+8,2));
         const bool dense_notes=note_count>hex_instance::LEGACY_INPUT_NOTE_COUNT;
         if (note_count>notes.size() || (dense_notes && !identified_notes) ||
-            (note_count && (!pcm || config.inputs)) || (version==3 && pcm && !note_count)) return -1;
+            (note_count && !pcm) || (version==3 && pcm && !note_count)) return -1;
         const bool has_parameter_field=((pcm || flush) && version==2) || identified_notes || guarded_flush;
         parameter_count=has_parameter_field?static_cast<size_t>(number(p+10,2)):0;
         if(parameter_count>parameters.size() || (dense_parameter && !has_parameter_field) ||
@@ -417,7 +417,7 @@ struct Packet {
             if(status==0xb0 || status==0xd0 || status==0xe0) {
                 using namespace Steinberg::Vst;
                 const bool pressure=status==0xd0;
-                if(raw[2]!=(pressure?2:3) || (pressure && raw[5]) || note_id ||
+                if(config.inputs || raw[2]!=(pressure?2:3) || (pressure && raw[5]) || note_id ||
                         controller_count>=controllers.size()) return -1;
                 auto& point=controllers[controller_count++];
                 point.offset=static_cast<uint16_t>(offset);

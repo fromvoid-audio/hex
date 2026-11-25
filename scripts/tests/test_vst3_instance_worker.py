@@ -675,6 +675,33 @@ class NativeInstanceTests(unittest.TestCase):
                 # SDK event type, offset, pitch, noteId and kIsLive flag.
                 self.assertEqual(rows[6:11], [3, 3, 60, identity or -1, int(live)])
 
+    def test_stereo_effect_receives_identified_notes_and_releases_held_gate_on_restore(self):
+        trace = self.root / "effect-events.bin"
+        with patch.dict(os.environ, {"HEX_ORIGINAL_EVENT_TRACE": str(trace)}):
+            session = self.session(variant=165, channels=(2, 2))
+        self.ready(session, controller=True)
+        notes = [(1, 0x92, 127, 41), (2, 0x92, 95, 42),
+                 (4, 0xa2, 64, 42), (6, 0x82, 0, 41)]
+        header = bytearray(session.packet(8))
+        struct.pack_into("<HHH", header, 4, 3, 8, len(notes))
+        events = b"".join(struct.pack("<HBBBB2xI", offset, 3, status, 60, value, identity)
+                          for offset, status, value, identity in notes)
+        pcm = (.25, -.125) * 8
+        session.socket.sendall(header + struct.pack("<16f", *pcm) + events)
+        magic, reply = session.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack_from("<16f", reply, 64), tuple(v * .5 for v in pcm))
+        session.sequence, session.frames = 1, 8
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 2, 0, 0, *BINDING, 1, 8))
+        magic, facts = session.message()
+        self.assertEqual((magic, struct.unpack("<2Q", facts[-16:])), (b"HXVIQF03", (1, 8)))
+        self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+        count, *rows = struct.unpack("=31q", trace.read_bytes())
+        self.assertEqual(count, 5)
+        self.assertEqual([rows[i:i + 4] for i in range(0, len(rows), 6)],
+                         [[0, 1, 60, 41], [0, 2, 60, 42], [3, 4, 60, 42],
+                          [1, 6, 60, 41], [1, 0, 60, 42]])
+
     def test_note_teardown_trace_distinguishes_held_from_released_identity(self):
         for release in (False, True):
             with self.subTest(release=release):

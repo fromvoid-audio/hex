@@ -183,11 +183,11 @@ impl Configuration {
             || block.sequence != sequence
             || sequence.checked_mul(u64::from(self.quantum)) != Some(block.first_frame)
             || block.events.as_slice().iter().any(|event| {
-                self.input_channels != 0
-                    || !matches!(
-                        (event.bytes[0] & 0xf0, event.len),
-                        (0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0, 3) | (0xd0, 2)
-                    )
+                match (event.bytes[0] & 0xf0, event.len) {
+                    (0x80 | 0x90 | 0xa0, 3) => false,
+                    (0xb0 | 0xe0, 3) | (0xd0, 2) => self.input_channels != 0,
+                    _ => true,
+                }
             })
             || !block.pcm[..usize::from(self.quantum)]
                 .iter()
@@ -563,7 +563,7 @@ pub fn quiesce(config: &Configuration, sequence: u64) -> Result<[u8; 64]> {
     Ok(out)
 }
 
-/// Stopped restoration discards the old graph's instrument gates. The helper
+/// Stopped restoration discards the old graph's held input notes. The helper
 /// releases its accepted notes without extending the acknowledged PCM prefix.
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 pub(crate) fn quiesce_for_stopped_restore(
@@ -571,9 +571,7 @@ pub(crate) fn quiesce_for_stopped_restore(
     sequence: u64,
 ) -> Result<[u8; 64]> {
     let mut out = quiesce(config, sequence)?;
-    if config.input_channels == 0 {
-        out[4..6].copy_from_slice(&2_u16.to_le_bytes());
-    }
+    out[4..6].copy_from_slice(&2_u16.to_le_bytes());
     Ok(out)
 }
 
