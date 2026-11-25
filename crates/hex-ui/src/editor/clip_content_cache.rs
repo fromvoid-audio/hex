@@ -87,6 +87,18 @@ impl TrackCache {
         self.snapshot = snapshot.cloned();
         self.generation = generation;
     }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn build_count(&self, track: TrackId, cx: &gpui::App) -> Option<usize> {
+        self.entries
+            .get(&track)
+            .map(|entity| entity.read(cx).builds)
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn epoch(&self, track: TrackId, cx: &gpui::App) -> Option<u64> {
+        self.entries.get(&track).map(|entity| entity.read(cx).epoch)
+    }
 }
 struct ClipContents {
     parent: WeakEntity<EditorView>,
@@ -146,34 +158,184 @@ impl Render for ClipContents {
             .unwrap_or_else(|_| div().size_full())
     }
 }
+fn track_contains_clip(track: &Track, clip: ClipId) -> bool {
+    track.clips().iter().any(|candidate| candidate.id() == clip)
+        || track
+            .midi_clips()
+            .iter()
+            .any(|candidate| candidate.id() == clip)
+}
+
+fn clip_drag_affects_track(drag: &super::drag::ClipDrag, track: &Track) -> bool {
+    let track_id = track.id();
+    if drag.source_track == track_id {
+        return true;
+    }
+    if drag
+        .preview
+        .get()
+        .is_some_and(|preview| preview.target_track == track_id)
+    {
+        return true;
+    }
+    if matches!(
+        drag.destination.get(),
+        Some(super::drag::ClipDropDestination::ExistingTrack(dest)) if dest == track_id
+    ) {
+        return true;
+    }
+    let group = drag.group.borrow();
+    if group
+        .previews()
+        .iter()
+        .any(|preview| preview.track == track_id)
+    {
+        return true;
+    }
+    group
+        .ids
+        .iter()
+        .any(|&clip_id| track_contains_clip(track, clip_id))
+}
+
+fn browser_drag_affects_track(drag: &super::drag::BrowserAudioDrag, track_id: TrackId) -> bool {
+    drag.preview
+        .get()
+        .is_some_and(|preview| preview.target_track == track_id)
+        || matches!(
+            drag.destination.get(),
+            Some(super::drag::BrowserDropDestination::ExistingTrack { track, .. })
+                if track == track_id
+        )
+}
+
 impl EditorView {
-    fn clip_content_cache_allowed(&self) -> bool {
-        self.clip_name_edit.is_none()
-            && !self.track_name.is_editing()
-            && !self.edit_pending()
-            && !self.opening_project
+    /// Global UI states that prevent reusing cached `ClipContents` scenes on any track.
+    fn clip_content_cache_globally_allowed(&self) -> bool {
+        !self.opening_project
             && !self.close_prompt_open
             && !self.save_dialog_open
             && !self.export_dialog_open
             && self.context_menu.is_none()
-            && self.active_clip_drag.is_none()
-            && self.active_browser_audio_drag.is_none()
-            && self.active_fade_drag.is_none()
-            && !self.clip_gain.has_displayed()
-            && self.audio_clip_controls.gain_preview(self).is_none()
-            && !self.audio_clip_controls.has_play_start_preview()
-            && !self.shows_audio_clip_loop_preview()
-            && !self.shows_midi_clip_loop_preview()
-            && self.held_audio_play_start_position().is_none()
-            && self.active_trim_drag.is_none()
-            && self.active_midi_trim_drag.is_none()
-            && self.time_range_move_gesture.is_none()
-            && self.pending_time_range_move.is_none()
-            // Panning changes the viewport/lane keys on each actual move. A
-            // held pointer alone does not invalidate an otherwise current scene.
-            // Device drags paint receiver feedback outside this clip scene.
             && self.loop_rail_gesture.is_none()
             && !self.theme_settings.open
+    }
+
+    /// True when `track` has no active or in-flight preview that mutates its
+    /// `ClipContents` scene, allowing untouched tracks to replay cached scenes
+    /// during single-track clip drags, trims, fades, renames, or edits.
+    fn clip_content_cache_allowed_for(&self, track: &Track, track_index: usize) -> bool {
+        if !self.clip_content_cache_globally_allowed() {
+            return false;
+        }
+        let track_id = track.id();
+        if let Some(edit) = self.clip_name_edit.as_ref()
+            && track_contains_clip(track, edit.clip)
+        {
+            return false;
+        }
+        if let Some(drag) = self.active_clip_drag.as_ref()
+            && clip_drag_affects_track(drag, track)
+        {
+            return false;
+        }
+        if let Some(pending) = self.pending_clip_move.as_ref()
+            && clip_drag_affects_track(&pending.drag, track)
+        {
+            return false;
+        }
+        if let Some(drag) = self.active_browser_audio_drag.as_ref()
+            && browser_drag_affects_track(drag, track_id)
+        {
+            return false;
+        }
+        if self
+            .active_fade_drag
+            .as_ref()
+            .is_some_and(|drag| drag.track == track_id)
+            || self
+                .pending_fade
+                .as_ref()
+                .is_some_and(|pending| pending.track() == track_id)
+        {
+            return false;
+        }
+        if self.clip_gain.affects_track(track, &self.clip_selection) {
+            return false;
+        }
+        if let Some((clip, _, _)) = self.audio_clip_controls.gain_preview(self)
+            && (track_contains_clip(track, clip)
+                || (self.clip_selection.contains(clip)
+                    && track
+                        .clips()
+                        .iter()
+                        .any(|candidate| self.clip_selection.contains(candidate.id()))))
+        {
+            return false;
+        }
+        if let Some(clip) = self.audio_clip_controls.play_start_preview_clip_id()
+            && track_contains_clip(track, clip)
+        {
+            return false;
+        }
+        if self.shows_audio_clip_loop_preview()
+            && self
+                .detail_clip_id()
+                .is_none_or(|clip| track_contains_clip(track, clip))
+        {
+            return false;
+        }
+        if self.shows_midi_clip_loop_preview()
+            && self
+                .detail_clip_id()
+                .is_none_or(|clip| track_contains_clip(track, clip))
+        {
+            return false;
+        }
+        if self.held_audio_play_start_position().is_some()
+            && self
+                .detail_clip_id()
+                .is_none_or(|clip| track_contains_clip(track, clip))
+        {
+            return false;
+        }
+        if self
+            .active_trim_drag
+            .as_ref()
+            .is_some_and(|drag| drag.source_track == track_id)
+            || self
+                .pending_trim
+                .as_ref()
+                .is_some_and(|pending| pending.track == track_id)
+            || self
+                .active_midi_trim_drag
+                .as_ref()
+                .is_some_and(|drag| drag.source_track == track_id)
+        {
+            return false;
+        }
+        if let Some(display) = self.time_range_move_display() {
+            let in_source = display.source.tracks().contains(&track_id);
+            let in_dest = track_index >= display.destination_first_index
+                && track_index <= display.destination_last_index;
+            if in_source || in_dest {
+                return false;
+            }
+        } else if self.time_range_move_gesture.is_some() || self.pending_time_range_move.is_some() {
+            let in_pending = self
+                .pending_time_range_move
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.source.tracks().contains(&track_id)
+                        || pending.range.tracks().contains(&track_id)
+                        || (track_index >= pending.destination_first_index
+                            && track_index <= pending.destination_last_index)
+                });
+            if in_pending || self.time_range_move_gesture.is_some() {
+                return false;
+            }
+        }
+        true
     }
     pub(super) fn clip_content_element(
         &mut self,
@@ -240,7 +402,7 @@ impl EditorView {
             drag_available: self.drag_available(),
         };
         let parent = cx.weak_entity();
-        let fresh = !self.clip_content_cache_allowed()
+        let fresh = !self.clip_content_cache_allowed_for(track, track_index)
             || self
                 .held_arrangement_event_clip()
                 .is_some_and(|clip| track.clips().iter().any(|candidate| candidate.id() == clip));

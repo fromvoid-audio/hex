@@ -96,7 +96,7 @@ pub(super) fn handle_shape(curve: bool, state: theme::FadeHandleState) -> impl g
 pub(super) struct FadeDrag {
     generation: u64,
     revision: u64,
-    track: TrackId,
+    pub(super) track: TrackId,
     clip: Rc<Clip>,
     viewport: Viewport,
     lane: LaneBounds,
@@ -793,6 +793,9 @@ pub(super) struct PendingFade {
     drag: FadeDrag,
 }
 impl PendingFade {
+    pub(super) fn track(&self) -> TrackId {
+        self.drag.track
+    }
     fn source_current(&self, view: &EditorView) -> bool {
         self.drag.generation == view.project_generation
             && view.state.as_ref().is_some_and(|s| {

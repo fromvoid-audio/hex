@@ -1542,10 +1542,11 @@ impl EditorView {
                     )),
                 )
                 .children([if include_meter {
-                    crate::editor::track_meters::render_arrangement(
-                        track_id,
-                        self.track_meters.reading(track_id),
-                        header_height,
+                    self.meter_slot_or_inline(
+                        crate::editor::playback_subviews::MeterTarget::ArrangementTrack {
+                            id: track_id,
+                            height: header_height,
+                        },
                     )
                 } else {
                     div()

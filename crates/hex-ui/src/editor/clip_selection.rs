@@ -12,6 +12,9 @@ pub(super) struct ClipSelection {
     pub(super) epoch: u64,
 }
 impl ClipSelection {
+    pub(super) fn contains(&self, clip: ClipId) -> bool {
+        self.members.contains(&clip)
+    }
     pub(super) fn only(&mut self, track: TrackId, clip: ClipId) {
         self.apply_members(BTreeSet::from([clip]));
         self.anchor = Some((track, clip));

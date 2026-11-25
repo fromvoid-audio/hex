@@ -494,20 +494,7 @@ impl EditorView {
                     String::new()
                 },
             ));
-        let meter_input = self.output_meter_frame.map_or(
-            crate::output_meter::MeterInput::Offline,
-            super::refresh::AudioFrame::meter_input,
-        );
-        bar = bar.child(
-            crate::output_meter::render_unified(meter_input, self.track_meters.main_reading())
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::transport::MiniTooltip {
-                        kind: crate::tooltips::Kind::Identification,
-                        description: crate::output_meter::description(meter_input).into(),
-                    })
-                    .into()
-                }),
-        );
+        bar = bar.children([self.status_output_meter_element(cx)]);
         bar = bar.child(disk_overload_slot(&self.disk_overload));
         if let Some(status) = self.audio_status() {
             let applied_audio = status.applied_revision.load(Relaxed);
@@ -629,6 +616,12 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.render_count = self.render_count.saturating_add(1);
+        }
+        self.refresh_sibling_overlay_flag();
+        self.playback_subviews.begin_editor_render();
         let frame_timing_start = super::frame_timing::enabled().then(std::time::Instant::now);
         self.wake_poll_if_busy();
         self.reconcile_update_ready(window, cx);
@@ -832,12 +825,62 @@ impl Render for EditorView {
             }))
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
-                    // Section hover paint follows modifiers even without pointer motion.
-                    cx.notify();
+                    let marker_only =
+                        crate::section_input::EditModifiers::from(event.modifiers).marker_only;
+                    if view.section_marker_only_modifier != marker_only {
+                        view.section_marker_only_modifier = marker_only;
+                        if view.mode == super::EditorMode::Arrangement
+                            && view.has_arrangement_sections()
+                            && !view.sections.held()
+                            && !view.sections.pending()
+                            && !view.sections.naming()
+                            && view.main_track_lane_bounds.is_some_and(|lane| {
+                                let pos = window.mouse_position();
+                                let x = f32::from(pos.x);
+                                let y = f32::from(pos.y);
+                                x >= lane.left
+                                    && x < lane.left + lane.width
+                                    && y >= lane.top
+                                    && y < lane.top + lane.height
+                            })
+                        {
+                            cx.notify();
+                        }
+                    }
                     view.tuning.shift = event.modifiers.shift;
                     if view.option_held != event.modifiers.alt {
                         view.option_held = event.modifiers.alt;
-                        cx.notify();
+                        let pos = window.mouse_position();
+                        let px_x = f32::from(pos.x);
+                        let px_y = f32::from(pos.y);
+                        let over_track_lane = view.mode == super::EditorMode::Arrangement
+                            && view.drag_lanes.values().any(|lane| {
+                                px_x >= lane.left
+                                    && px_x < lane.left + lane.width
+                                    && px_y >= lane.top
+                                    && px_y < lane.top + lane.height
+                            });
+                        let over_audio_event_editor = view.clip_view_open
+                            && !view.device_panel_active
+                            && view
+                                .audio_event_editor
+                                .bounds
+                                .is_some_and(|bounds| bounds.contains(&pos));
+                        let option_affects_view = view.hovered_arrangement_clip.is_some()
+                            || view.hovered_fade_clip.is_some()
+                            || view.hovered_fade_handle.is_some()
+                            || view.time_selection.is_some()
+                            || view.clip_gain.has_displayed()
+                            || view.active_clip_drag.is_some()
+                            || view.active_browser_audio_drag.is_some()
+                            || view.active_trim_drag.is_some()
+                            || view.active_midi_trim_drag.is_some()
+                            || view.active_native_device_drag.is_some()
+                            || over_audio_event_editor
+                            || over_track_lane;
+                        if option_affects_view {
+                            cx.notify();
+                        }
                     }
                     if view.active_native_device_drag.as_ref().is_some_and(|drag| {
                         matches!(

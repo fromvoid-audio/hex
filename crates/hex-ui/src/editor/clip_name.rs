@@ -21,7 +21,7 @@ pub(super) fn notched_label_is_clipped(width: f32, rem: f32, scale: f32) -> bool
 }
 
 pub(super) struct NameEdit {
-    clip: ClipId,
+    pub(super) clip: ClipId,
     generation: u64,
     revision: u64,
     original: String,
