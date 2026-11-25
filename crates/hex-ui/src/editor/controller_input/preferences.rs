@@ -52,7 +52,9 @@ impl EditorView {
                 match result {
                     Ok(value) => {
                         view.controller_input.channel = value.channel;
-                        let restore = value.port.is_some();
+                        view.controller_input.omni = value.omni;
+                        view.controller_input.all_ports = value.all_ports;
+                        let restore = value.all_ports || !value.selected_ports().is_empty();
                         view.controller_input.preferences.value = value;
                         if restore {
                             view.refresh_controller_inputs(cx);

@@ -393,6 +393,10 @@ impl ClaimedAudioCandidateRuntime {
         playback.set_device_metering(enabled);
         true
     }
+    pub fn arrangement_loop_pass(&self) -> u64 {
+        self.current_playback()
+            .map_or(0, |playback| playback.arrangement_loop_pass())
+    }
     pub fn arm_midi_capture(
         &mut self,
         binding: crate::midi_capture::MidiCaptureBinding,

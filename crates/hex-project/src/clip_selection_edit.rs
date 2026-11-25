@@ -517,6 +517,7 @@ impl Command {
             | Self::NudgeClip { clip, .. }
             | Self::TrimClipEndBy { clip, .. }
             | Self::TrimMidiClipEdge { clip, .. }
+            | Self::ExtendMidiClipWithNotes { clip, .. }
             | Self::StretchMidiClipEdge { clip, .. }
             | Self::SplitMidiClip { clip, .. }
             | Self::MoveMidiClip { clip, .. }
@@ -720,7 +721,8 @@ impl Command {
             | Self::CreateNativeSource { .. }
             | Self::RenameNativeSource { .. }
             | Self::RemoveNativeSource(_)
-            | Self::PlaceMidiClipWithOverwrite { .. } => ClipCommandScope::Unrelated,
+            | Self::PlaceMidiClipWithOverwrite { .. }
+            | Self::PlaceMidiClipWithNotes { .. } => ClipCommandScope::Unrelated,
         }
     }
 }

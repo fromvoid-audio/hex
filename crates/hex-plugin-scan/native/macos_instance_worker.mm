@@ -380,14 +380,15 @@ void presentation_receipt(wire::Bytes& out,uint8_t mode,const wire::Presentation
     if(plan.known) { wire::number(out,plan.known->input,4);wire::number(out,plan.known->output,4); }
 }
 wire::Bytes ready_body(const wire::Config& config,const hex_instance::CapturedState& state,
-    uint32 latency,uint32 tail,uint8_t presentation,const wire::PresentationPlan& plan,bool restored) {
+    uint32 latency,uint32 tail,uint8_t presentation,const wire::PresentationPlan& plan,bool restored,int32 event_channels) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
     wire::number(out,latency,4);wire::number(out,tail,4);presentation_receipt(out,presentation,plan);
     wire::number(out,restored?1:0,1);
     // State existence is not availability or an application/graph ACK.
-    wire::number(out,state.component?1:0,1);auto payload=state_payload(config,state);
+    wire::number(out,state.component?1:0,1);wire::number(out,event_channels,1);
+    auto payload=state_payload(config,state);
     wire::number(out,payload.size(),4);out.insert(out.end(),payload.begin(),payload.end());
     return out;
 }
@@ -502,7 +503,8 @@ int main(int argc,char** argv) {
             const auto final_tail=instance.reported_tail_on_control();
             if(!final_latency || !final_tail || *final_latency!=*latency || *final_tail!=*tail) throw Refusal{}; // caller's plan became stale
             instance.finish_startup_latency_observation_on_control();
-            const auto hello=ready_body(*config,state,*latency,*tail,*presentation,supplied,restoration.restored());
+            const auto hello=ready_body(*config,state,*latency,*tail,*presentation,supplied,restoration.restored(),
+                                        instance.event_input_channels());
             struct FeedbackOrigin { uint64 sequence=0; bool editor_input=false; };
             std::unique_ptr<hex_instance::ProcessingParameterSnapshot> processing_parameters_storage(
                 new(std::nothrow) hex_instance::ProcessingParameterSnapshot{});
@@ -1500,7 +1502,7 @@ int main(int argc,char** argv) {
                 CFRunLoopRunInMode(kCFRunLoopDefaultMode,0.001,true);
             }
             if(instance.host_refusals()) worker_failure.store(HostControl);
-            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD05",hello);
+            accepted=startup.load(std::memory_order_acquire)==1 && !worker_failure.load() && wire::send(channel,"HXVIRD06",hello);
             if(!accepted && !worker_failure.load()) worker_failure.store(Cancelled);
             { std::lock_guard<std::mutex> lock(startup_mutex);go=true;startup_changed.notify_all(); }
             std::thread control_thread;

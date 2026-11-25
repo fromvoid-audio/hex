@@ -2,20 +2,35 @@
 use super::*;
 use crate::{Invalid, computer_keyboard::KeyboardActivationClock, midi_capture::*};
 impl SessionPlayback {
+    pub(crate) fn arrangement_loop_pass(&self) -> u64 {
+        self.arrangement_loop_pass
+    }
     pub(crate) fn arm_midi_capture(
         &mut self,
         binding: MidiCaptureBinding,
         clock: &KeyboardActivationClock,
     ) -> Result<MidiCaptureClock, Invalid> {
+        let active_loop = self
+            .loop_region()
+            .map(|region| (region.start(), region.end()));
+        let position_valid = match active_loop {
+            Some((loop_start, loop_end)) => {
+                loop_start < loop_end && self.arrangement_frame < loop_end
+            }
+            None => {
+                self.arrangement_frame >= binding.first_frame
+                    && self.arrangement_frame < binding.end_frame
+            }
+        };
         if binding.take_id == 0
             || binding.output_epoch == 0
             || binding.sample_rate != self.revision.arrangement().sample_rate()
             || binding.first_frame >= binding.end_frame
-            || self.arrangement_frame < binding.first_frame
-            || self.arrangement_frame >= binding.end_frame
+            || binding.loop_region != active_loop
+            || !position_valid
         {
             return Err(Invalid(
-                "midi capture requires a playing resident nonlooping arrangement",
+                "midi capture requires a playing resident arrangement",
             ));
         }
         let latency = u64::from(self.revision.arrangement().main_latency_frames());
@@ -25,7 +40,7 @@ impl SessionPlayback {
             .ok_or(Invalid("midi capture latency exceeds frame range"))?;
         if !self.capture_route_supported() {
             return Err(Invalid(
-                "midi capture requires a playing resident nonlooping arrangement",
+                "midi capture requires a playing resident arrangement",
             ));
         }
         let route = self
@@ -44,6 +59,7 @@ impl SessionPlayback {
         Ok(MidiCaptureClock {
             content_frame: self.arrangement_frame,
             performance_frame: self.performance_frame,
+            loop_pass: self.arrangement_loop_pass,
         })
     }
     fn capture_route_supported(&self) -> bool {
@@ -51,10 +67,12 @@ impl SessionPlayback {
             && !self.linear_arrangement_export
             && !self.current_sampler_console
             && !self.revision.contains_streamed_sources()
-            && self.loop_region().is_none()
     }
     pub(super) fn begin_midi_capture_render(&mut self, frames: usize) {
         let supported = self.capture_route_supported();
+        let active_loop = self
+            .loop_region()
+            .map(|region| (region.start(), region.end()));
         let Some(keyboard) = self.computer_keyboard.as_mut() else {
             return;
         };
@@ -80,7 +98,7 @@ impl SessionPlayback {
             .lease()
             .and_then(|input| input.ordered_keys.as_ref())
             .is_some_and(|queue| queue.active(binding.keys));
-        if !supported || !route_supported {
+        if !supported || !route_supported || binding.loop_region != active_loop {
             keyboard.fail_capture(MidiCaptureFault::RouteChanged);
             return;
         }
@@ -103,7 +121,12 @@ impl SessionPlayback {
         }
         if let Some(capture) = &mut keyboard.capture
             && capture
-                .begin(self.arrangement_frame, self.performance_frame, frames)
+                .begin(
+                    self.arrangement_frame,
+                    self.performance_frame,
+                    self.arrangement_loop_pass,
+                    frames,
+                )
                 .is_err()
         {
             capture.fail(MidiCaptureFault::Clock);
@@ -184,6 +207,7 @@ impl SessionPlayback {
         Ok(MidiCaptureClock {
             content_frame: self.arrangement_frame,
             performance_frame: self.performance_frame,
+            loop_pass: self.arrangement_loop_pass,
         })
     }
     pub(crate) fn midi_capture_fault(&self, take_id: u64) -> Option<MidiCaptureFault> {

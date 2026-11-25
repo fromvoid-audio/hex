@@ -68,11 +68,12 @@ pub(crate) fn is_all_notes_off_cc(controller: u8) -> bool {
 }
 
 impl NoteEvent {
-    pub(crate) fn parse(message: &[u8], channel: u8) -> Option<Self> {
+    pub(crate) fn parse_filtered(message: &[u8], filter: crate::ChannelFilter) -> Option<Self> {
         let &[status, pitch, velocity] = message else {
             return None;
         };
-        if channel >= 16 || status & 15 != channel || pitch > 127 || velocity > 127 {
+        let channel = filter.matches(status)?;
+        if pitch > 127 || velocity > 127 {
             return None;
         }
         match status & 0xf0 {

@@ -13,6 +13,7 @@
 //! events; control must consume the terminal before admission can be reused.
 use hex_engine::midi_capture::{
     AcceptedMidiNote, MidiCaptureBinding, MidiCaptureClock, MidiCaptureEvent, MidiCaptureRender,
+    advance_midi_capture_clock, compensate_midi_capture_frame,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{
@@ -50,6 +51,10 @@ impl Target {
             && self.transport_epoch != 0
             && (8000..=192_000).contains(&self.capture.sample_rate)
             && self.capture.first_frame < self.capture.end_frame
+            && self
+                .capture
+                .loop_region
+                .is_none_or(|(start, end)| start < end)
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,42 +351,68 @@ impl Callback {
             self.abort(AbortReason::InvalidClock);
             return;
         }
-        let Some(end) = u64::try_from(render.frames)
-            .ok()
-            .and_then(|n| clock.content_frame.checked_add(n))
-        else {
+        let Some(frame_count) = u64::try_from(render.frames).ok() else {
             self.abort(AbortReason::InvalidClock);
             return;
         };
-        let Some(performance_end) = u64::try_from(render.frames)
-            .ok()
-            .and_then(|n| clock.performance_frame.checked_add(n))
-        else {
+        let Some(performance_end) = clock.performance_frame.checked_add(frame_count) else {
             self.abort(AbortReason::InvalidClock);
             return;
         };
-        let Some(capture_end) = target
-            .capture
-            .end_frame
-            .checked_add(u64::from(latency_frames))
-        else {
-            self.abort(AbortReason::InvalidClock);
-            return;
-        };
-        if clock.content_frame >= capture_end {
-            self.abort(AbortReason::InvalidClock);
-            return;
-        }
-        let Some(delivered_performance_end) =
-            performance_end.checked_sub(end.saturating_sub(capture_end))
-        else {
-            self.abort(AbortReason::InvalidClock);
-            return;
-        };
-        self.last_delivered = Some(MidiCaptureClock {
-            content_frame: end.min(capture_end),
-            performance_frame: delivered_performance_end,
-        });
+        let (last_delivered, auto_finish, linear_bounds) =
+            if let Some((loop_start, loop_end)) = target.capture.loop_region {
+                let Some((end_frame, end_pass)) = advance_midi_capture_clock(
+                    clock.content_frame,
+                    clock.loop_pass,
+                    frame_count,
+                    Some((loop_start, loop_end)),
+                ) else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                (
+                    MidiCaptureClock {
+                        content_frame: end_frame,
+                        performance_frame: performance_end,
+                        loop_pass: end_pass,
+                    },
+                    false,
+                    None,
+                )
+            } else {
+                let Some(end) = clock.content_frame.checked_add(frame_count) else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                let Some(capture_end) = target
+                    .capture
+                    .end_frame
+                    .checked_add(u64::from(latency_frames))
+                else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                if clock.content_frame >= capture_end {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                }
+                let Some(delivered_performance_end) =
+                    performance_end.checked_sub(end.saturating_sub(capture_end))
+                else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                (
+                    MidiCaptureClock {
+                        content_frame: end.min(capture_end),
+                        performance_frame: delivered_performance_end,
+                        loop_pass: clock.loop_pass,
+                    },
+                    end >= capture_end,
+                    Some((end, capture_end)),
+                )
+            };
+        self.last_delivered = Some(last_delivered);
         if !self.armed_delivered {
             if self
                 .terminals
@@ -403,20 +434,47 @@ impl Callback {
                 self.abort(AbortReason::InvalidClock);
                 return;
             };
-            let Some(raw_frame) = clock.content_frame.checked_add(offset) else {
+            if offset >= frame_count {
                 self.abort(AbortReason::InvalidClock);
                 return;
+            }
+            let content_frame = if let Some((end, capture_end)) = linear_bounds {
+                let Some(raw_frame) = clock.content_frame.checked_add(offset) else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                if raw_frame >= capture_end {
+                    continue;
+                }
+                if raw_frame < target.capture.first_frame || raw_frame >= end {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                }
+                raw_frame
+                    .saturating_sub(u64::from(latency_frames))
+                    .max(target.capture.first_frame)
+            } else {
+                let Some((raw_frame, raw_pass)) = advance_midi_capture_clock(
+                    clock.content_frame,
+                    clock.loop_pass,
+                    offset,
+                    target.capture.loop_region,
+                ) else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                let Some((audible_frame, _)) = compensate_midi_capture_frame(
+                    raw_frame,
+                    raw_pass,
+                    u64::from(latency_frames),
+                    target.capture.first_frame,
+                    target.capture.loop_region,
+                ) else {
+                    self.abort(AbortReason::InvalidClock);
+                    return;
+                };
+                audible_frame
             };
-            if raw_frame >= capture_end {
-                continue;
-            }
-            if raw_frame < target.capture.first_frame || raw_frame >= end {
-                self.abort(AbortReason::InvalidClock);
-                return;
-            }
-            let content_frame = raw_frame
-                .saturating_sub(u64::from(latency_frames))
-                .max(target.capture.first_frame);
             if matches!(note.event, MidiCaptureEvent::On { .. }) {
                 if self.note_ons >= MAX_TAKE_NOTES {
                     self.abort(AbortReason::TakeFull);
@@ -437,7 +495,7 @@ impl Callback {
                 return;
             }
         }
-        if end >= capture_end {
+        if auto_finish {
             self.finish();
         }
     }
@@ -481,6 +539,7 @@ mod tests {
                 hardware: None,
                 first_frame: 0,
                 end_frame: 48_000,
+                loop_region: None,
             },
             project_generation: 1,
             canonical_revision: 1,
@@ -518,6 +577,7 @@ mod tests {
         let clock = MidiCaptureClock {
             content_frame: target.capture.end_frame + 1,
             performance_frame: 0,
+            loop_pass: 0,
         };
         assert!(callback.stage(clock, 1, 0));
         callback.delivered(MidiCaptureRender {
@@ -549,6 +609,7 @@ mod tests {
                     let clock = MidiCaptureClock {
                         content_frame: start,
                         performance_frame: start,
+                        loop_pass: 0,
                     };
                     assert!(callback.stage(clock, partition as usize, latency));
                     let events = if (start..start + partition).contains(&100) {
@@ -590,6 +651,7 @@ mod tests {
                 MidiCaptureClock {
                     content_frame: start,
                     performance_frame: start,
+                    loop_pass: 0,
                 },
                 512,
                 0,
@@ -599,6 +661,7 @@ mod tests {
                 clock: MidiCaptureClock {
                     content_frame: start,
                     performance_frame: start,
+                    loop_pass: 0,
                 },
                 frames: 512,
                 events: &notes,
@@ -653,6 +716,7 @@ mod tests {
             let clock = MidiCaptureClock {
                 content_frame: 0,
                 performance_frame: 0,
+                loop_pass: 0,
             };
             callback.stage(clock, 4, 0);
             callback.delivered(MidiCaptureRender {

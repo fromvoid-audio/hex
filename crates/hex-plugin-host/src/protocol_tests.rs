@@ -508,6 +508,7 @@ fn ready_body_with_state(config: &Configuration, state: &NativeDeviceState) -> V
     out.extend(91_u32.to_le_bytes());
     out.push(u8::from(config.restore.is_some()));
     out.push(1); // component state exists
+    out.push(4); // activated main event input channels
     out.extend((state.payload().len() as u32).to_le_bytes());
     out.extend(state.payload());
     out
@@ -602,6 +603,21 @@ fn ready_requires_complete_source_config_and_state_presence_without_sizing_from_
     let body = ready_body(&config);
     let ready = Ready::decode(&body, &config, known()).unwrap();
     assert_eq!(ready.algorithmic_latency_frames, u32::MAX);
+    assert_eq!(ready.event_input_channels, 4);
+    for channels in [0, 1, 16, 17, u8::MAX] {
+        let mut reply = body.clone();
+        reply[82] = channels;
+        if channels <= 16 {
+            assert_eq!(
+                Ready::decode(&reply, &config, known())
+                    .unwrap()
+                    .event_input_channels,
+                channels
+            );
+        } else {
+            assert!(Ready::decode(&reply, &config, known()).is_err());
+        }
+    }
     assert_eq!(
         hex_plugin_state::decode(&ready.initial_state)
             .unwrap()

@@ -1230,6 +1230,21 @@ pub enum Command {
         start: crate::BeatTime,
         length: crate::BeatTime,
     },
+    /// Atomically place a new Arrangement MIDI clip and author its recorded notes
+    /// in one history step, cutting any overlapped clips on the target track.
+    PlaceMidiClipWithNotes {
+        track: TrackId,
+        start: crate::BeatTime,
+        length: crate::BeatTime,
+        notes: Vec<MidiNoteInsert>,
+    },
+    /// Atomically extend a non-looping forward MIDI clip (and its source extent if
+    /// needed) and author recorded notes in one history step.
+    ExtendMidiClipWithNotes {
+        clip: ClipId,
+        length: crate::BeatTime,
+        notes: Vec<MidiNoteInsert>,
+    },
     /// Resize a MIDI Arrangement edge without deleting authored source notes.
     TrimMidiClipEdge {
         clip: ClipId,
