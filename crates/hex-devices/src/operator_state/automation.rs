@@ -263,4 +263,163 @@ mod tests {
         let (hi_fb, _) = render_with(parameter::feedback(1), 0.8);
         assert_ne!(no_fb, hi_fb);
     }
+
+    #[test]
+    fn host_filter_automation_composes_with_per_voice_filter_modulation() {
+        let build_state = |velocity_filter_amount: f32| {
+            let mut state = OPERATOR_METADATA.default_state().unwrap();
+            // Parallel algorithm with op 1 feedback produces rich harmonics for the filter.
+            state = OPERATOR_METADATA
+                .patch_parameter(&state, parameter::ALGORITHM, ParameterValue::Choice(11))
+                .unwrap();
+            state = OPERATOR_METADATA
+                .patch_parameter(&state, parameter::feedback(1), ParameterValue::Float(0.9))
+                .unwrap();
+            state = OPERATOR_METADATA
+                .patch_parameter(
+                    &state,
+                    ParameterId::from_static(20_001),
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            // Velocity destination A (620) = choice 5 ("filter frequency"), amount A (621).
+            state = OPERATOR_METADATA
+                .patch_parameter(
+                    &state,
+                    ParameterId::from_static(620),
+                    ParameterValue::Choice(5),
+                )
+                .unwrap();
+            state = OPERATOR_METADATA
+                .patch_parameter(
+                    &state,
+                    ParameterId::from_static(621),
+                    ParameterValue::Float(velocity_filter_amount),
+                )
+                .unwrap();
+            state
+        };
+
+        let render = |state: &NativeDeviceState| {
+            let tuning = hex_lattice::TuningTable::default();
+            let context = DevicePreparationContext {
+                sample_rate: 48_000,
+                tuning: &tuning,
+                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            };
+            let prepared = OPERATOR_METADATA
+                .prepare_instrument(state, &context)
+                .unwrap();
+            let factory = prepared
+                .prepare_mutable_runtime()
+                .unwrap()
+                .expect("consolidated mutable runtime");
+            let limits = NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: 259,
+                max_active_occurrences: 64,
+                max_tail_frames: 48_000 * 600,
+            };
+            let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+            let mut out = [[0.0_f32; 2]; 256];
+            let events = [NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 72,
+                velocity: 127,
+            }];
+            let auto = SingleParam {
+                id: [FILTER_FREQUENCY],
+                values: vec![200.0; 256],
+            };
+            pair.begin_block();
+            pair.process_block_with_clock_and_automation(
+                &events,
+                &mut out,
+                None,
+                &[],
+                &auto,
+                &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+            pair.commit_block();
+            out
+        };
+
+        let without_vel_mod = render(&build_state(0.0));
+        let with_vel_mod = render(&build_state(100.0));
+        assert_ne!(
+            without_vel_mod, with_vel_mod,
+            "host FILTER_FREQUENCY automation must compose with per-voice velocity filter modulation"
+        );
+        let energy = |buf: &[[f32; 2]]| buf.iter().map(|f| f[0] * f[0]).sum::<f32>();
+        assert!(
+            energy(&with_vel_mod) > energy(&without_vel_mod) * 1.2,
+            "positive velocity->cutoff modulation must open the automated 200 Hz filter ({} vs {})",
+            energy(&with_vel_mod),
+            energy(&without_vel_mod)
+        );
+    }
+
+    #[test]
+    fn mpe_timbre_boosts_modulators_without_inflating_pure_carriers() {
+        let tuning = hex_lattice::TuningTable::default();
+        let context = DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &tuning,
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        };
+        let limits = NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 259,
+            max_active_occurrences: 64,
+            max_tail_frames: 48_000 * 600,
+        };
+        let render = |state: &NativeDeviceState, timbre: u8| {
+            let prepared = OPERATOR_METADATA
+                .prepare_instrument(state, &context)
+                .unwrap();
+            let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+            let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+            let mut out = [[0.0_f32; 2]; 128];
+            let events = [
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                    pitch: 60,
+                    velocity: 127,
+                },
+                NativeInstrumentEvent::NoteTimbre {
+                    frame_offset: 0,
+                    occurrence_id: std::num::NonZeroU64::new(1).unwrap(),
+                    value: timbre,
+                },
+            ];
+            pair.begin_block();
+            pair.process_block(&events, &mut out, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            pair.commit_block();
+            out
+        };
+
+        // Algorithm 11 (all carriers): timbre must not inflate raw carrier gain.
+        let parallel = OPERATOR_METADATA
+            .patch_parameter(
+                &OPERATOR_METADATA.default_state().unwrap(),
+                parameter::ALGORITHM,
+                ParameterValue::Choice(11),
+            )
+            .unwrap();
+        assert_eq!(render(&parallel, 0), render(&parallel, 127));
+
+        // Algorithm 0 (serial, op 2 modulates op 1): timbre must boost modulator depth.
+        let serial = OPERATOR_METADATA
+            .patch_parameter(
+                &OPERATOR_METADATA.default_state().unwrap(),
+                parameter::oscillator_level(2),
+                ParameterValue::Float(1.0),
+            )
+            .unwrap();
+        assert_ne!(render(&serial, 0), render(&serial, 127));
+    }
 }

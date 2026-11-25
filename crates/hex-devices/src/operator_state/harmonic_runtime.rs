@@ -1449,6 +1449,11 @@ impl Runtime {
         let base_targets = automation::base_target_values(&self.factory.settings);
         let rate_f64 = f64::from(self.factory.rate);
         let step_per_hz = (u64::MAX as f64 + 1.0) / rate_f64;
+        let effective_filter_rate = if self.factory.settings.global.active {
+            self.factory.rate.saturating_mul(2)
+        } else {
+            self.factory.rate
+        };
         let mut cached_filter: Option<([f32; 3], crate::operator_filter::Frame)> = None;
 
         for (offset, frame) in frames.iter_mut().enumerate() {
@@ -1543,42 +1548,40 @@ impl Runtime {
             } else {
                 None
             };
-            let automated_filter_frame = if (mask & FILTER_MASK) != 0 && self.filter.armed {
-                let freq = Self::read_target(values, mask, 18, offset)
-                    .unwrap_or(base_targets[18])
-                    .clamp(20.0, 20_000.0);
-                let res = Self::read_target(values, mask, 19, offset)
-                    .unwrap_or(base_targets[19])
-                    .clamp(0.0, 100.0);
-                let morph = Self::read_target(values, mask, 20, offset)
-                    .unwrap_or(base_targets[20])
-                    .clamp(0.0, 100.0);
-                let triplet = [freq, res, morph];
-                if let Some((prev, frame)) = cached_filter
-                    && prev == triplet
-                {
-                    Some(frame)
-                } else {
-                    let mut filter_settings = self.factory.settings.filter;
-                    let _ = filter_settings
-                        .patch(automation::FILTER_FREQUENCY, ParameterValue::Float(freq));
-                    let _ = filter_settings
-                        .patch(automation::FILTER_RESONANCE, ParameterValue::Float(res));
-                    let _ = filter_settings
-                        .patch(automation::FILTER_MORPH, ParameterValue::Float(morph));
-                    let prepared = if self.factory.settings.global.active {
-                        filter_settings.prepare_oversampled(self.factory.rate)
+            let (automated_filter_triplet, automated_filter_frame) =
+                if (mask & FILTER_MASK) != 0 && self.filter.armed {
+                    let freq = Self::read_target(values, mask, 18, offset)
+                        .unwrap_or(base_targets[18])
+                        .clamp(20.0, 20_000.0);
+                    let res = Self::read_target(values, mask, 19, offset)
+                        .unwrap_or(base_targets[19])
+                        .clamp(0.0, 100.0);
+                    let morph = Self::read_target(values, mask, 20, offset)
+                        .unwrap_or(base_targets[20])
+                        .clamp(0.0, 100.0);
+                    let triplet = [freq, res, morph];
+                    let frame = if let Some((prev, frame)) = cached_filter
+                        && prev == triplet
+                    {
+                        Some(frame)
                     } else {
-                        filter_settings.prepare(self.factory.rate)
+                        self.factory
+                            .settings
+                            .filter
+                            .frame_with_overrides(
+                                effective_filter_rate,
+                                f64::from(freq),
+                                f64::from(res),
+                                f64::from(morph),
+                            )
+                            .inspect(|&frame| {
+                                cached_filter = Some((triplet, frame));
+                            })
                     };
-                    prepared.ok().map(|p| {
-                        cached_filter = Some((triplet, p.frame));
-                        p.frame
-                    })
-                }
-            } else {
-                None
-            };
+                    (Some(triplet), frame)
+                } else {
+                    (None, None)
+                };
             let filter_frame =
                 automated_filter_frame.or_else(|| self.filter.armed.then(|| self.filter.frame()));
             let law = self.factory.settings.lfo;
@@ -1702,15 +1705,39 @@ impl Runtime {
                 } else {
                     self.factory.configuration.envelope_levels(age, gate)
                 };
+                // Unified MPE/CC74 timbre law (matching FM4): boosts FM modulator
+                // depth (operators with carrier weight == 0.0) by up to +50% without
+                // inflating carrier output gain.
                 let voice_timbre = voice.timbre.max(self.cc_timbre);
                 if voice_timbre != 0 {
                     let boost = 1.0 + 0.5 * (f64::from(voice_timbre) / 127.0);
-                    for amp in &mut amplitudes {
-                        *amp *= boost;
+                    for (op, amp) in amplitudes.iter_mut().enumerate() {
+                        if parameters[4 + op] == 0.0 {
+                            *amp *= boost;
+                        }
                     }
                 }
-                let voice_filter_frame = if let Some(auto_frame) = automated_filter_frame {
-                    Some(auto_frame)
+                let voice_filter_frame = if let Some(triplet) = automated_filter_triplet {
+                    if quality
+                        && voice.modulated_filter.is_some_and(|f| f.armed)
+                        && (voice.effective.cutoff_octaves != 0.0
+                            || voice.effective.resonance_delta != 0.0
+                            || voice.effective.morph_delta != 0.0)
+                    {
+                        let freq = (f64::from(triplet[0]) * voice.effective.cutoff_octaves.exp2())
+                            .clamp(20.0, 20_000.0);
+                        let res = (f64::from(triplet[1]) + voice.effective.resonance_delta)
+                            .clamp(0.0, 100.0);
+                        let morph =
+                            (f64::from(triplet[2]) + voice.effective.morph_delta).clamp(0.0, 100.0);
+                        self.factory
+                            .settings
+                            .filter
+                            .frame_with_overrides(effective_filter_rate, freq, res, morph)
+                            .or(automated_filter_frame)
+                    } else {
+                        automated_filter_frame
+                    }
                 } else if quality {
                     voice
                         .modulated_filter

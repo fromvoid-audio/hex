@@ -137,6 +137,12 @@ const STATIC_CHOICE: ParameterSemantics = ParameterSemantics {
     ..crate::parameter_binding::CHOICE_ENVELOPE
 };
 
+/// Continuous parameters smoothed by the device:
+/// - `CUTOFF`, `RESONANCE`, `MORPH`, `MIX`: 5 ms SVF coefficient ramp on
+///   discrete edits and stepped automation; direct sample-rate tracking when
+///   driven by `SampleRate` modulation (`has_sample_rate_modulation`).
+/// - `LFO_AMOUNT`, `LFO_PHASE`, `ENV_AMOUNT`: routed through the per-channel
+///   2 ms `OnePoleSmoother` applied to the combined cutoff modulation offset.
 const MODULATED_LINEAR: ParameterSemantics = ParameterSemantics {
     smoothing: ParameterSmoothing::DeviceManaged,
     modulation: ParameterModulation::SampleRate,
@@ -146,6 +152,17 @@ const MODULATED_LINEAR: ParameterSemantics = ParameterSemantics {
 const MODULATED_LOG: ParameterSemantics = ParameterSemantics {
     normalization: ParameterNormalization::PositiveLogarithmic,
     ..MODULATED_LINEAR
+};
+
+/// Continuous logarithmic parameters applied directly without an extra ramp:
+/// - `LFO_RATE`: integrated phase-continuously into the stereo LFO accumulator.
+/// - `ENV_ATTACK`, `ENV_RELEASE`: update cached one-pole follower coefficients
+///   directly per sample.
+const MODULATED_DIRECT_LOG: ParameterSemantics = ParameterSemantics {
+    normalization: ParameterNormalization::PositiveLogarithmic,
+    smoothing: ParameterSmoothing::None,
+    modulation: ParameterModulation::SampleRate,
+    ..crate::parameter_binding::SCALAR_ENVELOPE
 };
 
 const BINDINGS: [crate::parameter_binding::Binding<Settings>; COUNT] = [
@@ -199,7 +216,7 @@ const BINDINGS: [crate::parameter_binding::Binding<Settings>; COUNT] = [
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[LFO_RATE],
-        MODULATED_LOG,
+        MODULATED_DIRECT_LOG,
         |s| s.f32_at(LFO_RATE),
         |s, v| s.set_f32(LFO_RATE, v),
     ),
@@ -226,13 +243,13 @@ const BINDINGS: [crate::parameter_binding::Binding<Settings>; COUNT] = [
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[ENV_RELEASE],
-        MODULATED_LOG,
+        MODULATED_DIRECT_LOG,
         |s| s.f32_at(ENV_RELEASE),
         |s, v| s.set_f32(ENV_RELEASE, v),
     ),
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[ENV_ATTACK],
-        MODULATED_LOG,
+        MODULATED_DIRECT_LOG,
         |s| s.f32_at(ENV_ATTACK),
         |s, v| s.set_f32(ENV_ATTACK, v),
     ),
@@ -761,5 +778,138 @@ mod tests {
         let mut after = [[0.0_f32; 2]; 128];
         runtime.process_block(&mut after, &EMPTY_DEVICE_RESOURCES);
         assert_eq!(after, [[0.0_f32; 2]; 128]);
+    }
+
+    #[test]
+    fn sample_rate_cutoff_modulation_tracks_without_five_ms_lag() {
+        struct StepModulation {
+            id: [ParameterId; 1],
+            sample_rate_modulated: bool,
+        }
+        impl NativeParameterAutomation for StepModulation {
+            fn parameter_ids(&self) -> &[ParameterId] {
+                &self.id
+            }
+            fn value_at(&self, id: ParameterId, frame_offset: usize) -> Option<ParameterValue> {
+                if id != self.id[0] {
+                    return None;
+                }
+                // Step immediately from 100 Hz to 16 kHz at sample 8.
+                Some(ParameterValue::Float(if frame_offset < 8 {
+                    100.0
+                } else {
+                    16_000.0
+                }))
+            }
+            fn has_sample_rate_modulation(&self, parameter: ParameterId) -> bool {
+                self.sample_rate_modulated && parameter == self.id[0]
+            }
+        }
+
+        let state = patch(
+            &DEFINITION.default_state().unwrap(),
+            CUTOFF,
+            ParameterValue::Float(100.0),
+        );
+        let prepared =
+            FilterDefinition::prepare_owned(&state, 48_000, &[parameter::CUTOFF]).unwrap();
+
+        // 8 kHz tone: strongly attenuated at 100 Hz, nearly transparent at 16 kHz.
+        let input: Vec<[f32; 2]> = (0..64)
+            .map(|i| {
+                let s = (std::f64::consts::TAU * 8_000.0 * i as f64 / 48_000.0).sin() as f32;
+                [s, s]
+            })
+            .collect();
+
+        let mut modulated = input.clone();
+        let mut rt_mod = prepared.create_runtime();
+        rt_mod
+            .process_block_with_automation(
+                &mut modulated,
+                None,
+                &StepModulation {
+                    id: [parameter::CUTOFF],
+                    sample_rate_modulated: true,
+                },
+                &EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+
+        let mut automated = input;
+        let mut rt_auto = prepared.create_runtime();
+        rt_auto
+            .process_block_with_automation(
+                &mut automated,
+                None,
+                &StepModulation {
+                    id: [parameter::CUTOFF],
+                    sample_rate_modulated: false,
+                },
+                &EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+
+        // Within the first 32 samples after the step (~0.67 ms, well inside the 5 ms ramp),
+        // sample-rate modulation must track immediately and pass far more 8 kHz energy than
+        // stepped automation's 5 ms anti-zipper ramp.
+        let mod_energy: f32 = modulated[16..48].iter().map(|f| f[0] * f[0]).sum();
+        let auto_energy: f32 = automated[16..48].iter().map(|f| f[0] * f[0]).sum();
+        assert!(
+            mod_energy > auto_energy * 4.0 && mod_energy > 5.0,
+            "sample-rate cutoff modulation must bypass the 5 ms ramp (mod={mod_energy}, auto={auto_energy})"
+        );
+    }
+
+    #[test]
+    fn env_attack_and_release_modulation_matches_across_partitions() {
+        let base = patch(
+            &DEFINITION.default_state().unwrap(),
+            ENV_AMOUNT,
+            ParameterValue::Float(3.0),
+        );
+        let prepared = FilterDefinition::prepare_owned(
+            &base,
+            48_000,
+            &[parameter::ENV_RELEASE, parameter::ENV_ATTACK],
+        )
+        .unwrap();
+
+        let mut input = signal(2_000.0);
+        input.truncate(1024);
+        for frame in &mut input[512..] {
+            *frame = [0.0, 0.0];
+        }
+
+        let mut whole = input.clone();
+        let mut rt_whole = prepared.create_runtime();
+        let auto_whole = RampAutomation {
+            ids: vec![parameter::ENV_RELEASE, parameter::ENV_ATTACK],
+            start: 5.0,
+            end: 150.0,
+            length: input.len(),
+            offset_base: 0,
+        };
+        rt_whole
+            .process_block_with_automation(&mut whole, None, &auto_whole, &EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+
+        let mut partitioned = input.clone();
+        let mut rt_part = prepared.create_runtime();
+        let mut offset = 0;
+        for chunk in partitioned.chunks_mut(73) {
+            let auto = RampAutomation {
+                ids: vec![parameter::ENV_RELEASE, parameter::ENV_ATTACK],
+                start: 5.0,
+                end: 150.0,
+                length: input.len(),
+                offset_base: offset,
+            };
+            rt_part
+                .process_block_with_automation(chunk, None, &auto, &EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            offset += chunk.len();
+        }
+        assert_eq!(whole, partitioned);
     }
 }

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::auto_pan::Waveform;
-use hex_dsp::{EnvelopeFollower, OnePoleSmoother, SvfFilter, SvfFrame, SvfMode};
+use hex_dsp::{OnePoleSmoother, SvfFilter, SvfFrame, SvfMode, flush_quiet};
 use hex_lattice::{
     DeviceResources, NativeParameterAutomation, NativeProcessorRuntime, OutputTail, StereoFrame,
 };
@@ -15,6 +15,18 @@ const MAX_TAIL_SECONDS: u32 = 6;
 
 fn max_tail_frames_u32(rate: u32) -> u32 {
     rate.saturating_mul(MAX_TAIL_SECONDS)
+}
+
+fn envelope_pole(rate: u32, milliseconds: f64) -> Result<f64, DeviceContractError> {
+    let seconds = milliseconds * 0.001;
+    if rate == 0 || !seconds.is_finite() || seconds < 0.0 {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    Ok(if seconds == 0.0 {
+        1.0
+    } else {
+        -(-1.0 / seconds / f64::from(rate)).exp_m1()
+    })
 }
 
 fn build_frame(settings: Settings, rate: u32) -> Result<SvfFrame, DeviceContractError> {
@@ -43,7 +55,10 @@ pub struct PreparedFilter {
     phase_offset: f64,
     lfo_depth: f64,
     envelope_depth: f64,
-    envelope: EnvelopeFollower,
+    env_attack_bits: u32,
+    env_attack_coeff: f64,
+    env_release_bits: u32,
+    env_release_coeff: f64,
     modulation_smoother: OnePoleSmoother,
 }
 
@@ -60,6 +75,8 @@ impl PreparedFilter {
         let frame = build_frame(settings, rate)?;
         let modulation_smoother = OnePoleSmoother::new(0.0, rate, 0.002)
             .map_err(|_| DeviceContractError::InvalidParameterValue)?;
+        let env_attack_coeff = envelope_pole(rate, settings.float(ENV_ATTACK))?;
+        let env_release_coeff = envelope_pole(rate, settings.float(ENV_RELEASE))?;
         Ok(Self {
             settings,
             admitted,
@@ -70,12 +87,10 @@ impl PreparedFilter {
             phase_offset: settings.float(LFO_PHASE) / 360.0,
             lfo_depth: settings.float(LFO_AMOUNT),
             envelope_depth: settings.float(ENV_AMOUNT),
-            envelope: EnvelopeFollower::new(
-                rate,
-                settings.float(ENV_ATTACK) * 0.001,
-                settings.float(ENV_RELEASE) * 0.001,
-            )
-            .map_err(|_| DeviceContractError::InvalidParameterValue)?,
+            env_attack_bits: settings.0[ENV_ATTACK],
+            env_attack_coeff,
+            env_release_bits: settings.0[ENV_RELEASE],
+            env_release_coeff,
             modulation_smoother,
         })
     }
@@ -139,7 +154,11 @@ pub struct FilterRuntime {
     lfo_depth: f64,
     envelope_depth: f64,
     lane: [SvfFilter; 2],
-    envelope: EnvelopeFollower,
+    env_attack_bits: u32,
+    env_attack_coeff: f64,
+    env_release_bits: u32,
+    env_release_coeff: f64,
+    env_level: f64,
     phase: f64,
     modulation: [OnePoleSmoother; 2],
     silent_frames: u32,
@@ -158,7 +177,11 @@ impl FilterRuntime {
             lfo_depth: base.lfo_depth,
             envelope_depth: base.envelope_depth,
             lane: [SvfFilter::new(); 2],
-            envelope: base.envelope,
+            env_attack_bits: base.env_attack_bits,
+            env_attack_coeff: base.env_attack_coeff,
+            env_release_bits: base.env_release_bits,
+            env_release_coeff: base.env_release_coeff,
+            env_level: 0.0,
             phase: 0.0,
             modulation: [base.modulation_smoother; 2],
             silent_frames: max_tail_frames_u32(base.rate),
@@ -167,7 +190,7 @@ impl FilterRuntime {
 
     fn clear_history(&mut self) {
         self.lane = [SvfFilter::new(); 2];
-        self.envelope.reset();
+        self.env_level = 0.0;
         self.modulation = [self.base.modulation_smoother; 2];
     }
 
@@ -175,6 +198,7 @@ impl FilterRuntime {
         &mut self,
         settings: Settings,
         previous: Settings,
+        immediate_frame: bool,
     ) -> Result<(), DeviceContractError> {
         let rate = self.base.rate;
         let sample_rate = f64::from(rate);
@@ -184,7 +208,11 @@ impl FilterRuntime {
             || settings.0[MIX] != previous.0[MIX]
         {
             let next_frame = build_frame(settings, rate)?;
-            if next_frame != self.target_frame {
+            if immediate_frame {
+                self.frame = next_frame;
+                self.target_frame = next_frame;
+                self.ramp = 0;
+            } else if next_frame != self.target_frame {
                 self.target_frame = next_frame;
                 self.ramp = rate.div_ceil(200);
             }
@@ -193,17 +221,13 @@ impl FilterRuntime {
         self.phase_offset = settings.float(LFO_PHASE) / 360.0;
         self.lfo_depth = settings.float(LFO_AMOUNT);
         self.envelope_depth = settings.float(ENV_AMOUNT);
-        if settings.0[ENV_ATTACK] != previous.0[ENV_ATTACK]
-            || settings.0[ENV_RELEASE] != previous.0[ENV_RELEASE]
-        {
-            let mut updated = EnvelopeFollower::new(
-                rate,
-                settings.float(ENV_ATTACK) * 0.001,
-                settings.float(ENV_RELEASE) * 0.001,
-            )
-            .map_err(|_| DeviceContractError::InvalidParameterValue)?;
-            updated.inherit_envelope(&self.envelope);
-            self.envelope = updated;
+        if settings.0[ENV_ATTACK] != self.env_attack_bits {
+            self.env_attack_coeff = envelope_pole(rate, settings.float(ENV_ATTACK))?;
+            self.env_attack_bits = settings.0[ENV_ATTACK];
+        }
+        if settings.0[ENV_RELEASE] != self.env_release_bits {
+            self.env_release_coeff = envelope_pole(rate, settings.float(ENV_RELEASE))?;
+            self.env_release_bits = settings.0[ENV_RELEASE];
         }
         Ok(())
     }
@@ -235,12 +259,14 @@ impl FilterRuntime {
             self.silent_frames = 0;
         }
 
-        let mut envelope = [0.0];
-        // Identical shapes and timing for whole or partitioned blocks.
-        let _ = self
-            .envelope
-            .render(std::slice::from_ref(&input), &mut envelope);
-        let envelope = f64::from(envelope[0]) * self.envelope_depth;
+        let peak = f64::from(input[0].abs().max(input[1].abs()).min(1.0));
+        let coeff = if peak > self.env_level {
+            self.env_attack_coeff
+        } else {
+            self.env_release_coeff
+        };
+        self.env_level = flush_quiet(self.env_level + (peak - self.env_level) * coeff);
+        let envelope = f64::from(self.env_level as f32) * self.envelope_depth;
         let fade_frames = self.base.rate.div_ceil(200).max(1);
         let remaining = limit.saturating_sub(self.silent_frames);
         let tail_gain = if silent_input && remaining < fade_frames {
@@ -284,13 +310,22 @@ impl FilterRuntime {
         bypassed: bool,
     ) -> Result<(), DeviceContractError> {
         let mut resolved = self.controls.resolve(&BINDINGS, values)?;
+        let sr_cutoff = values.has_sample_rate_modulation(DESCRIPTORS[CUTOFF].id);
+        let sr_resonance = values.has_sample_rate_modulation(DESCRIPTORS[RESONANCE].id);
+        let sr_morph = values.has_sample_rate_modulation(DESCRIPTORS[MORPH].id);
+        let sr_mix = values.has_sample_rate_modulation(DESCRIPTORS[MIX].id);
         for (offset, frame) in frames.iter_mut().enumerate() {
             if let Some(next) = self
                 .controls
                 .sample(&BINDINGS, &mut resolved, values, offset)?
             {
                 let old = self.controls.effective();
-                self.retarget_from_settings(next.effective(), old)?;
+                let next_effective = next.effective();
+                let immediate_frame = (next_effective.0[CUTOFF] != old.0[CUTOFF] && sr_cutoff)
+                    || (next_effective.0[RESONANCE] != old.0[RESONANCE] && sr_resonance)
+                    || (next_effective.0[MORPH] != old.0[MORPH] && sr_morph)
+                    || (next_effective.0[MIX] != old.0[MIX] && sr_mix);
+                self.retarget_from_settings(next_effective, old, immediate_frame)?;
                 self.controls.install(next);
             }
             let original = *frame;
@@ -340,7 +375,7 @@ impl NativeProcessorRuntime for FilterRuntime {
             .filter(|old| old.base.rate == self.base.rate)
         {
             self.lane = old.lane;
-            self.envelope.inherit_envelope(&old.envelope);
+            self.env_level = old.env_level;
             self.phase = old.phase;
             self.silent_frames = old.silent_frames;
             for (dst, src) in self.modulation.iter_mut().zip(&old.modulation) {
@@ -356,7 +391,7 @@ impl NativeProcessorRuntime for FilterRuntime {
                 let previous = self.controls.effective();
                 self.controls.inherit(&old.controls);
                 let inherited = self.controls.effective();
-                let _ = self.retarget_from_settings(inherited, previous);
+                let _ = self.retarget_from_settings(inherited, previous, false);
             }
             self.frame = old.frame;
             self.ramp = if self.target_frame == old.frame {
