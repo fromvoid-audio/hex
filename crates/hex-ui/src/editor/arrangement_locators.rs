@@ -1609,6 +1609,8 @@ mod tests {
                 "running stateful locator seek must be admitted while the checkpoint is held"
             );
         });
+        // Keep ordered worker completions in delivery order while polling the separate audio receipt.
+        let seek_terminal = editor.read_with(&visual, |view, _| next_terminal(view));
         // Hold editor polling while the real callback installs the worker's
         // candidate. Its scalar result has not yet been consumed by the UI.
         let seek_deadline = Instant::now() + Duration::from_secs(5);
@@ -1665,7 +1667,6 @@ mod tests {
             view.receive(terminal);
             cx.notify();
         });
-        let seek_terminal = editor.read_with(&visual, |view, _| next_terminal(view));
         assert!(seek_terminal.error.is_none());
         editor.update(&mut visual, |view, cx| {
             view.receive(seek_terminal);
@@ -1819,6 +1820,8 @@ mod tests {
             assert_eq!(seek.kind.quantization(), Some(LaunchQuantization::Quarter));
             view.session_quantization = LaunchQuantization::OneBar;
         });
+        // Keep ordered worker completions in delivery order while polling the separate audio receipt.
+        let seek_terminal = editor.read_with(&visual, |view, _| next_terminal(view));
         let published = loop {
             let revision = editor.update(&mut visual, |view, cx| {
                 view.tick(cx);
@@ -1855,7 +1858,6 @@ mod tests {
             view.receive(terminal);
             cx.notify();
         });
-        let seek_terminal = editor.read_with(&visual, |view, _| next_terminal(view));
         assert!(seek_terminal.error.is_none());
         editor.update(&mut visual, |view, cx| {
             view.receive(seek_terminal);
