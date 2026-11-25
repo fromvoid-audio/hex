@@ -638,3 +638,157 @@ fn beats_checkpoint_cache_record_and_refresh_respects_tight_budget() {
         hex_stream::GranularSeekProgress::Reached { position: 0 }
     );
 }
+
+#[test]
+fn concurrent_warped_tracks_serialize_via_deferred_granular_without_capacity_exhausted() {
+    use hex_engine::MediaPages;
+    use hex_stream::{GranularWorkerAllowance, StreamConfig, StreamRuntime};
+
+    let wav = FixtureWav::create(SOURCE_FRAMES);
+    let out_len = 8_192_u64;
+    let src_len = SOURCE_FRAMES as u64;
+    let modes = [
+        Mode::Beats {
+            division_frames: None,
+            tail: Tail::Forward,
+            decay: 100,
+        },
+        Mode::Complex,
+    ];
+    let mut sources = Vec::new();
+    let mut keys = Vec::new();
+    let mut expected_pages = Vec::new();
+    for (idx, mode) in modes.into_iter().enumerate() {
+        let (reader, plan, raw) = open_reader_and_plan(&wav);
+        let region = SourceRegion::new(src_len, 0, src_len, 0, true, Vec::new()).unwrap();
+        let map = TimeMap::new_streamed(
+            vec![MapSegment {
+                output_start: 0,
+                output_end: out_len,
+                source_start_q32: 0,
+                source_end_q32: i128::from(src_len) << 32,
+            }],
+            out_len,
+        )
+        .unwrap();
+        let expected = hex_warp::render_with_resampler(
+            &Request {
+                attacks: &[],
+                input: Input {
+                    frames: &wav.pcm,
+                    sample_rate: RATE,
+                    region_start: 0,
+                    region_length: src_len,
+                    phase: 0,
+                    looping: true,
+                    envelope: &[],
+                },
+                map: &map,
+                output_frames: out_len as usize,
+                pitch_cents: if idx == 0 { 0 } else { 200 },
+                mode,
+            },
+            Resampler::V1,
+            &mut || false,
+        )
+        .unwrap()
+        .frames;
+        let root = StreamedGranularRoot::new_warped(
+            &raw,
+            region,
+            map,
+            mode,
+            if idx == 0 { 0 } else { 200 },
+            Resampler::V1,
+            Vec::new(),
+        )
+        .unwrap();
+        let limits = GranularSourcePreparationLimits {
+            source_scratch_frames: 16_384,
+            checkpoint_entries: 2,
+            checkpoint_budget: 4 * 1024 * 1024,
+            max_processing_bytes: 24 * 1024 * 1024,
+            max_construction_peak_bytes: 128 * 1024 * 1024,
+        };
+        let source = VerifiedGranularSource::prepare_from_reader_on_control(
+            raw,
+            root,
+            reader,
+            plan,
+            limits,
+            || false,
+        )
+        .unwrap();
+        keys.push(source.metadata().key());
+        sources.push(source);
+        expected_pages.push(expected);
+    }
+
+    let bank = GranularWorkerBank::try_new_on_control(
+        sources,
+        GranularBankAllowance {
+            max_sources: 4,
+            max_data_bytes: 64 * 1024 * 1024,
+        },
+    )
+    .unwrap();
+    let mut runtime = StreamRuntime::spawn_with_granular_sources(
+        StreamConfig::with_pool_pages(8),
+        Vec::new(),
+        Vec::new(),
+        bank,
+        GranularWorkerAllowance {
+            max_data_bytes: 64 * 1024 * 1024,
+            max_shared_handles: 32,
+        },
+    )
+    .unwrap();
+    runtime.wait_until_ready(Duration::from_secs(3)).unwrap();
+    let (control, mut endpoint) = runtime.split().ok().expect("split runtime");
+
+    // Request pages from BOTH warped tracks simultaneously while loan_limit == 1.
+    // The second request must serialize via deferred_granular instead of failing
+    // with StreamFailureKind::CapacityExhausted.
+    endpoint.request_page(keys[0], 0);
+    endpoint.request_page(keys[1], 0);
+    endpoint.request_page(keys[0], 1);
+    endpoint.request_page(keys[1], 1);
+
+    let mut received = [[false; 2]; 2];
+    let mut failures = [hex_stream::StreamFailure {
+        key: keys[0].into(),
+        page_index: 0,
+        kind: hex_stream::StreamFailureKind::DecodeFailed,
+    }; 4];
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while received.iter().flatten().any(|&ok| !ok) {
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for concurrent warped pages: {received:?}"
+        );
+        let _ = endpoint.pump_ready(4);
+        let failure_count = endpoint.take_failures(&mut failures);
+        assert_eq!(
+            failure_count,
+            0,
+            "concurrent warped tracks must not emit CapacityExhausted or other failures: {:?}",
+            &failures[..failure_count]
+        );
+        for (track_idx, &key) in keys.iter().enumerate() {
+            for (page_idx, slot) in received[track_idx].iter_mut().enumerate() {
+                if !*slot && let Some(page) = endpoint.page(key, page_idx as u64) {
+                    let start = page_idx * STREAM_PAGE_FRAMES;
+                    assert_eq!(page.frames.len(), STREAM_PAGE_FRAMES);
+                    assert_eq!(
+                        page.frames,
+                        &expected_pages[track_idx][start..start + STREAM_PAGE_FRAMES],
+                        "track {track_idx} page {page_idx} mismatch"
+                    );
+                    *slot = true;
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    let _ = control.shutdown(endpoint).unwrap();
+}

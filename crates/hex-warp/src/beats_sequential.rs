@@ -876,7 +876,9 @@ impl SequentialBeats {
         }
         self.pristine = false;
         let step_result = match self.phase {
-            EnginePhase::UnityCopy { cursor } => self.step_unity_copy(cursor, source, cancel),
+            EnginePhase::UnityCopy { cursor } => {
+                self.step_unity_copy(cursor, source, scratch, cancel)
+            }
             EnginePhase::UnityDecay { cursor, seg_index } => {
                 self.step_unity_decay(cursor, seg_index, source, scratch, cancel)
             }
@@ -926,8 +928,15 @@ impl SequentialBeats {
         }
         if self.decay < 100 {
             let cursor = self.overlap.position();
-            while self.env_boundaries.len() > 2 && self.env_boundaries[1].output <= cursor {
-                self.env_boundaries.remove(0);
+            let drop_count = self
+                .env_boundaries
+                .iter()
+                .skip(1)
+                .take(self.env_boundaries.len().saturating_sub(2))
+                .take_while(|b| b.output <= cursor)
+                .count();
+            if drop_count > 0 {
+                self.env_boundaries.drain(..drop_count);
             }
         }
         Ok(())
@@ -1342,28 +1351,67 @@ impl SequentialBeats {
         drop_count
     }
 
-    fn step_unity_copy<S: GranularSource>(
+    fn copy_unity_range<S: GranularSource>(
         &mut self,
-        cursor: u64,
+        start: u64,
+        end: u64,
         source: &mut S,
+        scratch: &mut [[f64; 2]],
         cancel: &mut dyn FnMut() -> bool,
     ) -> Result<(), S::Error> {
-        let end = (cursor + COPY_CHUNK_FRAMES).min(self.total);
-        for frame in cursor..end {
-            if (frame - cursor).is_multiple_of(512) && cancel() {
+        let mut frame = start;
+        while frame < end {
+            if (frame - start).is_multiple_of(512) && cancel() {
                 return Err(Error::Cancelled.into());
             }
-            let pos = self
+            let first_pos = self
                 .config
                 .map
                 .position_q32(i128::from(frame))
                 .map_err(S::Error::from)?
                 / Q32;
-            let sample = source.frame(pos)?;
-            self.overlap
-                .add(i128::from(frame), sample, 1.0)
-                .map_err(S::Error::from)?;
+            if scratch.is_empty() {
+                let sample = source.frame(first_pos)?;
+                self.overlap
+                    .add(i128::from(frame), sample, 1.0)
+                    .map_err(S::Error::from)?;
+                frame += 1;
+                continue;
+            }
+            let max_run = ((end - frame) as usize).min(scratch.len()).min(512);
+            let mut run = 1usize;
+            while run < max_run {
+                let next_pos = self
+                    .config
+                    .map
+                    .position_q32(i128::from(frame + run as u64))
+                    .map_err(S::Error::from)?
+                    / Q32;
+                if next_pos != first_pos + run as i128 {
+                    break;
+                }
+                run += 1;
+            }
+            source.window(first_pos, &mut scratch[..run])?;
+            for (offset, &sample) in scratch[..run].iter().enumerate() {
+                self.overlap
+                    .add(i128::from(frame + offset as u64), sample, 1.0)
+                    .map_err(S::Error::from)?;
+            }
+            frame += run as u64;
         }
+        Ok(())
+    }
+
+    fn step_unity_copy<S: GranularSource>(
+        &mut self,
+        cursor: u64,
+        source: &mut S,
+        scratch: &mut [[f64; 2]],
+        cancel: &mut dyn FnMut() -> bool,
+    ) -> Result<(), S::Error> {
+        let end = (cursor + COPY_CHUNK_FRAMES).min(self.total);
+        self.copy_unity_range(cursor, end, source, scratch, cancel)?;
         self.ready_end = end;
         self.phase = EnginePhase::UnityCopy { cursor: end };
         Ok(())
@@ -1402,21 +1450,7 @@ impl SequentialBeats {
                 return Ok(());
             }
         }
-        for frame in cursor..chunk_end {
-            if (frame - cursor).is_multiple_of(512) && cancel() {
-                return Err(Error::Cancelled.into());
-            }
-            let pos = self
-                .config
-                .map
-                .position_q32(i128::from(frame))
-                .map_err(S::Error::from)?
-                / Q32;
-            let sample = source.frame(pos)?;
-            self.overlap
-                .add(i128::from(frame), sample, 1.0)
-                .map_err(S::Error::from)?;
-        }
+        self.copy_unity_range(cursor, chunk_end, source, scratch, cancel)?;
         self.ready_end = chunk_end;
         self.phase = EnginePhase::UnityDecay {
             cursor: chunk_end,

@@ -577,13 +577,19 @@ pub(crate) fn run_worker(
         if stop.load(Ordering::Acquire) {
             break;
         }
+        let deferred_granular_next = granular
+            .as_mut()
+            .filter(|routing| routing.can_submit())
+            .and_then(granular::GranularRouting::pop_deferred)
+            .map(PageRequest);
         let request = if scalar_job.is_none() {
             deferred_scalar
                 .pop_front()
                 .map(PageRequest)
+                .or(deferred_granular_next)
                 .or_else(|| queues.requests.pop().ok())
         } else {
-            queues.requests.pop().ok()
+            deferred_granular_next.or_else(|| queues.requests.pop().ok())
         };
         let Some(PageRequest(key)) = request else {
             if scalar_job.is_none() {
@@ -609,6 +615,24 @@ pub(crate) fn run_worker(
             if deferred_scalar.len() < deferred_scalar.capacity() {
                 deferred_scalar.push_back(key);
             } else {
+                hold_failure(
+                    StreamFailure {
+                        key: key.source,
+                        page_index: key.page_index,
+                        kind: StreamFailureKind::CapacityExhausted,
+                    },
+                    &mut held_failures,
+                    &mut queues.failures,
+                );
+            }
+            continue;
+        }
+        if let StreamResourceKey::Audio(audio_key) = key.source
+            && let Some(routing) = &mut granular
+            && routing.contains(audio_key)
+            && !routing.can_submit()
+        {
+            if !routing.push_deferred(key) {
                 hold_failure(
                     StreamFailure {
                         key: key.source,
@@ -676,15 +700,17 @@ pub(crate) fn run_worker(
         {
             if let Err(page) = routing.submit(key, page) {
                 free_pages.push(page);
-                hold_failure(
-                    StreamFailure {
-                        key: key.source,
-                        page_index: key.page_index,
-                        kind: StreamFailureKind::CapacityExhausted,
-                    },
-                    &mut held_failures,
-                    &mut queues.failures,
-                );
+                if !routing.push_deferred(key) {
+                    hold_failure(
+                        StreamFailure {
+                            key: key.source,
+                            page_index: key.page_index,
+                            kind: StreamFailureKind::CapacityExhausted,
+                        },
+                        &mut held_failures,
+                        &mut queues.failures,
+                    );
+                }
             }
             continue;
         }
@@ -1453,11 +1479,17 @@ fn render_page(
             stop.load(Ordering::Acquire)
         })
         .map_err(map_import_error)?;
-    page.frames.fill([0.0; 2]);
-    source
-        .plan
-        .render_window(source_start, input, output_start, &mut page.frames[..count])
-        .map_err(map_import_error)?;
+    if let Err(error) =
+        source
+            .plan
+            .render_window(source_start, input, output_start, &mut page.frames[..count])
+    {
+        page.frames.fill([0.0; 2]);
+        return Err(map_import_error(error));
+    }
+    if count < page.frames.len() {
+        page.frames[count..].fill([0.0; 2]);
+    }
     if page.frames[..count]
         .iter()
         .flatten()
