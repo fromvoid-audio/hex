@@ -13,6 +13,7 @@
 //! acknowledgment.
 pub mod gain_recording;
 pub mod midi_recording;
+pub mod session_performance;
 
 use hex_engine::{Audio, Project as PlaybackProject};
 use hex_media::{
