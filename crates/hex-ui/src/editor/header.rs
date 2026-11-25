@@ -161,7 +161,7 @@ mod ui_tests {
         );
         editor.update(cx, |view, cx| {
             let now = std::time::Instant::now();
-            let sample = hex_audio::cpu_meter::CpuSample {
+            let sample = crate::editor::cpu_meter::CpuSample {
                 elapsed: 10,
                 budget: 100,
                 peak: 10_000,

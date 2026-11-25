@@ -1,7 +1,9 @@
-//! Readiness belongs to the new control's counters, never an old stream's tickets.
+//! Adapter over [`hex_ui_model::recovery_state`] binding session/engine/audio types.
 use hex_engine::AudioSourceContext;
 use hex_session::device_gesture::{GestureKey, GestureSnapshot};
 use hex_session::service::Request;
+pub(super) use hex_ui_model::recovery_state::DeferredEditKind;
+use hex_ui_model::recovery_state::SeekOutcome;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct StrandedGestureRecovery {
@@ -11,366 +13,68 @@ pub(super) struct StrandedGestureRecovery {
     pub(super) is_plugin: bool,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum DeferredEditKind {
-    NativeEffect,
-    PluginEffect,
-    RemoveDevice,
-    ToggleDeviceBypass,
-    SampleDrop,
-    TimeDuplicate,
-    LoopRegion,
-    ClipPlayStart,
-    MixerControl,
-    GraphEdit,
-}
-
 pub(super) struct DeferredGraphEdit {
     pub(super) kind: DeferredEditKind,
     pub(super) context: AudioSourceContext,
     pub(super) request: Box<Request>,
     pub(super) stranded_gesture: Option<StrandedGestureRecovery>,
 }
+
 #[derive(Default)]
 pub(super) struct RecoveryState {
-    next_generation: u64,
-    active: Option<Attempt>,
-    pub(super) deferred_edit: Option<DeferredGraphEdit>,
+    inner: hex_ui_model::recovery_state::RecoveryState<AudioSourceContext, DeferredGraphEdit>,
 }
 
-struct Attempt {
-    generation: u64,
-    position: u64,
-    opened: bool,
-    restored: bool,
-    seek_ticket: Option<u64>,
-    seek_outcome: Option<hex_audio::prepared::ActionOutcome>,
-    seek_position: Option<u64>,
-    prepared_retry_used: bool,
-    prepared_seek: Option<u64>,
-    prepared_revision: Option<u64>,
-    clip_play_start: Option<(AudioSourceContext, hex_project::ClipId)>,
-    mixer_edit: Option<AudioSourceContext>,
+impl std::ops::Deref for RecoveryState {
+    type Target =
+        hex_ui_model::recovery_state::RecoveryState<AudioSourceContext, DeferredGraphEdit>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for RecoveryState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 impl RecoveryState {
     pub(super) fn holds_clip_play_start(&self) -> bool {
-        self.deferred_edit
+        self.inner
+            .deferred_edit
             .as_ref()
             .is_some_and(|edit| edit.kind == DeferredEditKind::ClipPlayStart)
     }
 
     pub(super) fn holds_mixer_edit(&self) -> bool {
-        self.deferred_edit
+        self.inner
+            .deferred_edit
             .as_ref()
             .is_some_and(|edit| edit.kind == DeferredEditKind::MixerControl)
     }
 
-    pub(super) fn bind_clip_play_start(
-        &mut self,
-        context: AudioSourceContext,
-        clip: hex_project::ClipId,
-    ) {
-        if let Some(attempt) = self.active.as_mut() {
-            attempt.clip_play_start = Some((context, clip));
-        }
-    }
-
-    pub(super) fn admits_clip_play_start(
-        &self,
-        context: AudioSourceContext,
-        clip: hex_project::ClipId,
-    ) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|attempt| attempt.clip_play_start == Some((context, clip)))
-    }
-
-    pub(super) fn bind_mixer_edit(&mut self, context: AudioSourceContext) {
-        if let Some(attempt) = self.active.as_mut() {
-            attempt.mixer_edit = Some(context);
-        }
-    }
-
-    pub(super) fn admits_mixer_edit(&self, context: AudioSourceContext) -> bool {
-        self.active
-            .as_ref()
-            .is_some_and(|attempt| attempt.mixer_edit == Some(context))
-    }
-
     pub(super) fn holds_loop_region(&self) -> bool {
-        self.deferred_edit
+        self.inner
+            .deferred_edit
             .as_ref()
             .is_some_and(|edit| edit.kind == DeferredEditKind::LoopRegion)
     }
 
     pub(super) fn holds_stranded_gesture_for(&self, key: GestureKey) -> bool {
-        self.deferred_edit.as_ref().is_some_and(|edit| {
+        self.inner.deferred_edit.as_ref().is_some_and(|edit| {
             edit.stranded_gesture
                 .is_some_and(|stranded| stranded.key == key)
         })
     }
 
-    pub(super) fn begin(&mut self, position: u64) -> Result<u64, &'static str> {
-        if self.active.is_some() {
-            return Err("audio recovery is already pending");
-        }
-        let generation = self
-            .next_generation
-            .checked_add(1)
-            .ok_or("audio recovery generation exhausted")?;
-        self.next_generation = generation;
-        self.deferred_edit = None;
-        self.active = Some(Attempt {
-            generation,
-            position,
-            opened: false,
-            restored: false,
-            seek_ticket: None,
-            seek_outcome: None,
-            seek_position: None,
-            prepared_retry_used: false,
-            prepared_seek: None,
-            prepared_revision: None,
-            clip_play_start: None,
-            mixer_edit: None,
-        });
-        Ok(generation)
-    }
-
-    pub(super) fn generation(&self) -> Option<u64> {
-        self.active.as_ref().map(|attempt| attempt.generation)
-    }
-
-    pub(super) fn position(&self) -> Option<u64> {
-        self.active.as_ref().map(|attempt| attempt.position)
-    }
-
-    /// Retain the latest user cursor without replacing an admitted request's custody.
-    pub(super) fn retarget(&mut self, position: u64) {
-        if let Some(attempt) = self.active.as_mut() {
-            attempt.position = position;
-            attempt.prepared_retry_used = false;
-        }
-    }
-
-    pub(super) fn opened(&mut self, generation: u64) -> bool {
-        let Some(attempt) = self
-            .active
-            .as_mut()
-            .filter(|attempt| attempt.generation == generation)
-        else {
-            return false;
-        };
-        attempt.opened = true;
-        true
-    }
-
-    pub(super) fn restored(&mut self, generation: u64) -> bool {
-        let Some(attempt) = self
-            .active
-            .as_mut()
-            .filter(|attempt| attempt.generation == generation && attempt.opened)
-        else {
-            return false;
-        };
-        attempt.restored = true;
-        true
-    }
-
-    pub(super) fn seek_needed(&self, graph_is_current: bool) -> Option<u64> {
-        self.active
-            .as_ref()
-            .filter(|attempt| {
-                attempt.opened
-                    && attempt.restored
-                    && attempt.seek_ticket.is_none()
-                    && attempt.prepared_seek.is_none()
-                    && graph_is_current
-            })
-            .map(|attempt| attempt.position)
-    }
-
-    pub(super) fn seeking(&mut self, ticket: u64) {
-        if let Some(attempt) = self.active.as_mut() {
-            attempt.seek_ticket = Some(ticket);
-            attempt.seek_position = Some(attempt.position);
-            attempt.seek_outcome = None;
-        }
-    }
-
     pub(super) fn observe_receipt(&mut self, receipt: hex_audio::prepared::ActionOutcomeReceipt) {
-        if let Some(attempt) = self.active.as_mut()
-            && attempt.seek_ticket == Some(receipt.ticket)
-        {
-            attempt.seek_outcome = Some(receipt.outcome);
-        }
-    }
-
-    pub(super) fn seek_failed(&self) -> bool {
-        self.active
-            .as_ref()
-            .and_then(|attempt| attempt.seek_outcome)
-            .is_some_and(|outcome| outcome != hex_audio::prepared::ActionOutcome::Applied)
-    }
-
-    /// Only this recovery attempt may admit a stopped prepared cursor restore. User seeks and
-    /// stale attempts retain their ordinary recovery barrier.
-    pub(super) fn permits_seek(&self, generation: Option<u64>) -> bool {
-        match (&self.active, generation) {
-            (None, None) => true,
-            (Some(attempt), Some(generation)) => {
-                attempt.generation == generation && attempt.opened && attempt.restored
-            }
-            _ => false,
-        }
-    }
-
-    pub(super) fn prepared_seeking(&mut self, generation: u64, request: u64) -> bool {
-        let Some(attempt) = self.active.as_mut().filter(|a| {
-            a.generation == generation
-                && a.opened
-                && a.restored
-                && a.seek_ticket.is_none()
-                && a.prepared_seek.is_none()
-        }) else {
-            return false;
+        let outcome = if receipt.outcome == hex_audio::prepared::ActionOutcome::Applied {
+            SeekOutcome::Applied
+        } else {
+            SeekOutcome::Rejected
         };
-        attempt.prepared_seek = Some(request);
-        attempt.seek_position = Some(attempt.position);
-        true
-    }
-
-    /// An obsolete, unpublished preparation may be retried once for this cursor intent.
-    pub(super) fn retry_prepared_seek(&mut self, generation: u64, request: u64) -> bool {
-        let Some(attempt) = self.active.as_mut().filter(|attempt| {
-            attempt.generation == generation
-                && attempt.prepared_seek == Some(request)
-                && attempt.prepared_revision.is_none()
-                && !attempt.prepared_retry_used
-        }) else {
-            return false;
-        };
-        attempt.prepared_retry_used = true;
-        attempt.prepared_seek = None;
-        attempt.seek_position = None;
-        true
-    }
-
-    pub(super) fn prepared_request(&self) -> Option<u64> {
-        self.active.as_ref()?.prepared_seek
-    }
-
-    pub(super) fn prepared_published(&mut self, request: u64, revision: u64) {
-        if let Some(attempt) = self
-            .active
-            .as_mut()
-            .filter(|a| a.prepared_seek == Some(request))
-        {
-            attempt.prepared_revision = Some(revision);
-        }
-    }
-
-    pub(super) fn prepared_revision(&self) -> Option<u64> {
-        self.active.as_ref()?.prepared_revision
-    }
-
-    /// Exact tagged view metadata plus this output's actual applied counter establishes restore.
-    /// Neither a submitted graph nor a command ticket proves a prepared seek was installed.
-    pub(super) fn complete_prepared(
-        &mut self,
-        graph_is_current: bool,
-        audible: Option<(u64, u64)>,
-        applied_revision: u64,
-        position: u64,
-        playing: bool,
-    ) -> bool {
-        let ready = self.active.as_ref().is_some_and(|attempt| {
-            attempt.opened
-                && attempt.restored
-                && graph_is_current
-                && !playing
-                && Some(position) == attempt.seek_position
-                && audible.is_some_and(|(request, revision)| {
-                    attempt.prepared_seek == Some(request) && revision == applied_revision
-                })
-        });
-        self.complete_cursor(ready)
-    }
-
-    pub(super) fn complete(
-        &mut self,
-        graph_is_current: bool,
-        consumed_ticket: u64,
-        position: u64,
-        playing: bool,
-    ) -> bool {
-        let ready = self.active.as_ref().is_some_and(|attempt| {
-            attempt.opened
-                && attempt.restored
-                && graph_is_current
-                && !playing
-                && Some(position) == attempt.seek_position
-                && attempt
-                    .seek_ticket
-                    .is_some_and(|ticket| consumed_ticket >= ticket)
-        });
-        self.complete_cursor(ready)
-    }
-
-    pub(super) fn complete_exact(
-        &mut self,
-        graph_is_current: bool,
-        position: u64,
-        playing: bool,
-    ) -> bool {
-        let ready = self.active.as_ref().is_some_and(|attempt| {
-            attempt.opened
-                && attempt.restored
-                && graph_is_current
-                && !playing
-                && Some(position) == attempt.seek_position
-                && attempt.seek_ticket.is_some()
-                && attempt.seek_outcome == Some(hex_audio::prepared::ActionOutcome::Applied)
-        });
-        self.complete_cursor(ready)
-    }
-
-    fn complete_cursor(&mut self, ready: bool) -> bool {
-        if !ready {
-            return false;
-        }
-        let Some(attempt) = self.active.as_mut() else {
-            return false;
-        };
-        if attempt.seek_position != Some(attempt.position) {
-            // The old cursor is now acknowledged. The next tick may admit the
-            // newest requested position against the newly installed runtime.
-            attempt.seek_ticket = None;
-            attempt.seek_outcome = None;
-            attempt.seek_position = None;
-            attempt.prepared_seek = None;
-            attempt.prepared_revision = None;
-            return false;
-        }
-        self.active = None;
-        true
-    }
-
-    pub(super) fn stop(&mut self) {
-        if let Some(attempt) = self.active.as_mut() {
-            attempt.position = 0;
-            attempt.seek_position = None;
-            attempt.prepared_retry_used = false;
-            attempt.seek_ticket = None;
-            attempt.seek_outcome = None;
-            attempt.prepared_seek = None;
-            attempt.prepared_revision = None;
-        }
-    }
-
-    pub(super) fn fail(&mut self) {
-        self.active = None;
-        self.deferred_edit = None;
+        self.inner.observe_receipt(receipt.ticket, outcome);
     }
 }

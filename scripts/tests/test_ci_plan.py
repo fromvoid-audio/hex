@@ -377,7 +377,7 @@ class ScopeTests(unittest.TestCase):
                 features = tuple(target.get("required-features", ()))
                 by_feature.setdefault(features, set()).add(target["name"])
         self.assertEqual(by_feature, {
-            (): {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
+            (): {"track_group_focus", "browser_disclosure_assets",
                  "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"},
             ("ui-unit-tier",): set(plan.UI_UNIT_FEATURES),
             ("ui-test-support",): {"midi_pressure_boundary", "sample_recorder_layout", "operator_focus"},
@@ -1999,7 +1999,8 @@ class SingleRunFeatureTests(unittest.TestCase):
             (["browser_disclosure_assets.rs"], {"browser_disclosure_assets": []}),
             (["editor_logic_unit/tracks.rs"], {"unit_editor_logic": tracks}),
             (["editor_logic_unit/tracks.rs", "unit_editor_logic.rs"], {"unit_editor_logic": []}),
-            (["unit_editor_state.rs", "unit_editor_logic.rs"], {"unit_editor_logic": [], "unit_editor_state": []}),
+            (["browser_disclosure_assets.rs", "unit_editor_logic.rs"],
+             {"unit_editor_logic": [], "browser_disclosure_assets": []}),
         )
         for inputs, expected in cases:
             with self.subTest(inputs=inputs):
@@ -2026,7 +2027,7 @@ class SingleRunFeatureTests(unittest.TestCase):
 
     def test_standalone_ui_unit_selection_preserves_other_routes(self):
         root, inventory = self.live()
-        unit = "crates/hex-ui/tests/unit_editor_state.rs"
+        unit = "crates/hex-ui/tests/browser_disclosure_assets.rs"
         prefix = "crates/hex-ui/"
         cases = (
             [unit, prefix + "src/editor/pending_edit.rs"],
@@ -2057,11 +2058,11 @@ class SingleRunFeatureTests(unittest.TestCase):
                     self.assertNotIn("--", feature)
 
         # An unexpected Cargo target source or feature cannot narrow the plan.
-        for override in ({"src_path": "tests/renamed_editor_state.rs"},
+        for override in ({"src_path": "tests/renamed_disclosure_assets.rs"},
                          {"required-features": ["ui-test-support"]}):
             with self.subTest(override=override):
                 wrong_target = [{**package, "targets": [
-                    {**target, **override} if target.get("name") == "unit_editor_state" else target
+                    {**target, **override} if target.get("name") == "browser_disclosure_assets" else target
                     for target in package["targets"]]}
                     if package["name"] == "hex-ui" else package for package in inventory]
                 boundary = plan.boundary_selection(root, [unit], wrong_target, ["hex-ui"])
@@ -3725,7 +3726,7 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertEqual(sum(target in step.argv for step in full_steps), 1)
         standalone = next(step for step in full_steps if step.step_id == "ui-default-standalone-tests")
         self.assertEqual({standalone.argv[i + 1] for i, arg in enumerate(standalone.argv) if arg == "--test"},
-                         {"unit_editor_state", "track_group_focus", "browser_disclosure_assets",
+                         {"track_group_focus", "browser_disclosure_assets",
                           "browser_place_assets", "cursor_assets", "midi_audition_icon", "transport_icon_assets"})
         self.assertNotIn("--features", standalone.argv)
         self.assertTrue(any(step.step_id == "single-run-doctests" for step in full_steps))
@@ -6369,7 +6370,6 @@ class ModuleScopeTests(unittest.TestCase):
         steps = ci.planned_steps({"scope": "rust", "affected_packages": [owner], "boundary": boundary,
                                   "cargo_inventory": inventory, "paths": []})
         self.assertEqual(sum("unit_timeline" in step.argv for step in steps), 1)
-        self.assertEqual(sum("unit_editor_state" in step.argv for step in steps), 1)
         self.assertTrue(any(step.step_id == "ui-timeline-unit-tests" for step in ci.planned_steps({"scope": "full"})))
         health = ci.planned_steps({"scope": "rust", "health": {"python": False, "workspace_inputs": True, "packages": []}})
         self.assertTrue(any(step.step_id == "health-ui-timeline-unit" for step in health))
@@ -7383,8 +7383,7 @@ class ModuleScopeTests(unittest.TestCase):
                              "editor::midi_source_controls::", "editor::midi_wheel::",
                              "editor::midi_wheel_mapping::", creation,
                          ])})
-        shim_paths = ["crates/hex-ui/tests/piano_roll_unit/editor.rs",
-                      "crates/hex-ui/tests/piano_roll_unit/midi_canvas.rs"]
+        shim_paths = ["crates/hex-ui/tests/piano_roll_unit/midi_canvas.rs"]
         for path in shim_paths:
             self.assertEqual(plan.module_test_filters(root, [path], inventory, [owner]), piano_harness)
         combined_shims = plan.module_test_filters(root, shim_paths, inventory, [owner])

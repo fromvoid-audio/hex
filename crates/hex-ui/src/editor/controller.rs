@@ -1,7 +1,6 @@
 #[cfg(test)]
 use super::EnqueuedNativeDeviceDrop;
 use super::play_intent::AdmissionError;
-use super::refresh::AudioFrame;
 use super::seek::seek_is_pending;
 use super::selection;
 use super::{

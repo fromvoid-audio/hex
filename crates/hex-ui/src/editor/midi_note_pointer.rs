@@ -204,7 +204,9 @@ impl EditorView {
             let updated = g.update(point, modifiers.platform);
             changed |= updated;
             if updated && g.kind() == HitKind::Move && g.pitch_delta() != prev_pitch_delta {
-                let bank = g.preview_audition_bank();
+                let bank = g.preview_audition_bank::<{
+                    hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES
+                }>();
                 if let Some((notes, len)) = bank {
                     let _ = self.audition_midi_preview_bank(key.frame.clip, &notes[..len]);
                 }
@@ -251,7 +253,9 @@ impl EditorView {
             if updated
                 && g.kind() == HitKind::Move
                 && g.pitch_delta() != prev_pitch_delta
-                && let Some((notes, len)) = g.preview_audition_bank()
+                && let Some((notes, len)) = g.preview_audition_bank::<{
+                    hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES
+                }>()
             {
                 let _ = self.audition_midi_preview_bank(clip, &notes[..len]);
             }
@@ -260,7 +264,10 @@ impl EditorView {
                 && midi_drag::point_is_inside(g.bounds(), point[0], point[1])
             {
                 let already_auditioned = g.kind() == HitKind::Move
-                    && g.preview_audition_bank().is_some_and(|(notes, len)| {
+                    && g.preview_audition_bank::<{
+                        hex_engine::computer_keyboard::MAX_NOTE_AUDITION_NOTES
+                    }>()
+                    .is_some_and(|(notes, len)| {
                         self.midi_editor
                             .audition
                             .active_matches_bank(clip, &notes[..len])

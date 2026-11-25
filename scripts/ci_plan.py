@@ -649,11 +649,8 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::midi_cue::timing::": "unit_timeline",
                    "editor::waveform_source::": "unit_editor_logic",
                    "editor::computer_keyboard::state::": "unit_editor_logic",
-                   "editor::audio_admission::": "unit_editor_state",
                    "editor::audio_import_settings::admission::": "unit_editor_logic",
-                   "editor::clip_content_cache::profile::navigation::selection::": "unit_editor_state",
                    "editor::controller::audio_event_correlation::": "unit_editor_logic",
-                   "editor::cpu_meter::": "unit_editor_state",
                    "editor::device_automation::plot_geometry::": "unit_automation",
                    "editor::device_panel::eq_panel::group_move::": "unit_device",
                    "editor::device_panel::eq_panel::selection::": "unit_device",
@@ -661,7 +658,6 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::device_panel::eq_panel::state_edit::": "unit_device",
                    "editor::device_panel::numeric_display::": "unit_device",
                    "editor::device_panel::spectrum_display::": "unit_device",
-                   "editor::disk_overload::": "unit_editor_state",
                    "editor::fade_calculation::": "unit_editor_logic",
                    "editor::fade_handle_geometry::": "unit_editor_logic",
                    "editor::midi_drag::": "unit_piano_roll",
@@ -673,15 +669,11 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::midi_selection::": "unit_piano_roll",
                    "editor::midi_source_controls::": "unit_piano_roll",
                    "editor::midi_stroke::": "unit_piano_roll",
-                   "editor::midi_thumbnail::": "unit_editor_state",
                    "editor::midi_velocity::": "unit_piano_roll",
                    "editor::midi_viewport_grid::": "unit_piano_roll",
                    "editor::midi_wheel_mapping::": "unit_piano_roll",
                    "editor::musical_time::": "unit_timeline",
-                   "editor::pending_edit::": "unit_editor_state",
-                   "editor::play_intent::": "unit_editor_state",
                    "editor::recent_projects::labels::": "unit_editor_logic",
-                   "editor::recovery_state::": "unit_editor_state",
                    "editor::refresh_state::": "unit_editor_logic",
                    "editor::seek::": "unit_timeline",
                    "editor::session_grid::actions::": "unit_editor_logic",
@@ -696,14 +688,11 @@ UI_UNIT_TARGETS = {"editor::tempo_input::value::": "unit_editor_logic",
                    "editor::signed_frame_viewport::": "unit_timeline",
                    "editor::track_meters::decay::": "unit_editor_logic",
                    "editor::track_meters::follower::": "unit_editor_logic",
-                   "editor::track_meters::scale::": "unit_editor_state",
                    "editor::track_meters::selection::": "unit_editor_logic",
                    "editor::tracks::clone_source_window::": "unit_editor_logic",
                    "editor::tracks::group_overlap::": "unit_editor_logic",
-                   "editor::user_errors::": "unit_editor_logic",
-                   "editor::viewport::": "unit_editor_state"}
-UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/editor.rs": "unit_piano_roll",
-                         "tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
+                   "editor::user_errors::": "unit_editor_logic"}
+UI_UNIT_HARNESS_FILES = {"tests/piano_roll_unit/midi_canvas.rs": "unit_piano_roll"}
 UI_UNIT_HARNESS_MODULES = {
     "tests/editor_logic_unit/recent_projects.rs": {"editor::recent_projects::labels::"},
     "tests/editor_logic_unit/session_grid.rs": {"editor::session_grid::actions::"},
@@ -713,7 +702,7 @@ UI_UNIT_HARNESS_MODULES = {
 }
 UI_UNIT_FEATURES = {"unit_piano_roll": "ui-unit-tier", "unit_timeline": "ui-unit-tier", "unit_automation": "ui-unit-tier", "unit_device": "ui-unit-tier", "unit_section": "ui-unit-tier", "unit_editor_logic": "ui-unit-tier"}
 UI_DEFAULT_STANDALONE_TESTS = (
-    "unit_editor_state", "track_group_focus", "browser_disclosure_assets", "browser_place_assets",
+    "track_group_focus", "browser_disclosure_assets", "browser_place_assets",
     "cursor_assets", "midi_audition_icon", "transport_icon_assets",
 )
 # These standalone targets run separately from a module-scoped library run.
@@ -1308,6 +1297,8 @@ def module_test_filters(root: Path, paths: list[str], inventory: list[dict],
         def has_tests(candidate: str) -> bool:
             prefix = candidate + "::"
             if owner == "hex-ui" and (prefix in UI_MODULE_TEST_DEPENDENCIES
+                                      or prefix in UI_INTEGRATION_PAIRS
+                                      or any(prefix in group for group in UI_UNIT_COHORTS)
                                       or any(name.startswith(prefix) for name in UI_UNIT_TARGETS)):
                 return True
             return candidate in tested_subtrees

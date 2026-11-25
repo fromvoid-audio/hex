@@ -2,7 +2,7 @@
 use gpui::Context;
 use std::time::Instant;
 
-pub(super) use super::refresh_state::{AudioFrame, RedrawGate};
+pub(super) use super::refresh_state::{AudioFrame, RedrawGate, capture_audio_frame};
 
 impl super::EditorView {
     #[cfg(all(test, feature = "ui-test-support"))]

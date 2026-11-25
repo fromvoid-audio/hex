@@ -12,7 +12,7 @@ mod tests {
         let status = Status::default();
         status.peak_left.store(peak[0].to_bits(), Relaxed);
         status.peak_right.store(peak[1].to_bits(), Relaxed);
-        let mut frame = AudioFrame::capture(&status);
+        let mut frame = crate::editor::refresh_state::capture_audio_frame(&status);
         frame.source = source;
         frame
     }
