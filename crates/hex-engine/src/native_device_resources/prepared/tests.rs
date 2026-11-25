@@ -1887,6 +1887,19 @@ fn repitch_requirement_owner_is_counted_in_native_admission() {
         construction_bytes: 128,
         ..phase
     };
+    // Identical owner borrows must still account for construction growth,
+    // including when the retained allowance exceeds the peak allowance.
+    let shared = inspect_device_resource_union(&construction, &construction, pcm_limits()).unwrap();
+    let equivalent = DeviceResourcePhase { ..construction };
+    let separate = inspect_device_resource_union(&construction, &equivalent, pcm_limits()).unwrap();
+    assert_eq!(shared.retained, separate.retained);
+    assert_eq!(shared.construction, separate.construction);
+    assert_eq!(shared.construction_frames, separate.construction_frames);
+    let peak_limit = AudioStorageLedgerReservation {
+        max_construction_peak_bytes: shared.construction.construction_peak_bytes - 1,
+        ..pcm_limits()
+    };
+    assert!(inspect_device_resource_union(&construction, &construction, peak_limit).is_err());
     let peak = inspect_device_resource_union(&phase, &construction, pcm_limits())
         .unwrap()
         .construction

@@ -163,6 +163,17 @@ pub fn inspect_device_resource_union(
     reservation: AudioStorageLedgerReservation,
 ) -> Result<DeviceResourceInventory, ResourcePreparationError> {
     let (kept, retained_frames) = inspect(retained, reservation, None, false)?;
+    // An unstaged phase already checked both the retained limit and peak
+    // growth. When both borrows are this exact phase, its second inventory
+    // would visit the same owners and enforce the same peak limit again.
+    if std::ptr::eq(retained, construction) {
+        return Ok(DeviceResourceInventory {
+            retained: kept,
+            construction: kept,
+            retained_frames,
+            construction_frames: retained_frames,
+        });
+    }
     // Construction selection is a separate borrow after the retained ledger
     // has dropped. Its complete live union is checked against the caller peak.
     let peak_reservation = AudioStorageLedgerReservation {
