@@ -591,15 +591,24 @@ fn stateful_receiver_reference(
         .unwrap()
         .prepare_runtime_device(state, &context)
         .unwrap();
-    let factory = prepared
-        .processor
-        .as_ref()
-        .and_then(|processor| processor.legacy())
-        .unwrap();
-    assert_eq!(factory.algorithmic_latency_frames(), Some(0));
-    let mut original_effect = factory.create_runtime();
-    for block in input.chunks_mut(256) {
-        original_effect.process_block(block, &EMPTY_DEVICE_RESOURCES);
+    match prepared.processor.as_ref().expect("processor factory") {
+        hex_lattice::PreparedProcessorFactory::Legacy(factory) => {
+            assert_eq!(factory.algorithmic_latency_frames(), Some(0));
+            let mut original_effect = factory.create_runtime();
+            for block in input.chunks_mut(256) {
+                original_effect.process_block(block, &EMPTY_DEVICE_RESOURCES);
+            }
+        }
+        hex_lattice::PreparedProcessorFactory::Owned(factory) => {
+            assert_eq!(factory.algorithmic_latency_frames(), Some(0));
+            let mut original_effect = factory.create_runtime().unwrap();
+            for block in input.chunks_mut(256) {
+                original_effect.begin_block();
+                original_effect.process_block(block, &EMPTY_DEVICE_RESOURCES);
+                original_effect.commit_block();
+            }
+        }
+        _ => panic!("expected native processor factory"),
     }
     for ((whole, replaced), receiver) in expected.iter_mut().zip(new_wet).zip(input) {
         for ((whole, replaced), receiver) in whole.iter_mut().zip(replaced).zip(receiver) {

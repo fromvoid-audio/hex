@@ -97,7 +97,8 @@ impl NativeRuntimeChain {
         self.source_rejoin_processing_matches(previous, |runtime| match runtime {
             RuntimeOwnership::Memoryless => true,
             RuntimeOwnership::Legacy { primary, .. } => primary.supports_detached_source_rejoin(),
-            RuntimeOwnership::Owned(_) | RuntimeOwnership::Foreign(_) => false,
+            RuntimeOwnership::Owned(runtime) => runtime.supports_detached_source_rejoin(),
+            RuntimeOwnership::Foreign(_) => false,
         }) && self.can_inherit_from(previous)
     }
 
@@ -430,14 +431,19 @@ impl NativeRuntimeChain {
             .all(|(candidate, old)| {
                 // Static host coefficients ramp independently of processor
                 // history. A stateful provider still has to admit the retarget.
-                let stateful_matrix_retarget =
-                    matches!(
-                        &candidate.runtime,
-                        RuntimeOwnership::Legacy { primary, scratch }
-                            if primary.supports_manual_host_matrix_retarget()
-                                && scratch.supports_manual_host_matrix_retarget()
-                    ) && candidate.runtime.can_inherit_from(&old.runtime)
-                        && candidate.runtime.can_retarget_from(&old.runtime);
+                let stateful_matrix_retarget = matches!(
+                    &candidate.runtime,
+                    RuntimeOwnership::Legacy { primary, scratch }
+                        if primary.supports_manual_host_matrix_retarget()
+                            && scratch.supports_manual_host_matrix_retarget()
+                ) || matches!(
+                    &candidate.runtime,
+                    RuntimeOwnership::Owned(runtime)
+                        if runtime.supports_manual_host_matrix_retarget()
+                );
+                let stateful_matrix_retarget = stateful_matrix_retarget
+                    && candidate.runtime.can_inherit_from(&old.runtime)
+                    && candidate.runtime.can_retarget_from(&old.runtime);
                 let static_matrix_retarget = !candidate.bypassed
                     && candidate.automation.is_empty()
                     && old.automation.is_empty()

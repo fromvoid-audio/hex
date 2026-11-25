@@ -331,9 +331,18 @@ impl NativeDeviceDefinition for OverdriveDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             PreparedOverdrive::new(state, context.sample_rate, parameters)?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(crate::inline_owned::owned_factory(
+            PreparedOverdrive::new(state, context.sample_rate, &[])?,
+        )))
     }
     fn prepare_matrix(
         &self,
@@ -405,6 +414,21 @@ impl PreparedNativeProcessor for PreparedOverdrive {
         std::mem::size_of::<OverdriveRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(LATENCY_FRAMES as u32)
+    }
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Finite {
+            max_tail_frames: u64::from(self.rate) * 4,
+        }
+    }
+}
+
+impl crate::inline_owned::InlinePreparedProcessor for PreparedOverdrive {
+    type Runtime = OverdriveRuntime;
+    fn create_inline_runtime(&self) -> Self::Runtime {
         let runtime = OverdriveRuntime {
             base_targets: self.targets,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
@@ -420,15 +444,7 @@ impl PreparedNativeProcessor for PreparedOverdrive {
             silent_frames: self.rate * 4,
         };
         runtime.check_inline_ownership();
-        Box::new(runtime)
-    }
-    fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(LATENCY_FRAMES as u32)
-    }
-    fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite {
-            max_tail_frames: u64::from(self.rate) * 4,
-        }
+        runtime
     }
 }
 
@@ -464,6 +480,7 @@ impl Channel {
 }
 
 /// Fixed-inline Overdrive history audited by the sealed storage owner.
+#[derive(Clone, Copy)]
 pub struct OverdriveRuntime {
     base_targets: [f64; 6],
     controls: crate::parameter_binding::Controls<Settings, 6>,

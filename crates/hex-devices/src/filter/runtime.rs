@@ -141,6 +141,13 @@ impl PreparedNativeProcessor for PreparedFilter {
     }
 }
 
+impl crate::inline_owned::InlinePreparedProcessor for PreparedFilter {
+    type Runtime = FilterRuntime;
+    fn create_inline_runtime(&self) -> Self::Runtime {
+        FilterRuntime::new(*self)
+    }
+}
+
 /// Copy-bounded payload charged by the sealed host storage ledger.
 #[derive(Clone, Copy)]
 pub struct FilterRuntime {

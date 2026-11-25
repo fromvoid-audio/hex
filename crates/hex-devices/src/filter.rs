@@ -448,9 +448,18 @@ impl NativeDeviceDefinition for FilterDefinition {
         context: &DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             Self::prepare_owned(state, context.sample_rate, parameters)?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(crate::inline_owned::owned_factory(
+            Self::prepare_owned(state, context.sample_rate, &[])?,
+        )))
     }
     fn prepare_matrix(
         &self,

@@ -284,9 +284,18 @@ impl NativeDeviceDefinition for RattleDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             Self::prepare_owned(state, context.sample_rate, parameters)?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(crate::inline_owned::owned_factory(
+            Self::prepare_owned(state, context.sample_rate, &[])?,
+        )))
     }
     fn prepare_matrix(
         &self,
@@ -385,15 +394,7 @@ impl PreparedNativeProcessor for PreparedRattle {
         std::mem::size_of::<RattleRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
-        let drive = f64::from(self.settings.drive);
-        Box::new(RattleRuntime {
-            base: *self,
-            controls: crate::parameter_binding::Controls::new(self.settings, [self.automated]),
-            drive: self.drive_smoother,
-            shape: Shape::new(drive, &self.coefficients),
-            channels: [Channel::new(NOISE_SEEDS[0]), Channel::new(NOISE_SEEDS[1])],
-            silent_frames: 0,
-        })
+        Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(LATENCY_FRAMES)
@@ -401,6 +402,21 @@ impl PreparedNativeProcessor for PreparedRattle {
     fn output_tail(&self) -> OutputTail {
         OutputTail::Finite {
             max_tail_frames: u64::from(self.coefficients.silence_frames),
+        }
+    }
+}
+
+impl crate::inline_owned::InlinePreparedProcessor for PreparedRattle {
+    type Runtime = RattleRuntime;
+    fn create_inline_runtime(&self) -> Self::Runtime {
+        let drive = f64::from(self.settings.drive);
+        RattleRuntime {
+            base: *self,
+            controls: crate::parameter_binding::Controls::new(self.settings, [self.automated]),
+            drive: self.drive_smoother,
+            shape: Shape::new(drive, &self.coefficients),
+            channels: [Channel::new(NOISE_SEEDS[0]), Channel::new(NOISE_SEEDS[1])],
+            silent_frames: 0,
         }
     }
 }

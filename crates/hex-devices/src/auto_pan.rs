@@ -354,9 +354,18 @@ impl NativeDeviceDefinition for AutoPanDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             Self::prepare_owned(state, context.sample_rate, parameters)?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(crate::inline_owned::owned_factory(
+            Self::prepare_owned(state, context.sample_rate, &[])?,
+        )))
     }
 
     fn prepare_matrix(
@@ -439,6 +448,19 @@ impl PreparedNativeProcessor for PreparedAutoPan {
         std::mem::size_of::<AutoPanRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Finite { max_tail_frames: 0 }
+    }
+}
+
+impl crate::inline_owned::InlinePreparedProcessor for PreparedAutoPan {
+    type Runtime = AutoPanRuntime;
+    fn create_inline_runtime(&self) -> Self::Runtime {
         self.check_inline_ownership();
         let runtime = AutoPanRuntime {
             base: *self,
@@ -462,13 +484,7 @@ impl PreparedNativeProcessor for PreparedAutoPan {
             },
         };
         runtime.check_inline_ownership();
-        Box::new(runtime)
-    }
-    fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
-    }
-    fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite { max_tail_frames: 0 }
+        runtime
     }
 }
 

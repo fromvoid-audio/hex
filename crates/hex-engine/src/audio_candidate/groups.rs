@@ -1022,9 +1022,8 @@ mod tests {
             .iter()
             .map(|id| a.test_track_boxes(*id).unwrap())
             .collect::<Vec<_>>();
-        assert!(a_boxes.iter().all(|(primary, scratch)| primary.is_some()
-            && scratch.is_some()
-            && primary != scratch));
+        // Utility uses single-owner InlineOwnedRuntime: one owned box (sorted to `(None, Some(addr))`).
+        assert!(a_boxes.iter().all(|(a, b)| a.is_none() && b.is_some()));
         a.apply_action(crate::PlaybackAction::Transport(
             crate::PlaybackCommand::Play,
         ))

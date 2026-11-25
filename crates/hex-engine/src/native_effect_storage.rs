@@ -69,6 +69,27 @@ pub(crate) fn pair_bytes(
             scratch,
         )));
     }
+    macro_rules! inline_owned_bytes {
+        ($($runtime:ty),+ $(,)?) => {
+            $(
+                if let Some(runtime) =
+                    entry.owned_runtime::<hex_devices::InlineOwnedRuntime<$runtime>>()
+                {
+                    return Ok(Some((runtime.control_storage(), 0)));
+                }
+            )+
+        };
+    }
+    inline_owned_bytes!(
+        hex_devices::utility_filters::UtilityFilterProcessor,
+        hex_devices::saturator::SaturatorRuntime,
+        hex_devices::auto_pan::AutoPanRuntime,
+        hex_devices::overdrive::OverdriveRuntime,
+        hex_devices::filter::FilterRuntime,
+        hex_devices::gate::GateRuntime,
+        hex_devices::compressor::CompressorRuntime,
+        hex_devices::rattle::RattleRuntime,
+    );
     match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
         (Some(a), Some(b))
             if entry

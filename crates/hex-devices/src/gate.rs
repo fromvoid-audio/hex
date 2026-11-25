@@ -338,9 +338,20 @@ impl NativeDeviceDefinition for GateDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             PreparedGate::new(state, context.sample_rate, parameters)?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(crate::inline_owned::owned_factory(PreparedGate::new(
+            state,
+            context.sample_rate,
+            &[],
+        )?)))
     }
     fn prepare_matrix(
         &self,
@@ -440,6 +451,19 @@ impl PreparedNativeProcessor for PreparedGate {
         std::mem::size_of::<GateRuntime>()
     }
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
+    }
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn output_tail(&self) -> OutputTail {
+        OutputTail::Finite { max_tail_frames: 0 }
+    }
+}
+
+impl crate::inline_owned::InlinePreparedProcessor for PreparedGate {
+    type Runtime = GateRuntime;
+    fn create_inline_runtime(&self) -> Self::Runtime {
         let runtime = GateRuntime {
             base: *self,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
@@ -456,13 +480,7 @@ impl PreparedNativeProcessor for PreparedGate {
             gain_ramp: hex_dsp::LinearRamp::settled(self.floor_gain),
         };
         runtime.check_inline_ownership();
-        Box::new(runtime)
-    }
-    fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
-    }
-    fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite { max_tail_frames: 0 }
+        runtime
     }
 }
 
@@ -474,6 +492,7 @@ struct GateHistory {
 }
 
 /// Exact inline runtime recognized by the sealed constructor's storage ledger.
+#[derive(Clone, Copy)]
 pub struct GateRuntime {
     base: PreparedGate,
     controls: crate::parameter_binding::Controls<GateSettings, 6>,

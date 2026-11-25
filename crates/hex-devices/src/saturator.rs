@@ -296,9 +296,18 @@ impl NativeDeviceDefinition for SaturatorDefinition {
         context: &hex_lattice::DevicePreparationContext<'_>,
         parameters: &[ParameterId],
     ) -> Result<hex_lattice::PreparedRuntimeDevice, DeviceContractError> {
-        Ok(crate::parameter_binding::prepared_legacy_runtime(
+        Ok(crate::inline_owned::prepared_owned_runtime(
             Self::prepare_owned(state, context.sample_rate, parameters)?,
         ))
+    }
+    fn prepare_runtime_factory(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+    ) -> Result<Option<hex_lattice::PreparedProcessorFactory>, DeviceContractError> {
+        Ok(Some(crate::inline_owned::owned_factory(
+            Self::prepare_owned(state, context.sample_rate, &[])?,
+        )))
     }
 
     fn prepare_matrix(
@@ -392,6 +401,24 @@ impl PreparedNativeProcessor for PreparedSaturator {
     }
 
     fn create_runtime(&self) -> Box<dyn NativeProcessorRuntime> {
+        Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
+    }
+
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(LATENCY_FRAMES as u32)
+    }
+
+    fn output_tail(&self) -> OutputTail {
+        // Oversampler histories and the dry delay drain within this bound.
+        OutputTail::Finite {
+            max_tail_frames: TAIL_FRAMES,
+        }
+    }
+}
+
+impl crate::inline_owned::InlinePreparedProcessor for PreparedSaturator {
+    type Runtime = SaturatorRuntime;
+    fn create_inline_runtime(&self) -> Self::Runtime {
         self.check_inline_ownership();
         let runtime = SaturatorRuntime {
             base: *self,
@@ -410,18 +437,7 @@ impl PreparedNativeProcessor for PreparedSaturator {
             gain_ramp_remaining: [0; 2],
         };
         runtime.check_inline_ownership();
-        Box::new(runtime)
-    }
-
-    fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(LATENCY_FRAMES as u32)
-    }
-
-    fn output_tail(&self) -> OutputTail {
-        // Oversampler histories and the dry delay drain within this bound.
-        OutputTail::Finite {
-            max_tail_frames: TAIL_FRAMES,
-        }
+        runtime
     }
 }
 

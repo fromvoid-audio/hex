@@ -94,7 +94,7 @@ fn overdrive_modulation_matches_independent_sample_frames_in_both_compilers() {
             &IDS,
         )
         .unwrap();
-    let Some(PreparedProcessorFactory::Legacy(factory)) = prepared.processor else {
+    let Some(PreparedProcessorFactory::Owned(factory)) = prepared.processor else {
         panic!("overdrive factory");
     };
     for id in IDS {
@@ -168,8 +168,9 @@ fn overdrive_modulation_matches_independent_sample_frames_in_both_compilers() {
         [value, -value * 0.8]
     });
     let audio = Audio::new(RATE, expected.to_vec()).unwrap();
-    factory
-        .create_runtime()
+    let mut runtime = factory.create_runtime().unwrap();
+    runtime.begin_block();
+    runtime
         .process_block_with_automation(
             &mut expected,
             None,
@@ -177,6 +178,7 @@ fn overdrive_modulation_matches_independent_sample_frames_in_both_compilers() {
             &EMPTY_DEVICE_RESOURCES,
         )
         .unwrap();
+    runtime.commit_block();
     // The track fader opens once the compensated content origin arrives.
     // The underlying oversampler has a response before its group delay.
     expected[..LATENCY].fill([0.0; 2]);
