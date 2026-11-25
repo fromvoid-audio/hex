@@ -69,8 +69,8 @@ impl TryFrom<AuthoredGate> for hex_lattice::ForeignNote {
                 .map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?,
             channel: gate.channel,
             pitch: gate.pitch,
-            velocity: gate.velocity,
-            on: gate.on,
+            value: gate.velocity,
+            kind: hex_lattice::ForeignNoteKind::gate(gate.on),
             note_id: Some(id),
             is_live: false,
         })
