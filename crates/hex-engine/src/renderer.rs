@@ -860,13 +860,14 @@ impl RendererRuntime {
                     };
                     output_chunk[frame_index][0] += mixed[0];
                     output_chunk[frame_index][1] += mixed[1];
-                    for send in &track.sends {
+                    for (send_index, send) in track.sends.iter().enumerate() {
+                        let send_gain = track.send_gain_at(send_index, start + frame_index as u64);
                         let target = self
                             .return_scratch
                             .get_mut(send.return_index)
                             .ok_or(Invalid("compiled return send target is missing"))?;
-                        target[frame_index][0] += mixed[0] * send.gain;
-                        target[frame_index][1] += mixed[1] * send.gain;
+                        target[frame_index][0] += mixed[0] * send_gain;
+                        target[frame_index][1] += mixed[1] * send_gain;
                     }
                 }
             }

@@ -176,6 +176,8 @@ fn spectrum_eq_graph_with_params(
     }
     let project = CanonicalProject::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
@@ -363,6 +365,8 @@ fn native_effect_track_and_return_graph(
     let make_state = || state.clone();
     let project = CanonicalProject::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
@@ -507,6 +511,8 @@ fn compressor_track_and_return_graph(threshold_db: f32) -> Playback {
     };
     let project = CanonicalProject::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
@@ -670,6 +676,8 @@ fn native_track_and_return_graph(
     const FRAMES: u64 = 512;
     let project = CanonicalProject::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
@@ -6556,6 +6564,8 @@ fn session_audio_graph() -> (
     };
     let project = CanonicalProject::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),
@@ -7303,6 +7313,8 @@ fn session_playback(track_id: u64) -> Playback {
     };
     let project = CanonicalProject::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),

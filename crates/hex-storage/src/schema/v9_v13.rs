@@ -455,6 +455,8 @@ impl DocumentV13 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             automatic_track_names: Vec::new(),
+            mixer_automation: Vec::new(),
+            frozen_tracks: Vec::new(),
             retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
@@ -840,6 +842,8 @@ impl DocumentV10 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             automatic_track_names: Vec::new(),
+            mixer_automation: Vec::new(),
+            frozen_tracks: Vec::new(),
             retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),
@@ -997,6 +1001,8 @@ impl DocumentV9 {
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
             automatic_track_names: Vec::new(),
+            mixer_automation: Vec::new(),
+            frozen_tracks: Vec::new(),
             retained_source_paths: Vec::new(),
             aliases: Default::default(),
             native_sources: Vec::new(),

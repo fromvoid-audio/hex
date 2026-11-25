@@ -156,6 +156,7 @@ struct Knot {
     frame: u64,
     value: f64,
     linear: bool,
+    tension_millis: i16,
 }
 
 /// An engine-owned program paired to the graph's original worker epoch.
@@ -615,6 +616,7 @@ impl Program {
                     frame: 0,
                     value: f64::from_bits(parameter.normalized_base_bits),
                     linear: false,
+                    tension_millis: 0,
                 });
                 knots
             };
@@ -775,7 +777,7 @@ fn continuous(previous: Option<u64>, next: Option<u64>) -> bool {
 
 fn knot_reservation(points: &[AutomationPoint], tempo: &TempoMap) -> Option<usize> {
     points.windows(2).try_fold(points.len(), |count, pair| {
-        if pair[0].outgoing != AutomationInterpolation::Linear || pair[0].beat == pair[1].beat {
+        if pair[0].outgoing == AutomationInterpolation::Step || pair[0].beat == pair[1].beat {
             return Some(count);
         }
         let markers = tempo.points();
@@ -799,7 +801,7 @@ fn prepare_knots(
     knots
         .try_reserve_exact(capacity)
         .map_err(|_| Invalid("could not reserve foreign automation knots"))?;
-    let mut push = |beat, value, linear, coincident: bool| -> Result<(), Invalid> {
+    let mut push = |beat, value, linear, tension_millis, coincident: bool| -> Result<(), Invalid> {
         let frame = tempo
             .beat_to_frame(beat)
             .map_err(|error| Invalid(error.0))?;
@@ -807,6 +809,7 @@ fn prepare_knots(
             frame,
             value,
             linear,
+            tension_millis,
         };
         if let Some(last) = knots
             .last_mut()
@@ -821,8 +824,8 @@ fn prepare_knots(
     for (index, point) in points.iter().enumerate() {
         let value = f64::from(point.value.get());
         let next = points.get(index + 1);
-        let linear = steps == 0
-            && point.outgoing == AutomationInterpolation::Linear
+        let continuous_seg = steps == 0
+            && point.outgoing != AutomationInterpolation::Step
             && next.is_some_and(|next| next.beat > point.beat);
         let value = if steps == 0 {
             value
@@ -831,16 +834,32 @@ fn prepare_knots(
             (value * steps).round() / steps
         };
         let coincident = index > 0 && points[index - 1].beat == point.beat;
-        push(point.beat, value, linear, coincident)?;
-        if linear && let Some(next) = next {
-            let markers = tempo.points();
+        let markers = tempo.points();
+        let split_markers = if continuous_seg && let Some(next) = next {
             let first = markers.partition_point(|marker| marker.beat() <= point.beat);
             let end = markers.partition_point(|marker| marker.beat() < next.beat);
-            for marker in &markers[first..end] {
+            &markers[first..end]
+        } else {
+            &[]
+        };
+        // If no tempo markers split this segment, preserve exact curve tension on
+        // the single frame span; across tempo changes, sample curve values at each
+        // tempo marker and connect piecewise linearly.
+        let tension = if split_markers.is_empty() {
+            point.outgoing.curve_tension_millis()
+        } else {
+            0
+        };
+        push(point.beat, value, continuous_seg, tension, coincident)?;
+        if continuous_seg && let Some(next) = next {
+            for marker in split_markers {
                 let fraction = (marker.beat().raw() - point.beat.raw()) as f64
                     / (next.beat.raw() - point.beat.raw()) as f64;
-                let marker_value = value + (f64::from(next.value.get()) - value) * fraction;
-                push(marker.beat(), marker_value, true, false)?;
+                let marker_value =
+                    point
+                        .outgoing
+                        .interpolate(value, f64::from(next.value.get()), fraction);
+                push(marker.beat(), marker_value, true, 0, false)?;
             }
         }
     }
@@ -955,7 +974,8 @@ impl Lane {
             return left.value;
         };
         let fraction = (frame - left.frame) as f64 / (right.frame - left.frame) as f64;
-        (left.value + (right.value - left.value) * fraction).clamp(0.0, 1.0)
+        let shaped = hex_lattice::curve_shape(fraction, left.tension_millis);
+        (left.value + (right.value - left.value) * shaped).clamp(0.0, 1.0)
     }
 
     fn emit(

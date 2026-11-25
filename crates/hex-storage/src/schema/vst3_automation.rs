@@ -61,17 +61,26 @@ pub(crate) fn encode(project: &Project) -> Result<Value, StorageError> {
                 points: lane
                     .points
                     .into_iter()
-                    .map(|point| device_automation::Point {
-                        beat_raw: point.beat.raw(),
-                        value: point.value.get(),
-                        outgoing: match point.outgoing {
-                            AutomationInterpolation::Step => device_automation::Interpolation::Step,
-                            AutomationInterpolation::Linear => {
-                                device_automation::Interpolation::Linear
-                            }
-                        },
+                    .map(|point| {
+                        Ok(device_automation::Point {
+                            beat_raw: point.beat.raw(),
+                            value: point.value.get(),
+                            outgoing: match point.outgoing {
+                                AutomationInterpolation::Step => {
+                                    device_automation::Interpolation::Step
+                                }
+                                AutomationInterpolation::Linear => {
+                                    device_automation::Interpolation::Linear
+                                }
+                                AutomationInterpolation::Curve(_) => {
+                                    return Err(StorageError::Invalid(
+                                        "older schema cannot save curved automation",
+                                    ));
+                                }
+                            },
+                        })
                     })
-                    .collect(),
+                    .collect::<Result<Vec<_>, StorageError>>()?,
             });
         }
     }

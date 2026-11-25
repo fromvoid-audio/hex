@@ -100,7 +100,7 @@ pub(super) fn prepare(
         // A changing Linear kind segment cannot be represented by simply
         // linearly interpolating the two new discrete fields.
         for pair in row.points.windows(2) {
-            if pair[0].outgoing == AutomationInterpolation::Linear
+            if pair[0].outgoing != AutomationInterpolation::Step
                 && kind(source, pair[0].value.get())? != kind(source, pair[1].value.get())?
             {
                 return Err(Invalid(

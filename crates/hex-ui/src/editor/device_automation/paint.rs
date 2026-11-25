@@ -323,7 +323,10 @@ fn plot(
                         let points = all_points.get(range).unwrap_or_default();
                         if !points.is_empty() {
                             let selected = lanes.selected.as_ref();
-                            let paths = if entry.is_display_linear() {
+                            let has_curved = points
+                                .iter()
+                                .any(|p| matches!(p.outgoing, AutomationInterpolation::Curve(_)));
+                            let paths = if entry.is_display_linear() && !has_curved {
                                 super::plot_geometry::reduce(
                                     points.iter().enumerate().filter_map(|(index, value)| {
                                         let position = xy(value.beat, value.value.get())?;
@@ -347,11 +350,16 @@ fn plot(
                                     points.iter().enumerate().filter_map(|(index, value)| {
                                         let canonical = value.value.get();
                                         let position = xy(value.beat, canonical)?;
+                                        let tension = match value.outgoing {
+                                            AutomationInterpolation::Curve(t) => t,
+                                            _ => hex_project::CurveTension::LINEAR,
+                                        };
                                         Some(super::plot_geometry::CurvedPlotPoint {
                                             x: f32::from(position.x),
                                             canonical,
                                             y: f32::from(position.y),
                                             step: value.outgoing == AutomationInterpolation::Step,
+                                            tension,
                                             selected: selected.is_some_and(|selected| {
                                                 selected.contains(
                                                     target,
@@ -656,6 +664,18 @@ impl EditorView {
                 "linear segment",
                 Action::Shape(target, AutomationInterpolation::Linear),
             ));
+            if let Ok(ease_in) = hex_project::CurveTension::from_millis(600) {
+                actions.push((
+                    "ease-in curve",
+                    Action::Shape(target, AutomationInterpolation::Curve(ease_in)),
+                ));
+            }
+            if let Ok(ease_out) = hex_project::CurveTension::from_millis(-600) {
+                actions.push((
+                    "ease-out curve",
+                    Action::Shape(target, AutomationInterpolation::Curve(ease_out)),
+                ));
+            }
             actions.push((
                 "step segment",
                 Action::Shape(target, AutomationInterpolation::Step),

@@ -958,11 +958,13 @@ fn auto_pan_power_off_skips_automation_and_restarts_at_initial_phase() {
                 beat_raw: 0,
                 normalized: 1.0,
                 step: true,
+                curve_tension_millis: 0,
             },
             ParameterAutomationPoint {
                 beat_raw: 1 << 32,
                 normalized: 0.75,
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
     )

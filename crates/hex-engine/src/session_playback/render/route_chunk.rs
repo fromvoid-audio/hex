@@ -1095,13 +1095,14 @@ impl SessionPlayback {
                             let contribution = mix.apply_frame(*source);
                             output[frame_index][0] += contribution[0];
                             output[frame_index][1] += contribution[1];
-                            for send in track.sends() {
+                            for (send_index, send) in track.sends().iter().enumerate() {
+                                let send_gain = track.send_gain_at(send_index, content_frame);
                                 let target = self
                                     .return_scratch
                                     .get_mut(send.return_index)
                                     .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                                target[frame_index][0] += contribution[0] * send.gain;
-                                target[frame_index][1] += contribution[1] * send.gain;
+                                target[frame_index][0] += contribution[0] * send_gain;
+                                target[frame_index][1] += contribution[1] * send_gain;
                             }
                             contribution
                         };
@@ -1649,13 +1650,14 @@ impl SessionPlayback {
                         let contribution = mix.apply_frame(*source);
                         output[frame_index][0] += contribution[0];
                         output[frame_index][1] += contribution[1];
-                        for send in track.sends() {
+                        for (send_index, send) in track.sends().iter().enumerate() {
+                            let send_gain = track.send_gain_at(send_index, content_frame);
                             let target = self
                                 .return_scratch
                                 .get_mut(send.return_index)
                                 .ok_or(SessionPlaybackError::DeviceRuntime)?;
-                            target[frame_index][0] += contribution[0] * send.gain;
-                            target[frame_index][1] += contribution[1] * send.gain;
+                            target[frame_index][0] += contribution[0] * send_gain;
+                            target[frame_index][1] += contribution[1] * send_gain;
                         }
                         contribution
                     };

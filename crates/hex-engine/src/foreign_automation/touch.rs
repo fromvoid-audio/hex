@@ -76,6 +76,7 @@ impl Overlay {
                     frame,
                     value,
                     linear: false,
+                    tension_millis: 0,
                 });
             }
             if steps.first().is_none_or(|first| first.frame != start) {

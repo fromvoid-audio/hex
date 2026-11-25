@@ -163,10 +163,10 @@ pub(super) fn value_at_frame(
     let start = frame(left.beat)?;
     let end = frame(right.beat)?;
     let fraction = at.saturating_sub(start) as f64 / end.saturating_sub(start).max(1) as f64;
-    Some((
-        value + (right.value.get() - value) * fraction as f32,
-        left.outgoing,
-    ))
+    let interpolated =
+        left.outgoing
+            .interpolate(f64::from(value), f64::from(right.value.get()), fraction) as f32;
+    Some((interpolated, left.outgoing))
 }
 
 /// One displayed automation point in window logical pixels.
@@ -324,6 +324,35 @@ pub(in crate::editor) fn sample_curved_segment(
     scale: f32,
     split_canonical: Option<f32>,
     y_for: impl Fn(f32) -> f32,
+    emit: impl FnMut(f32, f32),
+) {
+    sample_curved_segment_with_tension(
+        x0,
+        c0,
+        x1,
+        c1,
+        hex_project::CurveTension::LINEAR,
+        vis_left,
+        vis_right,
+        scale,
+        split_canonical,
+        y_for,
+        emit,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sample_curved_segment_with_tension(
+    x0: f32,
+    c0: f32,
+    x1: f32,
+    c1: f32,
+    tension: hex_project::CurveTension,
+    vis_left: f32,
+    vis_right: f32,
+    scale: f32,
+    split_canonical: Option<f32>,
+    y_for: impl Fn(f32) -> f32,
     mut emit: impl FnMut(f32, f32),
 ) {
     if !x0.is_finite()
@@ -337,7 +366,8 @@ pub(in crate::editor) fn sample_curved_segment(
     {
         return;
     }
-    if let Some(split) = split_canonical {
+    let linear_tension = tension == hex_project::CurveTension::LINEAR;
+    if linear_tension && let Some(split) = split_canonical {
         let lo = c0.min(c1);
         let hi = c0.max(c1);
         if split > lo && split < hi {
@@ -364,62 +394,107 @@ pub(in crate::editor) fn sample_curved_segment(
     if t_end <= t_start {
         return;
     }
+    let c_at = |t: f64| (f64::from(c0) + dc * tension.shape(t)) as f32;
     let xa = (f64::from(x0) + dx * t_start) as f32;
-    let ca = (f64::from(c0) + dc * t_start) as f32;
-    let ya = y_for(ca);
+    let ya = y_for(c_at(t_start));
     let xb = (f64::from(x0) + dx * t_end) as f32;
-    let cb = (f64::from(c0) + dc * t_end) as f32;
-    let yb = y_for(cb);
+    let yb = y_for(c_at(t_end));
     if t_start > 0.0 {
         emit(xa, ya);
     }
     let min_dx = (1.0 / scale.max(1.0)).max(0.25);
     #[allow(clippy::too_many_arguments)]
     fn subdivide(
+        ta: f64,
         xa: f32,
-        ca: f32,
         ya: f32,
+        tb: f64,
         xb: f32,
-        cb: f32,
         yb: f32,
         depth: u8,
         min_dx: f32,
+        x0: f64,
+        dx: f64,
+        c_at: &impl Fn(f64) -> f32,
         y_for: &impl Fn(f32) -> f32,
         emit: &mut impl FnMut(f32, f32),
     ) {
         if depth >= MAX_CURVE_DEPTH || (xb - xa) <= min_dx {
             return;
         }
-        let xm = 0.5 * (xa + xb);
-        let cm = (0.5 * (f64::from(ca) + f64::from(cb))) as f32;
-        let ym = y_for(cm);
+        let tm = 0.5 * (ta + tb);
+        let xm = (x0 + dx * tm) as f32;
+        let ym = y_for(c_at(tm));
         let chord = 0.5 * (ya + yb);
         if depth >= 2 && (ym - chord).abs() <= CURVE_TOLERANCE_PX {
             return;
         }
-        subdivide(xa, ca, ya, xm, cm, ym, depth + 1, min_dx, y_for, emit);
+        subdivide(
+            ta,
+            xa,
+            ya,
+            tm,
+            xm,
+            ym,
+            depth + 1,
+            min_dx,
+            x0,
+            dx,
+            c_at,
+            y_for,
+            emit,
+        );
         emit(xm, ym);
-        subdivide(xm, cm, ym, xb, cb, yb, depth + 1, min_dx, y_for, emit);
+        subdivide(
+            tm,
+            xm,
+            ym,
+            tb,
+            xb,
+            yb,
+            depth + 1,
+            min_dx,
+            x0,
+            dx,
+            c_at,
+            y_for,
+            emit,
+        );
     }
-    subdivide(xa, ca, ya, xb, cb, yb, 0, min_dx, &y_for, &mut emit);
+    subdivide(
+        t_start,
+        xa,
+        ya,
+        t_end,
+        xb,
+        yb,
+        0,
+        min_dx,
+        f64::from(x0),
+        dx,
+        &c_at,
+        &y_for,
+        &mut emit,
+    );
     if t_end < 1.0 {
         emit(xb, yb);
     }
 }
 
 /// One displayed automation point with its canonical value for non-linear
-/// display curves.
+/// display curves or segment curve tension.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct CurvedPlotPoint {
     pub(super) x: f32,
     pub(super) canonical: f32,
     pub(super) y: f32,
     pub(super) step: bool,
+    pub(super) tension: hex_project::CurveTension,
     pub(super) selected: bool,
 }
 
 /// Like [`reduce`], but subdivides continuous segments through `y_for` when
-/// the lane's display scale differs from canonical linear interpolation.
+/// the lane's display scale or segment curve tension differs from linear.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn reduce_curved(
     points: impl IntoIterator<Item = CurvedPlotPoint>,
@@ -447,11 +522,12 @@ pub(super) fn reduce_curved(
             if prev.step || discrete {
                 reducer.push(point.x, prev.y, None);
             } else {
-                sample_curved_segment(
+                sample_curved_segment_with_tension(
                     prev.x,
                     prev.canonical,
                     point.x,
                     point.canonical,
+                    prev.tension,
                     vis_left,
                     vis_right,
                     scale,
@@ -799,6 +875,7 @@ mod tests {
                 canonical: 0.0,
                 y: y_for(0.0),
                 step: false,
+                tension: hex_project::CurveTension::LINEAR,
                 selected: true,
             },
             super::CurvedPlotPoint {
@@ -806,6 +883,7 @@ mod tests {
                 canonical: unity,
                 y: y_for(unity),
                 step: false,
+                tension: hex_project::CurveTension::LINEAR,
                 selected: false,
             },
             super::CurvedPlotPoint {
@@ -813,6 +891,7 @@ mod tests {
                 canonical: 1.0,
                 y: y_for(1.0),
                 step: false,
+                tension: hex_project::CurveTension::LINEAR,
                 selected: false,
             },
         ];
@@ -874,6 +953,7 @@ mod tests {
                     canonical: 0.0,
                     y: bipolar_y(0.0),
                     step: false,
+                    tension: hex_project::CurveTension::LINEAR,
                     selected: false,
                 },
                 super::CurvedPlotPoint {
@@ -881,6 +961,7 @@ mod tests {
                     canonical: 1.0,
                     y: bipolar_y(1.0),
                     step: false,
+                    tension: hex_project::CurveTension::LINEAR,
                     selected: false,
                 },
             ],
@@ -892,6 +973,47 @@ mod tests {
             bipolar_y,
         );
         assert_eq!(bipolar_paths.markers.len(), 2);
+
+        // Non-zero curve tension on a linear display scale subdivides into a smooth curve.
+        let linear_y = |c: f32| 100.0 - c * 100.0;
+        let tension = hex_project::CurveTension::from_millis(600).unwrap();
+        let tension_paths = super::reduce_curved(
+            [
+                super::CurvedPlotPoint {
+                    x: 0.0,
+                    canonical: 0.0,
+                    y: linear_y(0.0),
+                    step: false,
+                    tension,
+                    selected: false,
+                },
+                super::CurvedPlotPoint {
+                    x: 200.0,
+                    canonical: 1.0,
+                    y: linear_y(1.0),
+                    step: false,
+                    tension: hex_project::CurveTension::LINEAR,
+                    selected: false,
+                },
+            ],
+            false,
+            1.0,
+            0.0,
+            200.0,
+            None,
+            linear_y,
+        );
+        assert!(
+            tension_paths.line.len() > 8,
+            "curved tension segment subdivides"
+        );
+        let mid = tension_paths
+            .line
+            .iter()
+            .min_by(|a, b| (a.0 - 100.0).abs().total_cmp(&(b.0 - 100.0).abs()))
+            .unwrap();
+        let expected_mid_y = linear_y(tension.shape(0.5) as f32);
+        assert!((mid.1 - expected_mid_y).abs() < 1.0);
         assert_eq!(bipolar_paths.line.len(), 3);
         assert!((bipolar_paths.line[1].0 - 360.0).abs() < 1e-3);
         assert!((bipolar_paths.line[1].1 - 32.0).abs() < 1e-3);

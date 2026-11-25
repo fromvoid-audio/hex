@@ -53,6 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let project = Project::from_legacy_snapshot(Snapshot {
         automatic_track_names: Vec::new(),
+        mixer_automation: Vec::new(),
+        frozen_tracks: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),

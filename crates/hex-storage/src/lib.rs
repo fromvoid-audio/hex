@@ -83,7 +83,12 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = MIDI_EXPRESSION_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION;
+/// Schema128 adds automation curve tension, canonical track mixer automation
+/// lanes (balance/pan, mute, return sends), and persisted reversible track
+/// freeze (`automation_curves_and_freeze` capability) on top of the unified
+/// capability manifest layout. Older schema127 readers refuse schema128 cleanly.
+pub const AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION: u32 = 128;
 /// Schema127 adds bounded clip MIDI CC/pitch-bend lanes and per-note MPE
 /// expression (`midi_expression` capability) on top of the unified capability
 /// manifest layout. Older schema126 readers refuse schema127 cleanly.
@@ -292,6 +297,9 @@ fn contains_extended_frame_events(project: &Project) -> bool {
 /// lane has two points at one beat. Projects with unique beats retain their format.
 pub fn schema_version_for(project: &Project) -> u32 {
     use schema::long_granular::{self, LongWarpSchema};
+    if schema::manifest::contains_automation_curves_and_freeze(project) {
+        return AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION;
+    }
     if schema::manifest::contains_midi_expression(project) {
         return MIDI_EXPRESSION_SCHEMA_VERSION;
     }
@@ -1032,7 +1040,9 @@ fn decode_impl(bytes: &[u8], inside_envelope: bool) -> Result<Project, StorageEr
     }
     if matches!(
         header.version,
-        CAPABILITY_MANIFEST_SCHEMA_VERSION | MIDI_EXPRESSION_SCHEMA_VERSION
+        CAPABILITY_MANIFEST_SCHEMA_VERSION
+            | MIDI_EXPRESSION_SCHEMA_VERSION
+            | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
     ) && !inside_envelope
     {
         return schema::manifest::decode(bytes);

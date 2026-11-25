@@ -89,6 +89,7 @@ pub use session_tempo_preparation::SessionTempoCapacity;
 pub mod audio_transform;
 mod effect_clock;
 mod main_chain;
+mod mixer_envelope;
 mod native_device_view;
 pub mod wave_executor;
 pub use audio_input_storage::{

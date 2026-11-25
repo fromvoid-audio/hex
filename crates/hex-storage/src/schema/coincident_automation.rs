@@ -50,6 +50,11 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
         for (lane_index, lane) in device.automation.iter_mut().enumerate() {
             let mut points = std::mem::take(&mut lane.points).into_iter().peekable();
             while let Some(point) = points.next() {
+                if matches!(point.outgoing, AutomationInterpolation::Curve(_)) {
+                    return Err(StorageError::Invalid(
+                        "older schema cannot save curved automation",
+                    ));
+                }
                 if points.peek().is_some_and(|next| next.beat == point.beat) {
                     incoming.push(Row {
                         device: device.id,

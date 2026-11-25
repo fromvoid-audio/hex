@@ -61,16 +61,19 @@ fn provider_chain(
                     beat_raw: 0,
                     normalized: 0.1,
                     step: false,
+                    curve_tension_millis: 0,
                 },
                 ParameterAutomationPoint {
                     beat_raw: 4109,
                     normalized: 0.9,
                     step: false,
+                    curve_tension_millis: 0,
                 },
                 ParameterAutomationPoint {
                     beat_raw: 4318,
                     normalized: 0.25,
                     step: false,
+                    curve_tension_millis: 0,
                 },
             ],
         )

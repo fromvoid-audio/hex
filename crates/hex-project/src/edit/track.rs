@@ -77,6 +77,10 @@ pub(crate) fn new_track(
         parent_group,
         color,
         gain_lane: crate::GainLane::default(),
+        balance_lane: crate::MixerAutomationLane::default(),
+        mute_lane: crate::MixerAutomationLane::default(),
+        send_lanes: Vec::new(),
+        frozen: None,
         id,
         name,
         automatic_name: false,
@@ -185,6 +189,25 @@ impl Project {
                 lane.spans.clear();
                 Ok(Created::None)
             }
+            Command::SetTrackMixerAutomation {
+                track,
+                target,
+                points,
+            } => self.set_track_mixer_automation(track, target, points),
+            Command::FreezeTrack {
+                track,
+                path,
+                start,
+                duration,
+                frames,
+            } => self.freeze_track(track, path, start, duration, frames),
+            Command::FreezeTrackWithAsset {
+                track,
+                asset,
+                start,
+                duration,
+            } => self.freeze_track_with_asset(track, asset, start, duration),
+            Command::UnfreezeTrack { track } => self.unfreeze_track(track),
             Command::SetTrackColor { track, color } => {
                 self.track_mut(track)?.color = color;
                 Ok(Created::None)

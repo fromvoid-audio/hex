@@ -366,7 +366,11 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
         for event in events {
             let (offset, id, on) = match *event {
                 hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-                | hex_lattice::NativeInstrumentEvent::Expression { .. } => {
+                | hex_lattice::NativeInstrumentEvent::Expression { .. }
+                | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+                | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+                | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+                | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => {
                     return Err(hex_lattice::NativeInstrumentRuntimeError::InvalidEventBatch);
                 }
                 hex_lattice::NativeInstrumentEvent::NoteOn {
@@ -411,7 +415,11 @@ impl hex_lattice::MutableInstrumentRuntime for MutableFixtureRuntime {
                 match events[event_index] {
                     // Unsupported by this fixture's read-only preflight.
                     hex_lattice::NativeInstrumentEvent::NotePressure { .. }
-                    | hex_lattice::NativeInstrumentEvent::Expression { .. } => {}
+                    | hex_lattice::NativeInstrumentEvent::Expression { .. }
+                    | hex_lattice::NativeInstrumentEvent::ControlChange { .. }
+                    | hex_lattice::NativeInstrumentEvent::PitchBend { .. }
+                    | hex_lattice::NativeInstrumentEvent::NotePitchBend { .. }
+                    | hex_lattice::NativeInstrumentEvent::NoteTimbre { .. } => {}
                     hex_lattice::NativeInstrumentEvent::NoteOn { occurrence_id, .. } => {
                         if let Some(voice) = self.voices.iter_mut().find(|voice| !voice.active) {
                             *voice = MutableFixtureVoice {

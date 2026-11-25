@@ -112,11 +112,13 @@ fn borrowed_program_timing_bypass_and_missing_content_origin_are_explicit() {
                 beat_raw: 0,
                 normalized: 0.0,
                 step: false,
+                curve_tension_millis: 0,
             },
             hex_lattice::ParameterAutomationPoint {
                 beat_raw: 4,
                 normalized: 1.0,
                 step: true,
+                curve_tension_millis: 0,
             },
         ],
     )
@@ -316,6 +318,7 @@ fn scoped_gain_only_filters_skip_safely_and_enableable_lanes_keep_dormant_histor
             beat_raw: 0,
             normalized: 1.0,
             step: true,
+            curve_tension_millis: 0,
         }],
     )
     .unwrap();

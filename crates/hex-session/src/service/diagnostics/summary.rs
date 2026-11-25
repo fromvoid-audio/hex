@@ -490,6 +490,29 @@ pub(super) fn command(value: &Command) -> Description {
         Command::ClearTrackGainEnvelope { track } => {
             describe!("clear_track_gain_envelope"; ["track" => track.value()]; omitted="")
         }
+        Command::SetTrackMixerAutomation { track, points, .. } => {
+            describe!("set_track_mixer_automation"; ["track" => track.value(), "points_count" => points.len()]; omitted="target")
+        }
+        Command::FreezeTrack {
+            track,
+            start,
+            duration,
+            frames,
+            ..
+        } => {
+            describe!("freeze_track"; ["track" => track.value(), "start" => start, "duration" => duration, "frames" => frames]; omitted="path")
+        }
+        Command::FreezeTrackWithAsset {
+            track,
+            asset,
+            start,
+            duration,
+        } => {
+            describe!("freeze_track_with_asset"; ["track" => track.value(), "asset" => asset.value(), "start" => start, "duration" => duration]; omitted="")
+        }
+        Command::UnfreezeTrack { track } => {
+            describe!("unfreeze_track"; ["track" => track.value()]; omitted="")
+        }
         Command::SetRouting(value0) => {
             describe!("set_routing"; ["value0_count" => value0.len()]; omitted="")
         }

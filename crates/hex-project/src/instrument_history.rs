@@ -124,6 +124,10 @@ impl Project {
                 parent_group,
                 color,
                 gain_lane,
+                balance_lane,
+                mute_lane,
+                send_lanes,
+                frozen,
                 id,
                 name,
                 automatic_name,
@@ -160,6 +164,10 @@ impl Project {
                 || instrument_position != &next.instrument_position
                 || content != &next.content
                 || sends != &next.sends
+                || balance_lane != &next.balance_lane
+                || mute_lane != &next.mute_lane
+                || send_lanes != &next.send_lanes
+                || frozen != &next.frozen
                 || base != &next.gain_lane.base
                 || spans != &next.gain_lane.spans
                 || next.gain_lane.recording_epoch > *recording_epoch

@@ -269,6 +269,7 @@ fn prepare_lanes_with_input(
             beat_raw: point.beat.raw(),
             normalized: point.value.get(),
             step: point.outgoing == hex_project::AutomationInterpolation::Step,
+            curve_tension_millis: point.outgoing.curve_tension_millis(),
         }));
         lanes.push(ParameterAutomationLane {
             descriptor,
@@ -283,6 +284,7 @@ fn prepare_lanes_with_input(
                 beat_raw: step.beat.raw(),
                 normalized: step.value.get(),
                 step: true,
+                curve_tension_millis: 0,
             }));
             touch.push(ParameterAutomationTouchSpan {
                 target: lane.target,
