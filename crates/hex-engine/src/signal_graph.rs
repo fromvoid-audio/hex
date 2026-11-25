@@ -163,6 +163,17 @@ pub(crate) struct SignalGraph {
     key_stages: Vec<Option<KeyStage>>,
     typed: Vec<NodeId>,
 }
+
+/// Outcome of attempting to update send/return-feed gains on an existing `SignalGraph`
+/// without rebuilding `LatencyPlan`.
+pub(crate) enum UpdatedSignalGraph {
+    /// All send and feed gains are identical; reuse the existing `Arc<SignalGraph>`.
+    Unchanged,
+    /// Topology is identical; cloned graph carries the updated send/feed gains and reused `LatencyPlan`.
+    Updated(Arc<SignalGraph>),
+    /// Send or feed edge topology changed; caller must run full `SignalGraph::prepare`.
+    TopologyChanged,
+}
 fn error(error: CompensationError) -> Invalid {
     Invalid(match error {
         CompensationError::UnknownLatency => "enabled processor latency is unknown",
@@ -198,6 +209,85 @@ impl SignalGraph {
     /// Cheap prefilter for one local processor added to or removed from a chain.
     pub(crate) fn has_one_more_node_than(&self, old: &Self) -> bool {
         old.typed.len().checked_add(1) == Some(self.typed.len())
+    }
+
+    /// Update only send and return-feed gain scalars when the edge topology matches.
+    /// Reuses the existing `LatencyPlan` without running topological sort or delay solving.
+    pub(crate) fn with_updated_send_and_feed_gains(
+        &self,
+        project: &Project,
+        feeds: &[(usize, usize, f32)],
+    ) -> Result<UpdatedSignalGraph, Invalid> {
+        if self.tracks.len() != project.tracks.len()
+            || self.returns.len() != project.return_buses.len()
+        {
+            return Ok(UpdatedSignalGraph::TopologyChanged);
+        }
+        let mut any_changed = false;
+        for (plan_track, compiled_track) in self.tracks.iter().zip(&project.tracks) {
+            if plan_track.sends.len() != compiled_track.sends.len() {
+                return Ok(UpdatedSignalGraph::TopologyChanged);
+            }
+            for (old_send, new_send) in plan_track.sends.iter().zip(&compiled_track.sends) {
+                if old_send.target != new_send.return_index {
+                    return Ok(UpdatedSignalGraph::TopologyChanged);
+                }
+                if old_send.gain != new_send.gain {
+                    any_changed = true;
+                }
+            }
+        }
+        let total_old_feeds: usize = self.returns.iter().map(|bus| bus.feeds.len()).sum();
+        if total_old_feeds != feeds.len() {
+            return Ok(UpdatedSignalGraph::TopologyChanged);
+        }
+        let mut per_return_cursor = vec![0usize; self.returns.len()];
+        for &(source, target, gain) in feeds {
+            let Some(bus) = self.returns.get(source) else {
+                return Ok(UpdatedSignalGraph::TopologyChanged);
+            };
+            let cursor = &mut per_return_cursor[source];
+            let Some(old_feed) = bus.feeds.get(*cursor) else {
+                return Ok(UpdatedSignalGraph::TopologyChanged);
+            };
+            if old_feed.target != target {
+                return Ok(UpdatedSignalGraph::TopologyChanged);
+            }
+            if old_feed.gain != gain {
+                any_changed = true;
+            }
+            *cursor += 1;
+        }
+        if !any_changed {
+            return Ok(UpdatedSignalGraph::Unchanged);
+        }
+        let plan = self.plan.try_clone().map_err(error)?;
+        let mut tracks = self.tracks.clone();
+        for (plan_track, compiled_track) in tracks.iter_mut().zip(&project.tracks) {
+            for (old_send, new_send) in plan_track.sends.iter_mut().zip(&compiled_track.sends) {
+                old_send.gain = new_send.gain;
+            }
+        }
+        let mut returns = self.returns.clone();
+        per_return_cursor.fill(0);
+        for &(source, _, gain) in feeds {
+            let cursor = &mut per_return_cursor[source];
+            returns[source].feeds[*cursor].gain = gain;
+            *cursor += 1;
+        }
+        Ok(UpdatedSignalGraph::Updated(Arc::new(Self {
+            plan,
+            tracks,
+            returns,
+            owner_order: self.owner_order.clone(),
+            track_indices: self.track_indices.clone(),
+            has_group_outputs: self.has_group_outputs,
+            main: self.main,
+            main_devices: self.main_devices.clone(),
+            pre_main_edges: self.pre_main_edges.clone(),
+            key_stages: self.key_stages.clone(),
+            typed: self.typed.clone(),
+        })))
     }
     #[cfg(test)]
     pub(crate) fn test_printed_branch(

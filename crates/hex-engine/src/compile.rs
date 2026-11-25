@@ -1313,14 +1313,14 @@ fn validate_shared_windows(frames: &[u64], max: usize) -> Result<(), Invalid> {
     Ok(())
 }
 
-struct CompiledEffectPlan {
-    fused: Option<hex_lattice::StereoMatrix>,
-    prefix: Option<hex_lattice::StereoMatrix>,
-    suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
+pub(crate) struct CompiledEffectPlan {
+    pub(crate) fused: Option<hex_lattice::StereoMatrix>,
+    pub(crate) prefix: Option<hex_lattice::StereoMatrix>,
+    pub(crate) suffix: Option<hex_lattice::StereoMatrix>,
+    pub(crate) device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
 }
 
-fn compile_device_effects(
+pub(crate) fn compile_device_effects(
     track: &hex_project::Track,
     arrangement: &hex_project::Project,
     registry: &hex_lattice::NativeDeviceRegistry<'_>,
@@ -1528,7 +1528,7 @@ fn prepare_source_effect_suffix_with_input(
     Ok(plan.device_chain)
 }
 
-fn compile_effect_devices(
+pub(crate) fn compile_effect_devices(
     source_devices: EffectPower<'_>,
     owner: hex_lattice::ProcessorChainOwner,
     arrangement: &hex_project::Project,

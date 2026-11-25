@@ -770,6 +770,16 @@ impl Session {
         self.editor.project()
     }
 
+    /// Immutable shared handle to the current canonical project without deep cloning.
+    pub fn project_arc(&self) -> Arc<Project> {
+        self.editor.project_arc()
+    }
+
+    /// Monotonic history revision incremented on every committed edit, undo, or redo.
+    pub fn history_revision(&self) -> u64 {
+        self.editor.history_revision()
+    }
+
     /// Resolve a canonical device's class from its actual owning slot. UI
     /// requests carry stable IDs, never authority to select a registry.
     pub(crate) fn native_device_class(
@@ -921,11 +931,12 @@ impl Session {
         let sine_table = self.sine_table();
         self.editor
             .execute_prepared_transition(command, |source, candidate| {
-                let prepared = prepare_with_waveforms(
+                let prepared = prepare_transition_with_waveforms(
+                    source,
                     candidate,
+                    previous,
                     &media,
                     Arc::clone(&sine_table),
-                    previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
                 )
@@ -956,28 +967,23 @@ impl Session {
         tuning: hex_tuning::ProjectTuning,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
-        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let candidate = self.editor.stage_preview(Command::SetTuning(tuning))?;
         let media = self.media_bank();
         let table = self.sine_table();
-        let (_, prepared) = preview.execute_prepared_transition(
-            Command::SetTuning(tuning),
-            |source, candidate| {
-                prepare_with_waveforms(
-                    candidate,
-                    &media,
-                    Arc::clone(&table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .and_then(|prepared| {
-                    tuning_prepared_transition(prepared, source, candidate, previous)
-                })
-                .map(Arc::new)
-                .map_err(SessionError::from)
-            },
-        )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        let prepared = prepare_with_waveforms(
+            &candidate,
+            &media,
+            Arc::clone(&table),
+            previous.map(|artifact| artifact.session().as_ref()),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+        )
+        .and_then(|prepared| {
+            tuning_prepared_transition(prepared, self.project(), &candidate, previous)
+        })
+        .map(Arc::new)
+        .map_err(SessionError::from)?;
+        Ok((candidate, prepared))
     }
 
     /// Prepare a typed native parameter overlay without changing canonical
@@ -1000,25 +1006,7 @@ impl Session {
             parameter,
             value,
         )?;
-        let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
-        let table = self.sine_table();
-        let (_, prepared) = preview.execute_prepared(
-            Command::ReplaceDeviceState { device, state },
-            |candidate| {
-                prepare_with_waveforms(
-                    candidate,
-                    &media,
-                    Arc::clone(&table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)
-            },
-        )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        self.preview_mix_command(Command::ReplaceDeviceState { device, state }, previous)
     }
 
     /// Prepare two native parameter values as one atomic project overlay.
@@ -1055,25 +1043,7 @@ impl Session {
         )?;
         let state =
             hex_engine::patch_native_device_parameter_for_class(class, &state, second.0, second.1)?;
-        let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
-        let table = self.sine_table();
-        let (_, prepared) = preview.execute_prepared(
-            Command::ReplaceDeviceState { device, state },
-            |candidate| {
-                prepare_with_waveforms(
-                    candidate,
-                    &media,
-                    Arc::clone(&table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)
-            },
-        )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        self.preview_mix_command(Command::ReplaceDeviceState { device, state }, previous)
     }
 
     /// Commit only this parameter onto the latest authored device state.
@@ -1155,22 +1125,40 @@ impl Session {
         command: Command,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
-        let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
-        let sine_table = self.sine_table();
-        let (_, prepared) = preview.execute_prepared(command, |candidate| {
-            prepare_with_waveforms(
-                candidate,
+        let candidate = self.editor.stage_preview(command)?;
+        let prepared = if let Some(prev) = previous {
+            device_comparison::validate_project(&candidate)?;
+            if let Some(incremental) = hex_engine::PreparedRevision::try_prepare_incremental(
+                self.project(),
+                &candidate,
+                prev,
+            )? {
+                Arc::new(incremental)
+            } else {
+                let media = self.media_bank();
+                let sine_table = self.sine_table();
+                Arc::new(prepare_with_waveforms(
+                    &candidate,
+                    &media,
+                    sine_table,
+                    Some(prev.session().as_ref()),
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )?)
+            }
+        } else {
+            let media = self.media_bank();
+            let sine_table = self.sine_table();
+            Arc::new(prepare_with_waveforms(
+                &candidate,
                 &media,
-                Arc::clone(&sine_table),
-                previous.map(|artifact| artifact.session().as_ref()),
+                sine_table,
+                None,
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
-            )
-            .map(Arc::new)
-            .map_err(SessionError::from)
-        })?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+            )?)
+        };
+        Ok((candidate, prepared))
     }
 
     /// Publish the final absolute value as one ordinary canonical gain command.
@@ -1236,29 +1224,14 @@ impl Session {
                 "return send gain must be finite and between zero and two",
             ));
         }
-        let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
-        let sine_table = self.sine_table();
-        let (_, prepared) = preview.execute_prepared(
+        self.preview_mix_command(
             Command::SetReturnSend {
                 track,
                 return_track,
                 gain,
             },
-            |candidate| {
-                prepare_with_waveforms(
-                    candidate,
-                    &media,
-                    Arc::clone(&sine_table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)
-            },
-        )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+            previous,
+        )
     }
 
     /// Commit one return-send value onto the latest canonical project as one
@@ -1810,11 +1783,12 @@ impl Session {
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor.undo_prepared_transition(|source, candidate| {
-            let prepared = prepare_with_waveforms(
+            let prepared = prepare_transition_with_waveforms(
+                source,
                 candidate,
+                previous,
                 &media,
                 Arc::clone(&sine_table),
-                previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
             )
@@ -1866,11 +1840,12 @@ impl Session {
         let media = self.media_bank();
         let sine_table = self.sine_table();
         self.editor.redo_prepared_transition(|source, candidate| {
-            let prepared = prepare_with_waveforms(
+            let prepared = prepare_transition_with_waveforms(
+                source,
                 candidate,
+                previous,
                 &media,
                 Arc::clone(&sine_table),
-                previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
             )
@@ -2004,6 +1979,36 @@ impl Session {
             verified: self.verified_sources.clone(),
         }
     }
+}
+
+/// Fast-path trivial mixer, Arrangement MIDI note, and single-chain native effect
+/// deltas by reusing the previous `PreparedRevision` and existing `AudioClipWaveform`
+/// cache, falling back to full compilation for any structural/audio/routing change.
+fn prepare_transition_with_waveforms(
+    source: &Project,
+    candidate: &Project,
+    previous: Option<&hex_engine::PreparedRevision>,
+    media: &MediaBank,
+    table: Arc<hex_engine::SineTable>,
+    transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    if let Some(prev) = previous {
+        device_comparison::validate_project(candidate)?;
+        if let Some(incremental) =
+            hex_engine::PreparedRevision::try_prepare_incremental(source, candidate, prev)?
+        {
+            return Ok(incremental);
+        }
+    }
+    prepare_with_waveforms(
+        candidate,
+        media,
+        table,
+        previous.map(|artifact| artifact.session().as_ref()),
+        transforms,
+        retained,
+    )
 }
 
 /// All waveform work runs in the same control preparation closure as accepted PCM.
