@@ -380,9 +380,9 @@ private:
         }
         captured.bytes.resize(captured.component_bytes+captured.controller_bytes);
         if(captured.component_bytes)
-            std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
+            std::copy_n(component_stream->payload().begin(),captured.component_bytes,captured.bytes.begin());
         if(captured.controller_bytes)
-            std::copy_n(controller_stream->bytes.begin(),captured.controller_bytes,captured.bytes.begin()+captured.component_bytes);
+            std::copy_n(controller_stream->payload().begin(),captured.controller_bytes,captured.bytes.begin()+captured.component_bytes);
         result=std::move(captured);return CaptureResult::Captured;
     }
 public:
