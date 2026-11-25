@@ -160,8 +160,8 @@ impl Prepared {
         self.quiesce_retained(protocol::quiesce)
     }
 
-    /// The graph and callback have returned for stopped renewal. Only the
-    /// isolated instrument's accepted gates need release before it quiesces.
+    /// After the graph and callback return for stopped renewal, release any
+    /// notes the isolated instance accepted before it quiesces.
     pub fn quiesce_for_stopped_restore_on_control(
         self,
     ) -> std::result::Result<Quiescent, PreparationFailure> {
