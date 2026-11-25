@@ -31,6 +31,9 @@ pub(super) struct Inventory {
 }
 
 impl Inventory {
+    pub(super) fn binding(&self) -> Binding {
+        self.binding
+    }
     pub(super) fn request_yield(&mut self) {
         self.yield_to_control = true;
     }
@@ -122,7 +125,6 @@ impl Plugins {
         }
         if self.parameters.is_some()
             || self.parameter_conversion.is_some()
-            || self.editor.is_some()
             || self.restore.is_some()
             || self.parameter_gesture.is_some()
         {
@@ -140,6 +142,9 @@ impl Plugins {
             })
             .ok_or("vst3 parameters need an active hosted instance")?
             .binding;
+        if self.editor_holds(binding) {
+            return Err("vst3 controller is busy · try again".into());
+        }
         self.parameters = Some(Inventory {
             query,
             binding,
@@ -659,7 +664,8 @@ mod tests {
         plugins.parameters = Some(pending);
         plugins.toggle_editor(generation, device).unwrap();
         assert!(
-            matches!(plugins.editor, Some(super::super::editor::EditorOperation::Pending { binding: current, .. }) if current == binding)
+            plugins.editor_ops.iter().any(|op| op.binding == binding
+                && op.action == super::super::editor::EditorAction::Toggle)
         );
         assert!(plugins.parameters.as_mut().unwrap().yield_between_pages());
         let result = plugins.take_parameters().unwrap();

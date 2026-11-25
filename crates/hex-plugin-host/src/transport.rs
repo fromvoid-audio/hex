@@ -157,6 +157,10 @@ struct Revocation {
     // The low bit reserves the admitted input, and the high bit records
     // revocation atomically against a callback's handoff decision.
     parameter_input_generation: AtomicU64,
+    // Lock-free/allocation-free wakeup for the joining transport worker.
+    // Registered once on worker startup; callback finish unparks only when parked.
+    worker_thread: std::sync::OnceLock<std::thread::Thread>,
+    worker_parked: AtomicBool,
 }
 impl Revocation {
     const REPORTED: u8 = 1 << 7;
@@ -181,12 +185,29 @@ impl Revocation {
             quantum_state: AtomicU8::new(0),
             editor_scope: AtomicU64::new(0),
             parameter_input_generation: AtomicU64::new(0),
+            worker_thread: std::sync::OnceLock::new(),
+            worker_parked: AtomicBool::new(false),
+        }
+    }
+
+    fn register_worker_thread(&self, thread: std::thread::Thread) {
+        let _ = self.worker_thread.set(thread);
+    }
+
+    fn wake_worker(&self) {
+        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
+        if self.worker_parked.load(Acquire)
+            && self.worker_parked.swap(false, AcqRel)
+            && let Some(thread) = self.worker_thread.get()
+        {
+            thread.unpark();
         }
     }
 
     fn revoke(&self) {
         self.parameter_input_generation
             .fetch_or(parameter_fence::REVOKED_BIT, AcqRel);
+        self.wake_worker();
     }
 
     fn is_revoked(&self) -> bool {
@@ -682,6 +703,10 @@ impl Control {
     }
     pub fn revoke(&self) {
         self.revoked.revoke();
+    }
+    /// Wake the parked transport worker without allocation or mutexes.
+    pub fn wake_worker(&self) {
+        self.revoked.wake_worker();
     }
     pub fn is_revoked(&self) -> bool {
         self.revoked.is_revoked()
@@ -1731,6 +1756,7 @@ impl Callback {
             if self.requests.push(request).is_err() {
                 return self.fail(Fault::Saturated);
             }
+            self.revoked.wake_worker();
         }
         if stage.state.position % u64::from(self.quantum) != 0 {
             stage.state.parameter_capacity = stage.state.parameter_capacity.min(remaining);
@@ -1837,6 +1863,10 @@ impl Worker {
     pub fn revoke(&self) {
         self.revoked.revoke();
     }
+    /// Wake the parked transport worker without allocation or mutexes.
+    pub fn wake_worker(&self) {
+        self.revoked.wake_worker();
+    }
     /// Whether the paired transport has been revoked. Control work which
     /// mutates the processor must check this before taking new SDK work.
     pub fn is_revoked(&self) -> bool {
@@ -1851,6 +1881,29 @@ impl Worker {
     /// The original worker remains the only consumer.
     pub fn has_queued_request(&self) -> bool {
         self.requests.slots() != 0
+    }
+    /// Register the current worker thread for event-driven wakeups from callback
+    /// submission and control-plane signals. Call once before the worker loop.
+    pub fn register_wakeup_thread(&self) {
+        self.revoked.register_worker_thread(std::thread::current());
+    }
+    /// Park this worker until `timeout`, callback submission, revocation, or an
+    /// explicit control wake. Re-checks all wake conditions after publishing the
+    /// parked flag so no wakeup can be lost.
+    pub fn park_timeout(
+        &self,
+        timeout: std::time::Duration,
+        should_stay_awake: impl FnOnce() -> bool,
+    ) {
+        self.revoked
+            .worker_parked
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if self.requests.slots() != 0 || self.revoked.is_revoked() || should_stay_awake() {
+            self.revoked.worker_parked.store(false, Release);
+            return;
+        }
+        std::thread::park_timeout(timeout);
+        self.revoked.worker_parked.store(false, Release);
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending_requests_for_test(&self) -> usize {

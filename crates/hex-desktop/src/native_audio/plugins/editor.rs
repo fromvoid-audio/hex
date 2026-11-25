@@ -31,19 +31,18 @@ impl EditorAction {
     }
 }
 
-pub(super) enum EditorOperation {
-    Pending {
-        binding: Binding,
-        generation: u64,
-        action: EditorAction,
-        request: Option<NativeWorkerControllerQuery>,
-        admission_deadline: Instant,
-        retry_after: Option<Instant>,
-    },
-    Complete {
-        generation: u64,
-        result: Result<bool, String>,
-    },
+pub(super) struct EditorPending {
+    pub(super) binding: Binding,
+    pub(super) generation: u64,
+    pub(super) action: EditorAction,
+    pub(super) request: Option<NativeWorkerControllerQuery>,
+    pub(super) admission_deadline: Instant,
+    pub(super) retry_after: Option<Instant>,
+}
+
+enum EditorLane {
+    Explicit,
+    Visibility,
 }
 
 impl Plugins {
@@ -52,17 +51,7 @@ impl Plugins {
         generation: u64,
         device: u64,
     ) -> Result<(), String> {
-        if self.queued_editor_toggle.is_some()
-            || self.editor.as_ref().is_some_and(|operation| {
-                !matches!(
-                    operation,
-                    EditorOperation::Pending {
-                        action: EditorAction::Observe | EditorAction::Open,
-                        ..
-                    }
-                )
-            })
-            || self.restore.is_some()
+        if self.restore.is_some()
             || self.reopen.is_some()
             || self.edit.is_some()
             || self.sources.iter().any(|source| {
@@ -73,9 +62,9 @@ impl Plugins {
         {
             return Err("vst3 editor is busy · try again after preparation finishes".into());
         }
-        let source = self
+        let binding = self
             .sources
-            .iter_mut()
+            .iter()
             .rev()
             .find(|source| {
                 source.accepted
@@ -83,14 +72,34 @@ impl Plugins {
                     && source.device == device
                     && source.project_generation == generation
             })
-            .ok_or("vst3 editor needs an active hosted instance")?;
-        let binding = source.binding;
-        source.editor_open_on_insert = false;
-        if let Some(inventory) = self.parameters.as_mut() {
+            .ok_or("vst3 editor needs an active hosted instance")?
+            .binding;
+        if self
+            .queued_editor_toggles
+            .iter()
+            .any(|(queued, _)| *queued == binding)
+            || self
+                .editor_ops
+                .iter()
+                .any(|op| op.binding == binding && !matches!(op.action, EditorAction::Open))
+        {
+            return Err("vst3 editor is busy · try again after preparation finishes".into());
+        }
+        if let Some(source) = self
+            .sources
+            .iter_mut()
+            .rev()
+            .find(|source| source.binding == binding)
+        {
+            source.editor_open_on_insert = false;
+        }
+        if let Some(inventory) = self.parameters.as_mut()
+            && inventory.binding() == binding
+        {
             inventory.request_yield();
         }
-        if self.editor.is_some() {
-            self.queued_editor_toggle = Some((binding, generation));
+        if self.editor_holds(binding) {
+            self.queued_editor_toggles.push((binding, generation));
         } else {
             self.queue_editor(binding, generation, EditorAction::Toggle);
         }
@@ -107,21 +116,27 @@ impl Plugins {
                 format_args!(""),
             );
         }
-        self.editor = Some(EditorOperation::Pending {
+        let pending = EditorPending {
             binding,
             generation,
             action,
             request: None,
             admission_deadline: Instant::now() + Duration::from_millis(250),
             retry_after: None,
-        });
+        };
+        if action == EditorAction::Observe {
+            self.editor_visibility.push(pending);
+        } else {
+            self.editor_ops.push(pending);
+        }
     }
 
     pub(super) fn editor_holds(&self, binding: Binding) -> bool {
-        matches!(
-            self.editor,
-            Some(EditorOperation::Pending { binding: current, .. }) if current == binding
-        )
+        self.editor_ops.iter().any(|op| op.binding == binding)
+            || self
+                .editor_visibility
+                .iter()
+                .any(|op| op.binding == binding)
     }
 
     /// Maximum queued stale Space bytes drained from one ineligible editor socket per poll.
@@ -220,25 +235,30 @@ impl Plugins {
     }
 
     fn queue_next_editor_transfer(&mut self, current: Option<AudioSourceContext>) {
-        if self.editor.is_some() {
-            return;
-        }
+        let mut to_queue = Vec::new();
         for index in 0..self.sources.len() {
             if !self.sources[index].editor_transfer {
                 continue;
             }
-            let source = &mut self.sources[index];
-            source.editor_transfer = false;
-            let (binding, generation) = (source.binding, source.project_generation);
+            let binding = self.sources[index].binding;
+            if self.editor_holds(binding) {
+                continue;
+            }
+            let generation = self.sources[index].project_generation;
+            self.sources[index].editor_transfer = false;
             if current.is_some_and(|context| context.project_generation == generation)
                 && self.editor_successor(binding).is_some()
             {
-                if let Some(inventory) = self.parameters.as_mut() {
-                    inventory.request_yield();
-                }
-                self.queue_editor(binding, generation, EditorAction::Detach);
-                return;
+                to_queue.push((binding, generation));
             }
+        }
+        for (binding, generation) in to_queue {
+            if let Some(inventory) = self.parameters.as_mut()
+                && inventory.binding() == binding
+            {
+                inventory.request_yield();
+            }
+            self.queue_editor(binding, generation, EditorAction::Detach);
         }
     }
 
@@ -247,55 +267,66 @@ impl Plugins {
         generation: u64,
     ) -> impl Iterator<Item = u64> + '_ {
         self.sources.iter().filter_map(move |source| {
-            let reopening = matches!(
-                &self.editor,
-                Some(EditorOperation::Pending { binding, action: EditorAction::Reopen(_), .. })
-                    if *binding == source.binding
-            );
+            let reopening = self.editor_ops.iter().any(|op| {
+                op.binding == source.binding && matches!(op.action, EditorAction::Reopen(_))
+            });
             (source.project_generation == generation && (source.editor_open || reopening))
                 .then_some(source.device)
         })
     }
 
     fn queue_next_editor_work(&mut self, desired: &CanonicalAudioSourceSnapshot) {
-        if self.editor.is_some() {
-            return;
-        }
         let context = desired.context();
         let generation = context.project_generation;
-        if let Some((binding, expected)) = self.queued_editor_toggle.take() {
-            if expected == generation {
-                self.queue_editor(binding, generation, EditorAction::Toggle);
+        let mut ready_toggles = Vec::new();
+        let mut index = 0;
+        while index < self.queued_editor_toggles.len() {
+            let (binding, expected) = self.queued_editor_toggles[index];
+            if expected != generation {
+                self.queued_editor_toggles.remove(index);
+            } else if !self.editor_holds(binding) {
+                self.queued_editor_toggles.remove(index);
+                ready_toggles.push(binding);
+            } else {
+                index += 1;
             }
-            return;
+        }
+        for binding in ready_toggles {
+            self.queue_editor(binding, generation, EditorAction::Toggle);
         }
         if self.restore.is_some() || self.reopen.is_some() || self.edit.is_some() {
             return;
         }
+        let mut auto_opens = Vec::new();
         for index in 0..self.sources.len() {
-            let source = &mut self.sources[index];
-            if !source.editor_open_on_insert {
+            if !self.sources[index].editor_open_on_insert {
                 continue;
             }
-            if source.project_generation == generation
-                && context.editor_revision < source.binding.graph
+            let binding = self.sources[index].binding;
+            if self.sources[index].project_generation == generation
+                && context.editor_revision < binding.graph
             {
                 continue;
             }
-            source.editor_open_on_insert = false;
-            let binding = source.binding;
-            if source.project_generation == generation
-                && self.editor_source_present(binding, desired)
-            {
-                if let Some(inventory) = self.parameters.as_mut() {
-                    inventory.request_yield();
-                }
-                self.queue_editor(binding, generation, EditorAction::Open);
-                return;
+            if self.editor_holds(binding) {
+                continue;
+            }
+            let same_generation = self.sources[index].project_generation == generation;
+            self.sources[index].editor_open_on_insert = false;
+            if same_generation && self.editor_source_present(binding, desired) {
+                auto_opens.push(binding);
             }
         }
+        for binding in auto_opens {
+            if let Some(inventory) = self.parameters.as_mut()
+                && inventory.binding() == binding
+            {
+                inventory.request_yield();
+            }
+            self.queue_editor(binding, generation, EditorAction::Open);
+        }
         let now = Instant::now();
-        if self.parameters.is_some() || self.next_editor_visibility.is_some_and(|next| now < next) {
+        if self.next_editor_visibility.is_some_and(|next| now < next) {
             return;
         }
         let count = self.sources.len();
@@ -306,6 +337,15 @@ impl Plugins {
                 && source.accepted
                 && !source.retiring
                 && source.editor_open
+                && !self.editor_holds(source.binding)
+                && self
+                    .parameters
+                    .as_ref()
+                    .is_none_or(|inventory| inventory.binding() != source.binding)
+                && self
+                    .parameter_conversion
+                    .as_ref()
+                    .is_none_or(|conversion| conversion.binding() != source.binding)
             {
                 self.editor_visibility_cursor = (index + 1) % count;
                 self.next_editor_visibility = Some(now + Duration::from_millis(100));
@@ -325,121 +365,151 @@ impl Plugins {
             self.queue_next_editor_transfer(current);
             self.queue_next_editor_work(desired);
         }
-        if desired.is_none()
-            && matches!(
-                self.editor,
-                Some(EditorOperation::Pending {
-                    action: EditorAction::Toggle
+        self.poll_editor_lane(EditorLane::Explicit, control, current, desired);
+        self.poll_editor_lane(EditorLane::Visibility, control, current, desired);
+    }
+
+    fn poll_editor_lane(
+        &mut self,
+        lane: EditorLane,
+        control: &mut hex_audio::prepared::PublicationControl,
+        current: Option<AudioSourceContext>,
+        desired: Option<&CanonicalAudioSourceSnapshot>,
+    ) {
+        let len = match lane {
+            EditorLane::Explicit => self.editor_ops.len(),
+            EditorLane::Visibility => self.editor_visibility.len(),
+        };
+        let mut completed = Vec::new();
+        let mut index = 0;
+        let mut remaining = len;
+        while index < remaining {
+            let (binding, action, has_request) = {
+                let op = match lane {
+                    EditorLane::Explicit => &self.editor_ops[index],
+                    EditorLane::Visibility => &self.editor_visibility[index],
+                };
+                (op.binding, op.action, op.request.is_some())
+            };
+            if desired.is_none()
+                && !has_request
+                && matches!(
+                    action,
+                    EditorAction::Toggle
                         | EditorAction::Open
                         | EditorAction::Observe
-                        | EditorAction::Reopen(_),
-                    request: None,
-                    ..
-                })
-            )
-        {
-            return;
-        }
-        // An intervening accepted edit can supersede the queued target.
-        // Resolve it before admission while the previous binding is still held.
-        let can_admit = match &self.editor {
-            Some(EditorOperation::Pending {
-                binding,
-                action: EditorAction::Reopen(_),
-                request: None,
-                ..
-            }) => {
-                let target = self.editor_successor(*binding).filter(|&target| {
-                    desired.is_some_and(|snapshot| self.editor_source_present(target, snapshot))
-                });
-                if let Some(target) = target
-                    && let Some(EditorOperation::Pending { binding, .. }) = &mut self.editor
+                        | EditorAction::Reopen(_)
+                )
+            {
+                index += 1;
+                continue;
+            }
+            // An intervening accepted edit can supersede the queued target.
+            // Resolve it before admission while the previous binding is still held.
+            let can_admit = if !has_request {
+                match action {
+                    EditorAction::Reopen(_) => {
+                        let target = self.editor_successor(binding).filter(|&target| {
+                            desired.is_some_and(|snapshot| {
+                                self.editor_source_present(target, snapshot)
+                            })
+                        });
+                        if let Some(target) = target {
+                            let op = match lane {
+                                EditorLane::Explicit => &mut self.editor_ops[index],
+                                EditorLane::Visibility => &mut self.editor_visibility[index],
+                            };
+                            op.binding = target;
+                        }
+                        target.is_some()
+                    }
+                    EditorAction::Toggle | EditorAction::Open | EditorAction::Observe => desired
+                        .is_some_and(|snapshot| self.editor_source_present(binding, snapshot)),
+                    EditorAction::Close | EditorAction::Detach => true,
+                }
+            } else {
+                true
+            };
+            let op = match lane {
+                EditorLane::Explicit => &mut self.editor_ops[index],
+                EditorLane::Visibility => &mut self.editor_visibility[index],
+            };
+            if op.request.is_none() && op.retry_after.is_some_and(|at| Instant::now() < at) {
+                index += 1;
+                continue;
+            }
+            let progress = if let Some(request) = &op.request {
+                control.poll_native_source_controller_query_on_control(op.binding, request)
+            } else if !can_admit
+                || current.is_none_or(|context| context.project_generation != op.generation)
+            {
+                Err("vst3 editor target changed")
+            } else {
+                match control.begin_native_source_controller_query_on_control(
+                    op.binding,
+                    op.action.request(),
+                ) {
+                    Ok(token) => {
+                        op.request = Some(token);
+                        index += 1;
+                        continue;
+                    }
+                    Err(
+                        "native preparation is busy"
+                        | "native controller mailbox is busy"
+                        | "native controller query is already pending",
+                    ) if Instant::now() < op.admission_deadline => {
+                        index += 1;
+                        continue;
+                    }
+                    Err(
+                        "native preparation is busy"
+                        | "native controller mailbox is busy"
+                        | "native controller query is already pending",
+                    ) => Err("vst3 editor is busy"),
+                    Err(error) => Err(error),
+                }
+            };
+            let result = match progress {
+                Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
+                    index += 1;
+                    continue;
+                }
+                Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::Unavailable)) => {
+                    Err("native editor unavailable for this vst3".into())
+                }
+                Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::GestureActive))
+                    if op.action == EditorAction::Detach =>
                 {
-                    *binding = target;
+                    op.request = None;
+                    op.admission_deadline = Instant::now() + Duration::from_millis(250);
+                    op.retry_after = Instant::now().checked_add(Duration::from_millis(10));
+                    index += 1;
+                    continue;
                 }
-                target.is_some()
-            }
-            Some(EditorOperation::Pending {
-                binding,
-                action: EditorAction::Toggle | EditorAction::Open | EditorAction::Observe,
-                request: None,
-                ..
-            }) => desired.is_some_and(|snapshot| self.editor_source_present(*binding, snapshot)),
-            _ => true,
-        };
-        let Some(EditorOperation::Pending {
-            binding,
-            generation,
-            action,
-            request,
-            admission_deadline,
-            retry_after,
-        }) = self.editor.as_mut()
-        else {
-            return;
-        };
-        if request.is_none() && retry_after.is_some_and(|at| Instant::now() < at) {
-            return;
+                Ok(NativeWorkerControllerProgress::Editor(state)) => Ok(state),
+                Err(error) => Err(error.into()),
+                Ok(_) => Err("vst3 editor operation failed".into()),
+            };
+            let removed = match lane {
+                EditorLane::Explicit => self.editor_ops.remove(index),
+                EditorLane::Visibility => self.editor_visibility.remove(index),
+            };
+            remaining -= 1;
+            completed.push((removed.binding, removed.generation, removed.action, result));
         }
-        let progress = if let Some(request) = request {
-            control.poll_native_source_controller_query_on_control(*binding, request)
-        } else if !can_admit
-            || current.is_none_or(|context| context.project_generation != *generation)
-        {
-            Err("vst3 editor target changed")
-        } else {
-            match control
-                .begin_native_source_controller_query_on_control(*binding, action.request())
+        for (binding, generation, action, result) in completed {
+            self.finish_editor_action(binding, generation, action, result, current);
+            if self
+                .sources
+                .iter()
+                .find(|source| source.binding == binding)
+                .is_some_and(|source| !source.editor_open)
             {
-                Ok(token) => {
-                    *request = Some(token);
-                    return;
-                }
-                Err(
-                    "native preparation is busy"
-                    | "native controller mailbox is busy"
-                    | "native controller query is already pending",
-                ) if Instant::now() < *admission_deadline => {
-                    return;
-                }
-                Err(
-                    "native preparation is busy"
-                    | "native controller mailbox is busy"
-                    | "native controller query is already pending",
-                ) => Err("vst3 editor is busy"),
-                Err(error) => Err(error),
+                Self::drain_transport_space_with(binding, &mut |b| {
+                    control.take_native_source_transport_space(b)
+                });
             }
-        };
-        let result = match progress {
-            Ok(NativeWorkerControllerProgress::Pending) | Err("native preparation is busy") => {
-                return;
-            }
-            Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::Unavailable)) => {
-                Err("native editor unavailable for this vst3".into())
-            }
-            Ok(NativeWorkerControllerProgress::Editor(PluginEditorState::GestureActive))
-                if *action == EditorAction::Detach =>
-            {
-                *request = None;
-                *admission_deadline = Instant::now() + Duration::from_millis(250);
-                *retry_after = Instant::now().checked_add(Duration::from_millis(10));
-                return;
-            }
-            Ok(NativeWorkerControllerProgress::Editor(state)) => Ok(state),
-            Err(error) => Err(error.into()),
-            Ok(_) => Err("vst3 editor operation failed".into()),
-        };
-        let (binding, generation, action) = (*binding, *generation, *action);
-        self.finish_editor_action(binding, generation, action, result, current);
-        if self
-            .sources
-            .iter()
-            .find(|source| source.binding == binding)
-            .is_some_and(|source| !source.editor_open)
-        {
-            Self::drain_transport_space_with(binding, &mut |b| {
-                control.take_native_source_transport_space(b)
-            });
         }
     }
 
@@ -500,10 +570,16 @@ impl Plugins {
                 _ => {}
             }
         }
-        self.editor = (action == EditorAction::Toggle).then_some(EditorOperation::Complete {
-            generation,
-            result: result.map(|_| open),
-        });
+        if action == EditorAction::Observe {
+            self.editor_visibility.retain(|op| op.binding != binding);
+        } else {
+            self.editor_ops
+                .retain(|op| !(op.binding == binding && op.action == action));
+        }
+        if action == EditorAction::Toggle {
+            self.editor_results
+                .push_back((generation, result.map(|_| open)));
+        }
         if action == EditorAction::Detach
             && open
             && current.is_some_and(|context| context.project_generation == generation)
@@ -542,17 +618,18 @@ impl Plugins {
         desired: &CanonicalAudioSourceSnapshot,
     ) {
         let context = desired.context();
-        if self.editor.is_some() || self.editor_checked == Some(context) {
+        if self.editor_checked == Some(context) {
             return;
         }
-        let mut transfer_pending = false;
-        let removed = self.sources.iter().find(|source| {
+        let mut defer_checked = false;
+        let mut to_close = Vec::new();
+        for source in &self.sources {
             if !source.editor_open || source.project_generation != context.project_generation {
-                return false;
+                continue;
             }
-            if source.editor_transfer {
-                transfer_pending = true;
-                return false;
+            if source.editor_transfer || self.editor_holds(source.binding) {
+                defer_checked = true;
+                continue;
             }
             let mut present = false;
             let checked = desired
@@ -561,38 +638,37 @@ impl Plugins {
                     present |= device == source.device;
                     Ok(())
                 });
-            checked.is_ok() && !present
-        });
-        if let Some(source) = removed {
-            self.queue_editor(
-                source.binding,
-                context.project_generation,
-                EditorAction::Close,
-            );
-        } else if !transfer_pending {
+            if checked.is_ok() && !present {
+                to_close.push(source.binding);
+            }
+        }
+        for binding in to_close {
+            self.queue_editor(binding, context.project_generation, EditorAction::Close);
+        }
+        if !defer_checked
+            && self
+                .editor_ops
+                .iter()
+                .all(|op| op.action != EditorAction::Close)
+        {
             self.editor_checked = Some(context);
         }
     }
 
     pub(in crate::native_audio) fn editor_ready(&self) -> bool {
-        matches!(self.editor, Some(EditorOperation::Complete { .. }))
+        !self.editor_results.is_empty()
     }
 
     pub(in crate::native_audio) fn take_editor_result(
         &mut self,
         current_generation: u64,
     ) -> Option<Result<bool, String>> {
-        if !self.editor_ready() {
-            return None;
-        }
-        match self.editor.take()? {
-            EditorOperation::Complete { generation, result }
-                if generation == current_generation =>
-            {
-                Some(result)
+        while let Some((generation, result)) = self.editor_results.pop_front() {
+            if generation == current_generation {
+                return Some(result);
             }
-            _ => None,
         }
+        None
     }
 }
 
@@ -735,7 +811,7 @@ mod tests {
             plugins.finish_edit(after, accepted);
             plugins.queue_next_editor_transfer(Some(after));
             if !accepted {
-                assert!(plugins.editor.is_none());
+                assert!(plugins.editor_ops.is_empty());
                 assert!(plugins.sources[0].accepted && plugins.sources[0].editor_open);
                 continue;
             }
@@ -751,10 +827,10 @@ mod tests {
             assert!(!plugins.sources[0].editor_open);
             assert_eq!(plugins.editor_holds(new), was_open);
             if was_open {
-                assert!(matches!(
-                    plugins.editor,
-                    Some(EditorOperation::Pending { action: EditorAction::Reopen(Some(p)), .. }) if p == position
-                ));
+                assert!(plugins.editor_ops.iter().any(|op| {
+                    op.binding == new
+                        && matches!(op.action, EditorAction::Reopen(Some(p)) if p == position)
+                }));
                 plugins.finish_editor_action(
                     new,
                     1,
@@ -763,7 +839,7 @@ mod tests {
                     Some(after),
                 );
                 assert!(plugins.sources[1].editor_open);
-                assert!(plugins.editor.is_none());
+                assert!(plugins.editor_ops.is_empty());
             }
         }
     }
@@ -827,14 +903,10 @@ mod tests {
         );
         assert!(!plugins.sources[0].editor_open);
         assert!(
-            matches!(
-                plugins.editor,
-                Some(EditorOperation::Pending {
-                    binding,
-                    action: EditorAction::Reopen(Some(p)),
-                    ..
-                }) if binding == receiver_binding && p == position && p.content_size() == Some((540, 360))
-            ),
+            plugins.editor_ops.iter().any(|op| {
+                op.binding == receiver_binding
+                    && matches!(op.action, EditorAction::Reopen(Some(p)) if p == position && p.content_size() == Some((540, 360)))
+            }),
             "detach must queue Reopen with prior position and resized content size on destination track's successor"
         );
 
@@ -863,14 +935,10 @@ mod tests {
             Some(after_undo_or_second_move),
         );
         assert!(
-            matches!(
-                plugins.editor,
-                Some(EditorOperation::Pending {
-                    binding,
-                    action: EditorAction::Reopen(Some(p)),
-                    ..
-                }) if binding == third_binding && p == position && p.content_size() == Some((540, 360))
-            ),
+            plugins.editor_ops.iter().any(|op| {
+                op.binding == third_binding
+                    && matches!(op.action, EditorAction::Reopen(Some(p)) if p == position && p.content_size() == Some((540, 360)))
+            }),
             "undo must preserve resized placement on restored track successor"
         );
         plugins.finish_editor_action(
@@ -905,14 +973,10 @@ mod tests {
             Some(after_redo),
         );
         assert!(
-            matches!(
-                plugins.editor,
-                Some(EditorOperation::Pending {
-                    binding,
-                    action: EditorAction::Reopen(Some(p)),
-                    ..
-                }) if binding == redo_binding && p == position && p.content_size() == Some((540, 360))
-            ),
+            plugins.editor_ops.iter().any(|op| {
+                op.binding == redo_binding
+                    && matches!(op.action, EditorAction::Reopen(Some(p)) if p == position && p.content_size() == Some((540, 360)))
+            }),
             "redo must preserve resized placement on destination track successor"
         );
         assert_eq!(
@@ -954,7 +1018,7 @@ mod tests {
         deleted.editor_transfer = true;
         plugins.sources.push(deleted);
         plugins.close_removed_editor(desired);
-        assert!(plugins.editor.is_none());
+        assert!(plugins.editor_ops.is_empty());
         assert_eq!(plugins.editor_checked, None);
 
         // Once no transfer is pending, `close_removed_editor` must close the retiring source.
@@ -967,14 +1031,10 @@ mod tests {
         );
         plugins.close_removed_editor(desired);
         assert!(
-            matches!(
-                plugins.editor,
-                Some(EditorOperation::Pending {
-                    binding: queued,
-                    action: EditorAction::Close,
-                    ..
-                }) if queued == binding
-            ),
+            plugins
+                .editor_ops
+                .iter()
+                .any(|op| op.binding == binding && op.action == EditorAction::Close),
             "close_removed_editor must queue Close for a retiring deleted source with an open editor"
         );
         plugins.finish_editor_action(
@@ -1099,5 +1159,78 @@ mod tests {
             !plugins.take_transport_space_with(context.project_generation, read_socket(binding)),
             "retired device must not toggle current transport"
         );
+    }
+
+    #[test]
+    fn visibility_probe_and_other_plugin_editor_ops_do_not_reject_toggle_editor_as_busy() {
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 4,
+        };
+        let binding_a = Binding {
+            root: 1,
+            instance: 10,
+            graph: 4,
+            epoch: 1,
+        };
+        let binding_b = Binding {
+            root: 1,
+            instance: 20,
+            graph: 4,
+            epoch: 2,
+        };
+        let mut plugins = Plugins::default();
+        let mut src_a = source(binding_a, context, true);
+        src_a.accepted = true;
+        let mut src_b = source(binding_b, context, false);
+        src_b.accepted = true;
+        plugins.sources.extend([src_a, src_b]);
+
+        // 1. Active background visibility probe on Plugin A must not block toggle_editor on Plugin B.
+        plugins.queue_editor(binding_a, 1, EditorAction::Observe);
+        assert!(plugins.editor_holds(binding_a));
+        assert!(plugins.editor_visibility.len() == 1);
+        plugins
+            .toggle_editor(1, binding_b.instance)
+            .expect("visibility probe on plugin A must not reject plugin B toggle");
+        assert!(
+            plugins
+                .editor_ops
+                .iter()
+                .any(|op| op.binding == binding_b && op.action == EditorAction::Toggle)
+        );
+
+        // 2. Active Toggle on Plugin B must not block queueing a toggle on Plugin A while Observe finishes.
+        plugins
+            .toggle_editor(1, binding_a.instance)
+            .expect("toggle on plugin A while Observe is in flight must queue cleanly");
+        assert_eq!(plugins.queued_editor_toggles, vec![(binding_a, 1)]);
+
+        // 3. A second Toggle on the exact same binding B is still rejected while B's Toggle is in flight.
+        let err = plugins
+            .toggle_editor(1, binding_b.instance)
+            .expect_err("duplicate toggle on same binding must still be rejected");
+        assert!(err.contains("vst3 editor is busy"), "unexpected err: {err}");
+
+        // 4. Completing Observe on A releases A so queued Toggle can advance without affecting B.
+        plugins.finish_editor_action(
+            binding_a,
+            1,
+            EditorAction::Observe,
+            Ok(PluginEditorState::Open),
+            Some(context),
+        );
+        assert!(!plugins.editor_holds(binding_a));
+        assert!(plugins.editor_holds(binding_b));
+        plugins.finish_editor_action(
+            binding_b,
+            1,
+            EditorAction::Toggle,
+            Ok(PluginEditorState::Open),
+            Some(context),
+        );
+        assert!(plugins.editor_ready());
+        assert_eq!(plugins.take_editor_result(1), Some(Ok(true)));
+        assert!(!plugins.editor_ready());
     }
 }

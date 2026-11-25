@@ -1,5 +1,7 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+mod control;
+pub use control::ControlClient;
 mod deadline;
 pub use deadline::MAX_DEADLINE_PAIRS;
 mod edits;
@@ -261,6 +263,7 @@ pub struct Prepared {
     parameter_page: Option<parameter_page::PendingPage>,
     parameter_page_sequence: u64,
     authored_parameter_metadata: Option<AuthoredParameterMetadata>,
+    control: Option<Box<ControlClient>>,
     grouped_editor_callbacks: bool,
     offline: bool,
 }
@@ -270,6 +273,8 @@ pub struct Prepared {
 /// Derive the graph plan from `facts`, then consume it once through completion.
 pub struct Pending {
     lease: Lease,
+    control_channel: Channel,
+    control_packet: Packet,
     config: Configuration,
     facts: Facts,
     limits: Limits,
@@ -492,12 +497,18 @@ impl Pending {
         let (data, child_data) = UnixStream::pair()
             .map_err(Error::Io)
             .map_err(PreparationFailure::before_native)?;
+        let (control_data, child_control) = UnixStream::pair()
+            .map_err(Error::Io)
+            .map_err(PreparationFailure::before_native)?;
         let PreparationCancellation {
             token: cancellation,
             receiver: child_cancel,
         } = cancellation;
         let channel = Channel::new(data).map_err(PreparationFailure::before_native)?;
+        let control_channel =
+            Channel::new(control_data).map_err(PreparationFailure::before_native)?;
         let mut packet = Packet::new().map_err(PreparationFailure::before_native)?;
+        let control_packet = Packet::new().map_err(PreparationFailure::before_native)?;
         let mut command = Command::new(build.helper());
         command
             .arg("--supervised")
@@ -507,7 +518,7 @@ impl Pending {
             )
             .stdin(Stdio::from(OwnedFd::from(child_data)))
             .stdout(Stdio::from(OwnedFd::from(child_cancel)))
-            .stderr(Stdio::null());
+            .stderr(Stdio::from(OwnedFd::from(child_control)));
         if source.grouped_editor_callbacks {
             command.arg("--test-grouped-editor");
         }
@@ -587,6 +598,8 @@ impl Pending {
         };
         Ok(Self {
             lease: pending,
+            control_channel,
+            control_packet,
             config,
             facts,
             limits: options.limits,
@@ -702,6 +715,13 @@ impl Pending {
                 ));
             }
         };
+        let control = ControlClient::new(
+            self.control_channel,
+            self.control_packet,
+            &self.config,
+            self.limits,
+            self.lease.cancellation.clone(),
+        );
         Ok(Prepared {
             lease: self.lease,
             config: self.config,
@@ -722,6 +742,7 @@ impl Pending {
             parameter_page: None,
             parameter_page_sequence: 0,
             authored_parameter_metadata: None,
+            control: Some(Box::new(control)),
             grouped_editor_callbacks: self.source.grouped_editor_callbacks,
             offline: self.offline,
         })
@@ -729,6 +750,32 @@ impl Pending {
 }
 
 impl Prepared {
+    /// Detach the dedicated out-of-band control channel for joining control
+    /// custody while the real-time audio lane runs independently.
+    pub fn take_control_client_on_control(&mut self) -> Option<Box<ControlClient>> {
+        self.control.take()
+    }
+
+    /// Re-attach the dedicated control channel after joining the audio lane.
+    pub fn restore_control_client_on_control(&mut self, client: Box<ControlClient>) {
+        if client.is_faulted() {
+            self.faulted = true;
+        }
+        self.control = Some(client);
+    }
+
+    pub fn has_pending_control_capture_on_control(&self) -> bool {
+        self.control
+            .as_deref()
+            .is_some_and(ControlClient::has_pending_live_capture)
+    }
+
+    pub fn has_pending_control_controller_on_control(&self) -> bool {
+        self.control
+            .as_deref()
+            .is_some_and(ControlClient::has_pending_controller_request)
+    }
+
     /// The original helper was started in SDK offline processing mode.
     pub const fn is_offline_on_control(&self) -> bool {
         self.offline
@@ -1241,10 +1288,10 @@ impl Prepared {
         Ok(output)
     }
     pub fn stop_and_reap_on_control(&mut self) -> Result<Retirement> {
-        if self.parameter_page.is_some() {
+        if self.parameter_page.is_some() || self.has_pending_control_controller_on_control() {
             return Err(Error::Protocol("controller page is still pending"));
         }
-        if self.live_capture.is_some() {
+        if self.live_capture.is_some() || self.has_pending_control_capture_on_control() {
             return Err(Error::Protocol("native capture is still pending"));
         }
         if self.faulted {
