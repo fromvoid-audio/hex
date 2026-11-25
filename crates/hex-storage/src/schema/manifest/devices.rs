@@ -220,6 +220,190 @@ enum AutomationTargetDto {
 enum InterpolationDto {
     Step,
     Linear,
+    Curve { tension_millis: i16 },
+}
+
+impl InterpolationDto {
+    fn from_model(value: AutomationInterpolation) -> Self {
+        match value {
+            AutomationInterpolation::Step => Self::Step,
+            AutomationInterpolation::Linear => Self::Linear,
+            AutomationInterpolation::Curve(tension) => Self::Curve {
+                tension_millis: tension.millis(),
+            },
+        }
+    }
+
+    fn into_model(self) -> Result<AutomationInterpolation, StorageError> {
+        match self {
+            Self::Step => Ok(AutomationInterpolation::Step),
+            Self::Linear => Ok(AutomationInterpolation::Linear),
+            Self::Curve { tension_millis } => {
+                hex_project::CurveTension::from_millis(tension_millis)
+                    .map(AutomationInterpolation::Curve)
+                    .map_err(invalid)
+            }
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MixerPointDto {
+    beat_raw: u64,
+    value: f32,
+    outgoing: InterpolationDto,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendAutomationDto {
+    return_track: u64,
+    #[serde(deserialize_with = "read_mixer_points")]
+    points: Vec<MixerPointDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct TrackMixerAutomationDto {
+    pub(super) track: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_mixer_points"
+    )]
+    balance: Vec<MixerPointDto>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_mixer_points"
+    )]
+    mute: Vec<MixerPointDto>,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "read_send_lanes"
+    )]
+    sends: Vec<SendAutomationDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct FrozenTrackDto {
+    pub(super) track: u64,
+    asset: u64,
+    start: u64,
+    duration: u64,
+    source_frames: u64,
+}
+
+fn read_mixer_points<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<MixerPointDto>, D::Error> {
+    bounded(d, hex_project::MAX_MIXER_AUTOMATION_POINTS_PER_LANE)
+}
+
+fn read_send_lanes<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<SendAutomationDto>, D::Error> {
+    bounded(d, hex_project::MAX_RETURN_SENDS_PER_TRACK)
+}
+
+pub(super) fn read_mixer_automation<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<TrackMixerAutomationDto>, D::Error> {
+    bounded(d, hex_project::MAX_TRACKS)
+}
+
+pub(super) fn read_frozen_tracks<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<FrozenTrackDto>, D::Error> {
+    bounded(d, hex_project::MAX_TRACKS)
+}
+
+impl TrackMixerAutomationDto {
+    pub(super) fn from_model(track: &Track) -> Self {
+        let map_pts = |points: &[hex_project::MixerAutomationPoint]| {
+            points
+                .iter()
+                .map(|p| MixerPointDto {
+                    beat_raw: p.beat.raw(),
+                    value: p.value,
+                    outgoing: InterpolationDto::from_model(p.outgoing),
+                })
+                .collect()
+        };
+        Self {
+            track: track.id().value(),
+            balance: map_pts(track.balance_lane().points()),
+            mute: map_pts(track.mute_lane().points()),
+            sends: track
+                .send_lanes()
+                .iter()
+                .map(|(return_id, lane)| SendAutomationDto {
+                    return_track: return_id.value(),
+                    points: map_pts(lane.points()),
+                })
+                .collect(),
+        }
+    }
+
+    pub(super) fn into_snapshot(
+        self,
+    ) -> Result<hex_project::TrackMixerAutomationSnapshot, StorageError> {
+        let map_pts = |points: Vec<MixerPointDto>| {
+            points
+                .into_iter()
+                .map(|p| {
+                    Ok(hex_project::MixerAutomationPoint {
+                        beat: BeatTime::from_raw(p.beat_raw),
+                        value: p.value,
+                        outgoing: p.outgoing.into_model()?,
+                    })
+                })
+                .collect::<Result<Vec<_>, StorageError>>()
+        };
+        let sends = self
+            .sends
+            .into_iter()
+            .map(|send| {
+                Ok(hex_project::SendAutomationSnapshot {
+                    return_track: send.return_track,
+                    points: map_pts(send.points)?,
+                })
+            })
+            .collect::<Result<Vec<_>, StorageError>>()?;
+        Ok(hex_project::TrackMixerAutomationSnapshot {
+            track: self.track,
+            balance: map_pts(self.balance)?,
+            mute: map_pts(self.mute)?,
+            sends,
+        })
+    }
+}
+
+impl FrozenTrackDto {
+    pub(super) fn from_model(track: &Track) -> Option<Self> {
+        track.frozen().map(|freeze| Self {
+            track: track.id().value(),
+            asset: freeze.asset.value(),
+            start: freeze.start,
+            duration: freeze.duration,
+            source_frames: freeze.source_frames,
+        })
+    }
+}
+
+impl From<FrozenTrackDto> for hex_project::FrozenTrackSnapshot {
+    fn from(dto: FrozenTrackDto) -> Self {
+        Self {
+            track: dto.track,
+            asset: dto.asset,
+            start: dto.start,
+            duration: dto.duration,
+            source_frames: dto.source_frames,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -304,10 +488,7 @@ impl DeviceAutomationDto {
                 .map(|p| AutomationPointDto {
                     beat_raw: p.beat.raw(),
                     value: p.value.get(),
-                    outgoing: match p.outgoing {
-                        AutomationInterpolation::Step => InterpolationDto::Step,
-                        AutomationInterpolation::Linear => InterpolationDto::Linear,
-                    },
+                    outgoing: InterpolationDto::from_model(p.outgoing),
                 })
                 .collect(),
             touch: lane
@@ -351,10 +532,7 @@ impl DeviceAutomationDto {
                 Ok(AutomationPoint {
                     beat: BeatTime::from_raw(p.beat_raw),
                     value: AutomationValue::new(p.value).map_err(invalid)?,
-                    outgoing: match p.outgoing {
-                        InterpolationDto::Step => AutomationInterpolation::Step,
-                        InterpolationDto::Linear => AutomationInterpolation::Linear,
-                    },
+                    outgoing: p.outgoing.into_model()?,
                 })
             })
             .collect::<Result<Vec<_>, StorageError>>()?;

@@ -10,8 +10,8 @@
 //! per the saved-project compatibility policy this unified layout uses fresh
 //! schema identifier `126`.
 use crate::{
-    CAPABILITY_MANIFEST_SCHEMA_VERSION, MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION,
-    Project, StorageError,
+    AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION, CAPABILITY_MANIFEST_SCHEMA_VERSION,
+    MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION, Project, StorageError,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -27,11 +27,12 @@ mod tests;
 
 use audio::{AliasesDe, AliasesSer, SessionDe, SessionSer};
 use devices::{
-    AssetDe, AssetSer, AudioFeedDto, DeviceDe, DeviceSer, LocatorDe, LocatorSer, LoopRegionDto,
-    MeterPointDto, MidiRouteDto, NativeSourceDe, NativeSourceSer, ProvenanceDe, ProvenanceSer,
-    ReturnFeedDto, ReturnTrackDe, ReturnTrackSer, SampleRateModeDto, SectionDe, SectionSer,
-    SidechainDto, TempoPointDto, TrackDe, TrackSer, TuningDto, read_audio_feeds, read_locators,
-    read_main_devices, read_midi_routes, read_return_feeds, read_sections, read_sidechains,
+    AssetDe, AssetSer, AudioFeedDto, DeviceDe, DeviceSer, FrozenTrackDto, LocatorDe, LocatorSer,
+    LoopRegionDto, MeterPointDto, MidiRouteDto, NativeSourceDe, NativeSourceSer, ProvenanceDe,
+    ProvenanceSer, ReturnFeedDto, ReturnTrackDe, ReturnTrackSer, SampleRateModeDto, SectionDe,
+    SectionSer, SidechainDto, TempoPointDto, TrackDe, TrackMixerAutomationDto, TrackSer, TuningDto,
+    read_audio_feeds, read_frozen_tracks, read_locators, read_main_devices, read_midi_routes,
+    read_mixer_automation, read_return_feeds, read_sections, read_sidechains,
 };
 
 /// Sorted canonical list of all capabilities recognized by this build.
@@ -41,6 +42,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "arrangement_locators",
     "arrangement_steps",
     "audio_rate_modulator",
+    "automation_curves_and_freeze",
     "bound_source_effects",
     "button_modulator",
     "buttons_modulator",
@@ -141,11 +143,22 @@ pub(crate) fn contains_midi_expression(project: &Project) -> bool {
             })
 }
 
-/// True when `project` should be saved directly as unified schema 126/127 rather
-/// than stacking four or more historical post-112 `RawValue` wrappers.
+/// True when `project` carries curved device automation, canonical mixer
+/// pan/mute/send automation lanes, or persisted reversible track freeze,
+/// requiring schema 128 (`automation_curves_and_freeze`).
+pub(crate) fn contains_automation_curves_and_freeze(project: &Project) -> bool {
+    project.has_curved_device_automation()
+        || project.has_mixer_automation()
+        || project.has_frozen_tracks()
+}
+
+/// True when `project` should be saved directly as unified schema 126/127/128
+/// rather than stacking four or more historical post-112 `RawValue` wrappers.
 /// Projects with 0..=3 post-112 features retain their oldest compatible format.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    contains_midi_expression(project) || post_112_feature_count(project) >= 4
+    contains_automation_curves_and_freeze(project)
+        || contains_midi_expression(project)
+        || post_112_feature_count(project) >= 4
 }
 
 /// Deterministic, strictly sorted capability manifest for `project`.
@@ -177,6 +190,10 @@ pub(crate) fn capabilities_for(project: &Project) -> Vec<&'static str> {
     push(
         super::device_modulation::contains_audio_rate(project),
         "audio_rate_modulator",
+    );
+    push(
+        contains_automation_curves_and_freeze(project),
+        "automation_curves_and_freeze",
     );
     push(
         super::bound_source_effects::contains(project),
@@ -454,6 +471,10 @@ struct ProjectSer<'a> {
     sidechains: SliceSeq<'a, hex_project::SidechainRoute, SidechainDto>,
     arrangement_sections: SliceSeq<'a, hex_project::ArrangementSection, SectionSer<'a>>,
     arrangement_locators: SliceSeq<'a, hex_project::ArrangementLocator, LocatorSer<'a>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mixer_automation: Vec<TrackMixerAutomationDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    frozen_tracks: Vec<FrozenTrackDto>,
 }
 
 #[derive(Serialize)]
@@ -504,6 +525,10 @@ struct ProjectDe<'a> {
     arrangement_sections: Vec<SectionDe<'a>>,
     #[serde(borrow, deserialize_with = "read_locators")]
     arrangement_locators: Vec<LocatorDe<'a>>,
+    #[serde(default, deserialize_with = "read_mixer_automation")]
+    mixer_automation: Vec<TrackMixerAutomationDto>,
+    #[serde(default, deserialize_with = "read_frozen_tracks")]
+    frozen_tracks: Vec<FrozenTrackDto>,
 }
 
 #[derive(Deserialize)]
@@ -576,8 +601,29 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
         sidechains: SliceSeq(project.sidechains(), SidechainDto::from),
         arrangement_sections: SliceSeq(project.arrangement_sections(), SectionSer::from),
         arrangement_locators: SliceSeq(project.arrangement_locators(), LocatorSer::from),
+        mixer_automation: {
+            let mut entries: Vec<_> = project
+                .tracks()
+                .iter()
+                .filter(|track| track.has_mixer_automation())
+                .map(TrackMixerAutomationDto::from_model)
+                .collect();
+            entries.sort_by_key(|entry| entry.track);
+            entries
+        },
+        frozen_tracks: {
+            let mut entries: Vec<_> = project
+                .tracks()
+                .iter()
+                .filter_map(FrozenTrackDto::from_model)
+                .collect();
+            entries.sort_by_key(|entry| entry.track);
+            entries
+        },
     };
-    let version = if contains_midi_expression(project) {
+    let version = if contains_automation_curves_and_freeze(project) {
+        AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
+    } else if contains_midi_expression(project) {
         MIDI_EXPRESSION_SCHEMA_VERSION
     } else {
         CAPABILITY_MANIFEST_SCHEMA_VERSION
@@ -604,7 +650,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if document.format != "hex-project"
         || !matches!(
             document.version,
-            CAPABILITY_MANIFEST_SCHEMA_VERSION | MIDI_EXPRESSION_SCHEMA_VERSION
+            CAPABILITY_MANIFEST_SCHEMA_VERSION
+                | MIDI_EXPRESSION_SCHEMA_VERSION
+                | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
         )
     {
         return Err(StorageError::Invalid(
@@ -620,6 +668,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid(
             "schema 126 cannot declare midi_expression capability",
+        ));
+    }
+    if document.version < AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
+        && document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "automation_curves_and_freeze")
+    {
+        return Err(StorageError::Invalid(
+            "schemas before 128 cannot declare automation_curves_and_freeze capability",
         ));
     }
 
@@ -678,6 +736,12 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return_feeds: body.return_feeds.into_iter().map(Into::into).collect(),
         automatic_track_names: automatic_track_names.into_iter().collect(),
         retained_source_paths: retained_source_paths.into_iter().collect(),
+        mixer_automation: body
+            .mixer_automation
+            .into_iter()
+            .map(TrackMixerAutomationDto::into_snapshot)
+            .collect::<Result<Vec<_>, _>>()?,
+        frozen_tracks: body.frozen_tracks.into_iter().map(Into::into).collect(),
         audio_feeds: body.audio_feeds.into_iter().map(Into::into).collect(),
         midi_routes: body.midi_routes.into_iter().map(Into::into).collect(),
         sidechains: body.sidechains.into_iter().map(Into::into).collect(),

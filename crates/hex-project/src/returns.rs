@@ -65,6 +65,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
                 .retain(|feed| feed.source != id && feed.destination != id);
             for track in &mut project.tracks {
                 track.sends.retain(|send| send.return_track != id);
+                track.send_lanes.retain(|(return_id, _)| *return_id != id);
             }
             Ok(crate::Created::None)
         }

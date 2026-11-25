@@ -697,6 +697,142 @@ fn bench_memory_stacked_legacy() {
 }
 
 #[test]
+fn schema128_round_trip_and_older_schema_refusal() {
+    use hex_project::{CurveTension, MixerAutomationPoint, MixerLaneTarget};
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack { name: "pad".into() })
+        .unwrap()
+    else {
+        panic!("expected track");
+    };
+    let Created::ReturnTrack(ret) = editor
+        .execute(Command::AddReturnTrack {
+            name: "verb".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected return");
+    };
+    let Created::Device(device) = editor
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: NativeDeviceState::new(DeviceTypeId::new("hex.utility").unwrap(), 1, vec![])
+                .unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected device");
+    };
+    let curve = AutomationInterpolation::Curve(CurveTension::from_millis(650).unwrap());
+    editor
+        .execute(Command::ReplaceDeviceAutomationTarget {
+            device,
+            target: DeviceAutomationTarget::HostOutputGain,
+            points: vec![
+                AutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: AutomationValue::new(0.1).unwrap(),
+                    outgoing: curve,
+                },
+                AutomationPoint {
+                    beat: BeatTime::from_quarters(4).unwrap(),
+                    value: AutomationValue::new(0.9).unwrap(),
+                    outgoing: AutomationInterpolation::Linear,
+                },
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTrackMixerAutomation {
+            track,
+            target: MixerLaneTarget::Balance,
+            points: vec![
+                MixerAutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: -0.75,
+                    outgoing: curve,
+                },
+                MixerAutomationPoint {
+                    beat: BeatTime::from_quarters(4).unwrap(),
+                    value: 0.75,
+                    outgoing: AutomationInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTrackMixerAutomation {
+            track,
+            target: MixerLaneTarget::Mute,
+            points: vec![
+                MixerAutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: 0.0,
+                    outgoing: AutomationInterpolation::Step,
+                },
+                MixerAutomationPoint {
+                    beat: BeatTime::from_quarters(2).unwrap(),
+                    value: 1.0,
+                    outgoing: AutomationInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTrackMixerAutomation {
+            track,
+            target: MixerLaneTarget::Send(ret),
+            points: vec![
+                MixerAutomationPoint {
+                    beat: BeatTime::ZERO,
+                    value: 0.0,
+                    outgoing: AutomationInterpolation::Linear,
+                },
+                MixerAutomationPoint {
+                    beat: BeatTime::from_quarters(4).unwrap(),
+                    value: 0.8,
+                    outgoing: AutomationInterpolation::Step,
+                },
+            ],
+        })
+        .unwrap();
+    editor
+        .execute(Command::FreezeTrack {
+            track,
+            path: "frozen/pad.wav".into(),
+            start: 0,
+            duration: 96_000,
+            frames: 96_000,
+        })
+        .unwrap();
+
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
+    );
+    let encoded = crate::encode(project).unwrap();
+    let mut json: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        json["version"],
+        crate::AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
+    );
+    let caps = json["capabilities"].as_array().unwrap();
+    assert!(caps.iter().any(|c| c == "automation_curves_and_freeze"));
+
+    let decoded = crate::decode(&encoded).unwrap();
+    assert_eq!(&decoded, project);
+
+    // Schema 127 must explicitly refuse schema 128 capability payloads.
+    json["version"] = serde_json::json!(crate::MIDI_EXPRESSION_SCHEMA_VERSION);
+    let downgraded = serde_json::to_vec(&json).unwrap();
+    assert!(crate::decode(&downgraded).is_err());
+}
+
+#[test]
 #[ignore = "memory footprint probe for unified schema 126"]
 fn bench_memory_unified_schema126() {
     let project = build_rich_multi_feature_project();

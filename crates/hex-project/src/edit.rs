@@ -220,6 +220,10 @@ impl Project {
             | Command::MoveTrackGainPoint { .. }
             | Command::RemoveTrackGainPoint { .. }
             | Command::ClearTrackGainEnvelope { .. }
+            | Command::SetTrackMixerAutomation { .. }
+            | Command::FreezeTrack { .. }
+            | Command::FreezeTrackWithAsset { .. }
+            | Command::UnfreezeTrack { .. }
             | Command::SetTrackColor { .. }
             | Command::GainBy { .. }
             | Command::BalanceBy { .. }

@@ -1143,6 +1143,10 @@ fn same_shell(
             parent_group,
             color,
             gain_lane,
+            balance_lane,
+            mute_lane,
+            send_lanes,
+            frozen,
             id,
             name,
             automatic_name,
@@ -1183,6 +1187,10 @@ fn same_shell(
             && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position
             && sends == &b.sends
+            && balance_lane == &b.balance_lane
+            && mute_lane == &b.mute_lane
+            && send_lanes == &b.send_lanes
+            && frozen == &b.frozen
             && base == &b.gain_lane.base
             && spans == &b.gain_lane.spans
             && audio_clips == &b.content.audio_clips

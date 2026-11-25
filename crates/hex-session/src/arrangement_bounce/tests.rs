@@ -2567,5 +2567,86 @@ fn isolated_bounce_admits_projects_with_automatic_names_on_dropped_tracks() {
     assert_eq!(session.project(), &original);
 }
 
+#[test]
+fn track_freeze_renders_equivalent_audio_survives_save_reopen_and_unfreezes_with_undo_redo() {
+    let (mut session, track, _clip) = fixture();
+    // Apply non-unity track gain and pan to verify mixer stays live while frozen.
+    session
+        .command(Command::Gain { track, gain: 0.75 })
+        .unwrap();
+    session
+        .command(Command::Balance {
+            track,
+            balance: -0.25,
+        })
+        .unwrap();
+
+    let live_rev = session.compile_prepared_revision(None).unwrap();
+    let live_pcm = pcm(live_rev, 72_000);
+    assert!(
+        live_pcm.iter().any(|f| f[0].abs() > 1e-3),
+        "live synth must render audible signal"
+    );
+
+    let folder = Folder::new();
+    let control = hex_export::ExportControl::default();
+    let (_created, frozen_rev) = session
+        .freeze_track(track, &folder.0, &control, None)
+        .unwrap();
+
+    // Original MIDI clip, notes, and instrument remain 100% intact while frozen.
+    let frozen_track = session.project().track(track).unwrap();
+    assert!(frozen_track.is_frozen());
+    assert_eq!(frozen_track.midi_clips().len(), 1);
+    assert_eq!(frozen_track.midi_clips()[0].source().notes().len(), 1);
+    assert!(frozen_track.instrument().is_some());
+
+    // Frozen playback matches live synth playback closely (within WAV quantization noise).
+    let frozen_pcm = pcm(frozen_rev, 72_000);
+    let max_diff = live_pcm
+        .iter()
+        .zip(&frozen_pcm)
+        .map(|(a, b)| (a[0] - b[0]).abs().max((a[1] - b[1]).abs()))
+        .fold(0.0_f32, f32::max);
+    assert!(
+        max_diff < 1e-3,
+        "frozen track render diverged from live synth: max_diff={max_diff}"
+    );
+
+    // Save to disk (schema 128) and reopen via Session::from_loaded — freeze + MIDI intact!
+    let project_path = folder.0.join("frozen.hexproj");
+    hex_storage::save_new(&project_path, session.project()).unwrap();
+    let loaded = hex_storage::load(&project_path).unwrap();
+    let decoded = loaded
+        .assets()
+        .map(|asset| {
+            (
+                asset.id(),
+                hex_media::decode_wav_file(
+                    asset.path(),
+                    hex_media::Limits::new(16 * 1024 * 1024, 2_000_000),
+                )
+                .unwrap(),
+            )
+        })
+        .collect();
+    let reopened = Session::from_loaded(loaded, 32, 2_000_000, decoded).unwrap();
+    assert_eq!(reopened.project(), session.project());
+    let reopened_rev = reopened.compile_prepared_revision(None).unwrap();
+    let reopened_pcm = pcm(reopened_rev, 72_000);
+    assert_eq!(reopened_pcm, frozen_pcm);
+
+    // Unfreeze restores live state cleanly; Undo re-freezes; Redo unfreezes.
+    let unfrozen_rev = session.unfreeze_track(track).unwrap();
+    assert!(!session.project().track(track).unwrap().is_frozen());
+    let unfrozen_pcm = pcm(unfrozen_rev, 72_000);
+    assert_eq!(unfrozen_pcm, live_pcm);
+
+    assert!(session.undo());
+    assert!(session.project().track(track).unwrap().is_frozen());
+    assert!(session.redo());
+    assert!(!session.project().track(track).unwrap().is_frozen());
+}
+
 #[path = "tests/group_bounces.rs"]
 mod group_bounces;

@@ -640,7 +640,12 @@ impl TrackAssembly {
                     has_streamed_clips,
                     mix,
                     source_mix,
+                    static_gain: 1.0,
+                    static_balance: 0.0,
                     gain_envelope: r.prepared_gain.take(),
+                    balance_envelope: None,
+                    mute_envelope: None,
+                    send_envelopes: Vec::new(),
                     instrument: None,
                     foreign_instrument: None,
                     instrument_position: 0,
@@ -754,7 +759,12 @@ impl TrackAssembly {
                 has_streamed_clips: _,
                 mix: _,
                 source_mix: _,
+                static_gain: _,
+                static_balance: _,
                 gain_envelope,
+                balance_envelope: _,
+                mute_envelope: _,
+                send_envelopes: _,
                 instrument: _,
                 foreign_instrument: _,
                 instrument_position: _,
@@ -1107,7 +1117,12 @@ impl TrackAssembly {
                     has_streamed_clips: _,
                     mix: _,
                     source_mix: _,
+                    static_gain: _,
+                    static_balance: _,
                     gain_envelope,
+                    balance_envelope,
+                    mute_envelope,
+                    send_envelopes,
                     instrument,
                     foreign_instrument,
                     instrument_position: _,
@@ -1133,6 +1148,9 @@ impl TrackAssembly {
                     || foreign_instrument.is_some()
                     || (!sampler.present() && *mutable_looping_source)
                     || midi_source_index.is_some()
+                    || balance_envelope.is_some()
+                    || mute_envelope.is_some()
+                    || !send_envelopes.is_empty()
                 {
                     return Err(AudioStorageError::UnknownStorage);
                 }

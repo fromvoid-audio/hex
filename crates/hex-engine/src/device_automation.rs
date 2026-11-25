@@ -800,6 +800,7 @@ fn prepare_envelopes_with_registry(
                     beat_raw: point.beat.raw(),
                     normalized: point.value.get(),
                     step: point.outgoing == hex_project::AutomationInterpolation::Step,
+                    curve_tension_millis: point.outgoing.curve_tension_millis(),
                 }),
         );
         if let Some(parameter) = lane.target.provider_parameter() {
@@ -840,6 +841,7 @@ fn prepare_envelopes_with_registry(
                         beat_raw: step.beat.raw(),
                         normalized: step.value.get(),
                         step: true,
+                        curve_tension_millis: 0,
                     }),
             );
             touch.push(hex_lattice::ParameterAutomationTouchSpan {

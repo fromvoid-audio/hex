@@ -607,6 +607,10 @@ impl Command {
             | Self::MoveTrackGainPoint { .. }
             | Self::RemoveTrackGainPoint { .. }
             | Self::ClearTrackGainEnvelope { .. }
+            | Self::SetTrackMixerAutomation { .. }
+            | Self::FreezeTrack { .. }
+            | Self::FreezeTrackWithAsset { .. }
+            | Self::UnfreezeTrack { .. }
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
             | Self::SetSidechain { .. }

@@ -65,6 +65,7 @@ fn program(
                 frame: 0,
                 value,
                 linear: false,
+                tension_millis: 0,
             }]
         },
     );
@@ -317,6 +318,7 @@ fn malformed_spans_and_excess_density_are_refused_without_changing_the_base() {
         frame: 0,
         value: 0.5,
         linear: false,
+        tension_millis: 0,
     }];
     for spans in [
         vec![span(&map, 4, 4, &[(4, 0.2)])],

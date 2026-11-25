@@ -763,6 +763,7 @@ fn exact_foreign_continuation_compares_only_the_named_state_pair() {
             beat_raw: 0,
             normalized: 0.5,
             step: true,
+            curve_tension_millis: 0,
         }],
     )
     .unwrap();

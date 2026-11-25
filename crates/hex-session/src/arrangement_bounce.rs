@@ -333,6 +333,18 @@ pub(crate) fn isolated(
     snapshot.audio_feeds.clear();
     snapshot.midi_routes.clear();
     snapshot.return_feeds.clear();
+    if matches!(target, BounceTarget::MergedRange(_)) {
+        let kept: std::collections::BTreeSet<_> = snapshot.tracks.iter().map(|t| t.id).collect();
+        snapshot.mixer_automation.retain_mut(|entry| {
+            entry.sends.clear();
+            kept.contains(&entry.track) && (!entry.balance.is_empty() || !entry.mute.is_empty())
+        });
+    } else {
+        snapshot.mixer_automation.clear();
+    }
+    snapshot.frozen_tracks.retain(|entry| {
+        entry.track != selected_track_id && snapshot.tracks.iter().any(|t| t.id == entry.track)
+    });
     snapshot.loop_region = None;
     snapshot.master_gain = 1.0;
     snapshot.retain_clip_aliases_after_projection();
@@ -726,6 +738,206 @@ impl Session {
                     .map_err(|e| e.to_string())
             },
         )
+    }
+
+    /// Freeze an ordinary track by rendering its post-device/pre-mixer audio to
+    /// a verified project-rate WAV in `directory` and adopting it via
+    /// [`Command::FreezeTrack`]. Original clips, MIDI, instrument, devices, and
+    /// automation remain intact across save/reopen and Undo/Redo.
+    pub fn freeze_track(
+        &mut self,
+        track: hex_project::TrackId,
+        directory: &Path,
+        control: &hex_export::ExportControl,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        let owner = self
+            .project()
+            .track(track)
+            .ok_or_else(|| "track no longer exists".to_owned())?;
+        if owner.is_group() {
+            return Err("group tracks cannot be frozen directly".into());
+        }
+        if owner.is_frozen() {
+            return Err("track is already frozen".into());
+        }
+        self.bounce_arrangement_using(
+            BounceTarget::Track(track),
+            true,
+            directory,
+            control,
+            |session, project, _| {
+                let waveforms = std::cell::RefCell::new(
+                    session.audio_clip_waveforms().map_err(|e| e.to_string())?,
+                );
+                crate::prepare_with_waveforms(
+                    project,
+                    &session.media_bank(),
+                    session.sine_table(),
+                    None,
+                    &session.audio_transforms,
+                    &waveforms,
+                )
+                .map(|prepared| {
+                    streamed::BounceRevision::capture(Arc::new(prepared), &session.verified_sources)
+                })
+                .map_err(|e| e.to_string())
+            },
+            |path, revision, project, item, tails, control| {
+                streamed::render(
+                    path,
+                    revision,
+                    Some(project),
+                    None,
+                    item.start,
+                    item.end - item.start,
+                    tails,
+                    control,
+                    None,
+                    None,
+                )
+            },
+            |session, prepared, files| {
+                session
+                    .adopt_track_freeze(track, files, prepared, previous, |input| {
+                        crate::import_batch::prepare_asset_free(input, &mut || {
+                            control.seal_prepared_adoption().map_err(|_| {
+                                SessionError::Invalid("track freeze cancelled before adoption")
+                            })
+                        })
+                    })
+                    .map_err(|e| e.to_string())
+            },
+        )
+    }
+
+    /// Unfreeze a frozen track, restoring live playback of its untouched
+    /// original MIDI, clips, devices, and automation in one Undo step.
+    pub fn unfreeze_track(
+        &mut self,
+        track: hex_project::TrackId,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command(Command::UnfreezeTrack { track })?;
+        self.compile_prepared_revision(None)
+    }
+
+    fn adopt_track_freeze<T>(
+        &mut self,
+        track: hex_project::TrackId,
+        mut files: Vec<BounceFile>,
+        mut prepared: Vec<PreparedImport>,
+        previous: Option<&hex_engine::PreparedRevision>,
+        prepare: impl FnOnce(import_batch::Preparation<'_>) -> Result<T, SessionError>,
+    ) -> Result<(Created, T), SessionError> {
+        if files.len() != 1 || prepared.len() != 1 {
+            return Err(SessionError::Invalid(
+                "track freeze requires one rendered file",
+            ));
+        }
+        let file = files
+            .pop()
+            .ok_or(SessionError::Invalid("missing freeze file"))?;
+        let member = prepared
+            .pop()
+            .ok_or(SessionError::Invalid("missing freeze media"))?;
+        if member.audio.sample_rate() != self.project().sample_rate()
+            || member.waveform.source_frames() as u64 != file.frames
+            || member.path != file.path
+        {
+            return Err(SessionError::Invalid(
+                "freeze decoded media differs from output",
+            ));
+        }
+        self.media
+            .try_reserve(1)
+            .map_err(|_| SessionError::Allocation)?;
+        let additional = member.additional_pcm_frames(
+            self.media
+                .values()
+                .flat_map(|r: &ResidentAsset| [&r.source_audio, &r.audio]),
+        )?;
+        let total_frames = self
+            .resident_frames
+            .checked_add(additional)
+            .filter(|n| {
+                self.native_assets
+                    .capacity_frames()
+                    .ok()
+                    .and_then(|a| a.checked_add(*n))
+                    .is_some_and(|n| n <= self.max_resident_frames)
+            })
+            .ok_or(SessionError::Invalid("freeze resident frame limit reached"))?;
+        self.validate_native_legacy_budget(total_frames)?;
+        let bins = member.waveform.cached_bin_count();
+        let total_bins = self
+            .resident_waveform_bins
+            .checked_add(bins)
+            .ok_or(SessionError::Invalid("freeze waveform count overflows"))?;
+        let total_bytes = self
+            .resident_waveform_bytes
+            .checked_add(
+                bins.checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+                    .ok_or(SessionError::Allocation)?,
+            )
+            .ok_or(SessionError::Allocation)?;
+        let resident = ResidentAsset {
+            source_audio: member.source_audio,
+            audio: member.audio,
+            waveform: Arc::new(member.waveform),
+            frames: file.frames,
+            file_identity: member.file_identity,
+        };
+        let mut media = self.media_bank();
+        let waveforms = std::cell::RefCell::new(self.audio_clip_waveforms()?);
+        let legacy = self
+            .media
+            .values()
+            .chain(std::iter::once(&resident))
+            .flat_map(|r| [&r.source_audio, &r.audio])
+            .collect::<Vec<_>>();
+        let table = self.sine_table();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
+        let (created, (asset_id, artifact)) = self.editor.execute_prepared(
+            Command::FreezeTrack {
+                track,
+                path: file.path,
+                start: file.start,
+                duration: file.frames,
+                frames: file.frames,
+            },
+            |candidate| {
+                let asset_id = candidate
+                    .track(track)
+                    .and_then(|t| t.frozen())
+                    .map(|f| f.asset)
+                    .ok_or(SessionError::Invalid("freeze candidate asset missing"))?;
+                media.insert(asset_id, resident.audio.clone());
+                let artifact = prepare(import_batch::Preparation {
+                    project: candidate,
+                    media: &media,
+                    native,
+                    table,
+                    transforms,
+                    waveforms: &waveforms,
+                    legacy: &legacy,
+                    limits,
+                    max_frames,
+                    shutdown,
+                    previous,
+                })?;
+                Ok::<_, SessionError>((asset_id, artifact))
+            },
+        )?;
+        *self.audio_clip_waveforms.get_mut() = waveforms.into_inner();
+        self.media.insert(asset_id, resident);
+        self.resident_frames = total_frames;
+        self.resident_waveform_bins = total_bins;
+        self.resident_waveform_bytes = total_bytes;
+        Ok((created, artifact))
     }
 }
 

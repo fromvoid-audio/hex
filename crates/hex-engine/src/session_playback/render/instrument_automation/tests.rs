@@ -24,11 +24,13 @@ fn program() -> hex_lattice::PreparedParameterAutomation {
                 beat_raw: 0,
                 normalized: 0.0,
                 step: false,
+                curve_tension_millis: 0,
             },
             hex_lattice::ParameterAutomationPoint {
                 beat_raw: 2 << 32,
                 normalized: 1.0,
                 step: false,
+                curve_tension_millis: 0,
             },
         ],
     )

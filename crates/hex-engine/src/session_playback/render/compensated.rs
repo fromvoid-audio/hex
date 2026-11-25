@@ -1582,9 +1582,18 @@ impl SessionPlayback {
                         compensation.inputs[target][1] += sent[1];
                     }
                     if !batched_sends {
+                        let send_frame = compensation.fader_content_frame(index);
+                        let compiled_track = &self.revision.arrangement().tracks()[index];
                         for send_index in 0..compensation.graph.tracks[index].sends.len() {
                             let send = &compensation.graph.tracks[index].sends[send_index];
-                            let (target, gain, edge) = (send.target, send.gain, send.edge);
+                            let gain = if let Some(frame) = send_frame
+                                && compiled_track.has_send_automation()
+                            {
+                                compiled_track.send_gain_at(send_index, frame)
+                            } else {
+                                send.gain
+                            };
+                            let (target, edge) = (send.target, send.edge);
                             let sent = compensation
                                 .edge(edge, [send_mixed[0] * gain, send_mixed[1] * gain])
                                 .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -2427,12 +2436,37 @@ impl SessionPlayback {
                                 } else {
                                     &*audio
                                 };
+                                let fader_arrival_send = compensation.graph.plan.nodes()
+                                    [compensation.graph.tracks[index].fader]
+                                    .output_arrival_frames;
+                                let send_automated = track.has_send_automation();
                                 for send_index in 0..sends.len() {
                                     let send = &compensation.graph.tracks[index].sends[send_index];
-                                    let (target, gain, edge) = (send.target, send.gain, send.edge);
+                                    let (target, static_gain, edge) =
+                                        (send.target, send.gain, send.edge);
                                     let buf = &mut send_buf[..count];
-                                    for (dst, &src) in buf.iter_mut().zip(send_audio) {
-                                        *dst = [src[0] * gain, src[1] * gain];
+                                    if send_automated {
+                                        let send_origin = OriginWindow {
+                                            history: &compensation.delays,
+                                            incoming: stamps,
+                                            delay: fader_arrival_send,
+                                        };
+                                        for (i, (dst, &src)) in
+                                            buf.iter_mut().zip(send_audio).enumerate()
+                                        {
+                                            let gain =
+                                                send_origin.stamp_ref(i).map_or(static_gain, |s| {
+                                                    track.send_gain_at(
+                                                        send_index,
+                                                        s.arrangement_frame,
+                                                    )
+                                                });
+                                            *dst = [src[0] * gain, src[1] * gain];
+                                        }
+                                    } else {
+                                        for (dst, &src) in buf.iter_mut().zip(send_audio) {
+                                            *dst = [src[0] * static_gain, src[1] * static_gain];
+                                        }
                                     }
                                     compensation.edge_block(edge, buf).map_err(|error| {
                                         SessionPlaybackError::Arrangement(error.0)
@@ -3004,12 +3038,30 @@ impl SessionPlayback {
                         } else {
                             &*audio
                         };
+                        let fader_arrival_send = compensation.graph.plan.nodes()
+                            [compensation.graph.tracks[index].fader]
+                            .output_arrival_frames;
+                        let send_automated = track.has_send_automation();
                         for send_index in 0..sends.len() {
                             let send = &compensation.graph.tracks[index].sends[send_index];
-                            let (target, gain, edge) = (send.target, send.gain, send.edge);
+                            let (target, static_gain, edge) = (send.target, send.gain, send.edge);
                             let buf = &mut send_buf[..count];
-                            for (dst, &src) in buf.iter_mut().zip(send_audio) {
-                                *dst = [src[0] * gain, src[1] * gain];
+                            if send_automated {
+                                let send_origin = OriginWindow {
+                                    history: &compensation.delays,
+                                    incoming: stamps,
+                                    delay: fader_arrival_send,
+                                };
+                                for (i, (dst, &src)) in buf.iter_mut().zip(send_audio).enumerate() {
+                                    let gain = send_origin.stamp_ref(i).map_or(static_gain, |s| {
+                                        track.send_gain_at(send_index, s.arrangement_frame)
+                                    });
+                                    *dst = [src[0] * gain, src[1] * gain];
+                                }
+                            } else {
+                                for (dst, &src) in buf.iter_mut().zip(send_audio) {
+                                    *dst = [src[0] * static_gain, src[1] * static_gain];
+                                }
                             }
                             compensation
                                 .edge_block(edge, buf)
