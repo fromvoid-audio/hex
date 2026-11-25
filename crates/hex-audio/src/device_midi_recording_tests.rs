@@ -1374,3 +1374,108 @@ fn mpe_sustain_reuse_stop_and_queue_overflow_make_zero_callback_allocations() {
     control.command(hex_engine::PlaybackCommand::Stop).unwrap();
     assert!(deliver(&mut callback, &mut [[0.0; 2]; 32], 2));
 }
+
+#[test]
+fn mpe_dual_note_member_and_master_pitch_bend_endpoints_make_zero_callback_allocations() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let fm4_state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_engine::DeviceTypeId::from_static("hex.instrument.fm4"),
+    )
+    .unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "mpe-bend-alloc".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: fm4_state,
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let input = Arc::new(
+        control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_live_notes()
+            .unwrap(),
+    );
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut graph = Playback::try_from_prepared_with_session(prepared).unwrap();
+    graph
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    control
+        .publish_with_admission_and_source_on_control(
+            graph,
+            prepared::PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 4,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 16], 2));
+
+    let live = input.live_notes().unwrap();
+    let token = live.begin_activation_on_control().unwrap();
+    use hex_engine::computer_keyboard::LiveNoteEvent;
+    for ev in [
+        LiveNoteEvent::NoteOn {
+            channel: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        LiveNoteEvent::NoteOn {
+            channel: 2,
+            pitch: 64,
+            velocity: 100,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 4800,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 2,
+            pitch: 64,
+            cents: -4800,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 1,
+            pitch: 60,
+            cents: 1400,
+        },
+        LiveNoteEvent::NotePitchBend {
+            channel: 2,
+            pitch: 64,
+            cents: -200,
+        },
+        LiveNoteEvent::AllNotesOff,
+    ] {
+        live.publish(token, ev).unwrap();
+    }
+    assert!(deliver(&mut callback, &mut [[0.0; 2]; 64], 2));
+}

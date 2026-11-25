@@ -18,6 +18,23 @@ const MIDI_INPUT_DOCUMENT_VERSION_V1: u32 = 1;
 const MIDI_INPUT_DOCUMENT_VERSION_V2: u32 = 2;
 const MIDI_INPUT_DOCUMENT_VERSION_V3: u32 = 3;
 
+/// Default MPE per-note member pitch bend range in semitones (`1..=96`).
+pub const DEFAULT_MPE_MEMBER_PITCH_BEND_SEMITONES: u8 = 48;
+/// Maximum supported MPE per-note member pitch bend range in semitones.
+pub const MAX_MPE_MEMBER_PITCH_BEND_SEMITONES: u8 = 96;
+/// Default MPE master-channel pitch bend range in semitones (`1..=48`).
+pub const DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES: u8 = 2;
+/// Maximum supported MPE master-channel pitch bend range in semitones.
+pub const MAX_MPE_MASTER_PITCH_BEND_SEMITONES: u8 = 48;
+
+const fn default_member_pitch_bend_semitones() -> u8 {
+    DEFAULT_MPE_MEMBER_PITCH_BEND_SEMITONES
+}
+
+const fn default_master_pitch_bend_semitones() -> u8 {
+    DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES
+}
+
 /// Persisted MPE zone side (`lower` master ch 1, `upper` master ch 16).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -26,12 +43,17 @@ pub enum MidiInputMpeZoneKind {
     Upper,
 }
 
-/// Persisted bounded MPE zone selection (`member_channels` in `1..=15`).
+/// Persisted bounded MPE zone selection (`member_channels` in `1..=15`,
+/// `member_pitch_bend_semitones` in `1..=96`, `master_pitch_bend_semitones` in `1..=48`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MidiInputMpeZone {
     pub kind: MidiInputMpeZoneKind,
     pub member_channels: u8,
+    #[serde(default = "default_member_pitch_bend_semitones")]
+    pub member_pitch_bend_semitones: u8,
+    #[serde(default = "default_master_pitch_bend_semitones")]
+    pub master_pitch_bend_semitones: u8,
 }
 
 /// A native MIDI input port selection. The operating system's exact port name
@@ -274,12 +296,22 @@ fn validate(preferences: &MidiInputPreferences) -> Result<(), PreferencesError> 
             "midi channel must be between 0 and 15".into(),
         ));
     }
-    if let Some(zone) = preferences.mpe_zone
-        && !(1..=15).contains(&zone.member_channels)
-    {
-        return Err(PreferencesError::InvalidDocument(
-            "mpe member channels must be between 1 and 15".into(),
-        ));
+    if let Some(zone) = preferences.mpe_zone {
+        if !(1..=15).contains(&zone.member_channels) {
+            return Err(PreferencesError::InvalidDocument(
+                "mpe member channels must be between 1 and 15".into(),
+            ));
+        }
+        if !(1..=MAX_MPE_MEMBER_PITCH_BEND_SEMITONES).contains(&zone.member_pitch_bend_semitones) {
+            return Err(PreferencesError::InvalidDocument(format!(
+                "mpe member pitch bend range must be between 1 and {MAX_MPE_MEMBER_PITCH_BEND_SEMITONES} semitones"
+            )));
+        }
+        if !(1..=MAX_MPE_MASTER_PITCH_BEND_SEMITONES).contains(&zone.master_pitch_bend_semitones) {
+            return Err(PreferencesError::InvalidDocument(format!(
+                "mpe master pitch bend range must be between 1 and {MAX_MPE_MASTER_PITCH_BEND_SEMITONES} semitones"
+            )));
+        }
     }
     if preferences.ports.len() > MAX_MIDI_INPUT_PORTS {
         return Err(PreferencesError::InvalidDocument(format!(
@@ -457,10 +489,14 @@ mod tests {
             MidiInputMpeZone {
                 kind: MidiInputMpeZoneKind::Lower,
                 member_channels: 15,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 2,
             },
             MidiInputMpeZone {
                 kind: MidiInputMpeZoneKind::Upper,
                 member_channels: 7,
+                member_pitch_bend_semitones: 24,
+                master_pitch_bend_semitones: 12,
             },
         ] {
             let prefs = MidiInputPreferences {
@@ -477,6 +513,20 @@ mod tests {
             assert_eq!(load_midi_input_preferences(&path).unwrap(), prefs);
         }
 
+        // Earlier v3 documents without explicit bend-range fields load cleanly with MPE defaults (48 / 2).
+        let legacy_v3 = br#"{"version":3,"preferences":{"port":null,"ports":[],"all_ports":false,"channel":0,"omni":false,"mpe_zone":{"kind":"lower","member_channels":7}}}"#;
+        let legacy_path = dir.0.join("legacy-v3.json");
+        std::fs::write(&legacy_path, legacy_v3).unwrap();
+        assert_eq!(
+            load_midi_input_preferences(&legacy_path).unwrap().mpe_zone,
+            Some(MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 2,
+            })
+        );
+
         // Turning MPE back off stays v1-compatible for single-port/single-channel.
         let ordinary = MidiInputPreferences {
             port: Some(port.clone()),
@@ -491,14 +541,48 @@ mod tests {
         assert!(raw.contains(r#""version":1"#));
         assert_eq!(load_midi_input_preferences(&path).unwrap(), ordinary);
 
-        // Invalid member counts (0 and 16) are rejected on save and load without clobbering disk.
+        // Invalid member counts (0, 16) and invalid bend ranges are rejected on save and load.
         let invalid_path = dir.0.join("invalid-mpe.json");
-        for bad_count in [0_u8, 16, 255] {
+        for bad_zone in [
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 0,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 2,
+            },
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 16,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 2,
+            },
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 0,
+                master_pitch_bend_semitones: 2,
+            },
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 97,
+                master_pitch_bend_semitones: 2,
+            },
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 0,
+            },
+            MidiInputMpeZone {
+                kind: MidiInputMpeZoneKind::Lower,
+                member_channels: 7,
+                member_pitch_bend_semitones: 48,
+                master_pitch_bend_semitones: 49,
+            },
+        ] {
             let bad = MidiInputPreferences {
-                mpe_zone: Some(MidiInputMpeZone {
-                    kind: MidiInputMpeZoneKind::Lower,
-                    member_channels: bad_count,
-                }),
+                mpe_zone: Some(bad_zone),
                 ..MidiInputPreferences::default()
             };
             assert!(save_midi_input_preferences(&invalid_path, &bad).is_err());

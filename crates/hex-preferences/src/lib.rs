@@ -27,9 +27,10 @@ pub use audio_import::{
 
 mod midi_input;
 pub use midi_input::{
-    MAX_MIDI_INPUT_PORTS, MidiInputMpeZone, MidiInputMpeZoneKind, MidiInputPort,
-    MidiInputPreferences, load_midi_input_preferences, midi_input_preferences_path,
-    save_midi_input_preferences,
+    DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES, DEFAULT_MPE_MEMBER_PITCH_BEND_SEMITONES,
+    MAX_MIDI_INPUT_PORTS, MAX_MPE_MASTER_PITCH_BEND_SEMITONES, MAX_MPE_MEMBER_PITCH_BEND_SEMITONES,
+    MidiInputMpeZone, MidiInputMpeZoneKind, MidiInputPort, MidiInputPreferences,
+    load_midi_input_preferences, midi_input_preferences_path, save_midi_input_preferences,
 };
 
 mod playback;

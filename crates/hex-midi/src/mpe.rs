@@ -12,6 +12,10 @@ use crate::ControlChange;
 pub const DEFAULT_MPE_PITCH_BEND_SEMITONES: u8 = 48;
 /// Maximum supported MPE per-note pitch bend range in semitones.
 pub const MAX_MPE_PITCH_BEND_SEMITONES: u8 = 96;
+/// Default MPE master-channel pitch bend range in semitones per the MPE specification.
+pub const DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES: u8 = 2;
+/// Maximum supported MPE master-channel pitch bend range in semitones.
+pub const MAX_MPE_MASTER_PITCH_BEND_SEMITONES: u8 = 48;
 
 /// Configured MPE zone (zero-based MIDI channels `0..=15`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +69,8 @@ pub struct MpeConfig {
     pub zone: MpeZone,
     /// Per-note pitch bend range on member channels, in semitones (`1..=96`, default 48).
     pub pitch_bend_range_semitones: u8,
+    /// Global pitch bend range on the zone master channel, in semitones (`1..=48`, default 2).
+    pub master_pitch_bend_range_semitones: u8,
 }
 
 impl Default for MpeConfig {
@@ -72,33 +78,61 @@ impl Default for MpeConfig {
         Self {
             zone: MpeZone::full_lower(),
             pitch_bend_range_semitones: DEFAULT_MPE_PITCH_BEND_SEMITONES,
+            master_pitch_bend_range_semitones: DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES,
         }
     }
 }
 
 impl MpeConfig {
     pub const fn new(zone: MpeZone, pitch_bend_range_semitones: u8) -> Option<Self> {
+        Self::with_ranges(
+            zone,
+            pitch_bend_range_semitones,
+            DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES,
+        )
+    }
+
+    /// Construct a validated MPE config with explicit bounded member (`1..=96` st)
+    /// and master (`1..=48` st) pitch-bend ranges.
+    pub const fn with_ranges(
+        zone: MpeZone,
+        pitch_bend_range_semitones: u8,
+        master_pitch_bend_range_semitones: u8,
+    ) -> Option<Self> {
         if !zone.is_valid()
             || pitch_bend_range_semitones == 0
             || pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+            || master_pitch_bend_range_semitones == 0
+            || master_pitch_bend_range_semitones > MAX_MPE_MASTER_PITCH_BEND_SEMITONES
         {
             return None;
         }
         Some(Self {
             zone,
             pitch_bend_range_semitones,
+            master_pitch_bend_range_semitones,
         })
+    }
+
+    /// True when zone, member bend range, and master bend range are all within bounds.
+    pub const fn is_valid(self) -> bool {
+        self.zone.is_valid()
+            && self.pitch_bend_range_semitones >= 1
+            && self.pitch_bend_range_semitones <= MAX_MPE_PITCH_BEND_SEMITONES
+            && self.master_pitch_bend_range_semitones >= 1
+            && self.master_pitch_bend_range_semitones <= MAX_MPE_MASTER_PITCH_BEND_SEMITONES
     }
 
     /// Convert a signed 14-bit MIDI pitch bend (`-8192..=8191`) into cents
     /// scaled by `pitch_bend_range_semitones`, clamped to `-4800..=4800`.
     pub fn bend_to_cents(self, bend: i16) -> i16 {
-        let range_cents = i64::from(self.pitch_bend_range_semitones) * 100;
-        let denom = if bend < 0 { 8192_i64 } else { 8191_i64 };
-        let scaled = (i64::from(bend) * range_cents
-            + if bend >= 0 { denom / 2 } else { -(denom / 2) })
-            / denom;
-        scaled.clamp(-4800, 4800) as i16
+        MpeDecoder::bend_to_cents_with_range(bend, self.pitch_bend_range_semitones)
+    }
+
+    /// Convert a signed 14-bit master-channel pitch bend (`-8192..=8191`) into cents
+    /// scaled by `master_pitch_bend_range_semitones`, clamped to `-4800..=4800`.
+    pub fn master_bend_to_cents(self, bend: i16) -> i16 {
+        MpeDecoder::bend_to_cents_with_range(bend, self.master_pitch_bend_range_semitones)
     }
 }
 
@@ -164,6 +198,8 @@ pub struct MpeActiveNote {
     /// Per-note pitch bend range captured at NoteOn time so later zone bend-range
     /// changes do not retune already-held notes.
     pub pitch_bend_range_semitones: u8,
+    /// Most recent member-channel per-note pitch offset in cents (`-4800..=4800`).
+    pub member_bend_cents: i16,
     /// Monotonic occurrence token assigned by the decoder.
     pub occurrence_token: u64,
 }
@@ -171,8 +207,9 @@ pub struct MpeActiveNote {
 /// Zero-allocation MPE member-channel expression decoder.
 ///
 /// Tracks per-channel note ownership, master/member CC64 sustain, per-note
-/// pitch-bend range capture at NoteOn, duplicate same-channel retrigger
-/// release, channel reuse, and zone/system resets without heap allocation.
+/// pitch-bend range capture at NoteOn, master-channel global pitch bend,
+/// duplicate same-channel retrigger release, channel reuse, and zone/system
+/// resets without heap allocation.
 #[derive(Clone, Debug)]
 pub struct MpeDecoder {
     config: MpeConfig,
@@ -181,6 +218,8 @@ pub struct MpeDecoder {
     /// Sustain pedal (CC64 >= 64) state per channel (`0..=15`); master channel
     /// sustain holds every member channel in the zone.
     sustain_down: [bool; 16],
+    /// Current zone master-channel global pitch bend in cents (`-4800..=4800`).
+    master_bend_cents: i16,
     next_token: u64,
 }
 
@@ -190,6 +229,7 @@ impl MpeDecoder {
             config,
             active: [None; 16],
             sustain_down: [false; 16],
+            master_bend_cents: 0,
             next_token: 0,
         }
     }
@@ -208,12 +248,39 @@ impl MpeDecoder {
         true
     }
 
+    /// Update the master-channel pitch bend range (`1..=48` semitones) for
+    /// future master bend messages without retuning already-sounding notes.
+    pub fn set_master_pitch_bend_range(&mut self, semitones: u8) -> bool {
+        if semitones == 0 || semitones > MAX_MPE_MASTER_PITCH_BEND_SEMITONES {
+            return false;
+        }
+        self.config.master_pitch_bend_range_semitones = semitones;
+        true
+    }
+
+    /// Update both member (`1..=96` st) and master (`1..=48` st) pitch bend
+    /// ranges atomically without retuning already-sounding notes.
+    pub fn set_pitch_bend_ranges(&mut self, member_semitones: u8, master_semitones: u8) -> bool {
+        if member_semitones == 0
+            || member_semitones > MAX_MPE_PITCH_BEND_SEMITONES
+            || master_semitones == 0
+            || master_semitones > MAX_MPE_MASTER_PITCH_BEND_SEMITONES
+        {
+            return false;
+        }
+        self.config.pitch_bend_range_semitones = member_semitones;
+        self.config.master_pitch_bend_range_semitones = master_semitones;
+        true
+    }
+
+    /// Current zone master-channel pitch bend offset in cents (`-4800..=4800`).
+    pub const fn master_bend_cents(&self) -> i16 {
+        self.master_bend_cents
+    }
+
     /// Reconfigure the MPE zone, clearing all tracked notes and sustain state.
     pub fn set_config(&mut self, config: MpeConfig) -> bool {
-        if !config.zone.is_valid()
-            || config.pitch_bend_range_semitones == 0
-            || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
-        {
+        if !config.is_valid() {
             return false;
         }
         self.config = config;
@@ -232,10 +299,7 @@ impl MpeDecoder {
         config: MpeConfig,
         out: &mut [MpeExpressionEvent; 16],
     ) -> Option<usize> {
-        if !config.zone.is_valid()
-            || config.pitch_bend_range_semitones == 0
-            || config.pitch_bend_range_semitones > MAX_MPE_PITCH_BEND_SEMITONES
-        {
+        if !config.is_valid() {
             return None;
         }
         let had_state = self.has_active_notes() || self.sustain_down.iter().any(|&down| down);
@@ -249,10 +313,11 @@ impl MpeDecoder {
         }
     }
 
-    /// Clear tracked active notes and sustain state on all channels.
+    /// Clear tracked active notes, sustain state, and master bend on all channels.
     pub fn reset(&mut self) {
         self.active = [None; 16];
         self.sustain_down = [false; 16];
+        self.master_bend_cents = 0;
     }
 
     /// True when any member channel currently owns an active or sustained note.
@@ -348,6 +413,7 @@ impl MpeDecoder {
                         pitch,
                         sustained: false,
                         pitch_bend_range_semitones: self.config.pitch_bend_range_semitones,
+                        member_bend_cents: 0,
                         occurrence_token: self.next_token,
                     });
                 }
@@ -356,6 +422,13 @@ impl MpeDecoder {
                     pitch,
                     velocity,
                 });
+                if is_member && self.master_bend_cents != 0 {
+                    push(MpeExpressionEvent::NotePitchBend {
+                        channel,
+                        pitch,
+                        cents: self.master_bend_cents,
+                    });
+                }
             }
             (0x80 | 0x90, &[pitch, velocity]) => {
                 if is_member {
@@ -409,18 +482,39 @@ impl MpeDecoder {
             (0xe0, &[low, high]) => {
                 let bend = (i16::from(high) * 128 + i16::from(low)) - 8192;
                 if is_member {
-                    let Some(note) = self.active[usize::from(channel)] else {
+                    let Some(note) = self.active[usize::from(channel)].as_mut() else {
                         return 0;
                     };
+                    let member_cents =
+                        Self::bend_to_cents_with_range(bend, note.pitch_bend_range_semitones);
+                    note.member_bend_cents = member_cents;
+                    let total_cents = (i32::from(member_cents) + i32::from(self.master_bend_cents))
+                        .clamp(-4800, 4800) as i16;
                     push(MpeExpressionEvent::NotePitchBend {
                         channel,
                         pitch: note.pitch,
-                        cents: Self::bend_to_cents_with_range(
-                            bend,
-                            note.pitch_bend_range_semitones,
-                        ),
+                        cents: total_cents,
                     });
                 } else {
+                    let master_cents = Self::bend_to_cents_with_range(
+                        bend,
+                        self.config.master_pitch_bend_range_semitones,
+                    );
+                    self.master_bend_cents = master_cents;
+                    for ch in 0_u8..16 {
+                        if self.config.zone.is_member_channel(ch)
+                            && let Some(note) = self.active[usize::from(ch)]
+                        {
+                            let total_cents =
+                                (i32::from(note.member_bend_cents) + i32::from(master_cents))
+                                    .clamp(-4800, 4800) as i16;
+                            push(MpeExpressionEvent::NotePitchBend {
+                                channel: ch,
+                                pitch: note.pitch,
+                                cents: total_cents,
+                            });
+                        }
+                    }
                     push(MpeExpressionEvent::MasterPitchBend {
                         channel,
                         value: bend,
@@ -472,6 +566,7 @@ impl MpeDecoder {
                 if cc == ControlChange::RESET_ALL_CONTROLLERS {
                     if is_master {
                         self.sustain_down = [false; 16];
+                        self.master_bend_cents = 0;
                         for ch in 0_u8..16 {
                             if self.config.zone.is_member_channel(ch)
                                 && self.active[usize::from(ch)].is_some_and(|n| n.sustained)
@@ -937,6 +1032,7 @@ mod tests {
                 MpeConfig {
                     zone: MpeZone::Lower { member_channels: 0 },
                     pitch_bend_range_semitones: 48,
+                    master_pitch_bend_range_semitones: 2,
                 },
                 &mut out,
             ),
@@ -952,5 +1048,125 @@ mod tests {
         );
         assert_eq!(out[0], MpeExpressionEvent::AllNotesOff);
         assert!(!mpe.has_active_notes());
+    }
+
+    #[test]
+    fn master_and_member_bend_ranges_combine_per_note_and_live_updates_do_not_retune_held_notes() {
+        assert!(MpeConfig::with_ranges(MpeZone::full_lower(), 48, 0).is_none());
+        assert!(MpeConfig::with_ranges(MpeZone::full_lower(), 48, 49).is_none());
+        assert!(MpeConfig::with_ranges(MpeZone::full_lower(), 0, 2).is_none());
+        assert!(MpeConfig::with_ranges(MpeZone::full_lower(), 97, 2).is_none());
+
+        let config = MpeConfig::with_ranges(MpeZone::Lower { member_channels: 4 }, 48, 12).unwrap();
+        let mut mpe = MpeDecoder::new(config);
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+
+        // Start ch 1 pitch 60 (+1200c member bend -> quarter of +4800 = +2048 -> raw 10240 = 0x50 0x00)
+        // and ch 2 pitch 64 (-600c member bend).
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0x92, 64, 100], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0xe1, 0x00, 0x50], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 1200,
+            }
+        );
+        assert_eq!(mpe.decode_message_into(&[0xe2, 0x00, 0x38], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 2,
+                pitch: 64,
+                cents: -600,
+            }
+        );
+
+        // Apply master bend full up (+8191) at master range 12 st (+1200c):
+        // ch 1 becomes 1200 + 1200 = +2400c, ch 2 becomes -600 + 1200 = +600c!
+        let n = mpe.decode_message_into(&[0xe0, 0x7f, 0x7f], &mut out);
+        assert_eq!(n, 3);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 2400,
+            }
+        );
+        assert_eq!(
+            out[1],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 2,
+                pitch: 64,
+                cents: 600,
+            }
+        );
+        assert_eq!(
+            out[2],
+            MpeExpressionEvent::MasterPitchBend {
+                channel: 0,
+                value: 8191,
+            }
+        );
+
+        // Live range change (member 48 -> 12, master 12 -> 2) rejects invalid values and
+        // does NOT retune already-held notes or clear their captured member bend ranges!
+        assert!(!mpe.set_pitch_bend_ranges(0, 2));
+        assert!(!mpe.set_pitch_bend_ranges(12, 49));
+        assert!(mpe.set_pitch_bend_ranges(12, 2));
+        assert_eq!(mpe.master_bend_cents(), 1200);
+        // Existing ch 1 still uses its NoteOn-captured 48 st range when bent to full down (-8192):
+        // member = -4800c, master = +1200c => -3600c!
+        assert_eq!(mpe.decode_message_into(&[0xe1, 0x00, 0x00], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: -3600,
+            }
+        );
+
+        // Same-channel reuse on ch 1 (pitch 67) clears old member bend (-4800c),
+        // captures new 12 st member range, and starts with active master bend (+1200c).
+        let reuse = mpe.decode_message_into(&[0x91, 67, 96], &mut out);
+        assert_eq!(reuse, 3);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NoteOff {
+                channel: 1,
+                pitch: 60,
+                velocity: 0,
+            }
+        );
+        assert_eq!(
+            out[1],
+            MpeExpressionEvent::NoteOn {
+                channel: 1,
+                pitch: 67,
+                velocity: 96,
+            }
+        );
+        assert_eq!(
+            out[2],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 67,
+                cents: 1200,
+            }
+        );
+        // Full down member bend on new ch 1 note uses the updated 12 st range (-1200c + 1200c master = 0c)!
+        assert_eq!(mpe.decode_message_into(&[0xe1, 0x00, 0x00], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 67,
+                cents: 0,
+            }
+        );
     }
 }
