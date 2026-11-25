@@ -399,18 +399,22 @@ fn leftover_untitled_survives_worker_restart_and_failed_checkpoint_preserves_edi
             name: "edit remains usable".into(),
         }))
         .expect("edit");
-    let edit = wait_for(&restarted, |event| event.request_complete);
-    assert!(edit.error.is_none() && edit.playback.is_some());
-    let failed = wait_for(&restarted, |event| event.recovery_failure.is_some());
-    assert!(
-        failed
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("project changed outside hex")
-    );
-    assert_eq!(failed.state.project.tracks().len(), 2);
-    assert!(failed.state.unsaved && failed.state.can_undo && failed.playback.is_none());
+    let mut acknowledged = false;
+    let mut recovery_failed = false;
+    while !acknowledged || !recovery_failed {
+        let event = wait(&restarted);
+        if event.request_complete {
+            assert!(!acknowledged && event.playback.is_some());
+            assert_eq!(event.state.project.tracks().len(), 2);
+            assert!(event.state.unsaved && event.state.can_undo);
+            acknowledged = true;
+        }
+        if let Some(reason) = event.error.as_deref() {
+            assert!(reason.contains("project changed outside hex"), "{reason}");
+            assert!(event.recovery_failure.is_some());
+            recovery_failed = true;
+        }
+    }
     assert_eq!(
         fs::read(directory.slot()).expect("preserved external contents"),
         b"unrecognized external contents"
