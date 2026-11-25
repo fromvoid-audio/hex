@@ -566,7 +566,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     ctx.outcome.status = Some("device edit pending · waiting for audio".into());
                 }
                 Ok(BrowserEdit::Applied(new, prepared)) => {
-                    if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                    if !Arc::ptr_eq(&ctx.worker.session.project_arc(), &ctx.worker.state.project) {
                         if !ctx.outcome.replacing_catalog_instrument {
                             ctx.outcome.created = Some(new);
                         }
@@ -787,7 +787,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         ctx.outcome.failed_plugin_publication_confirmed = true;
                     }
                     ctx.outcome.created = Some(new);
-                    if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                    if !Arc::ptr_eq(&ctx.worker.session.project_arc(), &ctx.worker.state.project) {
                         ctx.worker.unsaved = true;
                         ctx.outcome.replacement_revision = Some(Arc::clone(&snapshot.prepared));
                         ctx.outcome.status =
@@ -1224,7 +1224,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     Ok((_, prepared)) => {
                         ctx.worker.range_clipboard =
                             Some(ArrangementClipboard::Clips(Arc::new(captured)));
-                        if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                        if !Arc::ptr_eq(
+                            &ctx.worker.session.project_arc(),
+                            &ctx.worker.state.project,
+                        ) {
                             ctx.worker.unsaved = true;
                             ctx.outcome.replacement_revision = Some(prepared);
                         }
@@ -1277,7 +1280,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         Ok((_, prepared)) => {
                             ctx.worker.range_clipboard =
                                 Some(ArrangementClipboard::Range(Arc::new(captured)));
-                            if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                            if !Arc::ptr_eq(
+                                &ctx.worker.session.project_arc(),
+                                &ctx.worker.state.project,
+                            ) {
                                 ctx.worker.unsaved = true;
                                 ctx.outcome.replacement_revision = Some(prepared);
                             }
@@ -1331,7 +1337,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     ),
                 ) {
                     Ok((result, prepared)) => {
-                        if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                        if !Arc::ptr_eq(
+                            &ctx.worker.session.project_arc(),
+                            &ctx.worker.state.project,
+                        ) {
                             ctx.worker.unsaved = true;
                             ctx.outcome.replacement_revision = Some(prepared);
                         }
@@ -1395,7 +1404,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     ),
                 ) {
                     Ok((result, prepared)) => {
-                        if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                        if !Arc::ptr_eq(
+                            &ctx.worker.session.project_arc(),
+                            &ctx.worker.state.project,
+                        ) {
                             ctx.worker.unsaved = true;
                             ctx.outcome.replacement_revision = Some(prepared);
                         }
@@ -1815,7 +1827,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     admission,
                 ) {
                     Ok((result, prepared)) => {
-                        if ctx.worker.session.project() != ctx.worker.state.project.as_ref() {
+                        if !Arc::ptr_eq(
+                            &ctx.worker.session.project_arc(),
+                            &ctx.worker.state.project,
+                        ) {
                             ctx.worker.unsaved = true;
                             ctx.outcome.replacement_revision = Some(prepared);
                         }

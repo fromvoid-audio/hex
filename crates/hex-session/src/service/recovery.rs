@@ -950,29 +950,37 @@ pub(super) fn project_for_save(
     SaveImage::capture(session, document_base)?.materialize()
 }
 
+struct AssetSaveOverride {
+    id: u64,
+    original_source: Option<hex_project::OriginalSourceFacts>,
+    path: Option<PathBuf>,
+}
+
 /// Owned save input after control-side media custody and identity checks.
 /// It contains no Session, native resource handle, or borrowed path and can be
 /// transferred to a worker before validating/materializing the project.
+/// Retaining `Arc<Project>` avoids cloning the entire `Project`/`Snapshot` tree
+/// synchronously on the service worker thread for every recovery checkpoint.
 pub(super) struct SaveImage {
-    snapshot: hex_project::Snapshot,
+    project: Arc<hex_project::Project>,
+    asset_overrides: Vec<AssetSaveOverride>,
 }
 
 impl SaveImage {
     pub(super) fn capture(session: &Session, document_base: Option<&Path>) -> Result<Self, String> {
-        let mut snapshot = session.project().snapshot();
-        for (metadata, asset) in session.project().assets().zip(&mut snapshot.assets) {
-            if metadata.id().value() != asset.id {
-                return Err("save source inventory differs from canonical project".into());
-            }
+        let project = session.project_arc();
+        let mut asset_overrides = Vec::new();
+        for metadata in project.assets() {
+            let mut override_source = None;
             if session.native_assets.contains(metadata.id()) {
                 let source = session
                     .native_source(metadata.id())
                     .ok_or("native original source is unavailable for saving")?;
-                if source.sample_rate() != asset.source_sample_rate
+                if source.sample_rate() != metadata.source_sample_rate()
                     || source
                         .resident_frames()
                         .and_then(|pcm| u64::try_from(pcm.len()).ok())
-                        != Some(asset.source_frames)
+                        != Some(metadata.source_frames())
                 {
                     return Err(
                         "native original source differs from canonical media metadata".into(),
@@ -982,29 +990,53 @@ impl SaveImage {
                     .native_assets
                     .original_source_facts_on_control(metadata.id())
                     .map_err(|e| SessionError::from(e).to_string())?;
-                if asset
-                    .original_source
+                if metadata
+                    .original_source()
                     .is_some_and(|expected| expected != facts)
                 {
                     return Err("native original content differs from saved source identity".into());
                 }
-                asset.original_source = Some(facts);
-            } else if asset.original_source.is_some() {
+                override_source = Some(facts);
+            } else if metadata.original_source().is_some() {
                 return Err("saved device-original media has no admitted native source".into());
             }
-            if !asset.path.is_absolute() {
+            let override_path = if !metadata.path().is_absolute() {
                 let base = document_base.ok_or_else(|| {
                     "relative media path has no project directory; refusing ambiguous save"
                         .to_owned()
                 })?;
-                asset.path = base.join(&asset.path);
+                Some(base.join(metadata.path()))
+            } else {
+                None
+            };
+            if override_source.is_some() || override_path.is_some() {
+                asset_overrides.push(AssetSaveOverride {
+                    id: metadata.id().value(),
+                    original_source: override_source,
+                    path: override_path,
+                });
             }
         }
-        Ok(Self { snapshot })
+        Ok(Self {
+            project,
+            asset_overrides,
+        })
     }
 
     pub(super) fn materialize(self) -> Result<hex_project::Project, String> {
-        hex_project::Project::from_snapshot(self.snapshot)
+        let mut snapshot = self.project.snapshot();
+        for item in self.asset_overrides {
+            let Some(asset) = snapshot.assets.iter_mut().find(|asset| asset.id == item.id) else {
+                return Err("save source inventory differs from canonical project".into());
+            };
+            if let Some(facts) = item.original_source {
+                asset.original_source = Some(facts);
+            }
+            if let Some(path) = item.path {
+                asset.path = path;
+            }
+        }
+        hex_project::Project::from_snapshot(snapshot)
             .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))
     }
 }
