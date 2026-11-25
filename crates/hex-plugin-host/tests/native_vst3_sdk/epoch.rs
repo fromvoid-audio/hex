@@ -1190,9 +1190,9 @@ fn overflow_capture_recovers(variant: u32) {
         .capture_state_or_refusal_retained_while_on_control(|| false)
         .unwrap();
     let expected_observed = match variant {
-        95 => 524288,
-        96 => 524320,
-        157 | 158 => 524193,
+        95 => 16_777_216,
+        96 => 16_777_248,
+        157 | 158 => 16_777_121,
         other => panic!("unexpected overflow variant {other}"),
     };
     assert!(

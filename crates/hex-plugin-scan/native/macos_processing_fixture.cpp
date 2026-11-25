@@ -172,6 +172,9 @@ static void arm_main_thread_tail(){static thread_local MainThreadTail tail;tail.
 const TUID restore_controller_id={0x48,0x45,0x58,0x43,1,2,3,4,5,6,7,8,9,10,11,12};
 // Original one-parameter SDK fixtures preserve the same opaque state shape.
 // Distinct variants exercise actual metadata and processing, not host guesses.
+constexpr int fixture_envelope_bytes=16*1024*1024;
+// HXVS header and separate eight-byte controller chunk.
+constexpr int last_component_byte=fixture_envelope_bytes-96-8-1;
 constexpr int grouped_effect_variant=148, grouped_instrument_variant=149;
 static bool grouped_editor(int variant) {
     return variant==grouped_effect_variant || variant==grouped_instrument_variant;
@@ -490,13 +493,13 @@ public:
         ++restoration.controller_get;
         if(fault==123 && restoration.controller_get==2) handler->restartComponent(kParamIDMappingChanged);
         if(fault==96 && restoration.controller_get==2) {
-            std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+            std::vector<unsigned char> huge(fixture_envelope_bytes);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
         }
         if(fault==controller_prealloc_overflow_variant && restoration.controller_get==2) {
             ISizeableStream* sized=nullptr;
             if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
                 return kResultFalse;
-            const auto result=sized->setStreamSize((512*1024-96-32)+1);
+            const auto result=sized->setStreamSize((fixture_envelope_bytes-96-32)+1);
             sized->release();
             return result;
         }
@@ -749,7 +752,7 @@ public:
         if(stream->read(data.data(),data.size(),&read)!=kResultOk || read!=32 || std::memcmp(data.data(),"HXPS",4))return kResultFalse;
         if(fault==121) {
             int64 tail=0;unsigned char marker=0;
-            if(stream->seek(-1,IBStream::kIBSeekEnd,&tail)!=kResultOk || tail!=150544 ||
+            if(stream->seek(-1,IBStream::kIBSeekEnd,&tail)!=kResultOk || tail!=last_component_byte ||
                stream->read(&marker,1,&read)!=kResultOk || read!=1 || marker!=0x37) return kResultFalse;
         }
         float restored_gain=0;std::memcpy(&restored_gain,data.data()+8,4);std::memcpy(&restored_latency,data.data()+4,4);
@@ -785,23 +788,23 @@ public:
         // Original current-state capture fault controls leave startup valid.
         if(restoration.component_get>1) {
             if(fault==95 && restoration.component_get==2) {
-                std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
+                std::vector<unsigned char> huge(fixture_envelope_bytes);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
             }
             if(fault==component_prealloc_overflow_variant && restoration.component_get==2) {
                 ISizeableStream* sized=nullptr;
                 if (stream->queryInterface(INLINE_UID_OF(ISizeableStream),reinterpret_cast<void**>(&sized))!=kResultOk || !sized)
                     return kResultFalse;
-                const auto result=sized->setStreamSize((512*1024-96)+1);
+                const auto result=sized->setStreamSize((fixture_envelope_bytes-96)+1);
                 sized->release();
                 return result;
             }
             if(fault==97 && restoration.component_get==2) {
-                std::vector<unsigned char> huge(512*1024);
+                std::vector<unsigned char> huge(fixture_envelope_bytes);
                 stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
                 stream->seek(-1,IBStream::kIBSeekSet,nullptr);return kResultOk;
             }
             if(fault==98 && restoration.component_get==2) {
-                std::vector<unsigned char> huge(512*1024);
+                std::vector<unsigned char> huge(fixture_envelope_bytes);
                 stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr);
                 return kInternalError;
             }
@@ -812,7 +815,7 @@ public:
         if (fault==35) arm_main_thread_tail();
         if (fault==34) fault_hang(12);
         if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
-        if (fault==15) { std::vector<unsigned char> huge(512*1024);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr); }
+        if (fault==15) { std::vector<unsigned char> huge(fixture_envelope_bytes);return stream->write(huge.data(),static_cast<int32>(huge.size()),nullptr); }
         if (fault==23) {
             stream->seek(std::numeric_limits<int64>::min(),IBStream::kIBSeekCur,nullptr);
             stream->seek(std::numeric_limits<int64>::max(),IBStream::kIBSeekSet,nullptr);
@@ -843,7 +846,7 @@ public:
             stream->write(&captured_independent_gain,8,&written)!=kResultOk || written!=8)) return kResultFalse;
         if(ok && fault==121) {
             unsigned char marker=0x37;
-            if(stream->seek(150544,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
+            if(stream->seek(last_component_byte,IBStream::kIBSeekSet,nullptr)!=kResultOk ||
                stream->write(&marker,1,&written)!=kResultOk || written!=1) return kResultFalse;
         }
         trace(4);return ok?kResultOk:kResultFalse;

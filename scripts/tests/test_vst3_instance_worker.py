@@ -12,6 +12,7 @@ import time
 import unittest
 from test_vst3_macos_bootstrap import BOOT
 
+STATE_ENVELOPE_BYTES = 16 * 1024 * 1024
 BINDING = (1, 2, 3, 4)
 CID = bytes([0x48, 0x45, 0x58, 0x50, *range(1, 13)])
 
@@ -80,7 +81,7 @@ class Session:
         length = struct.unpack("<I", self.exact(4))[0]
         state_prefix = {b"HXVIFA04": 140, b"HXVIRD05": 86, b"HXVICS02": 62, b"HXVLCA02": 63,
                         b"HXVIQF03": 156, b"HXVIAR02": 164, b"HXVIRR03": 166}
-        limit = 512 * 1024 + state_prefix[magic] if magic in state_prefix else 8192
+        limit = STATE_ENVELOPE_BYTES + state_prefix[magic] if magic in state_prefix else 8192
         if length > limit:
             raise AssertionError("unbounded helper control reply")
         body = self.exact(length)
@@ -953,8 +954,11 @@ class NativeInstanceTests(unittest.TestCase):
         magic, ready = session.message()
         self.assertEqual(magic, b"HXVIRD05")
         expected = ready[86:]
-        self.assertEqual(struct.unpack_from("<II", expected, 88)[0], 150545)
-        self.assertEqual(expected[96 + 150544], 0x37)
+        component_size = STATE_ENVELOPE_BYTES - 96 - 8
+        self.assertEqual(len(expected), STATE_ENVELOPE_BYTES)
+        self.assertEqual(struct.unpack_from("<II", expected, 88), (component_size, 8))
+        self.assertEqual(expected[96 + component_size - 1], 0x37)
+        self.assertEqual(expected[-8:-4], b"HXCT")
 
         def capture(kind):
             session.socket.sendall(struct.pack("<4sHHH6x7Q", kind, 1, 0, 0,

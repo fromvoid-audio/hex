@@ -183,12 +183,14 @@ impl Hosting {
             .checked_add(std::mem::size_of::<Self>())?
             .checked_add(Self::CAPTURE_RESPONSE_DATA_BYTES)
     }
-    /// Initial finite source profile. Listed control/transport DATA is capped
-    /// at4MiB per source; opaque plugin/OS memory is not an RSS claim. Reserve
+    /// Per-source listed DATA includes two packets, initial and restored state,
+    /// one worker capture response and bounded metadata/queues. Reserve
     /// both bounded helper/source file workspaces and protocol work before any
     /// load. Root compares actual source-specific quotes against these limits.
     pub fn source_data_reservation() -> Result<crate::NativeSourceDataReservation, String> {
-        let retained = 4_usize * 1024 * 1024;
+        let retained = 2 * hex_plugin_host::protocol::PACKET_LIMIT
+            + 3 * hex_plugin_state::MAX_ENVELOPE_BYTES
+            + 2 * 1024 * 1024;
         let peak = usize::try_from(hex_plugin_scan::MAX_BINARY)
             .ok()
             .and_then(|file| file.checked_mul(2))

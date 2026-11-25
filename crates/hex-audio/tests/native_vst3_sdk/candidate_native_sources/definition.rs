@@ -6,12 +6,7 @@ use hex_lattice::{DevicePreparationContext, NativeDeviceDefinition, PreparedProc
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn root_compiler_borrow_selects_exact_source_epoch_with_equal_device_state() {
     let outer = CandidateRoot::new(2).unwrap();
-    outer
-        .configure_domains(AudioCandidateDomainReservation {
-            max_retained_data_bytes: 64 * 1024 * 1024,
-            max_construction_peak_data_bytes: 64 * 1024 * 1024,
-        })
-        .unwrap();
+    outer.configure_domains(domain_for_sources(2)).unwrap();
     outer
         .configure_native_source_preparation(2, source_reservation())
         .unwrap();

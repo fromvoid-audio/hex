@@ -38,7 +38,7 @@ use std::{fmt, sync::Arc};
 
 /// Maximum opaque state for providers without a dedicated bound.
 pub const MAX_NATIVE_DEVICE_STATE_BYTES: usize = 4_096;
-/// Maximum VST3 envelope in historical project formats and the live transport.
+/// Maximum VST3 envelope in historical project formats and portable presets.
 pub const MAX_VST3_DEVICE_STATE_BYTES: usize = 512 * 1024;
 /// Maximum complete VST3 envelope retained by the current project model.
 pub const MAX_STORED_VST3_DEVICE_STATE_BYTES: usize = 16 * 1024 * 1024;

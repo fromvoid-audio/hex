@@ -21,22 +21,19 @@
 //! byte swapping or case folding occurs. Initially only macOS arm64 is supported.
 //! Paths are deliberately absent: moving identical bytes cannot change identity.
 //!
-//! The live codec admits a 512 KiB envelope with a combined component and
+//! The live codec admits a 16 MiB envelope with a combined component and
 //! controller limit. This is a bounded profile for opaque vendor state. Oversize capture refuses before allocation/copy without consuming
 //! caller buffers. Empty captured chunks differ from missing chunks. Unknown or
 //! malformed envelopes remain generic project state and must be retained intact;
 //! decoding/availability errors never reconstruct, normalize or overwrite them.
-use hex_lattice_contract::{
-    DeviceTypeId, MAX_STORED_VST3_DEVICE_STATE_BYTES, MAX_VST3_DEVICE_STATE_BYTES,
-    NativeDeviceState,
-};
+use hex_lattice_contract::{DeviceTypeId, MAX_STORED_VST3_DEVICE_STATE_BYTES, NativeDeviceState};
 use std::fmt;
 
 pub const TYPE_ID: DeviceTypeId = hex_lattice_contract::VST3_DEVICE_TYPE_ID;
 pub const STATE_VERSION: u32 = 1;
 const HEADER_BYTES: usize = 96;
 /// Maximum complete envelope the live native worker protocol admits.
-pub const MAX_ENVELOPE_BYTES: usize = MAX_VST3_DEVICE_STATE_BYTES;
+pub const MAX_ENVELOPE_BYTES: usize = MAX_STORED_VST3_DEVICE_STATE_BYTES;
 pub const MAX_OPAQUE_BYTES: usize = MAX_ENVELOPE_BYTES - HEADER_BYTES;
 
 /// SDK factory class identity, independent of module path and project instance ID.
@@ -137,16 +134,6 @@ pub fn encode(state: State<'_>) -> Result<NativeDeviceState, Error> {
 /// Inspect without mutating the retained generic envelope. Unknown versions and
 /// platforms remain recoverable project bytes, not defaults or automatic migrations.
 pub fn decode(state: &NativeDeviceState) -> Result<State<'_>, Error> {
-    decode_bounded(state, MAX_ENVELOPE_BYTES)
-}
-
-/// Inspect a saved envelope through the project limit, including identity and
-/// chunk boundaries for automation. Live admission uses the smaller worker limit.
-pub fn decode_stored(state: &NativeDeviceState) -> Result<State<'_>, Error> {
-    decode_bounded(state, MAX_STORED_VST3_DEVICE_STATE_BYTES)
-}
-
-fn decode_bounded(state: &NativeDeviceState, limit: usize) -> Result<State<'_>, Error> {
     if state.type_id() != TYPE_ID {
         return Err(Error::WrongType);
     }
@@ -154,7 +141,7 @@ fn decode_bounded(state: &NativeDeviceState, limit: usize) -> Result<State<'_>, 
         return Err(Error::UnsupportedVersion(state.state_version()));
     }
     let bytes = state.payload();
-    if bytes.len() > limit {
+    if bytes.len() > MAX_ENVELOPE_BYTES {
         return Err(Error::TooLarge);
     }
     let header = bytes.get(..HEADER_BYTES).ok_or(Error::Malformed)?;
@@ -178,7 +165,7 @@ fn decode_bounded(state: &NativeDeviceState, limit: usize) -> Result<State<'_>, 
     let controller =
         u32::from_le_bytes(array(92..96)?.try_into().map_err(|_| Error::Malformed)?) as usize;
     let count = component.checked_add(controller).ok_or(Error::TooLarge)?;
-    if count > limit - HEADER_BYTES {
+    if count > MAX_OPAQUE_BYTES {
         return Err(Error::TooLarge);
     }
     if bytes.len() != HEADER_BYTES + count

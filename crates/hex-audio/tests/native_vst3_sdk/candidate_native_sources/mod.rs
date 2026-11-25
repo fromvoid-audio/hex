@@ -8,12 +8,18 @@ use std::{
 };
 
 pub(super) fn root() -> Custody {
-    super::super::tests::configured(64 * 1024 * 1024)
+    super::super::tests::configured(domain_for_sources(2).max_construction_peak_data_bytes)
 }
 pub(crate) fn source_reservation() -> NativeSourceDataReservation {
-    NativeSourceDataReservation {
-        max_retained_data_bytes: 4 * 1024 * 1024,
-        max_construction_peak_data_bytes: 24 * 1024 * 1024,
+    crate::plugin_effects::Hosting::source_data_reservation().unwrap()
+}
+
+pub(crate) fn domain_for_sources(capacity: usize) -> AudioCandidateDomainReservation {
+    let (retained, peak) = source_reservation().pool_data_bytes(capacity).unwrap();
+    let other_data = 64 * 1024 * 1024;
+    AudioCandidateDomainReservation {
+        max_retained_data_bytes: retained + other_data,
+        max_construction_peak_data_bytes: peak + other_data,
     }
 }
 mod completion;
@@ -582,10 +588,7 @@ fn actual_native_preparation_stays_in_the_original_outer_root_across_handle_retu
         .eligible
         .configure(
             original.root_id(),
-            AudioCandidateDomainReservation {
-                max_retained_data_bytes: 64 * 1024 * 1024,
-                max_construction_peak_data_bytes: 64 * 1024 * 1024,
-            },
+            domain_for_sources(1),
             std::mem::size_of::<Inner>(),
         )
         .unwrap();
