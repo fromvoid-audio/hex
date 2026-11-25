@@ -240,18 +240,29 @@ impl KaiserSincKernel {
         let n = out_left.len().min(out_right.len());
         let src_len = src_left.len().min(src_right.len());
         if n == 0 || src_len == 0 || !start_pos.is_finite() || !step.is_finite() {
+            out_left[..n].fill(0.0);
+            out_right[..n].fill(0.0);
             return;
         }
         let mut pos = start_pos;
         for i in 0..n {
+            if !pos.is_finite() {
+                out_left[i] = 0.0;
+                out_right[i] = 0.0;
+                pos += step;
+                continue;
+            }
             let base = pos.floor();
             let frac = pos - base;
             let idx = base as i64;
-            if let Some(taps) = self.taps(frac) {
-                let first = idx + taps.first;
+            if let Some(taps) = self.taps(frac)
+                && let Some(first) = idx.checked_add(taps.first)
+            {
                 let count = taps.lower.len();
-                if first >= 0 && (first as usize) + count <= src_len {
-                    let s = first as usize;
+                if first >= 0
+                    && let Ok(s) = usize::try_from(first)
+                    && s.checked_add(count).is_some_and(|end| end <= src_len)
+                {
                     out_left[i] = taps.convolve(&src_left[s..s + count]);
                     out_right[i] = taps.convolve(&src_right[s..s + count]);
                 } else {
@@ -260,10 +271,13 @@ impl KaiserSincKernel {
                     let mut lo_r = 0.0_f32;
                     let mut hi_r = 0.0_f32;
                     for k in 0..count {
-                        let p = first + k as i64;
-                        if p >= 0 && (p as usize) < src_len {
-                            let sl = src_left[p as usize];
-                            let sr = src_right[p as usize];
+                        if let Some(p) = first.checked_add(k as i64)
+                            && p >= 0
+                            && let Ok(u) = usize::try_from(p)
+                            && u < src_len
+                        {
+                            let sl = src_left[u];
+                            let sr = src_right[u];
                             let wl = taps.lower[k];
                             let wh = taps.upper[k];
                             lo_l += sl * wl;
@@ -280,6 +294,9 @@ impl KaiserSincKernel {
                     out_left[i] = (lo_l + (hi_l - lo_l) * taps.blend) * inv;
                     out_right[i] = (lo_r + (hi_r - lo_r) * taps.blend) * inv;
                 }
+            } else {
+                out_left[i] = 0.0;
+                out_right[i] = 0.0;
             }
             pos += step;
         }
@@ -296,11 +313,13 @@ pub struct BlackmanSincBank<const TAPS: usize, const PHASES: usize> {
 impl<const TAPS: usize, const PHASES: usize> BlackmanSincBank<TAPS, PHASES> {
     /// Build the normalized Blackman-windowed sinc reconstruction bank on control.
     pub fn build() -> Self {
-        assert!(
-            TAPS >= 4 && TAPS.is_multiple_of(4),
-            "BlackmanSincBank TAPS must be a multiple of 4"
-        );
-        assert!(PHASES >= 8, "BlackmanSincBank PHASES must be >= 8");
+        const {
+            assert!(
+                TAPS >= 4 && TAPS.is_multiple_of(4),
+                "BlackmanSincBank TAPS must be a multiple of 4"
+            );
+            assert!(PHASES >= 8, "BlackmanSincBank PHASES must be >= 8");
+        }
         let half = (TAPS / 2) as f64;
         let phases_f64: [[f64; TAPS]; PHASES] = std::array::from_fn(|phase| {
             let position = (TAPS / 2 - 1) as f64 + phase as f64 / PHASES as f64;
@@ -334,8 +353,18 @@ impl<const TAPS: usize, const PHASES: usize> BlackmanSincBank<TAPS, PHASES> {
     }
 
     /// Unrolled 4-accumulator `f64` dot product over `TAPS` contiguous samples.
+    /// Returns `0.0` if `x.len() < TAPS`.
     #[inline(always)]
     pub fn dot_f64(x: &[f64], h: &[f64; TAPS]) -> f64 {
+        const {
+            assert!(
+                TAPS >= 4 && TAPS.is_multiple_of(4),
+                "BlackmanSincBank TAPS must be a multiple of 4"
+            );
+        }
+        let Some(x) = x.get(..TAPS).and_then(|s| <&[f64; TAPS]>::try_from(s).ok()) else {
+            return 0.0;
+        };
         let mut a0 = 0.0;
         let mut a1 = 0.0;
         let mut a2 = 0.0;
@@ -352,8 +381,18 @@ impl<const TAPS: usize, const PHASES: usize> BlackmanSincBank<TAPS, PHASES> {
     }
 
     /// Unrolled 4-accumulator `f32` dot product over `TAPS` contiguous samples.
+    /// Returns `0.0` if `x.len() < TAPS`.
     #[inline(always)]
     pub fn dot_f32(x: &[f32], h: &[f32; TAPS]) -> f32 {
+        const {
+            assert!(
+                TAPS >= 4 && TAPS.is_multiple_of(4),
+                "BlackmanSincBank TAPS must be a multiple of 4"
+            );
+        }
+        let Some(x) = x.get(..TAPS).and_then(|s| <&[f32; TAPS]>::try_from(s).ok()) else {
+            return 0.0;
+        };
         let mut a0 = 0.0_f32;
         let mut a1 = 0.0_f32;
         let mut a2 = 0.0_f32;
@@ -379,9 +418,12 @@ impl BlackmanSincBank<32, 32> {
     }
 
     /// Coarse-to-fine peak search over the exact 32-phase, 32-tap Blackman-windowed
-    /// sinc reconstruction for one `f64` lane (`x.len() >= 32`).
+    /// sinc reconstruction for one `f64` lane (`x.len() >= 32`). Returns `0.0` if `x.len() < 32`.
     #[inline(always)]
     pub fn true_peak_lane_f64(&self, x: &[f64]) -> f64 {
+        let Some(x) = x.get(..32).and_then(|s| <&[f64; 32]>::try_from(s).ok()) else {
+            return 0.0;
+        };
         let phases = &self.phases_f64;
         let v0 = x[15].abs();
         let v8 = Self::dot_f64(x, &phases[8]).abs();
@@ -436,9 +478,12 @@ impl BlackmanSincBank<32, 32> {
     }
 
     /// Coarse-to-fine peak search for one `f32` lane (`x.len() >= 32`), returning
-    /// the reconstructed intersample peak magnitude.
+    /// the reconstructed intersample peak magnitude. Returns `0.0` if `x.len() < 32`.
     #[inline(always)]
     pub fn true_peak_lane_f32(&self, x: &[f32]) -> f32 {
+        let Some(x) = x.get(..32).and_then(|s| <&[f32; 32]>::try_from(s).ok()) else {
+            return 0.0;
+        };
         let phases = &self.phases_f32;
         let v0 = x[15].abs();
         let v8 = Self::dot_f32(x, &phases[8]).abs();
@@ -547,5 +592,40 @@ mod tests {
         let peak_f32 = bank.true_peak_lane_f32(&sig_f32);
         assert!(peak_f64 > 0.99 && peak_f64 < 1.01, "peak_f64={peak_f64}");
         assert!((peak_f64 as f32 - peak_f32).abs() < 1e-5);
+    }
+
+    #[test]
+    fn blackman_and_kaiser_guards_handle_short_slices_and_invalid_positions() {
+        let bank = BlackmanSincBank::shared_32x32();
+        let short_f64 = [1.0_f64; 31];
+        let short_f32 = [1.0_f32; 31];
+        assert_eq!(
+            BlackmanSincBank::<32, 32>::dot_f64(&short_f64, &bank.phases_f64()[0]),
+            0.0
+        );
+        assert_eq!(
+            BlackmanSincBank::<32, 32>::dot_f32(&short_f32, &bank.phases_f32()[0]),
+            0.0
+        );
+        assert_eq!(bank.true_peak_lane_f64(&[]), 0.0);
+        assert_eq!(bank.true_peak_lane_f64(&short_f64), 0.0);
+        assert_eq!(bank.true_peak_lane_f32(&[]), 0.0);
+        assert_eq!(bank.true_peak_lane_f32(&short_f32), 0.0);
+
+        let kaiser = KaiserSincKernel::for_rate_with_bank(2.0, KaiserSincBank::shared()).unwrap();
+        let src = [1.0_f32; 64];
+        let mut out_l = [99.0_f32; 8];
+        let mut out_r = [99.0_f32; 8];
+        // Non-finite start_pos zeroes outputs instead of leaving stale caller data.
+        kaiser.interpolate_stereo_block(&src, &src, f64::NAN, 1.0, &mut out_l, &mut out_r);
+        assert_eq!(out_l, [0.0; 8]);
+        assert_eq!(out_r, [0.0; 8]);
+
+        // Extreme near-i64::MAX position must never overflow/panic and returns finite 0.0.
+        out_l.fill(99.0);
+        out_r.fill(99.0);
+        kaiser.interpolate_stereo_block(&src, &src, i64::MAX as f64, 1.0, &mut out_l, &mut out_r);
+        assert_eq!(out_l, [0.0; 8]);
+        assert_eq!(out_r, [0.0; 8]);
     }
 }
