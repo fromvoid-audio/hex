@@ -28,7 +28,7 @@ enum CommandValidationScope {
     Full,
 }
 
-fn command_validation_scope(command: &Command) -> CommandValidationScope {
+fn command_validation_scope(project: &Project, command: &Command) -> CommandValidationScope {
     match command {
         Command::Gain { .. }
         | Command::GainBy { .. }
@@ -43,8 +43,21 @@ fn command_validation_scope(command: &Command) -> CommandValidationScope {
         | Command::ToggleSolo { .. }
         | Command::ToggleSoloTracks { .. }
         | Command::ReturnGain { .. }
-        | Command::ReturnMute { .. }
-        | Command::SetReturnSend { .. } => CommandValidationScope::PureMixer,
+        | Command::ReturnMute { .. } => CommandValidationScope::PureMixer,
+        // Only a level change on an existing send preserves routing topology.
+        Command::SetReturnSend {
+            track,
+            return_track,
+            gain,
+        } if *gain > 0.0
+            && project.track(*track).is_some_and(|t| {
+                t.sends()
+                    .iter()
+                    .any(|send| send.return_track() == *return_track)
+            }) =>
+        {
+            CommandValidationScope::PureMixer
+        }
         Command::AddMidiNote { .. }
         | Command::AddMidiNotes { .. }
         | Command::UpdateMidiNote { .. }
@@ -62,9 +75,9 @@ fn command_validation_scope(command: &Command) -> CommandValidationScope {
 /// guaranteeing `apply()` would succeed with `Created::None` and zero state change.
 fn is_pure_mixer_noop(project: &Project, command: &Command) -> bool {
     match command {
-        Command::Gain { track, gain } => {
-            gain.is_finite() && project.track(*track).is_some_and(|t| t.gain() == *gain)
-        }
+        Command::Gain { track, gain } => project
+            .track(*track)
+            .is_some_and(|t| crate::track_gain_group::eligible(t) && t.gain() == *gain),
         Command::Balance { track, balance } => {
             balance.is_finite()
                 && project
@@ -514,7 +527,7 @@ impl Editor {
     /// `Editor`. Reuses the current `Arc<Project>` on no-ops and performs at most
     /// one `Project` clone otherwise.
     pub fn stage_preview(&self, command: Command) -> Result<Arc<Project>, Invalid> {
-        let scope = command_validation_scope(&command);
+        let scope = command_validation_scope(&self.project, &command);
         if scope == CommandValidationScope::PureMixer && is_pure_mixer_noop(&self.project, &command)
         {
             return Ok(Arc::clone(&self.project));
@@ -562,7 +575,7 @@ impl Editor {
         command: Command,
         require_midi: bool,
     ) -> Result<StagedProjectEdit, Invalid> {
-        let scope = command_validation_scope(&command);
+        let scope = command_validation_scope(&self.project, &command);
         if !require_midi
             && scope == CommandValidationScope::PureMixer
             && is_pure_mixer_noop(&self.project, &command)
