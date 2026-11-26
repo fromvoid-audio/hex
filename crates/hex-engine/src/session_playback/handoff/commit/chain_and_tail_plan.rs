@@ -2531,7 +2531,7 @@ impl SessionPlayback {
                 .filter(|tail| !tail.committed_is_quiescent())
             {
                 tail_processor_count = tail_processor_count
-                    .checked_add(1)
+                    .checked_add(1 + usize::from(tail.runtime.has_midi_processor()))
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_runtime_bytes = tail_runtime_bytes
                     .checked_add(tail.runtime.declared_pair_bytes())
@@ -3015,7 +3015,7 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             tail_processor_count = tail_processor_count
-                .checked_add(1)
+                .checked_add(1 + usize::from(runtime.has_midi_processor()))
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             tail_runtime_bytes = tail_runtime_bytes
                 .checked_add(runtime.declared_pair_bytes())

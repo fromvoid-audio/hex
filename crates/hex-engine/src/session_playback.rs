@@ -2475,12 +2475,42 @@ impl SessionPlayback {
             .ok_or(SessionPlaybackError::UnknownTrack)?;
         let runtime = self
             .mutable_instruments
+            .get(index)
+            .and_then(Option::as_ref)
+            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+        let stage = runtime.prepare_midi_processor(identity, prepared)?;
+        let storage = self
+            .accounted_runtime_storage_bytes()
+            .and_then(|total| total.checked_sub(runtime.midi_processor_storage_bytes()?))
+            .and_then(|total| total.checked_add(stage.storage_bytes()?));
+        if storage.is_none_or(|bytes| bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES) {
+            return Err(SessionPlaybackError::MutableInstrumentRuntime);
+        }
+        // The revision already owns charges for effects and instruments. Add the
+        // installed MIDI pairs, substituting the incoming pair at its track.
+        let (count, bytes) = self
+            .mutable_instruments
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| *slot != index)
+            .filter_map(|(_, runtime)| runtime.as_ref()?.midi_processor_declared_bytes())
+            .try_fold(
+                (1_usize, stage.declared_pair_bytes()),
+                |(count, bytes), pair| Some((count.checked_add(1)?, bytes.checked_add(pair)?)),
+            )
+            .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+        crate::mutable_instrument::validate_prepared_graph_with_midi_processors(
+            self.revision.arrangement(),
+            self.revision.session(),
+            count,
+            bytes,
+        )?;
+        self.mutable_instruments
             .get_mut(index)
             .and_then(Option::as_mut)
-            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
-        runtime
-            .install_midi_processor(identity, prepared)
-            .map_err(SessionPlaybackError::from)
+            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?
+            .install_prepared_midi_processor(stage);
+        Ok(())
     }
 
     /// Compute the exact sample-accurate next-scene follow trigger from `launch_beat`

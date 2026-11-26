@@ -810,19 +810,35 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
-    /// Control-side installation of one bounded native MIDI processor before
-    /// this track's mutable instrument runtime.
-    pub(crate) fn install_midi_processor(
-        &mut self,
+    /// Prepare the processor pair on control before the graph admits its storage.
+    pub(crate) fn prepare_midi_processor(
+        &self,
         identity: std::num::NonZeroU64,
         prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
-    ) -> Result<(), MutableInstrumentRuntimeError> {
+    ) -> Result<midi_processor::MidiProcessorStage, MutableInstrumentRuntimeError> {
         if !self.committed_is_quiescent() || !self.committed_state_available() {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
-        let stage = midi_processor::MidiProcessorStage::new(identity, prepared)?;
+        midi_processor::MidiProcessorStage::new(identity, prepared)
+    }
+
+    pub(crate) fn install_prepared_midi_processor(
+        &mut self,
+        stage: midi_processor::MidiProcessorStage,
+    ) {
         self.midi_processor = Some(Box::new(stage));
-        Ok(())
+    }
+
+    pub(crate) fn midi_processor_storage_bytes(&self) -> Option<usize> {
+        self.midi_processor
+            .as_ref()
+            .map_or(Some(0), |stage| stage.storage_bytes())
+    }
+
+    pub(crate) fn midi_processor_declared_bytes(&self) -> Option<usize> {
+        self.midi_processor
+            .as_ref()
+            .map(|stage| stage.declared_pair_bytes())
     }
 
     pub(crate) fn has_midi_processor(&self) -> bool {
@@ -1224,6 +1240,7 @@ impl MutableInstrumentTrackRuntime {
         self.pair
             .declared_pair_bytes()
             .saturating_add(self.modulation_bytes().unwrap_or(usize::MAX))
+            .saturating_add(self.midi_processor_declared_bytes().unwrap_or(0))
     }
 
     fn modulation_bytes(&self) -> Option<usize> {
@@ -1246,6 +1263,7 @@ impl MutableInstrumentTrackRuntime {
             .checked_add(self.pair.fixed_storage_pair_bytes()?)?
             .checked_add(self.frozen_parameters.storage_bytes()?)?
             .checked_add(self.modulation_bytes()?)?
+            .checked_add(self.midi_processor_storage_bytes()?)?
             .checked_add(
                 self.live
                     .as_ref()
@@ -2127,6 +2145,15 @@ pub(crate) fn validate_prepared_graph_budget(
     arrangement: &crate::Project,
     session: &crate::PreparedSessionInventory,
 ) -> Result<(), MutableInstrumentRuntimeError> {
+    validate_prepared_graph_with_midi_processors(arrangement, session, 0, 0)
+}
+
+pub(crate) fn validate_prepared_graph_with_midi_processors(
+    arrangement: &crate::Project,
+    session: &crate::PreparedSessionInventory,
+    midi_count: usize,
+    midi_pair_bytes: usize,
+) -> Result<(), MutableInstrumentRuntimeError> {
     let max_retarget_bytes = hex_project::MAX_TRACKS
         .checked_mul(MAX_INSTRUMENT_RETARGET_PROOF_BYTES)
         .ok_or(MutableInstrumentRuntimeError::Budget)?;
@@ -2168,8 +2195,8 @@ pub(crate) fn validate_prepared_graph_budget(
             .ok_or(MutableInstrumentRuntimeError::Budget)?;
     }
 
-    let mut mutable_count = 0_usize;
-    let mut mutable_bytes = 0_usize;
+    let mut mutable_count = midi_count;
+    let mut mutable_bytes = midi_pair_bytes;
     for track in arrangement.tracks() {
         let Some(track_id) = track.canonical_track_id() else {
             return Err(MutableInstrumentRuntimeError::Budget);

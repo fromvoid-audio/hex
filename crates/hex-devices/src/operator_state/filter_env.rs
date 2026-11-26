@@ -364,6 +364,36 @@ mod tests {
     }
 
     #[test]
+    fn filter_envelope_ids_and_defaults_remain_stable_in_the_registered_catalog() {
+        use ParameterValue::{Choice, Float};
+        let expected = [
+            (671, "filter env amount", Float(0.0)),
+            (672, "filter env initial", Float(0.0)),
+            (673, "filter env peak", Float(100.0)),
+            (674, "filter env sustain", Float(50.0)),
+            (675, "filter env end", Float(0.0)),
+            (676, "filter env attack", Float(0.005)),
+            (677, "filter env decay", Float(0.1)),
+            (678, "filter env release", Float(0.1)),
+            (679, "filter env attack slope", Float(0.0)),
+            (680, "filter env decay slope", Float(0.0)),
+            (681, "filter env release slope", Float(0.0)),
+            (682, "filter env loop", Choice(0)),
+            (683, "filter env loop time", Float(0.1)),
+            (684, "filter env beat", Choice(6)),
+            (685, "filter freq vel", Float(0.0)),
+            (686, "filter freq key", Float(0.0)),
+        ];
+        let actual: Vec<_> = OPERATOR_METADATA
+            .descriptors()
+            .iter()
+            .filter(|descriptor| (671..=686).contains(&descriptor.id.value()))
+            .map(|descriptor| (descriptor.id.value(), descriptor.label, descriptor.default))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn brief_cutoff_law_and_v21_migration_are_exact() {
         // From docs/design/vector-brief.md: 500 Hz + 24 st at 50% peak -> 1000 Hz,
         // 100% peak -> 2000 Hz, 0% -> 500 Hz.
