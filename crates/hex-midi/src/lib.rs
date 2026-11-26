@@ -15,6 +15,7 @@ mod aggregator;
 mod framing;
 mod held_notes;
 mod mpe;
+mod mpe_output;
 mod native;
 mod note_events;
 mod output;
@@ -36,6 +37,11 @@ pub use mpe::{
     DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES, DEFAULT_MPE_PITCH_BEND_SEMITONES,
     MAX_MPE_MASTER_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_CENTS, MAX_MPE_PITCH_BEND_SEMITONES,
     MpeActiveNote, MpeConfig, MpeDecoder, MpeExpressionEvent, MpeZone,
+};
+pub use mpe_output::{
+    DEFAULT_MPE_TIMBRE, MAX_MPE_MEMBER_CHANNELS, MpeInitialExpression, MpeNoteOn,
+    MpeOutputAllocator, MpeOutputError, MpeOutputOccurrence, PITCH_BEND_CENTER,
+    cents_to_pitch_bend_u14,
 };
 pub use note_events::{ControlChange, NoteEvent};
 pub use output::{
