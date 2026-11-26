@@ -161,10 +161,9 @@ impl Catalog {
                 continue;
             };
             let result = match &report.executable {
-                Some(executable) => report
-                    .bundle
-                    .executable_unchanged(executable)
-                    .map_err(|e| e.to_string()),
+                Some(executable) => {
+                    crate::fingerprint::verify_vst3_unchanged(&report.bundle, executable)
+                }
                 None => Err("catalog executable missing".into()),
             };
             if let Err(error) = result {
@@ -176,7 +175,7 @@ impl Catalog {
             let Some(identity) = &entry.last_good else {
                 continue;
             };
-            if let Err(error) = identity.unchanged() {
+            if let Err(error) = crate::fingerprint::verify_clap_unchanged(identity) {
                 self.source_errors
                     .insert(entry.path.clone(), error.chars().take(128).collect());
             }

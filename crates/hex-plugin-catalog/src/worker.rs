@@ -35,7 +35,7 @@ pub use clap_worker::{scan_clap_folders, scan_clap_standard};
 #[cfg(test)]
 use vst3_worker::{
     CachedResult, DiscoveryOutcome, ScanTools, cached_result, discover, discovery_app_path, drain,
-    poll_and_drain, scan_batch, scanner_command,
+    poll_and_drain, scan_batch, scanner_command, wait_scanner_child,
 };
 pub use vst3_worker::{
     available_app, scan, scan_folders, scan_folders_with_deadline, scan_folders_with_mode,
@@ -564,5 +564,113 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(launches.is_empty());
+    }
+
+    #[test]
+    fn wedged_outer_scanner_escalates_to_sigkill_within_cancel_grace() {
+        let (mut output, child_output) = UnixStream::pair().unwrap();
+        let (mut diagnostic, child_diagnostic) = UnixStream::pair().unwrap();
+        let (mut cancel, child_cancel) = UnixStream::pair().unwrap();
+        for stream in [&output, &diagnostic, &cancel] {
+            stream.set_nonblocking(true).unwrap();
+        }
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "trap '' TERM INT; sleep 30"])
+            .stdin(Stdio::from(OwnedFd::from(child_cancel)))
+            .stdout(Stdio::from(OwnedFd::from(child_output)))
+            .stderr(Stdio::from(OwnedFd::from(child_diagnostic)))
+            .spawn()
+            .unwrap();
+        let owner = Cancellation::default();
+        assert!(owner.cancel());
+        let mut diagnostics = ScanDiagnostics::default();
+        let started = Instant::now();
+        let outcome = wait_scanner_child(
+            &mut child,
+            &mut output,
+            &mut diagnostic,
+            &mut cancel,
+            &owner.token(),
+            ScanDeadline::default(),
+            Duration::from_millis(40),
+            &mut diagnostics,
+        )
+        .unwrap();
+        assert!(outcome.killed, "wedged child must be escalated to SIGKILL");
+        assert!(outcome.exit.is_some(), "killed child must be reaped");
+        assert!(outcome.cause.is_some());
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "SIGKILL escalation took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn stat_fingerprint_fast_path_skips_redundant_hashing_and_detects_modifications() {
+        use std::fs;
+
+        let fixture = crate::tests::Fixture::new();
+        let bundle_path = fixture.0.join("FastPath.vst3");
+        let mut binary: Vec<_> = [0xfeed_facf_u32, 0x0100_000c, 0, 8, 1, 8, 0, 0, 0, 8]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        binary.push(0);
+        let executable = "Contents/MacOS/FastPath";
+        fs::create_dir_all(bundle_path.join("Contents/MacOS")).unwrap();
+        fs::write(bundle_path.join("Contents/Info.plist"), b"plist-v1").unwrap();
+        fs::write(bundle_path.join(executable), &binary).unwrap();
+
+        let mut report = crate::tests::report(bundle_path.clone());
+        report.bundle = Bundle::inspect(&bundle_path).unwrap();
+        report.executable = Some(report.bundle.admit(executable).unwrap());
+        let mut catalog = Catalog::default();
+        catalog
+            .record(bundle_path.clone(), Ok((report, "e".repeat(40))))
+            .unwrap();
+
+        crate::fingerprint::clear_entry_for_test(&bundle_path);
+        let before = crate::fingerprint::vst3_full_hash_count();
+        catalog.refresh_sources().unwrap();
+        assert!(catalog.source_errors.is_empty());
+        let after_first = crate::fingerprint::vst3_full_hash_count();
+        assert!(
+            after_first > before,
+            "cold refresh must run full SHA-256 verification"
+        );
+
+        // Second refresh and incremental cached_result must both hit the stat fast path.
+        catalog.refresh_sources().unwrap();
+        assert!(catalog.source_errors.is_empty());
+        let receipt = "a".repeat(64);
+        let helper = "b".repeat(64);
+        let tools = ScanTools {
+            scan: TOOLS,
+            receipt: &receipt,
+            helper: &helper,
+        };
+        assert_eq!(
+            cached_result(ScanMode::Incremental, &catalog, &bundle_path, tools),
+            Some(CachedResult::Success)
+        );
+        let after_cached = crate::fingerprint::vst3_full_hash_count();
+        assert_eq!(
+            after_cached, after_first,
+            "unchanged bundle must not re-hash executable from disk"
+        );
+
+        // Mutating the executable changes len/mtime, invalidates stat fast path, and fails check.
+        binary.push(42);
+        fs::write(bundle_path.join(executable), &binary).unwrap();
+        catalog.refresh_sources().unwrap();
+        assert!(
+            catalog.source_errors.contains_key(&bundle_path),
+            "modified executable must be detected"
+        );
+        assert_eq!(
+            cached_result(ScanMode::Incremental, &catalog, &bundle_path, tools),
+            None
+        );
     }
 }
