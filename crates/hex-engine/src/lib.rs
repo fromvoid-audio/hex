@@ -151,8 +151,8 @@ pub use device_modulation::foreign_modulation_target as project_vst3_modulation_
 pub use device_modulation::foreign_modulation_targets as project_vst3_modulation_targets;
 pub use device_modulation::{
     device_available_modulation_outputs, fm4_note_pressure_parameter_supported,
-    project_device_can_add_note_pressure, project_device_has_modulation_note_events,
-    project_device_host_gain_modulation_supported,
+    instrument_modulation_supported, project_device_can_add_note_pressure,
+    project_device_has_modulation_note_events, project_device_host_gain_modulation_supported,
     project_device_instrument_output_modulation_supported,
     project_device_modulation_target_supported, project_source_utility_matrix_edit_supported,
     project_source_utility_mute_edit_supported,
