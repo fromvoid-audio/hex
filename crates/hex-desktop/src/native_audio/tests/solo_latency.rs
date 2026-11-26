@@ -4,7 +4,7 @@ use super::*;
 use hex_project::Command;
 
 #[test]
-fn solo_publication_reaches_next_pumped_callback() {
+fn solo_publication_reaches_callback_at_the_audible_cut() {
     let _native = native_fixture();
     let files = Files::new();
     let path = files.wav(48_000, 65_536);
@@ -49,30 +49,45 @@ fn solo_publication_reaches_next_pumped_callback() {
             assert!(Instant::now() < deadline, "solo publication was not staged");
             std::thread::yield_now();
         };
-        let output = h.render();
-        assert_eq!(
-            h.audio
+        // The 5 ms track fader spans 240 samples at 48 kHz. A muting
+        // predecessor keeps ownership through its fade. The unmuting
+        // successor can install first and fade its track up from silence.
+        const FADE: usize = 240;
+        let mut installed_at = None;
+        for block in 0..(FADE.div_ceil(64) + 1) {
+            let pcm = h.render();
+            let revision = h
+                .audio
                 .as_ref()
                 .unwrap()
                 .status()
                 .unwrap()
                 .applied_revision
-                .load(std::sync::atomic::Ordering::Acquire),
-            next,
-            "the first callback after staging must install the solo graph"
-        );
+                .load(Acquire);
+            if revision == next {
+                installed_at.get_or_insert_with(|| started.elapsed().as_micros());
+            } else {
+                assert_eq!(revision, applied);
+                assert!(installed_at.is_none(), "solo publication regressed");
+                assert!(expected && block < FADE.div_ceil(64), "late solo cut");
+            }
+            for (offset, frame) in pcm.into_iter().enumerate() {
+                let progress = ((block * 64 + offset + 1).min(FADE) as f32) / FADE as f32;
+                let level = 0.25 * if expected { 1.0 - progress } else { progress };
+                assert!(
+                    frame.iter().all(|sample| (sample - level).abs() < 1e-5),
+                    "solo={expected} block={block} frame={offset}: {frame:?}, expected {level}"
+                );
+            }
+        }
+        let elapsed = installed_at.expect("solo successor must install at the audible cut");
         if iteration >= 2 {
-            times.push(started.elapsed().as_micros());
+            times.push(elapsed);
         }
         applied = next;
         assert_eq!(metadata.context.editor_revision, event.state.revision);
         assert_eq!(event.state.project.track(solo).unwrap().soloed(), expected);
         assert!(!event.state.project.track(audible).unwrap().soloed());
-        if expected {
-            assert!(output.iter().flatten().all(|sample| sample.abs() < 1e-6));
-        } else {
-            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
-        }
     }
     times.sort_unstable();
     eprintln!(
