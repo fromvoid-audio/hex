@@ -397,12 +397,16 @@ for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/he
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/vst3_parameters/render.rs'
             and suffix.startswith('panel.search.clone())')
         )
+        vector_tuning_caption = (
+            path == editor_root / 'device_panel/operator_panel/waveform_editor.rs'
+            and re.match(r'hex_widgets::device_inline_caption\(\s*theme::text\(readout\)\s*,', suffix)
+        )
         # This row contains only controls from the shared themed factory.
         modulator_parameter_control = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators/source_card.rs'
             and suffix.startswith(('parameter_control_with_presentation(', 'control_row)'))
         )
-        if not suffix.startswith(widgets) and not suffix.startswith(local_components) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not modulator_parameter_control:
+        if not suffix.startswith(widgets) and not suffix.startswith(local_components) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not vector_tuning_caption and not modulator_parameter_control:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):
