@@ -73,19 +73,16 @@ impl SaturatorRuntime {
             controls,
             settings,
             sample_rate,
-            drive_gain,
-            output_gain,
+            gain_ramps,
             kernel,
             channels,
             delay,
             delay_index,
-            gain_ramp_remaining,
         } = self;
         base.check_inline_ownership();
         controls.check_inline(SaturatorSettings::check_inline);
         settings.check_inline();
-        let _: (&u32, &f64, &f64, &[u32; 2]) =
-            (sample_rate, drive_gain, output_gain, gain_ramp_remaining);
+        let _: (&u32, &[hex_dsp::LinearRamp; 2]) = (sample_rate, gain_ramps);
         let _: (
             &&'static Kernel,
             &[Oversampler; 2],
@@ -106,40 +103,35 @@ impl SaturatorRuntime {
         // Held controls reuse scalar coefficients once direct ramps settle.
         // Changes use the original bounded gain conversion.
         let targets = [
-            if settings.drive_db == self.settings.drive_db && self.gain_ramp_remaining[0] == 0 {
-                self.drive_gain
+            if settings.drive_db == self.settings.drive_db && self.gain_ramps[0].is_settled() {
+                self.gain_ramps[0].value()
             } else {
                 amplitude_from_db(settings.drive_db)?
             },
-            if settings.output_db == self.settings.output_db && self.gain_ramp_remaining[1] == 0 {
-                self.output_gain
+            if settings.output_db == self.settings.output_db && self.gain_ramps[1].is_settled() {
+                self.gain_ramps[1].value()
             } else {
                 amplitude_from_db(settings.output_db)?
             },
         ];
         let was_present = [self.controls.has_value(0), self.controls.has_value(1)];
         self.controls.install(next);
-        for (index, (gain, target)) in [
-            (&mut self.drive_gain, targets[0]),
-            (&mut self.output_gain, targets[1]),
-        ]
-        .into_iter()
-        .enumerate()
-        {
+        let frames = gain_ramp_frames(self.sample_rate);
+        for (index, target) in targets.into_iter().enumerate() {
             let parameter = [parameter::DRIVE, parameter::OUTPUT][index];
             // An omitted reading route keeps its existing immediate fallback.
             // A retained route with no value represents base selection instead.
             let omitted = self.base.supports(parameter)
                 && values.parameter_ids().binary_search(&parameter).is_err();
+            let ramp = &mut self.gain_ramps[index];
             if self.controls.has_value(index) || omitted {
-                *gain = target;
-                self.gain_ramp_remaining[index] = 0;
+                ramp.reset(target);
             } else {
-                if was_present[index] && self.gain_ramp_remaining[index] == 0 && *gain != target {
-                    self.gain_ramp_remaining[index] = gain_ramp_frames(self.sample_rate);
+                if was_present[index] && ramp.is_settled() && ramp.value() != target {
+                    ramp.retarget(target, frames);
                 }
-                if self.gain_ramp_remaining[index] == 0 {
-                    *gain = target;
+                if ramp.is_settled() {
+                    ramp.reset(target);
                 }
             }
         }

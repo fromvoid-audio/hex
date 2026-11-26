@@ -1,5 +1,5 @@
 //! Original mathematical proof only; no registered Operator/filter admission.
-#[path = "../src/operator_filter_lowpass.rs"]
+#[path = "support/operator_filter_lowpass.rs"]
 mod filter;
 
 use filter::{Error, Lowpass, PreparedLowpass};

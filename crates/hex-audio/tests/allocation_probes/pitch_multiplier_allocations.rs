@@ -1,5 +1,5 @@
 //! Standalone control-math probe, not native callback or pitch admission.
-#[path = "../../../hex-devices/src/pitch_multiplier.rs"]
+#[path = "../../../hex-devices/tests/support/pitch_multiplier.rs"]
 mod pitch;
 use pitch::{Error, Multiplier};
 
