@@ -406,6 +406,17 @@ impl SpectrumReaper {
             }
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn failed_for_test() -> Self {
+        Self {
+            stop: Arc::new(AtomicBool::new(true)),
+            join: None,
+            native: None,
+            phase: ReaperPhase::Failed,
+            first_panic: None,
+        }
+    }
 }
 
 impl Drop for SpectrumReaper {

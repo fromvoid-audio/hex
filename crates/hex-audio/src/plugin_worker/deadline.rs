@@ -5,10 +5,10 @@
 //! The device callback is uninvolved.
 
 use cpal::platform::CoreAudioWorkerTimeConstraint;
-use std::io::Write as _;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{Processor, State};
+use super::{Processor, Signal, State};
 
 pub(super) struct Deadline {
     policy: CoreAudioWorkerTimeConstraint,
@@ -16,6 +16,7 @@ pub(super) struct Deadline {
     live_until: Option<Instant>,
     active: bool,
     refused: bool,
+    signal: Option<Arc<Signal>>,
 }
 
 impl Deadline {
@@ -32,7 +33,7 @@ impl Deadline {
         (computation, constraint, interval)
     }
 
-    pub(super) fn for_native_pcm(state: &State) -> Option<Self> {
+    pub(super) fn for_native_pcm(state: &State, signal: Arc<Signal>) -> Option<Self> {
         let Some(Processor::Native(instance)) = state.processor.as_ref() else {
             return None;
         };
@@ -47,6 +48,7 @@ impl Deadline {
             live_until: None,
             active: false,
             refused: false,
+            signal: Some(signal),
         })
     }
 
@@ -98,10 +100,11 @@ impl Deadline {
         if let Err(error) = result {
             self.refused = true;
             self.live_until = None;
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "vst3 worker warning: native transport deadline leave failed: {error}"
-            );
+            // Never lock stderr on the Mach-RT transport worker thread; route
+            // the warning through the lock-free bounded control diagnostic queue.
+            if let Some(signal) = &self.signal {
+                signal.record_deadline_leave_failure(&error);
+            }
         }
     }
 }
@@ -124,6 +127,7 @@ mod tests {
             live_until: Some(Instant::now()),
             active: false,
             refused: false,
+            signal: None,
         };
         deadline.enter();
         assert!(
@@ -177,6 +181,7 @@ mod tests {
                     live_until: None,
                     active: false,
                     refused: false,
+                    signal: None,
                 };
                 deadline.enter();
                 assert!(
@@ -199,28 +204,56 @@ mod tests {
     fn failed_policy_restoration_is_non_fatal_and_disables_further_churn() {
         let period = Duration::from_micros(2_667);
         let (computation, constraint, interval) = Deadline::policy_window(period);
-        let mut deadline = Deadline {
-            policy: CoreAudioWorkerTimeConstraint::for_current_thread(
-                period,
-                computation,
-                constraint,
-            )
-            .unwrap(),
-            interval,
-            live_until: Some(Instant::now() + interval),
-            active: true,
-            refused: false,
-        };
-        deadline.finish_leave(Err("simulated non-KERN_SUCCESS policy restore".into()));
-        assert!(!deadline.active);
-        assert!(deadline.refused);
-        assert!(deadline.live_until.is_none());
-        // Subsequent enter/replied/after_empty_poll remain no-ops without panicking or failing.
-        deadline.enter();
-        assert!(!deadline.active);
-        deadline.replied();
-        assert!(deadline.live_until.is_none());
-        deadline.after_empty_poll(Instant::now());
-        assert!(!deadline.active);
+        let signal = Arc::new(Signal::new(false));
+        let worker_signal = Arc::clone(&signal);
+
+        // Hold the process-global stderr lock on this thread while the worker
+        // thread reports a deadline-leave failure and bounded failure queue overflow.
+        // Any stderr lock acquisition on the worker path would deadlock here.
+        let _stderr_guard = std::io::stderr().lock();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let mut deadline = Deadline {
+                policy: CoreAudioWorkerTimeConstraint::for_current_thread(
+                    period,
+                    computation,
+                    constraint,
+                )
+                .unwrap(),
+                interval,
+                live_until: Some(Instant::now() + interval),
+                active: true,
+                refused: false,
+                signal: Some(Arc::clone(&worker_signal)),
+            };
+            deadline.finish_leave(Err("simulated non-KERN_SUCCESS policy restore".into()));
+            assert!(!deadline.active);
+            assert!(deadline.refused);
+            assert!(deadline.live_until.is_none());
+            // Subsequent enter/replied/after_empty_poll remain no-ops without panicking or failing.
+            deadline.enter();
+            assert!(!deadline.active);
+            deadline.replied();
+            assert!(deadline.live_until.is_none());
+            deadline.after_empty_poll(Instant::now());
+            assert!(!deadline.active);
+            // Overflow bounded diagnostic queue to verify drop counter increments without blocking.
+            for i in 0..8 {
+                worker_signal.push_failure_diagnostic(format!("fault-{i}"));
+            }
+            let _ = done_tx.send(());
+        });
+        done_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("worker diagnostic path must not block on stderr lock");
+        handle.join().unwrap();
+        drop(_stderr_guard);
+
+        assert_eq!(signal.deadline_leave_failures(), 1);
+        let first = signal
+            .take_failure_diagnostic()
+            .expect("control must drain deadline leave warning");
+        assert!(first.contains("native transport deadline leave failed"));
+        assert!(signal.failure_diagnostics_dropped() >= 5);
     }
 }
