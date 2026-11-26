@@ -161,11 +161,16 @@ impl EditorView {
         {
             return self.track_meters.clear();
         }
-        let Some((audible, observation)) = self.audible_playback.as_ref().and_then(|audible| {
-            (audible.project_generation == self.project_generation
-                && status.applied_revision.load(Acquire) == audible.audio_revision)
-                .then_some((audible, audible.observation.as_ref()?))
-        }) else {
+        let Some((audible, observation)) =
+            self.audio_pub
+                .audible_playback
+                .as_ref()
+                .and_then(|audible| {
+                    (audible.project_generation == self.project_generation
+                        && status.applied_revision.load(Acquire) == audible.audio_revision)
+                        .then_some((audible, audible.observation.as_ref()?))
+                })
+        else {
             return self.track_meters.hold(self.project_generation, now);
         };
         let identity = (audible.project_generation, audible.audio_revision);
@@ -693,7 +698,7 @@ mod tests {
                 spectrum_error: None,
                 mode: hex_session::DocumentAudioMode::Resident,
             });
-            view.audible_playback = Some(super::super::PlaybackCandidate {
+            view.audio_pub.audible_playback = Some(super::super::PlaybackCandidate {
                 clip_preview_identity: None,
                 worker_requires_preroll: None,
                 observation: Some(observation),
@@ -710,6 +715,7 @@ mod tests {
                 view.tick_track_meters(now + Duration::from_millis(16 * tick));
             }
             let observation = view
+                .audio_pub
                 .audible_playback
                 .as_ref()
                 .unwrap()
@@ -756,7 +762,8 @@ mod tests {
             view.session_grid.visible_columns = 1;
             view.selected_track = Some(track);
             let other = view.state.as_ref().unwrap().project.tracks()[1].id();
-            view.audible_playback
+            view.audio_pub
+                .audible_playback
                 .as_ref()
                 .unwrap()
                 .observation

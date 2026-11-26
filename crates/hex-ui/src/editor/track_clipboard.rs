@@ -75,11 +75,11 @@ impl EditorView {
             || self.clip_name_edit.is_some()
             || self.track_reorder_active()
             || self.track_resize_active()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.time_selection_gesture.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.time_selection_gesture.is_some()
         {
             self.error = Some("finish the current edit before copying tracks".into());
             return;
@@ -94,7 +94,7 @@ impl EditorView {
             mode: self.mode,
             generation,
             revision,
-            epoch: self.selection_intent_epoch,
+            epoch: self.interaction.selection_intent_epoch,
             action: action.clone(),
             receipt: Receipt::new(generation),
         });
@@ -113,9 +113,12 @@ impl EditorView {
     ) -> bool {
         let retained_context = self.mode == super::EditorMode::Arrangement
             && self.focus.is_focused(window)
-            && self.selection_intent_epoch.is_some_and(|epoch| {
-                self.track_clipboard_context == Some((self.project_generation, epoch))
-            });
+            && self
+                .interaction
+                .selection_intent_epoch
+                .is_some_and(|epoch| {
+                    self.track_clipboard_context == Some((self.project_generation, epoch))
+                });
         if !self.track_header_focused(window) && !retained_context {
             return false;
         }
@@ -193,10 +196,10 @@ impl EditorView {
         if self.mode != p.mode
             || self.persistence.opening_project
             || self.persistence.close_prompt_open
-            || self.recovery.generation().is_some()
+            || self.audio_pub.recovery.generation().is_some()
             || p.generation != self.project_generation
             || p.epoch.is_none()
-            || p.epoch != self.selection_intent_epoch
+            || p.epoch != self.interaction.selection_intent_epoch
         {
             return;
         }

@@ -17,7 +17,7 @@ impl EditorView {
         if !clip.active() {
             return None;
         }
-        let audible = self.audible_playback.as_ref()?;
+        let audible = self.audio_pub.audible_playback.as_ref()?;
         if audible.project_generation != self.project_generation
             || audible.state.revision != state.revision
         {

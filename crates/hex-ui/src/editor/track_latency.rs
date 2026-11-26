@@ -40,10 +40,15 @@ impl EditorView {
         }) else {
             return Reading::Pending;
         };
-        let Some(candidate) = self.audible_playback.as_ref().filter(|candidate| {
-            candidate.project_generation == self.project_generation
-                && candidate.audio_revision == source.audio_revision
-        }) else {
+        let Some(candidate) = self
+            .audio_pub
+            .audible_playback
+            .as_ref()
+            .filter(|candidate| {
+                candidate.project_generation == self.project_generation
+                    && candidate.audio_revision == source.audio_revision
+            })
+        else {
             return Reading::Pending;
         };
         let reading = candidate

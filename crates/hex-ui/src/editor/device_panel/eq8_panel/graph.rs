@@ -371,7 +371,7 @@ fn begin_band_audition(
     owner: hex_engine::ProcessorChainOwner,
     band: usize,
 ) {
-    if view.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+    if view.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
         view.device_panel.message =
             Some("eq8 band audition is unavailable for verified streaming audio".into());
         return;
@@ -406,6 +406,7 @@ fn begin_band_audition(
     let generation = view.project_generation;
     let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
     let Some(floor) = view
+        .audio_pub
         .audio_admission
         .published_audio_revision(generation, project_revision)
     else {

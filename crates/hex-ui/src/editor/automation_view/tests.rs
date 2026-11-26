@@ -24,7 +24,7 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
     click(&mut visual, audio, true);
     editor.update(&mut visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
-        v.time_selection = Some(crate::editor::time_selection::TimeSelection {
+        v.interaction.time_selection = Some(crate::editor::time_selection::TimeSelection {
             anchor_track: Some(p.tracks()[0].id()),
             end_track: Some(p.tracks()[1].id()),
             anchor_frame: 12_000,
@@ -204,9 +204,9 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     visual.run_until_parked();
     let authored = editor.read_with(&visual, |v, _| {
         assert!(
-            v.active_clip_drag.is_none()
-                && v.active_trim_drag.is_none()
-                && v.time_selection_gesture.is_none()
+            v.interaction.active_clip_drag.is_none()
+                && v.interaction.active_trim_drag.is_none()
+                && v.interaction.time_selection_gesture.is_none()
         );
         assert_eq!(v.selected_track, background_selection.0);
         assert_eq!(

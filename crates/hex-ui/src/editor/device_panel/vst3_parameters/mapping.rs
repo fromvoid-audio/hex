@@ -21,7 +21,7 @@ pub(in crate::editor) fn mapping_target(
     if !row.editable
         || row.steps != 0
         || row.metadata_revision == 0
-        || view.stopped_playback_restore.is_some()
+        || view.audio_pub.stopped_playback_restore.is_some()
         || view.device_panel.degraded_plugins.contains(device.value())
         || current_context(view) != Some(panel.query.context)
         || view

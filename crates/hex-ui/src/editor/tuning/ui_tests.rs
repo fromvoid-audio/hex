@@ -501,8 +501,8 @@ fn tuning_overlay_occludes_arrangement_clicks_and_double_clicks(cx: &mut TestApp
     visual.run_until_parked();
 
     editor.read_with(&visual, |view, _| {
-        assert!(view.pointer_down.is_none());
-        assert!(view.clip_paint_gesture.is_none());
+        assert!(view.interaction.pointer_down.is_none());
+        assert!(view.interaction.clip_paint_gesture.is_none());
         assert_eq!(view.selected_track, before.0);
         assert_eq!(view.selected_clip, before.1);
         assert_eq!(view.state.as_ref().unwrap().revision, before.2);

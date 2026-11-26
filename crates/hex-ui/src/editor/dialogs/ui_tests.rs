@@ -165,7 +165,7 @@ fn project_actions_preserve_confirmation_and_dispatch_once_after_rerender(cx: &m
         assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
         assert!(!view.state.as_ref().unwrap().can_undo);
         assert_eq!(
-            view.document_audio_mode,
+            view.audio_pub.document_audio_mode,
             hex_session::DocumentAudioMode::Resident
         );
     });
@@ -358,7 +358,7 @@ fn unfocused_streaming_file_actions_preserve_explicit_mode_refusal(cx: &mut Test
         );
         assert_eq!(view.state.as_ref().unwrap().project, before);
         assert_eq!(
-            view.document_audio_mode,
+            view.audio_pub.document_audio_mode,
             hex_session::DocumentAudioMode::Resident
         );
         assert!(!view.persistence.opening_project);
@@ -1006,7 +1006,9 @@ fn returned_open_picker_admits_own_recovery_restore_without_admitting_edits(
     let (handle, editor) = directory.window(cx);
     add_track(&editor, cx);
     editor.update(cx, |view, _| view.recover_audio());
-    let generation = editor.read_with(cx, |view, _| view.pending_recovery_generation.unwrap());
+    let generation = editor.read_with(cx, |view, _| {
+        view.audio_pub.pending_recovery_generation.unwrap()
+    });
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     visual.update(|window, _| {
@@ -1074,7 +1076,9 @@ fn selected_open_path_survives_owned_restore_before_render_and_opens_once(cx: &m
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
     let old_generation = editor.read_with(cx, |view, _| view.project_generation);
     editor.update(cx, |view, _| view.recover_audio());
-    let recovery = editor.read_with(cx, |view, _| view.pending_recovery_generation.unwrap());
+    let recovery = editor.read_with(cx, |view, _| {
+        view.audio_pub.pending_recovery_generation.unwrap()
+    });
     let injected = Rc::new(Cell::new(false));
     let seen = Rc::clone(&injected);
     let chosen = path.clone();
@@ -1239,7 +1243,7 @@ fn one_new_save_waits_for_current_or_new_save_and_replaces_once(cx: &mut TestApp
             assert!(state.project.tracks().is_empty() && !state.can_undo && !state.unsaved);
             assert!(state.document_path.is_none() && !view.persistence.project_open.busy());
             assert_eq!(
-                view.document_audio_mode,
+                view.audio_pub.document_audio_mode,
                 hex_session::DocumentAudioMode::Resident
             );
         });

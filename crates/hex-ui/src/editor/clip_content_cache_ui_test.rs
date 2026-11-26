@@ -183,7 +183,7 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
         cx.notify();
     });
     visual.run_until_parked();
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&source]);
+    let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&source]);
     assert!(visual.should_present_drawn_scene(false, true));
     assert!(!visual.should_present_drawn_scene(false, false));
     let start = point(gpui::px(lane.left + 40.0), gpui::px(lane.top + 25.0));
@@ -192,13 +192,13 @@ fn held_pan_reuses_current_scene_and_release_keeps_first_clip_drag(cx: &mut Test
     visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
     visual.run_until_parked();
     let content = editor.read_with(&visual, |view, _| {
-        assert!(view.arrangement_pan.is_some());
+        assert!(view.interaction.arrangement_pan.is_some());
         assert!(
             view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
                 .start
                 > 0
         );
-        view.clip_content_cache.entries[&source].clone()
+        view.timeline_caches.clip_content_cache.entries[&source].clone()
     });
     assert_eq!(
         visual.should_present_drawn_scene(false, true),
@@ -264,7 +264,7 @@ fn held_device_drag_updates_the_receiver_and_reuses_clip_paint(cx: &mut TestAppC
     });
     visual.run_until_parked();
     let content = editor.read_with(&visual, |view, _| {
-        view.clip_content_cache.entries[&source].clone()
+        view.timeline_caches.clip_content_cache.entries[&source].clone()
     });
     let device = visual
         .debug_bounds("browser-device-effect-hex.utility")
@@ -363,7 +363,7 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
     visual.run_until_parked();
     let content = || {
         editor.read_with(cx, |view, _| {
-            view.clip_content_cache.entries[&source].clone()
+            view.timeline_caches.clip_content_cache.entries[&source].clone()
         })
     };
     let original = content();
@@ -439,12 +439,17 @@ fn palette_grid_and_resize_invalidate_content_with_current_geometry(cx: &mut Tes
         "one resize build, with no redundant following-frame rebuild"
     );
     editor.read_with(cx, |view, app| {
-        let lane = view.drag_lanes[&source];
+        let lane = view.timeline_caches.drag_lanes[&source];
         assert_eq!(resized.read(app).key.lane, Some(lane));
-        assert_eq!(view.drag_lane_epochs[&source], view.drag_layout_generation);
+        assert_eq!(
+            view.timeline_caches.drag_lane_epochs[&source],
+            view.timeline_caches.drag_layout_generation
+        );
     });
     let bounds = visual.debug_bounds(selector).expect("resized visible clip");
-    let expected = editor.read_with(cx, |view, _| view.drag_lanes[&source].width * 0.25);
+    let expected = editor.read_with(cx, |view, _| {
+        view.timeline_caches.drag_lanes[&source].width * 0.25
+    });
     assert!((f32::from(bounds.size.width) - expected).abs() <= 1.0);
 }
 
@@ -457,7 +462,7 @@ fn busy_to_idle_rebuilds_handles_and_pending_mouse_down_keeps_identity(cx: &mut 
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
     let original = editor.read_with(cx, |view, _| {
-        view.clip_content_cache.entries[&source].entity_id()
+        view.timeline_caches.clip_content_cache.entries[&source].entity_id()
     });
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
@@ -471,7 +476,12 @@ fn busy_to_idle_rebuilds_handles_and_pending_mouse_down_keeps_identity(cx: &mut 
         window.draw(cx).clear();
     });
     editor.read_with(cx, |view, _| {
-        assert!(view.clip_content_cache.entries.contains_key(&source))
+        assert!(
+            view.timeline_caches
+                .clip_content_cache
+                .entries
+                .contains_key(&source)
+        )
     });
     assert!(
         visual.debug_bounds(selector).is_none(),
@@ -488,7 +498,7 @@ fn busy_to_idle_rebuilds_handles_and_pending_mouse_down_keeps_identity(cx: &mut 
         .debug_bounds(selector)
         .expect("idle drag surface restored");
     let idle = editor.read_with(cx, |view, _| {
-        view.clip_content_cache.entries[&source].clone()
+        view.timeline_caches.clip_content_cache.entries[&source].clone()
     });
     assert_eq!(idle.entity_id(), original);
     let down = surface.center();
@@ -496,14 +506,14 @@ fn busy_to_idle_rebuilds_handles_and_pending_mouse_down_keeps_identity(cx: &mut 
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            assert!(view.pointer_down.is_some());
+            assert!(view.interaction.pointer_down.is_some());
             cx.notify();
         });
         window.draw(cx).clear();
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.clip_content_cache.entries[&source].entity_id(),
+            view.timeline_caches.clip_content_cache.entries[&source].entity_id(),
             idle.entity_id()
         )
     });
@@ -533,7 +543,7 @@ fn same_revision_snapshot_refresh_preserves_pending_clip_drag(cx: &mut TestAppCo
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            assert!(view.pointer_down.is_some());
+            assert!(view.interaction.pointer_down.is_some());
             let state = view.state.as_ref().expect("state");
             let revision = state.revision;
             let project = Arc::clone(&state.project);
@@ -563,8 +573,8 @@ fn snapshot_history_and_project_removal_release_cached_ownership(cx: &mut TestAp
     let (old_snapshot, old_source, old_target) = editor.read_with(cx, |view, _| {
         (
             Arc::downgrade(view.state.as_ref().expect("state")),
-            view.clip_content_cache.entries[&source].downgrade(),
-            view.clip_content_cache.entries[&target].downgrade(),
+            view.timeline_caches.clip_content_cache.entries[&source].downgrade(),
+            view.timeline_caches.clip_content_cache.entries[&target].downgrade(),
         )
     });
     // Metadata may replace the immutable Arc without changing the project revision.
@@ -612,7 +622,7 @@ fn snapshot_history_and_project_removal_release_cached_ownership(cx: &mut TestAp
             .debug_bounds(selector)
             .expect("current canonical history content");
         let expected = editor.read_with(cx, |view, _| {
-            let lane = view.drag_lanes[&source];
+            let lane = view.timeline_caches.drag_lanes[&source];
             lane.left + lane.width * expected_start as f32 / 384_000.0
         });
         assert!((f32::from(bounds.origin.x) - expected).abs() <= 1.0);
@@ -629,12 +639,23 @@ fn snapshot_history_and_project_removal_release_cached_ownership(cx: &mut TestAp
     });
     assert!(visual.debug_bounds(selector).is_none());
     editor.read_with(cx, |view, _| {
-        assert!(!view.clip_content_cache.entries.contains_key(&source));
-        assert!(view.clip_content_cache.entries.contains_key(&target));
-        assert!(view.clip_content_cache.entries.len() <= hex_project::MAX_TRACKS);
+        assert!(
+            !view
+                .timeline_caches
+                .clip_content_cache
+                .entries
+                .contains_key(&source)
+        );
+        assert!(
+            view.timeline_caches
+                .clip_content_cache
+                .entries
+                .contains_key(&target)
+        );
+        assert!(view.timeline_caches.clip_content_cache.entries.len() <= hex_project::MAX_TRACKS);
     });
     let previous = editor.read_with(cx, |view, _| {
-        view.clip_content_cache.entries[&target].downgrade()
+        view.timeline_caches.clip_content_cache.entries[&target].downgrade()
     });
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
@@ -866,7 +887,8 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let previous = editor.read_with(cx, |view, _| {
-        view.clip_content_cache
+        view.timeline_caches
+            .clip_content_cache
             .entries
             .get(&source)
             .expect("cached source")
@@ -905,7 +927,8 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
     );
     let original_bounds = visual.debug_bounds(selector).expect("selected clip bounds");
     let current = editor.read_with(cx, |view, _| {
-        view.clip_content_cache
+        view.timeline_caches
+            .clip_content_cache
             .entries
             .get(&source)
             .expect("selected source")
@@ -942,7 +965,8 @@ fn changed_key_paints_current_content_in_same_draw_then_reuses(cx: &mut TestAppC
         "the first viewport-change draw paints the cropped 72k/192k interval"
     );
     let zoomed = editor.read_with(cx, |view, _| {
-        view.clip_content_cache
+        view.timeline_caches
+            .clip_content_cache
             .entries
             .get(&source)
             .expect("zoomed source")
@@ -976,22 +1000,22 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
     // parking the executor or settling another frame.
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            view.clip_content_cache = TrackCache::default();
-            view.drag_lanes.clear();
-            view.drag_lane_epochs.clear();
+            view.timeline_caches.clip_content_cache = TrackCache::default();
+            view.timeline_caches.drag_lanes.clear();
+            view.timeline_caches.drag_lane_epochs.clear();
             cx.notify();
         });
         window.draw(cx).clear();
     });
     let content = editor.read_with(cx, |view, _| {
-        view.clip_content_cache.entries[&source].clone()
+        view.timeline_caches.clip_content_cache.entries[&source].clone()
     });
     let builds = content.read_with(cx, |content, _| content.builds);
     assert_eq!(builds, 1, "one cold child render");
     let clip_selector = Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
     let clip_bounds = visual.debug_bounds(clip_selector).expect("cold clip scene");
     editor.read_with(cx, |view, _| {
-        let lane = view.drag_lanes[&source];
+        let lane = view.timeline_caches.drag_lanes[&source];
         assert!((f32::from(clip_bounds.origin.x) - lane.left).abs() <= 1.0);
         assert!((f32::from(clip_bounds.size.width) - lane.width * 0.25).abs() <= 1.0);
     });
@@ -1043,10 +1067,10 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
         );
         editor.read_with(cx, |view, _| {
             assert_eq!(
-                view.drag_lane_epochs.get(&source),
-                Some(&view.drag_layout_generation)
+                view.timeline_caches.drag_lane_epochs.get(&source),
+                Some(&view.timeline_caches.drag_layout_generation)
             );
-            assert!(view.time_selection_project_scope);
+            assert!(view.interaction.time_selection_project_scope);
         });
     }
     visual.update(|window, cx| {
@@ -1084,6 +1108,7 @@ fn cold_main_selection_reuses_clip_scene_with_current_geometry(cx: &mut TestAppC
     );
     editor.read_with(cx, |view, _| {
         let drag = view
+            .interaction
             .active_trim_drag
             .as_ref()
             .expect("current trim gesture");

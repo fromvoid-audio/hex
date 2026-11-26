@@ -156,7 +156,7 @@ fn check_boundary(cx: &mut TestAppContext, edge: TrimEdge) {
         let state = v.state.as_ref().unwrap();
         let c = state.project.clip(clip).unwrap();
         let track = state.project.tracks()[0].id();
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         let viewport = v.visible_viewport(state.timeline_frames);
         let frame = if edge == TrimEdge::Right {
             c.start() + 6000
@@ -174,6 +174,7 @@ fn check_boundary(cx: &mut TestAppContext, edge: TrimEdge) {
     visual.run_until_parked();
     let desired = editor.read_with(&visual, |v, _| {
         let d = v
+            .interaction
             .active_trim_drag
             .as_ref()
             .expect("real held Shift capture");
@@ -226,8 +227,8 @@ fn point_for_frame(
     y: gpui::Pixels,
 ) -> gpui::Point<gpui::Pixels> {
     editor.read_with(visual, |view, _| {
-        let drag = view.active_trim_drag.as_ref().unwrap();
-        let lane = view.drag_lanes[&drag.source_track];
+        let drag = view.interaction.active_trim_drag.as_ref().unwrap();
+        let lane = view.timeline_caches.drag_lanes[&drag.source_track];
         let state = view.state.as_ref().unwrap();
         let viewport = view.visible_viewport(state.timeline_frames);
         point(
@@ -311,7 +312,7 @@ fn validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_mo
         visual.simulate_mouse_move(invalid, MouseButton::Left, shift);
         visual.run_until_parked();
         let checks = editor.read_with(&visual, |view, _| {
-            let drag = view.active_trim_drag.as_ref().unwrap();
+            let drag = view.interaction.active_trim_drag.as_ref().unwrap();
             let shown = drag.preview.borrow();
             hex_engine::audio_transform::validate_clip_warp_preview(
                 &shown.as_ref().unwrap().clip,
@@ -324,7 +325,8 @@ fn validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_mo
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                view.active_trim_drag
+                view.interaction
+                    .active_trim_drag
                     .as_ref()
                     .unwrap()
                     .resolution
@@ -347,9 +349,9 @@ fn validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_mo
             down.y,
         );
         let (expected, frame) = editor.read_with(&visual, |view, _| {
-            let drag = view.active_trim_drag.as_ref().unwrap();
+            let drag = view.interaction.active_trim_drag.as_ref().unwrap();
             let project = &view.state.as_ref().unwrap().project;
-            let lane = view.drag_lanes[&drag.source_track];
+            let lane = view.timeline_caches.drag_lanes[&drag.source_track];
             let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
             let frame =
                 super::snapped_edge_frame(drag, project, f32::from(release.x), lane, viewport)
@@ -469,7 +471,7 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
             down.y,
         );
         editor.read_with(&visual, |view, _| {
-            let drag = view.active_trim_drag.as_ref().unwrap();
+            let drag = view.interaction.active_trim_drag.as_ref().unwrap();
             assert_eq!(
                 view.hovered_drag_target(f32::from(target.x), f32::from(target.y))
                     .map(|(track, _)| track),
@@ -480,7 +482,7 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
         visual.simulate_mouse_move(target, MouseButton::Left, shift);
         visual.run_until_parked();
         let expected = editor.read_with(&visual, |view, _| {
-            let drag = view.active_trim_drag.as_ref().unwrap();
+            let drag = view.interaction.active_trim_drag.as_ref().unwrap();
             let preview = drag.preview.borrow().as_ref().unwrap().clone();
             assert!(
                 preview.clip.duration() > u64::from(source_frames),

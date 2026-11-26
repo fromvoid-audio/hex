@@ -48,7 +48,7 @@ impl super::EditorView {
         window: &mut gpui::Window,
         cx: &mut gpui::Context<Self>,
     ) {
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error =
                 Some("computer keyboard is unavailable for verified streaming audio".into());
             cx.notify();
@@ -72,7 +72,7 @@ impl super::EditorView {
     }
 
     pub(super) fn worker_owns_keyboard_publication(&self) -> bool {
-        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self
                 .audio
                 .as_ref()
@@ -172,8 +172,8 @@ impl super::EditorView {
         // Waiting for its callback here would discard the newer press; legacy UI-owned
         // publication still requires restoration to apply before preparing another graph.
         if (self.device_gesture_pending()
-            || self.prepared_seek.is_some()
-            || (self.stopped_playback_restore.is_some() && !worker_owned))
+            || self.audio_pub.prepared_seek.is_some()
+            || (self.audio_pub.stopped_playback_restore.is_some() && !worker_owned))
             && !retain_input
         {
             self.cancel_computer_keyboard();
@@ -359,8 +359,8 @@ impl super::EditorView {
             let worker_owned = self.worker_owns_keyboard_publication();
             let retain_input = self.reusable_worker_keyboard_input(worker_owned);
             if (self.device_gesture_pending()
-                || self.prepared_seek.is_some()
-                || (self.stopped_playback_restore.is_some() && !worker_owned))
+                || self.audio_pub.prepared_seek.is_some()
+                || (self.audio_pub.stopped_playback_restore.is_some() && !worker_owned))
                 && !retain_input
             {
                 self.cancel_computer_keyboard();
@@ -541,14 +541,14 @@ mod tests {
                 view.computer_keyboard.request_id, 51,
                 "the worker already rebound this input"
             );
-            view.stopped_playback_restore =
+            view.audio_pub.stopped_playback_restore =
                 Some(crate::editor::audio_admission::StoppedPlaybackRestore::Preparing);
             assert!(!view.tick_computer_keyboard_with_policy(true));
             assert!(
                 !input.is_cancelled(),
                 "preparation does not own the physical keys"
             );
-            view.stopped_playback_restore = None;
+            view.audio_pub.stopped_playback_restore = None;
             assert!(view.computer_keyboard_up("a"));
             assert_eq!(
                 input.key_word(0),
@@ -667,7 +667,7 @@ mod tests {
                 spectrum_error: None,
                 mode: hex_session::DocumentAudioMode::Resident,
             });
-            view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+            view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
             view.project_generation = 7;
             view.selected_track = Some(track);
             let revision = view.state.as_ref().unwrap().revision;

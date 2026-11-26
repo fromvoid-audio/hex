@@ -90,7 +90,7 @@ fn eq_preview_applied_before_worker_submitted_preserves_preroll_and_allows_toggl
 
     let (before_preview_applied, initial_preroll, held_rx) = editor.update(cx, |view, _| {
         assert_eq!(
-            view.document_audio_mode,
+            view.audio_pub.document_audio_mode,
             hex_session::DocumentAudioMode::Resident
         );
         let state = view.state.as_ref().unwrap();
@@ -161,7 +161,7 @@ fn eq_preview_applied_before_worker_submitted_preserves_preroll_and_allows_toggl
         view.install_current_applied_fallback(source);
         view.tick(cx);
 
-        let audible = view.audible_playback.as_ref().unwrap();
+        let audible = view.audio_pub.audible_playback.as_ref().unwrap();
         assert_eq!(audible.audio_revision, preview_applied);
         assert_eq!(
             audible.worker_requires_preroll, initial_preroll,
@@ -190,7 +190,11 @@ fn eq_preview_applied_before_worker_submitted_preserves_preroll_and_allows_toggl
         view.audio_events = held_rx;
         view.tick(cx);
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             preview_applied
         );
         assert_eq!(view.current_seek_requires_preroll(), initial_preroll);
@@ -249,7 +253,7 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
         assert_eq!(source.audio_revision, edited_applied);
         view.install_current_applied_fallback(source);
 
-        let audible = view.audible_playback.as_ref().unwrap();
+        let audible = view.audio_pub.audible_playback.as_ref().unwrap();
         assert_eq!(audible.audio_revision, edited_applied);
         assert_eq!(
             audible.worker_requires_preroll, None,
@@ -260,7 +264,7 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
         view.error = Some("playback source is unavailable · cannot seek safely".into());
         view.request_seek(4_800);
         assert_eq!(
-            view.deferred_metadata_seek,
+            view.audio_pub.deferred_metadata_seek,
             Some((4_800, view.project_generation))
         );
         assert!(view.error.is_none(), "seek deferral cleared stale error");
@@ -272,11 +276,16 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
         view.audio_events = held_rx;
         view.tick(cx);
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             edited_applied
         );
         assert!(
-            view.audible_playback
+            view.audio_pub
+                .audible_playback
                 .as_ref()
                 .unwrap()
                 .worker_requires_preroll
@@ -284,7 +293,7 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
             "late worker_submitted must backfill worker_requires_preroll"
         );
         assert!(
-            view.deferred_metadata_seek.is_none(),
+            view.audio_pub.deferred_metadata_seek.is_none(),
             "deferred seek must dispatch once metadata arrives"
         );
         assert!(view.error.is_none(), "unexpected error: {:?}", view.error);
@@ -335,7 +344,8 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
         assert_eq!(source.audio_revision, second_applied);
         view.install_current_applied_fallback(source);
         assert_eq!(
-            view.audible_playback
+            view.audio_pub
+                .audible_playback
                 .as_ref()
                 .unwrap()
                 .worker_requires_preroll,
@@ -361,7 +371,8 @@ fn fast_edit_applied_before_worker_submitted_allows_play_defers_seek_and_clears_
         view.audio_events = held_rx_2;
         view.tick(cx);
         assert!(
-            view.audible_playback
+            view.audio_pub
+                .audible_playback
                 .as_ref()
                 .unwrap()
                 .worker_requires_preroll
@@ -417,7 +428,7 @@ fn toggle_play_during_inflight_publication_defers_and_starts_once_applied(
             view.normal_start_source().is_none(),
             "audio callback has not yet applied the new revision"
         );
-        view.audible_playback = None;
+        view.audio_pub.audible_playback = None;
         view.error = Some("playback source is unavailable · cannot seek safely".into());
         view.toggle_play();
         assert!(
@@ -425,7 +436,7 @@ fn toggle_play_during_inflight_publication_defers_and_starts_once_applied(
             "deferring TogglePlay during in-flight edit must not report unavailable error: {:?}",
             view.error
         );
-        assert!(view.deferred_toggle_play.is_some());
+        assert!(view.audio_pub.deferred_toggle_play.is_some());
     });
 
     let _ = wait_until_applied_advances(&mut fixture, cx, initial_applied);
@@ -434,7 +445,7 @@ fn toggle_play_during_inflight_publication_defers_and_starts_once_applied(
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let playing = editor.update(cx, |view, cx| {
             view.tick(cx);
-            view.deferred_toggle_play.is_none()
+            view.audio_pub.deferred_toggle_play.is_none()
                 && view.audio_status().unwrap().playing.load(Acquire)
         });
         if playing {

@@ -189,7 +189,7 @@ pub(in crate::editor) fn view(
         draft.is_some() || local_numeric,
         view.edit_pending(),
         state.revision,
-        view.applied_project_revision,
+        view.audio_pub.applied_project_revision,
     );
     let details = point
         .and_then(|point| {

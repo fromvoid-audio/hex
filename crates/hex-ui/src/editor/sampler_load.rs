@@ -37,10 +37,10 @@ impl EditorView {
         let Some(audio) = self.audio.as_ref() else {
             return false;
         };
-        let Some(audible) = self.audible_playback.as_ref() else {
+        let Some(audible) = self.audio_pub.audible_playback.as_ref() else {
             return false;
         };
-        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && hex_engine::native_device_resources::requires_private_sampler_sources(&state.project)
             && self.applied_project_revision() == Some(state.revision)
             && audible.project_generation == self.project_generation
@@ -69,7 +69,7 @@ impl EditorView {
         if self.edit_pending() {
             return Err("wait for the pending edit before loading a sampler");
         }
-        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+        if self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident {
             return Err("sampler loading requires a resident project");
         }
         let state = self.state.as_ref().ok_or("project is still loading")?;
@@ -103,7 +103,7 @@ impl EditorView {
         if self.edit_pending() || self.device_panel.sampler_parameter.numeric_draft_active() {
             return Err("wait for the pending edit before loading a sampler");
         }
-        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+        if self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident {
             return Err("sampler loading requires a resident project");
         }
         if !device_panel::source_owner_current(self, source) {
@@ -272,7 +272,7 @@ impl EditorView {
         if self.edit_pending() {
             return Err("wait for the pending edit before loading a sampler");
         }
-        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+        if self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident {
             return Err("sampler loading requires a resident project");
         }
         Ok(())

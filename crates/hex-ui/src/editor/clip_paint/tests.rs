@@ -182,10 +182,10 @@ fn double_press_selects_existing_clip_header_without_moving_it(cx: &mut TestAppC
                 .midi_clips()[0]
                 .id();
             assert_eq!(view.selected_clip(), Some(clip));
-            assert!(view.clip_paint_gesture.is_none());
-            assert!(view.pointer_down.is_none());
-            assert!(view.active_clip_drag.is_none());
-            assert!(view.time_selection_gesture.is_none());
+            assert!(view.interaction.clip_paint_gesture.is_none());
+            assert!(view.interaction.pointer_down.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
+            assert!(view.interaction.time_selection_gesture.is_none());
             assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }
@@ -238,7 +238,7 @@ fn released_paint_survives_repaints_and_escape_until_success_or_refusal(cx: &mut
         assert!(visual.debug_bounds("clip-paint-preview").is_none());
         editor.update(cx, |view, _| {
             assert_eq!(view.worker_requests_pending, 0);
-            assert!(view.clip_paint_gesture.is_none());
+            assert!(view.interaction.clip_paint_gesture.is_none());
             assert_eq!(
                 view.state
                     .as_ref()
@@ -319,9 +319,9 @@ fn audio_rectangle_double_press_selects_at_every_height(cx: &mut TestAppContext)
         editor.read_with(cx, |view, _| {
             assert_eq!(view.selected_clip(), Some(clip));
             assert!(!view.clip_paint_held());
-            assert!(view.pointer_down.is_none());
-            assert!(view.active_clip_drag.is_none());
-            assert!(view.time_selection_gesture.is_none());
+            assert!(view.interaction.pointer_down.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
+            assert!(view.interaction.time_selection_gesture.is_none());
             assert!(view.test_probes.last_enqueued_edit.is_none());
         });
         editor.update(cx, |view, cx| {
@@ -361,7 +361,7 @@ fn closed_service_refusal_retires_unsubmitted_paint_without_editing(cx: &mut Tes
     visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.clip_paint_gesture.is_none());
+        assert!(view.interaction.clip_paint_gesture.is_none());
         assert_eq!(view.worker_requests_pending, 0);
         assert!(view.error.as_ref().unwrap().contains("worker stopped"));
         assert_eq!(

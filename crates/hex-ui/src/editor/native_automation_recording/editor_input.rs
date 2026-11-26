@@ -262,7 +262,7 @@ impl EditorView {
             return;
         }
         if self.audio.is_none()
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
         {
             self.error = Some("automation recording requires ordinary playback".into());
             return;

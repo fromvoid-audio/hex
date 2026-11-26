@@ -199,7 +199,7 @@ mod native {
             .unwrap();
         let landing = plot.center();
         entity.read_with(&visual,|view,_|{
-            let body=view.drag_lanes[&track];
+            let body=view.timeline_caches.drag_lanes[&track];
             let total=view.painted_track_drop_lane(track).unwrap();
             assert_eq!(body.height,super::super::super::tracks::TRACK_ROW_HEIGHT);
             assert_eq!(total.height,body.height+LANE_HEIGHT);

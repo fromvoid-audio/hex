@@ -201,7 +201,8 @@ impl EditorView {
             .normalized_time_selection()
             .map(|range| range.start())
             .or_else(|| {
-                self.edit_cursor
+                self.interaction
+                    .edit_cursor
                     .filter(|cursor| cursor.generation == self.project_generation)
                     .map(|cursor| cursor.frame)
             })
@@ -302,11 +303,11 @@ impl EditorView {
             return false;
         };
         self.committed_locator_seek_view(source).is_some()
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && self.pending_audio_commands.is_empty()
-            && self.stopped_playback_restore.is_none()
+            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.pending_audio_commands.is_empty()
+            && self.audio_pub.stopped_playback_restore.is_none()
             && !self.section_install_pending()
-            && self.recovery.permits_seek(None)
+            && self.audio_pub.recovery.permits_seek(None)
             && !self.device_panel.gesture.has_pending_terminal()
             && self.device_panel.gesture_barriers.is_empty()
             && self.settings.tuning.client.snapshot().is_none()
@@ -351,10 +352,10 @@ impl EditorView {
         let committed = self.locators.committed.as_ref()?;
         if self.locators.adds.is_empty()
             || !self.locator_committed_action_available()
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
-            || !self.pending_audio_commands.is_empty()
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || !self.audio_pub.pending_audio_commands.is_empty()
             || self.seek_pending()
-            || self.stopped_playback_restore.is_some()
+            || self.audio_pub.stopped_playback_restore.is_some()
             || self.section_install_pending()
             || self.settings.tuning.client.snapshot().is_some()
         {
@@ -371,7 +372,7 @@ impl EditorView {
         {
             return None;
         }
-        let observation = self.pending_publication_observation.as_ref()?;
+        let observation = self.audio_pub.pending_publication_observation.as_ref()?;
         let crate::EditorPublicationState::ResidentSubmitted {
             audio_revision,
             metadata,
@@ -421,7 +422,8 @@ impl EditorView {
                     .iter()
                     .chain(self.device_panel.gesture_barriers.iter())
                     .chain(
-                        self.recovery
+                        self.audio_pub
+                            .recovery
                             .deferred_edit
                             .as_ref()
                             .map(|edit| edit.request.as_ref()),

@@ -722,9 +722,11 @@ impl EditorView {
                 enabled,
             } => {
                 if generation == self.project_generation {
-                    self.waveform_geometry_cache.set_amplitude_scale(
-                        super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
-                    );
+                    self.timeline_caches
+                        .waveform_geometry_cache
+                        .set_amplitude_scale(
+                            super::waveform::WaveformAmplitudeScale::from_decibels(enabled),
+                        );
                     cx.notify();
                 }
             }
@@ -894,11 +896,11 @@ impl EditorView {
             || self.clip_name_edit.is_some()
             || self.track_reorder_active()
             || self.track_resize_active()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.time_selection_gesture.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.time_selection_gesture.is_some()
         {
             self.error = Some("finish the current edit before changing tracks".into());
             cx.notify();

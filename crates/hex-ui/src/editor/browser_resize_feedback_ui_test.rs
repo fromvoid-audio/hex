@@ -240,7 +240,9 @@ fn browser_resize_feedback_open_editor_and_compact_picker_keep_gesture_paint(
         }
     }
     editor.read_with(visual, |view, _| {
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
     });
 }
 

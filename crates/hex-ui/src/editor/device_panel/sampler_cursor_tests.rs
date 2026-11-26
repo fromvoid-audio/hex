@@ -149,7 +149,7 @@ fn sampler_cursor_clicks_original_frames_without_project_or_audio_edits(cx: &mut
                 let state = view.state.as_ref().unwrap();
                 assert_eq!(state.project.snapshot(), before);
                 assert!(view.pending_requests.is_empty());
-                assert!(view.pending_audio_commands.is_empty());
+                assert!(view.audio_pub.pending_audio_commands.is_empty());
                 assert!(!state.can_undo && !state.can_redo);
             });
         }

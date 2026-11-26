@@ -57,7 +57,9 @@ fn open(cx: &mut TestAppContext, selector: &'static str) -> Fixture {
             is_held: false,
         });
         visual.run_until_parked();
-        editor.read_with(&visual, |view, _| assert!(view.time_selection_key_held));
+        editor.read_with(&visual, |view, _| {
+            assert!(view.interaction.time_selection_key_held)
+        });
     }
     let b = visual.debug_bounds(selector).unwrap();
     let at = |f| {

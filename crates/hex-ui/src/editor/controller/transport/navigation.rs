@@ -4,16 +4,16 @@ use super::*;
 impl EditorView {
     pub(in crate::editor) fn request_seek(&mut self, frame: u64) {
         self.settings.playback.pending = None;
-        self.deferred_toggle_play = None;
-        self.deferred_metadata_seek = None;
+        self.audio_pub.deferred_toggle_play = None;
+        self.audio_pub.deferred_metadata_seek = None;
         self.wake_poll();
-        self.latency_rebuild = None;
+        self.audio_pub.latency_rebuild = None;
         if self.section_install_pending() {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        if self.recovery.generation().is_some() {
-            self.recovery.retarget(frame);
+        if self.audio_pub.recovery.generation().is_some() {
+            self.audio_pub.recovery.retarget(frame);
             if let Some((
                 PlaybackAction::Transport(
                     PlaybackCommand::PlayFrom(position)
@@ -23,16 +23,16 @@ impl EditorView {
                 ),
                 _,
                 _,
-            )) = self.deferred_play.as_mut()
+            )) = self.audio_pub.deferred_play.as_mut()
             {
                 *position = frame;
             }
-            self.offline_cursor = frame;
+            self.audio_pub.offline_cursor = frame;
             self.status = "restarting audio · playback position updated".into();
             self.error = None;
             return;
         }
-        if self.stopped_playback_restore.is_some() {
+        if self.audio_pub.stopped_playback_restore.is_some() {
             self.error = Some("restoring stopped playback · wait before seeking".into());
             return;
         }
@@ -60,7 +60,7 @@ impl EditorView {
             Some(false) => {}
             None if self.audio.is_none() => {}
             None if self.awaiting_applied_playback_metadata() => {
-                self.deferred_metadata_seek = Some((frame, self.project_generation));
+                self.audio_pub.deferred_metadata_seek = Some((frame, self.project_generation));
                 self.status = "waiting for playback metadata · seek queued".into();
                 clear_stale_playback_unavailable_error(&mut self.error);
                 self.wake_poll();
@@ -81,18 +81,21 @@ impl EditorView {
         };
 
         let command = PlaybackAction::Transport(PlaybackCommand::Seek(frame));
-        if self.pending_audio_commands.is_empty() {
+        if self.audio_pub.pending_audio_commands.is_empty() {
             match if let Some(trace) = &self.transport_trace {
                 trace.attempt(audio, command)
             } else {
                 audio.control.action_with_ticket(command)
             } {
                 Ok(ticket) => {
-                    self.pending_seek_ticket = Some(ticket);
+                    self.audio_pub.pending_seek_ticket = Some(ticket);
                     clear_stale_playback_unavailable_error(&mut self.error);
                 }
-                Err(rejected) if self.pending_audio_commands.len() < UI_REQUEST_CAPACITY => {
-                    self.pending_audio_commands
+                Err(rejected)
+                    if self.audio_pub.pending_audio_commands.len() < UI_REQUEST_CAPACITY =>
+                {
+                    self.audio_pub
+                        .pending_audio_commands
                         .push_back(PendingPlaybackAction {
                             action: rejected,
                             generation: self.project_generation,
@@ -105,8 +108,9 @@ impl EditorView {
                     self.error = Some("playback command queue full · seek was not applied".into())
                 }
             }
-        } else if self.pending_audio_commands.len() < UI_REQUEST_CAPACITY {
-            self.pending_audio_commands
+        } else if self.audio_pub.pending_audio_commands.len() < UI_REQUEST_CAPACITY {
+            self.audio_pub
+                .pending_audio_commands
                 .push_back(PendingPlaybackAction {
                     action: command,
                     generation: self.project_generation,
@@ -120,15 +124,15 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn seek_pending(&self) -> bool {
-        if self.recovery.generation().is_some()
+        if self.audio_pub.recovery.generation().is_some()
             || self.section_launch_waiting()
-            || self.prepared_seek.is_some()
-            || self.latched_seek_intent.is_some()
-            || self.retired_seek_result.is_some()
+            || self.audio_pub.prepared_seek.is_some()
+            || self.audio_pub.latched_seek_intent.is_some()
+            || self.audio_pub.retired_seek_result.is_some()
         {
             return true;
         }
-        let queued = self.pending_audio_commands.iter().any(|pending| {
+        let queued = self.audio_pub.pending_audio_commands.iter().any(|pending| {
             matches!(
                 pending.action,
                 PlaybackAction::Transport(
@@ -139,16 +143,16 @@ impl EditorView {
             )
         });
         let consumed = self.audio_status().map_or(0, |status| {
-            audio_command_prefix(status, self.document_audio_mode)
+            audio_command_prefix(status, self.audio_pub.document_audio_mode)
         });
         if self
             .audio
             .as_ref()
             .is_some_and(|audio| audio.control.has_action_outcomes())
         {
-            queued || self.pending_seek_ticket.is_some()
+            queued || self.audio_pub.pending_seek_ticket.is_some()
         } else {
-            seek_is_pending(self.pending_seek_ticket, consumed, queued)
+            seek_is_pending(self.audio_pub.pending_seek_ticket, consumed, queued)
         }
     }
 
@@ -181,13 +185,13 @@ impl EditorView {
         if !delta_y.is_finite() || delta_y == 0.0 {
             return false;
         }
-        self.zoom_wheel_accum = (self.zoom_wheel_accum + delta_y)
+        self.interaction.zoom_wheel_accum = (self.interaction.zoom_wheel_accum + delta_y)
             .clamp(-MAX_ACCUMULATED_PIXELS, MAX_ACCUMULATED_PIXELS);
-        let steps = (self.zoom_wheel_accum / PIXELS_PER_STEP).trunc() as i8;
+        let steps = (self.interaction.zoom_wheel_accum / PIXELS_PER_STEP).trunc() as i8;
         if steps == 0 {
             return false;
         }
-        self.zoom_wheel_accum -= f32::from(steps) * PIXELS_PER_STEP;
+        self.interaction.zoom_wheel_accum -= f32::from(steps) * PIXELS_PER_STEP;
 
         let Some(state) = self.state.as_ref() else {
             return false;

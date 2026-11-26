@@ -215,8 +215,9 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
             start: 0,
             length: 85_000,
         });
-        view.fade_key_held = true;
-        view.waveform_geometry_cache
+        view.interaction.fade_key_held = true;
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
         cx.notify();
@@ -320,7 +321,8 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
     let to = point(from.x + px(9.0), from.y + px(8.0));
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |view, _| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
     });
@@ -352,9 +354,10 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
     assert!(terminal.error.is_none(), "{:?}", terminal.error);
     for _ in 0..2 {
         editor.update(&mut visual, |view, cx| {
-            view.fade_key_held = false;
-            assert!(view.pending_fade.is_some());
-            view.waveform_geometry_cache
+            view.interaction.fade_key_held = false;
+            assert!(view.interaction.pending_fade.is_some());
+            view.timeline_caches
+                .waveform_geometry_cache
                 .borrow_mut()
                 .clear_paint_samples();
             cx.notify();
@@ -368,7 +371,7 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
     }
     editor.update(&mut visual, |view, cx| {
         view.receive(terminal);
-        assert!(view.pending_fade.is_none());
+        assert!(view.interaction.pending_fade.is_none());
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(
             project
@@ -380,7 +383,8 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
                 .fade_clock,
             hex_project::AudioClipFadeClock::Outer,
         );
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
         cx.notify();
@@ -396,7 +400,8 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
     );
 
     editor.update(&mut visual, |view, _| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
         assert!(view.enqueue(Request::Undo));
@@ -418,7 +423,8 @@ fn musical_repeat_fade_workflow(cx: &mut TestAppContext, legacy: bool) {
         original_waveform
     );
     editor.update(&mut visual, |view, _| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
         assert!(view.enqueue(Request::Edit(Command::SetClipFadeEnvelope {

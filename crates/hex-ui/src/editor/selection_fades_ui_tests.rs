@@ -43,17 +43,17 @@ fn actual_cmd_f_uses_arranger_range_before_browser_search_and_one_undo(cx: &mut 
     visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.time_selection_gesture.is_some(),
+            v.interaction.time_selection_gesture.is_some(),
             "clip body must begin a range; trim={} clipdrag={} from={from:?} lane={lane:?}",
-            v.active_trim_drag.is_some(),
-            v.active_clip_drag.is_some()
+            v.interaction.active_trim_drag.is_some(),
+            v.interaction.active_clip_drag.is_some()
         )
     });
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-f");
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.time_selection_gesture.is_some(),
+            v.interaction.time_selection_gesture.is_some(),
             "held range retains input custody"
         );
         assert!(v.test_probes.last_enqueued_edit.is_none());
@@ -150,7 +150,7 @@ fn cmd_f_respects_focused_context_and_explicit_search_intent(cx: &mut TestAppCon
         };
         let before = editor.update(&mut visual, |v, cx| {
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-            v.time_selection = Some(TimeSelection {
+            v.interaction.time_selection = Some(TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 0,

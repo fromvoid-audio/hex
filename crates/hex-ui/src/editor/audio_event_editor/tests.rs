@@ -11,7 +11,8 @@ fn clip_waveform_scale_toggle_is_independent_and_survives_view_switches(cx: &mut
     visual.simulate_resize(gpui::size(px(1280.0), px(800.0)));
     visual.run_until_parked();
     editor.update(&mut visual, |view, cx| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .set_amplitude_scale(WaveformAmplitudeScale::Decibel);
         assert_eq!(
             view.audio_detail.waveform_geometry_cache.amplitude_scale(),
@@ -29,7 +30,9 @@ fn clip_waveform_scale_toggle_is_independent_and_survives_view_switches(cx: &mut
             WaveformAmplitudeScale::Decibel
         );
         assert_eq!(
-            view.waveform_geometry_cache.amplitude_scale(),
+            view.timeline_caches
+                .waveform_geometry_cache
+                .amplitude_scale(),
             WaveformAmplitudeScale::Decibel
         );
     });
@@ -52,7 +55,9 @@ fn clip_waveform_scale_toggle_is_independent_and_survives_view_switches(cx: &mut
             WaveformAmplitudeScale::Linear
         );
         assert_eq!(
-            view.waveform_geometry_cache.amplitude_scale(),
+            view.timeline_caches
+                .waveform_geometry_cache
+                .amplitude_scale(),
             WaveformAmplitudeScale::Decibel
         );
     });
@@ -1557,7 +1562,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
                 state.project.snapshot(),
                 state.can_undo,
                 state.can_redo,
-                v.offline_cursor,
+                v.audio_pub.offline_cursor,
             ),
             expected,
             prior,
@@ -1590,7 +1595,7 @@ fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
                 s.project.snapshot(),
                 s.can_undo,
                 s.can_redo,
-                v.offline_cursor
+                v.audio_pub.offline_cursor
             ),
             before
         );

@@ -69,13 +69,13 @@ impl Drag {
         self.source_current(view)
             && view.mode == super::EditorMode::Arrangement
             && view.drag_available()
-            && view.active_fade_drag.is_none()
-            && view.active_clip_drag.is_none()
-            && view.active_trim_drag.is_none()
+            && view.interaction.active_fade_drag.is_none()
+            && view.interaction.active_clip_drag.is_none()
+            && view.interaction.active_trim_drag.is_none()
             && view.midi_editor.active_trim_drag.is_none()
-            && view.time_selection_gesture.is_none()
-            && view.time_range_move_gesture.is_none()
-            && view.clip_paint_gesture.is_none()
+            && view.interaction.time_selection_gesture.is_none()
+            && view.interaction.time_range_move_gesture.is_none()
+            && view.interaction.clip_paint_gesture.is_none()
             && !view.persistence.save_dialog_open
             && !view.persistence.export_dialog_open
             && !view.settings.theme.open
@@ -85,15 +85,19 @@ impl Drag {
                 s.revision == self.revision
                     && view.visible_viewport(s.timeline_frames) == self.viewport
             })
-            && view.drag_lanes.get(&self.track).is_some_and(|lane| {
-                (lane.left, lane.top, lane.width, lane.height)
-                    == (
-                        self.lane.left,
-                        self.lane.top,
-                        self.lane.width,
-                        self.lane.height,
-                    )
-            })
+            && view
+                .timeline_caches
+                .drag_lanes
+                .get(&self.track)
+                .is_some_and(|lane| {
+                    (lane.left, lane.top, lane.width, lane.height)
+                        == (
+                            self.lane.left,
+                            self.lane.top,
+                            self.lane.width,
+                            self.lane.height,
+                        )
+                })
     }
     fn command(&self) -> Command {
         Command::SetAudioClipGain {
@@ -146,19 +150,19 @@ impl EditorView {
                 edit,
             })
         });
-        if self.clip_gain.audition_held || target.is_some() {
-            self.clip_gain.audition_held = target.is_some();
+        if self.interaction.clip_gain.audition_held || target.is_some() {
+            self.interaction.clip_gain.audition_held = target.is_some();
             self.service.audition_arrangement_gain(target);
         }
     }
     pub(super) fn finish_gain_audition(&mut self) {
-        if std::mem::take(&mut self.clip_gain.audition_held) {
+        if std::mem::take(&mut self.interaction.clip_gain.audition_held) {
             self.service.finish_arrangement_gain_audition();
         }
     }
     pub(super) fn reconcile_gain_audition(&mut self) {
-        if self.clip_gain.audition_held
-            && !self.clip_gain.held()
+        if self.interaction.clip_gain.audition_held
+            && !self.interaction.clip_gain.held()
             && self.audio_detail.clip_controls.gain_preview(self).is_none()
             && !self.event_gain_held()
         {
@@ -185,19 +189,20 @@ impl EditorView {
         })
     }
     pub(super) fn cancel_clip_gain(&mut self, cx: &mut Context<Self>) {
-        if self.clip_gain.held.take().is_some() {
+        if self.interaction.clip_gain.held.take().is_some() {
             self.set_held_gain_audition(None);
             cx.notify();
         }
     }
     pub(super) fn reconcile_clip_gain(&mut self) {
         if self
+            .interaction
             .clip_gain
             .held
             .as_ref()
             .is_some_and(|g| !g.current(self))
         {
-            self.clip_gain.held = None;
+            self.interaction.clip_gain.held = None;
             self.set_held_gain_audition(None);
         }
     }
@@ -206,7 +211,7 @@ impl EditorView {
         event: &gpui::KeyDownEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        if event.keystroke.key == "escape" && self.clip_gain.held.is_some() {
+        if event.keystroke.key == "escape" && self.interaction.clip_gain.held.is_some() {
             self.cancel_clip_gain(cx);
             cx.stop_propagation();
             return true;
@@ -214,12 +219,14 @@ impl EditorView {
         false
     }
     pub(super) fn displayed_clip_gain(&self, clip: ClipId) -> Option<ClipGain> {
-        self.clip_gain
+        self.interaction
+            .clip_gain
             .held
             .as_ref()
             .filter(|d| d.current(self))
             .or_else(|| {
-                self.clip_gain
+                self.interaction
+                    .clip_gain
                     .pending
                     .as_ref()
                     .filter(|p| p.drag.source_current(self))
@@ -233,13 +240,18 @@ impl EditorView {
         if let Some(gain) = self.displayed_clip_gain(id) {
             return Some(gain);
         }
-        if let Some(drag) = self.clip_gain.held.as_ref().filter(|d| d.current(self))
+        if let Some(drag) = self
+            .interaction
+            .clip_gain
+            .held
+            .as_ref()
+            .filter(|d| d.current(self))
             && self.clip_is_selected(drag.clip.id())
             && self.clip_is_selected(id)
         {
             return relative_gain(clip.gain(), drag.clip.gain(), drag.preview);
         }
-        if let Some(pending) = self.clip_gain.pending.as_ref()
+        if let Some(pending) = self.interaction.clip_gain.pending.as_ref()
             && pending.drag.source_current(self)
             && let Command::EditClips {
                 clips,
@@ -270,6 +282,7 @@ impl EditorView {
             || !f32::from(position.x).is_finite()
             || !self.focus.is_focused(window)
             || self
+                .interaction
                 .clip_gain
                 .held
                 .as_ref()
@@ -278,7 +291,7 @@ impl EditorView {
             self.cancel_clip_gain(cx);
             return;
         }
-        if let Some(drag) = &mut self.clip_gain.held {
+        if let Some(drag) = &mut self.interaction.clip_gain.held {
             // Integrate each segment so changing Shift does not jump the value.
             drag.value = (drag.value
                 + (f64::from(drag.last_y) - f64::from(y)) * if fine { 10.0 } else { 100.0 })
@@ -308,7 +321,7 @@ impl EditorView {
         }
     }
     fn finish_clip_gain(&mut self, cx: &mut Context<Self>) {
-        if let Some(drag) = self.clip_gain.held.take()
+        if let Some(drag) = self.interaction.clip_gain.held.take()
             && drag.current(self)
             && drag.preview != drag.clip.gain()
         {
@@ -324,7 +337,7 @@ impl EditorView {
             } else {
                 drag.command()
             };
-            self.clip_gain.pending = Some(Pending {
+            self.interaction.clip_gain.pending = Some(Pending {
                 command: command.clone(),
                 drag,
                 receipt: Receipt::new(self.project_generation),
@@ -358,7 +371,7 @@ impl EditorView {
         let Some(clip) = state.project.clip(clip_id).cloned() else {
             return false;
         };
-        let Some(&lane) = self.drag_lanes.get(&track) else {
+        let Some(&lane) = self.timeline_caches.drag_lanes.get(&track) else {
             return false;
         };
         let generation = self.project_generation;
@@ -378,10 +391,10 @@ impl EditorView {
             preview: original.gain(),
         };
         if !drag.current(self)
-            || self.clip_gain.held.is_some()
-            || self.clip_gain.pending.is_some()
-            || self.fade_key_held
-            || self.time_selection_key_held
+            || self.interaction.clip_gain.held.is_some()
+            || self.interaction.clip_gain.pending.is_some()
+            || self.interaction.fade_key_held
+            || self.interaction.time_selection_key_held
             || !drag.origin_y.is_finite()
         {
             return false;
@@ -415,7 +428,7 @@ impl EditorView {
             cx,
         ) {
             self.focus.focus(window);
-            self.clip_gain.held = Some(drag);
+            self.interaction.clip_gain.held = Some(drag);
             cx.notify();
             return true;
         }
@@ -451,18 +464,20 @@ impl EditorView {
     ) -> Option<gpui::AnyElement> {
         let clip_id = clip.id();
         let held = self
+            .interaction
             .clip_gain
             .held
             .as_ref()
             .is_some_and(|d| d.clip.id() == clip_id && d.current(self));
         if !width.is_finite()
             || width < 28.0
-            || (!held && (self.fade_key_held || self.time_selection_key_held))
+            || (!held
+                && (self.interaction.fade_key_held || self.interaction.time_selection_key_held))
             || self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT
         {
             return None;
         }
-        let lane = *self.drag_lanes.get(&track)?;
+        let lane = *self.timeline_caches.drag_lanes.get(&track)?;
         let generation = self.project_generation;
         let revision = state.revision;
         let original = clip;
@@ -478,7 +493,7 @@ impl EditorView {
                 .left(px(9.0))
                 .right(px(9.0))
                 .h(px(4.0))
-                .when(self.option_held || held, |s| {
+                .when(self.interaction.option_held || held, |s| {
                     s.cursor(gpui::CursorStyle::ResizeUpDown)
                         .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Secondary))))
                 })
@@ -535,10 +550,10 @@ impl EditorView {
                             preview: original.gain(),
                         };
                         if !drag.current(view)
-                            || view.clip_gain.held.is_some()
-                            || view.clip_gain.pending.is_some()
-                            || view.fade_key_held
-                            || view.time_selection_key_held
+                            || view.interaction.clip_gain.held.is_some()
+                            || view.interaction.clip_gain.pending.is_some()
+                            || view.interaction.fade_key_held
+                            || view.interaction.time_selection_key_held
                             || !drag.origin_y.is_finite()
                         {
                             return;
@@ -572,7 +587,7 @@ impl EditorView {
                             cx,
                         ) {
                             view.focus.focus(window);
-                            view.clip_gain.held = Some(drag);
+                            view.interaction.clip_gain.held = Some(drag);
                             cx.notify();
                         }
                     }),
@@ -586,57 +601,72 @@ impl EditorView {
         )
     }
     pub(super) fn clip_gain_matches(&self, request: &Request) -> bool {
-        self.clip_gain.pending.as_ref().is_some_and(|p| {
-            p.receipt.is_queued()
-                && match (&p.command, request) {
-                    (
-                        Command::SetAudioClipGain {
-                            clip: a,
-                            millidb: av,
-                        },
-                        Request::Edit(Command::SetAudioClipGain {
-                            clip: b,
-                            millidb: bv,
-                        }),
-                    ) => (a, av) == (b, bv),
-                    (
-                        Command::EditClips { clips: a, edit: av },
-                        Request::Edit(Command::EditClips { clips: b, edit: bv }),
-                    ) => (a, av) == (b, bv),
-                    _ => false,
-                }
-        })
+        self.interaction
+            .clip_gain
+            .pending
+            .as_ref()
+            .is_some_and(|p| {
+                p.receipt.is_queued()
+                    && match (&p.command, request) {
+                        (
+                            Command::SetAudioClipGain {
+                                clip: a,
+                                millidb: av,
+                            },
+                            Request::Edit(Command::SetAudioClipGain {
+                                clip: b,
+                                millidb: bv,
+                            }),
+                        ) => (a, av) == (b, bv),
+                        (
+                            Command::EditClips { clips: a, edit: av },
+                            Request::Edit(Command::EditClips { clips: b, edit: bv }),
+                        ) => (a, av) == (b, bv),
+                        _ => false,
+                    }
+            })
     }
 
     pub(super) fn clip_gain_submitted(&mut self) {
-        if let Some(p) = &mut self.clip_gain.pending {
+        if let Some(p) = &mut self.interaction.clip_gain.pending {
             p.receipt.submitted(self.worker_requests_pending);
         }
     }
     pub(super) fn clip_gain_complete(&mut self, event: &Event) {
-        if self.clip_gain.pending.as_mut().is_some_and(|p| {
-            p.receipt.observe(
-                self.project_generation,
-                event.project_replaced,
-                event.request_complete,
-            ) != Disposition::Waiting
-        }) {
+        if self
+            .interaction
+            .clip_gain
+            .pending
+            .as_mut()
+            .is_some_and(|p| {
+                p.receipt.observe(
+                    self.project_generation,
+                    event.project_replaced,
+                    event.request_complete,
+                ) != Disposition::Waiting
+            })
+        {
             self.retire_clip_gain();
         }
     }
     pub(super) fn retire_clip_gain(&mut self) -> bool {
-        let retired = self.clip_gain.pending.take().is_some();
+        let retired = self.interaction.clip_gain.pending.take().is_some();
         if retired {
             self.service.retire_arrangement_gain_audition();
         }
         retired
     }
     pub(super) fn retire_abandoned_clip_gain(&mut self) -> bool {
-        let abandoned = self.clip_gain.pending.as_ref().is_some_and(|p| {
-            !p.drag.source_current(self)
-                || (p.receipt.is_queued()
-                    && !self.queued_requests().any(|r| self.clip_gain_matches(r)))
-        });
+        let abandoned = self
+            .interaction
+            .clip_gain
+            .pending
+            .as_ref()
+            .is_some_and(|p| {
+                !p.drag.source_current(self)
+                    || (p.receipt.is_queued()
+                        && !self.queued_requests().any(|r| self.clip_gain_matches(r)))
+            });
         abandoned && self.retire_clip_gain()
     }
 }

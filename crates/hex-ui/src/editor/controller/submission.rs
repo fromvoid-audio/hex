@@ -326,7 +326,7 @@ impl EditorView {
     ) -> bool {
         let mut visible = false;
         if matches!(request, Request::RestoreStoppedPlayback) {
-            visible |= self.stopped_playback_restore.take().is_some();
+            visible |= self.audio_pub.stopped_playback_restore.take().is_some();
         }
         if kinds.sample_drop {
             visible |= self.browser.pending_sample_drop.take().is_some();
@@ -386,7 +386,7 @@ impl EditorView {
             visible |= self.retire_pending_trim();
         }
         if kinds.loop_region {
-            visible |= self.pending_loop.take().is_some();
+            visible |= self.interaction.pending_loop.take().is_some();
         }
         if kinds.group_copy {
             visible |= self.pending_group_copy.take().is_some();

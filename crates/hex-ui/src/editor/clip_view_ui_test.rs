@@ -855,7 +855,7 @@ fn status_slots_keep_layout_stable_while_edits_and_work_switch_pending(cx: &mut 
         view.persistence.export_pending = true;
         view.persistence.saving_project = true;
         view.error = Some("audio device is unavailable".into());
-        view.applied_project_revision = Some(0);
+        view.audio_pub.applied_project_revision = Some(0);
         cx.notify();
     });
     visual.run_until_parked();
@@ -1118,7 +1118,7 @@ fn explicit_main_focus_keeps_deselected_audio_and_midi_detail_empty(cx: &mut Tes
             visual.run_until_parked();
             let before =
                 editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-            let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&source]);
+            let lane = editor.read_with(&visual, |v, _| v.timeline_caches.drag_lanes[&source]);
             let down = point(
                 px(lane.left + lane.width * 0.125),
                 px(lane.top + lane.height * 0.75),
@@ -1243,7 +1243,7 @@ fn outside_click_clears_selected_audio_and_midi_detail(cx: &mut TestAppContext) 
                 name: "pending rename".into(),
             })));
         });
-        let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&track]);
+        let lane = editor.read_with(&visual, |v, _| v.timeline_caches.drag_lanes[&track]);
         let outside = point(
             px(lane.left + lane.width * 0.9),
             px(lane.top + lane.height * 0.75),

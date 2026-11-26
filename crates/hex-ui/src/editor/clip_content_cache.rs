@@ -142,10 +142,14 @@ impl Render for ClipContents {
                 // Lane prepaint runs after key construction. Remember the
                 // geometry consumed by this build so the next selection-only
                 // draw does not invalidate an already-current clip scene.
-                self.key.lane = view.drag_lanes.get(&self.key.track).copied();
+                self.key.lane = view
+                    .timeline_caches
+                    .drag_lanes
+                    .get(&self.key.track)
+                    .copied();
                 let caption_rem_size = (self.key.lane.is_some()
-                    && view.drag_lane_epochs.get(&self.key.track)
-                        == Some(&view.drag_layout_generation))
+                    && view.timeline_caches.drag_lane_epochs.get(&self.key.track)
+                        == Some(&view.timeline_caches.drag_layout_generation))
                 .then(|| f32::from(window.rem_size()));
                 view.build_clip_contents(
                     &self.snapshot,
@@ -222,7 +226,7 @@ impl EditorView {
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
             && self.context_menu.is_none()
-            && self.loop_rail_gesture.is_none()
+            && self.interaction.loop_rail_gesture.is_none()
             && !self.settings.theme.open
     }
 
@@ -239,7 +243,7 @@ impl EditorView {
         {
             return false;
         }
-        if let Some(drag) = self.active_clip_drag.as_ref()
+        if let Some(drag) = self.interaction.active_clip_drag.as_ref()
             && clip_drag_affects_track(drag, track)
         {
             return false;
@@ -255,17 +259,23 @@ impl EditorView {
             return false;
         }
         if self
+            .interaction
             .active_fade_drag
             .as_ref()
             .is_some_and(|drag| drag.track == track_id)
             || self
+                .interaction
                 .pending_fade
                 .as_ref()
                 .is_some_and(|pending| pending.track() == track_id)
         {
             return false;
         }
-        if self.clip_gain.affects_track(track, &self.clip_selection) {
+        if self
+            .interaction
+            .clip_gain
+            .affects_track(track, &self.clip_selection)
+        {
             return false;
         }
         if let Some((clip, _, _)) = self.audio_detail.clip_controls.gain_preview(self)
@@ -305,10 +315,12 @@ impl EditorView {
             return false;
         }
         if self
+            .interaction
             .active_trim_drag
             .as_ref()
             .is_some_and(|drag| drag.source_track == track_id)
             || self
+                .interaction
                 .pending_trim
                 .as_ref()
                 .is_some_and(|pending| pending.track == track_id)
@@ -327,8 +339,11 @@ impl EditorView {
             if in_source || in_dest {
                 return false;
             }
-        } else if self.time_range_move_gesture.is_some() || self.pending_time_range_move.is_some() {
+        } else if self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.pending_time_range_move.is_some()
+        {
             let in_pending = self
+                .interaction
                 .pending_time_range_move
                 .as_ref()
                 .is_some_and(|pending| {
@@ -337,7 +352,7 @@ impl EditorView {
                         || (track_index >= pending.destination_first_index
                             && track_index <= pending.destination_last_index)
                 });
-            if in_pending || self.time_range_move_gesture.is_some() {
+            if in_pending || self.interaction.time_range_move_gesture.is_some() {
                 return false;
             }
         }
@@ -357,10 +372,17 @@ impl EditorView {
             .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), state))
             .cloned();
         if snapshot.is_none()
-            || (!self.clip_content_cache.entries.contains_key(&track.id())
-                && self.clip_content_cache.entries.len() >= hex_project::MAX_TRACKS)
+            || (!self
+                .timeline_caches
+                .clip_content_cache
+                .entries
+                .contains_key(&track.id())
+                && self.timeline_caches.clip_content_cache.entries.len() >= hex_project::MAX_TRACKS)
         {
-            self.clip_content_cache.entries.remove(&track.id());
+            self.timeline_caches
+                .clip_content_cache
+                .entries
+                .remove(&track.id());
             return self
                 .build_clip_contents(state, track, track_index, timeline, cx)
                 .into_any_element();
@@ -380,12 +402,14 @@ impl EditorView {
             palette: theme::preferences(),
             selected_clip: self.selected_clip(),
             selected_clips_epoch: self.clip_selection.epoch,
-            lane: self.drag_lanes.get(&track.id()).copied(),
-            fade_key_held: self.fade_key_held,
+            lane: self.timeline_caches.drag_lanes.get(&track.id()).copied(),
+            fade_key_held: self.interaction.fade_key_held,
             fade_handle_hover: self
+                .interaction
                 .hovered_fade_handle
                 .and_then(|hover| hover.in_track(self.project_generation, track.id())),
             hovered_fade_clip: self
+                .interaction
                 .hovered_fade_clip
                 .filter(|(generation, clip)| {
                     *generation == self.project_generation
@@ -395,14 +419,14 @@ impl EditorView {
                             .any(|candidate| candidate.id() == *clip)
                 })
                 .map(|(_, clip)| clip),
-            hovered_arrangement_clip: self.hovered_arrangement_clip.filter(|hover| {
+            hovered_arrangement_clip: self.interaction.hovered_arrangement_clip.filter(|hover| {
                 hover.generation == self.project_generation && hover.track == track.id()
             }),
-            option_held: self.option_held,
-            time_selection_key_held: self.time_selection_key_held,
+            option_held: self.interaction.option_held,
+            time_selection_key_held: self.interaction.time_selection_key_held,
             automation_view: self.automation_view.enabled,
             focus_ranges: self.arrangement_focus_ranges(),
-            waveform_overrange_epoch: self.waveform_overrange_epoch,
+            waveform_overrange_epoch: self.timeline_caches.waveform_overrange_epoch,
             // Match clip_view admission, including physically held track sizing.
             // Otherwise a body painted without controls can survive release.
             drag_available: self.drag_available(),
@@ -413,7 +437,12 @@ impl EditorView {
                 .held_arrangement_event_clip()
                 .is_some_and(|clip| track.clips().iter().any(|candidate| candidate.id() == clip));
         let has_active_drag = cx.has_active_drag();
-        let entity = if let Some(entity) = self.clip_content_cache.entries.get(&track.id()).cloned()
+        let entity = if let Some(entity) = self
+            .timeline_caches
+            .clip_content_cache
+            .entries
+            .get(&track.id())
+            .cloned()
         {
             entity.update(cx, |content, _| {
                 let stale_drag_cursor = content.painted_with_active_drag && !has_active_drag;
@@ -435,7 +464,8 @@ impl EditorView {
                 #[cfg(test)]
                 builds: 0,
             });
-            self.clip_content_cache
+            self.timeline_caches
+                .clip_content_cache
                 .entries
                 .insert(track.id(), entity.clone());
             entity

@@ -86,7 +86,8 @@ fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let before = editor.read_with(&visual, |view, _| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow()
             .painted_waveforms()
             .len()
@@ -96,7 +97,7 @@ fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
         visual.executor().advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
         let (ready, paints, busy, painted_ready) = editor.read_with(&visual, |view, _| {
-            let cache = view.waveform_geometry_cache.borrow();
+            let cache = view.timeline_caches.waveform_geometry_cache.borrow();
             (
                 cache.overrange_ready_count(),
                 cache.painted_waveforms().len(),
@@ -118,8 +119,9 @@ fn completed_overrange_query_repaints_the_editor(cx: &mut TestAppContext) {
     }
     let (weak_cache, exited) = editor.read_with(&visual, |view, _| {
         (
-            std::rc::Rc::downgrade(&view.waveform_geometry_cache),
-            view.waveform_geometry_cache
+            std::rc::Rc::downgrade(&view.timeline_caches.waveform_geometry_cache),
+            view.timeline_caches
+                .waveform_geometry_cache
                 .borrow()
                 .overrange_exit_observer()
                 .unwrap(),
@@ -156,13 +158,16 @@ fn assert_body(visual: &mut VisualTestContext, editor: &Entity<EditorView>, clip
         })
         .unwrap();
     editor.update(&mut *visual, |v, cx| {
-        v.clip_content_cache = Default::default();
-        v.waveform_geometry_cache.borrow_mut().clear();
+        v.timeline_caches.clip_content_cache = Default::default();
+        v.timeline_caches
+            .waveform_geometry_cache
+            .borrow_mut()
+            .clear();
         cx.notify();
     });
     visual.run_until_parked();
     editor.read_with(&*visual, |v, _| {
-        let cache = v.waveform_geometry_cache.borrow();
+        let cache = v.timeline_caches.waveform_geometry_cache.borrow();
         let paints: Vec<_> = cache
             .painted_waveforms()
             .iter()
@@ -276,7 +281,7 @@ fn looped_header_paints_canonical_visible_cycle_edges_at_two_zooms(cx: &mut Test
             assert_eq!(clip.start() + clip.duration(), 312_000);
             (
                 edges,
-                v.drag_lanes[&track],
+                v.timeline_caches.drag_lanes[&track],
                 v.visible_viewport(state.timeline_frames),
             )
         });
@@ -354,7 +359,8 @@ fn waveform_body_painter_stays_below_live_normal_and_shift_resize_titles(cx: &mu
                 visual.run_until_parked();
                 let desired = editor.read_with(&visual, |v, _| {
                     assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-                    v.active_trim_drag
+                    v.interaction
+                        .active_trim_drag
                         .as_ref()
                         .unwrap()
                         .preview
@@ -639,7 +645,8 @@ fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
         hex_project::ElementColor::Rose,
     ] {
         editor.update(&mut visual, |view, _| {
-            view.waveform_geometry_cache
+            view.timeline_caches
+                .waveform_geometry_cache
                 .borrow_mut()
                 .clear_paint_samples();
             assert!(view.enqueue(Request::Edit(Command::SetTrackColor {
@@ -659,7 +666,7 @@ fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
                 },
                 true,
             );
-            let cache = view.waveform_geometry_cache.borrow();
+            let cache = view.timeline_caches.waveform_geometry_cache.borrow();
             let paint = cache
                 .painted_waveforms()
                 .back()
@@ -683,7 +690,8 @@ fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
             view.audio_detail.clip_view_open = true;
             view.device_panel.active = false;
             view.audio_detail.event.source_view = source;
-            view.waveform_geometry_cache
+            view.timeline_caches
+                .waveform_geometry_cache
                 .borrow_mut()
                 .clear_paint_samples();
             cx.notify();
@@ -700,7 +708,7 @@ fn clip_waveform_palette_uses_a_contrasting_hue(cx: &mut TestAppContext) {
                 },
                 true,
             );
-            let cache = view.waveform_geometry_cache.borrow();
+            let cache = view.timeline_caches.waveform_geometry_cache.borrow();
             let paints: Vec<_> = cache
                 .painted_waveforms()
                 .iter()

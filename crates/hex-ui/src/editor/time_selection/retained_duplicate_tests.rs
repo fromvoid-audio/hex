@@ -343,7 +343,7 @@ fn committed_time_copy_paints_exact_rows_until_its_terminal(cx: &mut TestAppCont
     editor.update(&mut visual, |view, cx| {
         view.receive(terminal);
         assert!(view.committed_time_range_copy_view.is_none());
-        assert!(view.pending_time_range_move.is_none());
+        assert!(view.interaction.pending_time_range_move.is_none());
         assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
         assert_eq!(view.normalized_time_selection().as_ref(), Some(&newer));
         cx.notify();
@@ -403,7 +403,7 @@ fn committed_time_copy_view_is_invalidated_by_project_replacement(cx: &mut TestA
     editor.update(&mut visual, |view, cx| {
         view.receive(replacement);
         assert_ne!(view.project_generation, old_generation);
-        assert!(view.pending_time_range_move.is_none());
+        assert!(view.interaction.pending_time_range_move.is_none());
         assert!(view.committed_time_range_copy_view.is_none());
         assert!(
             !view.observe_time_range_copy_view(ArrangementEditViewObservation {
@@ -519,7 +519,7 @@ fn queued_time_repeat_with_terminal(
     visual.run_until_parked();
     editor.update(&mut visual, |view, cx| {
         view.receive(second_terminal);
-        assert!(view.pending_time_range_move.is_none());
+        assert!(view.interaction.pending_time_range_move.is_none());
         let range = view.normalized_time_selection().unwrap();
         if let Some(newer) = &newer {
             assert_eq!(&range, newer);
@@ -575,14 +575,15 @@ fn keyboard_copies(cx: &mut TestAppContext, recovery_failure: bool) {
         for iteration in 0..3 {
             let start = expected.end();
             let end = start + expected.duration();
-            let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
+            let epoch =
+                editor.read_with(&visual, |view, _| view.interaction.selection_intent_epoch);
             visual.simulate_keystrokes("cmd-d");
             editor.read_with(&visual, |view, _| {
-                assert!(view.pending_time_range_move.is_some())
+                assert!(view.interaction.pending_time_range_move.is_some())
             });
             pump(&editor, &mut visual);
             editor.read_with(&visual, |view, _| {
-                assert_eq!(view.selection_intent_epoch, epoch);
+                assert_eq!(view.interaction.selection_intent_epoch, epoch);
                 if recovery_failure {
                     assert!(
                         view.error
@@ -691,14 +692,14 @@ fn drag_then_keyboard_copy(cx: &mut TestAppContext, recovery_failure: bool) {
         assert!(preview.copy_modifier);
         (preview.destination_start, preview.destination_end)
     });
-    let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
+    let epoch = editor.read_with(&visual, |view, _| view.interaction.selection_intent_epoch);
     visual.simulate_mouse_up(b, MouseButton::Left, option);
     editor.read_with(&visual, |view, _| {
-        assert!(view.pending_time_range_move.is_some())
+        assert!(view.interaction.pending_time_range_move.is_some())
     });
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.selection_intent_epoch, epoch)
+        assert_eq!(view.interaction.selection_intent_epoch, epoch)
     });
     editor.read_with(&visual, |view, _| {
         let range = view
@@ -861,7 +862,7 @@ fn submit_range_copy(
         source.end()
     };
     editor.read_with(&*visual, |view, _| {
-        assert!(view.pending_time_range_move.is_some())
+        assert!(view.interaction.pending_time_range_move.is_some())
     });
     destination
 }
@@ -886,7 +887,7 @@ fn delayed_copy_selection_aba(cx: &mut TestAppContext, option_drag: bool, exhaus
     let source = pointer_range(&mut visual, &editor, &tracks[..1]);
     if exhaust {
         editor.update(&mut visual, |view, _| {
-            view.selection_intent_epoch = Some(u64::MAX - 1)
+            view.interaction.selection_intent_epoch = Some(u64::MAX - 1)
         });
     }
     let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
@@ -900,7 +901,7 @@ fn delayed_copy_selection_aba(cx: &mut TestAppContext, option_drag: bool, exhaus
     );
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.pending_time_range_move.is_some(),
+            view.interaction.pending_time_range_move.is_some(),
             "ACK remains unconsumed across A→B→A"
         );
         assert_eq!(view.state.as_ref().unwrap().revision, revision);
@@ -940,7 +941,7 @@ fn delayed_copy_selection_aba(cx: &mut TestAppContext, option_drag: bool, exhaus
     });
     if exhaust {
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.selection_intent_epoch, None)
+            assert_eq!(view.interaction.selection_intent_epoch, None)
         });
         visual.simulate_keystrokes("cmd-d");
         editor.read_with(&visual, |view, _| {
@@ -948,7 +949,7 @@ fn delayed_copy_selection_aba(cx: &mut TestAppContext, option_drag: bool, exhaus
                 !view.edit_pending(),
                 "exhausted epoch refuses before command admission"
             );
-            assert!(view.pending_time_range_move.is_none());
+            assert!(view.interaction.pending_time_range_move.is_none());
             assert!(
                 view.error
                     .as_deref()
@@ -961,7 +962,7 @@ fn delayed_copy_selection_aba(cx: &mut TestAppContext, option_drag: bool, exhaus
         visual.simulate_keystrokes("cmd-d");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.selection_intent_epoch, None);
+            assert_eq!(view.interaction.selection_intent_epoch, None);
             assert_eq!(view.state.as_ref().unwrap().revision, revision + 1);
         });
     }
@@ -1024,13 +1025,16 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
         let source = pointer_range(&mut visual, &editor, &tracks[..1]);
         let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
         let destination = submit_range_copy(&mut visual, &editor, &source, option_drag);
-        let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
+        let epoch = editor.read_with(&visual, |view, _| view.interaction.selection_intent_epoch);
         visual.simulate_keystrokes("tab");
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.mode, EditorMode::Session);
-            assert_eq!(view.selection_intent_epoch, epoch, "Tab alone keeps intent");
-            assert!(view.pending_time_range_move.is_some());
+            assert_eq!(
+                view.interaction.selection_intent_epoch, epoch,
+                "Tab alone keeps intent"
+            );
+            assert!(view.interaction.pending_time_range_move.is_some());
         });
         // Clicks are deliberately refused by the existing pending-edit guard.
         let bounds = visual
@@ -1043,7 +1047,7 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |view, _| {
             assert_eq!(
-                view.selection_intent_epoch, epoch,
+                view.interaction.selection_intent_epoch, epoch,
                 "refused click keeps intent"
             );
             assert!(view.session_grid.selected_cell.is_none());
@@ -1092,7 +1096,7 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
                     (range.start(), range.end()),
                     (destination, destination + source.duration())
                 );
-                assert_eq!(view.selection_intent_epoch, epoch);
+                assert_eq!(view.interaction.selection_intent_epoch, epoch);
             }
         });
         if !navigate {
@@ -1101,7 +1105,7 @@ fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
             editor.read_with(&visual, |view, _| {
                 assert_eq!(view.selected_clip, Some(session_clip));
                 assert_ne!(
-                    view.selection_intent_epoch, epoch,
+                    view.interaction.selection_intent_epoch, epoch,
                     "accepted actual Console click advances intent"
                 );
             });
@@ -1114,7 +1118,7 @@ fn console_navigation_without_target_keeps_pending_copy_intent(cx: &mut TestAppC
     let (mut visual, editor, _environment, tracks, _) = fixture(cx);
     let source = pointer_range(&mut visual, &editor, &tracks[..1]);
     let destination = submit_range_copy(&mut visual, &editor, &source, false);
-    let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
+    let epoch = editor.read_with(&visual, |view, _| view.interaction.selection_intent_epoch);
     visual.simulate_keystrokes("tab right");
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.mode, EditorMode::Session);
@@ -1122,7 +1126,7 @@ fn console_navigation_without_target_keeps_pending_copy_intent(cx: &mut TestAppC
             view.session_grid.selected_cell.is_none() && view.session_grid.selected_scene.is_none()
         );
         assert_eq!(
-            view.selection_intent_epoch, epoch,
+            view.interaction.selection_intent_epoch, epoch,
             "no target cannot consume selection intent"
         );
     });
@@ -1133,7 +1137,7 @@ fn console_navigation_without_target_keeps_pending_copy_intent(cx: &mut TestAppC
             (range.start(), range.end()),
             (destination, destination + source.duration())
         );
-        assert_eq!(view.selection_intent_epoch, epoch);
+        assert_eq!(view.interaction.selection_intent_epoch, epoch);
     });
 }
 
@@ -1145,14 +1149,14 @@ fn actual_later_range_selection_is_not_stolen_by_queued_range_copy_ack(cx: &mut 
     visual.simulate_keystrokes("cmd-d cmd-d");
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.pending_time_range_move.is_some(),
+            view.interaction.pending_time_range_move.is_some(),
             "own ACK intentionally not consumed yet"
         )
     });
     let newer = pointer_range(&mut visual, &editor, &tracks[1..]);
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.pending_time_range_move.is_some(),
+            view.interaction.pending_time_range_move.is_some(),
             "actual newer body range created before consuming copy ACK"
         )
     });
@@ -1183,7 +1187,7 @@ fn escape_before_submission_cancels_copy_but_after_submission_only_cancels_selec
             let presses = vec!["d"; usize::from(MAX_QUEUED_REPEATS) + 2].join(" ");
             visual.simulate_keystrokes(&presses);
             editor.read_with(&visual, |view, _| {
-                let pending = view.pending_time_range_move.as_ref().unwrap();
+                let pending = view.interaction.pending_time_range_move.as_ref().unwrap();
                 assert_eq!(
                     pending.keyboard.as_ref().unwrap().repeats,
                     Some(MAX_QUEUED_REPEATS)
@@ -1211,14 +1215,14 @@ fn escape_before_submission_cancels_copy_but_after_submission_only_cancels_selec
             visual.simulate_mouse_down(a, MouseButton::Left, option);
             visual.simulate_mouse_move(b, Some(MouseButton::Left), option);
             editor.read_with(&visual, |view, _| {
-                assert!(view.time_range_move_gesture.is_some())
+                assert!(view.interaction.time_range_move_gesture.is_some())
             });
         }
         visual.simulate_keystrokes("escape");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            assert!(view.time_range_move_gesture.is_none());
-            assert!(view.pending_time_range_move.is_none());
+            assert!(view.interaction.time_range_move_gesture.is_none());
+            assert!(view.interaction.pending_time_range_move.is_none());
             let p = &view.state.as_ref().unwrap().project;
             if submitted {
                 assert!(
@@ -1261,7 +1265,7 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
             track: tracks[0],
             frame: u64::MAX,
         })));
-        view.pending_time_range_move = Some(PendingTimeRangeMove {
+        view.interaction.pending_time_range_move = Some(PendingTimeRangeMove {
             source: source.clone(),
             range: hex_project::TimeRange::new(
                 tracks[..1].to_vec(),
@@ -1273,7 +1277,7 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
             destination_first_index: 0,
             destination_last_index: 0,
             source_revision: before.revision,
-            selection_intent_epoch: view.selection_intent_epoch.unwrap(),
+            selection_intent_epoch: view.interaction.selection_intent_epoch.unwrap(),
             copy_modifier: true,
             keyboard: None,
         });
@@ -1281,7 +1285,7 @@ fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert!(view.error.is_some());
-        assert!(view.pending_time_range_move.is_none());
+        assert!(view.interaction.pending_time_range_move.is_none());
         assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
         assert_eq!(
             view.state.as_ref().unwrap().project.snapshot(),
@@ -1439,7 +1443,7 @@ fn leading_silence_copy_with_a_note_on_the_destination_edge_survives_real_worker
                     .expect("accepted copied range");
                 assert_eq!((range.start(), range.end()), expected);
                 assert_eq!(range.tracks(), &tracks[..1]);
-                assert!(view.pending_time_range_move.is_none());
+                assert!(view.interaction.pending_time_range_move.is_none());
                 assert!(view.selected_clip.is_none());
                 assert_eq!(
                     view.state

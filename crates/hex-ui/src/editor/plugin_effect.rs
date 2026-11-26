@@ -795,7 +795,7 @@ impl EditorView {
         {
             self.retain_session_track_proposal_page(proposal);
         }
-        if let Some(intent) = self.deferred_toggle_play.as_mut()
+        if let Some(intent) = self.audio_pub.deferred_toggle_play.as_mut()
             && let TogglePlayTarget::DeviceProposal { output } = intent.target
             && terminal.accepted
             && !event.project_replaced
@@ -866,11 +866,11 @@ impl EditorView {
             error,
         );
         if settled
-            && self.deferred_toggle_play.is_some_and(|intent| {
+            && self.audio_pub.deferred_toggle_play.is_some_and(|intent| {
                 matches!(intent.target, TogglePlayTarget::DeviceProposal { .. })
             })
         {
-            self.deferred_toggle_play = None;
+            self.audio_pub.deferred_toggle_play = None;
         }
         settled
     }

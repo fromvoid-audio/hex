@@ -701,7 +701,7 @@ mod ui_tests {
             (
                 view.worker_requests_pending,
                 view.pending_requests.len(),
-                view.offline_cursor,
+                view.audio_pub.offline_cursor,
             )
         });
         visual.simulate_event(gpui::ScrollWheelEvent {
@@ -725,7 +725,7 @@ mod ui_tests {
                 (
                     view.worker_requests_pending,
                     view.pending_requests.len(),
-                    view.offline_cursor
+                    view.audio_pub.offline_cursor
                 ),
                 before
             );
@@ -1081,7 +1081,7 @@ mod ui_tests {
             (
                 view.worker_requests_pending,
                 view.pending_requests.len(),
-                view.offline_cursor,
+                view.audio_pub.offline_cursor,
             )
         });
         visual.simulate_click(row.center(), Modifiers::default());
@@ -1091,7 +1091,7 @@ mod ui_tests {
                 (
                     view.worker_requests_pending,
                     view.pending_requests.len(),
-                    view.offline_cursor
+                    view.audio_pub.offline_cursor
                 ),
                 before
             )

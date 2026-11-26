@@ -74,7 +74,7 @@ fn search_focus_click_selects_query_and_replaces_after_real_workers(cx: &mut Tes
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).text(), "snare");
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert_eq!(view.browser.playback_generation, 0);
     });
     visual.simulate_keystrokes("cmd-f");
@@ -292,7 +292,7 @@ fn search_selection_clipboard_ime_empty_and_long_query_keep_text_ownership(
     editor.read_with(visual, |view, cx| {
         assert_eq!(view.browser.search.read(cx).text(), "x");
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert_eq!(view.browser.playback_generation, 0);
     });
 }
@@ -462,7 +462,7 @@ fn search_double_click_toggles_against_selection_before_first_click(cx: &mut Tes
     workers_and_ticks(&editor, visual, &samples);
     assert_eq!(selection(&editor, visual), 0..9);
     editor.read_with(visual, |view, _| {
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert!(view.pending_requests.is_empty());
     });
 }
@@ -481,7 +481,9 @@ fn search_empty_double_click_is_selection_only(cx: &mut TestAppContext) {
     editor.read_with(visual, |view, cx| {
         assert!(view.browser.search.read(cx).text().is_empty());
         assert_eq!(view.browser.playback_generation, 0);
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
     });
 }
 
@@ -564,7 +566,9 @@ fn invalidated_pair_caller(cx: &mut TestAppContext, invalidation: &str) {
             ),
             before
         );
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
     });
     double_click_at(visual, at, 3);
     assert_eq!(
@@ -755,7 +759,10 @@ fn clear_search_preserves_scope_focus_and_reserved_geometry(cx: &mut TestAppCont
                 before
             );
             assert!(!view.browser_visible_entries(cx).is_empty());
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(
+                view.pending_requests.is_empty()
+                    && view.audio_pub.pending_audio_commands.is_empty()
+            );
             assert_eq!(view.browser.playback_generation, 0);
         });
         visual.simulate_input("loop");

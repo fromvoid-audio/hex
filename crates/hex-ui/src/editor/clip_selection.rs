@@ -239,10 +239,10 @@ impl EditorView {
         // A deliberate whole-clip header click supersedes an unrelated time
         // rectangle and a cursor placed inside the clip; body gestures retain
         // their separate range-copy contract.
-        self.time_selection = None;
-        self.edit_cursor_in_selected_clip = None;
-        self.loop_start_over_clip = None;
-        self.time_selection_project_scope = false;
+        self.interaction.time_selection = None;
+        self.interaction.edit_cursor_in_selected_clip = None;
+        self.interaction.loop_start_over_clip = None;
+        self.interaction.time_selection_project_scope = false;
         let mut next_focus = None;
         if let Some(state) = &self.state {
             selection.select(&state.project, track, clip, modifiers);
@@ -405,7 +405,10 @@ mod tests {
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
             assert!(view.test_probes.last_enqueued_edit.is_none());
-            assert!(view.active_clip_drag.is_none() && view.time_selection_gesture.is_none());
+            assert!(
+                view.interaction.active_clip_drag.is_none()
+                    && view.interaction.time_selection_gesture.is_none()
+            );
         });
     }
     #[gpui::test]

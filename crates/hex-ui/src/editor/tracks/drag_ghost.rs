@@ -292,7 +292,7 @@ impl EditorView {
         }) = payload.destination.get()
         {
             let state = self.state.as_ref()?;
-            let body = self.arrangement_bounds?;
+            let body = self.timeline_caches.arrangement_bounds?;
             let viewport = self.visible_viewport(state.timeline_frames);
             let preview = drag::preview_for(&state.project, payload.source_track, position)?;
             let visible_start = preview.start_frame.max(viewport.start);
@@ -334,7 +334,9 @@ impl EditorView {
                 },
                 ClipGhostDecor {
                     active,
-                    waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    waveform_cache: std::rc::Rc::clone(
+                        &self.timeline_caches.waveform_geometry_cache,
+                    ),
                     notched: visible_end == preview.end_frame,
                     fill: theme::clip_activity_fill(
                         hex_project::ElementColor::default(),
@@ -409,7 +411,7 @@ impl EditorView {
             },
             ClipGhostDecor {
                 active,
-                waveform_cache: std::rc::Rc::clone(&self.waveform_geometry_cache),
+                waveform_cache: std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                 notched: true,
                 fill: theme::clip_activity_fill(
                     self.state
@@ -476,7 +478,7 @@ impl EditorView {
         if !self.drag_available() || viewport.length == 0 {
             return None;
         }
-        let lane = *self.drag_lanes.get(&track)?;
+        let lane = *self.timeline_caches.drag_lanes.get(&track)?;
         let start = clip.start();
         let length = clip.length();
         let _ = start.raw().checked_add(length.raw())?;
@@ -563,7 +565,7 @@ impl EditorView {
                                 bounds.end_frame,
                             )
                         })();
-                        if let Some(press) = view.pointer_down.as_mut() {
+                        if let Some(press) = view.interaction.pointer_down.as_mut() {
                             press.snap_edge = edge;
                         }
                     } else {

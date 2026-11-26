@@ -306,7 +306,7 @@ impl EditorView {
         if let Some(project_source) = project_waveform {
             waveform = waveform.child(super::super::overview_waveform::render(
                 super::super::overview_waveform::Source::Browser(project_source),
-                Rc::clone(&self.overview_waveform_cache),
+                Rc::clone(&self.timeline_caches.overview_waveform_cache),
                 None,
             ));
             let label = fallback.clone();
@@ -338,7 +338,7 @@ impl EditorView {
                     super::super::overview_waveform::Source::Browser(Arc::clone(
                         &metadata.waveform,
                     )),
-                    Rc::clone(&self.overview_waveform_cache),
+                    Rc::clone(&self.timeline_caches.overview_waveform_cache),
                     None,
                 ));
             } else {

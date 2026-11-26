@@ -18,7 +18,10 @@ impl EditorView {
         }
         let generation = self.project_generation;
         let current = self.snap_grid.density();
-        let decibels = self.waveform_geometry_cache.amplitude_scale()
+        let decibels = self
+            .timeline_caches
+            .waveform_geometry_cache
+            .amplitude_scale()
             == super::super::waveform::WaveformAmplitudeScale::Decibel;
         if let Some(menu) = &mut self.context_menu {
             menu.items

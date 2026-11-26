@@ -196,7 +196,11 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
     };
     editor.update(&mut visual, |view, cx| {
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             before_preview
         );
         assert!(view.device_panel.gesture.snapshot().is_some());
@@ -214,7 +218,12 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
         assert!((y - 0.65).abs() < 0.01);
     });
     pump_until(&editor, cx, |view| {
-        view.audible_playback.as_ref().unwrap().audio_revision == preview
+        view.audio_pub
+            .audible_playback
+            .as_ref()
+            .unwrap()
+            .audio_revision
+            == preview
     });
     assert!((y(&visual) - 0.75).abs() < 0.01);
 
@@ -226,10 +235,14 @@ fn eq_graph_follows_authored_gain_on_the_applied_playback_source(cx: &mut TestAp
             view.tick(cx);
             cx.notify();
             settled(view)
-                && view.audible_playback.as_ref().is_some_and(|candidate| {
-                    candidate.audio_revision > preview
-                        && candidate.device_preview_identity.is_none()
-                })
+                && view
+                    .audio_pub
+                    .audible_playback
+                    .as_ref()
+                    .is_some_and(|candidate| {
+                        candidate.audio_revision > preview
+                            && candidate.device_preview_identity.is_none()
+                    })
         });
         if committed {
             break;

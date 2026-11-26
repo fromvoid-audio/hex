@@ -13,8 +13,8 @@ fn wait_for_retired_outcomes(cx: &mut TestAppContext, editor: &gpui::Entity<supe
     loop {
         let done = editor.update(cx, |view, _| {
             view.poll_retired_action_outcomes();
-            view.retired_action_message = None;
-            view.retired_action_outcomes.is_none()
+            view.audio_pub.retired_action_message = None;
+            view.audio_pub.retired_action_outcomes.is_none()
         });
         if done {
             return;
@@ -67,10 +67,10 @@ fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut Te
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.session_grid.pending_session_ticket = Some((first, view.project_generation));
-        view.pending_metronome_ticket = Some(second);
+        view.audio_pub.pending_metronome_ticket = Some(second);
         view.tick(cx);
         assert_eq!(view.session_grid.pending_session_ticket, None);
-        assert_eq!(view.pending_metronome_ticket, None);
+        assert_eq!(view.audio_pub.pending_metronome_ticket, None);
         assert_eq!(view.status.as_str(), "session request rejected");
         let error = view.error.as_ref().expect("rejections displayed");
         assert!(
@@ -86,7 +86,7 @@ fn editor_reports_each_rejection_and_keeps_reader_through_retirement(cx: &mut Te
             .unwrap();
         assert!(pending > second);
         assert!(view.retire_audio_preserving_gain_take());
-        assert!(view.retired_action_outcomes.is_some());
+        assert!(view.audio_pub.retired_action_outcomes.is_some());
     });
     backend.close();
     drop(output);
@@ -134,7 +134,7 @@ fn occupied_retirement_slot_keeps_the_closed_current_reader(cx: &mut TestAppCont
         .command_with_ticket(hex_engine::PlaybackCommand::Pause)
         .unwrap();
     editor.update(cx, |view, _| {
-        view.retired_action_outcomes = Some(old_reader);
+        view.audio_pub.retired_action_outcomes = Some(old_reader);
         view.audio = Some(crate::EditorAudio {
             control: client,
             sample_rate: 48_000,
@@ -146,7 +146,7 @@ fn occupied_retirement_slot_keeps_the_closed_current_reader(cx: &mut TestAppCont
         let retained = view.audio.as_ref().expect("closed client retained");
         assert!(retained.control.status().is_none());
         assert!(retained.control.has_action_outcomes());
-        assert!(view.retired_action_outcomes.is_some());
+        assert!(view.audio_pub.retired_action_outcomes.is_some());
     });
     old_control.request_shutdown();
     old_control
@@ -154,10 +154,10 @@ fn occupied_retirement_slot_keeps_the_closed_current_reader(cx: &mut TestAppCont
         .unwrap();
     editor.update(cx, |view, _| {
         view.poll_retired_action_outcomes();
-        assert!(view.retired_action_outcomes.is_none());
+        assert!(view.audio_pub.retired_action_outcomes.is_none());
         assert!(view.retire_audio_preserving_gain_take());
         assert!(view.audio.is_none());
-        assert!(view.retired_action_outcomes.is_some());
+        assert!(view.audio_pub.retired_action_outcomes.is_some());
     });
     backend.close();
     drop(output);
@@ -254,7 +254,7 @@ fn retired_action_interruption_survives_current_output_fault(cx: &mut TestAppCon
     );
     backend.report_render_error().unwrap();
     editor.update(cx, |view, cx| {
-        view.retired_action_outcomes = Some(reader);
+        view.audio_pub.retired_action_outcomes = Some(reader);
         view.audio = Some(crate::EditorAudio {
             control: client,
             sample_rate: 48_000,

@@ -299,7 +299,7 @@ impl Field {
 }
 impl EditorView {
     pub(super) fn open_tuning(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.pointer_down = None;
+        self.interaction.pointer_down = None;
         self.settings.tuning.open = true;
         self.settings.tuning.midi_last_query = None;
         self.settings

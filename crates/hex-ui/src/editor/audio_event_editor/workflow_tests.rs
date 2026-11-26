@@ -262,7 +262,8 @@ fn repaint_fade_outlines(
 ) -> ([u64; 2], [u64; 2]) {
     // Read newly painted outlines even when either view can reuse its geometry.
     editor.update(visual, |view, cx| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples();
         view.audio_detail
@@ -800,7 +801,9 @@ fn check_event_move_release(cx: &mut TestAppContext, outside: bool) {
             assert_eq!(v.state.as_ref().unwrap().project, before)
         });
     }
-    let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&v.selected_track.unwrap()]);
+    let lane = editor.read_with(&visual, |v, _| {
+        v.timeline_caches.drag_lanes[&v.selected_track.unwrap()]
+    });
     let empty = point(
         px(lane.left + lane.width * 0.95),
         px(lane.top + lane.height * 0.75),
@@ -1597,7 +1600,10 @@ fn event_fade_drag_across_waveform_views(cx: &mut TestAppContext, fixture: Event
     });
     for _ in 0..3 {
         editor.update(&mut visual, |v, _| {
-            v.waveform_geometry_cache.borrow_mut().clear_paint_samples();
+            v.timeline_caches
+                .waveform_geometry_cache
+                .borrow_mut()
+                .clear_paint_samples();
         });
         repaint(&mut visual, &editor);
         assert_eq!(thumbnail(&mut visual), held_thumbnail);
@@ -1995,7 +2001,7 @@ fn warped_event_fade_workflow(cx: &mut TestAppContext, fixture: WarpedFadeFixtur
         }
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            let pending = v.pending_playback.as_ref().unwrap();
+            let pending = v.audio_pub.pending_playback.as_ref().unwrap();
             let prepared = pending
                 .prepared_revision
                 .as_ref()
@@ -2335,6 +2341,7 @@ fn event_fade_single_sample_can_author_both_ends_after_zoom(cx: &mut TestAppCont
 fn render_accepted_event(v: &EditorView, clip: ClipId) -> Vec<hex_engine::Frame> {
     let state = v.state.as_ref().unwrap();
     let pending = v
+        .audio_pub
         .pending_playback
         .as_ref()
         .expect("actual worker accepted playback");

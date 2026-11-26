@@ -957,7 +957,11 @@ pub(in crate::editor) fn audible_vst3_processor(
         .as_ref()
         .and_then(|state| state.project.device(device_id))
         .ok_or(CurrentDeviceMissing)?;
-    let audible = view.audible_playback.as_ref().ok_or(AppliedGraphMissing)?;
+    let audible = view
+        .audio_pub
+        .audible_playback
+        .as_ref()
+        .ok_or(AppliedGraphMissing)?;
     if audible.project_generation != view.project_generation {
         return Err(AppliedGenerationChanged);
     }
@@ -1017,7 +1021,8 @@ pub(in crate::editor) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mu
         snapshot,
         " vst3_device={} vst3_applied_audio={applied_audio:?} vst3_observed_audio={:?}",
         device.value(),
-        view.audible_playback
+        view.audio_pub
+            .audible_playback
             .as_ref()
             .map(|view| view.audio_revision)
     );
@@ -1451,7 +1456,7 @@ pub(in crate::editor) fn render_instrument(
             cx,
         );
         let modulation_view = device_view.as_ref().ok().filter(|_| {
-            view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            view.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
                 && device.state().asset_references().len() == 1
                 && view
                     .state

@@ -285,7 +285,8 @@ fn context(view: &EditorView) -> Result<Option<(u64, u32)>, String> {
     Ok(installed
         .or_else(retained)
         .or_else(|| {
-            view.audio_admission
+            view.audio_pub
+                .audio_admission
                 .published_audio_revision(view.project_generation, state.revision)
         })
         .map(|floor| (floor, audio.sample_rate)))

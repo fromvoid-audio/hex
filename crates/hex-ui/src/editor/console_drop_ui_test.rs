@@ -631,7 +631,7 @@ fn console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source(
     receive_worker(&editor, cx);
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.document_audio_mode,
+            view.audio_pub.document_audio_mode,
             hex_session::DocumentAudioMode::VerifiedStreaming
         )
     });
@@ -842,6 +842,7 @@ fn begin_arrangement_clip_in_console(
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let drag = view
+            .interaction
             .active_clip_drag
             .as_ref()
             .expect("real Arrangement pointer capture");
@@ -877,7 +878,7 @@ fn drop_actual_arrangement_midi(
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     let submitted = editor.read_with(&visual, |view, _| {
-        assert!(view.active_clip_drag.is_none(), "drop retires the visible clip ghost");
+        assert!(view.interaction.active_clip_drag.is_none(), "drop retires the visible clip ghost");
         matches!(view.test_probes.last_enqueued_edit, Some(Command::CopyArrangementMidiToSession { source: id, scene: target }) if id == source && target == scene)
     });
     assert!(
@@ -1211,7 +1212,7 @@ fn console_clip_new_track_refuses_unavailable_defaults_but_existing_cell_still_w
             } else {
                 "open settings"
             }));
-            assert!(view.active_clip_drag.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
         });
         assert_eq!(project(&editor, cx), before);
         editor.update(cx, |view, _| view.error = None);
@@ -1251,7 +1252,9 @@ fn console_column_real_arrangement_midi_copies_source_with_one_history_step(
             .track_defaults
             .set_test_state(0.25, false, true)
     });
-    editor.read_with(&visual, |view, _| assert!(view.active_clip_drag.is_none()));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.interaction.active_clip_drag.is_none())
+    });
     receive_worker(&editor, cx);
     let after = project(&editor, cx);
     assert_eq!(after.tracks().len(), before.tracks().len() + 1);
@@ -1465,7 +1468,7 @@ fn console_column_real_arrangement_audio_copies_plain_source_and_refuses_process
         "processed source is refused with no empty column"
     );
     editor.read_with(cx, |view, _| {
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
         assert!(
             view.error
                 .as_ref()
@@ -1483,7 +1486,9 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
     let source = arrangement_midi_source(cx, &editor, track);
     let before = project(&editor, cx);
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
-    let old = editor.read_with(&visual, |view, _| view.active_clip_drag.clone().unwrap());
+    let old = editor.read_with(&visual, |view, _| {
+        view.interaction.active_clip_drag.clone().unwrap()
+    });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(
         point(px(8.0), px(8.0)),
@@ -1491,7 +1496,9 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
         Modifiers::default(),
     );
     let mut visual = begin_arrangement_clip_in_console(cx, handle, &editor, source);
-    let fresh = editor.read_with(&visual, |view, _| view.active_clip_drag.clone().unwrap());
+    let fresh = editor.read_with(&visual, |view, _| {
+        view.interaction.active_clip_drag.clone().unwrap()
+    });
     assert!(!std::rc::Rc::ptr_eq(&old.group, &fresh.group));
     // Deliver an older receiver's payload after a new real pointer capture.
     // Same clip/generation/revision does not transfer ownership to that receiver.
@@ -1507,6 +1514,7 @@ fn console_column_stale_clip_release_preserves_a_new_capture_of_the_same_source(
     });
     editor.read_with(cx, |view, _| {
         let active = view
+            .interaction
             .active_clip_drag
             .as_ref()
             .expect("stale Console release must preserve newer pointer capture");

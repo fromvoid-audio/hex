@@ -185,7 +185,10 @@ fn body_drag_and_shift_steps_preserve_full_length_original_origin_and_one_undo(
         visual.simulate_mouse_move(target, MouseButton::Left, shift);
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            let gesture = v.loop_rail_gesture.expect("body owns whole-range drag");
+            let gesture = v
+                .interaction
+                .loop_rail_gesture
+                .expect("body owns whole-range drag");
             let p = gesture.preview.unwrap();
             assert_eq!((p.start(), p.end(), p.enabled()), (96_000, 144_000, false));
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -277,7 +280,7 @@ fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
         // A plain body click is not an enable action or an edit.
         click(&mut visual, down, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.loop_rail_gesture.is_none());
+            assert!(v.interaction.loop_rail_gesture.is_none());
             assert!(v.pending_requests.is_empty());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -291,7 +294,7 @@ fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         let shown = editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-            let shown = v.loop_rail_gesture.unwrap().preview.unwrap();
+            let shown = v.interaction.loop_rail_gesture.unwrap().preview.unwrap();
             assert_eq!(shown.end() - shown.start(), 72_000);
             assert!(!shown.enabled());
             match grid {
@@ -316,7 +319,7 @@ fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
                 v.test_probes.last_enqueued_edit.is_none(),
                 "duplicate release cannot enqueue an edit"
             );
-            assert!(v.loop_rail_gesture.is_none());
+            assert!(v.interaction.loop_rail_gesture.is_none());
             assert_eq!(v.state.as_ref().unwrap().revision, revision);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
         });
@@ -344,7 +347,7 @@ fn ordinary_body_move_preserves_length_preview_commit_undo_redo_and_save_open(
             pump(&editor, &mut visual);
             editor.read_with(&visual, |v, _| {
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
-                assert!(v.loop_rail_gesture.is_none());
+                assert!(v.interaction.loop_rail_gesture.is_none());
             });
         }
     }
@@ -403,7 +406,7 @@ fn shift_steps_reverse_from_initial_origin_across_grids_and_final_mouse_up(
             let target = point(down.x + step * steps, down.y);
             visual.simulate_mouse_move(target, MouseButton::Left, shift);
             editor.read_with(&visual, |v, _| {
-                let shown = v.loop_rail_gesture.unwrap().preview.unwrap();
+                let shown = v.interaction.loop_rail_gesture.unwrap().preview.unwrap();
                 assert_eq!((shown.start(), shown.end()), (expected, expected + 36_000));
             });
         }
@@ -449,7 +452,7 @@ fn loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit(cx: &mut TestA
         let target = at(&mut visual, 110_000.0 / 384_000.0);
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
-        assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+        assert!(editor.read_with(&visual, |v, _| v.interaction.loop_rail_gesture.is_some()));
         editor.update(&mut visual, |v, _| v.test_probes.last_enqueued_edit = None);
         let mut modifiers = Modifiers::default();
         match cancel {
@@ -478,7 +481,7 @@ fn loop_move_modifier_changes_cancel_and_focus_loss_do_not_submit(cx: &mut TestA
                 v.test_probes.last_enqueued_edit.is_none(),
                 "cancelled/late release cannot enqueue: {cancel}"
             );
-            assert!(v.loop_rail_gesture.is_none(), "{cancel}");
+            assert!(v.interaction.loop_rail_gesture.is_none(), "{cancel}");
             assert_eq!(
                 v.state.as_ref().unwrap().project.snapshot(),
                 before,
@@ -560,7 +563,7 @@ fn moving_body_recalculates_modifiers_without_changing_initial_origin(cx: &mut T
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     let ordinary = editor.read_with(&visual, |v, _| {
-        v.loop_rail_gesture.unwrap().preview.unwrap()
+        v.interaction.loop_rail_gesture.unwrap().preview.unwrap()
     });
     assert!(ordinary.start().abs_diff(80_000) <= 1);
     let shift = Modifiers {
@@ -570,13 +573,16 @@ fn moving_body_recalculates_modifiers_without_changing_initial_origin(cx: &mut T
     visual.simulate_modifiers_change(shift);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
-            v.loop_rail_gesture.unwrap().preview.unwrap(),
+            v.interaction.loop_rail_gesture.unwrap().preview.unwrap(),
             LoopRegion::new(96_000, 132_000, false).unwrap()
         );
     });
     visual.simulate_modifiers_change(Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.loop_rail_gesture.unwrap().preview.unwrap(), ordinary)
+        assert_eq!(
+            v.interaction.loop_rail_gesture.unwrap().preview.unwrap(),
+            ordinary
+        )
     });
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
@@ -610,7 +616,7 @@ fn command_vertical_motion_control(cx: &mut TestAppContext, moves: &[f32], relea
     };
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     visual.simulate_mouse_down(down, MouseButton::Left, command);
-    assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+    assert!(editor.read_with(&visual, |v, _| v.interaction.loop_rail_gesture.is_some()));
     for y in moves {
         visual.simulate_mouse_move(
             point(down.x, down.y + gpui::px(*y)),
@@ -618,13 +624,13 @@ fn command_vertical_motion_control(cx: &mut TestAppContext, moves: &[f32], relea
             command,
         );
         visual.run_until_parked();
-        assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_some()));
+        assert!(editor.read_with(&visual, |v, _| v.interaction.loop_rail_gesture.is_some()));
     }
     let up = point(down.x, down.y + gpui::px(release_y));
     eprintln!("command vertical down={down:?} moves={moves:?} actual mouse up={up:?}");
     visual.simulate_mouse_up(up, MouseButton::Left, command);
     visual.run_until_parked();
-    assert!(editor.read_with(&visual, |v, _| v.loop_rail_gesture.is_none()));
+    assert!(editor.read_with(&visual, |v, _| v.interaction.loop_rail_gesture.is_none()));
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -728,7 +734,10 @@ fn ordinary_vertical_motion_off_grid_never_authors_snap_or_toggle(cx: &mut TestA
     });
     visual.simulate_modifiers_change(Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        let gesture = v.loop_rail_gesture.expect("same held rail capture");
+        let gesture = v
+            .interaction
+            .loop_rail_gesture
+            .expect("same held rail capture");
         assert!(!gesture.moved, "Y is not horizontal range movement");
         assert!(gesture.click_disqualified);
         assert_eq!(gesture.last_pointer, target);
@@ -742,7 +751,7 @@ fn ordinary_vertical_motion_off_grid_never_authors_snap_or_toggle(cx: &mut TestA
             v.test_probes.last_enqueued_edit.is_none(),
             "no snap, set or toggle submitted"
         );
-        assert!(v.loop_rail_gesture.is_none());
+        assert!(v.interaction.loop_rail_gesture.is_none());
         assert_eq!(v.worker_requests_pending, 0);
         assert!(v.pending_requests.is_empty());
     });

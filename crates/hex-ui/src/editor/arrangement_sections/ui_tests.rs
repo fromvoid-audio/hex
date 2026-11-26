@@ -1,13 +1,18 @@
 use super::*;
+
 use gpui::{Modifiers, MouseButton, MouseDownEvent, TestAppContext, VisualTestContext, point, px};
+
 use hex_project::Created;
+
 use hex_session::service::Service;
+
 use std::time::{Duration, Instant};
 
 fn painted_fill(visual: &mut VisualTestContext, index: usize) -> Option<gpui::Background> {
     let selector = Box::leak(format!("arrangement-section-{index}").into_boxed_str());
     painted_fill_for(visual, selector)
 }
+
 fn painted_fill_for(
     visual: &mut VisualTestContext,
     selector: &'static str,
@@ -25,6 +30,7 @@ fn painted_fill_for(
         .map(|(_, color)| color)
         .next_back()
 }
+
 #[track_caller]
 pub(in crate::editor) fn next(service: &Service) -> Event {
     let deadline = crate::test_wait::hang_deadline();
@@ -36,6 +42,7 @@ pub(in crate::editor) fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+
 pub(in crate::editor) fn fixture(
     cx: &mut TestAppContext,
 ) -> (gpui::AnyWindowHandle, Entity<EditorView>, [SectionId; 2]) {
@@ -109,118 +116,6 @@ fn section_test_window(
     (handle, editor)
 }
 
-#[gpui::test]
-fn g_on_a_main_gap_leaves_underlying_clips_untouched(cx: &mut TestAppContext) {
-    use crate::editor::drag::group_drag_ui_test::pump;
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let lane = visual.debug_bounds("main-track-lane").unwrap();
-    let (start, end, before) = editor.read_with(&visual, |view, _| {
-        (
-            position(view, 5).x,
-            position(view, 7).x,
-            view.state.as_ref().unwrap().project.clone(),
-        )
-    });
-    let start = point(start, lane.center().y);
-    let end = point(end, start.y);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    visual.simulate_keystrokes("g");
-    pump(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        let project = &view.state.as_ref().unwrap().project;
-        assert_eq!(
-            project.tracks()[0].midi_clips(),
-            before.tracks()[0].midi_clips()
-        );
-        let [intro, section, chorus] = project.arrangement_sections() else {
-            panic!("three sections");
-        };
-        assert_eq!(
-            (intro, chorus),
-            (
-                &before.arrangement_sections()[0],
-                &before.arrangement_sections()[1]
-            )
-        );
-        assert_eq!(
-            (section.start(), section.end()),
-            (
-                BeatTime::from_quarters(5).unwrap(),
-                BeatTime::from_quarters(7).unwrap()
-            )
-        );
-    });
-}
-
-#[gpui::test]
-fn dragging_main_gap_then_g_creates_a_section_even_without_tracks(cx: &mut TestAppContext) {
-    use crate::editor::drag::group_drag_ui_test::pump;
-    cx.update(super::super::bind_editor_keys);
-    let service = Service::new(48_000, 8, 8_000_000).unwrap();
-    let state = next(&service).state;
-    let handle = *cx.add_window(|_, _| gpui::Empty);
-    let editor = cx
-        .update_window(handle, |_, window, cx| {
-            let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new(window, cx, service, Err("offline section ui test".into()))
-            });
-            editor.update(cx, |view, cx| {
-                view.state = Some(state);
-                view.focus.focus(window);
-                view.snap_grid = SnapGrid::Quarter;
-                cx.notify();
-            });
-            editor
-        })
-        .unwrap();
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let lane = visual.debug_bounds("main-track-lane").unwrap();
-    let start = point(lane.origin.x + lane.size.width * 0.1, lane.center().y);
-    let end = point(lane.origin.x + lane.size.width * 0.4, start.y);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    let (start, end) = editor.read_with(&visual, |view, _| {
-        assert!(view.time_selection_project_scope);
-        assert!(view.normalized_time_selection().is_none());
-        let selection = view.time_selection.unwrap();
-        assert!(selection.anchor_frame < selection.end_frame);
-        let map = view.state.as_ref().unwrap().project.tempo_map();
-        (
-            map.frame_to_beat(selection.anchor_frame).unwrap(),
-            map.frame_to_beat(selection.end_frame).unwrap(),
-        )
-    });
-    visual.simulate_keystrokes("g");
-    pump(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| {
-        assert!(view.error.is_none(), "{:?}", view.error);
-        let project = &view.state.as_ref().unwrap().project;
-        assert!(project.tracks().is_empty());
-        let [section] = project.arrangement_sections() else {
-            panic!("created section");
-        };
-        assert_eq!((section.start(), section.end()), (start, end));
-    });
-    visual.simulate_keystrokes("cmd-z");
-    pump(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| {
-        assert!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_sections()
-                .is_empty()
-        );
-    });
-}
 pub(in crate::editor) fn position(view: &EditorView, quarters: u64) -> gpui::Point<gpui::Pixels> {
     let [left, top, width, _] = view.section_layout().unwrap();
     let state = view.state.as_ref().unwrap();
@@ -238,6 +133,7 @@ pub(in crate::editor) fn position(view: &EditorView, quarters: u64) -> gpui::Poi
             ) * 0.5),
     )
 }
+
 fn bounds(visual: &mut VisualTestContext, index: usize) -> gpui::Bounds<gpui::Pixels> {
     visual
         .debug_bounds(Box::leak(
@@ -245,1875 +141,7 @@ fn bounds(visual: &mut VisualTestContext, index: usize) -> gpui::Bounds<gpui::Pi
         ))
         .expect("painted section")
 }
-#[gpui::test]
-fn marker_only_paint_tracks_hover_latched_drag_and_exact_ack(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (from, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 6)));
-    let marker = Modifiers {
-        platform: true,
-        alt: true,
-        ..Modifiers::default()
-    };
-    visual.update(|window, cx| {
-        window.dispatch_input(
-            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
-                position: from,
-                ..Default::default()
-            }),
-            cx,
-        );
-    });
-    visual.simulate_modifiers_change(marker);
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("arrangement-section-markers-only-0")
-            .is_some()
-    );
-    let hover_fill = painted_fill_for(&mut visual, "arrangement-section-markers-only-0");
-    visual.simulate_modifiers_change(Modifiers::default());
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("arrangement-section-markers-only-0")
-            .is_none()
-    );
-    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("arrangement-section-markers-only-0")
-            .is_none()
-    );
-    visual.simulate_modifiers_change(marker);
-    visual.simulate_modifiers_change(Modifiers::default());
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("arrangement-section-markers-only-0")
-            .is_some(),
-        "released modifiers retain the actual latched marker-only mode"
-    );
-    assert_ne!(
-        painted_fill_for(&mut visual, "arrangement-section-markers-only-0"),
-        hover_fill,
-        "selection remains visible within marker-only feedback",
-    );
-    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let terminal = editor.update(cx, |view, _| next(&view.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        assert!(
-            visual
-                .debug_bounds("arrangement-section-markers-only-0")
-                .is_some()
-        );
-        assert!(painted_fill_for(&mut visual, "arrangement-section-markers-only-0").is_some());
-    }
-    editor.update(cx, |view, cx| {
-        view.receive(terminal);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(
-        visual
-            .debug_bounds("arrangement-section-markers-only-0")
-            .is_none()
-    );
-}
 
-#[gpui::test]
-fn option_drag_copies_sections_with_live_modifiers_and_acknowledged_selection(
-    cx: &mut TestAppContext,
-) {
-    for (late, select_elsewhere, empty) in [
-        (false, false, false),
-        (true, false, false),
-        (false, true, false),
-        (false, false, true),
-    ] {
-        let (handle, editor, ids) = fixture(cx);
-        if empty {
-            editor.update(cx, |view, cx| {
-                let track = view.state.as_ref().unwrap().project.tracks()[0].id();
-                assert!(view.enqueue(Request::Edit(Command::RemoveTrack(track))));
-                let event = next(&view.service);
-                assert!(event.error.is_none());
-                view.receive(event);
-                cx.notify();
-            });
-        }
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        editor.update(cx, |view, cx| {
-            view.viewport =
-                Some(view.visible_viewport(view.state.as_ref().unwrap().timeline_frames));
-            view.section_autoplay = true;
-            cx.notify();
-        });
-        visual.run_until_parked();
-        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-        let (from, to) = editor.read_with(cx, |view, _| (position(view, 2), position(view, 12)));
-        let copy = Modifiers {
-            alt: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(from, MouseButton::Left, copy);
-        visual.simulate_mouse_up(from, MouseButton::Left, copy);
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert_eq!(view.state.as_ref().unwrap().project, before);
-            assert!(view.sections.pending.is_none());
-            assert!(view.pending_audio_commands.is_empty() && view.prepared_seek.is_none());
-        });
-        visual.simulate_mouse_down(
-            from,
-            MouseButton::Left,
-            if late { Modifiers::default() } else { copy },
-        );
-        visual.simulate_mouse_move(
-            to,
-            MouseButton::Left,
-            if late { Modifiers::default() } else { copy },
-        );
-        visual.simulate_modifiers_change(copy);
-        visual.run_until_parked();
-        assert_eq!(
-            visual.rendered_cursor_style(),
-            Some(gpui::CursorStyle::DragCopy)
-        );
-        editor.read_with(cx, |view, _| {
-            assert!(matches!(view.sections.gesture.as_ref().unwrap().command,
-                Some(Command::DuplicateArrangementSectionAt { section, target, after: true })
-                if section == ids[0] && target == ids[1]));
-            assert_eq!(view.state.as_ref().unwrap().project, before);
-        });
-        // Option is live copy intent, unlike latched marker-only Option-Command.
-        visual.simulate_modifiers_change(Modifiers::default());
-        visual.run_until_parked();
-        assert_eq!(
-            visual.rendered_cursor_style(),
-            Some(gpui::CursorStyle::ClosedHand)
-        );
-        editor.read_with(cx, |view, _| {
-            assert!(matches!(
-                view.sections.gesture.as_ref().unwrap().command,
-                Some(Command::ReorderSectionAfter { .. })
-            ))
-        });
-        visual.simulate_modifiers_change(copy);
-        visual.run_until_parked();
-        let frozen = [
-            bounds(&mut visual, 0),
-            bounds(&mut visual, 1),
-            bounds(&mut visual, 2),
-        ];
-        let selected_fill = painted_fill(&mut visual, 2);
-        let preview = before
-            .preview_arrangement_section_edit(&Command::DuplicateArrangementSectionAt {
-                section: ids[0],
-                target: ids[1],
-                after: true,
-            })
-            .unwrap();
-        let copy_color = preview
-            .sections()
-            .iter()
-            .find(|section| section.id().value() == 0)
-            .unwrap()
-            .color();
-        assert_eq!(
-            selected_fill,
-            Some(rgb(theme::section_colors(copy_color, true, true).0).into()),
-            "the captured copy retains its gesture-owned target feedback"
-        );
-        visual.simulate_mouse_up(to, MouseButton::Left, copy);
-        let terminal = editor.update(cx, |view, _| {
-            assert!(view.sections.gesture.is_none());
-            assert!(view.sections.pending.is_some());
-            next(&view.service)
-        });
-        assert!(terminal.error.is_none(), "{:?}", terminal.error);
-        let Some(Created::ArrangementSection(created)) = terminal.created else {
-            panic!("copy identity");
-        };
-        for _ in 0..3 {
-            visual.update(|window, _| window.refresh());
-            visual.run_until_parked();
-            assert_ne!(
-                visual.rendered_cursor_style(),
-                Some(gpui::CursorStyle::DragCopy),
-                "pending preview must not retain a held copy cursor"
-            );
-            assert_eq!(
-                [
-                    bounds(&mut visual, 0),
-                    bounds(&mut visual, 1),
-                    bounds(&mut visual, 2)
-                ],
-                frozen
-            );
-            assert_eq!(painted_fill(&mut visual, 2), selected_fill);
-        }
-        editor.update(cx, |view, cx| {
-            if select_elsewhere {
-                view.select_section_metadata(Some(ids[1]));
-            }
-            view.receive(terminal);
-            assert!(view.sections.pending.is_none());
-            let expected = if select_elsewhere { ids[1] } else { created };
-            assert_eq!(view.sections.selected, Some(expected));
-            assert_eq!(view.sections.selection, vec![expected]);
-            let project = &view.state.as_ref().unwrap().project;
-            assert_eq!(
-                project.arrangement_section(ids[0]),
-                before.arrangement_section(ids[0])
-            );
-            let copied = project.arrangement_section(created).unwrap();
-            assert_eq!(
-                (copied.start(), copied.end()),
-                (
-                    BeatTime::from_quarters(12).unwrap(),
-                    BeatTime::from_quarters(16).unwrap()
-                )
-            );
-            assert!(view.pending_audio_commands.is_empty() && view.prepared_seek.is_none());
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert_eq!(
-            [
-                bounds(&mut visual, 0),
-                bounds(&mut visual, 1),
-                bounds(&mut visual, 2)
-            ],
-            frozen
-        );
-        if !select_elsewhere {
-            // At the exact insertion edge, the pointer is outside the new
-            // copy's hover fill after ACK; pending target paint above stays frozen.
-            assert_eq!(
-                painted_fill(&mut visual, 2),
-                Some(rgb(theme::section_colors(copy_color, true, false).0).into())
-            );
-        }
-    }
-}
-
-#[gpui::test]
-fn section_copy_cursor_cancels_without_late_release_edits(cx: &mut TestAppContext) {
-    for loss in ["escape", "button", "window", "focus", "generation"] {
-        let (handle, editor, _) = fixture(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.update(|window, _| window.activate_window());
-        visual.run_until_parked();
-        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-        let (from, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 13)));
-        let copy = Modifiers {
-            alt: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(from, MouseButton::Left, copy);
-        visual.simulate_mouse_move(to, MouseButton::Left, copy);
-        visual.run_until_parked();
-        assert_eq!(
-            visual.rendered_cursor_style(),
-            Some(gpui::CursorStyle::DragCopy)
-        );
-        let outside = point(px(1.0), px(1.0));
-        visual.simulate_mouse_move(outside, MouseButton::Left, copy);
-        visual.run_until_parked();
-        assert_eq!(
-            visual.rendered_cursor_style(),
-            Some(gpui::CursorStyle::DragCopy)
-        );
-        match loss {
-            "escape" => visual.simulate_keystrokes("escape"),
-            "button" => visual.simulate_mouse_move(outside, None, copy),
-            "window" => visual.deactivate_window(),
-            "focus" => visual.update(|w, cx| {
-                editor.update(cx, |v, cx| v.search_browser(w, cx));
-            }),
-            _ => editor.update(cx, |v, cx| {
-                v.project_generation += 1;
-                cx.notify();
-            }),
-        }
-        visual.run_until_parked();
-        visual.simulate_mouse_up(outside, MouseButton::Left, copy);
-        visual.run_until_parked();
-        assert_ne!(
-            visual.rendered_cursor_style(),
-            Some(gpui::CursorStyle::DragCopy)
-        );
-        editor.read_with(cx, |v, _| {
-            assert!(
-                v.sections.gesture.is_none() && v.sections.pending.is_none(),
-                "{loss}"
-            );
-            assert_eq!(v.state.as_ref().unwrap().project, before, "{loss}");
-            assert_eq!(v.worker_requests_pending, 0);
-        });
-    }
-}
-#[gpui::test]
-fn option_command_drag_replaces_overlapped_markers_and_retains_preview_until_actual_ack(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |view, _| {
-        view.state.as_ref().unwrap().project.snapshot()
-    });
-    let (from, to) = editor.read_with(cx, |view, _| (position(view, 2), position(view, 9)));
-    let marker_modifier = Modifiers {
-        platform: true,
-        alt: true,
-        ..Modifiers::default()
-    };
-    // Start a structural copy, then switch to marker adjustment without
-    // moving the pointer. Option-Command replaces the insertion-edge preview.
-    let copy = Modifiers {
-        alt: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(from, MouseButton::Left, copy);
-    visual.simulate_mouse_move(to, MouseButton::Left, copy);
-    // Modifier intent also refreshes while captured outside the lane; an
-    // old structural command must never survive the switch to marker mode.
-    visual.simulate_mouse_move(point(px(1.0), px(1.0)), MouseButton::Left, copy);
-    visual.simulate_modifiers_change(marker_modifier);
-    visual.run_until_parked();
-    assert_eq!(
-        visual.rendered_cursor_style(),
-        Some(gpui::CursorStyle::ClosedHand)
-    );
-    editor.read_with(cx, |view, _| {
-        assert!(matches!(
-            view.sections.gesture.as_ref().unwrap().command,
-            Some(Command::MoveArrangementSectionMarker { .. })
-        ));
-        let display = &view.sections.gesture.as_ref().unwrap().display;
-        let moved = display
-            .markers
-            .iter()
-            .find(|m| m.id == Some(ids[0]))
-            .unwrap();
-        let remaining = display
-            .markers
-            .iter()
-            .find(|m| m.id == Some(ids[1]))
-            .unwrap();
-        assert_eq!(
-            (moved.start, moved.end),
-            (
-                BeatTime::from_quarters(7).unwrap(),
-                BeatTime::from_quarters(11).unwrap()
-            )
-        );
-        assert_eq!(
-            (remaining.start, remaining.end),
-            (
-                BeatTime::from_quarters(11).unwrap(),
-                BeatTime::from_quarters(12).unwrap()
-            )
-        );
-        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-    });
-    let preview = [bounds(&mut visual, 0), bounds(&mut visual, 1)];
-    visual.simulate_mouse_up(to, MouseButton::Left, marker_modifier);
-    let terminal = editor.update(cx, |view, _| {
-        let pending = view
-            .sections
-            .pending
-            .as_ref()
-            .expect("released marker preview");
-        assert!(
-            !pending.receipt.is_queued(),
-            "the exact move command was admitted"
-        );
-        next(&view.service)
-    });
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-    }
-    editor.update(cx, |view, cx| {
-        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-        view.receive(terminal);
-        assert!(view.sections.pending.is_none());
-        let after = view.state.as_ref().unwrap().project.snapshot();
-        let mut expected = before.clone();
-        expected.arrangement_sections = after.arrangement_sections.clone();
-        assert_eq!(after, expected, "only section marker geometry changes");
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-}
-
-#[gpui::test]
-fn option_command_resize_live_modifier_carves_both_edges_and_commits_outside_lane(
-    cx: &mut TestAppContext,
-) {
-    for (left, late) in [(false, false), (false, true), (true, false), (true, true)] {
-        let (handle, editor, ids) = fixture(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let edge = bounds(&mut visual, usize::from(left));
-        let down = point(
-            if left {
-                edge.left() + px(1.0)
-            } else {
-                edge.right() - px(1.0)
-            },
-            edge.top() + px(12.0),
-        );
-        let (safe, overlap) = editor.read_with(cx, |v, _| {
-            (position(v, 6), position(v, if left { 2 } else { 10 }))
-        });
-        let marker_modifier = Modifiers {
-            platform: true,
-            alt: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(
-            down,
-            MouseButton::Left,
-            if late {
-                Modifiers::default()
-            } else {
-                marker_modifier
-            },
-        );
-        visual.simulate_mouse_move(
-            safe,
-            MouseButton::Left,
-            if late {
-                Modifiers::default()
-            } else {
-                marker_modifier
-            },
-        );
-        if late {
-            visual.simulate_modifiers_change(marker_modifier);
-        }
-        visual.simulate_mouse_move(overlap, MouseButton::Left, marker_modifier);
-        visual.run_until_parked();
-        editor.read_with(cx, |v, _| {
-            assert!(matches!(
-                v.sections.gesture.as_ref().unwrap().command,
-                Some(Command::ResizeArrangementSectionMarker { .. })
-            ))
-        });
-        let preview = [bounds(&mut visual, 0), bounds(&mut visual, 1)];
-        let outside = point(px(1.0), px(1.0));
-        visual.simulate_mouse_move(outside, MouseButton::Left, marker_modifier);
-        visual.simulate_mouse_up(outside, MouseButton::Left, marker_modifier);
-        let event = editor.update(cx, |v, _| {
-            assert!(
-                v.sections.pending.is_some(),
-                "off-lane release must admit the last valid resize"
-            );
-            next(&v.service)
-        });
-        assert!(event.error.is_none(), "{:?}", event.error);
-        for _ in 0..3 {
-            visual.update(|window, _| window.refresh());
-            visual.run_until_parked();
-            assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-        }
-        editor.update(cx, |v, cx| {
-            v.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-        let after = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        assert_eq!(
-            after.arrangement_sections[0].end,
-            BeatTime::from_quarters(if left { 2 } else { 10 }).unwrap()
-        );
-        assert_eq!(
-            after.arrangement_sections[1].start,
-            after.arrangement_sections[0].end
-        );
-        assert_eq!(after.arrangement_sections[0].id, ids[0].value());
-        assert_eq!(after.arrangement_sections[1].id, ids[1].value());
-        let mut music = after.clone();
-        music.arrangement_sections = before.arrangement_sections.clone();
-        assert_eq!(music, before);
-        for (request, expected) in [(Request::Undo, &before), (Request::Redo, &after)] {
-            editor.update(cx, |v, cx| {
-                v.service.submit(request).unwrap();
-                let event = next(&v.service);
-                assert!(event.error.is_none());
-                v.receive(event);
-                assert_eq!(&v.state.as_ref().unwrap().project.snapshot(), expected);
-                cx.notify();
-            });
-            visual.run_until_parked();
-        }
-    }
-}
-
-#[gpui::test]
-fn option_command_move_latches_marker_mode_and_preserves_control_snap_inversion(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |view, _| {
-        view.state.as_ref().unwrap().project.snapshot()
-    });
-    for free in [false, true] {
-        let (from, to) = editor.read_with(cx, |view, _| {
-            let a = position(view, 6);
-            let b = position(view, 7);
-            (position(view, 2), point(a.x + (b.x - a.x) * 0.37, a.y))
-        });
-        visual.simulate_mouse_down(
-            from,
-            MouseButton::Left,
-            Modifiers {
-                platform: true,
-                alt: true,
-                ..Modifiers::default()
-            },
-        );
-        // Releasing Option-Command must not turn this into a music edit.
-        visual.simulate_mouse_move(
-            to,
-            MouseButton::Left,
-            Modifiers {
-                control: free,
-                ..Modifiers::default()
-            },
-        );
-        editor.read_with(cx, |view, _| {
-            let Some(Command::MoveArrangementSectionMarker { section, start }) =
-                &view.sections.gesture.as_ref().unwrap().command
-            else {
-                panic!("expected latched marker move")
-            };
-            assert_eq!(*section, ids[0]);
-            let four = BeatTime::from_quarters(4).unwrap();
-            if free {
-                assert!(*start > four && *start < BeatTime::from_quarters(5).unwrap());
-            } else {
-                assert_eq!(*start, four);
-            }
-        });
-        visual.simulate_keystrokes("escape");
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert!(view.sections.gesture.is_none());
-            assert!(view.sections.pending.is_none());
-            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-        });
-    }
-}
-
-#[gpui::test]
-fn paint_empty_section_lane_at_every_height(cx: &mut TestAppContext) {
-    for (fraction, reverse) in [(0.1, false), (0.5, true), (0.9, false)] {
-        let (handle, editor, _) = fixture(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let (from, to) = editor.read_with(cx, |v, _| {
-            let [_, top, _, height] = v.section_layout().unwrap();
-            let mut from = position(v, if reverse { 7 } else { 5 });
-            let mut to = position(v, if reverse { 5 } else { 7 });
-            from.y = px(top + height * fraction);
-            to.y = from.y;
-            (from, to)
-        });
-        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(from, MouseButton::Left, Modifiers::default());
-        visual.simulate_event(MouseDownEvent {
-            position: from,
-            button: MouseButton::Left,
-            click_count: 2,
-            modifiers: Modifiers::default(),
-            first_mouse: false,
-        });
-        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(cx, |v, _| {
-            assert!(
-                matches!(v.sections.gesture.as_ref().and_then(|g| g.command.as_ref()),
-                Some(Command::AddArrangementSection { start, end, .. })
-                if *start == BeatTime::from_quarters(5).unwrap()
-                    && *end == BeatTime::from_quarters(7).unwrap()),
-                "height {fraction}"
-            );
-            assert!(v.time_selection_gesture.is_none());
-        });
-        let preview = bounds(&mut visual, 2);
-        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-        let terminal = editor.update(cx, |v, _| next(&v.service));
-        assert!(terminal.error.is_none(), "{:?}", terminal.error);
-        for _ in 0..2 {
-            visual.update(|window, _| window.refresh());
-            visual.run_until_parked();
-            assert_eq!(bounds(&mut visual, 2), preview);
-        }
-        editor.update(cx, |v, cx| {
-            v.receive(terminal);
-            assert_eq!(
-                v.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .arrangement_sections()
-                    .len(),
-                3
-            );
-            v.service.submit(Request::Undo).unwrap();
-            let terminal = next(&v.service);
-            assert!(terminal.error.is_none());
-            v.receive(terminal);
-            let restored = v.state.as_ref().unwrap().project.snapshot();
-            let mut expected = before.clone();
-            assert!(restored.next_id >= expected.next_id);
-            expected.next_id = restored.next_id;
-            assert_eq!(restored, expected, "one undo restores all content");
-            cx.notify();
-        });
-        visual.run_until_parked();
-        let first = bounds(&mut visual, 0);
-        let occupied = point(first.center().x, first.top() + first.size.height * fraction);
-        visual.simulate_event(MouseDownEvent {
-            position: occupied,
-            button: MouseButton::Left,
-            click_count: 2,
-            modifiers: Modifiers::default(),
-            first_mouse: false,
-        });
-        editor.read_with(cx, |v, _| {
-            if fraction < 0.3 {
-                assert!(matches!(
-                    v.sections.gesture.as_ref().map(|g| g.mode),
-                    Some(Mode::Reorder(_))
-                ));
-            } else {
-                assert!(v.sections.gesture.is_none());
-                assert!(v.time_selection_gesture.is_some());
-            }
-        });
-        visual.simulate_keystrokes("escape");
-    }
-}
-
-#[gpui::test]
-fn paint_and_resize_main_sections_preview_without_project_writes(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("main-track-lane").is_some());
-    let (start, end) = editor.read_with(cx, |v, _| (position(v, 5), position(v, 7)));
-    let original = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-    visual.simulate_event(MouseDownEvent {
-        position: start,
-        button: MouseButton::Left,
-        click_count: 2,
-        modifiers: Modifiers::default(),
-        first_mouse: false,
-    });
-    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(bounds(&mut visual, 2).size.width > px(1.0));
-    editor.read_with(cx, |v, _| {
-        assert_eq!(v.state.as_ref().unwrap().project, original);
-        assert!(matches!(
-            v.sections.gesture.as_ref().unwrap().command,
-            Some(Command::AddArrangementSection { .. })
-        ));
-        assert!(v.time_selection_gesture.is_none());
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("arrangement-section-2").is_none());
-    // The right edge edits marker geometry only, preserving every track.
-    let edge = bounds(&mut visual, 0);
-    let down = point(
-        edge.origin.x + edge.size.width - px(1.0),
-        edge.origin.y + px(12.0),
-    );
-    visual.simulate_mouse_down(
-        down,
-        MouseButton::Left,
-        Modifiers {
-            platform: true,
-            alt: true,
-            ..Modifiers::default()
-        },
-    );
-    let target = editor.read_with(cx, |v, _| position(v, 6));
-    visual.simulate_mouse_move(
-        target,
-        MouseButton::Left,
-        Modifiers {
-            platform: true,
-            alt: true,
-            ..Modifiers::default()
-        },
-    );
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(matches!(
-            v.sections.gesture.as_ref().unwrap().command,
-            Some(Command::ResizeArrangementSectionMarker { section, boundary: end, .. })
-                if section == ids[0] && end == BeatTime::from_quarters(6).unwrap()
-        ));
-        assert_eq!(v.state.as_ref().unwrap().project, original);
-    });
-    assert!(bounds(&mut visual, 0).size.width > edge.size.width);
-    // Revision/viewport changes invalidate a held operation before release.
-    editor.update(cx, |v, cx| {
-        v.snap_grid = SnapGrid::Off;
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(!v.sections.held()));
-    assert_eq!(bounds(&mut visual, 0).size.width, edge.size.width);
-    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| v.snap_grid = SnapGrid::Quarter);
-    let (anchor, destination) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
-    let alt = Modifiers {
-        platform: true,
-        alt: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(anchor, MouseButton::Left, alt);
-    visual.simulate_mouse_move(destination, MouseButton::Left, alt);
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(matches!(
-            v.sections.gesture.as_ref().unwrap().command,
-            Some(Command::MoveArrangementSectionMarker { section, start })
-                if section == ids[0] && start == BeatTime::ONE
-        ));
-        assert_eq!(v.state.as_ref().unwrap().project, original);
-    });
-    assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    visual.simulate_keystrokes("escape");
-}
-#[gpui::test]
-fn first_section_can_be_inserted_after_last(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 12)));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(
-            v.sections.gesture.as_ref().unwrap().command.is_some(),
-            "after-last drop must move the song"
-        );
-    });
-    assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        let sections = v.state.as_ref().unwrap().project.arrangement_sections();
-        assert_eq!(sections[0].name(), "Chorus");
-        assert_eq!(sections[1].name(), "Intro");
-        assert_eq!(sections[1].end(), BeatTime::from_quarters(12).unwrap());
-        assert_eq!(
-            v.state.as_ref().unwrap().project.meter_map(),
-            &hex_project::MeterMap::common_time(),
-            "dragging equal-meter sections must not create meter boundaries"
-        );
-    });
-    assert!(
-        visual
-            .debug_bounds("arrangement-grid-line-192000")
-            .is_some()
-    );
-    editor.read_with(cx, |v, _| {
-        let state = v.state.as_ref().unwrap();
-        let viewport = v.visible_viewport(state.timeline_frames);
-        let width = v.main_track_lane_bounds.unwrap().width;
-        let line =
-            super::super::musical_time::grid_lines(&state.project, viewport, width, v.snap_grid)
-                .into_iter()
-                .find(|line| line.frame == 192_000)
-                .unwrap();
-        assert!(!line.meter_marker, "the moved seam is not a meter marker");
-    });
-}
-#[gpui::test]
-fn selected_sections_l_uses_outer_bounds_and_one_history_edit(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    // Use the real marker click, including the gap between these sections.
-    let chorus = editor.read_with(cx, |v, _| position(v, 10));
-    visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    for (key, start, end) in [("l", 192_000, 288_000), ("w", 0, 288_000)] {
-        if start == 0 {
-            let intro = editor.read_with(cx, |v, _| position(v, 2));
-            let shift = Modifiers {
-                shift: true,
-                platform: true,
-                ..Modifiers::default()
-            };
-            visual.simulate_mouse_down(intro, MouseButton::Left, shift);
-            visual.simulate_mouse_up(intro, MouseButton::Left, shift);
-            visual.run_until_parked();
-        }
-        let before = editor.read_with(cx, |v, _| {
-            assert_eq!(v.sections.selection.len(), if start == 0 { 2 } else { 1 });
-            v.state.as_ref().unwrap().project.clone()
-        });
-        if key == "l" {
-            crate::editor::section_launch::test_tap_loop_key(&mut visual);
-        } else {
-            visual.simulate_keystrokes(key);
-        }
-        editor.read_with(cx, |v, _| {
-            assert!(
-                matches!(v.test_probes.last_enqueued_edit,
-            Some(Command::SetLoopRegion { start: a, end: b, enabled: true }) if (a,b)==(start,end)),
-                "selected sections must dispatch a loop request"
-            )
-        });
-        let event = editor.update(cx, |v, _| next(&v.service));
-        assert!(event.error.is_none(), "{:?}", event.error);
-        let after = event.state.project.clone();
-        let region = after.loop_region().unwrap();
-        assert_eq!(
-            (region.start(), region.end(), region.enabled()),
-            (start, end, true)
-        );
-        assert_eq!(after.tracks(), before.tracks());
-        assert_eq!(after.arrangement_sections(), before.arrangement_sections());
-        editor.update(cx, |v, cx| {
-            v.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        for (key, expected) in [("cmd-z", &before), ("cmd-shift-z", &after)] {
-            visual.simulate_keystrokes(key);
-            let event = editor.update(cx, |v, _| next(&v.service));
-            assert!(event.error.is_none(), "{:?}", event.error);
-            assert_eq!(&event.state.project, expected);
-            editor.update(cx, |v, cx| {
-                v.receive(event);
-                cx.notify();
-            });
-            visual.run_until_parked();
-        }
-        editor.read_with(cx, |v, _| {
-            assert!(v.sections.selection.iter().all(|id| ids.contains(id)))
-        });
-    }
-}
-
-#[gpui::test]
-fn lost_section_button_records_cancel_and_allows_loop_before_late_release(cx: &mut TestAppContext) {
-    let directory = std::env::temp_dir().join(format!(
-        "hex-section-loop-diagnostic-test-{}",
-        std::process::id()
-    ));
-    let mut log = hex_diagnostics::SessionLog::start(directory).unwrap();
-    cx.update(|cx| {
-        crate::diagnostics::install_session_log(cx, Ok(log.handle()));
-        crate::diagnostics::install_action_diagnostics(cx, true);
-    });
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
-    visual.run_until_parked();
-    let from = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
-    crate::editor::section_launch::test_tap_loop_key(&mut visual);
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.held());
-        assert!(
-            v.test_probes.last_enqueued_edit.is_none(),
-            "a real held gesture still blocks loop creation"
-        );
-    });
-    visual.simulate_mouse_move(point(px(1.0), px(1.0)), None, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(
-            !v.sections.held(),
-            "button loss cancels before any late release"
-        )
-    });
-    crate::editor::section_launch::test_tap_loop_key(&mut visual);
-    editor.read_with(cx, |v, _| {
-        assert!(matches!(
-            v.test_probes.last_enqueued_edit,
-            Some(Command::SetLoopRegion { .. })
-        ))
-    });
-    editor.update(cx, |view, cx| {
-        let event = next(&view.service);
-        assert!(event.error.is_none());
-        view.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let point = editor.read_with(cx, |view, _| position(view, 10));
-    visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    log.shutdown().unwrap();
-    let contents = std::fs::read_to_string(log.path()).unwrap();
-    assert!(contents.contains("section_held"));
-    assert!(contents.contains("stage=section_capture outcome=cancel"));
-    assert!(contents.contains("stage=section_capture outcome=release"));
-}
-
-#[gpui::test]
-fn selected_sections_loop_resolves_current_tempo_and_respects_input_custody(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    editor.update(cx, |v, cx| {
-        v.service
-            .submit(Request::Edit(Command::SetTempoPoint {
-                beat: BeatTime::from_quarters(4).unwrap(),
-                tempo: hex_project::Tempo::new(60_000_000).unwrap(),
-            }))
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none());
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let chorus = editor.read_with(cx, |v, _| position(v, 10));
-    visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.update(cx, |v, _| {
-        assert_eq!(v.section_loop_bounds(), Ok(Some((288_000, 480_000))));
-        v.test_probes.last_enqueued_edit = None;
-        v.computer_keyboard.enabled = true;
-    });
-    crate::editor::section_launch::test_tap_loop_key(&mut visual);
-    editor.update(cx, |v, _| {
-        assert!(
-            v.test_probes.last_enqueued_edit.is_none(),
-            "L retains computer MIDI priority"
-        );
-        v.computer_keyboard.enabled = false;
-    });
-    visual.simulate_keystrokes("cmd-r");
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.sections.naming()));
-    visual.simulate_keystrokes("l cmd-l");
-    editor.read_with(cx, |v, _| {
-        assert!(v.test_probes.last_enqueued_edit.is_none())
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    let chorus = editor.read_with(cx, |v, _| position(v, 10));
-    visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-    crate::editor::section_launch::test_tap_loop_key(&mut visual);
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.held());
-        assert!(
-            v.test_probes.last_enqueued_edit.is_none(),
-            "held section capture cannot set a loop"
-        );
-    });
-    visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| {
-        // Simulate an unreconciled stale selection at the read-only boundary.
-        v.service
-            .submit(Request::EditArrangementSection {
-                project_generation: v.project_generation,
-                revision: v.state.as_ref().unwrap().revision,
-                command: Command::RemoveArrangementSection(ids[0]),
-            })
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none());
-        v.receive(event);
-        v.sections.selection = ids.to_vec();
-        v.sections.selected = Some(ids[1]);
-        assert_eq!(
-            v.section_loop_bounds(),
-            Err("selected section no longer belongs to the arrangement")
-        );
-        v.sections.selection = vec![ids[1]];
-        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        // A retained range from another context must not win over Main sections.
-        v.time_selection = Some(super::super::time_selection::TimeSelection {
-            anchor_track: Some(track),
-            end_track: Some(track),
-            anchor_frame: 1,
-            end_frame: 2,
-        });
-    });
-    crate::editor::section_launch::test_tap_loop_key(&mut visual);
-    editor.read_with(cx, |v, _| {
-        assert!(matches!(
-            v.test_probes.last_enqueued_edit,
-            Some(Command::SetLoopRegion {
-                start: 288_000,
-                end: 480_000,
-                enabled: true
-            })
-        ))
-    });
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none());
-    let region = event.state.project.loop_region().unwrap();
-    assert_eq!((region.start(), region.end()), (288_000, 480_000));
-}
-
-#[gpui::test]
-fn multiselection_hover_and_g_merge_keep_music_and_focus_guards(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
-    let base = painted_fill(&mut visual, 0);
-    visual.simulate_event(gpui::MouseMoveEvent {
-        position: a,
-        pressed_button: None,
-        modifiers: Modifiers::default(),
-    });
-    visual.run_until_parked();
-    assert_ne!(
-        base,
-        painted_fill(&mut visual, 0),
-        "hover changes section surface"
-    );
-    visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let selected = painted_fill(&mut visual, 0);
-    assert_ne!(base, selected, "selection changes entire section surface");
-    let shift = Modifiers {
-        shift: true,
-        platform: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(b, MouseButton::Left, shift);
-    visual.simulate_mouse_up(b, MouseButton::Left, shift);
-    visual.run_until_parked();
-    let tracks = editor.read_with(cx, |v, _| {
-        assert_eq!(v.sections.selection.len(), 2);
-        assert!(v.sections.pending.is_none());
-        v.state.as_ref().unwrap().project.tracks().to_vec()
-    });
-    visual.simulate_keystrokes("g");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.arrangement_sections().len(), 1);
-        assert_eq!(
-            p.arrangement_section(ids[0]).unwrap().end(),
-            BeatTime::from_quarters(12).unwrap()
-        );
-        assert_eq!(p.tracks(), tracks);
-        assert_eq!(v.sections.selected, Some(ids[0]));
-        assert_eq!(v.sections.selection, vec![ids[0]]);
-    });
-    // Text editing owns printable g instead of merging a section.
-    visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
-    visual.simulate_keystrokes("cmd-r");
-    visual.simulate_input("g");
-    editor.read_with(cx, |v, cx| {
-        assert!(v.sections.naming());
-        assert_eq!(v.sections.name.as_ref().unwrap().input.read(cx).text(), "g");
-        assert!(v.sections.pending.is_none());
-    });
-}
-#[gpui::test]
-fn content_resize_release_retains_preview_and_command_resize_only_moves_marker(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let edge = bounds(&mut visual, 0);
-    let down = point(
-        edge.origin.x + edge.size.width - px(1.0),
-        edge.origin.y + px(12.0),
-    );
-    let to = editor.read_with(cx, |v, _| position(v, 6));
-    let before = editor.read_with(cx, |v, _| {
-        v.state.as_ref().unwrap().project.tracks().to_vec()
-    });
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(matches!(
-            v.sections.gesture.as_ref().unwrap().command,
-            Some(Command::ResizeArrangementSectionEdge { .. })
-        ))
-    });
-    let preview = bounds(&mut visual, 0);
-    let outside = point(px(1.0), px(1.0));
-    visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(outside, MouseButton::Left, Modifiers::default());
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        assert_eq!(bounds(&mut visual, 0), preview);
-    }
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(bounds(&mut visual, 0), preview);
-    editor.read_with(cx, |v, _| {
-        let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(
-            p.arrangement_section(ids[0]).unwrap().end(),
-            BeatTime::from_quarters(6).unwrap()
-        );
-        assert_ne!(p.tracks(), before);
-    });
-    // Normal deletion cuts song time; command deletion is covered separately.
-    visual.simulate_keystrokes("backspace");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_section(ids[0])
-                .is_none()
-        )
-    });
-}
-#[gpui::test]
-fn section_duplicate_shortcut_copies_song_content_and_is_one_history_step(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let down = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
-    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    visual.simulate_keystrokes("cmd-d");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.arrangement_sections().len(), 3);
-        assert_eq!(
-            p.arrangement_sections()[1].start(),
-            BeatTime::from_quarters(4).unwrap()
-        );
-        assert!(p.tracks()[0].midi_clips().len() > 1);
-    });
-    visual.simulate_keystrokes("cmd-z");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none());
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    editor.read_with(cx, |v, _| {
-        let mut actual = v.state.as_ref().unwrap().project.snapshot();
-        actual.next_id = before.next_id;
-        assert_eq!(actual, before);
-    });
-}
-#[gpui::test]
-fn section_duplicate_shortcut_copies_a_copy_at_a_rounded_sample_seam(cx: &mut TestAppContext) {
-    use crate::editor::external_audio_drop_ui_test::BatchFiles;
-    use hex_project::{Editor, Project, Tempo};
-
-    let rate = 8_000;
-    let tempo = Tempo::new(143_000_000).unwrap();
-    let beat = |n| BeatTime::from_quarters(n).unwrap();
-    let map = TempoMap::constant(rate, tempo).unwrap();
-    let section_frames = map.beat_to_frame(beat(1)).unwrap();
-    let files = BatchFiles::new();
-    let wav = files.wav(
-        "section-seam.wav",
-        rate,
-        u32::try_from(section_frames).unwrap(),
-    );
-    let path = wav.with_extension("hex");
-    let mut project = Editor::new(Project::new(rate).unwrap(), 16).unwrap();
-    for command in [
-        Command::SetTempoPoint {
-            beat: beat(0),
-            tempo,
-        },
-        Command::AddArrangementSection {
-            name: "source".into(),
-            color: ElementColor::Blue,
-            start: beat(0),
-            end: beat(1),
-        },
-    ] {
-        project.execute(command).unwrap();
-    }
-    let Created::Imported { clip, .. } = project
-        .execute(Command::ImportAudioTrack {
-            name: "audio".into(),
-            path: wav,
-            sample_rate: rate,
-            frames: section_frames,
-        })
-        .unwrap()
-    else {
-        panic!("audio import")
-    };
-    project
-        .execute(Command::SetAudioClipMusical {
-            clip,
-            enabled: true,
-        })
-        .unwrap();
-    let mut snapshot = project.project().snapshot();
-    snapshot.tracks[0].audio_clips_mut().unwrap()[0]
-        .edit
-        .as_mut()
-        .unwrap()
-        .view_end = beat(1).raw();
-    hex_storage::save_new(&path, &Project::from_snapshot(snapshot).unwrap()).unwrap();
-    let service = Service::new(rate, 32, 8_000_000).unwrap();
-    next(&service);
-    service.submit(Request::Open(path)).unwrap();
-    let opened = next(&service);
-    assert!(
-        opened.project_replaced && opened.open_complete && opened.error.is_none(),
-        "{:?}",
-        opened.error
-    );
-    cx.update(super::super::bind_editor_keys);
-    let (handle, editor) = section_test_window(cx, service, Arc::clone(&opened.state));
-    editor.update(cx, |view, cx| {
-        view.receive(opened);
-        view.viewport = Some(Viewport::fit(16_000));
-        cx.notify();
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    for index in 0..2 {
-        let x = bounds(&mut visual, index).center().x;
-        let y = editor.read_with(cx, |view, _| position(view, 0).y);
-        let down = point(x, y);
-        visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("cmd-d");
-        let event = editor.update(cx, |view, _| next(&view.service));
-        assert!(
-            event.error.is_none(),
-            "cmd-d on section {index}: {:?}",
-            event.error
-        );
-        let project = &event.state.project;
-        assert_eq!(project.arrangement_sections().len(), index + 2);
-        let clips = project.tracks()[0].clips();
-        assert_eq!(clips.len(), index + 2);
-        assert!(
-            clips
-                .windows(2)
-                .all(|pair| pair[0].start() + pair[0].duration() <= pair[1].start())
-        );
-        editor.update(cx, |view, cx| {
-            view.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        let _ = bounds(&mut visual, index + 1);
-    }
-    for (key, count) in [("cmd-z", 2), ("cmd-shift-z", 3)] {
-        visual.simulate_keystrokes(key);
-        let event = editor.update(cx, |view, _| next(&view.service));
-        assert!(event.error.is_none(), "{key}: {:?}", event.error);
-        assert_eq!(event.state.project.arrangement_sections().len(), count);
-        assert_eq!(event.state.project.tracks()[0].clips().len(), count);
-        editor.update(cx, |view, cx| {
-            view.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert_eq!(
-            visual.debug_bounds("arrangement-section-2").is_some(),
-            count == 3
-        );
-    }
-}
-
-#[gpui::test]
-fn launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections(
-    cx: &mut TestAppContext,
-) {
-    for empty in [false, true] {
-        let (handle, editor, ids) = fixture(cx);
-        if empty {
-            editor.update(cx, |view, cx| {
-                let track = view.state.as_ref().unwrap().project.tracks()[0].id();
-                view.service
-                    .submit(Request::Edit(Command::RemoveTrack(track)))
-                    .unwrap();
-                let event = next(&view.service);
-                assert!(event.error.is_none());
-                view.receive(event);
-                cx.notify();
-            });
-        }
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        for width in [880.0, 1440.0] {
-            visual.simulate_resize(gpui::size(px(width), px(700.0)));
-            for start in [0, 72_000] {
-                editor.update(cx, |view, cx| {
-                    view.viewport = Some(Viewport {
-                        start,
-                        length: 384_000,
-                    });
-                    cx.notify();
-                });
-                visual.run_until_parked();
-                for (index, id) in ids.iter().enumerate() {
-                    let header = visual
-                        .debug_bounds(Box::leak(
-                            format!("arrangement-section-header-{index}").into_boxed_str(),
-                        ))
-                        .unwrap();
-                    let selector =
-                        Box::leak(format!("section-launch-{}", id.value()).into_boxed_str());
-                    let expected = super::super::section_launch::action_bounds(
-                        f32::from(header.left()),
-                        f32::from(header.top()),
-                        f32::from(header.size.width),
-                    );
-                    assert_eq!(visual.debug_bounds(selector), expected);
-                    if let Some(bounds) = expected {
-                        let at = bounds.center();
-                        editor.read_with(cx, |view, _| {
-                            assert!(
-                                view.pointer_hits_section_launch(f32::from(at.x), f32::from(at.y))
-                            );
-                            assert!(
-                                !view.pointer_hits_section_launch(
-                                    f32::from(header.left()) + 1.0,
-                                    f32::from(at.y)
-                                ),
-                                "leading resize edge remains available"
-                            );
-                        });
-                    }
-                }
-            }
-        }
-        let play = visual
-            .debug_bounds(Box::leak(
-                format!("section-launch-{}", ids[1].value()).into_boxed_str(),
-            ))
-            .unwrap()
-            .center();
-        let before = editor.read_with(cx, |view, _| {
-            view.state.as_ref().unwrap().project.snapshot()
-        });
-        for range_key in [false, true] {
-            editor.update(cx, |view, _| {
-                view.error = None;
-                view.time_selection_key_held = range_key;
-            });
-            visual.simulate_mouse_down(play, MouseButton::Left, Modifiers::default());
-            visual.simulate_mouse_up(play, MouseButton::Left, Modifiers::default());
-            editor.read_with(cx, |view, _| {
-                assert_eq!(
-                    view.error.as_deref(),
-                    Some("section playback source is unavailable")
-                );
-                assert!(!view.sections.held());
-                assert!(view.time_selection_gesture.is_none());
-                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-            });
-        }
-        editor.update(cx, |view, _| view.time_selection_key_held = false);
-        let tiny = editor.update(cx, |view, cx| {
-            let start = BeatTime::from_quarters(6).unwrap();
-            view.service
-                .submit(Request::EditArrangementSection {
-                    project_generation: view.project_generation,
-                    revision: view.state.as_ref().unwrap().revision,
-                    command: Command::AddArrangementSection {
-                        name: "tiny".into(),
-                        color: ElementColor::Red,
-                        start,
-                        end: BeatTime::from_raw(start.raw() + 1),
-                    },
-                })
-                .unwrap();
-            let event = next(&view.service);
-            assert!(event.error.is_none());
-            let Some(Created::ArrangementSection(id)) = event.created else {
-                panic!("tiny section");
-            };
-            view.receive(event);
-            cx.notify();
-            id
-        });
-        visual.run_until_parked();
-        assert!(
-            visual
-                .debug_bounds(Box::leak(
-                    format!("section-launch-{}", tiny.value()).into_boxed_str()
-                ))
-                .is_none()
-        );
-        editor.update(cx, |view, cx| {
-            view.service
-                .submit(Request::EditArrangementSection {
-                    project_generation: view.project_generation,
-                    revision: view.state.as_ref().unwrap().revision,
-                    command: Command::RemoveArrangementSection(ids[1]),
-                })
-                .unwrap();
-            let event = next(&view.service);
-            assert!(event.error.is_none());
-            view.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        visual.update(|window, cx| {
-            let view = editor.read(cx);
-            assert!(!view.sections.launch_focus.borrow().contains_key(&ids[1]));
-            assert!(view.focus.is_focused(window));
-        });
-    }
-}
-
-#[gpui::test]
-fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
-    cx: &mut TestAppContext,
-) {
-    let _output_fixture_guard =
-        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
-    use std::sync::Arc;
-    let (handle, editor, ids) = fixture(cx);
-    let deadline = crate::test_wait::hang_deadline();
-    let (mut output, mut backend) = loop {
-        match hex_audio::worker_fixture::open(48_000) {
-            Ok(output) => break output,
-            Err(error)
-                if error == "audio output is open or still shutting down"
-                    && Instant::now() < deadline =>
-            {
-                std::thread::yield_now()
-            }
-            Err(error) => panic!("{error}"),
-        }
-    };
-    let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
-    editor.update(cx, |view, _| {
-        view.service
-            .submit(Request::Edit(Command::SetLoopRegion {
-                start: region.start(),
-                end: region.end(),
-                enabled: true,
-            }))
-            .unwrap();
-        let event = next(&view.service);
-        assert!(event.error.is_none());
-        view.receive(event);
-        view.pending_playback = None;
-    });
-    let (source, project_generation, editor_revision) = editor.read_with(cx, |view, _| {
-        let state = view.state.as_ref().unwrap();
-        (
-            state.project.clone(),
-            view.project_generation,
-            state.revision,
-        )
-    });
-    let prepared = Arc::new(
-        hex_engine::PreparedRevision::prepare(
-            &source,
-            &std::collections::BTreeMap::new(),
-            Arc::new(hex_engine::SineTable::new()),
-            None,
-        )
-        .unwrap(),
-    );
-    assert!(!prepared.arrangement_seek_requires_preroll());
-    let control = output.publication.control().unwrap();
-    control
-        .configure_device_resource_publication_on_control(
-            hex_engine::AudioStorageLedgerReservation {
-                data_rows: 512,
-                handle_rows: 256,
-                root_rows: 128,
-                max_retained_bytes: 32_000_000,
-                max_construction_peak_bytes: 32_000_000,
-            },
-        )
-        .unwrap();
-    let audio_revision = control
-        .publish_with_admission_and_source_on_control(
-            hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
-                .unwrap(),
-            hex_audio::prepared::PublicationPolicy::InheritRuntime,
-            hex_engine::AudioSourceContext {
-                project_generation,
-                editor_revision,
-            },
-            |_| Ok::<_, ()>(()),
-        )
-        .unwrap();
-    backend.render(&mut [[0.0; 2]; 1]).unwrap();
-    let client = output.take_client().unwrap();
-    editor.update(cx, |view, cx| {
-        view.audio = Some(crate::EditorAudio {
-            control: client,
-            sample_rate: 48_000,
-            label: "test audio".into(),
-            spectrum_error: None,
-            mode: hex_session::DocumentAudioMode::Resident,
-        });
-        let state = Arc::clone(view.state.as_ref().unwrap());
-        view.applied_project_revision = Some(state.revision);
-        view.audible_playback = Some(super::super::PlaybackCandidate {
-            clip_preview_identity: None,
-            worker_requires_preroll: Some(false),
-            observation: None,
-            audio_revision,
-            project_generation: view.project_generation,
-            state,
-            prepared_revision: Some(prepared),
-            seek_request_id: None,
-            device_preview_identity: None,
-            tuning_preview_identity: None,
-        });
-        view.session_grid.quantization = hex_engine::LaunchQuantization::QuarterTriplet;
-        view.toggle_section_autoplay();
-        cx.notify();
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let clicked = editor.read_with(cx, |view, _| position(view, 1));
-    visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |view, _| {
-        view.tick_section_launch();
-        let pending = view
-            .prepared_seek
-            .as_ref()
-            .expect("stationary section click prepares a seek even without stateful devices");
-        let section = pending.kind.section().unwrap();
-        assert_eq!(section.region, region);
-        assert_eq!(
-            section.quantization,
-            hex_engine::LaunchQuantization::QuarterTriplet
-        );
-        assert_eq!(view.sections.selected, Some(ids[0]));
-        assert_eq!(
-            view.state.as_ref().unwrap().project,
-            source,
-            "an already-matching loop needs no new history edit"
-        );
-        let cancellation = Arc::clone(&pending.worker_cancel);
-        view.toggle_section_autoplay();
-        assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
-        assert!(view.latched_seek_intent.is_none());
-        assert!(!view.section_autoplay);
-    });
-    // Turning autoplay off must still leave ordinary section dragging
-    // available on an actually playing output.
-    editor.update(cx, |view, _| {
-        view.audio
-            .as_mut()
-            .unwrap()
-            .control
-            .command(hex_engine::PlaybackCommand::Play)
-            .unwrap();
-    });
-    backend.render(&mut [[0.0; 2]; 64]).unwrap();
-    let end = editor.read_with(cx, |view, _| position(view, 12));
-    visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
-        assert!(
-            view.audio_status()
-                .unwrap()
-                .playing
-                .load(std::sync::atomic::Ordering::Acquire)
-        );
-        let gesture = view
-            .sections
-            .gesture
-            .as_ref()
-            .expect("live reorder capture");
-        assert!(matches!(
-            gesture.command,
-            Some(Command::ReorderSectionAfter { .. }) | Some(Command::ReorderSectionBefore { .. })
-        ));
-        assert!(view.error.is_none(), "{:?}", view.error);
-        assert_eq!(view.state.as_ref().unwrap().project, source);
-    });
-    editor.update(cx, |view, _| {
-        view.cancel_section_pointer();
-    });
-    visual.update(|window, cx| {
-        window.cancel_pointer_capture_for(editor.entity_id(), cx);
-    });
-    visual.run_until_parked();
-    let selector = Box::leak(format!("section-launch-{}", ids[0].value()).into_boxed_str());
-    let target = visual
-        .debug_bounds(selector)
-        .expect("explicit section launch")
-        .center();
-    let selected = editor.read_with(cx, |view, _| view.sections.selected);
-    visual
-        .update(|window, cx| editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window));
-    visual.simulate_keystrokes("enter");
-    editor.read_with(cx, |view, _| {
-        let pending = view
-            .pending_loop_region()
-            .expect("enter disables the old loop");
-        assert_eq!(
-            pending,
-            hex_project::LoopRegion::new(0, 96_000, false).unwrap()
-        );
-        assert!(!view.section_autoplay);
-        assert!(!view.sections.held());
-        assert_eq!(view.sections.selected, selected);
-        assert_eq!(view.state.as_ref().unwrap().project, source);
-    });
-    editor.update(cx, |view, _| {
-        view.cancel_section_launch_wait();
-        view.invalidate_prepared_seek();
-        view.persistence.save_dialog_open = true;
-    });
-    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |view, _| {
-        assert!(!view.section_launch_waiting());
-        assert!(view.latched_seek_intent.is_none());
-        assert!(
-            view.prepared_seek
-                .as_ref()
-                .is_none_or(|pending| pending.cancelled)
-        );
-    });
-    editor.update(cx, |view, _| {
-        view.persistence.save_dialog_open = false;
-        view.audio = None;
-    });
-}
-
-#[gpui::test]
-fn stationary_non_grid_content_edge_click_does_not_change_music(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    editor.update(cx, |v, cx| {
-        v.service
-            .submit(Request::EditArrangementSection {
-                project_generation: v.project_generation,
-                revision: v.state.as_ref().unwrap().revision,
-                command: Command::SetArrangementSectionRange {
-                    section: ids[0],
-                    start: BeatTime::ZERO,
-                    end: BeatTime::from_ratio(19, 5).unwrap(),
-                },
-            })
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none());
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let edge = bounds(&mut visual, 0);
-    let down = point(
-        edge.origin.x + edge.size.width - px(1.0),
-        edge.origin.y + px(12.0),
-    );
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.pending.is_none());
-        assert_eq!(v.worker_requests_pending, 0);
-    });
-}
-#[gpui::test]
-fn stationary_click_near_snapped_end_does_not_move_song(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let a = bounds(&mut visual, 0);
-    let down = point(a.origin.x + a.size.width - px(7.0), a.origin.y + px(12.0));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.pending.is_none());
-        assert_eq!(v.worker_requests_pending, 0);
-    });
-}
-#[gpui::test]
-fn option_command_move_changes_canonical_marker_without_moving_music(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let tracks = editor.read_with(cx, |v, _| {
-        v.state.as_ref().unwrap().project.tracks().to_vec()
-    });
-    let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 3)));
-    let modifiers = Modifiers {
-        platform: true,
-        alt: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
-    visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
-    visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.tracks(), tracks);
-        assert!(p.arrangement_section(ids[0]).unwrap().start() > BeatTime::ZERO);
-        assert_eq!(
-            p.arrangement_section(ids[0]).unwrap().end().raw()
-                - p.arrangement_section(ids[0]).unwrap().start().raw(),
-            BeatTime::from_quarters(4).unwrap().raw()
-        );
-    });
-}
-#[gpui::test]
-fn reorder_pending_keeps_completed_frames_until_its_exact_terminal(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    let preview = bounds(&mut visual, 1);
-    // Controlled FIFO seam: reserve two ordinary completion ordinals,
-    // then deliver real earlier-work and refused section Service events.
-    // The separate success test exercises real release/enqueue stamping.
-    editor.update(cx, |v, _| {
-        let g = v.sections.gesture.take().unwrap();
-        let command = g.command.unwrap();
-        assert!(matches!(command,
-            Command::ReorderSectionBefore { section, before } if section == ids[1] && before == ids[0]
-        ));
-        let mut receipt = Receipt::new(v.project_generation);
-        assert!(receipt.submitted(2));
-        v.sections.pending = Some(Pending {
-            selection_intent_epoch: v.selection_intent_epoch,
-            generation: v.project_generation,
-            revision: g.revision,
-            command,
-            display: g.display,
-            layout: None,
-            copied: None,
-            cut_clipboard: None,
-            cut_cursor: None,
-            receipt,
-            deferred_submission: false,
-        });
-        v.worker_requests_pending = 2;
-    });
-    visual.simulate_keystrokes("escape");
-    editor.update(cx, |v, _| {
-        v.toggle_play();
-        assert!(format!("{:?}", v.error).contains("applying edit"));
-        v.request_seek(12);
-        assert!(format!("{:?}", v.error).contains("applying edit"));
-        assert!(v.pending_audio_commands.is_empty());
-    });
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        assert_eq!(bounds(&mut visual, 1), preview);
-        assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    }
-    let earlier = editor.update(cx, |v, _| {
-        v.service.submit(Request::Undo).unwrap();
-        next(&v.service)
-    });
-    let terminal = editor.update(cx, |v, _| {
-        let p = v.sections.pending.as_ref().unwrap();
-        v.service
-            .submit(Request::EditArrangementSection {
-                project_generation: p.generation,
-                revision: p.revision,
-                command: p.command.clone(),
-            })
-            .unwrap();
-        next(&v.service)
-    });
-    // Earlier completion keeps the frozen paint, even if it changes revision.
-    editor.update(cx, |v, cx| {
-        v.receive(earlier);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(bounds(&mut visual, 1), preview);
-    // Undo made the stamp stale: refusal and canonical install retire together.
-    assert!(terminal.error.is_some());
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    editor.read_with(cx, |v, _| assert!(v.sections.pending.is_none()));
-}
 fn midi_clip_bounds(
     visual: &mut VisualTestContext,
     project: &hex_project::Project,
@@ -2128,594 +156,7 @@ fn midi_clip_bounds(
         })
         .collect()
 }
-#[gpui::test]
-fn pending_reorder_draws_final_clips_until_exact_terminal_and_refusal_restores(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let canonical = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-    let original = midi_clip_bounds(&mut visual, &canonical);
-    let (down, to) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 2)));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let terminal = editor.update(cx, |v, _| {
-        assert!(v.sections.pending.as_ref().unwrap().layout.is_some());
-        next(&v.service)
-    });
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    let committed = std::sync::Arc::clone(&terminal.state.project);
-    assert_ne!(*committed, *canonical, "reorder moves clip content");
-    // Delayed ACK: every completed repaint already shows the final clips.
-    let mut released = Vec::new();
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        released = midi_clip_bounds(&mut visual, &committed);
-        assert_ne!(released, original);
-    }
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        assert!(v.sections.pending.is_none());
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
 
-    // A stale stamp previews the move, then its refusal restores canonical clips.
-    let (down, to) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let renamed = editor.update(cx, |v, _| {
-        v.service
-            .submit(Request::Edit(Command::RenameTrack {
-                track: committed.tracks()[0].id(),
-                name: "renamed".into(),
-            }))
-            .unwrap();
-        next(&v.service)
-    });
-    assert!(renamed.error.is_none(), "{:?}", renamed.error);
-    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
-    let refused = editor.update(cx, |v, _| next(&v.service));
-    assert!(refused.error.is_some(), "stale section stamp");
-    visual.update(|window, _| window.refresh());
-    visual.run_until_parked();
-    assert_ne!(midi_clip_bounds(&mut visual, &committed), released);
-    editor.update(cx, |v, cx| {
-        // The refusal carries the newer canonical state (the rename).
-        v.receive(refused);
-        assert!(v.sections.pending.is_none());
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(midi_clip_bounds(&mut visual, &committed), released);
-}
-#[gpui::test]
-fn backspace_deletes_section_with_device_automation_and_undo_restores_it(cx: &mut TestAppContext) {
-    use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId};
-    use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
-
-    let (handle, editor, [intro, chorus]) = fixture(cx);
-    let beat = |n| BeatTime::from_quarters(n).unwrap();
-    let automation_point = |at, value| AutomationPoint {
-        beat: beat(at),
-        value: AutomationValue::new(value).unwrap(),
-        outgoing: AutomationInterpolation::Step,
-    };
-    let target = DeviceAutomationTarget::HostInputGain;
-    let (device, mut before) = editor.update(cx, |v, cx| {
-        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        let state =
-            hex_engine::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
-                .unwrap();
-        v.service
-            .submit(Request::Edit(Command::InsertDevice {
-                track,
-                before: None,
-                state,
-            }))
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none(), "{:?}", event.error);
-        let Some(Created::Device(device)) = event.created else {
-            panic!("device result")
-        };
-        v.receive(event);
-        v.service
-            .submit(Request::Edit(Command::ReplaceDeviceAutomationTarget {
-                device,
-                target,
-                points: vec![
-                    automation_point(0, 0.25),
-                    automation_point(9, 0.5),
-                    automation_point(12, 0.75),
-                    automation_point(14, 1.0),
-                ],
-            }))
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none(), "{:?}", event.error);
-        let before = event.state.project.snapshot();
-        v.receive(event);
-        cx.notify();
-        (device, before)
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let _ = bounds(&mut visual, 1);
-    let down = editor.read_with(cx, |v, _| position(v, 10));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_keystrokes("backspace");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(
-        event.error.is_none(),
-        "section Backspace: {:?}",
-        event.error
-    );
-    let project = &event.state.project;
-    assert!(project.arrangement_section(chorus).is_none());
-    assert!(project.arrangement_section(intro).is_some());
-    assert_eq!(
-        project.tracks()[0]
-            .midi_clips()
-            .iter()
-            .map(|clip| clip.start().raw() + clip.length().raw())
-            .max(),
-        Some(beat(12).raw()),
-    );
-    let lane = project
-        .device(device)
-        .unwrap()
-        .automation_target(target)
-        .unwrap();
-    assert_eq!(
-        lane.points,
-        [
-            automation_point(0, 0.25),
-            automation_point(8, 0.75),
-            automation_point(10, 1.0),
-        ]
-    );
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("arrangement-section-1").is_none());
-
-    visual.simulate_keystrokes("cmd-z");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    let restored = event.state.project.snapshot();
-    assert!(restored.next_id >= before.next_id);
-    before.next_id = restored.next_id;
-    assert_eq!(restored, before);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let _ = bounds(&mut visual, 1);
-}
-
-#[gpui::test]
-fn section_name_palette_delete_and_text_focus_are_guarded(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let down = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_keystrokes("cmd-r");
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.naming());
-        assert!(v.clip_name_edit.is_none());
-    });
-    visual.simulate_keystrokes("backspace");
-    editor.read_with(cx, |v, cx| {
-        assert!(
-            v.sections
-                .name
-                .as_ref()
-                .unwrap()
-                .input
-                .read(cx)
-                .text()
-                .is_empty()
-        );
-        assert!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_section(ids[0])
-                .is_some()
-        );
-    });
-    visual.update(|window, cx| {
-        editor.update(cx, |v, cx| {
-            assert!(!v.finalize_section_name_for_open(window, cx));
-            assert!(v.sections.naming());
-            v.new_project(hex_session::DocumentAudioMode::Resident, window, cx);
-            assert!(!v.persistence.project_open.busy());
-            assert!(v.sections.naming());
-            assert!(!v.persistence.opening_project);
-        })
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    visual.simulate_mouse_down(down, MouseButton::Right, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        let menu = v.context_menu.as_ref().unwrap();
-        let choices: Vec<_> = menu
-            .items
-            .iter()
-            .filter_map(|item| {
-                if let super::super::context_menu::EditorContextAction::Section(MenuAction {
-                    kind: MenuKind::Color(color),
-                    ..
-                }) = item.action
-                {
-                    Some(color)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(choices, ElementColor::TRACK_CHOICES);
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-r");
-    visual.simulate_input("Bridge X");
-    visual.run_until_parked();
-    editor.read_with(cx, |v, cx| {
-        let input = v.sections.name.as_ref().unwrap().input.read(cx);
-        assert_eq!(input.text(), "Bridge X");
-        assert_eq!(input.painted_text(), Some("bridge x"));
-    });
-    visual.simulate_keystrokes("enter");
-    let terminal = editor.update(cx, |v, _| next(&v.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        assert_eq!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_section(ids[0])
-                .unwrap()
-                .name(),
-            "Bridge X"
-        );
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let original_fill = painted_fill(&mut visual, 0);
-    visual.simulate_mouse_down(down, MouseButton::Right, Modifiers::default());
-    visual.run_until_parked();
-    let green = editor.read_with(cx, |v, _| {
-        v.context_menu
-            .as_ref()
-            .unwrap()
-            .items
-            .iter()
-            .position(|item| item.label == "green")
-            .unwrap()
-    });
-    for _ in 0..green {
-        visual.simulate_keystrokes("down");
-    }
-    visual.simulate_keystrokes("enter");
-    let terminal = editor.update(cx, |v, _| next(&v.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        assert_eq!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_section(ids[0])
-                .unwrap()
-                .color(),
-            ElementColor::Green
-        );
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_ne!(painted_fill(&mut visual, 0), original_fill);
-    let tracks = editor.read_with(cx, |v, _| {
-        v.state.as_ref().unwrap().project.tracks().to_vec()
-    });
-    visual.simulate_keystrokes("alt-cmd-backspace");
-    let terminal = editor.update(cx, |v, _| next(&v.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        assert!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_section(ids[0])
-                .is_none()
-        );
-        assert_eq!(v.state.as_ref().unwrap().project.tracks(), tracks);
-        cx.notify();
-    });
-    // A stale menu action cannot recolor any new canonical source.
-    editor.update(cx, |v, _| {
-        let state = v.state.as_ref().unwrap();
-        let action = MenuAction {
-            generation: v.project_generation,
-            revision: state.revision,
-            section: Some(ids[1]),
-            kind: MenuKind::Color(ElementColor::Green),
-        };
-        v.project_generation += 1;
-        assert!(v.section_menu_stale(&action));
-        assert!(v.sections.pending.is_none());
-    });
-}
-#[gpui::test]
-fn painted_section_release_uses_stamped_queue_and_keeps_success_preview(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (start, end) = editor.read_with(cx, |v, _| (position(v, 5), position(v, 7)));
-    visual.simulate_event(MouseDownEvent {
-        position: start,
-        button: MouseButton::Left,
-        click_count: 2,
-        modifiers: Modifiers::default(),
-        first_mouse: false,
-    });
-    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let preview = bounds(&mut visual, 2);
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-    let terminal = editor.update(cx, |v, _| {
-        assert!(!v.sections.held());
-        let p = v
-            .sections
-            .pending
-            .as_ref()
-            .expect("released pending display");
-        assert!(
-            !p.receipt.is_queued(),
-            "immediate enqueue stamps the exact receipt"
-        );
-        next(&v.service)
-    });
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        assert_eq!(bounds(&mut visual, 2), preview);
-    }
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        assert!(v.sections.pending.is_none());
-        assert_eq!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_sections()
-                .len(),
-            3
-        );
-        cx.notify();
-    });
-    visual.run_until_parked();
-    // The ID becomes project owned and rows re-sort, preserving the final
-    // geometry through the canonical installation in the same receive.
-    assert_eq!(bounds(&mut visual, 1), preview);
-    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-    let (source, target) = editor.read_with(cx, |v, _| (position(v, 10), position(v, 0)));
-    visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
-    let terminal = editor.update(cx, |v, _| next(&v.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        let sections = v.state.as_ref().unwrap().project.arrangement_sections();
-        assert_eq!(sections[0].name(), "Chorus");
-        assert_eq!(sections[1].name(), "Intro");
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-z");
-    let terminal = editor.update(cx, |v, _| next(&v.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        let restored = v.state.as_ref().unwrap().project.snapshot();
-        let mut expected = before.snapshot();
-        assert!(
-            restored.next_id >= expected.next_id,
-            "undo never reuses project identities"
-        );
-        expected.next_id = restored.next_id;
-        assert_eq!(
-            restored, expected,
-            "one undo restores every musical and structural field"
-        );
-        cx.notify();
-    });
-}
-#[gpui::test]
-fn empty_track_list_can_paint_sections_and_queue_refusal_retires_display(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    editor.update(cx, |v, cx| {
-        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        v.service
-            .submit(Request::Edit(Command::RemoveTrack(track)))
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none());
-        v.state = Some(event.state);
-        cx.notify();
-    });
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (start, end) = editor.read_with(cx, |v, _| (position(v, 5), position(v, 7)));
-    visual.simulate_event(MouseDownEvent {
-        position: start,
-        button: MouseButton::Left,
-        click_count: 2,
-        modifiers: Modifiers::default(),
-        first_mouse: false,
-    });
-    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(bounds(&mut visual, 2).size.width > px(1.0));
-    // Held gesture then queue saturation between update and submission:
-    // the immediate refusal must retire released paint synchronously.
-    editor.update(cx, |v, cx| {
-        let g = v.sections.gesture.take().unwrap();
-        let command = g.command.unwrap();
-        for _ in 0..super::super::UI_REQUEST_CAPACITY {
-            v.pending_requests.push_back(Request::Undo);
-        }
-        v.submit_section(command, g.display, g.generation, g.revision);
-        assert!(v.sections.pending.is_none());
-        v.pending_requests.clear();
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("arrangement-section-2").is_none());
-}
-#[gpui::test]
-fn ordinary_clip_and_text_focus_release_section_keyboard_ownership(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let section = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(section, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(section, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| assert_eq!(v.sections.selected, Some(ids[0])));
-    let clip = editor.read_with(cx, |v, _| {
-        v.state.as_ref().unwrap().project.tracks()[0].midi_clips()[0].id()
-    });
-    let header = visual
-        .debug_bounds(Box::leak(
-            format!("clip-name-{}", clip.value()).into_boxed_str(),
-        ))
-        .expect("ordinary clip name");
-    visual.simulate_mouse_down(header.center(), MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(header.center(), MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.selected.is_none());
-        assert_eq!(v.selected_clip, Some(clip));
-    });
-    visual.simulate_keystrokes("cmd-r");
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert!(v.clip_name_edit.is_some());
-        assert!(!v.sections.naming());
-    });
-    visual.simulate_keystrokes("escape backspace");
-    let terminal = editor.update(cx, |v, _| next(&v.service));
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    editor.update(cx, |v, cx| {
-        v.receive(terminal);
-        let project = &v.state.as_ref().unwrap().project;
-        assert!(project.midi_clip(clip).is_none());
-        assert_eq!(project.arrangement_sections().len(), 2);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let section = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(section, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(section, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| assert_eq!(v.sections.selected, Some(ids[0])));
-    visual.update(|window, cx| {
-        editor.read_with(cx, |v, cx| v.browser.search.read(cx).focus(window));
-        window.refresh();
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.sections.selected.is_none()));
-    visual.simulate_keystrokes("cmd-r backspace");
-    editor.read_with(cx, |v, _| {
-        assert!(!v.sections.naming());
-        assert_eq!(
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_sections()
-                .len(),
-            2
-        );
-    });
-    let return_track = editor.update(cx, |v, cx| {
-        v.service
-            .submit(Request::Edit(Command::AddReturnTrack {
-                name: "return".into(),
-            }))
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none());
-        let Some(Created::ReturnTrack(id)) = event.created else {
-            panic!("return result")
-        };
-        v.receive(event);
-        cx.notify();
-        id
-    });
-    visual.run_until_parked();
-    visual.update(|window, cx| {
-        editor.update(cx, |v, cx| {
-            v.focus.focus(window);
-            v.select_section_metadata(Some(ids[0]));
-            assert!(v.section_has_focus(window));
-            // Keyboard/programmatic device focus preserves the ordinary track
-            // selection and therefore must explicitly supersede Main ownership.
-            assert!(v.focus_return_details(return_track, window, cx));
-            assert!(!v.section_has_focus(window));
-            assert!(!v.delete_section(window));
-            assert!(!v.section_name_begin(window, cx));
-            assert!(v.sections.pending.is_none());
-            cx.notify();
-        })
-    });
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.sections.selected.is_none()));
-    visual.update(|window, cx| {
-        editor.update(cx, |v, cx| {
-            v.select_section_metadata(Some(ids[0]));
-            v.device_panel.main_selected = None;
-            assert!(!v.section_has_focus(window));
-            assert!(!v.delete_section(window));
-            assert!(!v.section_name_begin(window, cx));
-            assert_eq!(
-                v.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .arrangement_sections()
-                    .len(),
-                2
-            );
-            cx.notify();
-        })
-    });
-}
 fn touching_fixture(
     cx: &mut TestAppContext,
 ) -> (gpui::AnyWindowHandle, Entity<EditorView>, [SectionId; 2]) {
@@ -2740,946 +181,6 @@ fn touching_fixture(
     (handle, editor, ids)
 }
 
-#[gpui::test]
-fn section_cursor_zones_distinguish_inner_edges_and_shared_seam(cx: &mut TestAppContext) {
-    let (handle, _editor, _) = touching_fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let left = bounds(&mut visual, 0);
-    let seam = left.right();
-    for (offset, cursor) in [
-        (-3.0, gpui::CursorStyle::ResizeRightBracket),
-        (0.0, gpui::CursorStyle::ResizeLeftRight),
-        (3.0, gpui::CursorStyle::ResizeLeftBracket),
-    ] {
-        visual.simulate_mouse_move(
-            point(seam + px(offset), left.center().y),
-            None,
-            Modifiers::default(),
-        );
-        visual.run_until_parked();
-        assert_eq!(
-            visual.rendered_cursor_style(),
-            Some(cursor),
-            "zone {offset}"
-        );
-    }
-}
-#[gpui::test]
-fn command_snap_changes_live_without_entering_marker_mode(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let edge = bounds(&mut visual, 0);
-    let down = point(edge.right() - px(1.0), edge.center().y);
-    let to = editor.read_with(cx, |v, _| {
-        let a = position(v, 6);
-        let b = position(v, 7);
-        point(a.x + (b.x - a.x) * 0.37, a.y)
-    });
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
-    for free in [false, true, false, true] {
-        visual.simulate_modifiers_change(Modifiers {
-            platform: free,
-            ..Modifiers::default()
-        });
-        editor.read_with(cx, |v, _| {
-            let Some(Command::ResizeArrangementSectionEdge {
-                section, boundary, ..
-            }) = &v.sections.gesture.as_ref().unwrap().command
-            else {
-                panic!("command must invert snapping without selecting marker editing");
-            };
-            assert_eq!(*section, ids[0]);
-            if free {
-                assert!(*boundary > BeatTime::from_quarters(6).unwrap());
-                assert!(*boundary < BeatTime::from_quarters(7).unwrap());
-            } else {
-                assert_eq!(*boundary, BeatTime::from_quarters(6).unwrap());
-            }
-        });
-    }
-    visual.simulate_keystrokes("escape");
-    editor.read_with(cx, |v, _| assert!(v.sections.gesture.is_none()));
-}
-
-#[gpui::test]
-fn control_alias_inverts_snap_and_option_command_selects_marker_resize(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    for marker_only in [false, true] {
-        for free in [false, true] {
-            let edge = bounds(&mut visual, 0);
-            let down = point(edge.right() - px(1.0), edge.center().y);
-            let to = editor.read_with(cx, |v, _| {
-                let a = position(v, 6);
-                let b = position(v, 7);
-                point(a.x + (b.x - a.x) * 0.37, a.y)
-            });
-            let modifiers = Modifiers {
-                platform: marker_only,
-                alt: marker_only,
-                control: free,
-                ..Modifiers::default()
-            };
-            visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
-            visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
-            editor.read_with(cx, |v, _| {
-                let command = v
-                    .sections
-                    .gesture
-                    .as_ref()
-                    .unwrap()
-                    .command
-                    .as_ref()
-                    .unwrap();
-                let value = match command {
-                    Command::ResizeArrangementSectionMarker {
-                        section,
-                        boundary: end,
-                        ..
-                    } if marker_only && *section == ids[0] => *end,
-                    Command::ResizeArrangementSectionEdge {
-                        section, boundary, ..
-                    } if !marker_only && *section == ids[0] => *boundary,
-                    other => panic!("wrong modifier mode: {other:?}"),
-                };
-                if free {
-                    assert!(
-                        value > BeatTime::from_quarters(6).unwrap()
-                            && value < BeatTime::from_quarters(7).unwrap()
-                    );
-                } else {
-                    assert_eq!(value, BeatTime::from_quarters(6).unwrap());
-                }
-            });
-            visual.simulate_keystrokes("escape");
-            visual.run_until_parked();
-        }
-    }
-}
-
-#[gpui::test]
-fn shared_seam_drags_publish_both_edges_atomically_and_option_command_preserves_music(
-    cx: &mut TestAppContext,
-) {
-    for marker_only in [false, true] {
-        let (handle, editor, ids) = touching_fixture(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        let left = bounds(&mut visual, 0);
-        let down = point(left.right(), left.center().y);
-        let to = editor.read_with(cx, |v, _| position(v, 5));
-        let modifiers = Modifiers {
-            platform: marker_only,
-            alt: marker_only,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
-        visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
-        visual.run_until_parked();
-        editor.read_with(cx, |v, _| {
-            let command = v
-                .sections
-                .gesture
-                .as_ref()
-                .unwrap()
-                .command
-                .as_ref()
-                .unwrap();
-            match command {
-                Command::ResizeArrangementSectionMarker {
-                    section,
-                    edge: hex_project::TrimEdge::Right,
-                    boundary,
-                } if marker_only
-                    && *section == ids[0]
-                    && *boundary == BeatTime::from_quarters(5).unwrap() => {}
-                Command::ResizeArrangementSectionBoundary {
-                    left,
-                    right,
-                    boundary,
-                    marker_only: false,
-                } if !marker_only
-                    && *left == ids[0]
-                    && *right == ids[1]
-                    && *boundary == BeatTime::from_quarters(5).unwrap() => {}
-                other => panic!("wrong seam command {other:?}"),
-            }
-        });
-        let preview = [bounds(&mut visual, 0), bounds(&mut visual, 1)];
-        visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
-        let event = editor.update(cx, |v, _| next(&v.service));
-        assert!(event.error.is_none(), "{:?}", event.error);
-        for _ in 0..3 {
-            visual.update(|window, _| window.refresh());
-            visual.run_until_parked();
-            assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-            assert!(visual.debug_bounds("section-insertion-preview").is_none());
-        }
-        editor.update(cx, |v, cx| {
-            v.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-        editor.read_with(cx, |v, _| {
-            let p = &v.state.as_ref().unwrap().project;
-            assert_eq!(
-                p.arrangement_section(ids[0]).unwrap().start(),
-                BeatTime::ZERO
-            );
-            assert_eq!(
-                p.arrangement_section(ids[0]).unwrap().end(),
-                BeatTime::from_quarters(5).unwrap()
-            );
-            assert_eq!(
-                p.arrangement_section(ids[1]).unwrap().start(),
-                BeatTime::from_quarters(5).unwrap()
-            );
-            assert_eq!(
-                p.arrangement_section(ids[1]).unwrap().end(),
-                BeatTime::from_quarters(8).unwrap()
-            );
-            assert_eq!(p.snapshot().tracks == before.tracks, marker_only);
-        });
-        visual.simulate_keystrokes("cmd-z");
-        let event = editor.update(cx, |v, _| next(&v.service));
-        assert!(event.error.is_none());
-        editor.update(cx, |v, cx| {
-            v.receive(event);
-            cx.notify();
-        });
-        let mut undone = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-        undone.next_id = before.next_id;
-        assert_eq!(undone, before);
-    }
-}
-#[gpui::test]
-fn option_command_after_shared_seam_capture_can_resize_past_the_neighbor(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = touching_fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    let left = bounds(&mut visual, 0);
-    let down = point(left.right(), left.center().y);
-    let to = editor.read_with(cx, |v, _| position(v, 10));
-    let marker_modifier = Modifiers {
-        platform: true,
-        alt: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
-    visual.simulate_modifiers_change(marker_modifier);
-    visual.simulate_mouse_move(to, MouseButton::Left, marker_modifier);
-    visual.simulate_mouse_up(to, MouseButton::Left, marker_modifier);
-    editor.update(cx, |v, cx| {
-        let event = next(&v.service);
-        assert!(event.error.is_none(), "{:?}", event.error);
-        v.receive(event);
-        let after = v.state.as_ref().unwrap().project.snapshot();
-        assert_eq!(after.arrangement_sections.len(), 1);
-        assert_eq!(after.arrangement_sections[0].id, ids[0].value());
-        assert_eq!(
-            after.arrangement_sections[0].end,
-            BeatTime::from_quarters(10).unwrap()
-        );
-        let mut music = after;
-        music.arrangement_sections = before.arrangement_sections.clone();
-        assert_eq!(music, before);
-        cx.notify();
-    });
-}
-
-#[gpui::test]
-fn inner_zones_resize_only_the_touched_edge_and_leave_the_neighbor_in_place(
-    cx: &mut TestAppContext,
-) {
-    for (offset, target, index) in [(-3.0, 3, 0usize), (3.0, 5, 1usize)] {
-        for marker_only in [false, true] {
-            let (handle, editor, ids) = touching_fixture(cx);
-            let mut visual = VisualTestContext::from_window(handle, cx);
-            visual.run_until_parked();
-            let left = bounds(&mut visual, 0);
-            let neighbor = editor.read_with(cx, |v, _| {
-                v.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .arrangement_section(ids[1 - index])
-                    .unwrap()
-                    .clone()
-            });
-            let down = point(left.right() + px(offset), left.center().y);
-            let to = editor.read_with(cx, |v, _| position(v, target));
-            let modifiers = Modifiers {
-                platform: marker_only,
-                alt: marker_only,
-                ..Modifiers::default()
-            };
-            visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
-            visual.simulate_mouse_move(to, MouseButton::Left, modifiers);
-            visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
-            let event = editor.update(cx, |v, _| next(&v.service));
-            assert!(event.error.is_none(), "{:?}", event.error);
-            editor.update(cx, |v, cx| {
-                v.receive(event);
-                cx.notify();
-            });
-            editor.read_with(cx, |v, _| {
-                let p = &v.state.as_ref().unwrap().project;
-                assert_eq!(p.arrangement_section(ids[1 - index]), Some(&neighbor));
-                let section = p.arrangement_section(ids[index]).unwrap();
-                assert_eq!(
-                    if index == 0 {
-                        section.end()
-                    } else {
-                        section.start()
-                    },
-                    BeatTime::from_quarters(target).unwrap()
-                );
-            });
-        }
-    }
-}
-#[gpui::test]
-fn lane_cursor_splits_only_markers_and_holds_preview_until_exact_ack(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    let at = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("section-edit-cursor").is_some());
-    assert!(visual.debug_bounds("section-insertion-preview").is_none());
-    editor.read_with(cx, |v, _| {
-        assert_eq!(
-            v.sections.cursor.unwrap().beat,
-            BeatTime::from_quarters(2).unwrap()
-        );
-        assert!(v.sections.pending.is_none());
-    });
-    visual.simulate_keystrokes("e");
-    let preview = [bounds(&mut visual, 0), bounds(&mut visual, 1)];
-    assert_eq!(preview[0].right(), preview[1].left());
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    for _ in 0..3 {
-        visual.update(|window, _| window.refresh());
-        visual.run_until_parked();
-        assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-        editor.read_with(cx, |v, _| assert!(v.sections.pending.is_some()));
-    }
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!([bounds(&mut visual, 0), bounds(&mut visual, 1)], preview);
-    editor.read_with(cx, |v, _| {
-        let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.arrangement_sections().len(), 3);
-        assert_eq!(p.arrangement_sections()[0].id(), ids[0]);
-        assert_ne!(p.arrangement_sections()[1].id(), ids[0]);
-        let mut after = p.snapshot();
-        after.next_id = before.next_id;
-        after.arrangement_sections = before.arrangement_sections.clone();
-        assert_eq!(after, before);
-        assert!(v.sections.pending.is_none());
-    });
-    visual.simulate_keystrokes("cmd-z");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none());
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        cx.notify();
-    });
-    let mut undone = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    undone.next_id = before.next_id;
-    assert_eq!(undone, before);
-}
-
-#[gpui::test]
-fn lane_cursor_gap_endpoint_stale_and_text_context_refuse_without_clip_fallthrough(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    for beat in [6, 4, 0] {
-        let at = editor.read_with(cx, |v, _| position(v, beat));
-        visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("section-edit-cursor").is_some());
-        visual.simulate_keystrokes("e");
-        editor.read_with(cx, |v, _| {
-            assert!(v.sections.pending.is_none());
-            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-            assert!(
-                v.error
-                    .as_ref()
-                    .is_some_and(|e| e.contains("strictly inside"))
-            );
-        });
-    }
-    let at = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-    editor.update(cx, |v, _| v.sections.cursor.as_mut().unwrap().revision += 1);
-    visual.simulate_keystrokes("e");
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.pending.is_none());
-        assert!(
-            v.error
-                .as_ref()
-                .is_some_and(|e| e.contains("click the lane again"))
-        );
-    });
-    visual.simulate_keystrokes("cmd-r");
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.sections.naming()));
-    visual.simulate_keystrokes("cmd-a e");
-    editor.read_with(cx, |v, cx| {
-        assert!(v.sections.pending.is_none());
-        assert_eq!(v.sections.name.as_ref().unwrap().input.read(cx).text(), "e");
-        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-    });
-    visual.simulate_keystrokes("escape");
-    visual.run_until_parked();
-    // A regular-track point releases the lane and preserves clip splitting.
-    let at = editor.read_with(cx, |v, _| {
-        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        let lane = v.drag_lanes[&track];
-        point(px(lane.left + lane.width * 0.1), px(lane.top + 18.0))
-    });
-    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.sections.cursor.is_none()));
-    visual.simulate_keystrokes("e");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    assert_eq!(event.state.project.arrangement_sections().len(), 2);
-    assert_eq!(event.state.project.tracks()[0].midi_clips().len(), 2);
-}
-
-#[gpui::test]
-fn lane_cursor_snap_inversion_and_empty_project_clicks(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let mut beats = Vec::new();
-    for grid in [SnapGrid::Quarter, SnapGrid::Off] {
-        editor.update(cx, |v, _| v.snap_grid = grid);
-        for free in [false, true] {
-            let at = editor.read_with(cx, |v, _| {
-                let a = position(v, 2);
-                let b = position(v, 3);
-                point(a.x + (b.x - a.x) * 0.37, a.y)
-            });
-            let modifiers = Modifiers {
-                platform: free,
-                ..Modifiers::default()
-            };
-            visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
-            visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
-            editor.read_with(cx, |v, _| {
-                let beat = v.sections.cursor.unwrap().beat;
-                beats.push(beat);
-                assert!(v.sections.pending.is_none());
-            });
-        }
-    }
-    assert_eq!(beats[0], BeatTime::from_quarters(2).unwrap());
-    assert!(beats[1] > beats[0] && beats[1] < BeatTime::from_quarters(3).unwrap());
-    assert_eq!(
-        beats[1], beats[2],
-        "off and Command-inverted fixed grid are free"
-    );
-    assert_ne!(
-        beats[3], beats[2],
-        "Command with snap off enables adaptive snapping"
-    );
-    editor.update(cx, |v, cx| {
-        let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        v.service
-            .submit(Request::Edit(Command::RemoveTrack(track)))
-            .unwrap();
-        let event = next(&v.service);
-        assert!(event.error.is_none());
-        v.state = Some(event.state);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let at = editor.read_with(cx, |v, _| position(v, 6));
-    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    assert!(visual.debug_bounds("section-edit-cursor").is_some());
-}
-#[gpui::test]
-fn section_lower_body_paints_all_tracks_without_section_edit_even_when_focused(
-    cx: &mut TestAppContext,
-) {
-    for focused in [false, true] {
-        let (handle, editor, ids) = fixture(cx);
-        editor.update(cx, |view, cx| {
-            assert!(view.enqueue(Request::Edit(Command::AddTrack {
-                name: "hidden empty track".into()
-            })));
-            let event = next(&view.service);
-            assert!(event.error.is_none());
-            view.receive(event);
-            view.section_autoplay = false;
-            view.test_probes.last_enqueued_edit = None;
-            cx.notify();
-        });
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let (header, start, end) = editor.read_with(cx, |view, _| {
-            let [_, top, _, height] = view.section_layout().unwrap();
-            let a = position(view, 1);
-            let b = position(view, 3);
-            (
-                point(a.x, px(top + 6.0)),
-                point(a.x, px(top + height * 0.75)),
-                point(b.x, px(top + height * 0.75)),
-            )
-        });
-        visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert_eq!(view.sections.selected, Some(ids[0]))
-        });
-        if focused {
-            visual.simulate_keystrokes("q");
-            visual.run_until_parked();
-        }
-        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-        let hidden = before.tracks()[1].id();
-        if focused {
-            assert!(
-                visual
-                    .debug_bounds(Box::leak(
-                        format!("arrangement-lane-{}", hidden.value()).into_boxed_str()
-                    ))
-                    .is_none()
-            );
-        }
-        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-        editor.read_with(cx, |view, _| {
-            assert!(
-                view.sections.gesture.is_none(),
-                "lower section body must delegate to the time-selection owner"
-            );
-            assert!(view.time_selection_gesture.is_some());
-            assert!(
-                view.sections.cursor.is_none(),
-                "body range must not retain a second section edit cursor"
-            );
-        });
-        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        assert!(visual.debug_bounds("main-project-time-selection").is_some());
-        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            let range = view
-                .normalized_time_selection()
-                .expect("completed main range");
-            let map = before.tempo_map();
-            assert_eq!(
-                (range.start(), range.end()),
-                (
-                    map.beat_to_frame(BeatTime::ONE).unwrap(),
-                    map.beat_to_frame(BeatTime::from_quarters(3).unwrap())
-                        .unwrap()
-                )
-            );
-            assert_eq!(
-                range.tracks(),
-                before
-                    .tracks()
-                    .iter()
-                    .map(|track| track.id())
-                    .collect::<Vec<_>>()
-            );
-            assert!(view.time_selection_project_scope);
-            assert!(view.sections.pending.is_none());
-            assert!(view.test_probes.last_enqueued_edit.is_none());
-            assert_eq!(view.state.as_ref().unwrap().project, before);
-            assert_eq!(view.arrangement_focus.projection.enabled, focused);
-            assert!(
-                !focused || view.sections.selected == Some(ids[0]),
-                "focus retains its section driver while range scope includes hidden tracks"
-            );
-        });
-        assert!(
-            !visual.update(|window, app| editor.read(app).section_has_focus(window)),
-            "range owns keyboard actions while Q keeps its display driver"
-        );
-        visual.simulate_keystrokes("cmd-c");
-        editor.read_with(cx, |view, _| {
-            assert_eq!(view.test_probes.last_time_request, Some(("copy", None)))
-        });
-    }
-}
-#[gpui::test]
-fn section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts(
-    cx: &mut TestAppContext,
-) {
-    struct RestoreTheme(hex_preferences::ThemePreferences);
-    impl Drop for RestoreTheme {
-        fn drop(&mut self) {
-            theme::apply_preferences(self.0);
-        }
-    }
-    let _restore = RestoreTheme(theme::preferences());
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-    for (width, palette) in [
-        (880.0, hex_preferences::ThemePreferences::default()),
-        (
-            1280.0,
-            hex_preferences::ThemePreferences {
-                background: hex_preferences::RgbColor::new(225, 229, 238),
-                text: hex_preferences::RgbColor::new(24, 27, 34),
-                primary: hex_preferences::RgbColor::new(145, 25, 45),
-                secondary: hex_preferences::RgbColor::new(16, 70, 145),
-            },
-        ),
-    ] {
-        theme::apply_preferences(palette);
-        editor.update(cx, |view, cx| {
-            view.viewport = Some(Viewport {
-                start: 24_000,
-                length: 240_000,
-            });
-            cx.notify();
-        });
-        visual.simulate_resize(gpui::size(px(width), px(600.0)));
-        visual.simulate_mouse_move(point(px(4.0), px(4.0)), None, Modifiers::default());
-        visual.run_until_parked();
-        let body = bounds(&mut visual, 0);
-        let header = visual
-            .debug_bounds("arrangement-section-header-0")
-            .expect("actual section header");
-        assert!((f32::from(header.top() - body.top())).abs() <= 1.0);
-        assert!(
-            (f32::from(header.size.height) - super::super::clip_name::CLIP_NAME_HEIGHT).abs()
-                <= 0.1,
-            "header remains a fixed compact height"
-        );
-        assert!(header.right() <= body.right() + px(1.0));
-        let (fill, _, _) = theme::section_colors(ElementColor::Blue, false, false);
-        assert_eq!(
-            painted_fill(&mut visual, 0),
-            Some(rgb(fill).into()),
-            "opaque tier fill"
-        );
-        let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
-        let fills: Vec<_> = visual
-            .rendered_filled_quads("arrangement-section-0")
-            .into_iter()
-            .filter(|(_, c)| *c == gpui::Background::from(rgb(fill)))
-            .collect();
-        assert!(
-            fills.iter().any(
-                |(b, _)| (b.bottom() / scale - f32::from(body.bottom())).abs() < 0.1
-                    && b.right() / scale < f32::from(body.right()) - 1.0
-            ),
-            "cut leaves the bottom-right corner unfilled"
-        );
-        for (at, cursor) in [
-            (header.center(), gpui::CursorStyle::OpenHand),
-            (
-                point(body.center().x, header.bottom() + px(1.0)),
-                gpui::CursorStyle::Arrow,
-            ),
-            (
-                point(body.right() - px(1.0), body.top() + body.size.height * 0.75),
-                gpui::CursorStyle::ResizeRightBracket,
-            ),
-        ] {
-            visual.simulate_mouse_move(at, None, Modifiers::default());
-            visual.run_until_parked();
-            assert_eq!(visual.rendered_cursor_style(), Some(cursor));
-        }
-        editor.read_with(cx, |view, _| {
-            assert_eq!(view.state.as_ref().unwrap().project, before)
-        });
-    }
-}
-#[gpui::test]
-fn shift_click_selects_section_blocks_in_header_and_body_without_time_ranges(
-    cx: &mut TestAppContext,
-) {
-    for (focused, body) in [(false, false), (false, true), (true, false), (true, true)] {
-        let (handle, editor, ids) = fixture(cx);
-        editor.update(cx, |view, cx| {
-            for command in [
-                Command::AddTrack {
-                    name: "hidden empty track".into(),
-                },
-                Command::SetTempoPoint {
-                    beat: BeatTime::ONE,
-                    tempo: hex_project::Tempo::new(180_000_000).unwrap(),
-                },
-                Command::SetArrangementSectionRange {
-                    section: ids[0],
-                    start: BeatTime::from_ratio(1, 7).unwrap(),
-                    end: BeatTime::from_ratio(27, 7).unwrap(),
-                },
-            ] {
-                let request = if matches!(command, Command::SetArrangementSectionRange { .. }) {
-                    Request::EditArrangementSection {
-                        project_generation: view.project_generation,
-                        revision: view.state.as_ref().unwrap().revision,
-                        command,
-                    }
-                } else {
-                    Request::Edit(command)
-                };
-                assert!(view.enqueue(request));
-                let event = next(&view.service);
-                assert!(
-                    event.error.is_none(),
-                    "fixture edit refused: {:?}",
-                    event.error
-                );
-                view.receive(event);
-            }
-            view.section_autoplay = false;
-            cx.notify();
-        });
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let header = editor.read_with(cx, |view, _| position(view, 10));
-        visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        if focused {
-            visual.simulate_keystrokes("q");
-            visual.run_until_parked();
-        }
-        editor.update(cx, |view, cx| {
-            let first = view.state.as_ref().unwrap().project.tracks()[0].id();
-            view.time_selection = Some(super::super::time_selection::TimeSelection {
-                anchor_track: Some(first),
-                end_track: Some(first),
-                anchor_frame: 111,
-                end_frame: 222,
-            });
-            view.time_selection_project_scope = false;
-            view.section_autoplay = true;
-            view.test_probes.last_enqueued_edit = None;
-            cx.notify();
-        });
-        visual.run_until_parked();
-        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().clone());
-        let at = editor.read_with(cx, |view, _| {
-            let [_, top, _, height] = view.section_layout().unwrap();
-            point(
-                position(view, 2).x,
-                if body {
-                    px(top + height * 0.75)
-                } else {
-                    header.y
-                },
-            )
-        });
-        let shift = Modifiers {
-            shift: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(at, MouseButton::Left, shift);
-        visual.simulate_mouse_up(at, MouseButton::Left, shift);
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert!(view.time_selection.is_none());
-            assert!(!view.time_selection_project_scope);
-            assert_eq!(view.sections.selection, vec![ids[0], ids[1]]);
-            assert_eq!(view.sections.selected, Some(ids[0]));
-            assert!(view.selected_clip_ids().is_empty());
-            assert!(
-                view.sections.gesture.is_none()
-                    && view.sections.pending.is_none()
-                    && view.sections.cursor.is_none()
-            );
-            assert!(view.time_selection_gesture.is_none());
-            assert!(view.test_probes.last_enqueued_edit.is_none());
-            assert!(
-                view.pending_audio_commands.is_empty()
-                    && view.prepared_seek.is_none()
-                    && view.latched_seek_intent.is_none()
-            );
-            assert_eq!(view.worker_requests_pending, 0);
-            assert_eq!(view.state.as_ref().unwrap().project, before.project);
-            assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
-            assert_eq!(
-                (
-                    view.state.as_ref().unwrap().can_undo,
-                    view.state.as_ref().unwrap().can_redo
-                ),
-                (before.can_undo, before.can_redo)
-            );
-            assert_eq!(view.arrangement_focus.projection.enabled, focused);
-        });
-        let toggle = Modifiers {
-            shift: true,
-            platform: true,
-            ..Modifiers::default()
-        };
-        visual.simulate_mouse_down(at, MouseButton::Left, toggle);
-        visual.simulate_mouse_up(at, MouseButton::Left, toggle);
-        visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert_eq!(view.sections.selection, vec![ids[1]]);
-            assert_eq!(view.sections.selected, Some(ids[1]));
-            assert!(view.time_selection.is_none());
-        });
-    }
-}
-#[gpui::test]
-fn shift_click_selects_every_section_between_anchor_and_click(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut all = vec![ids[0]];
-    editor.update(cx, |view, cx| {
-        for (start, end, name) in [(4, 8, "Verse"), (12, 16, "Bridge")] {
-            assert!(view.enqueue(Request::EditArrangementSection {
-                project_generation: view.project_generation,
-                revision: view.state.as_ref().unwrap().revision,
-                command: Command::AddArrangementSection {
-                    name: name.into(),
-                    color: ElementColor::Green,
-                    start: BeatTime::from_quarters(start).unwrap(),
-                    end: BeatTime::from_quarters(end).unwrap(),
-                },
-            }));
-            let event = next(&view.service);
-            assert!(event.error.is_none(), "{:?}", event.error);
-            let Some(Created::ArrangementSection(id)) = event.created else {
-                panic!("section result")
-            };
-            all.push(id);
-            view.receive(event);
-        }
-        view.section_autoplay = false;
-        cx.notify();
-    });
-    // Song order: intro, verse, chorus, bridge.
-    let all = [all[0], all[1], ids[1], all[2]];
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let shift = Modifiers {
-        shift: true,
-        ..Modifiers::default()
-    };
-    let mut click = |quarters, modifiers| {
-        let at = editor.read_with(&visual, |view, _| position(view, quarters));
-        visual.simulate_mouse_down(at, MouseButton::Left, modifiers);
-        visual.simulate_mouse_up(at, MouseButton::Left, modifiers);
-        visual.run_until_parked();
-        editor.read_with(&visual, |view, _| {
-            assert!(view.time_selection.is_none());
-            (
-                view.sections.selected_ids().to_vec(),
-                view.sections.selected,
-            )
-        })
-    };
-    click(2, Modifiers::default());
-    assert_eq!(click(14, shift), (all.to_vec(), Some(all[3])));
-    // Same anchor: a shorter range replaces the previous one.
-    assert_eq!(click(10, shift), (all[..3].to_vec(), Some(all[2])));
-    click(14, Modifiers::default());
-    assert_eq!(click(2, shift), (all.to_vec(), Some(all[0])));
-}
-#[gpui::test]
-fn menu_merge_click_over_the_lane_merges_and_undo_restores(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
-    let before = editor.read_with(cx, |v, _| v.state.as_ref().unwrap().project.clone());
-    visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    // One selected section: g explains instead of silently consuming input.
-    visual.simulate_keystrokes("g");
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.pending.is_none());
-        assert!(
-            v.error
-                .as_ref()
-                .is_some_and(|e| e.contains("shift-click another section to merge a span"))
-        );
-    });
-    let shift = Modifiers {
-        shift: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(b, MouseButton::Left, shift);
-    visual.simulate_mouse_up(b, MouseButton::Left, shift);
-    visual.run_until_parked();
-    let body = editor.read_with(cx, |v, _| {
-        let [_, top, _, height] = v.section_layout().unwrap();
-        point(a.x, px(top + height * 0.75))
-    });
-    visual.simulate_mouse_down(body, MouseButton::Right, Modifiers::default());
-    visual.simulate_mouse_up(body, MouseButton::Right, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert_eq!(
-            v.context_menu.as_ref().unwrap().items[0].label,
-            "merge selected span · g"
-        )
-    });
-    // The first row opens at the pointer, above the lane's own capture.
-    let panel = visual.debug_bounds("context-menu-panel").unwrap();
-    let row = point(panel.origin.x + px(20.0), panel.origin.y + px(14.0));
-    visual.simulate_mouse_down(row, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(row, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    let event = editor.update(cx, |v, _| {
-        assert!(v.context_menu.is_none());
-        assert!(matches!(
-            v.sections.pending.as_ref().map(|p| &p.command),
-            Some(Command::MergeArrangementSections(_))
-        ));
-        next(&v.service)
-    });
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, cx| {
-        v.receive(event);
-        let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.arrangement_sections().len(), 1);
-        assert_eq!(
-            p.arrangement_section(ids[0]).unwrap().end(),
-            BeatTime::from_quarters(12).unwrap()
-        );
-        assert_eq!(p.tracks(), before.tracks());
-        cx.notify();
-    });
-    visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-z");
-    let event = editor.update(cx, |v, _| next(&v.service));
-    assert!(event.error.is_none(), "{:?}", event.error);
-    editor.update(cx, |v, _| {
-        v.receive(event);
-        assert_eq!(v.state.as_ref().unwrap().project, before);
-    });
-}
 /// Tick the real worker pump until every edit and queued follow-up lands.
 fn settle(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let deadline = crate::test_wait::hang_deadline();
@@ -3695,287 +196,6 @@ fn settle(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
     visual.run_until_parked();
-}
-#[gpui::test]
-fn section_copy_paints_committed_rows_before_the_terminal(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let source = editor.read_with(cx, |view, _| position(view, 2));
-    visual.simulate_click(source, Modifiers::default());
-    visual.simulate_keystrokes("q");
-    visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-d");
-
-    let terminal = editor.read_with(cx, |view, _| next(&view.service));
-    let observed = editor.read_with(cx, |view, _| {
-        view.service.try_arrangement_edit_view().unwrap()
-    });
-    let Some(Created::ArrangementSection(copy)) = terminal.created else {
-        panic!("section copy");
-    };
-    assert!(matches!(
-        observed.kind,
-        hex_session::service::ArrangementEditViewKind::Duplicate(Created::ArrangementSection(id))
-            if id == copy
-    ));
-    let committed = observed.state.upgrade().unwrap();
-    let marker = committed.project.arrangement_section(copy).unwrap();
-    let midi = committed.project.tracks()[0]
-        .midi_clips()
-        .iter()
-        .find(|clip| clip.start() == marker.start())
-        .unwrap()
-        .id();
-    let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
-    visual.run_until_parked();
-    assert!(
-        visual.debug_bounds(selector).is_none(),
-        "the old focus cache has no copy"
-    );
-
-    editor.update(cx, |view, cx| {
-        assert!(view.arrangement_focus.projection.enabled);
-        assert_eq!(view.sections.selected, Some(ids[0]));
-        for (generation, revision) in [
-            (observed.project_generation + 1, observed.previous_revision),
-            (observed.project_generation, observed.previous_revision + 1),
-        ] {
-            assert!(
-                !view.observe_duplicate_view(ArrangementEditViewObservation {
-                    project_generation: generation,
-                    first_previous_revision: revision,
-                    previous_revision: revision,
-                    kind: observed.kind,
-                    state: Arc::downgrade(&committed),
-                })
-            );
-        }
-        assert!(view.observe_duplicate_view(observed));
-        assert!(view.section_install_pending());
-        assert!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_section(copy)
-                .is_none()
-        );
-        assert!(Arc::ptr_eq(
-            &view.arrangement_rows_state().unwrap(),
-            &committed
-        ));
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let before_ack = visual
-        .debug_bounds(selector)
-        .expect("committed copy is visible");
-    let marker_bounds = visual.debug_bounds("arrangement-section-1").unwrap();
-    editor.update(cx, |view, cx| {
-        view.receive(terminal);
-        assert!(view.committed_section_copy_view().is_none());
-        assert!(!view.section_install_pending());
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(visual.debug_bounds(selector), Some(before_ack));
-    assert_eq!(
-        visual.debug_bounds("arrangement-section-1"),
-        Some(marker_bounds)
-    );
-}
-
-#[gpui::test]
-fn consecutive_keyboard_section_copies_keep_both_receipts_and_latest_rows(cx: &mut TestAppContext) {
-    let (handle, editor, _ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let source = editor.read_with(cx, |view, _| position(view, 2));
-    visual.simulate_click(source, Modifiers::default());
-    visual.simulate_keystrokes("q");
-    visual.run_until_parked();
-    let initial = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
-    visual.simulate_keystrokes("cmd-d cmd-d");
-    let deadline = crate::test_wait::hang_deadline();
-    let first_view = loop {
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "first committed section view");
-        std::thread::yield_now();
-    };
-    let mut first_terminal = editor.read_with(&visual, |view, _| next(&view.service));
-    let first_state = first_view.state.upgrade().unwrap();
-    editor.update(&mut visual, |view, cx| {
-        // A refused, still-queued successor must not retire its predecessor.
-        let primary = view.sections.pending.as_ref().unwrap();
-        let command = primary.command.clone();
-        view.sections.ahead = Some(Pending {
-            generation: primary.generation,
-            revision: initial + 1,
-            command: command.clone(),
-            display: primary.display.clone(),
-            layout: None,
-            copied: None,
-            cut_clipboard: None,
-            cut_cursor: None,
-            receipt: Receipt::new(primary.generation),
-            selection_intent_epoch: primary.selection_intent_epoch,
-            deferred_submission: false,
-        });
-        assert!(view.refuse_section(&Request::EditArrangementSection {
-            project_generation: view.project_generation,
-            revision: initial + 1,
-            command,
-        }));
-        assert!(view.sections.pending.is_some());
-        assert!(view.sections.ahead.is_none());
-        assert!(view.observe_duplicate_view(first_view));
-        assert!(view.sections.pending.is_some());
-        assert!(
-            view.sections.ahead.is_some(),
-            "successor admitted before first terminal"
-        );
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let second_view = loop {
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "second committed section view");
-        std::thread::yield_now();
-    };
-    let second_terminal = editor.read_with(&visual, |view, _| next(&view.service));
-    assert!(first_terminal.error.is_none());
-    assert!(second_terminal.error.is_none());
-    let second_state = second_view.state.upgrade().unwrap();
-    assert_eq!(second_state.revision, initial + 2);
-    let Some(Created::ArrangementSection(copy)) = second_terminal.created else {
-        panic!("second section copy");
-    };
-    let copy_start = second_state
-        .project
-        .arrangement_section(copy)
-        .unwrap()
-        .start();
-    let midi = second_state.project.tracks()[0]
-        .midi_clips()
-        .iter()
-        .find(|clip| {
-            clip.start() == copy_start && first_state.project.midi_clip(clip.id()).is_none()
-        })
-        .unwrap()
-        .id();
-    let selector = Box::leak(format!("midi-clip-visual-{}", midi.value()).into_boxed_str());
-    editor.update(&mut visual, |view, cx| {
-        for (generation, revision) in [
-            (
-                second_view.project_generation + 1,
-                second_view.previous_revision,
-            ),
-            (
-                second_view.project_generation,
-                second_view.previous_revision + 1,
-            ),
-        ] {
-            assert!(
-                !view.observe_duplicate_view(ArrangementEditViewObservation {
-                    project_generation: generation,
-                    first_previous_revision: revision,
-                    previous_revision: revision,
-                    kind: second_view.kind,
-                    state: Arc::downgrade(&second_state),
-                })
-            );
-        }
-        assert!(view.observe_duplicate_view(second_view));
-        assert!(Arc::ptr_eq(
-            &view.arrangement_rows_state().unwrap(),
-            &second_state
-        ));
-        cx.notify();
-    });
-    visual.run_until_parked();
-    let before = visual
-        .debug_bounds(selector)
-        .expect("second committed copy paints");
-    let marker = visual.debug_bounds("arrangement-section-2").unwrap();
-    editor.update(&mut visual, |view, cx| {
-        view.history_action(Request::Undo, cx)
-    });
-    first_terminal.error = Some("automatic recovery: test warning".into());
-    editor.update(&mut visual, |view, cx| {
-        view.receive(first_terminal);
-        assert!(Arc::ptr_eq(
-            &view.arrangement_rows_state().unwrap(),
-            &second_state
-        ));
-        assert!(
-            view.sections.pending.is_some(),
-            "warning cannot retire an admitted successor"
-        );
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(visual.debug_bounds(selector), Some(before));
-    assert_eq!(visual.debug_bounds("arrangement-section-2"), Some(marker));
-    editor.update(&mut visual, |view, cx| {
-        view.receive(second_terminal);
-        assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &second_state));
-        assert!(view.sections.pending.is_none());
-        cx.notify();
-    });
-    visual.run_until_parked();
-    assert_eq!(visual.debug_bounds(selector), Some(before));
-    assert_eq!(visual.debug_bounds("arrangement-section-2"), Some(marker));
-    settle(&editor, &mut visual);
-    editor.read_with(&visual, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().revision, initial + 3);
-        assert_eq!(
-            view.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_sections()
-                .len(),
-            first_state.project.arrangement_sections().len(),
-            "undo follows both admitted copies"
-        );
-    });
-}
-
-#[gpui::test]
-fn unrelated_worker_completion_preserves_existing_status(cx: &mut TestAppContext) {
-    let (_handle, editor, _ids) = fixture(cx);
-    editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::AddTrack {
-            name: "other".into()
-        })));
-    });
-    let mut event = editor.read_with(cx, |view, _| next(&view.service));
-    assert!(event.error.is_none());
-    event.status = None;
-    editor.update(cx, |view, _| {
-        view.status = "existing status".into();
-        view.receive(event);
-        assert_eq!(&*view.status, "existing status");
-    });
-}
-
-#[gpui::test]
-fn newer_selection_does_not_admit_an_ahead_section_copy(cx: &mut TestAppContext) {
-    newer_selection_rejects_ahead_section_copy(cx, false);
-}
-
-#[gpui::test]
-fn newer_selection_does_not_admit_a_duplicate_after_pointer_copy(cx: &mut TestAppContext) {
-    newer_selection_rejects_ahead_section_copy(cx, true);
 }
 
 fn newer_selection_rejects_ahead_section_copy(cx: &mut TestAppContext, pointer_first: bool) {
@@ -4018,272 +238,6 @@ fn newer_selection_rejects_ahead_section_copy(cx: &mut TestAppContext, pointer_f
         // The already requested command remains in the ordinary queue.
         assert!(view.sections.queued.is_some());
     });
-}
-
-#[gpui::test]
-fn pointer_copy_keeps_a_different_queued_duplicate_ordered(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    editor.update(&mut visual, |view, _| {
-        view.select_section_metadata(Some(ids[0]));
-        view.section_metadata(Command::DuplicateArrangementSectionAt {
-            section: ids[0],
-            target: ids[0],
-            after: true,
-        });
-        view.section_metadata(Command::DuplicateArrangementSection(ids[1]));
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    let first = loop {
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "first section view");
-        std::thread::yield_now();
-    };
-    let terminal = editor.read_with(&visual, |view, _| next(&view.service));
-    editor.update(&mut visual, |view, _| {
-        assert!(view.observe_duplicate_view(first));
-        assert!(
-            view.sections.ahead.is_none(),
-            "different source must not be admitted ahead"
-        );
-        assert!(view.sections.queued.is_some());
-        view.receive(terminal);
-    });
-}
-
-#[gpui::test]
-fn project_replacement_retires_both_section_receipts(cx: &mut TestAppContext) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    editor.update(&mut visual, |view, _| {
-        view.select_section_metadata(Some(ids[0]));
-        view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
-        view.section_metadata(Command::DuplicateArrangementSection(ids[0]));
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    let first = loop {
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "first section view");
-        std::thread::yield_now();
-    };
-    let _first_terminal = editor.read_with(&visual, |view, _| next(&view.service));
-    editor.update(&mut visual, |view, _| {
-        assert!(view.observe_duplicate_view(first))
-    });
-    let second = loop {
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "second section view");
-        std::thread::yield_now();
-    };
-    let _second_terminal = editor.read_with(&visual, |view, _| next(&view.service));
-    let stale_state = second.state.upgrade().unwrap();
-    let stale_kind = second.kind;
-    let stale_generation = second.project_generation;
-    let stale_revision = second.previous_revision;
-    editor.update(&mut visual, |view, _| {
-        assert!(view.observe_duplicate_view(second));
-        assert!(view.sections.pending.is_some() && view.sections.ahead.is_some());
-        view.service
-            .submit(Request::NewWithAudioMode {
-                mode: hex_session::DocumentAudioMode::Resident,
-                reservation: None,
-            })
-            .unwrap();
-    });
-    let replacement = editor.read_with(&visual, |view, _| next(&view.service));
-    assert!(replacement.project_replaced && replacement.error.is_none());
-    editor.update(&mut visual, |view, _| {
-        view.receive(replacement);
-        assert!(view.sections.pending.is_none() && view.sections.ahead.is_none());
-        assert!(
-            !view.observe_duplicate_view(ArrangementEditViewObservation {
-                project_generation: stale_generation,
-                first_previous_revision: stale_revision,
-                previous_revision: stale_revision,
-                kind: stale_kind,
-                state: Arc::downgrade(&stale_state),
-            })
-        );
-    });
-}
-
-#[gpui::test]
-fn play_uses_applied_successor_while_both_section_receipts_wait(cx: &mut TestAppContext) {
-    use std::sync::atomic::Ordering::Acquire;
-
-    let commands = vec![
-        Command::AddTrack {
-            name: "track".into(),
-        },
-        Command::AddArrangementSection {
-            name: "section".into(),
-            color: ElementColor::Blue,
-            start: BeatTime::from_quarters(8).unwrap(),
-            end: BeatTime::from_quarters(12).unwrap(),
-        },
-    ];
-    let mut fixture =
-        super::super::worker_ui_fixture::open_with_section_support(cx, commands, false, true);
-    let editor = fixture.editor.clone();
-    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
-    visual.run_until_parked();
-    let (revision, expected) = editor.update(&mut visual, |view, _| {
-        let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
-        view.select_section_metadata(Some(section));
-        view.play_start_at_beginning = false;
-        let expected = view.playback_start_frame();
-        let revision = view.state.as_ref().unwrap().revision;
-        view.section_metadata(Command::DuplicateArrangementSection(section));
-        view.section_metadata(Command::DuplicateArrangementSection(section));
-        (revision, expected)
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    let first = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "first section view");
-        std::thread::yield_now();
-    };
-    let first_terminal = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "first section terminal");
-        std::thread::yield_now();
-    };
-    assert!(first_terminal.error.is_none(), "{:?}", first_terminal.error);
-    loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let ready = editor.read_with(&visual, |view, _| {
-            view.audio_status().is_some_and(|status| {
-                !status.stopped_edit_pending()
-                    && status
-                        .recording_source()
-                        .is_some_and(|source| source.context.editor_revision == revision + 1)
-            })
-        });
-        if ready {
-            break;
-        }
-        assert!(Instant::now() < deadline, "first source and released fence");
-        std::thread::yield_now();
-    }
-    editor.update(&mut visual, |view, cx| {
-        assert!(view.observe_duplicate_view(first));
-        assert!(view.sections.ahead.is_some());
-        cx.notify();
-    });
-    let second = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(view) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break view;
-        }
-        assert!(Instant::now() < deadline, "second section view");
-        std::thread::yield_now();
-    };
-    let second_terminal = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "second section terminal");
-        std::thread::yield_now();
-    };
-    assert!(
-        second_terminal.error.is_none(),
-        "{:?}",
-        second_terminal.error
-    );
-    let committed = second.state.upgrade().unwrap();
-    editor.update(&mut visual, |view, cx| {
-        assert!(view.observe_duplicate_view(second));
-        cx.notify();
-    });
-    visual.run_until_parked();
-    loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let ready = editor.update(&mut visual, |view, cx| {
-            view.tick(cx);
-            view.section_copy_play_source()
-                .is_some_and(|source| source.context.editor_revision == revision + 2)
-        });
-        if ready {
-            break;
-        }
-        assert!(Instant::now() < deadline, "applied successor source");
-        std::thread::yield_now();
-    }
-    editor.update(&mut visual, |view, cx| {
-        assert!(Arc::ptr_eq(
-            &view.arrangement_rows_state().unwrap(),
-            &committed
-        ));
-        view.toggle_play();
-        assert_eq!(
-            view.test_probes.last_transport_command,
-            Some(
-                hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
-                    frame: expected,
-                    note_chase: hex_engine::NoteChase::On,
-                }
-            )
-        );
-        cx.notify();
-    });
-    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-    editor.read_with(&visual, |view, _| {
-        assert!(view.audio_status().unwrap().playing.load(Acquire))
-    });
-    editor.update(&mut visual, |view, cx| {
-        view.receive(first_terminal);
-        assert!(Arc::ptr_eq(
-            &view.arrangement_rows_state().unwrap(),
-            &committed
-        ));
-        view.receive(second_terminal);
-        assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
-        cx.notify();
-    });
-    fixture.finish(cx);
-}
-
-#[gpui::test]
-fn held_recovery_allows_next_section_copy_and_applied_play(cx: &mut TestAppContext) {
-    held_recovery_allows_queued_duplicate(cx, 0);
-}
-
-#[gpui::test]
-fn held_pointer_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
-    held_recovery_allows_queued_duplicate(cx, 1);
-}
-
-#[gpui::test]
-fn held_append_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
-    held_recovery_allows_queued_duplicate(cx, 2);
-}
-
-#[gpui::test]
-fn held_replacement_copy_allows_queued_duplicate_and_applied_play(cx: &mut TestAppContext) {
-    held_recovery_allows_queued_duplicate(cx, 3);
 }
 
 // Capture the real worker receipt while recovery is held. Each test chooses
@@ -4347,7 +301,7 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
     let (revision, expected) = editor.update(&mut visual, |view, _| {
         let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
         view.select_section_metadata(Some(section));
-        view.play_start_at_beginning = false;
+        view.interaction.play_start_at_beginning = false;
         let expected = view.playback_start_frame();
         let revision = view.state.as_ref().unwrap().revision;
         let first = if copy_kind == 1 {
@@ -4615,21 +569,6 @@ fn held_recovery_allows_queued_duplicate(cx: &mut TestAppContext, copy_kind: u8)
     drop(environment);
 }
 
-#[gpui::test]
-fn applied_pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext) {
-    pointer_section_copy_plays_from_the_selected_copy(cx, 0);
-}
-
-#[gpui::test]
-fn appended_section_copy_with_gap_plays_from_the_selected_copy(cx: &mut TestAppContext) {
-    pointer_section_copy_plays_from_the_selected_copy(cx, 1);
-}
-
-#[gpui::test]
-fn replaced_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext) {
-    pointer_section_copy_plays_from_the_selected_copy(cx, 2);
-}
-
 fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, copy_kind: u8) {
     let environment = super::super::test_environment::Environment::new().unwrap();
     let recovery = environment.root().join("held-pointer-section.hex-journal");
@@ -4666,7 +605,7 @@ fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, co
     let original_revision = editor.update(&mut visual, |view, _| {
         let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
         view.select_section_metadata(Some(section));
-        view.play_start_at_beginning = false;
+        view.interaction.play_start_at_beginning = false;
         let revision = view.state.as_ref().unwrap().revision;
         let command = if copy_kind == 1 {
             Command::AppendArrangementSectionCopy {
@@ -4779,26 +718,31 @@ fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, co
             view.service.try_event().is_err(),
             "terminal must still be held"
         );
-        let observation = view.pending_publication_observation.as_mut().unwrap();
+        let observation = view
+            .audio_pub
+            .pending_publication_observation
+            .as_mut()
+            .unwrap();
         observation.output_identity += 1;
         assert!(
             view.section_copy_play_source().is_none(),
             "wrong output must refuse"
         );
-        view.pending_publication_observation
+        view.audio_pub
+            .pending_publication_observation
             .as_mut()
             .unwrap()
             .output_identity -= 1;
-        let epoch = view.selection_intent_epoch;
+        let epoch = view.interaction.selection_intent_epoch;
         view.advance_selection_intent();
         assert!(
             view.section_copy_play_source().is_none(),
             "changed selection must refuse"
         );
-        view.selection_intent_epoch = epoch;
-        view.play_start_at_beginning = true;
+        view.interaction.selection_intent_epoch = epoch;
+        view.interaction.play_start_at_beginning = true;
         assert_eq!(view.section_copy_play_start(), Some(0));
-        view.play_start_at_beginning = false;
+        view.interaction.play_start_at_beginning = false;
         view.toggle_play();
         assert_eq!(
             view.test_probes.last_transport_command,
@@ -4830,475 +774,6 @@ fn pointer_section_copy_plays_from_the_selected_copy(cx: &mut TestAppContext, co
     fixture.finish(cx);
 }
 
-#[gpui::test]
-fn applied_keyboard_section_copy_starts_before_its_terminal(cx: &mut TestAppContext) {
-    use std::sync::atomic::Ordering::Acquire;
-
-    let commands = vec![
-        Command::AddTrack {
-            name: "track".into(),
-        },
-        Command::AddArrangementSection {
-            name: "section".into(),
-            color: ElementColor::Blue,
-            start: BeatTime::from_quarters(8).unwrap(),
-            end: BeatTime::from_quarters(12).unwrap(),
-        },
-    ];
-    let mut fixture =
-        super::super::worker_ui_fixture::open_with_section_support(cx, commands, false, true);
-    let editor = fixture.editor.clone();
-    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
-    visual.run_until_parked();
-    let (source_revision, expected) = editor.update(&mut visual, |view, cx| {
-        let section = view.state.as_ref().unwrap().project.arrangement_sections()[0].id();
-        view.select_section_metadata(Some(section));
-        view.play_start_at_beginning = false;
-        let expected = view.playback_start_frame();
-        let revision = view.state.as_ref().unwrap().revision;
-        view.section_metadata(Command::DuplicateArrangementSection(section));
-        view.toggle_play();
-        assert!(
-            view.test_probes.last_transport_command.is_none(),
-            "unapplied source cannot start"
-        );
-        cx.notify();
-        (revision, expected)
-    });
-    let deadline = crate::test_wait::hang_deadline();
-    let observation = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(observation) =
-            editor.read_with(&visual, |view, _| view.service.try_arrangement_edit_view())
-        {
-            break observation;
-        }
-        assert!(Instant::now() < deadline, "committed section view");
-        std::thread::yield_now();
-    };
-    let terminal = loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        if let Ok(event) = editor.read_with(&visual, |view, _| view.service.try_event()) {
-            break event;
-        }
-        assert!(Instant::now() < deadline, "section terminal");
-        std::thread::yield_now();
-    };
-    assert!(terminal.error.is_none(), "{:?}", terminal.error);
-    let committed = observation.state.upgrade().unwrap();
-    editor.update(&mut visual, |view, cx| {
-        assert!(view.observe_duplicate_view(observation));
-        assert_eq!(view.state.as_ref().unwrap().revision, source_revision);
-        cx.notify();
-    });
-    visual.run_until_parked();
-    loop {
-        fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-        let ready = editor.update(&mut visual, |view, cx| {
-            view.tick(cx);
-            view.section_copy_play_source().is_some()
-        });
-        if ready {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "exact applied source and released fence"
-        );
-        std::thread::yield_now();
-    }
-    editor.update(&mut visual, |view, cx| {
-        assert_eq!(view.state.as_ref().unwrap().revision, source_revision);
-        assert!(Arc::ptr_eq(
-            &view.arrangement_rows_state().unwrap(),
-            &committed
-        ));
-        let pending = view.pending_publication_observation.as_mut().unwrap();
-        pending.output_identity += 1;
-        assert!(
-            view.section_copy_play_source().is_none(),
-            "wrong output must not start"
-        );
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .output_identity -= 1;
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .context
-            .project_generation += 1;
-        assert!(
-            view.section_copy_play_source().is_none(),
-            "wrong generation must not start"
-        );
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .context
-            .project_generation -= 1;
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .context
-            .editor_revision += 1;
-        assert!(
-            view.section_copy_play_source().is_none(),
-            "wrong revision must not start"
-        );
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .context
-            .editor_revision -= 1;
-        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
-            &mut view.pending_publication_observation.as_mut().unwrap().state
-        else {
-            panic!("resident metadata")
-        };
-        metadata.requires_preroll = true;
-        assert!(
-            view.section_copy_play_source().is_none(),
-            "preroll must not be bypassed"
-        );
-        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
-            &mut view.pending_publication_observation.as_mut().unwrap().state
-        else {
-            panic!("resident metadata")
-        };
-        metadata.requires_preroll = false;
-        view.audio_status()
-            .unwrap()
-            .device_fault
-            .store(true, std::sync::atomic::Ordering::Release);
-        assert!(
-            view.section_copy_play_source().is_none(),
-            "faulted output must not start"
-        );
-        view.audio_status()
-            .unwrap()
-            .device_fault
-            .store(false, std::sync::atomic::Ordering::Release);
-        view.toggle_play();
-        assert_eq!(
-            view.test_probes.last_transport_command,
-            Some(
-                hex_engine::playback::PlaybackCommand::PlayFromWithNoteChase {
-                    frame: expected,
-                    note_chase: hex_engine::NoteChase::On,
-                }
-            )
-        );
-        cx.notify();
-    });
-    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
-    editor.read_with(&visual, |view, _| {
-        assert!(view.audio_status().unwrap().playing.load(Acquire))
-    });
-    editor.update(&mut visual, |view, _| {
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .output_identity += 1;
-        view.toggle_play();
-        assert_eq!(
-            view.test_probes.last_transport_command,
-            Some(hex_engine::playback::PlaybackCommand::Pause)
-        );
-        view.pending_publication_observation
-            .as_mut()
-            .unwrap()
-            .output_identity -= 1;
-    });
-    fixture.backend.render(&mut [[0.0; 2]; 512]).unwrap();
-    editor.read_with(&visual, |view, _| {
-        assert!(!view.audio_status().unwrap().playing.load(Acquire))
-    });
-    visual.run_until_parked();
-    editor.update(&mut visual, |view, cx| {
-        view.receive(terminal);
-        assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &committed));
-        cx.notify();
-    });
-    visual.run_until_parked();
-    fixture.finish(cx);
-}
-
-#[gpui::test]
-fn section_keys_during_a_pending_edit_queue_one_follow_up_or_refuse_visibly(
-    cx: &mut TestAppContext,
-) {
-    let sections = |editor: &Entity<EditorView>, cx: &mut TestAppContext| {
-        editor.read_with(cx, |v, _| {
-            v.state
-                .as_ref()
-                .unwrap()
-                .project
-                .arrangement_sections()
-                .iter()
-                .map(|s| s.id())
-                .collect::<Vec<_>>()
-        })
-    };
-    // (keys after the pending cmd-d, expected section count, first kept)
-    for (keys, count, kept) in [
-        // Back to back: duplicate, then delete of the same section.
-        ("backspace", 2, false),
-        // Latest wins: the delete is replaced by a second duplicate.
-        ("backspace cmd-d", 4, true),
-        // Undo orders behind the duplicate and drops the queued delete.
-        ("backspace cmd-z", 2, true),
-    ] {
-        let (handle, editor, ids) = fixture(cx);
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let a = editor.read_with(cx, |v, _| position(v, 2));
-        visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
-        visual.run_until_parked();
-        visual.simulate_keystrokes("cmd-d");
-        // The acknowledgement is delayed: nothing ticks the worker yet.
-        visual.simulate_keystrokes(keys);
-        editor.read_with(cx, |v, _| {
-            assert!(v.sections.pending.is_some(), "{keys}");
-            let queued = v.sections.queued.as_ref().map(|q| &q.command);
-            match keys {
-                "backspace" => assert!(
-                    matches!(queued, Some(Command::DeleteArrangementSection(id)) if *id == ids[0])
-                ),
-                "backspace cmd-d" => assert!(
-                    matches!(queued, Some(Command::DuplicateArrangementSection(id)) if *id == ids[0])
-                ),
-                _ => {
-                    assert!(queued.is_none());
-                    assert_eq!(&*v.status, "queued section edit cancelled by undo/redo");
-                }
-            }
-            if queued.is_some() {
-                assert_eq!(
-                    &*v.status,
-                    "section edit queued · applies after the current edit"
-                );
-            }
-        });
-        settle(&editor, &mut visual);
-        let after = sections(&editor, cx);
-        assert_eq!(after.len(), count, "{keys}: {after:?}");
-        assert_eq!(after.contains(&ids[0]), kept, "{keys}");
-        editor.read_with(cx, |v, _| {
-            assert!(v.error.is_none(), "{keys}: {:?}", v.error)
-        });
-    }
-
-    // g queues a merge behind another in-flight section edit.
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    let (a, b) = editor.read_with(cx, |v, _| (position(v, 2), position(v, 10)));
-    visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
-    let shift = Modifiers {
-        shift: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(b, MouseButton::Left, shift);
-    visual.simulate_mouse_up(b, MouseButton::Left, shift);
-    visual.run_until_parked();
-    editor.update(cx, |v, _| {
-        v.section_metadata(Command::SetArrangementSectionColor {
-            section: ids[1],
-            color: ElementColor::Green,
-        });
-        assert!(v.sections.pending.is_some());
-    });
-    visual.simulate_keystrokes("g");
-    editor.read_with(cx, |v, _| {
-        assert!(matches!(
-            v.sections.queued.as_ref().map(|q| &q.command),
-            Some(Command::MergeArrangementSections(_))
-        ));
-    });
-    settle(&editor, &mut visual);
-    assert_eq!(sections(&editor, cx), vec![ids[0]]);
-
-    // Pointer and split input cannot wait for the edit; they refuse visibly.
-    editor.update(cx, |v, _| {
-        v.section_metadata(Command::SetArrangementSectionColor {
-            section: ids[0],
-            color: ElementColor::Blue,
-        });
-        assert!(v.sections.pending.is_some());
-    });
-    visual.simulate_mouse_down(a, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(a, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| {
-        assert_eq!(v.error.as_deref(), Some(SECTION_BUSY));
-        assert!(v.sections.gesture.is_none());
-    });
-    settle(&editor, &mut visual);
-}
-#[gpui::test]
-fn resize_keeps_one_selected_surface_every_frame_through_delayed_ack(cx: &mut TestAppContext) {
-    let platform = Modifiers {
-        platform: true,
-        alt: true,
-        ..Modifiers::default()
-    };
-    let alt = Modifiers {
-        alt: true,
-        ..Modifiers::default()
-    };
-    // (touching seam, modifiers, release quarter)
-    for (seam, modifiers, end) in [
-        (false, Modifiers::default(), 7),
-        (false, platform, 7),
-        (false, alt, 7),
-        (true, Modifiers::default(), 6),
-        (true, platform, 6),
-    ] {
-        let (handle, editor, ids) = if seam {
-            touching_fixture(cx)
-        } else {
-            fixture(cx)
-        };
-        let mut visual = VisualTestContext::from_window(handle, cx);
-        visual.run_until_parked();
-        let edge = bounds(&mut visual, 0);
-        let down = point(
-            if seam {
-                edge.right()
-            } else {
-                edge.right() - px(1.0)
-            },
-            edge.origin.y + px(12.0),
-        );
-        let to = editor.read_with(cx, |v, _| position(v, end));
-        visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
-        let mut frames = Vec::new();
-        // Sub-grid steps cross snap points, so the pointer alternates
-        // between inside and outside the snapped preview edge.
-        for step in 1..=8 {
-            let x = down.x + (to.x - down.x) * (step as f32 / 8.0);
-            visual.simulate_mouse_move(point(x, down.y), MouseButton::Left, modifiers);
-            visual.run_until_parked();
-            assert!(
-                visual
-                    .debug_bounds("arrangement-section-selected-trailing-0")
-                    .is_some(),
-                "seam {seam} {modifiers:?} step {step}: section lost its selected edge"
-            );
-            editor.read_with(cx, |v, _| {
-                assert_eq!(v.sections.selected, Some(ids[0]));
-                assert!(v.sections.gesture.is_some());
-            });
-            frames.push((
-                painted_fill(&mut visual, 0),
-                painted_fill_for(&mut visual, "arrangement-section-header-0"),
-            ));
-        }
-        visual.simulate_mouse_up(to, MouseButton::Left, modifiers);
-        let event = editor.update(cx, |v, _| next(&v.service));
-        assert!(event.error.is_none(), "{:?}", event.error);
-        // Delayed acknowledgement: completed repaints keep the frozen look.
-        for _ in 0..3 {
-            visual.update(|window, _| window.refresh());
-            visual.run_until_parked();
-            assert!(
-                visual
-                    .debug_bounds("arrangement-section-selected-trailing-0")
-                    .is_some()
-            );
-            frames.push((
-                painted_fill(&mut visual, 0),
-                painted_fill_for(&mut visual, "arrangement-section-header-0"),
-            ));
-        }
-        assert!(frames[0].0.is_some() && frames[0].1.is_some(), "{frames:?}");
-        for (index, frame) in frames.iter().enumerate() {
-            assert_eq!(
-                frame, &frames[0],
-                "seam {seam} {modifiers:?} frame {index}: selected surface changed"
-            );
-        }
-        editor.update(cx, |v, cx| {
-            v.receive(event);
-            cx.notify();
-        });
-        visual.run_until_parked();
-        assert!(
-            visual
-                .debug_bounds("arrangement-section-selected-trailing-0")
-                .is_some()
-        );
-        editor.read_with(cx, |v, _| {
-            assert_eq!(v.sections.selected, Some(ids[0]));
-            assert_eq!(
-                v.state
-                    .as_ref()
-                    .unwrap()
-                    .project
-                    .arrangement_section(ids[0])
-                    .unwrap()
-                    .end(),
-                BeatTime::from_quarters(end).unwrap()
-            );
-        });
-    }
-}
-#[gpui::test]
-fn g_merges_a_click_and_shift_click_section_span(cx: &mut TestAppContext) {
-    g_merge_case(cx, false, false);
-}
-#[gpui::test]
-fn g_merges_a_leftward_shift_click_span(cx: &mut TestAppContext) {
-    g_merge_case(cx, false, true);
-}
-#[gpui::test]
-fn g_merges_a_leftward_shift_click_span_under_section_focus(cx: &mut TestAppContext) {
-    g_merge_case(cx, true, true);
-}
-#[gpui::test]
-fn g_merges_a_shift_click_span_under_section_focus(cx: &mut TestAppContext) {
-    g_merge_case(cx, true, false);
-}
-#[gpui::test]
-fn g_merges_a_selected_span_outside_strict_section_focus_and_explains_empty(
-    cx: &mut TestAppContext,
-) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.run_until_parked();
-    // Nothing selected: g explains instead of silently doing nothing.
-    visual.simulate_keystrokes("g");
-    editor.read_with(cx, |v, _| {
-        assert!(
-            v.error
-                .as_ref()
-                .is_some_and(|e| e.contains("select a clip, a time range or two sections")),
-            "{:?}",
-            v.error
-        );
-    });
-    editor.update(cx, |v, _| {
-        v.error = None;
-        v.sections.selected = Some(ids[0]);
-        v.sections.selection = ids.to_vec();
-        // Main no longer owns the device view, so the strict section-focus
-        // test fails, yet the section span is the only grouping selection.
-        v.device_panel.main_selected = None;
-    });
-    visual.simulate_keystrokes("g");
-    editor.read_with(cx, |v, _| {
-        assert!(
-            matches!(
-                v.sections.pending.as_ref().map(|p| &p.command),
-                Some(Command::MergeArrangementSections(_))
-            ),
-            "{:?}",
-            v.error
-        );
-    });
-}
 fn g_merge_case(cx: &mut TestAppContext, focused: bool, leftward: bool) {
     let (handle, editor, ids) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -5343,173 +818,582 @@ fn g_merge_case(cx: &mut TestAppContext, focused: bool, leftward: bool) {
             v.status,
             v.selected_track,
             v.selected_clip,
-            v.time_selection.map(|t| (t.anchor_frame, t.end_frame)),
+            v.interaction
+                .time_selection
+                .map(|t| (t.anchor_frame, t.end_frame)),
             v.device_panel.main_selected,
         );
     });
 }
 
 #[gpui::test]
-fn off_target_clip_release_does_not_block_section_loop_scope(cx: &mut TestAppContext) {
-    let (handle, editor, _) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
-    visual.run_until_parked();
+fn launch_action_geometry_matches_raw_exclusion_without_enlarging_tiny_sections(
+    cx: &mut TestAppContext,
+) {
+    for empty in [false, true] {
+        let (handle, editor, ids) = fixture(cx);
+        if empty {
+            editor.update(cx, |view, cx| {
+                let track = view.state.as_ref().unwrap().project.tracks()[0].id();
+                view.service
+                    .submit(Request::Edit(Command::RemoveTrack(track)))
+                    .unwrap();
+                let event = next(&view.service);
+                assert!(event.error.is_none());
+                view.receive(event);
+                cx.notify();
+            });
+        }
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        for width in [880.0, 1440.0] {
+            visual.simulate_resize(gpui::size(px(width), px(700.0)));
+            for start in [0, 72_000] {
+                editor.update(cx, |view, cx| {
+                    view.viewport = Some(Viewport {
+                        start,
+                        length: 384_000,
+                    });
+                    cx.notify();
+                });
+                visual.run_until_parked();
+                for (index, id) in ids.iter().enumerate() {
+                    let header = visual
+                        .debug_bounds(Box::leak(
+                            format!("arrangement-section-header-{index}").into_boxed_str(),
+                        ))
+                        .unwrap();
+                    let selector =
+                        Box::leak(format!("section-launch-{}", id.value()).into_boxed_str());
+                    let expected = super::super::section_launch::action_bounds(
+                        f32::from(header.left()),
+                        f32::from(header.top()),
+                        f32::from(header.size.width),
+                    );
+                    assert_eq!(visual.debug_bounds(selector), expected);
+                    if let Some(bounds) = expected {
+                        let at = bounds.center();
+                        editor.read_with(cx, |view, _| {
+                            assert!(
+                                view.pointer_hits_section_launch(f32::from(at.x), f32::from(at.y))
+                            );
+                            assert!(
+                                !view.pointer_hits_section_launch(
+                                    f32::from(header.left()) + 1.0,
+                                    f32::from(at.y)
+                                ),
+                                "leading resize edge remains available"
+                            );
+                        });
+                    }
+                }
+            }
+        }
+        let play = visual
+            .debug_bounds(Box::leak(
+                format!("section-launch-{}", ids[1].value()).into_boxed_str(),
+            ))
+            .unwrap()
+            .center();
+        let before = editor.read_with(cx, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
+        for range_key in [false, true] {
+            editor.update(cx, |view, _| {
+                view.error = None;
+                view.interaction.time_selection_key_held = range_key;
+            });
+            visual.simulate_mouse_down(play, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(play, MouseButton::Left, Modifiers::default());
+            editor.read_with(cx, |view, _| {
+                assert_eq!(
+                    view.error.as_deref(),
+                    Some("section playback source is unavailable")
+                );
+                assert!(!view.sections.held());
+                assert!(view.interaction.time_selection_gesture.is_none());
+                assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
+            });
+        }
+        editor.update(cx, |view, _| {
+            view.interaction.time_selection_key_held = false
+        });
+        let tiny = editor.update(cx, |view, cx| {
+            let start = BeatTime::from_quarters(6).unwrap();
+            view.service
+                .submit(Request::EditArrangementSection {
+                    project_generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    command: Command::AddArrangementSection {
+                        name: "tiny".into(),
+                        color: ElementColor::Red,
+                        start,
+                        end: BeatTime::from_raw(start.raw() + 1),
+                    },
+                })
+                .unwrap();
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            let Some(Created::ArrangementSection(id)) = event.created else {
+                panic!("tiny section");
+            };
+            view.receive(event);
+            cx.notify();
+            id
+        });
+        visual.run_until_parked();
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("section-launch-{}", tiny.value()).into_boxed_str()
+                ))
+                .is_none()
+        );
+        editor.update(cx, |view, cx| {
+            view.service
+                .submit(Request::EditArrangementSection {
+                    project_generation: view.project_generation,
+                    revision: view.state.as_ref().unwrap().revision,
+                    command: Command::RemoveArrangementSection(ids[1]),
+                })
+                .unwrap();
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        visual.update(|window, cx| {
+            let view = editor.read(cx);
+            assert!(!view.sections.launch_focus.borrow().contains_key(&ids[1]));
+            assert!(view.focus.is_focused(window));
+        });
+    }
+}
 
-    let clip = editor.read_with(cx, |v, _| {
-        v.state.as_ref().unwrap().project.tracks()[0].midi_clips()[0].id()
+#[gpui::test]
+fn section_autoplay_click_dispatches_stateless_loop_and_toggle_off_cancels(
+    cx: &mut TestAppContext,
+) {
+    let _output_fixture_guard =
+        crate::editor::device_panel::tests::eq_ui_tests::graph_layout_tests::status_fixture_guard();
+    use std::sync::Arc;
+    let (handle, editor, ids) = fixture(cx);
+    let deadline = crate::test_wait::hang_deadline();
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err(error)
+                if error == "audio output is open or still shutting down"
+                    && Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("{error}"),
+        }
+    };
+    let region = hex_project::LoopRegion::new(0, 96_000, true).unwrap();
+    editor.update(cx, |view, _| {
+        view.service
+            .submit(Request::Edit(Command::SetLoopRegion {
+                start: region.start(),
+                end: region.end(),
+                enabled: true,
+            }))
+            .unwrap();
+        let event = next(&view.service);
+        assert!(event.error.is_none());
+        view.receive(event);
+        view.audio_pub.pending_playback = None;
     });
-    let trim_selector =
-        Box::leak(format!("midi-clip-trim-right-{}", clip.value()).into_boxed_str());
-    let trim_point = visual.debug_bounds(trim_selector).unwrap().center();
-
-    // 1. Clicking a trim handle on the lane canvas must retire pointer_down.
-    visual.simulate_mouse_down(trim_point, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_some()));
-    visual.simulate_mouse_up(trim_point, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
-
-    // 2. Pressing a clip header and releasing off the clip must retire pointer_down
-    //    so selecting a section and pressing L sets the loop scope cleanly.
-    let header_selector = Box::leak(format!("clip-drag-surface-{}", clip.value()).into_boxed_str());
-    let header_point = visual.debug_bounds(header_selector).unwrap().center();
-    visual.simulate_mouse_down(header_point, MouseButton::Left, Modifiers::default());
-    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_some()));
-    visual.simulate_mouse_up(
-        point(px(2.0), px(2.0)),
-        MouseButton::Left,
-        Modifiers::default(),
+    let (source, project_generation, editor_revision) = editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        (
+            state.project.clone(),
+            view.project_generation,
+            state.revision,
+        )
+    });
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &source,
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
     );
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
-
-    // 3. Even if a stale pointer_down survived a lost release, a fresh section
-    //    click clears it so L immediately sets the section loop scope.
-    editor.update(cx, |v, _| {
-        v.remember_pointer_down(v.project_generation, clip, None, 10.0);
-        assert!(v.pointer_down.is_some());
+    assert!(!prepared.arrangement_seek_requires_preroll());
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    let audio_revision = control
+        .publish_with_admission_and_source_on_control(
+            hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+                .unwrap(),
+            hex_audio::prepared::PublicationPolicy::InheritRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    backend.render(&mut [[0.0; 2]; 1]).unwrap();
+    let client = output.take_client().unwrap();
+    editor.update(cx, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "test audio".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        let state = Arc::clone(view.state.as_ref().unwrap());
+        view.audio_pub.applied_project_revision = Some(state.revision);
+        view.audio_pub.audible_playback = Some(super::super::PlaybackCandidate {
+            clip_preview_identity: None,
+            worker_requires_preroll: Some(false),
+            observation: None,
+            audio_revision,
+            project_generation: view.project_generation,
+            state,
+            prepared_revision: Some(prepared),
+            seek_request_id: None,
+            device_preview_identity: None,
+            tuning_preview_identity: None,
+        });
+        view.session_grid.quantization = hex_engine::LaunchQuantization::QuarterTriplet;
+        view.toggle_section_autoplay();
+        cx.notify();
     });
-    let chorus = editor.read_with(cx, |v, _| position(v, 10));
-    visual.simulate_mouse_down(chorus, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(chorus, MouseButton::Left, Modifiers::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
-    editor.read_with(cx, |v, _| assert!(v.pointer_down.is_none()));
-
-    crate::editor::section_launch::test_tap_loop_key(&mut visual);
-    editor.read_with(cx, |v, _| {
-        assert_eq!(v.error, None);
+    let clicked = editor.read_with(cx, |view, _| position(view, 1));
+    visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(clicked, MouseButton::Left, Modifiers::default());
+    editor.update(cx, |view, _| {
+        view.tick_section_launch();
+        let pending = view
+            .audio_pub
+            .prepared_seek
+            .as_ref()
+            .expect("stationary section click prepares a seek even without stateful devices");
+        let section = pending.kind.section().unwrap();
+        assert_eq!(section.region, region);
+        assert_eq!(
+            section.quantization,
+            hex_engine::LaunchQuantization::QuarterTriplet
+        );
+        assert_eq!(view.sections.selected, Some(ids[0]));
+        assert_eq!(
+            view.state.as_ref().unwrap().project,
+            source,
+            "an already-matching loop needs no new history edit"
+        );
+        let cancellation = Arc::clone(&pending.worker_cancel);
+        view.toggle_section_autoplay();
+        assert!(cancellation.load(std::sync::atomic::Ordering::Acquire));
+        assert!(view.audio_pub.latched_seek_intent.is_none());
+        assert!(!view.section_autoplay);
+    });
+    // Turning autoplay off must still leave ordinary section dragging
+    // available on an actually playing output.
+    editor.update(cx, |view, _| {
+        view.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(hex_engine::PlaybackCommand::Play)
+            .unwrap();
+    });
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let end = editor.read_with(cx, |view, _| position(view, 12));
+    visual.simulate_mouse_down(clicked, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.audio_status()
+                .unwrap()
+                .playing
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
+        let gesture = view
+            .sections
+            .gesture
+            .as_ref()
+            .expect("live reorder capture");
         assert!(matches!(
-            v.test_probes.last_enqueued_edit,
-            Some(Command::SetLoopRegion { .. })
+            gesture.command,
+            Some(Command::ReorderSectionAfter { .. }) | Some(Command::ReorderSectionBefore { .. })
         ));
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert_eq!(view.state.as_ref().unwrap().project, source);
+    });
+    editor.update(cx, |view, _| {
+        view.cancel_section_pointer();
+    });
+    visual.update(|window, cx| {
+        window.cancel_pointer_capture_for(editor.entity_id(), cx);
+    });
+    visual.run_until_parked();
+    let selector = Box::leak(format!("section-launch-{}", ids[0].value()).into_boxed_str());
+    let target = visual
+        .debug_bounds(selector)
+        .expect("explicit section launch")
+        .center();
+    let selected = editor.read_with(cx, |view, _| view.sections.selected);
+    visual
+        .update(|window, cx| editor.read(cx).sections.launch_focus.borrow()[&ids[0]].focus(window));
+    visual.simulate_keystrokes("enter");
+    editor.read_with(cx, |view, _| {
+        let pending = view
+            .pending_loop_region()
+            .expect("enter disables the old loop");
+        assert_eq!(
+            pending,
+            hex_project::LoopRegion::new(0, 96_000, false).unwrap()
+        );
+        assert!(!view.section_autoplay);
+        assert!(!view.sections.held());
+        assert_eq!(view.sections.selected, selected);
+        assert_eq!(view.state.as_ref().unwrap().project, source);
+    });
+    editor.update(cx, |view, _| {
+        view.cancel_section_launch_wait();
+        view.invalidate_prepared_seek();
+        view.persistence.save_dialog_open = true;
+    });
+    visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(!view.section_launch_waiting());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
+        assert!(
+            view.audio_pub
+                .prepared_seek
+                .as_ref()
+                .is_none_or(|pending| pending.cancelled)
+        );
+    });
+    editor.update(cx, |view, _| {
+        view.persistence.save_dialog_open = false;
+        view.audio = None;
     });
 }
 
 #[gpui::test]
-fn section_copy_then_immediate_pointer_edit_succeeds_without_refusal_or_flicker(
+fn section_lower_body_paints_all_tracks_without_section_edit_even_when_focused(
     cx: &mut TestAppContext,
 ) {
-    let (handle, editor, ids) = fixture(cx);
-    let mut visual = VisualTestContext::from_window(handle, cx);
-    visual.update(|window, _| window.activate_window());
-    visual.run_until_parked();
-
-    // Select section 0 (beats 0..4) and trigger Cmd+D section copy without settling yet.
-    let section_a = editor.read_with(cx, |v, _| position(v, 2));
-    visual.simulate_mouse_down(section_a, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(section_a, MouseButton::Left, Modifiers::default());
-    visual.run_until_parked();
-    visual.simulate_keystrokes("cmd-d");
-
-    editor.read_with(cx, |v, _| {
-        assert!(v.sections.pending.is_some(), "section copy is in flight");
-        assert_eq!(v.worker_requests_pending, 1);
+    for focused in [false, true] {
+        let (handle, editor, ids) = fixture(cx);
+        editor.update(cx, |view, cx| {
+            assert!(view.enqueue(Request::Edit(Command::AddTrack {
+                name: "hidden empty track".into()
+            })));
+            let event = next(&view.service);
+            assert!(event.error.is_none());
+            view.receive(event);
+            view.section_autoplay = false;
+            view.test_probes.last_enqueued_edit = None;
+            cx.notify();
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let (header, start, end) = editor.read_with(cx, |view, _| {
+            let [_, top, _, height] = view.section_layout().unwrap();
+            let a = position(view, 1);
+            let b = position(view, 3);
+            (
+                point(a.x, px(top + 6.0)),
+                point(a.x, px(top + height * 0.75)),
+                point(b.x, px(top + height * 0.75)),
+            )
+        });
+        visual.simulate_mouse_down(header, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(header, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.sections.selected, Some(ids[0]))
+        });
+        if focused {
+            visual.simulate_keystrokes("q");
+            visual.run_until_parked();
+        }
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        let hidden = before.tracks()[1].id();
+        if focused {
+            assert!(
+                visual
+                    .debug_bounds(Box::leak(
+                        format!("arrangement-lane-{}", hidden.value()).into_boxed_str()
+                    ))
+                    .is_none()
+            );
+        }
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.sections.gesture.is_none(),
+                "lower section body must delegate to the time-selection owner"
+            );
+            assert!(view.interaction.time_selection_gesture.is_some());
+            assert!(
+                view.sections.cursor.is_none(),
+                "body range must not retain a second section edit cursor"
+            );
+        });
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("main-project-time-selection").is_some());
+        visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(cx, |view, _| {
+            let range = view
+                .normalized_time_selection()
+                .expect("completed main range");
+            let map = before.tempo_map();
+            assert_eq!(
+                (range.start(), range.end()),
+                (
+                    map.beat_to_frame(BeatTime::ONE).unwrap(),
+                    map.beat_to_frame(BeatTime::from_quarters(3).unwrap())
+                        .unwrap()
+                )
+            );
+            assert_eq!(
+                range.tracks(),
+                before
+                    .tracks()
+                    .iter()
+                    .map(|track| track.id())
+                    .collect::<Vec<_>>()
+            );
+            assert!(view.interaction.time_selection_project_scope);
+            assert!(view.sections.pending.is_none());
+            assert!(view.test_probes.last_enqueued_edit.is_none());
+            assert_eq!(view.state.as_ref().unwrap().project, before);
+            assert_eq!(view.arrangement_focus.projection.enabled, focused);
+            assert!(
+                !focused || view.sections.selected == Some(ids[0]),
+                "focus retains its section driver while range scope includes hidden tracks"
+            );
+        });
         assert!(
-            v.section_pointer_available(),
-            "section pointer gestures must stay available during section copy"
+            !visual.update(|window, app| editor.read(app).section_has_focus(window)),
+            "range owns keyboard actions while Q keeps its display driver"
         );
-        assert!(
-            v.drag_available(),
-            "clip dragging must stay available during section copy"
-        );
-        assert!(
-            !v.track_gain_edit_blocked(),
-            "track volume must stay available during section copy"
-        );
-        assert_eq!(v.error, None);
-    });
-
-    // Immediately drag section 0's trailing edge (beat 4 -> beat 6) with Option+Cmd
-    // (marker-only resize) BEFORE the section copy terminal arrives.
-    let edge = editor.read_with(cx, |v, _| {
-        let p = position(v, 4);
-        point(p.x - px(2.0), p.y)
-    });
-    let target = editor.read_with(cx, |v, _| position(v, 6));
-    let marker_only = Modifiers {
-        alt: true,
-        platform: true,
-        ..Modifiers::default()
-    };
-    visual.simulate_mouse_down(edge, MouseButton::Left, marker_only);
-    visual.simulate_mouse_move(target, Some(MouseButton::Left), marker_only);
-    visual.run_until_parked();
-    let held_end = editor.read_with(cx, |v, _| {
-        v.sections
-            .gesture
-            .as_ref()
-            .and_then(|g| g.display.markers.iter().find(|m| m.id == Some(ids[0])))
-            .map(|m| m.end)
-    });
-    assert_eq!(
-        held_end,
-        Some(BeatTime::from_quarters(6).unwrap()),
-        "pointer drag during pending section copy must preview new edge"
-    );
-
-    visual.simulate_mouse_up(target, MouseButton::Left, marker_only);
-    visual.run_until_parked();
-    editor.read_with(cx, |v, _| {
-        assert_eq!(
-            v.error, None,
-            "section pointer edit during section copy must not show SECTION_BUSY refusal"
-        );
-        assert!(
-            v.sections.queued.is_some(),
-            "released section edit must queue behind the in-flight copy"
-        );
-        let queued_end = v
-            .sections
-            .queued
-            .as_ref()
-            .and_then(|q| q.display.as_ref())
-            .and_then(|d| d.markers.iter().find(|m| m.id == Some(ids[0])))
-            .map(|m| m.end);
-        assert_eq!(
-            queued_end,
-            Some(BeatTime::from_quarters(6).unwrap()),
-            "queued pointer edit must keep its frozen display without release flicker"
-        );
-    });
-
-    // Settle both the section copy and the queued resize edit.
-    settle(&editor, &mut visual);
-    editor.read_with(cx, |v, _| {
-        assert_eq!(v.error, None);
-        assert!(v.sections.pending.is_none());
-        assert!(v.sections.queued.is_none());
-        let project = &v.state.as_ref().unwrap().project;
-        assert_eq!(
-            project.arrangement_sections().len(),
-            3,
-            "section copy must commit canonically"
-        );
-        let first = project.arrangement_section(ids[0]).unwrap();
-        assert_eq!(
-            first.end(),
-            BeatTime::from_quarters(6).unwrap(),
-            "immediate follow-up resize must commit canonically"
-        );
-    });
+        visual.simulate_keystrokes("cmd-c");
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.test_probes.last_time_request, Some(("copy", None)))
+        });
+    }
 }
+
+#[gpui::test]
+fn section_has_opaque_chamfered_fill_and_compact_header_across_palettes_and_layouts(
+    cx: &mut TestAppContext,
+) {
+    struct RestoreTheme(hex_preferences::ThemePreferences);
+    impl Drop for RestoreTheme {
+        fn drop(&mut self) {
+            theme::apply_preferences(self.0);
+        }
+    }
+    let _restore = RestoreTheme(theme::preferences());
+    let (handle, editor, _) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    for (width, palette) in [
+        (880.0, hex_preferences::ThemePreferences::default()),
+        (
+            1280.0,
+            hex_preferences::ThemePreferences {
+                background: hex_preferences::RgbColor::new(225, 229, 238),
+                text: hex_preferences::RgbColor::new(24, 27, 34),
+                primary: hex_preferences::RgbColor::new(145, 25, 45),
+                secondary: hex_preferences::RgbColor::new(16, 70, 145),
+            },
+        ),
+    ] {
+        theme::apply_preferences(palette);
+        editor.update(cx, |view, cx| {
+            view.viewport = Some(Viewport {
+                start: 24_000,
+                length: 240_000,
+            });
+            cx.notify();
+        });
+        visual.simulate_resize(gpui::size(px(width), px(600.0)));
+        visual.simulate_mouse_move(point(px(4.0), px(4.0)), None, Modifiers::default());
+        visual.run_until_parked();
+        let body = bounds(&mut visual, 0);
+        let header = visual
+            .debug_bounds("arrangement-section-header-0")
+            .expect("actual section header");
+        assert!((f32::from(header.top() - body.top())).abs() <= 1.0);
+        assert!(
+            (f32::from(header.size.height) - super::super::clip_name::CLIP_NAME_HEIGHT).abs()
+                <= 0.1,
+            "header remains a fixed compact height"
+        );
+        assert!(header.right() <= body.right() + px(1.0));
+        let (fill, _, _) = theme::section_colors(ElementColor::Blue, false, false);
+        assert_eq!(
+            painted_fill(&mut visual, 0),
+            Some(rgb(fill).into()),
+            "opaque tier fill"
+        );
+        let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+        let fills: Vec<_> = visual
+            .rendered_filled_quads("arrangement-section-0")
+            .into_iter()
+            .filter(|(_, c)| *c == gpui::Background::from(rgb(fill)))
+            .collect();
+        assert!(
+            fills.iter().any(
+                |(b, _)| (b.bottom() / scale - f32::from(body.bottom())).abs() < 0.1
+                    && b.right() / scale < f32::from(body.right()) - 1.0
+            ),
+            "cut leaves the bottom-right corner unfilled"
+        );
+        for (at, cursor) in [
+            (header.center(), gpui::CursorStyle::OpenHand),
+            (
+                point(body.center().x, header.bottom() + px(1.0)),
+                gpui::CursorStyle::Arrow,
+            ),
+            (
+                point(body.right() - px(1.0), body.top() + body.size.height * 0.75),
+                gpui::CursorStyle::ResizeRightBracket,
+            ),
+        ] {
+            visual.simulate_mouse_move(at, None, Modifiers::default());
+            visual.run_until_parked();
+            assert_eq!(visual.rendered_cursor_style(), Some(cursor));
+        }
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, before)
+        });
+    }
+}
+
+#[path = "ui_tests/creation_and_selection_tests.rs"]
+mod creation_and_selection_tests;
+#[path = "ui_tests/drag_and_copy_tests.rs"]
+mod drag_and_copy_tests;
+#[path = "ui_tests/edit_and_menu_tests.rs"]
+mod edit_and_menu_tests;
+#[path = "ui_tests/playback_and_loop_tests.rs"]
+mod playback_and_loop_tests;

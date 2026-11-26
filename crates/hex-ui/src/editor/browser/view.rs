@@ -14,7 +14,7 @@ impl EditorView {
         }) = payload.destination.get()
         {
             let state = self.state.as_ref()?;
-            let body = self.arrangement_bounds?;
+            let body = self.timeline_caches.arrangement_bounds?;
             let viewport = self.visible_viewport(state.timeline_frames);
             let timeline_width = body.width - self.track_header_width();
             if !timeline_width.is_finite() || timeline_width <= 0.0 || viewport.length == 0 {
@@ -109,7 +109,7 @@ impl EditorView {
                                 start,
                                 visible_start,
                                 visible_end,
-                                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                                std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                                 crate::theme::color(crate::theme::PaletteRole::Waveform),
                             )
                         }),

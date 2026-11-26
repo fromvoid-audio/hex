@@ -55,7 +55,7 @@ pub(in crate::editor) fn render_body(
         .w(px(crate::device_composition::GENERIC_FRAME_WIDTH))
         .flex_col()
         .min_w_0();
-    let restoring = view.stopped_playback_restore.is_some();
+    let restoring = view.audio_pub.stopped_playback_restore.is_some();
     if !view
         .device_panel
         .vst3_parameters
@@ -454,7 +454,7 @@ pub(in crate::editor) fn follow_display(
             }),
         );
     };
-    let restoring = view.stopped_playback_restore.is_some();
+    let restoring = view.audio_pub.stopped_playback_restore.is_some();
     if restoring || !row.editable || row.metadata_revision == 0 || panel.source.is_none() {
         let pending = panel.follow_knob.as_ref().and_then(|(current, knob)| {
             (*current == id
@@ -502,7 +502,9 @@ pub(in crate::editor) fn select_host_automation_lane(
     parameter: u32,
     cx: &mut Context<EditorView>,
 ) {
-    if view.stopped_playback_restore.is_some() || current_context(view) != Some(query.context) {
+    if view.audio_pub.stopped_playback_restore.is_some()
+        || current_context(view) != Some(query.context)
+    {
         return;
     }
     let Some(panel) = view.device_panel.vst3_parameters.panels.get(&query.device) else {
@@ -541,7 +543,7 @@ pub(in crate::editor) fn show_automation_menu(
     window: &mut gpui::Window,
     cx: &mut Context<EditorView>,
 ) -> bool {
-    if view.stopped_playback_restore.is_some()
+    if view.audio_pub.stopped_playback_restore.is_some()
         || current_context(view) != Some(query.context)
         || view
             .audio

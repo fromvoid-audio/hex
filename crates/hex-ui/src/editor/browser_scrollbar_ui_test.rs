@@ -31,7 +31,7 @@ fn browser_thumb_tracks_wheel_and_drag_without_selection_or_audition(cx: &mut Te
             view.browser.playback_generation,
             view.browser.preview_preparations,
             view.pending_requests.len(),
-            view.pending_audio_commands.len(),
+            view.audio_pub.pending_audio_commands.len(),
         )
     });
     let initial = editor.read_with(visual, |view, _| {
@@ -68,7 +68,7 @@ fn browser_thumb_tracks_wheel_and_drag_without_selection_or_audition(cx: &mut Te
                 view.browser.playback_generation,
                 view.browser.preview_preparations,
                 view.pending_requests.len(),
-                view.pending_audio_commands.len()
+                view.audio_pub.pending_audio_commands.len()
             ),
             before
         );

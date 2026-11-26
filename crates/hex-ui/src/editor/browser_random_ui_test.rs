@@ -45,7 +45,7 @@ fn random_button_and_r_reveal_offscreen_audio_and_share_auto_audition(cx: &mut T
         assert!(view.browser.selected_index > 500);
         assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &state));
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert!(view.test_probes.last_enqueued_import_to_track.is_none());
         assert!(view.test_probes.last_enqueued_import_to_new_track.is_none());
         view.browser.selected_index

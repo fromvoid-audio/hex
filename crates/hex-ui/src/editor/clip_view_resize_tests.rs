@@ -88,7 +88,7 @@ fn shared_splitters_cancel_button_loss_and_replaced_source_without_edits(cx: &mu
                 assert_eq!(view.state.as_ref().unwrap().project, before.project);
                 assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
                 assert!(view.pending_requests.is_empty());
-                assert!(view.pending_audio_commands.is_empty());
+                assert!(view.audio_pub.pending_audio_commands.is_empty());
             });
         }
     }
@@ -289,7 +289,7 @@ fn clip_detail_pointer_resize_collapse_restore_and_fixed_devices(cx: &mut TestAp
         );
         editor.read_with(visual, |view, _| {
             assert!(view.pending_requests.is_empty());
-            assert!(view.pending_audio_commands.is_empty());
+            assert!(view.audio_pub.pending_audio_commands.is_empty());
         });
     }
 }

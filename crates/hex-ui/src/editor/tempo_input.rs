@@ -162,7 +162,7 @@ mod tests {
         let mut visual = VisualTestContext::from_window(handle, cx);
         for cursor in [0, 48_000, 96_000] {
             editor.update(cx, |view, cx| {
-                view.offline_cursor = cursor;
+                view.audio_pub.offline_cursor = cursor;
                 cx.notify();
             });
             visual.run_until_parked();

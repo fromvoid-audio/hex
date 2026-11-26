@@ -184,7 +184,7 @@ fn steady_playback_ticks_do_not_rerender_root_editor_view(cx: &mut TestAppContex
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.audible_playback = Some(crate::editor::PlaybackCandidate {
+        view.audio_pub.audible_playback = Some(crate::editor::PlaybackCandidate {
             clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: Some(Arc::clone(&observation)),
@@ -461,11 +461,15 @@ fn single_track_clip_drag_retains_cached_scene_replay_on_untouched_tracks(cx: &m
 
     let (builds_at_drag_start, epochs_at_drag_start): (Vec<usize>, Vec<u64>) =
         editor.read_with(&visual, |view, cx| {
-            assert!(view.active_clip_drag.is_some(), "clip drag must be active");
+            assert!(
+                view.interaction.active_clip_drag.is_some(),
+                "clip drag must be active"
+            );
             let builds = tracks
                 .iter()
                 .map(|&track| {
-                    view.clip_content_cache
+                    view.timeline_caches
+                        .clip_content_cache
                         .build_count(track, cx)
                         .expect("cached clip contents entity")
                 })
@@ -473,7 +477,8 @@ fn single_track_clip_drag_retains_cached_scene_replay_on_untouched_tracks(cx: &m
             let epochs = tracks
                 .iter()
                 .map(|&track| {
-                    view.clip_content_cache
+                    view.timeline_caches
+                        .clip_content_cache
                         .epoch(track, cx)
                         .expect("cached clip contents epoch")
                 })
@@ -496,7 +501,8 @@ fn single_track_clip_drag_retains_cached_scene_replay_on_untouched_tracks(cx: &m
             let builds = tracks
                 .iter()
                 .map(|&track| {
-                    view.clip_content_cache
+                    view.timeline_caches
+                        .clip_content_cache
                         .build_count(track, cx)
                         .expect("cached clip contents entity")
                 })
@@ -504,7 +510,8 @@ fn single_track_clip_drag_retains_cached_scene_replay_on_untouched_tracks(cx: &m
             let epochs = tracks
                 .iter()
                 .map(|&track| {
-                    view.clip_content_cache
+                    view.timeline_caches
+                        .clip_content_cache
                         .epoch(track, cx)
                         .expect("cached clip contents epoch")
                 })
@@ -621,22 +628,22 @@ fn pulsing_edit_cursor_and_locked_play_start_do_not_rerender_editor_view_or_pin_
     editor.update(&mut visual, |view, cx| {
         view.audio_detail.clip_view_open = false;
         view.mode = EditorMode::Arrangement;
-        view.play_start_at_beginning = false;
+        view.interaction.play_start_at_beginning = false;
         view.selected_clip = None;
-        view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
+        view.interaction.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
             track: Some(tracks[0]),
             frame: 48_000,
             generation: view.project_generation,
             pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
             pulse_started: pulse_start,
         });
-        view.time_selection = Some(crate::editor::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(crate::editor::time_selection::TimeSelection {
             anchor_track: Some(tracks[0]),
             end_track: Some(tracks[0]),
             anchor_frame: 48_000,
             end_frame: 48_000,
         });
-        view.locked_play_start = Some(crate::editor::edit_cursor::EditCursor {
+        view.interaction.locked_play_start = Some(crate::editor::edit_cursor::EditCursor {
             track: None,
             frame: 96_000,
             generation: view.project_generation,
@@ -737,10 +744,10 @@ fn pulsing_edit_cursor_and_locked_play_start_do_not_rerender_editor_view_or_pin_
             editor.update(cx, |view, cx| {
                 if let Some(started) = Instant::now().checked_sub(Duration::from_millis(step * 100))
                 {
-                    if let Some(cursor) = view.edit_cursor.as_mut() {
+                    if let Some(cursor) = view.interaction.edit_cursor.as_mut() {
                         cursor.pulse_started = started;
                     }
-                    if let Some(locked) = view.locked_play_start.as_mut() {
+                    if let Some(locked) = view.interaction.locked_play_start.as_mut() {
                         locked.pulse_started = started;
                     }
                 }
@@ -804,7 +811,7 @@ fn audio_detail_playhead_isolates_from_editor_view_during_playback(cx: &mut Test
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.audible_playback = Some(crate::editor::PlaybackCandidate {
+        view.audio_pub.audible_playback = Some(crate::editor::PlaybackCandidate {
             clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: None,

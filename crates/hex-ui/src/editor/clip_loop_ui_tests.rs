@@ -201,7 +201,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
         };
         let target = drag(&mut f, "outer", 70.0, modifiers);
         f.editor.read_with(&f.visual, |v, _| {
-            assert!(v.time_selection_gesture.is_none());
+            assert!(v.interaction.time_selection_gesture.is_none());
             if midi {
                 assert!(matches!(
                     *v.midi_editor
@@ -214,6 +214,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
                 ));
             } else {
                 let p = v
+                    .interaction
                     .active_trim_drag
                     .as_ref()
                     .expect("held loop")
@@ -293,7 +294,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
             "released header keeps the prospective gradient until acknowledgement"
         );
         f.editor.read_with(&f.visual, |v, _| {
-            assert!(v.pending_trim.is_some());
+            assert!(v.interaction.pending_trim.is_some());
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert!(if midi {
                 matches!(
@@ -310,7 +311,7 @@ fn clip_loop_outer_real_pointer_retains_released_paint_and_one_worker_history_ed
         pump(&f.editor, &mut f.visual);
         let after = f.editor.read_with(&f.visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            assert!(v.pending_trim.is_none());
+            assert!(v.interaction.pending_trim.is_none());
             let project = &v.state.as_ref().unwrap().project;
             assert!(if midi {
                 project.midi_clip(f.clip).unwrap().looping()
@@ -375,7 +376,13 @@ fn audio_repeat_gap_drag_retains_marker_until_the_worker_ack(cx: &mut TestAppCon
         .debug_bounds("clip-repeat-marker-0")
         .expect("held repeat marker");
     f.editor.read_with(&f.visual, |v, _| {
-        let held = v.active_trim_drag.as_ref().unwrap().preview.borrow();
+        let held = v
+            .interaction
+            .active_trim_drag
+            .as_ref()
+            .unwrap()
+            .preview
+            .borrow();
         assert!(
             held.as_ref()
                 .unwrap()
@@ -391,13 +398,13 @@ fn audio_repeat_gap_drag_retains_marker_until_the_worker_ack(cx: &mut TestAppCon
     f.visual.run_until_parked();
     assert_eq!(f.visual.debug_bounds("clip-repeat-marker-0"), Some(marker));
     f.editor.read_with(&f.visual, |v, _| {
-        assert!(v.pending_trim.is_some());
+        assert!(v.interaction.pending_trim.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     pump(&f.editor, &mut f.visual);
     f.editor.read_with(&f.visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
-        assert!(v.pending_trim.is_none());
+        assert!(v.interaction.pending_trim.is_none());
         assert!(
             v.state
                 .as_ref()
@@ -476,9 +483,9 @@ fn clip_loop_first_boundary_keeps_outer_extent_and_escape_does_not_commit(cx: &m
             .update(|_, cx| assert_eq!(cx.active_drag_cursor_style(), None));
         f.editor.read_with(&f.visual, |v, _| {
             assert!(
-                v.active_trim_drag.is_none()
+                v.interaction.active_trim_drag.is_none()
                     && v.midi_editor.active_trim_drag.is_none()
-                    && v.pending_trim.is_none()
+                    && v.interaction.pending_trim.is_none()
             );
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -532,8 +539,8 @@ fn clip_loop_no_motion_stale_and_refused_capture_leave_no_edit(cx: &mut TestAppC
             f.visual.run_until_parked();
             f.editor.read_with(&f.visual, |v, _| {
                 assert!(
-                    v.pending_trim.is_none()
-                        && v.active_trim_drag.is_none()
+                    v.interaction.pending_trim.is_none()
+                        && v.interaction.active_trim_drag.is_none()
                         && v.midi_editor.active_trim_drag.is_none(),
                     "midi={midi} case={case}"
                 );
@@ -627,7 +634,10 @@ fn clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body(
             pump(&f.editor, &mut f.visual);
         }
         f.editor.update(&mut f.visual, |v, _| {
-            v.waveform_geometry_cache.borrow_mut().clear()
+            v.timeline_caches
+                .waveform_geometry_cache
+                .borrow_mut()
+                .clear()
         });
         let target = drag(&mut f, "outer", 70.0, Modifiers::default());
         let held = f.visual.debug_bounds("trim-live-preview").unwrap();
@@ -640,7 +650,8 @@ fn clip_loop_audio_preview_keeps_nonzero_waveform_across_the_extended_body(
             }
             f.editor.read_with(&f.visual, |v, _| {
                 assert!(
-                    v.waveform_geometry_cache
+                    v.timeline_caches
+                        .waveform_geometry_cache
                         .borrow()
                         .painted_waveforms()
                         .iter()
@@ -691,7 +702,10 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
             ..Default::default()
         };
         f.editor.update(&mut f.visual, |v, _| {
-            v.waveform_geometry_cache.borrow_mut().clear()
+            v.timeline_caches
+                .waveform_geometry_cache
+                .borrow_mut()
+                .clear()
         });
         f.visual.simulate_mouse_down(down, MouseButton::Left, shift);
         f.visual
@@ -706,7 +720,7 @@ fn clip_loop_existing_repeat_shift_warp_keeps_processed_waveform_and_real_histor
         let gradient = crate::editor::clip_header_loop::gradient_quads(&mut f.visual, header);
         assert!(!gradient.is_empty());
 
-        f.editor.read_with(&f.visual,|v,_|assert!(v.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
+        f.editor.read_with(&f.visual,|v,_|assert!(v.timeline_caches.waveform_geometry_cache.borrow().painted_waveforms().iter().any(|p|
             p.bounds.right()>=held.right()-px(2.0) && p.ordinates.iter().any(|(lo,hi)| hi-lo>1.0)
         ),"ordinary Shift-Warp retains accepted processed root peaks on an existing repeat; warped={warped}"));
         f.visual.simulate_mouse_up(target, MouseButton::Left, shift);
@@ -775,9 +789,9 @@ fn repeat_boundary_cursor_retires_with_focus_and_window_loss(cx: &mut TestAppCon
             );
             f.editor.read_with(&f.visual, |v, _| {
                 assert!(
-                    v.active_trim_drag.is_none()
+                    v.interaction.active_trim_drag.is_none()
                         && v.midi_editor.active_trim_drag.is_none()
-                        && v.pending_trim.is_none()
+                        && v.interaction.pending_trim.is_none()
                 );
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             });
@@ -812,6 +826,7 @@ fn edge_mode(
     f.visual.run_until_parked();
     let mode = f.editor.read_with(&f.visual, |v, _| {
         let trim = v
+            .interaction
             .active_trim_drag
             .as_ref()
             .map(|d| (d.loop_kind, d.repeat.get(), d.stretch_modifier.get()))
@@ -826,7 +841,7 @@ fn edge_mode(
             Some((None, false, true)) => EdgeMode::Stretch,
             Some((None, false, false)) => EdgeMode::Trim,
             Some(_) => panic!("unexpected loop control drag"),
-            None if v.active_fade_drag.is_some() => EdgeMode::Fade,
+            None if v.interaction.active_fade_drag.is_some() => EdgeMode::Fade,
             None => EdgeMode::None,
         }
     });
@@ -1007,7 +1022,7 @@ fn warped_looping_clip_right_edge_extends_by_repeats_instead_of_cancelling(
             .simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         f.visual.run_until_parked();
         f.editor.read_with(&f.visual, |v, _| {
-            let drag = v.active_trim_drag.as_ref().expect("held edge");
+            let drag = v.interaction.active_trim_drag.as_ref().expect("held edge");
             let preview = drag.preview.borrow();
             let preview = preview
                 .as_ref()
@@ -1067,7 +1082,7 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                 let clip = state.project.clip(f.clip).unwrap();
                 clip.start() + clip.duration()
             };
-            view.time_selection = Some(super::super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::super::time_selection::TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 0,
@@ -1087,6 +1102,7 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
                 format!(
                     "time-selection-handle-{}",
                     f.editor.read_with(&f.visual, |view, _| view
+                        .interaction
                         .time_selection
                         .unwrap()
                         .anchor_track
@@ -1123,19 +1139,21 @@ fn option_repeat_edge_has_priority_over_a_covering_time_selection(cx: &mut TestA
         let target = drag(&mut f, "outer", 70.0, Modifiers::default());
         f.editor.read_with(&f.visual, |view, _| {
             assert!(
-                view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none()
+                view.interaction.time_selection_gesture.is_none()
+                    && view.interaction.time_range_move_gesture.is_none()
             );
             assert!(if midi {
                 view.midi_editor.active_trim_drag.is_some()
             } else {
-                view.active_trim_drag.is_some()
+                view.interaction.active_trim_drag.is_some()
             });
         });
         f.visual
             .simulate_mouse_up(target, MouseButton::Left, option);
         f.visual.run_until_parked();
-        f.editor
-            .read_with(&f.visual, |view, _| assert!(view.pending_trim.is_some()));
+        f.editor.read_with(&f.visual, |view, _| {
+            assert!(view.interaction.pending_trim.is_some())
+        });
         pump(&f.editor, &mut f.visual);
         f.editor.read_with(&f.visual, |view, _| {
             let project = &view.state.as_ref().unwrap().project;

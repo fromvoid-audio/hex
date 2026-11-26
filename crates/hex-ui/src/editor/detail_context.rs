@@ -34,7 +34,7 @@ impl EditorView {
                 .filter(|context| {
                     self.mode == super::EditorMode::Arrangement
                         && context.generation == self.project_generation
-                        && context.intent == self.selection_intent_epoch
+                        && context.intent == self.interaction.selection_intent_epoch
                 })
                 .map(|context| context.clip)
         })
@@ -88,7 +88,7 @@ impl EditorView {
             clip,
             generation: self.project_generation,
             revision,
-            intent: self.selection_intent_epoch,
+            intent: self.interaction.selection_intent_epoch,
         });
     }
 
@@ -109,7 +109,7 @@ impl EditorView {
             return;
         };
         if context.generation != self.project_generation
-            || context.intent != self.selection_intent_epoch
+            || context.intent != self.interaction.selection_intent_epoch
         {
             self.audio_detail.detail_context = None;
         } else if context.revision != state.revision {

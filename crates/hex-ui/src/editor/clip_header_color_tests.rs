@@ -606,7 +606,8 @@ fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_col
     pump(&f.editor, &mut visual);
     for active in [false, true] {
         f.editor.update(&mut visual, |view, _| {
-            view.waveform_geometry_cache
+            view.timeline_caches
+                .waveform_geometry_cache
                 .borrow_mut()
                 .clear_paint_samples();
         });
@@ -646,7 +647,8 @@ fn disabled_audio_and_midi_clips_paint_neutral_bodies_and_titles_and_restore_col
         if !active {
             assert!(notes.iter().all(|(_, color)| *color != black));
             let ink = f.editor.read_with(&visual, |view, _| {
-                view.waveform_geometry_cache
+                view.timeline_caches
+                    .waveform_geometry_cache
                     .borrow()
                     .painted_waveforms()
                     .back()

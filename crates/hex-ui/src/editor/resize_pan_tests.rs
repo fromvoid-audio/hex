@@ -244,7 +244,7 @@ fn held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit(cx: &m
                 editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
             let down = capture(&mut visual, clip, midi, left);
             let edge = editor.read_with(&visual, |v, _| {
-                let lane = v.drag_lanes[&track];
+                let lane = v.timeline_caches.drag_lanes[&track];
                 point(
                     px(if left {
                         lane.left + 3.0
@@ -272,7 +272,7 @@ fn held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit(cx: &m
                 vp
             });
             let center = editor.read_with(&visual, |v, _| {
-                let lane = v.drag_lanes[&track];
+                let lane = v.timeline_caches.drag_lanes[&track];
                 point(px(lane.left + lane.width / 2.0), down.y)
             });
             visual.simulate_mouse_move(center, MouseButton::Left, Modifiers::default());
@@ -288,7 +288,10 @@ fn held_resize_edges_pan_both_directions_stop_and_commit_one_history_edit(cx: &m
             visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
             pump(&editor, &mut visual);
             let after = editor.read_with(&visual, |v, _| {
-                assert!(v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
+                assert!(
+                    v.interaction.active_trim_drag.is_none()
+                        && v.midi_editor.active_trim_drag.is_none()
+                );
                 v.state.as_ref().unwrap().project.snapshot()
             });
             assert_ne!(after, before);
@@ -315,7 +318,7 @@ fn held_resize_can_pan_right_beyond_original_fitted_display_extent(cx: &mut Test
         let horizon = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().timeline_frames);
         let down = capture(&mut visual, clip, midi, false);
         let edge = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(px(lane.left + lane.width - 3.0), down.y)
         });
         visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -348,7 +351,7 @@ fn resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit(cx: &mut TestAppC
             let mut visual = VisualTestContext::from_window(handle, cx);
             let down = capture(&mut visual, clip, midi, false);
             let edge = editor.read_with(&visual, |v, _| {
-                let lane = v.drag_lanes[&track];
+                let lane = v.timeline_caches.drag_lanes[&track];
                 point(px(lane.left + lane.width - 3.0), down.y)
             });
             visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -366,7 +369,8 @@ fn resize_edge_cancel_and_stale_owners_cannot_scroll_or_commit(cx: &mut TestAppC
             held_tick(&editor, &mut visual, now + Duration::from_millis(100));
             editor.read_with(&visual, |v, _| {
                 assert!(
-                    v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none(),
+                    v.interaction.active_trim_drag.is_none()
+                        && v.midi_editor.active_trim_drag.is_none(),
                     "retire midi={midi} stale={stale}"
                 );
                 assert!(v.test_probes.last_enqueued_edit.is_none());
@@ -410,7 +414,7 @@ fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
     let mut visual = VisualTestContext::from_window(handle, cx);
     let down = capture(&mut visual, clip, false, true);
     let edge = editor.read_with(&visual, |v, _| {
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         point(px(lane.left + 3.0), down.y)
     });
     visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -433,7 +437,7 @@ fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
     pump(&editor, &mut visual);
     let down = capture(&mut visual, clip, false, false);
     let edge = editor.read_with(&visual, |v, _| {
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         point(px(lane.left + lane.width - 3.0), down.y)
     });
     visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -448,7 +452,7 @@ fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
             before,
             "no panning away from exhausted source"
         );
-        let drag = v.active_trim_drag.as_ref().unwrap();
+        let drag = v.interaction.active_trim_drag.as_ref().unwrap();
         assert_eq!(
             drag.preview.borrow().as_ref().unwrap().clip.duration(),
             96_000
@@ -472,7 +476,7 @@ fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &m
         });
         let down = capture(&mut visual, clip, false, false);
         let edge = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(px(lane.left + lane.width - 3.0), down.y)
         });
         visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -487,7 +491,7 @@ fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &m
         let now = Instant::now();
         held_tick(&editor, &mut visual, now);
         let preview = editor.read_with(&visual, |v, _| {
-            let d = v.active_trim_drag.as_ref().unwrap();
+            let d = v.interaction.active_trim_drag.as_ref().unwrap();
             assert_eq!(d.stretch_modifier.get(), stretch);
             assert!(d.snap_modifier.get());
             d.preview.borrow().as_ref().unwrap().clip.clone()
@@ -498,7 +502,8 @@ fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &m
         });
         visual.run_until_parked();
         let snapped = editor.read_with(&visual, |v, _| {
-            v.active_trim_drag
+            v.interaction
+                .active_trim_drag
                 .as_ref()
                 .unwrap()
                 .preview
@@ -522,7 +527,7 @@ fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &m
                 Some(&preview),
                 "release matches last actual modifier preview"
             );
-            assert!(v.active_trim_drag.is_none());
+            assert!(v.interaction.active_trim_drag.is_none());
         });
     }
 }
@@ -554,7 +559,7 @@ fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
         });
         let down = capture(&mut visual, clip, midi, false);
         let edge = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(px(lane.left + lane.width - 3.0), down.y)
         });
         visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -583,7 +588,10 @@ fn check_retired_pan_then_growth(cx: &mut TestAppContext, stale: bool) {
         visual.simulate_mouse_up(edge, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         let stored_after_cancel = editor.read_with(&visual, |v, _| {
-            assert!(v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
+            assert!(
+                v.interaction.active_trim_drag.is_none()
+                    && v.midi_editor.active_trim_drag.is_none()
+            );
             assert!(v.trim_display_end().is_none());
             assert_eq!(
                 v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
@@ -648,7 +656,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
         editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let down = capture(&mut visual, clip, midi, left);
     let edge = editor.read_with(&visual, |v, _| {
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         point(
             px(if left {
                 lane.left + lane.width - 3.0
@@ -666,7 +674,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| {
         if !midi {
-            let d = v.active_trim_drag.as_ref().unwrap();
+            let d = v.interaction.active_trim_drag.as_ref().unwrap();
             assert!(d.stretch_modifier.get());
             assert!(d.preview.borrow().as_ref().unwrap().clip.duration() > 1);
         }
@@ -689,7 +697,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
             let d = v.midi_editor.active_trim_drag.as_ref().unwrap();
             assert!(d.preview.borrow().as_ref().unwrap().length().raw() > 0);
         } else {
-            let d = v.active_trim_drag.as_ref().unwrap();
+            let d = v.interaction.active_trim_drag.as_ref().unwrap();
             let preview = d.preview.borrow();
             let preview = preview.as_ref().unwrap();
             assert!(preview.clip.duration() > 0);
@@ -711,7 +719,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
     });
     let release = if supported {
         let target = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             let frame = if left { 168_000_u64 } else { 120_000 };
             point(
                 px(lane.left
@@ -727,7 +735,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
         edge
     };
     let desired = editor.read_with(&visual, |v, _| {
-        v.active_trim_drag.as_ref().and_then(|d| {
+        v.interaction.active_trim_drag.as_ref().and_then(|d| {
             d.preview
                 .borrow()
                 .as_ref()
@@ -748,7 +756,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
     editor.read_with(&visual, |v, _| {
         eprintln!("inward release midi={midi} left={left} supported={supported} error={:?} submitted={:?}", v.error, v.test_probes.last_enqueued_edit);
         let p = &v.state.as_ref().unwrap().project;
-        assert!(v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
+        assert!(v.interaction.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
         if midi {
             assert!(v.error.is_none(), "{:?}", v.error);
             assert!(p.midi_clip(clip).unwrap().length().raw() > 0);
@@ -758,7 +766,7 @@ fn check_inward_last_valid_step(cx: &mut TestAppContext, midi: bool, left: bool,
             hex_engine::audio_transform::validate_clip_warp_preview(
                 p.clip(clip).unwrap(), p.tempo_map(),
             ).expect("real worker accepted the displayed supported extent");
-            assert!(v.pending_trim.is_none());
+            assert!(v.interaction.pending_trim.is_none());
         }
     });
     if !midi {
@@ -809,7 +817,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
     });
     let down = capture(&mut visual, clip, midi, false);
     let edge = editor.read_with(&visual, |v, _| {
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         point(px(lane.left + lane.width - 3.0), down.y)
     });
     let modifiers = Modifiers {
@@ -833,7 +841,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
                 && viewport.end().unwrap() > v.state.as_ref().unwrap().timeline_frames
         );
         if refuse {
-            let drag = v.active_trim_drag.as_ref().unwrap();
+            let drag = v.interaction.active_trim_drag.as_ref().unwrap();
             let preview = drag.preview.borrow();
             let preview = preview.as_ref().unwrap();
             assert!(preview.clip.duration() > 0);
@@ -852,7 +860,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
         // Its real display horizon remains the eight-second minimum, shorter
         // than the stored transient pan. Endpoint alone is not the oracle.
         let inside = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(
                 px(lane.left
                     + ((200_000 - owned.start) as f64 / owned.length as f64 * f64::from(lane.width))
@@ -866,7 +874,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
     };
     let retained_command_frame = refuse.then(|| {
         editor.read_with(&visual, |v, _| {
-            let drag = v.active_trim_drag.as_ref().unwrap();
+            let drag = v.interaction.active_trim_drag.as_ref().unwrap();
             drag.preview
                 .borrow()
                 .as_ref()
@@ -881,7 +889,7 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
                 Some(Command::StretchAudioClipEdge { clip: submitted, edge: hex_project::TrimEdge::Right, frame: submitted_frame })
                 if *submitted == clip && *submitted_frame == frame
             ));
-            assert!(v.pending_trim.is_some(), "own accepted command retains PendingTrim until its actual worker terminal");
+            assert!(v.interaction.pending_trim.is_some(), "own accepted command retains PendingTrim until its actual worker terminal");
             assert_eq!(v.worker_requests_pending, 1, "actual own FIFO submission");
         });
     }
@@ -895,9 +903,9 @@ fn check_actual_terminal_then_growth(cx: &mut TestAppContext, midi: bool, refuse
     pump(&editor, &mut visual);
     let settled = editor.read_with(&visual, |v,_| {
         let state=v.state.as_ref().unwrap();
-        if refuse { assert!(v.error.as_ref().is_some_and(|error| error.contains("preparation currently require resident audio; streamed source changes were not committed")), "actual streamed preparation refusal, not range validation: {:?}", v.error);assert_eq!(state.project.snapshot(),before);assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),before_history);assert!(v.pending_trim.is_none()); }
+        if refuse { assert!(v.error.as_ref().is_some_and(|error| error.contains("preparation currently require resident audio; streamed source changes were not committed")), "actual streamed preparation refusal, not range validation: {:?}", v.error);assert_eq!(state.project.snapshot(),before);assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),before_history);assert!(v.interaction.pending_trim.is_none()); }
         else { assert!(v.error.is_none(),"{:?}",v.error);assert_ne!(state.project.snapshot(),before); }
-        assert!(v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
+        assert!(v.interaction.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
         let visible=v.visible_viewport(state.timeline_frames);
         eprintln!("terminal pan midi={midi} refuse={refuse} held={owned:?} raw={:?} horizon={} settled={visible:?} error={:?}",v.viewport,state.timeline_frames,v.error);
         assert!(state.timeline_frames<owned.end().unwrap(), "endpoint intentionally short of transient display end");
@@ -931,7 +939,7 @@ fn fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal(
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let down = capture(&mut visual, clip, midi, false);
         let edge = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(px(lane.left + lane.width - 3.0), down.y)
         });
         visual.simulate_mouse_move(edge, MouseButton::Left, Modifiers::default());
@@ -954,7 +962,7 @@ fn fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal(
             "released fitted preview midi={midi}"
         );
         editor.read_with(&visual, |v, _| {
-            assert!(v.pending_trim.is_some());
+            assert!(v.interaction.pending_trim.is_some());
             assert_eq!(
                 v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
                 viewport
@@ -963,8 +971,11 @@ fn fitted_resize_release_keeps_accepted_pan_horizon_until_exact_worker_terminal(
         });
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert!(v.pending_trim.is_none());
-            assert!(v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
+            assert!(v.interaction.pending_trim.is_none());
+            assert!(
+                v.interaction.active_trim_drag.is_none()
+                    && v.midi_editor.active_trim_drag.is_none()
+            );
             let state = v.state.as_ref().unwrap();
             assert_eq!(
                 v.visible_viewport(state.timeline_frames),
@@ -1024,7 +1035,7 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
     let original = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let down = capture(&mut visual, clip, midi, false);
     let pointer = editor.read_with(&visual, |v, _| {
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         point(
             px(if midi {
                 lane.left + 3.0
@@ -1048,7 +1059,7 @@ fn check_partial_clamped_pan(cx: &mut TestAppContext, midi: bool) {
                 .beat_to_frame(BeatTime::from_raw(p.start().raw() + p.length().raw()))
                 .unwrap()
         } else {
-            let d = v.active_trim_drag.as_ref().unwrap();
+            let d = v.interaction.active_trim_drag.as_ref().unwrap();
             let p = d.preview.borrow();
             let p = &p.as_ref().unwrap().clip;
             p.start() + p.duration()
@@ -1167,7 +1178,7 @@ fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mu
         .debug_bounds("audio-events-waveform")
         .expect("actual lower event editor");
     let outside = editor.read_with(&visual, |v, _| {
-        let lane = v.drag_lanes[&track];
+        let lane = v.timeline_caches.drag_lanes[&track];
         point(
             px(lane.left + lane.width / 2.0),
             px(lane.top + lane.height / 2.0),
@@ -1285,7 +1296,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
         visual.simulate_modifiers_change(modifiers);
         visual.run_until_parked();
         let edge = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(
                 px(if pan_left {
                     lane.left + 3.0
@@ -1316,7 +1327,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
         if visual.debug_bounds(selector).is_some() {
             editor.read_with(&visual, |v, _| {
                 let state = v.state.as_ref().unwrap();
-                let active = v.active_trim_drag.as_ref();
+                let active = v.interaction.active_trim_drag.as_ref();
                 println!("HANDLE_RETAINED_TRACE midi={midi} left={left} stretch={stretch} enabled_warp={enabled_warp} view={:?} audio_active={} midi_active={} pointer={:?} preview={:?} canonical={:?} error={:?}", v.visible_viewport(state.timeline_frames), active.is_some(), v.midi_editor.active_trim_drag.is_some(), active.and_then(|drag| drag.last_pointer_x.get()), active.and_then(|drag| drag.preview.borrow().as_ref().map(|preview| preview.clip.clone())), state.project.clip(clip), v.error);
             });
         }
@@ -1325,7 +1336,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
             "actual original handle must have left the rendered viewport"
         );
         let (edge_view, center) = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             (
                 v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
@@ -1336,7 +1347,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
         visual.run_until_parked();
         held_tick(&editor, &mut visual, now + Duration::from_secs(2));
         let stopped = editor.read_with(&visual, |v, _| {
-            let recorded = if midi { v.midi_editor.active_trim_drag.as_ref().unwrap().last_pointer_x.get() } else { v.active_trim_drag.as_ref().unwrap().last_pointer_x.get() };
+            let recorded = if midi { v.midi_editor.active_trim_drag.as_ref().unwrap().last_pointer_x.get() } else { v.interaction.active_trim_drag.as_ref().unwrap().last_pointer_x.get() };
             let view = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
             println!("REAL_RESIZE_INTERIOR midi={midi} left={left} original_handle_absent=true actual_pointer={} recorded={recorded:?} viewport={edge_view:?}->{view:?}", f32::from(center.x));
             view
@@ -1349,7 +1360,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
             editor.read_with(&visual, |v, _| if midi {
                 v.midi_editor.active_trim_drag.is_some()
             } else {
-                v.active_trim_drag.is_some()
+                v.interaction.active_trim_drag.is_some()
             }),
             "resize remains captured while panning stops"
         );
@@ -1370,7 +1381,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
             "same edge resumes after interior stop"
         );
         let opposite = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&track];
+            let lane = v.timeline_caches.drag_lanes[&track];
             point(
                 px(if pan_left {
                     lane.left + lane.width - 3.0
@@ -1409,7 +1420,7 @@ fn check_edge_pan_after_original_handle_leaves_view(
                 "held preview does not edit canonical state"
             );
             (
-                v.active_trim_drag.as_ref().and_then(|drag| {
+                v.interaction.active_trim_drag.as_ref().and_then(|drag| {
                     drag.preview
                         .borrow()
                         .as_ref()
@@ -1435,7 +1446,10 @@ fn check_edge_pan_after_original_handle_leaves_view(
         visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
         pump(&editor, &mut visual);
         let after = editor.read_with(&visual, |v, _| {
-            assert!(v.active_trim_drag.is_none() && v.midi_editor.active_trim_drag.is_none());
+            assert!(
+                v.interaction.active_trim_drag.is_none()
+                    && v.midi_editor.active_trim_drag.is_none()
+            );
             let project = &v.state.as_ref().unwrap().project;
             if let Some(expected) = expected_audio.as_ref() {
                 assert_eq!(

@@ -231,7 +231,10 @@ fn dragging_nonprimary_selected_header_moves_all_three_clips_with_gaps_and_one_u
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.active_clip_drag.as_ref().unwrap().clip, anchor);
+        assert_eq!(
+            v.interaction.active_clip_drag.as_ref().unwrap().clip,
+            anchor
+        );
         assert_eq!(
             v.selected_clip_ids(),
             clips,
@@ -303,8 +306,9 @@ fn group_escape_and_actual_gpui_capture_loss_never_commit_any_member(cx: &mut Te
         let mut visual = VisualTestContext::from_window(handle, cx);
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let target = begin_group(&mut visual, &clips);
-        let retained_payload =
-            editor.read_with(&visual, |v, _| v.active_clip_drag.as_ref().unwrap().clone());
+        let retained_payload = editor.read_with(&visual, |v, _| {
+            v.interaction.active_clip_drag.as_ref().unwrap().clone()
+        });
         assert!(retained_payload.group.borrow().capture.is_some());
         for id in &clips {
             let selector = Box::leak(format!("group-clip-preview-{}", id.value()).into_boxed_str());
@@ -329,7 +333,7 @@ fn group_escape_and_actual_gpui_capture_loss_never_commit_any_member(cx: &mut Te
             "retired Rc payload cannot keep capture metadata"
         );
         editor.read_with(&visual, |v, _| {
-            assert!(v.active_clip_drag.is_none());
+            assert!(v.interaction.active_clip_drag.is_none());
             assert_eq!(v.selected_clip_ids(), clips);
             assert_eq!(v.worker_requests_pending, 0);
             assert!(v.test_probes.last_enqueued_edit.is_none());
@@ -374,7 +378,7 @@ fn group_pending_or_actual_revision_change_refuses_all_members_without_losing_in
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let project = &v.state.as_ref().unwrap().project;
-            assert!(v.active_clip_drag.is_none());
+            assert!(v.interaction.active_clip_drag.is_none());
             for id in &clips {
                 let old = before.clip(*id).unwrap();
                 let current = project.clip(*id).unwrap();
@@ -405,7 +409,13 @@ fn stationary_group_snap_modifier_uses_one_anchor_delta_and_authoritative_releas
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
     let target = begin_group(&mut visual, &clips);
     let positions = |v: &EditorView| {
-        let group = v.active_clip_drag.as_ref().unwrap().group.borrow();
+        let group = v
+            .interaction
+            .active_clip_drag
+            .as_ref()
+            .unwrap()
+            .group
+            .borrow();
         let starts = clips
             .iter()
             .map(|id| {
@@ -526,14 +536,14 @@ fn mixed_audio_midi_group_uses_real_track_offsets_or_refuses_whole_vertical_move
         );
         let destination = targets[usize::from(!fits)];
         let target = editor.read_with(&visual, |v, _| {
-            let lane = v.drag_lanes[&destination];
+            let lane = v.timeline_caches.drag_lanes[&destination];
             point(down.x + px(63.0), px(lane.top + lane.height / 2.0))
         });
         visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
         let planned = editor.read_with(&visual, |v, _| {
             assert_eq!(v.selected_clip_ids(), vec![anchor, midi]);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-            let drag = v.active_clip_drag.as_ref().unwrap();
+            let drag = v.interaction.active_clip_drag.as_ref().unwrap();
             let plan = drag.group.borrow().previews().to_vec();
             assert_eq!(plan.len(), if fits { 2 } else { 0 });
             plan
@@ -617,7 +627,7 @@ fn group_outside_lane_clears_all_previews_and_restores_originals(cx: &mut TestAp
     visual.simulate_mouse_move(outside, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        let drag = v.active_clip_drag.as_ref().unwrap();
+        let drag = v.interaction.active_clip_drag.as_ref().unwrap();
         assert!(drag.preview.get().is_none());
         assert!(drag.destination.get().is_none());
         assert!(
@@ -665,7 +675,7 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
     begin_group(&mut visual, &clips);
     visual.run_until_parked();
     let target = editor.read_with(&visual, |v, _| {
-        let body = v.arrangement_bounds.unwrap();
+        let body = v.timeline_caches.arrangement_bounds.unwrap();
         point(
             px(body.left + body.width * 0.6),
             px(body.top + body.height - 5.0),
@@ -675,7 +685,8 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
     visual.run_until_parked();
     editor.update(&mut visual, |v, cx| {
         assert_eq!(
-            v.active_clip_drag
+            v.interaction
+                .active_clip_drag
                 .as_ref()
                 .unwrap()
                 .group
@@ -685,7 +696,7 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
             3
         );
         let offset = v.track_scroll.offset().y;
-        let generation = v.drag_layout_generation;
+        let generation = v.timeline_caches.drag_layout_generation;
         let now = Instant::now();
         v.tick_clip_gesture_autoscroll(now, cx);
         if v.track_scroll.offset().y == offset {
@@ -695,9 +706,12 @@ fn group_vertical_autoscroll_invalidates_all_previews_before_repaint(cx: &mut Te
             v.track_scroll.offset().y < offset,
             "actual UniformList scroll occurred"
         );
-        assert!(v.drag_layout_generation > generation);
-        assert_ne!(v.arrangement_bounds_epoch, v.drag_layout_generation);
-        let drag = v.active_clip_drag.as_ref().unwrap();
+        assert!(v.timeline_caches.drag_layout_generation > generation);
+        assert_ne!(
+            v.timeline_caches.arrangement_bounds_epoch,
+            v.timeline_caches.drag_layout_generation
+        );
+        let drag = v.interaction.active_clip_drag.as_ref().unwrap();
         assert!(drag.preview.get().is_none());
         assert!(drag.destination.get().is_none());
         assert!(
@@ -744,8 +758,9 @@ fn group_capture_checks_source_allocation_and_selection_epoch(cx: &mut TestAppCo
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
         let target = begin_group(&mut visual, &clips);
         visual.run_until_parked();
-        let payload =
-            editor.read_with(&visual, |v, _| v.active_clip_drag.as_ref().unwrap().clone());
+        let payload = editor.read_with(&visual, |v, _| {
+            v.interaction.active_clip_drag.as_ref().unwrap().clone()
+        });
         editor.update(&mut visual, |v, cx| {
             let old = v.state.as_ref().unwrap();
             let project = if replace_project {
@@ -829,7 +844,7 @@ fn group_capture_profiles_actual_redraw_separately_from_projection(cx: &mut Test
         let target = begin_group(&mut visual, &clips);
         visual.run_until_parked();
         let (row, position) = editor.read_with(&visual, |v, _| {
-            let drag = v.active_clip_drag.as_ref().unwrap();
+            let drag = v.interaction.active_clip_drag.as_ref().unwrap();
             let preview = drag.preview.get().unwrap();
             (
                 preview.target_track,
@@ -839,7 +854,7 @@ fn group_capture_profiles_actual_redraw_separately_from_projection(cx: &mut Test
         let start = Instant::now();
         editor.update(&mut visual, |v, _| {
             let state = v.state.as_ref().unwrap();
-            let drag = v.active_clip_drag.as_ref().unwrap();
+            let drag = v.interaction.active_clip_drag.as_ref().unwrap();
             let mut group = drag.group.borrow_mut();
             let capture = group.capture.as_mut().unwrap();
             for _ in 0..32 {
@@ -883,7 +898,9 @@ fn group_capture_reenters_valid_lane_and_commits_only_current_projection(cx: &mu
     let mut visual = VisualTestContext::from_window(handle, cx);
     let target = begin_group(&mut visual, &clips);
     visual.run_until_parked();
-    let payload = editor.read_with(&visual, |v, _| v.active_clip_drag.as_ref().unwrap().clone());
+    let payload = editor.read_with(&visual, |v, _| {
+        v.interaction.active_clip_drag.as_ref().unwrap().clone()
+    });
     visual.simulate_mouse_move(
         point(px(200.0), target.y),
         MouseButton::Left,
@@ -1110,7 +1127,7 @@ fn review_group_landing_paints_unselected_overwrite_victim(cx: &mut TestAppConte
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        let drag = view.active_clip_drag.as_ref().unwrap();
+        let drag = view.interaction.active_clip_drag.as_ref().unwrap();
         let group = drag.group.borrow();
         assert_eq!(group.previews().len(), 2);
         let state = view.state.as_ref().unwrap();
@@ -1488,7 +1505,7 @@ fn group_overlap_is_passive_clipped_and_excludes_selected_originals_in_both_mode
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert!(v.error.is_none(), "{:?}", v.error);
-            assert!(v.active_clip_drag.is_none());
+            assert!(v.interaction.active_clip_drag.is_none());
         });
     }
 }
@@ -1517,6 +1534,7 @@ fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContex
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         let drag = view
+            .interaction
             .active_clip_drag
             .as_ref()
             .expect("actual group pointer capture");
@@ -1556,7 +1574,7 @@ fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContex
             "unsupported group Console drop must not enqueue a primary-only copy"
         );
         assert_eq!(state.project.snapshot(), before);
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
         assert_eq!(view.worker_requests_pending, 0);
     });
 }
@@ -1627,7 +1645,7 @@ fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &m
         let selected = vec![clips[1], midi];
         begin_group(&mut visual, &selected);
         let retained = editor.read_with(&visual, |view, _| {
-            let drag = view.active_clip_drag.as_ref().unwrap();
+            let drag = view.interaction.active_clip_drag.as_ref().unwrap();
             assert_eq!(drag.clip, midi);
             assert_eq!(drag.group.borrow().ids, selected);
             assert!(drag.group.borrow().capture.is_some());
@@ -1682,7 +1700,7 @@ fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &m
             assert_eq!(view.selected_clip_ids(), selection);
             assert_eq!(view.selected_clip, primary);
             assert!(state.project.session_cell(track, scene).is_none());
-            assert!(view.active_clip_drag.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
             assert_eq!(view.worker_requests_pending, 0);
             assert!(view.pending_requests.is_empty());
             assert!(
@@ -1757,7 +1775,13 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
     );
     editor.update(&mut visual, |view, cx| {
         assert_eq!(
-            view.active_clip_drag.as_ref().unwrap().group.borrow().ids,
+            view.interaction
+                .active_clip_drag
+                .as_ref()
+                .unwrap()
+                .group
+                .borrow()
+                .ids,
             vec![clips[1]]
         );
         view.test_probes.last_enqueued_edit = None;
@@ -1791,7 +1815,7 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
         // Existing Created::SessionClip completion selects its Console cell.
         assert_eq!(view.session_grid.selected_cell, Some((track, scene)));
         assert!(view.selected_clip_ids().is_empty());
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
         assert_eq!(view.worker_requests_pending, 0);
         assert!(view.pending_requests.is_empty());
         project.snapshot()

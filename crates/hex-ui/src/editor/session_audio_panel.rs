@@ -287,7 +287,7 @@ impl EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        let audible = self.audible_playback.as_ref()?;
+        let audible = self.audio_pub.audible_playback.as_ref()?;
         if audible.project_generation != self.project_generation
             || audible.state.revision != state.revision
         {

@@ -300,22 +300,23 @@ impl EditorView {
             })
             .cloned()
         {
-            self.arrangement_clip_index
+            self.timeline_caches
+                .arrangement_clip_index
                 .borrow_mut()
                 .ensure_current(self.project_generation, &snapshot);
 
             let has_potential_overlays = exclusions.iter().any(Option::is_some)
                 || group.is_some()
                 || self.clip_name_edit.is_some()
-                || self.pending_trim.is_some()
-                || self.active_trim_drag.is_some()
+                || self.interaction.pending_trim.is_some()
+                || self.interaction.active_trim_drag.is_some()
                 || self.midi_editor.active_trim_drag.is_some()
-                || self.fade_key_held
-                || self.hovered_fade_clip.is_some()
-                || self.hovered_fade_handle.is_some()
-                || self.active_fade_drag.is_some()
-                || self.pending_fade.is_some()
-                || self.clip_gain.has_displayed()
+                || self.interaction.fade_key_held
+                || self.interaction.hovered_fade_clip.is_some()
+                || self.interaction.hovered_fade_handle.is_some()
+                || self.interaction.active_fade_drag.is_some()
+                || self.interaction.pending_fade.is_some()
+                || self.interaction.clip_gain.has_displayed()
                 || self.audio_detail.clip_controls.gain_preview(self).is_some()
                 || self.audio_detail.clip_controls.has_play_start_preview()
                 || self.shows_audio_clip_loop_preview()
@@ -352,6 +353,7 @@ impl EditorView {
             let mut overlay_bars = narrow_clips::Bars::default();
 
             let visible_entries: Vec<_> = self
+                .timeline_caches
                 .arrangement_clip_index
                 .borrow()
                 .track(track_id)
@@ -382,16 +384,18 @@ impl EditorView {
                             .is_some_and(|(orig, _)| orig.id() == clip.id());
                         let has_exclusions = clip_intersects_exclusions(clip, exclusions);
                         let has_rename = self.clip_name_is_editing(clip.id());
-                        let has_fade_overlay = self.fade_key_held
+                        let has_fade_overlay = self.interaction.fade_key_held
                             || self.fade_curve_active(clip.id())
-                            || self.hovered_fade_clip == Some((self.project_generation, clip.id()))
+                            || self.interaction.hovered_fade_clip
+                                == Some((self.project_generation, clip.id()))
                             || self
+                                .interaction
                                 .hovered_fade_handle
                                 .and_then(|h| h.in_track(self.project_generation, track_id))
                                 .is_some_and(|(id, _)| id == clip.id())
                             || self.fade_preview(clip.id()).is_some();
-                        let has_gain_overlay =
-                            self.displayed_clip_gain(clip.id()).is_some() || self.clip_gain.held();
+                        let has_gain_overlay = self.displayed_clip_gain(clip.id()).is_some()
+                            || self.interaction.clip_gain.held();
 
                         if !(has_scope
                             || has_trim
@@ -410,7 +414,8 @@ impl EditorView {
                                     .flatten()
                             {
                                 if let Some(fragment_view) = passive_audio_fragment(
-                                    self.drag_lanes
+                                    self.timeline_caches
+                                        .drag_lanes
                                         .get(&track_id)
                                         .map_or(0.0, |lane| lane.width),
                                     scale_factor,
@@ -425,7 +430,9 @@ impl EditorView {
                                     viewport,
                                     viewport_end,
                                     grid,
-                                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                                    std::rc::Rc::clone(
+                                        &self.timeline_caches.waveform_geometry_cache,
+                                    ),
                                     format!(
                                         "time-move-audio-residual-{}-{}",
                                         track_id.value(),
@@ -521,7 +528,8 @@ impl EditorView {
                                     continue;
                                 };
                                 if let Some(fragment) = passive_midi_fragment(
-                                    self.drag_lanes
+                                    self.timeline_caches
+                                        .drag_lanes
                                         .get(&track_id)
                                         .map_or(0.0, |lane| lane.width),
                                     scale_factor,
@@ -604,7 +612,8 @@ impl EditorView {
                                 let active = self.displayed_clip_active(clip.id(), clip.active());
                                 let selected_clip = self.clip_is_selected(clip.id());
                                 if let Some(fragment) = passive_midi_fragment(
-                                    self.drag_lanes
+                                    self.timeline_caches
+                                        .drag_lanes
                                         .get(&track_id)
                                         .map_or(0.0, |lane| lane.width),
                                     scale_factor,
@@ -704,6 +713,7 @@ impl EditorView {
                 continue;
             };
             let display = self
+                .interaction
                 .pending_trim
                 .as_ref()
                 .and_then(|_| self.audio_trim_display(track_id, Some(clip.id())));
@@ -722,7 +732,8 @@ impl EditorView {
                     .flatten()
                 {
                     if let Some(fragment_view) = passive_audio_fragment(
-                        self.drag_lanes
+                        self.timeline_caches
+                            .drag_lanes
                             .get(&track_id)
                             .map_or(0.0, |lane| lane.width),
                         scale_factor,
@@ -737,7 +748,7 @@ impl EditorView {
                         viewport,
                         viewport_end,
                         grid,
-                        std::rc::Rc::clone(&self.waveform_geometry_cache),
+                        std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                         format!(
                             "time-move-audio-residual-{}-{}",
                             track_id.value(),
@@ -839,7 +850,8 @@ impl EditorView {
                         continue;
                     };
                     let fragment = passive_midi_fragment(
-                        self.drag_lanes
+                        self.timeline_caches
+                            .drag_lanes
                             .get(&track_id)
                             .map_or(0.0, |lane| lane.width),
                         scale_factor,
@@ -880,6 +892,7 @@ impl EditorView {
                 .filter(|(original, _)| original.id() == clip.id())
                 .map(|(_, preview)| preview);
             let lane_width = self
+                .timeline_caches
                 .drag_lanes
                 .get(&track_id)
                 .map_or(0.0, |lane| lane.width);
@@ -1448,7 +1461,7 @@ impl EditorView {
                 },
                 visible_start,
                 visible_end,
-                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                 grid,
             )
             .unwrap_or_else(|| div().absolute().inset_0());
@@ -1583,7 +1596,7 @@ impl EditorView {
                 mapping,
                 visible_start,
                 visible_end,
-                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                 grid,
                 ink,
             ),
@@ -1614,7 +1627,7 @@ impl EditorView {
         viewport: Viewport,
         scale: f32,
     ) -> Option<crate::editor::waveform::WaveformGrid> {
-        let lane = self.drag_lanes.get(&track)?;
+        let lane = self.timeline_caches.drag_lanes.get(&track)?;
         crate::editor::waveform::WaveformGrid::arrangement(
             viewport,
             lane.left,
@@ -1660,7 +1673,7 @@ impl EditorView {
         };
         // Keep the interactive surface in the same place as the retained trim
         // preview while its canonical edit is still in flight.
-        let display_clip = if self.pending_trim.is_some() {
+        let display_clip = if self.interaction.pending_trim.is_some() {
             trim_preview_clip.as_ref().unwrap_or(clip)
         } else {
             clip
@@ -1686,7 +1699,7 @@ impl EditorView {
         let width = visible_frames as f64 / viewport.length as f64;
         let drag_payload = self
             .drag_available()
-            .then(|| self.drag_lanes.get(&track).copied())
+            .then(|| self.timeline_caches.drag_lanes.get(&track).copied())
             .flatten()
             .map(|lane| {
                 (
@@ -1743,7 +1756,11 @@ impl EditorView {
             },
         );
         let detail_opacity = theme::clip_detail_opacity(active);
-        let lane_width = self.drag_lanes.get(&track).map_or(0.0, |lane| lane.width);
+        let lane_width = self
+            .timeline_caches
+            .drag_lanes
+            .get(&track)
+            .map_or(0.0, |lane| lane.width);
         let clip_pixel_width = crate::editor::trim::rendered_clip_width(lane_width, width);
         let stroke = 1.0 / scale_factor.max(1.0);
         let narrow = !active_trim_preview
@@ -1800,7 +1817,7 @@ impl EditorView {
         // overlay in this lane so automation opacity and clipping still apply.
         let raise_fade = !narrow
             && !self.automation_view.enabled
-            && (self.fade_key_held || self.fade_curve_active(clip_id));
+            && (self.interaction.fade_key_held || self.fade_curve_active(clip_id));
         let mut foreground = div().absolute().inset_0();
         let fade_preview = self.fade_preview(clip.id());
         let fade = fade_preview.unwrap_or(clip.retained_fade());
@@ -1826,7 +1843,7 @@ impl EditorView {
                 let layer = div().absolute().inset_0().child(clip_fade_layer(
                     clip.id(),
                     samples,
-                    self.fade_key_held || self.fade_curve_active(clip_id),
+                    self.interaction.fade_key_held || self.fade_curve_active(clip_id),
                     active,
                 ));
                 if raise_fade {

@@ -105,7 +105,7 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
         view.service = service;
         view.state = Some(Arc::clone(&canonical));
         view.project_generation = context.project_generation;
-        view.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
+        view.audio_pub.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
         view.audio = Some(crate::EditorAudio {
             control: client,
             sample_rate: 48_000,
@@ -113,9 +113,9 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
             spectrum_error: None,
             mode: DocumentAudioMode::VerifiedStreaming,
         });
-        view.pending_playback = None;
-        view.playback_candidates.clear();
-        view.applied_project_revision = None;
+        view.audio_pub.pending_playback = None;
+        view.audio_pub.playback_candidates.clear();
+        view.audio_pub.applied_project_revision = None;
         assert_eq!(
             view.device_panel
                 .gesture
@@ -148,7 +148,7 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
         );
     });
     visual.run_until_parked();
-    let admission = editor.read_with(&visual, |view, _| view.audio_admission);
+    let admission = editor.read_with(&visual, |view, _| view.audio_pub.audio_admission);
     editor.update(&mut visual, |view, _| {
         view.retain_publication_observation(
             context,
@@ -158,30 +158,30 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
                 identity,
             },
         );
-        assert!(view.pending_publication_observation.is_some());
+        assert!(view.audio_pub.pending_publication_observation.is_some());
     });
     for _ in 0..3 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            assert!(view.pending_publication_observation.is_some());
-            assert!(view.playback_candidates.is_empty());
-            assert!(view.audible_playback.is_none());
+            assert!(view.audio_pub.pending_publication_observation.is_some());
+            assert!(view.audio_pub.playback_candidates.is_empty());
+            assert!(view.audio_pub.audible_playback.is_none());
             assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
-            assert_eq!(view.audio_admission, admission);
+            assert_eq!(view.audio_pub.audio_admission, admission);
         });
     }
     editor.update(&mut visual, |view, _| {
         view.device_panel.resident_preview = Some(preview);
         assert!(view.reconcile_publication_observation());
-        let candidate = view.playback_candidates.back().unwrap();
+        let candidate = view.audio_pub.playback_candidates.back().unwrap();
         assert_eq!(candidate.device_preview_identity, Some(identity));
         assert_eq!(candidate.state.project.track(track).unwrap().gain(), 0.25);
         assert!(candidate.state.canonical_audio_source.is_none());
         assert!(candidate.observation.is_none());
-        assert!(view.applied_project_revision.is_none());
-        assert!(view.audible_playback.is_none());
-        assert_eq!(view.audio_admission, admission);
+        assert!(view.audio_pub.applied_project_revision.is_none());
+        assert!(view.audio_pub.audible_playback.is_none());
+        assert_eq!(view.audio_pub.audio_admission, admission);
         let mut stale = identity;
         stale.sequence += 1;
         assert!(view.device_publication_view(context, stale).is_none());
@@ -193,11 +193,11 @@ fn verified_preview_submission_waits_for_exact_view_without_canonical_promotion(
                 identity: stale,
             },
         );
-        assert!(view.pending_publication_observation.is_none());
-        assert_eq!(view.playback_candidates.len(), 1);
+        assert!(view.audio_pub.pending_publication_observation.is_none());
+        assert_eq!(view.audio_pub.playback_candidates.len(), 1);
         view.reset_output_publication_tracking(Some(output_identity + 1));
-        assert!(view.playback_candidates.is_empty());
-        assert!(view.pending_publication_observation.is_none());
+        assert!(view.audio_pub.playback_candidates.is_empty());
+        assert!(view.audio_pub.pending_publication_observation.is_none());
         view.audio = None;
     });
 }

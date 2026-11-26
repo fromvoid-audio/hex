@@ -100,11 +100,11 @@ impl EditorView {
     ) {
         if !f32::from(event.position.x).is_finite()
             || !f32::from(event.position.y).is_finite()
-            || self.time_selection_key_held
+            || self.interaction.time_selection_key_held
             || self.audio_detail.event.source_view
             || !self.event_context_current()
             || self.edit_pending()
-            || self.recovery.generation().is_some()
+            || self.audio_pub.recovery.generation().is_some()
             || self.audio_detail.event.pending.is_some()
             || self.audio_detail.event.gesture.is_some()
             || cx.has_active_drag()
@@ -285,7 +285,7 @@ impl EditorView {
             .gesture
             .as_ref()
             .is_some_and(|g| matches!(g.kind, Kind::PlayStart { .. }));
-        let selection_mode = self.time_selection_key_held;
+        let selection_mode = self.interaction.time_selection_key_held;
         let inward = self
             .audio_detail
             .event
@@ -324,7 +324,7 @@ impl EditorView {
                 } else { "play start is read-only for this audio view" }.into(),
             }).into())
             .on_mouse_down(MouseButton::Left, cx.listener(move |view, event, window, cx| {
-                if view.time_selection_key_held { return }
+                if view.interaction.time_selection_key_held { return }
                 if editable { view.begin_audio_play_start(event, window, cx); }
                 cx.stop_propagation();
             }));

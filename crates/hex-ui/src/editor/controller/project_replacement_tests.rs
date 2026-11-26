@@ -429,7 +429,8 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             view.receive(event(Arc::clone(&original), 0, true));
             let generation = view.project_generation;
             assert!(
-                view.pending_playback
+                view.audio_pub
+                    .pending_playback
                     .as_ref()
                     .unwrap()
                     .install_fresh_runtime
@@ -438,7 +439,7 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             // space. They replace the candidate, not its project identity.
             view.receive(event(first_edit, 1, false));
             view.receive(event(Arc::clone(&second_edit), 2, false));
-            let pending = view.pending_playback.as_ref().unwrap();
+            let pending = view.audio_pub.pending_playback.as_ref().unwrap();
             assert!(pending.install_fresh_runtime);
             assert_eq!(pending.project_revision, 2);
             assert_eq!(pending.project_generation, generation);
@@ -460,7 +461,8 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             view.receive(refused_open);
             assert_eq!(view.project_generation, generation);
             assert!(
-                view.pending_playback
+                view.audio_pub
+                    .pending_playback
                     .as_ref()
                     .unwrap()
                     .install_fresh_runtime
@@ -468,7 +470,7 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
 
             // The audio queue owns an admitted candidate. Later same-project
             // edits inherit, while another successful Open installs fresh again.
-            let admitted = view.pending_playback.take().unwrap();
+            let admitted = view.audio_pub.pending_playback.take().unwrap();
             let (mut control, _callback) = hex_audio::prepared::channel(48_000).unwrap();
             assert!(
                 control
@@ -478,6 +480,7 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             view.receive(event(later_edit, 3, false));
             assert!(
                 !view
+                    .audio_pub
                     .pending_playback
                     .as_ref()
                     .unwrap()
@@ -485,7 +488,7 @@ fn receive_preserves_fresh_installation_through_edits_and_failed_open(cx: &mut T
             );
             view.receive(event(original, 0, true));
             assert_ne!(view.project_generation, generation);
-            let pending = view.pending_playback.as_ref().unwrap();
+            let pending = view.audio_pub.pending_playback.as_ref().unwrap();
             assert!(pending.install_fresh_runtime);
             assert_eq!(pending.project_revision, 0);
             assert_eq!(pending.project_generation, view.project_generation);
@@ -612,9 +615,9 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
         .update(cx, |view, _, _| {
             let project = Arc::new(Project::new(48_000).unwrap());
             view.receive(event(Arc::clone(&project), 2, false));
-            view.pending_playback = None;
+            view.audio_pub.pending_playback = None;
             let generation = view.project_generation;
-            view.stopped_playback_restore =
+            view.audio_pub.stopped_playback_restore =
                 Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
             view.computer_keyboard.enabled = true;
             view.computer_keyboard.suspended = false;
@@ -627,7 +630,8 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
             assert_eq!(view.project_generation, generation);
             assert_eq!(view.state.as_ref().unwrap().project, project);
             assert!(
-                view.pending_playback
+                view.audio_pub
+                    .pending_playback
                     .as_ref()
                     .unwrap()
                     .install_fresh_runtime
@@ -636,16 +640,18 @@ fn stopped_restore_installs_fresh_without_replacing_project_or_losing_policy_to_
             // coalesces before publication. Ordinary edits alone retain histories.
             view.receive(event(Arc::clone(&project), 3, false));
             assert!(
-                view.pending_playback
+                view.audio_pub
+                    .pending_playback
                     .as_ref()
                     .unwrap()
                     .install_fresh_runtime
             );
-            view.pending_playback = None;
-            view.stopped_playback_restore = None;
+            view.audio_pub.pending_playback = None;
+            view.audio_pub.stopped_playback_restore = None;
             view.receive(event(project, 4, false));
             assert!(
                 !view
+                    .audio_pub
                     .pending_playback
                     .as_ref()
                     .unwrap()
@@ -775,7 +781,7 @@ fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestApp
                 Some(identity),
                 "rebound kept the endpoint"
             );
-            assert!(view.pending_audio_result.is_none());
+            assert!(view.audio_pub.pending_audio_result.is_none());
 
             // A stale rebind or release never touches the current endpoint.
             for stale in [
@@ -815,7 +821,8 @@ fn held_endpoint_follows_rebound_and_release_across_generations(cx: &mut TestApp
                 .unwrap();
             view.poll_editor_audio_events(cx);
             assert_eq!(
-                view.pending_restart_request
+                view.audio_pub
+                    .pending_restart_request
                     .map(|(generation, _)| generation),
                 Some(view.project_generation)
             );

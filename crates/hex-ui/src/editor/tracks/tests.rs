@@ -270,12 +270,16 @@ fn held_midi_drag_keeps_actual_note_paint_and_colored_name_below_header(
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&target]);
+    let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&target]);
     let end = point(start.x + px(72.0), px(lane.top + lane.height * 0.5));
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        let payload = view.active_clip_drag.as_ref().expect("real captured drag");
+        let payload = view
+            .interaction
+            .active_clip_drag
+            .as_ref()
+            .expect("real captured drag");
         assert_eq!(payload.preview.get().unwrap().target_track, target);
         assert_eq!(view.state.as_ref().unwrap().project, before);
     });
@@ -499,7 +503,7 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
         Some(MouseButton::Left),
         Modifiers::default(),
     );
-    let lane = editor.read_with(&visual, |v, _| v.drag_lanes[&target]);
+    let lane = editor.read_with(&visual, |v, _| v.timeline_caches.drag_lanes[&target]);
     let landing = point(start.x + px(90.0), px(lane.top + lane.height * 0.5));
     let floating = point(px(60.0), px(100.0));
     for (pointer, selector) in [
@@ -508,8 +512,11 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
     ] {
         visual.simulate_mouse_move(pointer, Some(MouseButton::Left), Modifiers::default());
         editor.update(&mut visual, |v, cx| {
-            v.clip_content_cache = Default::default();
-            v.waveform_geometry_cache.borrow_mut().clear();
+            v.timeline_caches.clip_content_cache = Default::default();
+            v.timeline_caches
+                .waveform_geometry_cache
+                .borrow_mut()
+                .clear();
             cx.notify();
         });
         visual.run_until_parked();
@@ -543,7 +550,7 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project, before);
             assert_eq!(v.worker_requests_pending, 0);
-            let cache = v.waveform_geometry_cache.borrow();
+            let cache = v.timeline_caches.waveform_geometry_cache.borrow();
             let paints: Vec<_> = cache
                 .painted_waveforms()
                 .iter()
@@ -634,8 +641,11 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
             },
         );
         editor.update(&mut visual, |v, cx| {
-            v.clip_content_cache = Default::default();
-            v.waveform_geometry_cache.borrow_mut().clear();
+            v.timeline_caches.clip_content_cache = Default::default();
+            v.timeline_caches
+                .waveform_geometry_cache
+                .borrow_mut()
+                .clear();
             cx.notify();
         });
         visual.run_until_parked();
@@ -661,7 +671,7 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
         }
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project, before);
-            let cache = v.waveform_geometry_cache.borrow();
+            let cache = v.timeline_caches.waveform_geometry_cache.borrow();
             assert!(
                 cache.painted_waveforms().iter().any(|p| {
                     p.bounds.top()
@@ -688,7 +698,12 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
                 "mixed-group processed clone must not fall back to the raw asset waveform"
             );
             assert_eq!(
-                v.active_clip_drag.as_ref().unwrap().copy_modifier.get(),
+                v.interaction
+                    .active_clip_drag
+                    .as_ref()
+                    .unwrap()
+                    .copy_modifier
+                    .get(),
                 duplicate
             );
             assert_eq!(v.worker_requests_pending, 0);
@@ -698,7 +713,7 @@ fn assert_audio_drag_content(cx: &mut gpui::TestAppContext, warped_loop: bool) {
     visual.simulate_mouse_up(landing, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.active_clip_drag.is_none());
+        assert!(v.interaction.active_clip_drag.is_none());
         assert_eq!(v.state.as_ref().unwrap().project, before);
     });
 }

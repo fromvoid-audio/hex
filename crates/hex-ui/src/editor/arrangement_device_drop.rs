@@ -286,7 +286,7 @@ impl EditorView {
         if !self.native_device_drag_is_current(drag) {
             return None;
         }
-        let body = self.arrangement_bounds?;
+        let body = self.timeline_caches.arrangement_bounds?;
         let (lane, line) = match preview.target {
             ArrangementDropTarget::ExistingTrack { lane, .. } => (lane, None),
             ArrangementDropTarget::NewTrack { lane, line, .. } => (lane, Some(line)),

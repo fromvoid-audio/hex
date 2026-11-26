@@ -12,7 +12,7 @@ struct Card {
 impl gpui::Render for Card {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (focus, body) = self.editor.update(cx, |view, cx| {
-            let body = if view.stopped_playback_restore.is_some() {
+            let body = if view.audio_pub.stopped_playback_restore.is_some() {
                 let device = view
                     .state
                     .as_ref()
@@ -412,7 +412,7 @@ fn typed_value_case(
             assert!(view.device_panel.gesture.snapshot().is_none());
         });
         editor.update(&mut visual, |view, cx| {
-            view.stopped_playback_restore =
+            view.audio_pub.stopped_playback_restore =
                 Some(crate::editor::audio_admission::StoppedPlaybackRestore::Preparing);
             cx.notify();
         });

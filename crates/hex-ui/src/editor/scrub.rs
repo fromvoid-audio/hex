@@ -41,15 +41,16 @@ impl EditorView {
     /// Includes a released final target until its existing admission/refusal
     /// retires it: switching modes must not silently discard that target.
     pub(super) fn scrub_active(&self) -> bool {
-        self.scrub.gesture.is_some()
+        self.interaction.scrub.gesture.is_some()
     }
 
     pub(super) fn timeline_ruler_bounds(&self) -> Option<Bounds<Pixels>> {
-        self.scrub.bounds
+        self.interaction.scrub.bounds
     }
 
     pub(super) fn update_scrub_geometry(&mut self, bounds: Bounds<Pixels>) {
         if self
+            .interaction
             .scrub
             .gesture
             .is_some_and(|gesture| gesture.context.bounds != bounds)
@@ -57,7 +58,7 @@ impl EditorView {
             self.cancel_scrub();
         }
         let _ = self.cancel_locked_play_start_drag_on_ruler_change(bounds);
-        self.scrub.bounds = Some(bounds);
+        self.interaction.scrub.bounds = Some(bounds);
     }
 
     fn scrub_context(&self, viewport: Viewport, bounds: Bounds<Pixels>) -> Option<ScrubContext> {
@@ -73,26 +74,26 @@ impl EditorView {
             && !self.persistence.close_prompt_open
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
-            && self.recovery.generation().is_none()
+            && self.audio_pub.recovery.generation().is_none()
             && self
                 .audio
                 .as_ref()
                 .is_none_or(|audio| super::arrangement_seek::audio_ready_for_seek(&audio.control))
             && !self.device_gesture_pending()
             && self.device_panel.gesture.snapshot().is_none()
-            && self.active_clip_drag.is_none()
+            && self.interaction.active_clip_drag.is_none()
             && self.browser.active_audio_drag.is_none()
             && self.device_panel.active_native_drag.is_none()
-            && self.active_trim_drag.is_none()
-            && self.active_fade_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
+            && self.interaction.active_fade_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
-            && self.arrangement_pan.is_none()
-            && self.loop_rail_gesture.is_none()
+            && self.interaction.arrangement_pan.is_none()
+            && self.interaction.loop_rail_gesture.is_none()
             && !self.locked_play_start_drag_active()
-            && self.time_selection_gesture.is_none()
-            && self.time_range_move_gesture.is_none()
+            && self.interaction.time_selection_gesture.is_none()
+            && self.interaction.time_range_move_gesture.is_none()
             && self.visible_viewport(state.timeline_frames) == viewport
-            && self.scrub.bounds == Some(bounds))
+            && self.interaction.scrub.bounds == Some(bounds))
         .then_some(ScrubContext {
             generation: self.project_generation,
             revision: state.revision,
@@ -118,8 +119,8 @@ impl EditorView {
         ) else {
             return false;
         };
-        self.latency_rebuild = None;
-        self.scrub.gesture = Some(ScrubGesture {
+        self.audio_pub.latency_rebuild = None;
+        self.interaction.scrub.gesture = Some(ScrubGesture {
             context,
             latest: Some(frame),
             last_issued: None,
@@ -129,10 +130,15 @@ impl EditorView {
     }
 
     pub(super) fn update_scrub(&mut self, x: f32, released: bool) -> bool {
-        if self.scrub.gesture.is_some_and(|gesture| gesture.released) {
+        if self
+            .interaction
+            .scrub
+            .gesture
+            .is_some_and(|gesture| gesture.released)
+        {
             return false;
         }
-        let Some(mut gesture) = self.scrub.gesture.take() else {
+        let Some(mut gesture) = self.interaction.scrub.gesture.take() else {
             return false;
         };
         if self.scrub_context(gesture.context.viewport, gesture.context.bounds)
@@ -150,13 +156,18 @@ impl EditorView {
         };
         gesture.target(frame, released);
         if !gesture.released || gesture.latest.is_some() {
-            self.scrub.gesture = Some(gesture);
+            self.interaction.scrub.gesture = Some(gesture);
         }
         true
     }
 
     pub(super) fn lose_scrub_pointer(&mut self) -> bool {
-        if self.scrub.gesture.is_some_and(|gesture| !gesture.released) {
+        if self
+            .interaction
+            .scrub
+            .gesture
+            .is_some_and(|gesture| !gesture.released)
+        {
             self.cancel_scrub()
         } else {
             false
@@ -166,11 +177,11 @@ impl EditorView {
     /// Cancel only future targets. An admitted seek retains its existing
     /// acknowledgment/cancellation lifecycle, including priority Stop fencing.
     pub(super) fn cancel_scrub(&mut self) -> bool {
-        self.scrub.gesture.take().is_some()
+        self.interaction.scrub.gesture.take().is_some()
     }
 
     pub(super) fn tick_scrub(&mut self) -> bool {
-        let Some(gesture) = self.scrub.gesture else {
+        let Some(gesture) = self.interaction.scrub.gesture else {
             return false;
         };
         if self.scrub_context(gesture.context.viewport, gesture.context.bounds)
@@ -182,20 +193,25 @@ impl EditorView {
             return false;
         };
         if self.seek_pending()
-            || !self.pending_audio_commands.is_empty()
-            || self.pending_playback.is_some()
-            || !self.playback_candidates.is_empty()
+            || !self.audio_pub.pending_audio_commands.is_empty()
+            || self.audio_pub.pending_playback.is_some()
+            || !self.audio_pub.playback_candidates.is_empty()
         {
             return false;
         }
-        let previous_ticket = self.pending_seek_ticket;
+        let previous_ticket = self.audio_pub.pending_seek_ticket;
         self.request_seek(frame);
-        if self.seek_pending() || self.pending_seek_ticket != previous_ticket {
-            if let Some(gesture) = self.scrub.gesture.as_mut() {
+        if self.seek_pending() || self.audio_pub.pending_seek_ticket != previous_ticket {
+            if let Some(gesture) = self.interaction.scrub.gesture.as_mut() {
                 gesture.admitted(frame);
             }
-            if self.scrub.gesture.is_some_and(|gesture| gesture.released) {
-                self.scrub.gesture = None;
+            if self
+                .interaction
+                .scrub
+                .gesture
+                .is_some_and(|gesture| gesture.released)
+            {
+                self.interaction.scrub.gesture = None;
             }
         } else {
             // An immediate refusal already explains why in the existing seek

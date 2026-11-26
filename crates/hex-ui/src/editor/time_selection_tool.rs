@@ -9,12 +9,13 @@ impl EditorView {
     /// advertise a different idle tool. No hit handler or occlusion is added;
     /// existing pointer captures retain priority over this hover cursor.
     pub(super) fn time_selection_cursor_layer(&self) -> Option<Div> {
-        self.time_selection_key_held
+        self.interaction
+            .time_selection_key_held
             .then(|| div().absolute().inset_0().cursor(CursorStyle::IBeam))
     }
 
     pub(super) fn time_selection_pointer_cursor(&self, ordinary: CursorStyle) -> CursorStyle {
-        if self.time_selection_key_held {
+        if self.interaction.time_selection_key_held {
             CursorStyle::IBeam
         } else {
             ordinary
@@ -36,7 +37,7 @@ impl EditorView {
     ) -> bool {
         if event.keystroke.key != "2"
             || event.keystroke.modifiers.modified()
-            || (event.is_held && !self.time_selection_key_held)
+            || (event.is_held && !self.interaction.time_selection_key_held)
             || !self.time_selection_tool_has_focus(window)
             || self.clip_name_edit.is_some()
             || self.track_name.is_editing()
@@ -54,8 +55,8 @@ impl EditorView {
         {
             return false;
         }
-        if !self.time_selection_key_held {
-            self.time_selection_key_held = true;
+        if !self.interaction.time_selection_key_held {
+            self.interaction.time_selection_key_held = true;
             cx.notify();
         }
         cx.stop_propagation();
@@ -69,7 +70,7 @@ impl EditorView {
         event: &KeyUpEvent,
         cx: &mut Context<Self>,
     ) -> bool {
-        if !self.time_selection_key_held {
+        if !self.interaction.time_selection_key_held {
             return false;
         }
         let key = event.keystroke.key.as_str();
@@ -83,7 +84,7 @@ impl EditorView {
         {
             return false;
         }
-        self.time_selection_key_held = false;
+        self.interaction.time_selection_key_held = false;
         cx.notify();
         true
     }
@@ -93,8 +94,8 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        if self.time_selection_key_held && !self.time_selection_tool_has_focus(window) {
-            self.time_selection_key_held = false;
+        if self.interaction.time_selection_key_held && !self.time_selection_tool_has_focus(window) {
+            self.interaction.time_selection_key_held = false;
             cx.notify();
             // Focus listeners run after frame swap. Retire the hover overlay
             // through the next effect cycle without requiring pointer movement.
@@ -154,8 +155,8 @@ mod tests {
         assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(v.time_selection_gesture.is_some());
-            assert!(v.active_clip_drag.is_none());
+            assert!(v.interaction.time_selection_gesture.is_some());
+            assert!(v.interaction.active_clip_drag.is_none());
         });
         key(&mut visual, false);
         assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
@@ -163,8 +164,8 @@ mod tests {
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
             assert!(v.normalized_time_selection().is_some());
-            assert!(v.time_selection_gesture.is_none());
-            assert!(!v.time_selection_key_held);
+            assert!(v.interaction.time_selection_gesture.is_none());
+            assert!(!v.interaction.time_selection_key_held);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
             assert!(v.test_probes.last_enqueued_edit.is_none());
         });
@@ -284,7 +285,9 @@ mod tests {
         for replacement in [false, true] {
             let (mut visual, editor, _environment, _) = fixture(cx);
             key(&mut visual, true);
-            editor.read_with(&visual, |v, _| assert!(v.time_selection_key_held));
+            editor.read_with(&visual, |v, _| {
+                assert!(v.interaction.time_selection_key_held)
+            });
             if replacement {
                 editor.update(&mut visual, |v, _| {
                     assert!(v.enqueue(hex_session::service::Request::NewWithAudioMode {
@@ -297,7 +300,9 @@ mod tests {
             } else {
                 visual.deactivate_window();
             }
-            editor.read_with(&visual, |v, _| assert!(!v.time_selection_key_held));
+            editor.read_with(&visual, |v, _| {
+                assert!(!v.interaction.time_selection_key_held)
+            });
         }
     }
 
@@ -312,13 +317,15 @@ mod tests {
             visual.simulate_event(KeyUpEvent {
                 keystroke: Keystroke::parse("f").unwrap(),
             });
-            editor.read_with(&visual, |v, _| assert!(v.time_selection_key_held));
+            editor.read_with(&visual, |v, _| {
+                assert!(v.interaction.time_selection_key_held)
+            });
             visual.simulate_event(KeyUpEvent {
                 keystroke: Keystroke::parse(symbol).unwrap(),
             });
             editor.read_with(&visual, |v, _| {
                 assert!(
-                    !v.time_selection_key_held,
+                    !v.interaction.time_selection_key_held,
                     "shifted release {symbol} must restore normal input"
                 )
             });
@@ -330,24 +337,30 @@ mod tests {
         let (mut visual, editor, _environment, _) =
             crate::editor::midi_canvas::creation_tests::fixture(cx);
         visual.simulate_keystrokes("cmd-2");
-        editor.read_with(&visual, |v, _| assert!(!v.time_selection_key_held));
+        editor.read_with(&visual, |v, _| {
+            assert!(!v.interaction.time_selection_key_held)
+        });
         let roll = visual.debug_bounds("midi-note-roll").unwrap();
         visual.simulate_mouse_move(roll.center(), None, Modifiers::default());
         visual.run_until_parked();
         key(&mut visual, true);
         assert_eq!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
-        editor.read_with(&visual, |v, _| assert!(v.time_selection_key_held));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.interaction.time_selection_key_held)
+        });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| {
                 v.browser.search.read(cx).focus_handle().focus(window)
             })
         });
         visual.run_until_parked();
-        editor.read_with(&visual, |v, _| assert!(!v.time_selection_key_held));
+        editor.read_with(&visual, |v, _| {
+            assert!(!v.interaction.time_selection_key_held)
+        });
         assert_ne!(visual.rendered_cursor_style(), Some(CursorStyle::IBeam));
         visual.simulate_keystrokes("2");
         editor.read_with(&visual, |v, cx| {
-            assert!(!v.time_selection_key_held);
+            assert!(!v.interaction.time_selection_key_held);
             assert_eq!(v.browser.search.read(cx).text(), "2");
         });
     }

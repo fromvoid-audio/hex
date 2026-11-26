@@ -492,7 +492,8 @@ impl EditorView {
             .iter()
             .chain(self.device_panel.gesture_barriers.iter())
             .chain(
-                self.recovery
+                self.audio_pub
+                    .recovery
                     .deferred_edit
                     .as_ref()
                     .map(|edit| edit.request.as_ref()),
@@ -501,17 +502,17 @@ impl EditorView {
 
     /// Retire any released previews/receipts owned by an aborted recovery.
     pub(in crate::editor) fn clear_recovery(&mut self) {
-        if self.recovery.holds_loop_region() {
-            self.pending_loop = None;
+        if self.audio_pub.recovery.holds_loop_region() {
+            self.interaction.pending_loop = None;
         }
-        if self.recovery.holds_clip_play_start() {
+        if self.audio_pub.recovery.holds_clip_play_start() {
             self.audio_detail.clip_loop.retire_deferred_play_start();
         }
-        if self.recovery.holds_mixer_edit() {
+        if self.audio_pub.recovery.holds_mixer_edit() {
             self.track_gain_controls.retire_deferred_recovery();
         }
-        let deferred = self.recovery.deferred_edit.take();
-        self.recovery.fail();
+        let deferred = self.audio_pub.recovery.deferred_edit.take();
+        self.audio_pub.recovery.fail();
         let Some(edit) = deferred else {
             return;
         };
@@ -519,7 +520,7 @@ impl EditorView {
             self.browser.pending_sample_drop = None;
         }
         if edit.kind == DeferredEditKind::TimeDuplicate {
-            self.pending_time_range_move = None;
+            self.interaction.pending_time_range_move = None;
         }
         if edit.kind == DeferredEditKind::ToggleDeviceBypass {
             self.device_panel.retire_unsubmitted_bypass(&edit.request);
@@ -528,7 +529,7 @@ impl EditorView {
     }
 
     pub(super) fn has_resident_vst3(&self) -> bool {
-        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.state.as_ref().is_some_and(|state| {
                 state
                     .project
@@ -538,18 +539,21 @@ impl EditorView {
     }
 
     pub(super) fn holds_stopped_vst3_requests(&self) -> bool {
-        self.stopped_playback_restore.is_some_and(|restore| {
-            !matches!(
-                restore,
-                super::audio_admission::StoppedPlaybackRestore::WaitingForEdits { .. }
-            )
-        }) && self.has_resident_vst3()
+        self.audio_pub
+            .stopped_playback_restore
+            .is_some_and(|restore| {
+                !matches!(
+                    restore,
+                    super::audio_admission::StoppedPlaybackRestore::WaitingForEdits { .. }
+                )
+            })
+            && self.has_resident_vst3()
     }
 
     pub(super) fn has_degraded_vst3_output(&self) -> bool {
         self.audio.is_some()
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && self.stopped_playback_restore.is_none()
+            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.stopped_playback_restore.is_none()
             && !self.device_panel.degraded_plugins.is_empty()
     }
 
@@ -557,8 +561,8 @@ impl EditorView {
     /// full-engine restart. A single degraded VST3 plugin stays isolated as an
     /// aligned pass-through and must not tear down healthy playback or editors.
     pub(super) fn has_output_fault_requiring_recovery(&self) -> bool {
-        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && self.stopped_playback_restore.is_none()
+        self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.stopped_playback_restore.is_none()
             && self.audio_status().is_some_and(|status| {
                 status.device_fault.load(Acquire) || status.render_fault.load(Acquire)
             })
@@ -584,7 +588,7 @@ impl EditorView {
         {
             return Some(DeferredEditKind::ClipPlayStart);
         }
-        if !output_fault && self.recovery.deferred_edit.is_none() {
+        if !output_fault && self.audio_pub.recovery.deferred_edit.is_none() {
             if is_track_switch_edit(request) && self.has_degraded_stranded_device_gesture() {
                 return Some(DeferredEditKind::GraphEdit);
             }
@@ -644,7 +648,7 @@ impl EditorView {
 
     pub(super) fn recovering_clip_play_start(&self, clip: ClipId) -> bool {
         self.state.as_ref().is_some_and(|state| {
-            self.recovery.admits_clip_play_start(
+            self.audio_pub.recovery.admits_clip_play_start(
                 AudioSourceContext {
                     project_generation: self.project_generation,
                     editor_revision: state.revision,
@@ -663,10 +667,12 @@ impl EditorView {
         is_mixer_control_edit(request)
             && self.pending_mixer_edit_matches(request)
             && self.state.as_ref().is_some_and(|state| {
-                self.recovery.admits_mixer_edit(AudioSourceContext {
-                    project_generation: self.project_generation,
-                    editor_revision: state.revision,
-                })
+                self.audio_pub
+                    .recovery
+                    .admits_mixer_edit(AudioSourceContext {
+                        project_generation: self.project_generation,
+                        editor_revision: state.revision,
+                    })
             })
     }
 
@@ -689,8 +695,8 @@ impl EditorView {
         let continuing_mixer_edit =
             kind == DeferredEditKind::MixerControl && self.recovering_mixer_edit_request(&request);
         let continuing = continuing_play_start || continuing_mixer_edit;
-        if self.recovery.generation().is_some()
-            && (!continuing || self.recovery.deferred_edit.is_some())
+        if self.audio_pub.recovery.generation().is_some()
+            && (!continuing || self.audio_pub.recovery.deferred_edit.is_some())
         {
             self.error = Some("audio recovery pending · wait before editing".into());
             retire_refused(self, &request);
@@ -717,7 +723,7 @@ impl EditorView {
         } else {
             self.edit_pending()
         };
-        if !continuing && (blocked_by_edit || self.pending_restart_request.is_some()) {
+        if !continuing && (blocked_by_edit || self.audio_pub.pending_restart_request.is_some()) {
             self.error = Some("finish the current edit before restarting audio".into());
             retire_refused(self, &request);
             return false;
@@ -755,7 +761,7 @@ impl EditorView {
                 .audio_status()
                 .is_some_and(|status| status.playing.load(Acquire));
             self.recover_audio();
-            if self.recovery.generation().is_none() {
+            if self.audio_pub.recovery.generation().is_none() {
                 retire_refused(self, &request);
                 return false;
             }
@@ -768,7 +774,7 @@ impl EditorView {
         }
         let is_pan = matches!(request, Request::Edit(Command::Balance { .. }));
         let graph_status = deferred_graph_edit_waiting_status(&request);
-        self.recovery.deferred_edit = Some(DeferredGraphEdit {
+        self.audio_pub.recovery.deferred_edit = Some(DeferredGraphEdit {
             kind,
             context,
             request: Box::new(request),
@@ -805,7 +811,7 @@ impl EditorView {
     }
 
     fn submit_recovered_graph_edit(&mut self) {
-        let Some(pending) = self.recovery.deferred_edit.take() else {
+        let Some(pending) = self.audio_pub.recovery.deferred_edit.take() else {
             return;
         };
         let sample_drop = pending.kind == DeferredEditKind::SampleDrop;
@@ -957,7 +963,7 @@ impl EditorView {
     }
 
     pub(super) fn defer_play_until_audio_recovers(&mut self) {
-        self.deferred_play = Some((
+        self.audio_pub.deferred_play = Some((
             PlaybackAction::Transport(PlaybackCommand::Play),
             None,
             self.project_generation,
@@ -968,7 +974,7 @@ impl EditorView {
     /// A contained VST3 worker fault leaves the applied graph playable. Only
     /// recover on Play when the output itself cannot serve the start.
     pub(super) fn recover_degraded_play_at(&mut self, frame: u64) -> bool {
-        if self.recovery.generation().is_some()
+        if self.audio_pub.recovery.generation().is_some()
             || !self.has_degraded_vst3_output()
             || self.audio_status().is_some_and(|status| {
                 status.applied_revision.load(Acquire) != 0
@@ -980,16 +986,18 @@ impl EditorView {
             return false;
         }
         self.recover_audio_at(frame);
-        if self.recovery.generation().is_some() {
+        if self.audio_pub.recovery.generation().is_some() {
             self.defer_play_until_audio_recovers();
         }
         true
     }
 
     pub(super) fn recover_audio(&mut self) {
-        let position = self.recovery.position().unwrap_or_else(|| {
+        let position = self.audio_pub.recovery.position().unwrap_or_else(|| {
             self.audio_status()
-                .map_or(self.offline_cursor, |status| status.recovery_position())
+                .map_or(self.audio_pub.offline_cursor, |status| {
+                    status.recovery_position()
+                })
         });
         self.recover_audio_at(position);
     }
@@ -1007,13 +1015,13 @@ impl EditorView {
             self.error = Some("project is still loading".into());
             return;
         };
-        if self.seek_pending() && self.recovery.generation().is_none() {
+        if self.seek_pending() && self.audio_pub.recovery.generation().is_none() {
             self.error =
                 Some("seek pending · wait for audio or press stop before restarting".into());
             return;
         }
         self.invalidate_prepared_seek();
-        let generation = match self.recovery.begin(position) {
+        let generation = match self.audio_pub.recovery.begin(position) {
             Ok(generation) => generation,
             Err(message) => {
                 self.error = Some(message.into());
@@ -1021,14 +1029,14 @@ impl EditorView {
             }
         };
         self.settings.playback.pending = None;
-        self.offline_cursor = position;
+        self.audio_pub.offline_cursor = position;
         if !self.retire_audio_preserving_gain_take() {
             self.clear_recovery();
             return;
         }
         self.clear_audio_accounting();
         if self.restart_audio_for_current_document() {
-            self.pending_recovery_generation = Some(generation);
+            self.audio_pub.pending_recovery_generation = Some(generation);
             self.status = "restarting audio output".into();
             self.error = None;
         } else {
@@ -1042,7 +1050,7 @@ impl EditorView {
     /// pending seek, restart or recovery is active; drops the request when
     /// the named output is no longer current.
     pub(super) fn follow_output_route(&mut self) -> bool {
-        let Some(identity) = self.route_follow else {
+        let Some(identity) = self.audio_pub.route_follow else {
             return false;
         };
         if self
@@ -1051,7 +1059,7 @@ impl EditorView {
             .and_then(|audio| audio.control.output_identity())
             != Some(identity)
         {
-            self.route_follow = None;
+            self.audio_pub.route_follow = None;
             return false;
         }
         if self.persistence.close_prompt_open
@@ -1060,14 +1068,14 @@ impl EditorView {
             || self.persistence.export_dialog_open
             || self.state.is_none()
             || self.seek_pending()
-            || self.recovery.generation().is_some()
-            || self.pending_restart_request.is_some()
+            || self.audio_pub.recovery.generation().is_some()
+            || self.audio_pub.pending_restart_request.is_some()
         {
             return false;
         }
-        self.route_follow = None;
+        self.audio_pub.route_follow = None;
         self.recover_audio();
-        if self.pending_recovery_generation.is_some() {
+        if self.audio_pub.pending_recovery_generation.is_some() {
             self.status = "audio output changed · reopening".into();
         }
         true
@@ -1078,21 +1086,21 @@ impl EditorView {
     }
 
     pub(super) fn finish_audio_recovery_tick(&mut self) -> bool {
-        let Some(recovery_generation) = self.recovery.generation() else {
+        let Some(recovery_generation) = self.audio_pub.recovery.generation() else {
             return false;
         };
         let reliable = self
             .audio
             .as_ref()
             .is_some_and(|audio| audio.control.has_action_outcomes());
-        if reliable && self.recovery.seek_failed() {
+        if reliable && self.audio_pub.recovery.seek_failed() {
             self.fail_audio_recovery("recovered cursor request was not applied · retry available");
             return true;
         }
         let graph_is_current = self
             .state
             .as_ref()
-            .is_some_and(|state| self.applied_project_revision == Some(state.revision));
+            .is_some_and(|state| self.audio_pub.applied_project_revision == Some(state.revision));
         let failed = self
             .audio
             .as_ref()
@@ -1106,7 +1114,7 @@ impl EditorView {
             self.fail_audio_recovery("audio output failed during recovery · retry available");
             return true;
         }
-        if let Some(position) = self.recovery.seek_needed(graph_is_current) {
+        if let Some(position) = self.audio_pub.recovery.seek_needed(graph_is_current) {
             let prepared = position != 0
                 && self.current_seek_requires_preroll() == Some(true)
                 && self
@@ -1119,23 +1127,28 @@ impl EditorView {
                 // exact source before capturing another preparation fence.
                 let source_ready = self.audio.as_ref().is_some_and(|audio| {
                     audio.control.status().is_some_and(|status| {
-                        self.audible_playback.as_ref().is_some_and(|candidate| {
-                            candidate.audio_revision == status.applied_revision.load(Acquire)
-                        })
+                        self.audio_pub
+                            .audible_playback
+                            .as_ref()
+                            .is_some_and(|candidate| {
+                                candidate.audio_revision == status.applied_revision.load(Acquire)
+                            })
                     })
                 });
                 if !source_ready
-                    || self.pending_playback.is_some()
-                    || self.pending_resident_publication.is_some()
-                    || !self.playback_candidates.is_empty()
+                    || self.audio_pub.pending_playback.is_some()
+                    || self.audio_pub.pending_resident_publication.is_some()
+                    || !self.audio_pub.playback_candidates.is_empty()
                 {
                     return false;
                 }
-                let Some(generation) = self.recovery.generation() else {
+                let Some(generation) = self.audio_pub.recovery.generation() else {
                     return false;
                 };
                 if let Some(request) = self.request_recovery_prepared_seek(position, generation) {
-                    self.recovery.prepared_seeking(generation, request);
+                    self.audio_pub
+                        .recovery
+                        .prepared_seeking(generation, request);
                 } else {
                     let reason = self.error.as_ref().map_or_else(
                         || "could not prepare recovered cursor · retry available".to_owned(),
@@ -1149,42 +1162,51 @@ impl EditorView {
                     .control
                     .command_with_ticket(PlaybackCommand::Seek(position))
             {
-                self.recovery.seeking(ticket);
-                self.pending_seek_ticket = Some(ticket);
+                self.audio_pub.recovery.seeking(ticket);
+                self.audio_pub.pending_seek_ticket = Some(ticket);
             }
         }
         let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status()) else {
             return false;
         };
-        if self.recovery.prepared_revision().is_some_and(|revision| {
-            status
-                .rejected_revision()
-                .is_some_and(|(rejected, _)| rejected == revision)
-                && status.applied_revision.load(Acquire) < revision
-        }) {
+        if self
+            .audio_pub
+            .recovery
+            .prepared_revision()
+            .is_some_and(|revision| {
+                status
+                    .rejected_revision()
+                    .is_some_and(|(rejected, _)| rejected == revision)
+                    && status.applied_revision.load(Acquire) < revision
+            })
+        {
             self.fail_audio_recovery("recovered cursor publication was rejected · retry available");
             return true;
         }
         let position = status.position.load(Relaxed);
         let playing = status.playing.load(Relaxed);
-        let ready = if self.recovery.prepared_request().is_some() {
-            let audible = self.audible_playback.as_ref().and_then(|candidate| {
-                (candidate.project_generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| candidate.state.revision == state.revision)
-                    && candidate.device_preview_identity.is_none()
-                    && candidate.tuning_preview_identity.is_none()
-                    && candidate.clip_preview_identity.is_none())
-                .then_some(
-                    candidate
-                        .seek_request_id
-                        .map(|request| (request, candidate.audio_revision)),
-                )
-                .flatten()
-            });
-            self.recovery.complete_prepared(
+        let ready = if self.audio_pub.recovery.prepared_request().is_some() {
+            let audible = self
+                .audio_pub
+                .audible_playback
+                .as_ref()
+                .and_then(|candidate| {
+                    (candidate.project_generation == self.project_generation
+                        && self
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| candidate.state.revision == state.revision)
+                        && candidate.device_preview_identity.is_none()
+                        && candidate.tuning_preview_identity.is_none()
+                        && candidate.clip_preview_identity.is_none())
+                    .then_some(
+                        candidate
+                            .seek_request_id
+                            .map(|request| (request, candidate.audio_revision)),
+                    )
+                    .flatten()
+                });
+            self.audio_pub.recovery.complete_prepared(
                 graph_is_current,
                 audible,
                 status.applied_revision.load(Acquire),
@@ -1192,12 +1214,15 @@ impl EditorView {
                 playing,
             )
         } else if reliable {
-            self.recovery
+            self.audio_pub
+                .recovery
                 .complete_exact(graph_is_current, position, playing)
         } else {
-            self.recovery.complete(
+            self.audio_pub.recovery.complete(
                 graph_is_current,
-                if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+                if self.audio_pub.document_audio_mode
+                    == hex_session::DocumentAudioMode::VerifiedStreaming
+                {
                     status.stream_applied_command_prefix.load(Acquire)
                 } else {
                     status.consumed_command.load(Acquire)
@@ -1207,8 +1232,8 @@ impl EditorView {
             )
         };
         if ready {
-            self.offline_cursor = position;
-            self.pending_recovery_generation = None;
+            self.audio_pub.offline_cursor = position;
+            self.audio_pub.pending_recovery_generation = None;
             self.status = "audio ready · stopped".into();
             self.error = None;
             self.submit_recovered_graph_edit();
@@ -1221,15 +1246,20 @@ impl EditorView {
     pub(super) fn fail_audio_recovery(&mut self, error: impl Into<hex_audio::OutputOpenError>) {
         self.settings.playback.pending = None;
         let error = error.into();
-        let lost_stranded_commit = self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
-            edit.stranded_gesture
-                .is_some_and(|stranded| stranded.had_stranded_commit)
-        });
-        self.offline_cursor = self.cursor_position();
+        let lost_stranded_commit =
+            self.audio_pub
+                .recovery
+                .deferred_edit
+                .as_ref()
+                .is_some_and(|edit| {
+                    edit.stranded_gesture
+                        .is_some_and(|stranded| stranded.had_stranded_commit)
+                });
+        self.audio_pub.offline_cursor = self.cursor_position();
         self.clear_recovery();
         self.retire_audio_preserving_gain_take();
-        self.pending_recovery_generation = None;
-        self.pending_restart_request = None;
+        self.audio_pub.pending_recovery_generation = None;
+        self.audio_pub.pending_restart_request = None;
         self.clear_audio_accounting();
         if error.rate_mismatch().is_some() {
             let message = super::audio_unavailable::unavailable_message(&error);
@@ -1247,25 +1277,25 @@ impl EditorView {
 
     fn clear_audio_accounting(&mut self) {
         self.output_meter_frame = None;
-        self.stopped_playback_restore = None;
-        self.paused_republish = None;
-        self.deferred_play = None;
+        self.audio_pub.stopped_playback_restore = None;
+        self.audio_pub.paused_republish = None;
+        self.audio_pub.deferred_play = None;
         self.service.invalidate_arrangement_seek();
-        self.prepared_seek = None;
-        self.latched_seek_intent = None;
-        self.playback_candidates.clear();
-        self.audible_playback = None;
-        self.audio_admission.reset_audio();
-        self.applied_project_revision = None;
-        self.pending_audio_commands.clear();
-        self.pending_seek_ticket = None;
+        self.audio_pub.prepared_seek = None;
+        self.audio_pub.latched_seek_intent = None;
+        self.audio_pub.playback_candidates.clear();
+        self.audio_pub.audible_playback = None;
+        self.audio_pub.audio_admission.reset_audio();
+        self.audio_pub.applied_project_revision = None;
+        self.audio_pub.pending_audio_commands.clear();
+        self.audio_pub.pending_seek_ticket = None;
         self.session_grid.pending_session_ticket = None;
         self.play_intent.clear();
-        self.pending_playback = None;
-        self.pending_resident_publication = None;
+        self.audio_pub.pending_playback = None;
+        self.audio_pub.pending_resident_publication = None;
         self.clear_route_telemetry();
-        self.observed_rejected_action = 0;
-        self.observed_rejected_revision = 0;
+        self.audio_pub.observed_rejected_action = 0;
+        self.audio_pub.observed_rejected_revision = 0;
         self.session_grid.observed_capability = None;
         self.session_grid.capability_message = None;
     }
@@ -1274,9 +1304,9 @@ impl EditorView {
     /// commands act on.
     pub(super) fn cursor_position(&self) -> u64 {
         cursor_frame(
-            self.recovery.position(),
+            self.audio_pub.recovery.position(),
             self.audio_status(),
-            self.offline_cursor,
+            self.audio_pub.offline_cursor,
             Cursor::Scheduled,
         )
     }
@@ -1285,9 +1315,9 @@ impl EditorView {
     /// the scheduled cursor by the graph's Main latency.
     pub(super) fn audible_cursor_position(&self) -> u64 {
         cursor_frame(
-            self.recovery.position(),
+            self.audio_pub.recovery.position(),
             self.audio_status(),
-            self.offline_cursor,
+            self.audio_pub.offline_cursor,
             Cursor::Audible,
         )
     }

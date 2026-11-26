@@ -49,7 +49,7 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
         .expect("f reveals the actual handle")
         .center();
     editor.update(&mut visual, |view, cx| {
-        view.time_selection = Some(super::super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::super::time_selection::TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: 0,
@@ -63,10 +63,22 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.active_fade_drag.as_ref().unwrap().preview.fade_in() > 0);
-        assert!(view.active_clip_drag.is_none() && view.active_trim_drag.is_none());
         assert!(
-            view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none(),
+            view.interaction
+                .active_fade_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .fade_in()
+                > 0
+        );
+        assert!(
+            view.interaction.active_clip_drag.is_none()
+                && view.interaction.active_trim_drag.is_none()
+        );
+        assert!(
+            view.interaction.time_selection_gesture.is_none()
+                && view.interaction.time_range_move_gesture.is_none(),
             "fade handles take precedence inside an existing time selection"
         );
         assert!(
@@ -81,7 +93,7 @@ fn held_f_exposes_neutral_handles_and_release_commits_one_fade_without_moving_cl
     );
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let command = editor.read_with(&visual, |view, _| {
-        assert!(view.active_fade_drag.is_none());
+        assert!(view.interaction.active_fade_drag.is_none());
         view.test_probes
             .last_enqueued_edit
             .clone()
@@ -173,7 +185,7 @@ fn authored_fades_reveal_on_hover_and_each_endpoint_and_curve_uses_its_real_hand
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert!(
-                view.active_fade_drag.is_some(),
+                view.interaction.active_fade_drag.is_some(),
                 "claiming workspace focus must retain the new gesture"
             )
         });
@@ -291,7 +303,7 @@ fn fade_escape_focus_loss_and_stale_revision_cancel_without_edits(cx: &mut TestA
             }
             visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
-                assert!(view.active_fade_drag.is_none());
+                assert!(view.interaction.active_fade_drag.is_none());
                 assert!(
                     view.test_probes.last_enqueued_edit.is_none(),
                     "cancel {cancel}: {:?}",
@@ -481,12 +493,17 @@ fn lower_handles_noop_return_to_origin_and_release_modifier_use_one_trim(cx: &mu
             visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
-                assert!(view.active_fade_drag.is_none());
+                assert!(view.interaction.active_fade_drag.is_none());
                 assert!(view.test_probes.last_enqueued_edit.is_none());
             });
         } else {
             let snapped = editor.read_with(&visual, |view, _| {
-                view.active_fade_drag.as_ref().unwrap().trim_frame.unwrap()
+                view.interaction
+                    .active_fade_drag
+                    .as_ref()
+                    .unwrap()
+                    .trim_frame
+                    .unwrap()
             });
             visual.simulate_mouse_up(
                 moved,
@@ -609,14 +626,14 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 }
                 visual.simulate_mouse_down(target, MouseButton::Left, Modifiers::default());
                 let dx = editor.read_with(&visual, |view, _| {
-                    let drag = view.active_fade_drag.as_ref().unwrap();
+                    let drag = view.interaction.active_fade_drag.as_ref().unwrap();
                     17_321.0 * drag.lane.width / drag.viewport.length as f32
                 });
                 let moved = point(target.x + px(dx * direction), target.y);
                 visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
                 visual.run_until_parked();
                 let (free, expected_snapped_frame) = editor.read_with(&visual, |view, _| {
-                    let drag = view.active_fade_drag.as_ref().unwrap();
+                    let drag = view.interaction.active_fade_drag.as_ref().unwrap();
                     let delta = (f64::from(f32::from(moved.x - target.x))
                         / f64::from(drag.lane.width)
                         * drag.viewport.length as f64)
@@ -647,7 +664,11 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 let snapped = editor.read_with(&visual, |view, _| {
                     assert!(view.test_probes.last_enqueued_edit.is_none());
                     assert_eq!(
-                        view.active_fade_drag.as_ref().unwrap().trim_frame,
+                        view.interaction
+                            .active_fade_drag
+                            .as_ref()
+                            .unwrap()
+                            .trim_frame,
                         Some(expected_snapped_frame)
                     );
                     view.fade_trim_preview(clip).unwrap().clone()
@@ -672,6 +693,7 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                 visual.update(|window, cx| {
                     editor.read_with(cx, |view, _| {
                         let drag = view
+                            .interaction
                             .active_fade_drag
                             .as_ref()
                             .expect("active before release");
@@ -695,7 +717,7 @@ fn stationary_command_changes_refresh_both_lower_previews_and_release_uses_curre
                     },
                 );
                 let edit = editor.read_with(&visual, |view, _| {
-                    assert!(view.active_fade_drag.is_none());
+                    assert!(view.interaction.active_fade_drag.is_none());
                     view.test_probes
                         .last_enqueued_edit
                         .clone()
@@ -756,12 +778,19 @@ fn lower_source_limits_are_noops_with_and_without_command(cx: &mut TestAppContex
                 visual.run_until_parked();
                 editor.read_with(&visual, |view, _| {
                     assert!(view.fade_trim_preview(clip).is_none());
-                    assert!(view.active_fade_drag.as_ref().unwrap().trim_frame.is_none());
+                    assert!(
+                        view.interaction
+                            .active_fade_drag
+                            .as_ref()
+                            .unwrap()
+                            .trim_frame
+                            .is_none()
+                    );
                     assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
                 });
                 visual.simulate_mouse_up(beyond_source, MouseButton::Left, modifiers);
                 editor.read_with(&visual, |view, _| {
-                    assert!(view.active_fade_drag.is_none());
+                    assert!(view.interaction.active_fade_drag.is_none());
                     assert!(view.test_probes.last_enqueued_edit.is_none());
                     assert_eq!(view.worker_requests_pending, 0);
                 });
@@ -820,7 +849,9 @@ fn two_axis_curve_drags_change_pcm_keep_endpoints_and_bound_vertical_travel(
             let gain = curve_handle_gain(preview, out);
             assert!((0.25..=0.75).contains(&gain));
             let center = visual.debug_bounds(selector).unwrap().center();
-            let lane = editor.read_with(&visual, |v, _| v.active_fade_drag.as_ref().unwrap().lane);
+            let lane = editor.read_with(&visual, |v, _| {
+                v.interaction.active_fade_drag.as_ref().unwrap().lane
+            });
             let top = lane.top + super::super::clip_name::CLIP_NAME_HEIGHT;
             let body = lane.height - super::super::clip_name::CLIP_NAME_HEIGHT;
             assert!((f32::from(center.y) - top) >= body * 0.25 - 1.0);
@@ -901,7 +932,8 @@ fn pump(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
 
 fn clear_waveform_paints(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     editor.update(visual, |view, _| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow_mut()
             .clear_paint_samples()
     });
@@ -1040,7 +1072,7 @@ fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mu
         assert_eq!(visual.debug_bounds(in_top), Some(held_in));
         super::paint_probe::assert_style(&mut visual, in_top, theme::FadeHandleState::Active);
         editor.read_with(&visual, |v, _| {
-            assert!(v.pending_fade.is_some());
+            assert!(v.interaction.pending_fade.is_some());
             assert_eq!(v.fade_preview(clip), Some(preview));
         });
     }
@@ -1051,7 +1083,7 @@ fn released_push_keeps_both_pushed_handles_painted_until_real_worker_ack(cx: &mu
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         let state = v.state.as_ref().unwrap();
-        assert!(v.pending_fade.is_none());
+        assert!(v.interaction.pending_fade.is_none());
         assert_eq!(state.project.clip(clip).unwrap().retained_fade(), preview);
         assert!(state.can_undo);
     });
@@ -1148,7 +1180,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
             held_outline
         );
         editor.read_with(&visual, |v, _| {
-            assert!(v.pending_fade.is_some());
+            assert!(v.interaction.pending_fade.is_some());
             assert_ne!(
                 v.state
                     .as_ref()
@@ -1173,7 +1205,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
         held_outline
     );
     editor.read_with(&visual, |v, _| {
-        assert!(v.pending_fade.is_none());
+        assert!(v.interaction.pending_fade.is_none());
         assert_eq!(
             v.state
                 .as_ref()
@@ -1197,7 +1229,12 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let generation = editor.read_with(&visual, |v, _| {
-        assert!(v.active_fade_drag.as_ref().is_some_and(|drag| drag.moved));
+        assert!(
+            v.interaction
+                .active_fade_drag
+                .as_ref()
+                .is_some_and(|drag| drag.moved)
+        );
         v.project_generation
     });
     editor.update(&mut visual, |v, _| {
@@ -1209,7 +1246,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
     pump(&editor, &mut visual);
     let replacement = editor.update(&mut visual, |v, _| {
         assert!(v.project_generation > generation);
-        assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
+        assert!(v.interaction.active_fade_drag.is_none() && v.interaction.pending_fade.is_none());
         assert!(v.state.as_ref().unwrap().project.tracks().is_empty());
         // Reset only the test edit trace after the expected earlier commit.
         v.test_probes.last_enqueued_edit = None;
@@ -1226,7 +1263,7 @@ fn released_two_axis_fade_stays_painted_until_real_worker_ack(cx: &mut TestAppCo
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), replacement);
         assert!(v.test_probes.last_enqueued_edit.is_none());
         assert!(v.error.is_none() && !v.state.as_ref().unwrap().can_undo);
-        assert!(v.active_fade_drag.is_none() && v.pending_fade.is_none());
+        assert!(v.interaction.active_fade_drag.is_none() && v.interaction.pending_fade.is_none());
         assert!(v.pending_requests.is_empty() && v.worker_requests_pending == 0);
     });
 }
@@ -1282,7 +1319,7 @@ fn real_refusal_retires_frozen_curve_with_its_canonical_state(cx: &mut TestAppCo
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.pending_fade.is_none() && v.fade_preview(clip).is_none())
+        assert!(v.interaction.pending_fade.is_none() && v.fade_preview(clip).is_none())
     });
     assert!(visual.debug_bounds(selector).is_none());
 }
@@ -1443,12 +1480,23 @@ fn hover_revealed_handle_on_a_fade_free_clip_drags_one_fade_without_moving_clip(
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.active_fade_drag.as_ref().unwrap().preview.fade_out() > 0);
-        assert!(view.active_clip_drag.is_none() && view.active_trim_drag.is_none());
+        assert!(
+            view.interaction
+                .active_fade_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .fade_out()
+                > 0
+        );
+        assert!(
+            view.interaction.active_clip_drag.is_none()
+                && view.interaction.active_trim_drag.is_none()
+        );
     });
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let edit = editor.read_with(&visual, |view, _| {
-        assert!(view.active_fade_drag.is_none());
+        assert!(view.interaction.active_fade_drag.is_none());
         view.test_probes
             .last_enqueued_edit
             .clone()
@@ -1486,7 +1534,9 @@ fn narrow_clip_hides_hover_and_f_targets_until_zoomed_in(cx: &mut TestAppContext
         super::super::clip_drag_ui_test::editor_window(cx, original.clone(), Arc::default());
     let mut visual = VisualTestContext::from_window(window, cx);
     visual.run_until_parked();
-    let lane_width = editor.read_with(&visual, |v, _| v.drag_lanes.get(&track).unwrap().width);
+    let lane_width = editor.read_with(&visual, |v, _| {
+        v.timeline_caches.drag_lanes.get(&track).unwrap().width
+    });
     let selector: &'static str =
         Box::leak(format!("fade-in-top-{}", clip.value()).into_boxed_str());
     for (width, shown) in [(23.0_f32, false), (25.0, true)] {
@@ -1533,7 +1583,9 @@ fn narrow_clip_hides_hover_and_f_targets_until_zoomed_in(cx: &mut TestAppContext
             });
             visual.simulate_mouse_down(hit, MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(hit, MouseButton::Left, Modifiers::default());
-            editor.read_with(&visual, |v, _| assert!(v.active_fade_drag.is_none()));
+            editor.read_with(&visual, |v, _| {
+                assert!(v.interaction.active_fade_drag.is_none())
+            });
         }
         if shown {
             let from = visual.debug_bounds(selector).unwrap().center();
@@ -1556,7 +1608,7 @@ fn narrow_clip_hides_hover_and_f_targets_until_zoomed_in(cx: &mut TestAppContext
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
                 assert!(
-                    v.active_fade_drag.is_some(),
+                    v.interaction.active_fade_drag.is_some(),
                     "admitted gesture survives zoom"
                 )
             });
@@ -1567,7 +1619,10 @@ fn narrow_clip_hides_hover_and_f_targets_until_zoomed_in(cx: &mut TestAppContext
             visual.simulate_mouse_up(to, MouseButton::Left, free);
             visual.run_until_parked();
             editor.read_with(&visual, |v, _| {
-                assert!(v.pending_fade.is_some(), "release owns its pending preview")
+                assert!(
+                    v.interaction.pending_fade.is_some(),
+                    "release owns its pending preview"
+                )
             });
             assert!(
                 visual.debug_bounds(selector).is_some(),
@@ -1654,19 +1709,21 @@ fn fade_capture_stays_visible_when_dragging_into_the_header(cx: &mut TestAppCont
     visual.simulate_mouse_down(knob.center(), MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| assert!(view.active_fade_drag.is_some()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.interaction.active_fade_drag.is_some())
+    });
     assert!(
         visual.debug_bounds(selector).is_some(),
         "held fade survives header crossing"
     );
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.active_fade_drag.is_none());
+        assert!(view.interaction.active_fade_drag.is_none());
         assert!(matches!(
             view.test_probes.last_enqueued_edit,
             Some(Command::SetClipFadeEnvelope { .. })
         ));
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
     });
 }
 
@@ -1737,7 +1794,9 @@ fn clip_fade_shading_survives_idle_selection_and_narrow_repaints(cx: &mut TestAp
         super::super::clip_drag_ui_test::editor_window(cx, model.project().clone(), Arc::default());
     let mut visual = VisualTestContext::from_window(window, cx);
     visual.run_until_parked();
-    let lane_width = editor.read_with(&visual, |v, _| v.drag_lanes.get(&track).unwrap().width);
+    let lane_width = editor.read_with(&visual, |v, _| {
+        v.timeline_caches.drag_lanes.get(&track).unwrap().width
+    });
     let selector: &'static str =
         Box::leak(format!("clip-fade-shade-{}", clip.value()).into_boxed_str());
     let shade: gpui::Background = gpui::rgba(theme::CLIP_FADE_SHADE).into();
@@ -1749,8 +1808,8 @@ fn clip_fade_shading_survives_idle_selection_and_narrow_repaints(cx: &mut TestAp
                     length: (128.0 * lane_width / width) as u64,
                 });
                 v.selected_clip = selected.then_some(clip);
-                v.hovered_fade_clip = None;
-                v.fade_key_held = false;
+                v.interaction.hovered_fade_clip = None;
+                v.interaction.fade_key_held = false;
                 cx.notify();
             });
             visual.run_until_parked();
@@ -1945,7 +2004,9 @@ fn repeated_clip_fade_preview(cx: &mut TestAppContext, processed: bool) {
             painted_clip_waveform_outline(&editor, &mut visual, clip),
             held_waveform
         );
-        editor.read_with(&visual, |v, _| assert!(v.pending_fade.is_some()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.interaction.pending_fade.is_some())
+        });
     }
     clear_waveform_paints(&editor, &mut visual);
     editor.update(&mut visual, |v, cx| {
@@ -1954,7 +2015,7 @@ fn repeated_clip_fade_preview(cx: &mut TestAppContext, processed: bool) {
     });
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.pending_fade.is_none());
+        assert!(v.interaction.pending_fade.is_none());
         let project = &v.state.as_ref().unwrap().project;
         let outer = project
             .clip(clip)

@@ -15,7 +15,7 @@ fn setup(
     let tracks = editor.read_with(&visual, |v, _| {
         let t = v.state.as_ref().unwrap().project.tracks();
         assert_eq!(
-            v.document_audio_mode,
+            v.audio_pub.document_audio_mode,
             hex_session::DocumentAudioMode::Resident
         );
         [t[0].id(), t[1].id()]

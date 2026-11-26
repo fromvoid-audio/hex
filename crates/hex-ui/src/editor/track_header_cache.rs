@@ -180,7 +180,8 @@ impl EditorView {
 
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn track_header_render_count(&self, track_id: TrackId, cx: &gpui::App) -> usize {
-        self.track_header_cache
+        self.timeline_caches
+            .track_header_cache
             .entries
             .get(&track_id)
             .map_or(0, |entity| entity.read(cx).render_count)
@@ -188,7 +189,8 @@ impl EditorView {
 
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn track_header_epoch(&self, track_id: TrackId, cx: &gpui::App) -> Option<u64> {
-        self.track_header_cache
+        self.timeline_caches
+            .track_header_cache
             .entries
             .get(&track_id)
             .map(|entity| entity.read(cx).epoch)
@@ -209,10 +211,17 @@ impl EditorView {
             .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), state))
             .cloned();
         if snapshot.is_none()
-            || (!self.track_header_cache.entries.contains_key(&track_id)
-                && self.track_header_cache.entries.len() >= hex_project::MAX_TRACKS)
+            || (!self
+                .timeline_caches
+                .track_header_cache
+                .entries
+                .contains_key(&track_id)
+                && self.timeline_caches.track_header_cache.entries.len() >= hex_project::MAX_TRACKS)
         {
-            self.track_header_cache.entries.remove(&track_id);
+            self.timeline_caches
+                .track_header_cache
+                .entries
+                .remove(&track_id);
             return self
                 .build_track_header(state, track, track_index, cx)
                 .into_any_element();
@@ -273,7 +282,8 @@ impl EditorView {
                 .device_panel
                 .sample_recorder
                 .is_armed(self.project_generation, sample_source),
-            resident_layout: self.document_audio_mode == hex_session::DocumentAudioMode::Resident,
+            resident_layout: self.audio_pub.document_audio_mode
+                == hex_session::DocumentAudioMode::Resident,
             show_track_latency: self.show_track_latency,
             send_menu_open: self.session_grid.send_menu_track == Some(track_id),
             io_menu_open: self
@@ -294,7 +304,13 @@ impl EditorView {
         let parent = cx.weak_entity();
         let fresh = !self.track_header_cache_allowed_for(track_id, cx);
         let has_active_drag = cx.has_active_drag();
-        let entity = if let Some(entity) = self.track_header_cache.entries.get(&track_id).cloned() {
+        let entity = if let Some(entity) = self
+            .timeline_caches
+            .track_header_cache
+            .entries
+            .get(&track_id)
+            .cloned()
+        {
             entity.update(cx, |header, _| {
                 let stale_drag_cursor = header.painted_with_active_drag && !has_active_drag;
                 if header.key != key || fresh || header.fresh_last || stale_drag_cursor {
@@ -315,7 +331,8 @@ impl EditorView {
                 #[cfg(all(test, feature = "ui-test-support"))]
                 render_count: 0,
             });
-            self.track_header_cache
+            self.timeline_caches
+                .track_header_cache
                 .entries
                 .insert(track_id, entity.clone());
             entity

@@ -474,7 +474,7 @@ impl EditorView {
             return;
         };
         if self.audio.is_none()
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
         {
             self.error = Some("automation recording requires ordinary native playback".into());
             return;
@@ -539,7 +539,7 @@ impl EditorView {
             return;
         }
         if self.audio.is_none()
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
         {
             self.error = Some("automation recording requires ordinary playback".into());
             return;
@@ -723,6 +723,7 @@ impl EditorView {
             })
             .ok_or("automation arm is still applying")?;
         let applied = self
+            .audio_pub
             .audible_playback
             .as_ref()
             .filter(|candidate| {

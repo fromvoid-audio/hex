@@ -716,7 +716,8 @@ impl EditorView {
         let ids = self.project_spectrum_ids();
         let generation = self.project_generation;
         let floor = self.state.as_ref().and_then(|state| {
-            self.audio_admission
+            self.audio_pub
+                .audio_admission
                 .published_audio_revision(generation, state.revision)
         });
         let expanded = self.device_panel.project_spectrum.expanded

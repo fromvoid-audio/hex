@@ -71,11 +71,11 @@ impl EditorView {
     }
     pub(super) fn begin_clip_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.edit_pending()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.clip_paint_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.clip_paint_gesture.is_some()
             || self.clip_name_edit.is_some()
             || self.track_name.is_editing()
         {
@@ -482,7 +482,11 @@ mod tests {
         let wide_glyphs = visual.rendered_monochrome_colors(name);
         assert!(wide_bounds.size.width > px(0.0) && !wide_glyphs.is_empty());
         let compact = editor.read_with(&visual, |view, _| {
-            let lane = view.drag_lanes.get(&track).expect("resolved audio lane");
+            let lane = view
+                .timeline_caches
+                .drag_lanes
+                .get(&track)
+                .expect("resolved audio lane");
             Viewport::fit((duration as f64 * f64::from(lane.width) / 4.5).round() as u64)
         });
         let zoom = |visual: &mut VisualTestContext, viewport| {

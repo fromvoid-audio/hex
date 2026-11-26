@@ -123,9 +123,11 @@ impl EditorView {
             self.error = Some("select a track before adding a midi clip".into());
             return;
         };
-        let frame = self.audio_status().map_or(self.offline_cursor, |s| {
-            s.position.load(std::sync::atomic::Ordering::Relaxed)
-        });
+        let frame = self
+            .audio_status()
+            .map_or(self.audio_pub.offline_cursor, |s| {
+                s.position.load(std::sync::atomic::Ordering::Relaxed)
+            });
         let Ok(beat) = state.project.tempo_map().frame_to_beat(frame) else {
             self.error = Some("cursor exceeds the musical beat range".into());
             return;

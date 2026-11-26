@@ -36,6 +36,7 @@ impl EditorView {
         if !arranger_focused
             || self.automation_view.enabled
             || self
+                .interaction
                 .time_selection
                 .is_none_or(|s| s.anchor_frame == s.end_frame)
         {

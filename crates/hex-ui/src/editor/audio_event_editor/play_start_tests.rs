@@ -181,7 +181,7 @@ fn audio_start_recovery(
             v.recovering_clip_play_start(clip),
             "recover on the first changed marker"
         );
-        assert!(v.deferred_play.is_some());
+        assert!(v.audio_pub.deferred_play.is_some());
         assert!(
             v.service
                 .held_arrangement_play_start_audition_for_test()
@@ -192,7 +192,7 @@ fn audio_start_recovery(
             "only the restart was submitted"
         );
         (
-            v.recovery.generation().unwrap(),
+            v.audio_pub.recovery.generation().unwrap(),
             v.held_audio_play_start_position().unwrap(),
         )
     });
@@ -209,7 +209,7 @@ fn audio_start_recovery(
     let shown = marker_fraction(&mut visual);
     assert!((shown - 0.375).abs() < 0.003);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.recovery.holds_clip_play_start(), released);
+        assert_eq!(v.audio_pub.recovery.holds_clip_play_start(), released);
         assert_eq!(
             v.worker_requests_pending, 1,
             "release must not submit against the old source"
@@ -259,9 +259,9 @@ fn audio_start_recovery(
             mode: hex_session::DocumentAudioMode::Resident,
         });
         v.device_panel.degraded_plugins = Default::default();
-        v.applied_project_revision = Some(revision);
-        assert!(v.recovery.opened(recovery));
-        assert!(v.recovery.restored(recovery));
+        v.audio_pub.applied_project_revision = Some(revision);
+        assert!(v.audio_pub.recovery.opened(recovery));
+        assert!(v.audio_pub.recovery.restored(recovery));
         assert!(!v.finish_audio_recovery_tick());
     });
     callback.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -308,7 +308,7 @@ fn audio_start_recovery(
                 editor_revision: revision,
             });
             v.receive(edit);
-            assert!(v.recovery.generation().is_none());
+            assert!(v.audio_pub.recovery.generation().is_none());
             assert!(v.pending_clip_loop_audio(clip).is_none());
             assert_eq!(v.state.as_ref().unwrap().project, before.project);
             assert_eq!(v.worker_requests_pending, 0);
@@ -620,8 +620,12 @@ fn source_refusal_keeps_released_clip_resize_until_recovery_or_second_refusal(
                 editor_revision: before.revision,
             });
             view.receive(refused);
-            assert!(view.recovery.generation().is_some(), "{:?}", view.error);
-            let deferred = view.recovery.deferred_edit.as_ref().unwrap();
+            assert!(
+                view.audio_pub.recovery.generation().is_some(),
+                "{:?}",
+                view.error
+            );
+            let deferred = view.audio_pub.recovery.deferred_edit.as_ref().unwrap();
             assert!(
                 matches!(deferred.request.as_ref(), Request::Edit(Command::ResizeAudioClipView {
                 clip: id, operation: op,

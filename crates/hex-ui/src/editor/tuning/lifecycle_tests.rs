@@ -182,7 +182,7 @@ fn review_lifecycle_stop_cancels_late_audition_preparation_and_publication(
     let input = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
     input.set_key(0, Some((60, 100, 1))).unwrap();
     editor.update(cx, |view, _| {
-        view.pending_playback = None;
+        view.audio_pub.pending_playback = None;
         view.settings.tuning.audition_input = Some(Arc::clone(&input));
         view.service
             .submit(Request::PrepareTuningAudition {
@@ -205,7 +205,7 @@ fn review_lifecycle_stop_cancels_late_audition_preparation_and_publication(
     editor.update(cx, |view, _| {
         view.receive(late);
         assert!(view.settings.tuning.audition_input.is_none());
-        assert!(view.pending_playback.is_none());
+        assert!(view.audio_pub.pending_playback.is_none());
     });
 }
 #[gpui::test]

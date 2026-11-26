@@ -45,7 +45,7 @@ fn off_grid_pure_y_hold_and_modifier_refresh_keep_original_preview_and_scene(
     );
     visual.run_until_parked();
     let held = editor.read_with(&visual, |v, _| {
-        let g = v.loop_rail_gesture.unwrap();
+        let g = v.interaction.loop_rail_gesture.unwrap();
         assert!(!g.moved && g.click_disqualified);
         g.preview.unwrap()
     });
@@ -57,7 +57,7 @@ fn off_grid_pure_y_hold_and_modifier_refresh_keep_original_preview_and_scene(
     visual.simulate_modifiers_change(Modifiers::default());
     visual.run_until_parked();
     let refreshed = editor.read_with(&visual, |v, _| {
-        v.loop_rail_gesture.unwrap().preview.unwrap()
+        v.interaction.loop_rail_gesture.unwrap().preview.unwrap()
     });
     let refreshed_scene = painted(&mut visual);
     eprintln!(
@@ -106,7 +106,10 @@ fn narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels(cx: &mut Tes
             });
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
             let (mode, whole) = editor.read_with(&visual, |v, _| {
-                let g = v.loop_rail_gesture.expect("actual tiny-bar capture");
+                let g = v
+                    .interaction
+                    .loop_rail_gesture
+                    .expect("actual tiny-bar capture");
                 (
                     format!("{:?}", g.mode),
                     matches!(g.mode, super::super::EditMode::Move { .. }),
@@ -115,7 +118,7 @@ fn narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels(cx: &mut Tes
             visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             let preview = editor.read_with(&visual, |v, _| {
-                v.loop_rail_gesture.unwrap().preview.unwrap()
+                v.interaction.loop_rail_gesture.unwrap().preview.unwrap()
             });
             let held_scene = visual.debug_bounds("loop-rail-range").unwrap();
             let held_quads = visual
@@ -189,7 +192,7 @@ fn stationary_command_endpoints_toggle_and_command_edge_drags_remain_free(cx: &m
                 assert_eq!(region(&editor, &visual), original);
                 visual.simulate_mouse_down(down, MouseButton::Left, command);
                 editor.read_with(&visual, |v, _| {
-                    let mode = v.loop_rail_gesture.unwrap().mode;
+                    let mode = v.interaction.loop_rail_gesture.unwrap().mode;
                     assert!(if left {
                         matches!(mode, super::super::EditMode::ResizeStart { .. })
                     } else {
@@ -200,7 +203,7 @@ fn stationary_command_endpoints_toggle_and_command_edge_drags_remain_free(cx: &m
                 visual.simulate_mouse_move(target, MouseButton::Left, command);
                 visual.run_until_parked();
                 let desired = editor.read_with(&visual, |v, _| {
-                    v.loop_rail_gesture.unwrap().preview.unwrap()
+                    v.interaction.loop_rail_gesture.unwrap().preview.unwrap()
                 });
                 painted(&mut visual);
                 visual.simulate_mouse_up(target, MouseButton::Left, command);
@@ -254,7 +257,7 @@ fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut Te
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(matches!(
-            v.loop_rail_gesture.unwrap().mode,
+            v.interaction.loop_rail_gesture.unwrap().mode,
             super::super::EditMode::Move { .. }
         ))
     });
@@ -262,7 +265,7 @@ fn minimum_frame_bar_body_keeps_move_even_when_pointer_rounds_to_end(cx: &mut Te
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let preview = editor.read_with(&visual, |v, _| {
-        v.loop_rail_gesture.unwrap().preview.unwrap()
+        v.interaction.loop_rail_gesture.unwrap().preview.unwrap()
     });
     painted(&mut visual);
     assert!(preview.start() > 100);

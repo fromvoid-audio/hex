@@ -27,7 +27,7 @@ fn arrangement_nudge_uses_selected_grid_instead_of_legacy_free_step(cx: &mut Tes
                 assert!(matches!(view.test_probes.last_enqueued_edit,
                     Some(Command::MoveMidiClip { start, .. }) if start == BeatTime::from_raw(BeatTime::ONE.raw()*5/4)));
             } else {
-                assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::MoveClip { start: 6000, .. })), "request={:?} bounds={:?} epoch={} layout={} pending={} mode={:?}", view.test_probes.last_enqueued_edit, view.arrangement_bounds, view.arrangement_bounds_epoch, view.drag_layout_generation, view.edit_pending(), view.mode);
+                assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::MoveClip { start: 6000, .. })), "request={:?} bounds={:?} epoch={} layout={} pending={} mode={:?}", view.test_probes.last_enqueued_edit, view.timeline_caches.arrangement_bounds, view.timeline_caches.arrangement_bounds_epoch, view.timeline_caches.drag_layout_generation, view.edit_pending(), view.mode);
             }
         });
     }

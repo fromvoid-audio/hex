@@ -155,7 +155,7 @@ fn folders_drag_to_places_persists_without_import_or_navigation(cx: &mut TestApp
             )
         );
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
 }
 
@@ -375,7 +375,7 @@ fn cancelled_outside_stale_and_missing_folder_do_not_bookmark(cx: &mut TestAppCo
             )
         );
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
     assert!(!environment.root().join("config/browser.json").exists());
     assert!(!visual.update(|_, cx| cx.has_active_drag()));
@@ -412,7 +412,7 @@ fn file_drop_is_not_a_bookmark_and_malformed_preferences_remain_untouched(cx: &m
         );
         assert!(!view.browser.folder_bookmark_pending);
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
     let path = environment.root().join("config/browser.json");
     std::fs::write(&path, b"malformed settings must survive").unwrap();
@@ -636,7 +636,7 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
         );
         assert_eq!(view.browser.places, vec![samples.clone()]);
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
 }
 

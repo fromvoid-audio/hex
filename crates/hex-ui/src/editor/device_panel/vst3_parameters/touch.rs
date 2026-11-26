@@ -23,8 +23,8 @@ pub(in crate::editor) fn refresh_source(view: &EditorView) -> Option<AppliedAudi
     let output = view.audio.as_ref()?.control.output_identity()?;
     (source.output_identity == output
         && source.context.project_generation == view.project_generation
-        && view.stopped_playback_restore.is_none()
-        && view.recovery.generation().is_none())
+        && view.audio_pub.stopped_playback_restore.is_none()
+        && view.audio_pub.recovery.generation().is_none())
     .then_some(source)
 }
 
@@ -34,12 +34,16 @@ pub(in crate::editor) fn refreshable_device(
     source: AppliedAudioSource,
 ) -> bool {
     !view.device_panel.degraded_plugins.contains(device.value())
-        && view.audible_playback.as_ref().is_some_and(|audible| {
-            audible.audio_revision == source.audio_revision
-                && audible.project_generation == source.context.project_generation
-                && super::super::audible_vst3_processor(view, device)
-                    == Ok(hex_engine::PreparedDeviceProcessing::Foreign)
-        })
+        && view
+            .audio_pub
+            .audible_playback
+            .as_ref()
+            .is_some_and(|audible| {
+                audible.audio_revision == source.audio_revision
+                    && audible.project_generation == source.context.project_generation
+                    && super::super::audible_vst3_processor(view, device)
+                        == Ok(hex_engine::PreparedDeviceProcessing::Foreign)
+            })
 }
 
 pub(in crate::editor) fn touch_is_current(

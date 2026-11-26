@@ -212,7 +212,7 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         view.service = service;
         view.state = Some(Arc::clone(&canonical));
         view.project_generation = context.project_generation;
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         view.audio = Some(crate::editor_backend::EditorAudio {
             control: client,
             sample_rate: 48_000,
@@ -220,9 +220,9 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.pending_playback = None;
-        view.playback_candidates.clear();
-        view.applied_project_revision = None;
+        view.audio_pub.pending_playback = None;
+        view.audio_pub.playback_candidates.clear();
+        view.audio_pub.applied_project_revision = None;
         let key = view
             .device_panel
             .gesture
@@ -258,14 +258,14 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             identity,
             state: Arc::clone(&canonical),
         });
-        let before = view.audio_admission;
+        let before = view.audio_pub.audio_admission;
         view.tick(cx);
         assert!(
-            view.audible_playback.is_none(),
+            view.audio_pub.audible_playback.is_none(),
             "context-only preview ACK fabricated canonical audio"
         );
-        assert!(view.applied_project_revision.is_none());
-        assert_eq!(view.audio_admission, before);
+        assert!(view.audio_pub.applied_project_revision.is_none());
+        assert_eq!(view.audio_pub.audio_admission, before);
         let mut metadata = hex_session::service::ResidentPublicationMetadata {
             source_origin: hex_session::service::ResidentSourceOrigin::DevicePreview,
             clip_preview: None,
@@ -295,7 +295,7 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             },
         );
         view.tick(cx);
-        let audible = view.audible_playback.as_ref().unwrap();
+        let audible = view.audio_pub.audible_playback.as_ref().unwrap();
         assert_eq!(audible.device_preview_identity, Some(identity));
         assert!(Arc::ptr_eq(
             audible.observation.as_ref().unwrap(),
@@ -306,7 +306,11 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         view.tick(cx);
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             preview_revision
         );
         metadata.device_preview = None;
@@ -320,7 +324,7 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             },
         );
         view.tick(cx);
-        let audible = view.audible_playback.as_ref().unwrap();
+        let audible = view.audio_pub.audible_playback.as_ref().unwrap();
         assert_eq!(audible.audio_revision, canonical_revision);
         assert!(audible.device_preview_identity.is_none());
 
@@ -338,10 +342,14 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             generation: context.project_generation,
             revision: canonical.revision,
         };
-        view.audio_admission.canonical_revision(canonical_project);
-        view.audio_admission
+        view.audio_pub
+            .audio_admission
+            .canonical_revision(canonical_project);
+        view.audio_pub
+            .audio_admission
             .published(canonical_project, canonical_revision);
-        view.audio_admission
+        view.audio_pub
+            .audio_admission
             .applied(canonical_project, canonical_revision);
         view.expected_clip_preview = Some(clip_identity);
         view.clip_preview_may_apply = true;
@@ -358,13 +366,18 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         );
         assert!(
             !view
+                .audio_pub
                 .playback_candidates
                 .iter()
                 .any(|candidate| candidate.audio_revision == clip_revision)
         );
         view.tick(cx);
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             canonical_revision
         );
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -373,8 +386,8 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             backend.status().unwrap().applied_revision.load(Acquire),
             clip_revision
         );
-        assert!(view.audible_playback.is_none());
-        assert!(view.applied_project_revision.is_none());
+        assert!(view.audio_pub.audible_playback.is_none());
+        assert!(view.audio_pub.applied_project_revision.is_none());
         view.retain_publication_observation(
             context,
             output_identity,
@@ -385,14 +398,14 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             },
         );
         view.tick(cx);
-        assert!(view.audible_playback.is_none());
+        assert!(view.audio_pub.audible_playback.is_none());
         assert_eq!(
             view.applied_clip_preview,
             Some((clip_revision, clip_identity))
         );
-        assert!(view.applied_project_revision.is_none());
+        assert!(view.audio_pub.applied_project_revision.is_none());
         assert_ne!(
-            view.audio_admission.current().unwrap().state,
+            view.audio_pub.audio_admission.current().unwrap().state,
             super::super::audio_admission::AdmissionState::Applied
         );
 
@@ -421,9 +434,9 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             "rejected: {:?}",
             backend.status().unwrap().rejected_revision()
         );
-        assert!(view.audible_playback.is_none());
+        assert!(view.audio_pub.audible_playback.is_none());
         assert!(view.applied_clip_preview.is_none());
-        assert!(view.applied_project_revision.is_none());
+        assert!(view.audio_pub.applied_project_revision.is_none());
         metadata.clip_preview = Some(next_identity);
         view.retain_publication_observation(
             context,
@@ -469,7 +482,11 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         view.tick(cx);
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             restored_revision
         );
         assert!(view.applied_clip_preview.is_none());
@@ -559,20 +576,31 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
             },
         );
         assert!(
-            view.pending_publication_observation.is_none(),
+            view.audio_pub.pending_publication_observation.is_none(),
             "current authored publication waited on retained source context"
         );
         assert_eq!(
-            view.playback_candidates.back().unwrap().audio_revision,
+            view.audio_pub
+                .playback_candidates
+                .back()
+                .unwrap()
+                .audio_revision,
             runtime_revision
         );
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         view.tick(cx);
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             runtime_revision
         );
-        assert_eq!(view.applied_project_revision, Some(authored.revision));
+        assert_eq!(
+            view.audio_pub.applied_project_revision,
+            Some(authored.revision)
+        );
 
         // Deliver a callback refusal before its protected worker metadata.
         let control = output.publication.control().unwrap();
@@ -592,7 +620,7 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         );
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         view.tick(cx);
-        assert_eq!(view.observed_rejected_revision, rejected);
+        assert_eq!(view.audio_pub.observed_rejected_revision, rejected);
         view.retain_publication_observation(
             runtime_context,
             output_identity,
@@ -604,12 +632,16 @@ fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) 
         );
         view.tick(cx);
         assert!(matches!(
-            view.audio_admission.current().unwrap().state,
+            view.audio_pub.audio_admission.current().unwrap().state,
             super::super::audio_admission::AdmissionState::Rejected(_)
         ));
-        assert!(view.playback_candidates.is_empty());
+        assert!(view.audio_pub.playback_candidates.is_empty());
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             runtime_revision
         );
 
@@ -699,7 +731,7 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
             gain_recording_track: None,
             requires_preroll: true,
         };
-        let before = view.audio_admission;
+        let before = view.audio_pub.audio_admission;
         view.apply_publication_observation(
             context,
             crate::EditorPublicationState::ResidentSubmitted {
@@ -708,8 +740,8 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
                 metadata,
             },
         );
-        assert!(view.playback_candidates.is_empty());
-        assert_eq!(view.audio_admission, before);
+        assert!(view.audio_pub.playback_candidates.is_empty());
+        assert_eq!(view.audio_pub.audio_admission, before);
         view.device_panel.resident_preview = Some(hex_session::service::DevicePreview {
             identity,
             state: Arc::clone(&preview),
@@ -725,7 +757,7 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
                 metadata,
             },
         );
-        let candidate = view.playback_candidates.back().unwrap();
+        let candidate = view.audio_pub.playback_candidates.back().unwrap();
         assert!(Arc::ptr_eq(&candidate.state, &preview));
         assert!(candidate.prepared_revision.is_none());
         assert!(Arc::ptr_eq(
@@ -733,40 +765,42 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
             &observation,
         ));
         assert!(
-            view.audible_playback.is_none(),
+            view.audio_pub.audible_playback.is_none(),
             "submission is not application"
         );
         assert_eq!(candidate.worker_requires_preroll, Some(true));
         assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
-        assert_eq!(view.audio_admission, before);
-        view.applied_project_revision = Some(canonical.revision);
-        view.observed_rejected_revision = 70;
-        view.pending_publication_observation = Some(PendingEditorPublicationObservation {
-            context,
-            output_identity: 41,
-            state: crate::EditorPublicationState::ResidentSubmitted {
-                audio_revision: 7,
-                observation: Arc::clone(&observation),
-                metadata,
-            },
-        });
+        assert_eq!(view.audio_pub.audio_admission, before);
+        view.audio_pub.applied_project_revision = Some(canonical.revision);
+        view.audio_pub.observed_rejected_revision = 70;
+        view.audio_pub.pending_publication_observation =
+            Some(PendingEditorPublicationObservation {
+                context,
+                output_identity: 41,
+                state: crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: 7,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            });
         view.reset_output_publication_tracking(Some(42));
-        assert!(view.playback_candidates.is_empty());
-        assert!(view.audible_playback.is_none());
-        assert!(view.applied_project_revision.is_none());
-        assert_eq!(view.observed_rejected_revision, 0);
-        assert!(view.pending_publication_observation.is_none());
-        view.pending_publication_observation = Some(PendingEditorPublicationObservation {
-            context,
-            output_identity: 42,
-            state: crate::EditorPublicationState::ResidentSubmitted {
-                audio_revision: 7,
-                observation: Arc::clone(&observation),
-                metadata,
-            },
-        });
+        assert!(view.audio_pub.playback_candidates.is_empty());
+        assert!(view.audio_pub.audible_playback.is_none());
+        assert!(view.audio_pub.applied_project_revision.is_none());
+        assert_eq!(view.audio_pub.observed_rejected_revision, 0);
+        assert!(view.audio_pub.pending_publication_observation.is_none());
+        view.audio_pub.pending_publication_observation =
+            Some(PendingEditorPublicationObservation {
+                context,
+                output_identity: 42,
+                state: crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: 7,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            });
         view.reset_output_publication_tracking(Some(42));
-        assert!(view.pending_publication_observation.is_some());
+        assert!(view.audio_pub.pending_publication_observation.is_some());
         view.apply_publication_observation(
             context,
             crate::EditorPublicationState::ResidentSubmitted {
@@ -775,8 +809,8 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
                 metadata,
             },
         );
-        assert_eq!(view.playback_candidates.len(), 1);
-        view.stopped_playback_restore =
+        assert_eq!(view.audio_pub.playback_candidates.len(), 1);
+        view.audio_pub.stopped_playback_restore =
             Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
         let mut canonical_metadata = metadata;
         canonical_metadata.device_preview = None;
@@ -789,7 +823,7 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
             },
         );
         assert_eq!(
-            view.stopped_playback_restore,
+            view.audio_pub.stopped_playback_restore,
             Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing),
             "an ordinary canonical submission cannot complete stopped restoration"
         );
@@ -803,7 +837,7 @@ fn resident_publication_correlates_preview_restart_and_stopped_restore(
             },
         );
         assert_eq!(
-            view.stopped_playback_restore,
+            view.audio_pub.stopped_playback_restore,
             Some(super::super::audio_admission::StoppedPlaybackRestore::Published(9)),
             "only the tagged submission binds restoration to its actual audio revision"
         );

@@ -198,7 +198,7 @@ fn session_key_dispatch_navigates_without_edits_and_enter_refuses_offline_playba
             Some((second_track, first_scene))
         );
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert!(!view.play_intent.desired_playing(false));
         assert_eq!(
             view.error.as_deref(),
@@ -262,7 +262,7 @@ fn piano_focus_keeps_arrow_and_enter_out_of_session_navigation_and_launch(cx: &m
             Some((second_track, first_scene))
         );
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert_eq!(view.state.as_ref().unwrap().project.scenes().len(), 2);
     });
 }
@@ -401,7 +401,7 @@ fn scene_launch_leads_the_caption_and_uses_the_guarded_offline_action(cx: &mut T
         assert_eq!(view.session_grid.selected_scene, Some(scene));
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert_eq!(
             view.error.as_deref(),
             Some("session playback requires an audio output")

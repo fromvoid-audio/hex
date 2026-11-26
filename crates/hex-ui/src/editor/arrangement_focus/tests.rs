@@ -316,7 +316,7 @@ fn q_filters_tracks_but_keeps_outside_clips_and_hits_without_editing_history(
         );
         assert!(v.test_probes.last_enqueued_edit.is_none());
         assert!(!v.state.as_ref().unwrap().can_undo);
-        let lane = v.drag_lanes[&f.tracks[1]];
+        let lane = v.timeline_caches.drag_lanes[&f.tracks[1]];
         let x = f32::from(before.center().x);
         let viewport = v.visible_viewport(v.state.as_ref().unwrap().timeline_frames);
         assert!(

@@ -120,7 +120,9 @@ fn browser_insert_no_selected_track_refuses_without_new_track(cx: &mut TestAppCo
                 .as_deref()
                 .is_some_and(|error| error.contains("select"))
         );
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
     });
 }
 
@@ -258,7 +260,7 @@ fn project_sample_enter_reuses_asset_and_undoes_placement(cx: &mut TestAppContex
         assert_eq!(state.project.assets().count(), 1);
         let revision = state.revision;
         let generation = view.project_generation;
-        view.offline_cursor = 5_300;
+        view.audio_pub.offline_cursor = 5_300;
         (asset, revision, generation)
     });
     editor.update(cx, |view, _| {
@@ -384,7 +386,7 @@ fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite
     let track = select_sample(&editor, visual);
     editor.update(visual, |view, _| {
         view.set_input_quantization(hex_project::InputQuantization::Off);
-        view.offline_cursor = 100;
+        view.audio_pub.offline_cursor = 100;
     });
     visual.simulate_keystrokes("enter");
     // No worker response/tick has been consumed. Changing UI selection/cursor must
@@ -395,7 +397,7 @@ fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite
             Some((path.clone(), track, 100, true))
         );
         view.selected_track = Some(view.state.as_ref().unwrap().project.tracks()[1].id());
-        view.offline_cursor = 999;
+        view.audio_pub.offline_cursor = 999;
     });
     receive_worker(&editor, cx, false);
     let before = editor.update(cx, |view, _| {
@@ -413,7 +415,7 @@ fn browser_insert_captures_selected_track_frame_native_path_and_atomic_overwrite
             path
         );
         view.selected_track = Some(track);
-        view.offline_cursor = 108;
+        view.audio_pub.offline_cursor = 108;
         state.project.clone()
     });
     visual.simulate_keystrokes("enter");
@@ -479,7 +481,7 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
                 quantized
             );
             view.snap_grid = SnapGrid::Quarter;
-            view.offline_cursor = candidate;
+            view.audio_pub.offline_cursor = candidate;
         });
         visual.simulate_keystrokes("enter");
         editor.update(visual, |view, _| {
@@ -497,7 +499,7 @@ fn browser_insert_quantized_toggle_uses_nearest_canonical_grid_and_snapshots_mod
             } else {
                 hex_project::InputQuantization::Off
             };
-            view.offline_cursor = 123_456;
+            view.audio_pub.offline_cursor = 123_456;
         });
         receive_worker(&editor, cx, false);
         editor.read_with(cx, |view, _| {
@@ -543,9 +545,9 @@ fn browser_insert_adaptive_grid_uses_tempo_meter_and_current_viewport(cx: &mut T
                 start: 0,
                 length: zoom,
             });
-            view.offline_cursor = 49_000;
+            view.audio_pub.offline_cursor = 49_000;
             let state = view.state.as_ref().unwrap();
-            let lane = view.main_track_lane_bounds.unwrap();
+            let lane = view.timeline_caches.main_track_lane_bounds.unwrap();
             view.snap_grid
                 .snap_frame(
                     &state.project,
@@ -602,7 +604,8 @@ fn browser_insert_refuses_stale_target_busy_session_grid_and_missing_file_atomic
                 }
                 5 => {
                     view.input_quantization = hex_project::InputQuantization::Adaptive;
-                    view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
+                    view.timeline_caches.drag_layout_generation =
+                        view.timeline_caches.drag_layout_generation.wrapping_add(1);
                 }
                 6 => std::fs::remove_file(&path).unwrap(),
                 7 => view.project_generation = view.project_generation.wrapping_add(1),
@@ -693,7 +696,7 @@ fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppCon
         editor.update(visual, |view, _| {
             view.input_quantization = hex_project::InputQuantization::Adaptive;
             view.snap_grid = grid;
-            view.offline_cursor = 25_000;
+            view.audio_pub.offline_cursor = 25_000;
             view.error = None;
         });
         visual.simulate_keystrokes("enter");
@@ -705,7 +708,10 @@ fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppCon
                 "{grid:?} must visibly refuse"
             );
             assert_eq!(view.worker_requests_pending, 0, "{grid:?}");
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(
+                view.pending_requests.is_empty()
+                    && view.audio_pub.pending_audio_commands.is_empty()
+            );
             assert!(
                 view.persistence.audio_batch.is_none()
                     && view.test_probes.last_enqueued_import_to_track.is_none()
@@ -753,7 +759,7 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
                 } else {
                     SnapGrid::OffDensity(density)
                 };
-                view.offline_cursor = 25_000;
+                view.audio_pub.offline_cursor = 25_000;
                 assert!(
                     view.state
                         .as_ref()
@@ -766,7 +772,7 @@ fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
                 );
                 if quantized {
                     let state = view.state.as_ref().unwrap();
-                    let lane = view.main_track_lane_bounds.unwrap();
+                    let lane = view.timeline_caches.main_track_lane_bounds.unwrap();
                     let expected = view
                         .snap_grid
                         .snap_frame(
@@ -872,7 +878,7 @@ fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_
             hex_project::InputQuantization::Eighth
         );
         view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
-        view.offline_cursor = 15_600;
+        view.audio_pub.offline_cursor = 15_600;
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
@@ -885,7 +891,7 @@ fn input_quantization_menu_controls_fixed_browser_insertion_and_freezes_pending_
             12_000
         );
         view.set_input_quantization(hex_project::InputQuantization::Sixteenth);
-        view.offline_cursor = 99_999;
+        view.audio_pub.offline_cursor = 99_999;
     });
     receive_worker(&editor, visual, false);
     editor.read_with(visual, |view, _| {
@@ -911,7 +917,7 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
     editor.update(visual, |view, _| {
         view.input_quantization = hex_project::InputQuantization::Off;
         view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
-        view.offline_cursor = 1_000;
+        view.audio_pub.offline_cursor = 1_000;
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
@@ -919,13 +925,13 @@ fn rapid_browser_enter_queues_follow_up_insertions_without_busy_refusal(cx: &mut
         assert!(view.persistence.audio_batch.is_some());
         assert!(view.browser.insertion_flight.is_some());
         assert!(view.browser.pending_insertions.is_empty());
-        view.offline_cursor = 2_000;
+        view.audio_pub.offline_cursor = 2_000;
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert_eq!(view.browser.pending_insertions.len(), 1);
-        view.offline_cursor = 3_000;
+        view.audio_pub.offline_cursor = 3_000;
     });
     visual.simulate_keystrokes("enter");
     editor.read_with(visual, |view, _| {
@@ -960,11 +966,11 @@ fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut 
     editor.update(visual, |view, _| {
         view.input_quantization = hex_project::InputQuantization::Off;
         view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
-        view.offline_cursor = 1_000;
+        view.audio_pub.offline_cursor = 1_000;
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, _| {
-        view.offline_cursor = 2_000;
+        view.audio_pub.offline_cursor = 2_000;
     });
     visual.simulate_keystrokes("enter");
     editor.update(visual, |view, cx| {
@@ -988,7 +994,7 @@ fn escape_clears_queued_browser_insertions_and_hard_busy_still_refuses(cx: &mut 
         );
         view.error = None;
         view.persistence.save_dialog_open = true;
-        view.offline_cursor = 4_000;
+        view.audio_pub.offline_cursor = 4_000;
     });
     visual.simulate_keystrokes("enter");
     editor.read_with(visual, |view, _| {
@@ -1010,11 +1016,11 @@ fn accepted_browser_paths_survive_a_modal_place_change_and_unrelated_refusal(
     editor.update(visual, |view, cx| {
         view.input_quantization = hex_project::InputQuantization::Off;
         view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
-        view.offline_cursor = 1_000;
+        view.audio_pub.offline_cursor = 1_000;
         view.insert_browser_audio(path.clone(), cx);
-        view.offline_cursor = 2_000;
+        view.audio_pub.offline_cursor = 2_000;
         view.insert_browser_audio(path, cx);
-        view.offline_cursor = 3_000;
+        view.audio_pub.offline_cursor = 3_000;
         view.insert_browser_audio(directory.root().join("missing.wav"), cx);
         assert_eq!(view.browser.pending_insertions.len(), 2);
         view.persistence.save_dialog_open = true;
@@ -1137,15 +1143,15 @@ fn queued_file_and_project_sample_keep_each_enter_taps_warp_setting(cx: &mut Tes
         view.snap_grid = crate::editor::musical_time::SnapGrid::Off;
         view.input_quantization = hex_project::InputQuantization::Off;
         view.set_auto_warp_imports_for_test(false);
-        view.offline_cursor = 1_000;
+        view.audio_pub.offline_cursor = 1_000;
         view.insert_browser_audio(path.clone(), cx);
         view.set_auto_warp_imports_for_test(true);
-        view.offline_cursor = 2_000;
+        view.audio_pub.offline_cursor = 2_000;
         view.insert_browser_audio(path.clone(), cx);
-        view.offline_cursor = 3_000;
+        view.audio_pub.offline_cursor = 3_000;
         view.insert_browser_project_sample(generation, revision, asset, cx);
         view.set_auto_warp_imports_for_test(false);
-        view.offline_cursor = 4_000;
+        view.audio_pub.offline_cursor = 4_000;
         view.insert_browser_audio(path, cx);
         assert_eq!(view.browser.pending_insertions.len(), 3);
     });

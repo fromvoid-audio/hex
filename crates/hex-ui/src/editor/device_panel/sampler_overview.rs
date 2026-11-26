@@ -224,7 +224,7 @@ pub(super) fn render(
                     table,
                     asset: asset_id,
                 },
-                Rc::clone(&view.overview_waveform_cache),
+                Rc::clone(&view.timeline_caches.overview_waveform_cache),
                 Some((start / frames as f64, end / frames as f64)),
             )
             .absolute()

@@ -287,7 +287,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.places[0], long_place);
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
 }
 

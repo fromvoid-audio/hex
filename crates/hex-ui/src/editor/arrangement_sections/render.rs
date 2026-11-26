@@ -126,8 +126,9 @@ impl EditorView {
                         .pending
                         .as_ref()
                         .filter(|p| {
-                            p.selection_intent_epoch
-                                .is_some_and(|epoch| Some(epoch) == self.selection_intent_epoch)
+                            p.selection_intent_epoch.is_some_and(|epoch| {
+                                Some(epoch) == self.interaction.selection_intent_epoch
+                            })
                         })
                         .map(|p| &p.command)
                 });
@@ -158,9 +159,12 @@ impl EditorView {
             let colors = theme::section_colors(m.color, selected, owned_hover);
             let hover = theme::section_colors(m.color, selected, true);
             let border = colors.2;
-            let pixel_width = self.main_track_lane_bounds.map_or(0.0, |lane| {
-                lane.width * ((end - start) as f32 / viewport.length as f32)
-            });
+            let pixel_width = self
+                .timeline_caches
+                .main_track_lane_bounds
+                .map_or(0.0, |lane| {
+                    lane.width * ((end - start) as f32 / viewport.length as f32)
+                });
             let stroke = 1.0 / scale.max(1.0);
             let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
             let mut element = crate::section_surface::surface(

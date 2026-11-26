@@ -40,15 +40,17 @@ fn shift_click_extends_from_cursor_forward_backward_and_plain_click_resets(
             };
             visual.simulate_click(at(0.5), Modifiers::default());
             visual.run_until_parked();
-            let anchor = editor.read_with(&visual, |view, _| view.edit_cursor.unwrap().frame);
+            let anchor = editor.read_with(&visual, |view, _| {
+                view.interaction.edit_cursor.unwrap().frame
+            });
             for fraction in [0.8, 0.2, 0.65] {
                 let expected = editor.read_with(&visual, |view, _| {
                     let state = view.state.as_ref().unwrap();
                     let viewport = view.visible_viewport(state.timeline_frames);
                     let measured = if main {
-                        view.main_track_lane_bounds.unwrap()
+                        view.timeline_caches.main_track_lane_bounds.unwrap()
                     } else {
-                        view.drag_lanes[&target]
+                        view.timeline_caches.drag_lanes[&target]
                     };
                     let frame = crate::editor::seek::pointer_to_frame(
                         f32::from(at(fraction).x),
@@ -83,11 +85,11 @@ fn shift_click_extends_from_cursor_forward_backward_and_plain_click_resets(
                         vec![target]
                     };
                     assert_eq!(range.tracks(), tracks);
-                    assert_eq!(view.edit_cursor.unwrap().frame, anchor);
-                    assert_eq!(view.time_selection_project_scope, main);
+                    assert_eq!(view.interaction.edit_cursor.unwrap().frame, anchor);
+                    assert_eq!(view.interaction.time_selection_project_scope, main);
                     assert!(
-                        view.time_selection_gesture.is_none()
-                            && view.time_range_move_gesture.is_none()
+                        view.interaction.time_selection_gesture.is_none()
+                            && view.interaction.time_range_move_gesture.is_none()
                     );
                     assert!(
                         view.test_probes.last_enqueued_edit.is_none()
@@ -106,7 +108,7 @@ fn shift_click_extends_from_cursor_forward_backward_and_plain_click_resets(
             visual.run_until_parked();
             let replacement = editor.read_with(&visual, |view, _| {
                 assert!(view.normalized_time_selection().is_none());
-                view.edit_cursor.unwrap().frame
+                view.interaction.edit_cursor.unwrap().frame
             });
             assert_ne!(replacement, anchor);
             visual.simulate_click(
@@ -118,7 +120,10 @@ fn shift_click_extends_from_cursor_forward_backward_and_plain_click_resets(
             );
             visual.run_until_parked();
             editor.read_with(&visual, |view, _| {
-                assert_eq!(view.time_selection.unwrap().anchor_frame, replacement)
+                assert_eq!(
+                    view.interaction.time_selection.unwrap().anchor_frame,
+                    replacement
+                )
             });
             editor.update(&mut visual, |view, _| view.project_generation += 1);
             visual.simulate_click(
@@ -135,7 +140,7 @@ fn shift_click_extends_from_cursor_forward_backward_and_plain_click_resets(
                     "old-document cursor cannot anchor a new range"
                 );
                 assert_eq!(
-                    view.edit_cursor.unwrap().generation,
+                    view.interaction.edit_cursor.unwrap().generation,
                     view.project_generation
                 );
             });
@@ -172,12 +177,12 @@ fn shift_click_without_cursor_places_one_and_clip_headers_keep_selection_precede
         shift: true,
         ..Modifiers::default()
     };
-    assert!(editor.read_with(&visual, |view, _| view.edit_cursor.is_none()));
+    assert!(editor.read_with(&visual, |view, _| view.interaction.edit_cursor.is_none()));
     visual.simulate_click(at(target_lane, 0.05), shift);
     visual.run_until_parked();
     let anchor = editor.read_with(&visual, |view, _| {
         assert!(view.normalized_time_selection().is_none());
-        view.edit_cursor.unwrap().frame
+        view.interaction.edit_cursor.unwrap().frame
     });
     visual.simulate_click(at(source_lane, 0.8), shift);
     visual.run_until_parked();
@@ -199,7 +204,10 @@ fn shift_click_without_cursor_places_one_and_clip_headers_keep_selection_precede
     visual.simulate_mouse_up(end, gpui::MouseButton::Left, shift);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.time_selection.unwrap().anchor_frame, anchor);
+        assert_eq!(
+            view.interaction.time_selection.unwrap().anchor_frame,
+            anchor
+        );
         assert!(view.test_probes.last_enqueued_edit.is_none());
     });
     let header = visual
@@ -212,7 +220,10 @@ fn shift_click_without_cursor_places_one_and_clip_headers_keep_selection_precede
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.selected_clip_ids(), vec![clip]);
         assert!(view.normalized_time_selection().is_none());
-        assert!(view.time_selection_gesture.is_none() && view.time_range_move_gesture.is_none());
+        assert!(
+            view.interaction.time_selection_gesture.is_none()
+                && view.interaction.time_range_move_gesture.is_none()
+        );
         assert!(view.test_probes.last_enqueued_edit.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });

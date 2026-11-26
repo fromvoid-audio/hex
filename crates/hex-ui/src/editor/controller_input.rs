@@ -427,7 +427,7 @@ impl EditorView {
 
     pub(super) fn controller_wants_live_notes(&self) -> bool {
         self.controller_input.has_selected_ports()
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
     }
     pub(super) fn controller_expression_prepared(&mut self) {
         self.controller_input.expression_prepared = true;
@@ -574,7 +574,7 @@ impl EditorView {
     }
 
     fn refresh_controller_inputs(&mut self, cx: &mut Context<Self>) {
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error =
                 Some("controller input is unavailable for verified streaming audio".into());
             cx.notify();
@@ -958,7 +958,7 @@ impl EditorView {
         }
     }
     pub(super) fn tick_controller_input(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             if !self.controller_input.blocked_for_streaming {
                 let active = self.controller_input.has_selected_ports()
                     || self.controller_input.input.is_some();
@@ -1086,7 +1086,7 @@ impl EditorView {
     }
     pub(super) fn controller_input_matches(&self, input: &Arc<LiveExpressionInput>) -> bool {
         let current_target = self.controller_target();
-        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self
                 .controller_input
                 .input
@@ -1274,7 +1274,7 @@ impl EditorView {
             )])
     }
     pub(super) fn controller_input_settings(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        let status = if self.document_audio_mode
+        let status = if self.audio_pub.document_audio_mode
             == hex_session::DocumentAudioMode::VerifiedStreaming
         {
             "unsupported (streaming)"
@@ -1753,7 +1753,7 @@ fn controller_input_streaming_guard_cancels_without_discovery_or_retry(
         })
         .unwrap();
     editor.update(cx, |view, cx| {
-        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
         view.controller_input.input = Some(Arc::clone(&input));
         view.controller_input.selected_port = Some(hex_midi::Port {
             id: 1,

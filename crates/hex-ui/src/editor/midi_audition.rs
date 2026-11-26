@@ -54,7 +54,7 @@ impl MidiAudition {
 impl Intent {
     fn matches_pending(&self, view: &EditorView) -> bool {
         view.midi_editor.audition.enabled
-            && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && view.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && view.audio_detail.clip_view_open
             && view.project_generation == self.generation
             && view
@@ -71,7 +71,7 @@ impl Intent {
 
     fn matches_active(&self, view: &EditorView) -> bool {
         view.midi_editor.audition.enabled
-            && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && view.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && view.audio_detail.clip_view_open
             && view.project_generation == self.generation
             && view.state.as_ref().is_some_and(|state| {
@@ -263,7 +263,7 @@ impl EditorView {
             return false;
         }
         self.cancel_midi_audition();
-        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+        if self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident {
             self.error = Some("note audition is unavailable for verified streaming audio".into());
             return false;
         }
@@ -325,7 +325,7 @@ impl EditorView {
         if !self.midi_editor.audition.enabled {
             return false;
         }
-        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident {
+        if self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident {
             self.error = Some("note audition is unavailable for verified streaming audio".into());
             self.cancel_midi_audition();
             return false;
@@ -502,7 +502,7 @@ impl EditorView {
             || !self.audio_detail.clip_view_open
             || self.persistence.opening_project
             || self.persistence.close_prompt_open
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
         {
             if self.is_clip_audition_only_root() {
                 self.retire_computer_keyboard_audio();
@@ -613,8 +613,9 @@ impl EditorView {
             || self.midi_editor.creation.is_some()
             || self.midi_editor.stroke.is_some()
             || self.device_gesture_pending()
-            || self.prepared_seek.is_some()
-            || (self.stopped_playback_restore.is_some() && !self.worker_owns_keyboard_publication())
+            || self.audio_pub.prepared_seek.is_some()
+            || (self.audio_pub.stopped_playback_restore.is_some()
+                && !self.worker_owns_keyboard_publication())
             || self.settings.tuning.client.snapshot().is_some()
             || self.settings.tuning.client.has_pending_requests()
             || self.settings.tuning.client.is_recovery_pending()
@@ -669,7 +670,7 @@ impl EditorView {
             && self.audio_detail.clip_view_open
             && !self.persistence.opening_project
             && !self.persistence.close_prompt_open
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && request == self.computer_keyboard.request_id
             && self.computer_keyboard.target
                 == self

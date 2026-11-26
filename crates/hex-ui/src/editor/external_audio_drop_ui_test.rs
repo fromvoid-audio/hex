@@ -87,7 +87,8 @@ fn external_audio_drop_refuses_main_stale_geometry_busy_and_empty_paths(cx: &mut
         cx.update_window(handle, |_, window, cx| {
             editor.update(cx, |view, cx| {
                 if refusal == 1 {
-                    view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1);
+                    view.timeline_caches.drag_layout_generation =
+                        view.timeline_caches.drag_layout_generation.wrapping_add(1);
                 }
                 if refusal == 2 {
                     view.persistence.opening_project = true;

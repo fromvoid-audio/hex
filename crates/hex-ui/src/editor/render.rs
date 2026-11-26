@@ -111,9 +111,10 @@ impl EditorView {
         if grid.is_off() {
             return Some((grid, viewport, 1.0));
         }
-        let bounds = self
-            .arrangement_bounds
-            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let bounds = self.timeline_caches.arrangement_bounds.filter(|_| {
+            self.timeline_caches.arrangement_bounds_epoch
+                == self.timeline_caches.drag_layout_generation
+        })?;
         let width = bounds.width - self.track_header_width();
         (width.is_finite() && width > 0.0).then_some((grid, viewport, width))
     }
@@ -425,7 +426,7 @@ impl EditorView {
             );
         }
         let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
-        let revision_label = self.audio_admission.label();
+        let revision_label = self.audio_pub.audio_admission.label();
         let pending_commands = self
             .worker_requests_pending
             .saturating_add(self.pending_requests.len());
@@ -443,7 +444,7 @@ impl EditorView {
                 .truncate()
                 .text_right()
                 .tooltip({
-                    let description = self.audio_admission.description();
+                    let description = self.audio_pub.audio_admission.description();
                     move |_, cx| {
                         cx.new(|_| super::transport::MiniTooltip {
                             kind: crate::tooltips::Kind::Identification,
@@ -455,7 +456,7 @@ impl EditorView {
                 .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                 .child(theme::text(revision_label)),
         );
-        let recovery_pending = self.recovery.generation().is_some();
+        let recovery_pending = self.audio_pub.recovery.generation().is_some();
         let activity = [
             recovery_pending.then_some("audio recovery pending"),
             (self.persistence.export_pending && !showing_export_progress)
@@ -680,11 +681,18 @@ impl Render for EditorView {
         {
             self.gain_lane.change_owner(track, &state.project);
         }
-        self.clip_content_cache
-            .reconcile(self.project_generation, self.state.as_ref(), cx);
-        self.track_header_cache
-            .reconcile(self.project_generation, self.state.as_ref(), cx);
-        self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
+        self.timeline_caches.clip_content_cache.reconcile(
+            self.project_generation,
+            self.state.as_ref(),
+            cx,
+        );
+        self.timeline_caches.track_header_cache.reconcile(
+            self.project_generation,
+            self.state.as_ref(),
+            cx,
+        );
+        self.timeline_caches.drag_layout_generation =
+            self.timeline_caches.drag_layout_generation.wrapping_add(1);
         let clip_view = self.clip_detail_view(window, cx);
         self.reconcile_device_action_menu(window, cx);
         let workspace = self.render_workspace(window, cx, clip_view);
@@ -808,7 +816,7 @@ impl Render for EditorView {
                 |view, event: &gpui::MouseDownEvent, window, cx| {
                     // A fresh primary press cannot coexist with an unretired clip press.
                     if event.button == MouseButton::Left {
-                        view.pointer_down = None;
+                        view.interaction.pointer_down = None;
                     }
                     super::device_panel::capture_navigation_pointer_down(view, event, window, cx);
                 },
@@ -841,27 +849,30 @@ impl Render for EditorView {
                             && !view.sections.held()
                             && !view.sections.pending()
                             && !view.sections.naming()
-                            && view.main_track_lane_bounds.is_some_and(|lane| {
-                                let pos = window.mouse_position();
-                                let x = f32::from(pos.x);
-                                let y = f32::from(pos.y);
-                                x >= lane.left
-                                    && x < lane.left + lane.width
-                                    && y >= lane.top
-                                    && y < lane.top + lane.height
-                            })
+                            && view
+                                .timeline_caches
+                                .main_track_lane_bounds
+                                .is_some_and(|lane| {
+                                    let pos = window.mouse_position();
+                                    let x = f32::from(pos.x);
+                                    let y = f32::from(pos.y);
+                                    x >= lane.left
+                                        && x < lane.left + lane.width
+                                        && y >= lane.top
+                                        && y < lane.top + lane.height
+                                })
                         {
                             cx.notify();
                         }
                     }
                     view.settings.tuning.shift = event.modifiers.shift;
-                    if view.option_held != event.modifiers.alt {
-                        view.option_held = event.modifiers.alt;
+                    if view.interaction.option_held != event.modifiers.alt {
+                        view.interaction.option_held = event.modifiers.alt;
                         let pos = window.mouse_position();
                         let px_x = f32::from(pos.x);
                         let px_y = f32::from(pos.y);
                         let over_track_lane = view.mode == super::EditorMode::Arrangement
-                            && view.drag_lanes.values().any(|lane| {
+                            && view.timeline_caches.drag_lanes.values().any(|lane| {
                                 px_x >= lane.left
                                     && px_x < lane.left + lane.width
                                     && px_y >= lane.top
@@ -874,18 +885,19 @@ impl Render for EditorView {
                                 .event
                                 .bounds
                                 .is_some_and(|bounds| bounds.contains(&pos));
-                        let option_affects_view = view.hovered_arrangement_clip.is_some()
-                            || view.hovered_fade_clip.is_some()
-                            || view.hovered_fade_handle.is_some()
-                            || view.time_selection.is_some()
-                            || view.clip_gain.has_displayed()
-                            || view.active_clip_drag.is_some()
-                            || view.browser.active_audio_drag.is_some()
-                            || view.active_trim_drag.is_some()
-                            || view.midi_editor.active_trim_drag.is_some()
-                            || view.device_panel.active_native_drag.is_some()
-                            || over_audio_event_editor
-                            || over_track_lane;
+                        let option_affects_view =
+                            view.interaction.hovered_arrangement_clip.is_some()
+                                || view.interaction.hovered_fade_clip.is_some()
+                                || view.interaction.hovered_fade_handle.is_some()
+                                || view.interaction.time_selection.is_some()
+                                || view.interaction.clip_gain.has_displayed()
+                                || view.interaction.active_clip_drag.is_some()
+                                || view.browser.active_audio_drag.is_some()
+                                || view.interaction.active_trim_drag.is_some()
+                                || view.midi_editor.active_trim_drag.is_some()
+                                || view.device_panel.active_native_drag.is_some()
+                                || over_audio_event_editor
+                                || over_track_lane;
                         if option_affects_view {
                             cx.notify();
                         }
@@ -969,7 +981,7 @@ impl Render for EditorView {
                         cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
                         cx.notify();
                     }
-                    if view.pointer_down.take().is_some() {
+                    if view.interaction.pointer_down.take().is_some() {
                         cx.notify();
                     }
                     view.cancel_trim_gesture(cx);
@@ -982,7 +994,7 @@ impl Render for EditorView {
             .on_mouse_up_out(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| {
-                    if view.pointer_down.take().is_some() {
+                    if view.interaction.pointer_down.take().is_some() {
                         cx.notify();
                     }
                     if view.cancel_trim_gesture(cx) | view.cancel_active_native_device_drag() {
@@ -1048,8 +1060,8 @@ impl Render for EditorView {
                     cx.notify();
                     cx.stop_propagation();
                 }
-                if event.keystroke.key == "f" && view.fade_key_held {
-                    view.fade_key_held = false;
+                if event.keystroke.key == "f" && view.interaction.fade_key_held {
+                    view.interaction.fade_key_held = false;
                     cx.notify();
                     cx.stop_propagation();
                 }
@@ -1214,7 +1226,7 @@ impl Render for EditorView {
                     cx.notify();
                     return;
                 }
-                if view.active_fade_drag.take().is_some() {
+                if view.interaction.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
                 } else if view.device_panel.active_native_drag.is_some() {
@@ -1250,7 +1262,7 @@ impl Render for EditorView {
             }))
             .on_action(cx.trace(|view, stop: &Stop, window, cx| {
                 cx.stop_active_drag(window);
-                view.pointer_down = None;
+                view.interaction.pointer_down = None;
                 view.retire_active_clip_drag();
                 view.cancel_active_browser_audio_drag();
                 view.cancel_active_native_device_drag();
@@ -1318,7 +1330,7 @@ impl Render for EditorView {
                     cx.notify();
                     return;
                 }
-                if view.active_fade_drag.take().is_some() {
+                if view.interaction.active_fade_drag.take().is_some() {
                     cx.stop_propagation();
                     cx.notify();
                     return;
@@ -1747,9 +1759,12 @@ impl Render for EditorView {
             .on_action(cx.trace(|view, _: &super::MakeClipUnique, window, cx| {
                 if view.focus.is_focused(window)
                     && !view.track_header_focused(window)
-                    && !view.selection_intent_epoch.is_some_and(|epoch| {
-                        view.track_clipboard_context == Some((view.project_generation, epoch))
-                    })
+                    && !view
+                        .interaction
+                        .selection_intent_epoch
+                        .is_some_and(|epoch| {
+                            view.track_clipboard_context == Some((view.project_generation, epoch))
+                        })
                     && !view.computer_keyboard.accepts_key("i")
                     && !window.context_stack().iter().any(|context| {
                         context.contains("hex_text_editing")

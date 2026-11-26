@@ -201,19 +201,20 @@ fn source_picker_preserves_sampler_numeric_draft(cx: &mut TestAppContext) {
             },
         ];
         for request in requests {
-            view.latched_seek_intent = Some(crate::editor::arrangement_seek::SeekIntent {
-                note_chase: hex_engine::NoteChase::On,
-                kind: crate::editor::arrangement_seek::SeekKind::Fresh,
-                recovery_generation: None,
-                destination_frame: 0,
-                start_playing: true,
-                project_generation: 0,
-                project_revision: revision,
-                prepared_revision: None,
-                device_preview_identity: None,
-            });
+            view.audio_pub.latched_seek_intent =
+                Some(crate::editor::arrangement_seek::SeekIntent {
+                    note_chase: hex_engine::NoteChase::On,
+                    kind: crate::editor::arrangement_seek::SeekKind::Fresh,
+                    recovery_generation: None,
+                    destination_frame: 0,
+                    start_playing: true,
+                    project_generation: 0,
+                    project_revision: revision,
+                    prepared_revision: None,
+                    device_preview_identity: None,
+                });
             assert!(view.enqueue(request));
-            assert!(view.latched_seek_intent.is_none());
+            assert!(view.audio_pub.latched_seek_intent.is_none());
         }
     });
 }
@@ -1092,7 +1093,7 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdi
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.prepared_seek = Some(pending);
+        view.audio_pub.prepared_seek = Some(pending);
         let request = match kind {
             SourceEdit::Receiver => Request::ChooseNativeSourceReceiver {
                 project_generation: 0,
@@ -1127,7 +1128,7 @@ fn source_edit_cancels_a_published_seek(cx: &mut TestAppContext, kind: SourceEdi
             },
         };
         assert!(view.enqueue(request));
-        assert!(view.prepared_seek.as_ref().unwrap().cancelled);
+        assert!(view.audio_pub.prepared_seek.as_ref().unwrap().cancelled);
     });
     backend.render(&mut block).unwrap();
     assert_eq!(
@@ -4430,7 +4431,7 @@ fn unassigned_empty_sampler_load_cancellation_keeps_source_custody(cx: &mut Test
         );
     });
     editor.update(&mut visual, |view, cx| {
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         let target = view.first_sampler_target("first.wav".into()).unwrap();
         assert_eq!(
             target.owner,

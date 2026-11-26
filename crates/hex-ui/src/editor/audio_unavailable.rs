@@ -76,7 +76,7 @@ mod ui_tests {
             .unwrap();
         editor.update(cx, |view, cx| {
             view.project_generation = 0;
-            view.pending_restart_request = None;
+            view.audio_pub.pending_restart_request = None;
             view.audio_events = receiver;
             view.tick(cx);
             let expected = "audio paused · output runs at 44100 hz, project needs 48000 hz · set the device to 48000 hz, then retry audio";

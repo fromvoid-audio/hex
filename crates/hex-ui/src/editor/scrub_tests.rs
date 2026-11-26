@@ -63,7 +63,7 @@ mod ui {
         editor.update(cx, |view, cx| {
             // Keep a genuine transport acknowledgment gate closed while
             // testing pointer coalescing in the offline UI fixture.
-            view.pending_seek_ticket = Some(1);
+            view.audio_pub.pending_seek_ticket = Some(1);
             cx.notify();
         });
         (handle, editor)
@@ -94,7 +94,9 @@ mod ui {
             MouseButton::Left,
             Modifiers::default(),
         );
-        editor.read_with(cx, |view, _| assert!(view.scrub.gesture.is_some()));
+        editor.read_with(cx, |view, _| {
+            assert!(view.interaction.scrub.gesture.is_some())
+        });
         for fraction in [0.2, 0.7, 0.4] {
             visual.simulate_mouse_move(
                 pointer(bounds, fraction),
@@ -108,7 +110,7 @@ mod ui {
             Modifiers::default(),
         );
         editor.update(cx, |view, _| {
-            let gesture = view.scrub.gesture.unwrap();
+            let gesture = view.interaction.scrub.gesture.unwrap();
             assert!(gesture.released);
             let expected = crate::editor::seek::pointer_to_frame(
                 f32::from(pointer(bounds, 0.8).x),
@@ -126,18 +128,22 @@ mod ui {
                 !view.lose_scrub_pointer(),
                 "hover after release must retain its final target"
             );
-            assert_eq!(view.scrub.gesture.unwrap().latest, Some(expected));
+            assert_eq!(
+                view.interaction.scrub.gesture.unwrap().latest,
+                Some(expected)
+            );
             assert!(
-                view.pending_audio_commands.is_empty(),
+                view.audio_pub.pending_audio_commands.is_empty(),
                 "pointer moves do not enqueue commands"
             );
             assert_eq!(
-                view.offline_cursor, 0,
+                view.audio_pub.offline_cursor, 0,
                 "the displayed cursor does not fake a transport acknowledgment"
             );
-            view.pending_seek_ticket = None;
+            view.audio_pub.pending_seek_ticket = None;
             for _ in 0..crate::editor::UI_REQUEST_CAPACITY {
-                view.pending_audio_commands
+                view.audio_pub
+                    .pending_audio_commands
                     .push_back(PendingPlaybackAction {
                         action: PlaybackAction::Transport(PlaybackCommand::Pause),
                         generation: view.project_generation,
@@ -149,8 +155,11 @@ mod ui {
                 !view.tick_scrub(),
                 "queue pressure retains the final destination"
             );
-            assert_eq!(view.scrub.gesture.unwrap().latest, Some(expected));
-            view.pending_audio_commands.clear();
+            assert_eq!(
+                view.interaction.scrub.gesture.unwrap().latest,
+                Some(expected)
+            );
+            view.audio_pub.pending_audio_commands.clear();
             assert!(
                 view.tick_scrub(),
                 "one unsupported offline seek reports its existing error"
@@ -160,7 +169,7 @@ mod ui {
                     .as_deref()
                     .is_some_and(|error| error.contains("audio output"))
             );
-            assert!(view.scrub.gesture.is_none());
+            assert!(view.interaction.scrub.gesture.is_none());
             assert!(
                 !view.tick_scrub(),
                 "the refusal cannot repeat every timer tick"
@@ -192,7 +201,7 @@ mod ui {
                     }),
                 }
                 view.tick_scrub();
-                assert!(view.scrub.gesture.is_none());
+                assert!(view.interaction.scrub.gesture.is_none());
             });
         }
         editor.update(cx, |view, _| {
@@ -217,7 +226,7 @@ mod ui {
                 document_path: state.document_path.clone(),
             }));
             view.tick_scrub();
-            assert!(view.scrub.gesture.is_none());
+            assert!(view.interaction.scrub.gesture.is_none());
         });
     }
 
@@ -234,14 +243,16 @@ mod ui {
             Modifiers::default(),
         );
         visual.simulate_keystrokes("escape");
-        editor.read_with(cx, |view, _| assert!(view.scrub.gesture.is_none()));
+        editor.read_with(cx, |view, _| {
+            assert!(view.interaction.scrub.gesture.is_none())
+        });
         visual.simulate_mouse_up(
             pointer(bounds, 0.3),
             MouseButton::Left,
             Modifiers::default(),
         );
         editor.update(cx, |view, cx| {
-            view.pending_seek_ticket = Some(1);
+            view.audio_pub.pending_seek_ticket = Some(1);
             cx.notify();
         });
         visual.simulate_mouse_down(
@@ -255,9 +266,9 @@ mod ui {
         // GPUI publishes focus-path changes during its next draw phase.
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
-            assert!(view.scrub.gesture.is_none());
+            assert!(view.interaction.scrub.gesture.is_none());
             assert_eq!(
-                view.pending_seek_ticket,
+                view.audio_pub.pending_seek_ticket,
                 Some(1),
                 "focus loss preserves an admitted seek's acknowledgment"
             );
@@ -266,9 +277,9 @@ mod ui {
             let viewport = view.visible_viewport(view.state.as_ref().unwrap().timeline_frames);
             assert!(view.begin_scrub(f32::from(pointer(bounds, 0.5).x), viewport, bounds));
             view.stop();
-            assert!(view.scrub.gesture.is_none());
+            assert!(view.interaction.scrub.gesture.is_none());
             assert_eq!(
-                view.pending_seek_ticket, None,
+                view.audio_pub.pending_seek_ticket, None,
                 "Stop owns the existing cancellation lifecycle"
             );
         });

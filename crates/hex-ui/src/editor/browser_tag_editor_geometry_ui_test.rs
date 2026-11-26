@@ -155,7 +155,10 @@ fn browser_tag_editor_stationary_rail_and_full_height_outward_column(cx: &mut Te
                     &view.browser.preview_cache[&key].metadata
                 ));
                 assert!(metadata.borrow().is_some());
-                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.pending_requests.is_empty()
+                        && view.audio_pub.pending_audio_commands.is_empty()
+                );
             });
         }
     }

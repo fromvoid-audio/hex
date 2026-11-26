@@ -14,7 +14,7 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
     let track = project.tracks()[0].id();
     cx.update(crate::editor::bind_editor_keys);
     editor.update(cx, |view, cx| {
-        view.edit_cursor = Some(EditCursor {
+        view.interaction.edit_cursor = Some(EditCursor {
             track: Some(track),
             frame: 256,
             generation: view.project_generation,
@@ -36,7 +36,7 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
             "play with history"
         );
         assert!(
-            view.prepared_seek.is_none(),
+            view.audio_pub.prepared_seek.is_none(),
             "opening the menu never starts playback"
         );
     });
@@ -44,7 +44,11 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(view.context_menu.is_none());
-        let pending = view.prepared_seek.as_ref().expect("history request queued");
+        let pending = view
+            .audio_pub
+            .prepared_seek
+            .as_ref()
+            .expect("history request queued");
         assert!(matches!(pending.kind, SeekKind::History));
         assert_eq!(pending.destination_frame, 256);
         assert_eq!(
@@ -61,7 +65,7 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
             assert!(matches!(
-                view.prepared_seek.as_ref().unwrap().kind,
+                view.audio_pub.prepared_seek.as_ref().unwrap().kind,
                 SeekKind::History
             ));
             assert_eq!(view.playback_start_frame(), 256);
@@ -76,7 +80,7 @@ fn play_menu_preserves_history_through_delayed_ack_and_completed_repaints(cx: &m
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.prepared_seek.is_none(),
+            view.audio_pub.prepared_seek.is_none(),
             "exact callback acknowledgement retires the intent"
         );
         assert_eq!(view.playback_start_frame(), 256);
@@ -160,8 +164,8 @@ fn history_menu_refuses_stale_loop_and_work_limit_without_a_request(cx: &mut Tes
                 .to_string()
                 .contains("limit exceeded")
         );
-        assert!(view.prepared_seek.is_none());
-        assert!(view.latched_seek_intent.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
     });
     let mut snapshot = hex_project::Project::new(48_000).unwrap().snapshot();
     snapshot.loop_region = Some(hex_project::LoopRegion::new(0, 512, true).unwrap());
@@ -186,8 +190,8 @@ fn history_menu_refuses_stale_loop_and_work_limit_without_a_request(cx: &mut Tes
                 .to_string()
                 .contains("loop off")
         );
-        assert!(view.prepared_seek.is_none());
-        assert!(view.latched_seek_intent.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
     });
 }
 
@@ -254,10 +258,13 @@ fn wait_for_submission(
             cx.notify();
         });
         if editor.read_with(visual, |view, _| {
-            view.prepared_seek.as_ref().is_some_and(|pending| {
-                pending.destination_frame == destination
-                    && matches!(pending.stage, SeekStage::Published { .. })
-            })
+            view.audio_pub
+                .prepared_seek
+                .as_ref()
+                .is_some_and(|pending| {
+                    pending.destination_frame == destination
+                        && matches!(pending.stage, SeekStage::Published { .. })
+                })
         }) {
             return;
         }
@@ -265,9 +272,11 @@ fn wait_for_submission(
             Instant::now() < deadline,
             "history submission unavailable: {:?}",
             editor.read_with(visual, |view, _| (
-                view.prepared_seek
-                    .as_ref()
-                    .map(|p| (p.stage, p.cancelled, p.destination_frame)),
+                view.audio_pub.prepared_seek.as_ref().map(|p| (
+                    p.stage,
+                    p.cancelled,
+                    p.destination_frame
+                )),
                 view.error.as_ref().map(|e| e.to_string()),
                 view.status.to_string(),
             ))
@@ -292,8 +301,8 @@ fn latest_history_intent_on_an_ordinary_graph_waits_for_prior_then_exact_ack(
     wait_for_submission(&editor, &mut visual, 256);
     editor.update(&mut visual, |view, _| {
         view.request_history_playback(512);
-        assert!(!view.prepared_seek.as_ref().unwrap().cancelled);
-        let latest = view.latched_seek_intent.as_ref().unwrap();
+        assert!(!view.audio_pub.prepared_seek.as_ref().unwrap().cancelled);
+        let latest = view.audio_pub.latched_seek_intent.as_ref().unwrap();
         assert!(matches!(latest.kind, SeekKind::History));
         assert_eq!(latest.destination_frame, 512);
     });
@@ -308,7 +317,7 @@ fn latest_history_intent_on_an_ordinary_graph_waits_for_prior_then_exact_ack(
         });
         visual.run_until_parked();
         editor.read_with(&visual, |view, _| {
-            let latest = view.prepared_seek.as_ref().unwrap();
+            let latest = view.audio_pub.prepared_seek.as_ref().unwrap();
             assert!(matches!(latest.kind, SeekKind::History));
             assert_eq!(latest.destination_frame, 512);
             assert_eq!(view.audio_status().unwrap().position.load(Acquire), 320);
@@ -321,8 +330,8 @@ fn latest_history_intent_on_an_ordinary_graph_waits_for_prior_then_exact_ack(
     });
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.prepared_seek.is_none());
-        assert!(view.latched_seek_intent.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
         assert_eq!(view.audio_status().unwrap().position.load(Acquire), 576);
     });
     fixture.finish(cx);
@@ -382,8 +391,8 @@ fn playback_menu_order_session_availability_and_keyboard_save_keep_history_indep
             .unwrap()
             .note_chase
         );
-        assert!(view.prepared_seek.is_none());
-        assert!(view.latched_seek_intent.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
         view.mode = EditorMode::Session;
         cx.notify();
     });
@@ -447,7 +456,7 @@ fn disabled_popup_row_ignores_pointer_enter_and_navigation_skips_it(cx: &mut Tes
     editor.read_with(&visual, |view, _| {
         assert!(view.settings.playback.preferences.note_chase);
         assert!(view.context_menu.is_some());
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
     });
 }
 
@@ -513,8 +522,8 @@ fn saved_play_menu_toggle_controls_held_midi_on_the_next_arrangement_start(
     let mut visual = VisualTestContext::from_window(fixture.handle, cx);
     let frame = 512;
     editor.update(&mut visual, |view, cx| {
-        view.play_start_at_beginning = false;
-        view.edit_cursor = Some(EditCursor {
+        view.interaction.play_start_at_beginning = false;
+        view.interaction.edit_cursor = Some(EditCursor {
             track: None,
             frame,
             generation: view.project_generation,

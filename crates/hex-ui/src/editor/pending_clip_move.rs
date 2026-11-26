@@ -324,7 +324,8 @@ impl EditorView {
             .map(|p| &p.drag)
             .or_else(|| self.pending_bounce_drag())
             .or_else(|| {
-                self.active_clip_drag
+                self.interaction
+                    .active_clip_drag
                     .as_ref()
                     .filter(|d| self.drag_start_is_current(d))
             })
@@ -341,7 +342,7 @@ impl EditorView {
             .or_else(|| self.pending_bounce_drag())
             .or_else(|| {
                 let state = self.state.as_ref()?;
-                self.active_clip_drag.as_ref().filter(|drag| {
+                self.interaction.active_clip_drag.as_ref().filter(|drag| {
                     let group = drag.group.borrow();
                     !self.persistence.opening_project
                         && !self.persistence.close_prompt_open
@@ -366,7 +367,7 @@ impl EditorView {
     pub(super) fn audible_clip_move_position(
         &self,
     ) -> Option<(hex_session::service::ClipMovePreviewDestination, u64)> {
-        let drag = self.active_clip_drag.as_ref()?;
+        let drag = self.interaction.active_clip_drag.as_ref()?;
         let (audio_revision, applied) = self.applied_clip_preview?;
         let desired = self.expected_clip_preview?;
         let state = self.state.as_ref()?;
@@ -410,7 +411,7 @@ impl EditorView {
         event: &Event,
     ) -> Option<(DropCursor, Option<ClipId>)> {
         if !event.project_replaced
-            && let Some(active) = self.active_clip_drag.as_ref()
+            && let Some(active) = self.interaction.active_clip_drag.as_ref()
             && active.project_generation == self.project_generation
             && active.effective_revision() < event.state.revision
         {

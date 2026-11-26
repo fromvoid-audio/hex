@@ -2252,7 +2252,7 @@ fn vst3_first_lane_menu_arms_and_disarms_the_raw_zero_knob(cx: &mut TestAppConte
         view.selected_track = Some(track);
         view.device_panel.active = true;
         view.device_panel.owner = Some(Owner::Track(track));
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         view.audio = Some(crate::EditorAudio {
             control: client,
             sample_rate: 48_000,
@@ -2415,8 +2415,8 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
             .to_vec();
         assert_eq!(clips.len(), 1, "{:?}", view.error);
         view.selected_clip = Some(clips[0].id());
-        view.time_selection = Some(background_range);
-        view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
+        view.interaction.time_selection = Some(background_range);
+        view.interaction.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
             track: Some(track),
             frame: background_range.anchor_frame,
             generation: view.project_generation,
@@ -2490,7 +2490,7 @@ fn lane_range_keyboard_edits_preserve_the_selected_clip_and_undo(cx: &mut TestAp
                 .clips(),
             clips
         );
-        assert_eq!(view.time_selection, Some(background_range));
+        assert_eq!(view.interaction.time_selection, Some(background_range));
     });
 
     let other = DeviceAutomationTarget::HostInputGain;

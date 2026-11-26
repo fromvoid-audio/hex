@@ -58,15 +58,15 @@ fn stop_during_fresh_vst3_recovery_cancels_play_without_revoking_sources(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
-        let generation = view.recovery.begin(120).unwrap();
-        assert!(view.recovery.opened(generation));
-        view.pending_recovery_generation = Some(generation);
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        let generation = view.audio_pub.recovery.begin(120).unwrap();
+        assert!(view.audio_pub.recovery.opened(generation));
+        view.audio_pub.pending_recovery_generation = Some(generation);
         view.defer_play_until_audio_recovers();
         view.stop();
-        assert!(view.deferred_play.is_none());
-        assert_eq!(view.recovery.position(), Some(0));
-        assert_eq!(view.recovery.generation(), Some(generation));
+        assert!(view.audio_pub.deferred_play.is_none());
+        assert_eq!(view.audio_pub.recovery.position(), Some(0));
+        assert_eq!(view.audio_pub.recovery.generation(), Some(generation));
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let control = &mut view.audio.as_mut().unwrap().control;
         assert!(
@@ -126,9 +126,9 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
-        view.applied_project_revision = Some(revision);
-        view.audible_playback = Some(super::super::PlaybackCandidate {
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.applied_project_revision = Some(revision);
+        view.audio_pub.audible_playback = Some(super::super::PlaybackCandidate {
             clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: None,
@@ -142,13 +142,13 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
         });
         view.stop_from_escape();
         let restore = Some(StoppedPlaybackRestore::Preparing);
-        assert_eq!(view.stopped_playback_restore, restore);
+        assert_eq!(view.audio_pub.stopped_playback_restore, restore);
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert_eq!(stop_count(view), 1, "first stop reaches the callback");
 
         view.stop_from_escape();
-        assert!(view.play_start_at_beginning);
-        assert_eq!(view.stopped_playback_restore, restore);
+        assert!(view.interaction.play_start_at_beginning);
+        assert_eq!(view.audio_pub.stopped_playback_restore, restore);
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert_eq!(
             stop_count(view),
@@ -159,10 +159,10 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
         view.device_panel.degraded_plugins =
             crate::editor_backend::DegradedDevices::new(vec![device.value()]);
         view.queue_audio_command(PlaybackCommand::PlayFrom(0));
-        assert!(view.deferred_play.is_some());
+        assert!(view.audio_pub.deferred_play.is_some());
         view.stop();
-        assert!(view.deferred_play.is_none());
-        assert_eq!(view.stopped_playback_restore, restore);
+        assert!(view.audio_pub.deferred_play.is_none());
+        assert_eq!(view.audio_pub.stopped_playback_restore, restore);
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert_eq!(
             stop_count(view),
@@ -171,7 +171,7 @@ fn stop_renews_current_resident_vst3_playback_before_an_edit(cx: &mut gpui::Test
         );
 
         view.queue_audio_command(PlaybackCommand::PlayFrom(0));
-        assert!(view.deferred_play.is_some());
+        assert!(view.audio_pub.deferred_play.is_some());
         assert_eq!(
             view.audio.as_ref().unwrap().control.output_identity(),
             Some(identity)
@@ -568,7 +568,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             EditFixture::TimeDuplicate | EditFixture::InFlightTimeDuplicate
         ) {
             let range = hex_project::TimeRange::new(vec![target], 0, 96_000).unwrap();
-            v.time_selection = Some(super::super::time_selection::TimeSelection {
+            v.interaction.time_selection = Some(super::super::time_selection::TimeSelection {
                 anchor_track: Some(target),
                 end_track: Some(target),
                 anchor_frame: 0,
@@ -601,8 +601,8 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                         | EditRecovery::RetryTerminal
                         | EditRecovery::PendingTerminal
                 ) {
-                    assert!(v.recovery.generation().is_none());
-                    assert!(v.pending_time_range_move.is_none());
+                    assert!(v.audio_pub.recovery.generation().is_none());
+                    assert!(v.interaction.pending_time_range_move.is_none());
                     assert!(v.error.is_some());
                     return None;
                 }
@@ -611,7 +611,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             } else {
                 v.start_time_duplicate(range, 0);
             }
-            assert!(v.pending_time_range_move.is_some());
+            assert!(v.interaction.pending_time_range_move.is_some());
         } else if let Some(region) = expected_loop {
             if edit == EditFixture::LoopToggle {
                 v.toggle_loop();
@@ -620,12 +620,12 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             }
             assert_eq!(v.pending_loop_region(), Some(region));
             assert!(
-                v.recovery.generation().is_some(),
+                v.audio_pub.recovery.generation().is_some(),
                 "loop must wait for fresh audio"
             );
             assert_eq!(v.worker_requests_pending, 1, "only restart is queued");
             assert!(
-                v.deferred_play.is_some(),
+                v.audio_pub.deferred_play.is_some(),
                 "playing intent must survive recovery"
             );
             v.toggle_loop();
@@ -660,11 +660,12 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
             );
         }
         let generation = v
+            .audio_pub
             .recovery
             .generation()
             .expect("graph edit starts audio recovery");
-        assert_eq!(v.recovery.position(), Some(64));
-        assert!(v.deferred_play.is_some());
+        assert_eq!(v.audio_pub.recovery.position(), Some(64));
+        assert!(v.audio_pub.deferred_play.is_some());
         assert!(!v.enqueue_device_barrier(request()), "one deferred effect");
         assert_eq!(v.worker_requests_pending, 1, "only restart is admitted");
         v.selected_track = Some(other);
@@ -713,13 +714,13 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         if outcome == EditRecovery::Failed {
             v.fail_audio_recovery("fixture audio recovery failed");
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             if edit == EditFixture::Effect {
                 assert!(v.device_panel.pending_plugin_effect.is_none());
                 assert!(v.device_panel.failed_plugin_proposal.is_some());
             }
             assert!(v.browser.pending_sample_drop.is_none());
-            assert!(v.pending_time_range_move.is_none());
+            assert!(v.interaction.pending_time_range_move.is_none());
             assert!(v.pending_loop_region().is_none());
             assert!(v.service.try_event().is_err());
             assert_eq!(v.state.as_ref().unwrap().revision, revision);
@@ -734,14 +735,14 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         v.audio = Some(fresh_audio);
         // Opening a new output clears observations belonging to the old one.
         v.device_panel.degraded_plugins = Default::default();
-        v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
-        assert!(v.recovery.opened(recovery));
+        v.audio_pub.applied_project_revision = v.state.as_ref().map(|s| s.revision);
+        assert!(v.audio_pub.recovery.opened(recovery));
         assert!(
             !v.finish_audio_recovery_tick(),
             "an open output is not a restored graph"
         );
         assert!(v.service.try_event().is_err());
-        assert!(v.recovery.restored(recovery));
+        assert!(v.audio_pub.recovery.restored(recovery));
         assert!(
             !v.finish_audio_recovery_tick(),
             "cursor seek must reach the callback"
@@ -755,10 +756,10 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
     fresh_backend.render(&mut [[0.0; 2]; 64]).unwrap();
     editor.update(cx, |v, _| {
         assert!(v.finish_audio_recovery_tick());
-        assert!(v.recovery.deferred_edit.is_none());
+        assert!(v.audio_pub.recovery.deferred_edit.is_none());
         assert!(!v.finish_audio_recovery_tick());
         if outcome == EditRecovery::SelectionChanged {
-            assert!(v.pending_time_range_move.is_none());
+            assert!(v.interaction.pending_time_range_move.is_none());
             assert!(v.service.try_event().is_err());
             assert!(
                 v.error
@@ -775,7 +776,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
                 assert!(v.device_panel.failed_plugin_proposal.is_some());
             }
             assert!(v.browser.pending_sample_drop.is_none());
-            assert!(v.pending_time_range_move.is_none());
+            assert!(v.interaction.pending_time_range_move.is_none());
             assert!(v.pending_loop_region().is_none());
             assert!(
                 v.error
@@ -787,7 +788,7 @@ fn graph_edit_recovery(cx: &mut gpui::TestAppContext, edit: EditFixture, outcome
         }
         if outcome == EditRecovery::ProjectEditPending {
             assert!(v.browser.pending_sample_drop.is_none());
-            assert!(v.pending_time_range_move.is_none());
+            assert!(v.interaction.pending_time_range_move.is_none());
             assert_eq!(v.worker_requests_pending, 1, "only the intervening edit");
             assert!(v.error.as_deref().unwrap().contains("project work pending"));
             let changed = next(&v.service);
@@ -997,7 +998,7 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
                 .control
                 .command_with_ticket(PlaybackCommand::Seek(37))
                 .unwrap();
-            view.pending_seek_ticket = Some(ticket);
+            view.audio_pub.pending_seek_ticket = Some(ticket);
             view.recover_audio();
             assert!(view.audio.is_some());
             assert_eq!(
@@ -1007,7 +1008,7 @@ fn restart_from_fault(cx: &mut gpui::TestAppContext, stop: bool) {
             view.stop();
         }
         view.recover_audio();
-        assert_eq!(view.offline_cursor, if stop { 0 } else { 64 });
+        assert_eq!(view.audio_pub.offline_cursor, if stop { 0 } else { 64 });
     });
     drop(backend);
     output.publication.close();
@@ -1080,12 +1081,12 @@ fn degraded_worker_recovers(
         view.device_panel.degraded_plugins = crate::editor_backend::DegradedDevices::new(vec![2]);
         if stop_first {
             view.stop();
-            assert!(view.deferred_play.is_none());
+            assert!(view.audio_pub.deferred_play.is_none());
         }
         if let Some(command) = explicit_command {
             view.queue_audio_command(command);
             assert_eq!(
-                view.deferred_play,
+                view.audio_pub.deferred_play,
                 Some((
                     hex_engine::playback::PlaybackAction::Transport(
                         explicit_command
@@ -1106,8 +1107,8 @@ fn degraded_worker_recovers(
             assert!(view.settings.playback.pending.is_some());
         }
         assert!(view.audio.is_none());
-        assert!(view.pending_restart_request.is_some());
-        assert!(view.stopped_playback_restore.is_none());
+        assert!(view.audio_pub.pending_restart_request.is_some());
+        assert!(view.audio_pub.stopped_playback_restore.is_none());
         let frame = match explicit_command {
             Some(
                 PlaybackCommand::PlayFrom(frame)
@@ -1115,9 +1116,9 @@ fn degraded_worker_recovers(
             ) => frame,
             _ => 0,
         };
-        assert_eq!(view.recovery.position(), Some(frame));
+        assert_eq!(view.audio_pub.recovery.position(), Some(frame));
         view.stop();
-        assert!(view.deferred_play.is_none());
+        assert!(view.audio_pub.deferred_play.is_none());
         assert!(view.settings.playback.pending.is_none());
     });
     drop(backend);
@@ -1197,8 +1198,8 @@ fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option
             mode: hex_session::DocumentAudioMode::Resident,
         });
         let state = Arc::clone(&canonical_state);
-        view.applied_project_revision = Some(state.revision);
-        view.audible_playback = Some(super::super::PlaybackCandidate {
+        view.audio_pub.applied_project_revision = Some(state.revision);
+        view.audio_pub.audible_playback = Some(super::super::PlaybackCandidate {
             clip_preview_identity: None,
             worker_requires_preroll: Some(false),
             observation: None,
@@ -1222,8 +1223,8 @@ fn play_on_degraded_output(cx: &mut gpui::TestAppContext, explicit_frame: Option
         } else {
             view.toggle_play();
         }
-        assert!(view.pending_restart_request.is_none());
-        assert!(view.deferred_play.is_none());
+        assert!(view.audio_pub.pending_restart_request.is_none());
+        assert!(view.audio_pub.deferred_play.is_none());
         assert_eq!(
             view.audio.as_ref().unwrap().control.output_identity(),
             Some(identity)
@@ -1263,23 +1264,23 @@ fn a_changed_output_route_restarts_audio_once_its_guards_allow(cx: &mut gpui::Te
             mode: hex_session::DocumentAudioMode::Resident,
         });
         // A notice for an output that is no longer current is dropped.
-        view.route_follow = Some(identity + 1);
+        view.audio_pub.route_follow = Some(identity + 1);
         assert!(!view.follow_output_route());
-        assert_eq!(view.route_follow, None);
+        assert_eq!(view.audio_pub.route_follow, None);
         // An open dialog defers the move without reporting an error.
         let error = view.error.clone();
-        view.route_follow = Some(identity);
+        view.audio_pub.route_follow = Some(identity);
         view.persistence.save_dialog_open = true;
         assert!(!view.follow_output_route());
-        assert_eq!(view.route_follow, Some(identity));
+        assert_eq!(view.audio_pub.route_follow, Some(identity));
         assert_eq!(view.error, error);
-        assert!(view.pending_recovery_generation.is_none());
+        assert!(view.audio_pub.pending_recovery_generation.is_none());
         // Once allowed, the move uses the restart-audio recovery exactly once.
         view.persistence.save_dialog_open = false;
         assert!(view.follow_output_route());
-        assert_eq!(view.route_follow, None);
-        assert!(view.pending_recovery_generation.is_some());
-        assert!(view.pending_restart_request.is_some());
+        assert_eq!(view.audio_pub.route_follow, None);
+        assert!(view.audio_pub.pending_recovery_generation.is_some());
+        assert!(view.audio_pub.pending_restart_request.is_some());
         assert_eq!(view.status.to_string(), "audio output changed · reopening");
         assert!(!view.follow_output_route());
     });
@@ -1720,21 +1721,22 @@ fn seek_during_latency_rebuild_cancels_the_automatic_resume(cx: &mut gpui::TestA
     let project = hex_project::Project::new(48_000).unwrap();
     let (_, editor) = super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
     editor.update(cx, |view, _| {
-        view.latency_rebuild = Some(super::super::audio_admission::LatencyRebuild::Restoring {
-            project: super::super::audio_admission::ProjectRevision {
-                generation: 0,
-                revision: 0,
-            },
-            output: 1,
-            frame: 123,
-            resume: true,
-            runtime_audio: None,
-            installed: false,
-        });
-        view.stopped_playback_restore =
+        view.audio_pub.latency_rebuild =
+            Some(super::super::audio_admission::LatencyRebuild::Restoring {
+                project: super::super::audio_admission::ProjectRevision {
+                    generation: 0,
+                    revision: 0,
+                },
+                output: 1,
+                frame: 123,
+                resume: true,
+                runtime_audio: None,
+                installed: false,
+            });
+        view.audio_pub.stopped_playback_restore =
             Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
         view.request_seek(456);
-        assert!(view.latency_rebuild.is_none());
+        assert!(view.audio_pub.latency_rebuild.is_none());
         assert!(
             view.error
                 .as_deref()
@@ -1752,21 +1754,22 @@ fn replaced_project_cannot_resume_an_older_latency_rebuild(cx: &mut gpui::TestAp
         Arc::default(),
     );
     editor.update(cx, |view, _| {
-        view.latency_rebuild = Some(super::super::audio_admission::LatencyRebuild::Restoring {
-            project: super::super::audio_admission::ProjectRevision {
-                generation: 0,
-                revision: 0,
-            },
-            output: 1,
-            frame: 123,
-            resume: true,
-            runtime_audio: None,
-            installed: false,
-        });
+        view.audio_pub.latency_rebuild =
+            Some(super::super::audio_admission::LatencyRebuild::Restoring {
+                project: super::super::audio_admission::ProjectRevision {
+                    generation: 0,
+                    revision: 0,
+                },
+                output: 1,
+                frame: 123,
+                resume: true,
+                runtime_audio: None,
+                installed: false,
+            });
         view.project_generation = 1;
         assert!(!view.tick_latency_rebuild());
-        assert!(view.latency_rebuild.is_none());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.latency_rebuild.is_none());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
 }
 
@@ -1792,8 +1795,8 @@ fn failed_native_latency_restore_cannot_resume_the_old_audio(cx: &mut gpui::Test
             mode: hex_session::DocumentAudioMode::Resident,
         });
         let revision = view.state.as_ref().unwrap().revision;
-        view.applied_project_revision = Some(revision);
-        view.latency_rebuild = Some(LatencyRebuild::Restoring {
+        view.audio_pub.applied_project_revision = Some(revision);
+        view.audio_pub.latency_rebuild = Some(LatencyRebuild::Restoring {
             project: ProjectRevision {
                 generation: view.project_generation,
                 revision,
@@ -1804,14 +1807,14 @@ fn failed_native_latency_restore_cannot_resume_the_old_audio(cx: &mut gpui::Test
             runtime_audio: Some(1),
             installed: false,
         });
-        view.stopped_playback_restore = Some(StoppedPlaybackRestore::Published(2));
+        view.audio_pub.stopped_playback_restore = Some(StoppedPlaybackRestore::Published(2));
         assert!(!view.tick_latency_rebuild());
-        assert!(view.latency_rebuild.is_some());
+        assert!(view.audio_pub.latency_rebuild.is_some());
         // A failed publication clears its pending state. The old graph still
         // represents the canonical project revision, but cannot justify Play.
-        view.stopped_playback_restore = None;
+        view.audio_pub.stopped_playback_restore = None;
         assert!(!view.tick_latency_rebuild());
-        assert!(view.latency_rebuild.is_none());
+        assert!(view.audio_pub.latency_rebuild.is_none());
         let mut pcm = [[0.0; 2]; 64];
         backend.render(&mut pcm).unwrap();
         let status = view.audio.as_ref().unwrap().status().unwrap();
@@ -1981,8 +1984,8 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
-        view.pending_playback = None;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.pending_playback = None;
         view.tick(cx);
     });
     let deadline = crate::test_wait::hang_deadline();
@@ -1992,7 +1995,7 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
             view.tick(cx);
             view.state
                 .as_ref()
-                .is_some_and(|s| view.applied_project_revision == Some(s.revision))
+                .is_some_and(|s| view.audio_pub.applied_project_revision == Some(s.revision))
         }) {
             break;
         }
@@ -2022,10 +2025,10 @@ fn second_limiter_while_playing_applies_without_stopping(cx: &mut gpui::TestAppC
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(cx, |view, cx| {
             view.tick(cx);
-            assert!(view.latency_rebuild.is_none());
+            assert!(view.audio_pub.latency_rebuild.is_none());
             assert!(view.audio_status().unwrap().playing.load(Acquire));
             view.state.as_ref().is_some_and(|s| {
-                view.applied_project_revision == Some(s.revision)
+                view.audio_pub.applied_project_revision == Some(s.revision)
                     && s.project
                         .track(second_track)
                         .is_some_and(|track| !track.devices().is_empty())
@@ -2309,8 +2312,8 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
-        view.pending_playback = None;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.pending_playback = None;
         view.tick(cx);
     });
     let deadline = crate::test_wait::hang_deadline();
@@ -2318,10 +2321,9 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let ready = editor.update(cx, |view, cx| {
             view.tick(cx);
-            view.state
-                .as_ref()
-                .is_some_and(|state| view.applied_project_revision == Some(state.revision))
-                && view.current_seek_requires_preroll() == Some(true)
+            view.state.as_ref().is_some_and(|state| {
+                view.audio_pub.applied_project_revision == Some(state.revision)
+            }) && view.current_seek_requires_preroll() == Some(true)
         });
         if ready {
             break;
@@ -2334,12 +2336,13 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
     }
     editor.update(cx, |view, cx| {
         assert_eq!(view.current_seek_requires_preroll(), Some(true));
-        let generation = view.recovery.begin(129).unwrap();
-        view.recovery.opened(generation);
-        view.recovery.restored(generation);
-        view.pending_recovery_generation = Some(generation);
+        let generation = view.audio_pub.recovery.begin(129).unwrap();
+        view.audio_pub.recovery.opened(generation);
+        view.audio_pub.recovery.restored(generation);
+        view.audio_pub.pending_recovery_generation = Some(generation);
         view.tick(cx);
         let pending = view
+            .audio_pub
             .prepared_seek
             .as_ref()
             .expect("recovery must submit a prepared seek, not raw Seek");
@@ -2347,7 +2350,7 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
         assert!(!pending.start_playing);
         assert!(pending.prepared_revision.is_none());
         if retarget {
-            view.deferred_play = Some((
+            view.audio_pub.deferred_play = Some((
                 hex_engine::PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase {
                     frame: 129,
                     note_chase: hex_engine::NoteChase::On,
@@ -2356,7 +2359,7 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
                 view.project_generation,
             ));
             view.request_seek(recovery_position);
-            assert_eq!(view.recovery.position(), Some(recovery_position));
+            assert_eq!(view.audio_pub.recovery.position(), Some(recovery_position));
         }
     });
     let deadline = crate::test_wait::hang_deadline();
@@ -2372,10 +2375,11 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
                 );
             }
             assert!(
-                view.recovery.prepared_request().is_none() || view.prepared_seek.is_some(),
+                view.audio_pub.recovery.prepared_request().is_none()
+                    || view.audio_pub.prepared_seek.is_some(),
                 "recovery must retain or release its exact pending request"
             );
-            view.recovery.generation().is_none()
+            view.audio_pub.recovery.generation().is_none()
         });
         if done {
             break;
@@ -2393,7 +2397,7 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
                 RecoveryResult::AdvancedTwice => {
                     assert!(message.contains("audio changed again"), "{message}");
                     assert!(view.audio.is_some());
-                    assert!(view.pending_recovery_generation.is_none());
+                    assert!(view.audio_pub.pending_recovery_generation.is_none());
                 }
                 RecoveryResult::Failed => {
                     assert!(
@@ -2416,7 +2420,7 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
     }
     editor.update(cx, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        let audible = view.audible_playback.as_ref().unwrap();
+        let audible = view.audio_pub.audible_playback.as_ref().unwrap();
         assert!(audible.seek_request_id.is_some());
         let audio = view.audio.as_mut().unwrap();
         let status = audio.control.status().unwrap();
@@ -2449,15 +2453,15 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
     );
     hold.store(true, std::sync::atomic::Ordering::Release);
     editor.update(cx, |view, cx| {
-        let generation = view.recovery.begin(257).unwrap();
-        view.recovery.opened(generation);
-        view.recovery.restored(generation);
-        view.pending_recovery_generation = Some(generation);
+        let generation = view.audio_pub.recovery.begin(257).unwrap();
+        view.audio_pub.recovery.opened(generation);
+        view.audio_pub.recovery.restored(generation);
+        view.audio_pub.pending_recovery_generation = Some(generation);
         view.tick(cx);
-        let request = view.recovery.prepared_request().unwrap();
+        let request = view.audio_pub.recovery.prepared_request().unwrap();
         view.request_seek(64);
         assert_eq!(
-            view.recovery.prepared_request(),
+            view.audio_pub.recovery.prepared_request(),
             Some(request),
             "new cursor intent must retain the in-flight request until its acknowledgement"
         );
@@ -2492,15 +2496,15 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
     };
     editor.update(cx, |view, _| {
         view.stop();
-        assert_eq!(view.recovery.position(), Some(0));
-        assert_eq!(view.recovery.prepared_request(), None);
+        assert_eq!(view.audio_pub.recovery.position(), Some(0));
+        assert_eq!(view.audio_pub.recovery.prepared_request(), None);
     });
     let deadline = crate::test_wait::hang_deadline();
     loop {
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let done = editor.update(cx, |view, cx| {
             view.tick(cx);
-            view.recovery.generation().is_none()
+            view.audio_pub.recovery.generation().is_none()
         });
         if done {
             break;
@@ -2526,7 +2530,11 @@ fn recovered_cursor(cx: &mut gpui::TestAppContext, result: RecoveryResult) {
         assert_eq!(status.position.load(Relaxed), 0);
         assert!(!status.playing.load(Relaxed));
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             delayed_revision,
             "late metadata must preserve the actual applied source after Stop"
         );
@@ -2581,7 +2589,7 @@ fn automatic_latency_rebuild_renders_the_stop_fade_before_requesting_restore(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+        view.audio_pub.latency_rebuild = Some(LatencyRebuild::Waiting {
             project: ProjectRevision { generation: view.project_generation, revision: view.state.as_ref().unwrap().revision },
             output,
             runtime_audio: None,
@@ -2590,12 +2598,12 @@ fn automatic_latency_rebuild_renders_the_stop_fade_before_requesting_restore(
         backend.render(&mut pcm).unwrap();
         assert!(pcm[0][0] > 0.9 && pcm[63][0] > 0.0 && pcm[63][0] < pcm[0][0], "the automatic transition must render the falling ramp");
         assert!(!view.tick_latency_rebuild(), "consuming Stop only starts the fade");
-        assert!(view.stopped_playback_restore.is_none());
+        assert!(view.audio_pub.stopped_playback_restore.is_none());
         backend.render(&mut pcm).unwrap();
         assert_eq!(pcm[63], [0.0; 2]);
         assert!(view.tick_latency_rebuild());
-        assert_eq!(view.stopped_playback_restore, Some(StoppedPlaybackRestore::Preparing));
-        assert!(matches!(view.latency_rebuild, Some(LatencyRebuild::Restoring { frame: saved, .. }) if saved == frame));
+        assert_eq!(view.audio_pub.stopped_playback_restore, Some(StoppedPlaybackRestore::Preparing));
+        assert!(matches!(view.audio_pub.latency_rebuild, Some(LatencyRebuild::Restoring { frame: saved, .. }) if saved == frame));
         view.audio.take().unwrap().control.close();
     });
     backend.close();
@@ -2642,7 +2650,7 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
             generation: 0,
             revision,
         };
-        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+        view.audio_pub.latency_rebuild = Some(LatencyRebuild::Waiting {
             project,
             output,
             runtime_audio: None,
@@ -2651,29 +2659,29 @@ fn refused_latency_edit_in_midi_project_shows_waiting_until_applied_or_stopped(
         // Playing: MIDI voices are kept, and the wait is visible, once.
         assert!(view.tick_latency_rebuild());
         assert_eq!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
-        assert!(view.latency_rebuild.is_some());
+        assert!(view.audio_pub.latency_rebuild.is_some());
         assert!(!view.tick_latency_rebuild());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
 
         // Once the revision is audible, the notice retires with the wait.
-        view.applied_project_revision = Some(revision);
+        view.audio_pub.applied_project_revision = Some(revision);
         assert!(view.tick_latency_rebuild());
         assert!(view.error.is_none());
-        assert!(view.latency_rebuild.is_none());
+        assert!(view.audio_pub.latency_rebuild.is_none());
 
         // Stop installs the waiting revision through the stopped restore.
-        view.applied_project_revision = None;
-        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+        view.audio_pub.applied_project_revision = None;
+        view.audio_pub.latency_rebuild = Some(LatencyRebuild::Waiting {
             project,
             output,
             runtime_audio: None,
         });
         assert!(view.tick_latency_rebuild());
         view.stop();
-        assert!(view.latency_rebuild.is_none());
+        assert!(view.audio_pub.latency_rebuild.is_none());
         assert_ne!(view.error.as_deref(), Some(LATENCY_EDIT_WAITING));
         assert_eq!(
-            view.stopped_playback_restore,
+            view.audio_pub.stopped_playback_restore,
             Some(StoppedPlaybackRestore::Preparing)
         );
     });
@@ -2748,7 +2756,7 @@ fn stopped_native_latency_restart_in_midi_project_restores_instead_of_waiting(
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.project_generation = 0;
-        view.latency_rebuild = Some(LatencyRebuild::Waiting {
+        view.audio_pub.latency_rebuild = Some(LatencyRebuild::Waiting {
             project,
             output: output_id,
             runtime_audio: Some(applied.audio_revision),
@@ -2777,11 +2785,11 @@ fn stopped_native_latency_restart_in_midi_project_restores_instead_of_waiting(
         assert!(view.tick_latency_rebuild());
         assert!(view.error.is_none());
         assert_eq!(
-            view.stopped_playback_restore,
+            view.audio_pub.stopped_playback_restore,
             Some(StoppedPlaybackRestore::Preparing)
         );
         assert!(matches!(
-            view.latency_rebuild,
+            view.audio_pub.latency_rebuild,
             Some(LatencyRebuild::Restoring {
                 resume: false,
                 runtime_audio: Some(rev),
@@ -2846,8 +2854,8 @@ fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::VerifiedStreaming,
         });
-        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
-        view.applied_project_revision = view.state.as_ref().map(|state| state.revision);
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        view.audio_pub.applied_project_revision = view.state.as_ref().map(|state| state.revision);
         view.queue_audio_command(hex_engine::PlaybackCommand::Play);
         for _ in 0..4 {
             backend.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -2889,8 +2897,8 @@ fn streamed_sampler_edit_while_playing_stops_and_resumes_at_its_frame(
             !view.tick_sampler_edit_resume(),
             "waits for the stopped restore"
         );
-        view.stopped_playback_restore = None;
-        view.applied_project_revision = view.state.as_ref().map(|state| state.revision);
+        view.audio_pub.stopped_playback_restore = None;
+        view.audio_pub.applied_project_revision = view.state.as_ref().map(|state| state.revision);
         assert!(view.tick_sampler_edit_resume());
         assert!(view.device_panel.sampler_edit_resume.is_none());
     });
@@ -2964,20 +2972,20 @@ fn play_during_stopped_restore_starts_once_the_restore_settles(cx: &mut gpui::Te
         });
         let restoring = Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
         // A Stop while held cancels the deferred Play.
-        view.stopped_playback_restore = restoring;
+        view.audio_pub.stopped_playback_restore = restoring;
         view.queue_audio_command(hex_engine::PlaybackCommand::Play);
-        assert!(view.deferred_play.is_some());
+        assert!(view.audio_pub.deferred_play.is_some());
         view.queue_audio_command(hex_engine::PlaybackCommand::Stop);
-        assert!(view.deferred_play.is_none());
+        assert!(view.audio_pub.deferred_play.is_none());
         view.queue_audio_command(hex_engine::PlaybackCommand::Play);
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.status.contains("playback starts when ready"));
         assert!(!view.tick_deferred_play(), "held while restoring");
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert!(!playing(view));
-        view.stopped_playback_restore = None;
+        view.audio_pub.stopped_playback_restore = None;
         assert!(view.tick_deferred_play());
-        assert!(view.deferred_play.is_none());
+        assert!(view.audio_pub.deferred_play.is_none());
         backend.render(&mut [[0.0; 2]; 64]).unwrap();
         assert!(playing(view), "held play starts after the restore");
     });
@@ -3111,7 +3119,7 @@ fn setup_degraded_device_recovery(
         v.service = service;
         v.state = Some(ready);
         v.project_generation = 0;
-        v.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        v.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
         v.audio = Some(old_audio);
         v.audio_status()
             .unwrap()
@@ -3136,15 +3144,15 @@ fn finish_fresh_recovery_output(
     let recovery = editor.update(cx, |v, _| {
         let restart = next_service_event(&v.service);
         v.receive(restart);
-        v.recovery.generation().expect("recovery active")
+        v.audio_pub.recovery.generation().expect("recovery active")
     });
     let (mut fresh_guard, fresh_audio) = FixtureOutputGuard::open();
     editor.update(cx, |v, _| {
         v.audio = Some(fresh_audio);
         v.device_panel.degraded_plugins = Default::default();
-        v.applied_project_revision = v.state.as_ref().map(|s| s.revision);
-        assert!(v.recovery.opened(recovery));
-        assert!(v.recovery.restored(recovery));
+        v.audio_pub.applied_project_revision = v.state.as_ref().map(|s| s.revision);
+        assert!(v.audio_pub.recovery.opened(recovery));
+        assert!(v.audio_pub.recovery.restored(recovery));
         let _ = v.finish_audio_recovery_tick();
     });
     fresh_guard.render_block();
@@ -3164,8 +3172,8 @@ fn degraded_remove_device_recovers_audio_and_applies_or_cancels(cx: &mut gpui::T
             setup_degraded_device_recovery(&mut app);
         editor.update(&mut app, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::RemoveDevice(device))));
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert_eq!(
                 v.status.as_str(),
                 "restarting audio · device will be removed when ready"
@@ -3197,10 +3205,10 @@ fn degraded_remove_device_recovers_audio_and_applies_or_cancels(cx: &mut gpui::T
         let (editor, _track, device, old_guard, _restarted) = setup_degraded_device_recovery(cx);
         editor.update(cx, |v, _| {
             assert!(v.enqueue(Request::Edit(Command::RemoveDevice(device))));
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             v.fail_audio_recovery("fixture recovery failure");
-            assert!(v.recovery.deferred_edit.is_none());
-            assert!(v.recovery.generation().is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.generation().is_none());
             assert!(v.state.as_ref().unwrap().project.device(device).is_some());
             v.audio = None;
         });
@@ -3229,8 +3237,8 @@ fn degraded_toggle_device_bypass_preserves_receipt_through_recovery_and_retires_
                     .bypassed()
             );
             v.toggle_device_bypass(device);
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert_eq!(
                 v.status.as_str(),
                 "restarting audio · device bypass will update when ready"
@@ -3267,7 +3275,7 @@ fn degraded_toggle_device_bypass_preserves_receipt_through_recovery_and_retires_
             v.toggle_device_bypass(device);
             assert!(v.device_panel.displayed_bypass(device, false));
             v.fail_audio_recovery("fixture recovery failure");
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert!(
                 !v.device_panel.displayed_bypass(device, false),
                 "failed recovery must retire the queued bypass receipt"
@@ -3303,13 +3311,13 @@ fn degraded_insert_plugin_effect_recovers_audio_and_settles_proposal_on_failure(
             setup_degraded_device_recovery(&mut app);
         editor.update(&mut app, |v, cx| {
             v.insert_plugin_effect(&selection, PluginEffectDestination::Track(track), None, cx);
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert!(v.device_panel.pending_plugin_effect.is_some());
         });
         let fresh_guard = finish_fresh_recovery_output(&mut app, &editor, &restarted, old_guard);
         editor.update(&mut app, |v, _| {
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert_eq!(v.status.as_str(), "adding plug-in");
             assert!(v.device_panel.pending_plugin_effect.is_some());
             v.audio = None;
@@ -3323,7 +3331,7 @@ fn degraded_insert_plugin_effect_recovers_audio_and_settles_proposal_on_failure(
             v.insert_plugin_effect(&selection, PluginEffectDestination::Track(track), None, cx);
             assert!(v.device_panel.pending_plugin_effect.is_some());
             v.fail_audio_recovery("fixture recovery failure");
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert!(
                 v.device_panel.pending_plugin_effect.is_none(),
                 "failed recovery must settle pending_plugin_effect"
@@ -3358,10 +3366,10 @@ fn degraded_toggle_solo_and_mute_recover_audio_while_playing_and_paused(
                 track,
                 exclusive: false,
             })));
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert!(
-                v.deferred_play.is_some(),
+                v.audio_pub.deferred_play.is_some(),
                 "playing state must preserve deferred play through recovery"
             );
             assert_eq!(
@@ -3410,10 +3418,10 @@ fn degraded_toggle_solo_and_mute_recover_audio_while_playing_and_paused(
                     .load(std::sync::atomic::Ordering::Acquire)
             );
             assert!(v.enqueue(Request::Edit(Command::ToggleMute(track))));
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert!(
-                v.deferred_play.is_none(),
+                v.audio_pub.deferred_play.is_none(),
                 "paused recovery must stay paused"
             );
             assert_eq!(
@@ -3444,7 +3452,7 @@ fn degraded_toggle_solo_and_mute_recover_audio_while_playing_and_paused(
                     .unwrap()
                     .muted()
             );
-            assert!(v.deferred_play.is_none());
+            assert!(v.audio_pub.deferred_play.is_none());
             assert!(v.error.is_none(), "{:?}", v.error);
             v.audio = None;
         });
@@ -3498,8 +3506,8 @@ fn degraded_general_graph_edits_and_pending_receipts_recover_or_retire_cleanly(
                 .is_none()
             );
             assert!(v.enqueue(Request::Undo));
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert_eq!(
                 v.status.as_str(),
                 "restarting audio · undo will apply when ready"
@@ -3532,8 +3540,8 @@ fn degraded_general_graph_edits_and_pending_receipts_recover_or_retire_cleanly(
                     without_clips: false,
                 },
             );
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert!(v.pending_track_clipboard.is_some());
             assert!(
                 !v.retire_abandoned_track_clipboard(),
@@ -3551,7 +3559,7 @@ fn degraded_general_graph_edits_and_pending_receipts_recover_or_retire_cleanly(
             );
             // Failing recovery retires the deferred track-clipboard receipt without leaking state.
             v.fail_audio_recovery("fixture recovery failure");
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert!(
                 v.pending_track_clipboard.is_none(),
                 "failed recovery must retire deferred pending_track_clipboard"
@@ -3706,10 +3714,10 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
                 .playing
                 .store(true, std::sync::atomic::Ordering::Release);
             v.toggle_solo(track, false);
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert!(
-                v.deferred_play.is_some(),
+                v.audio_pub.deferred_play.is_some(),
                 "playing recovery must preserve deferred play"
             );
             assert_eq!(
@@ -3816,10 +3824,10 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
                     .load(std::sync::atomic::Ordering::Acquire)
             );
             v.toggle_mute(track);
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             assert!(
-                v.deferred_play.is_none(),
+                v.audio_pub.deferred_play.is_none(),
                 "paused recovery must stay paused"
             );
             assert_eq!(
@@ -3843,7 +3851,7 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
             let node = decoded.nodes.iter().find(|n| n.id == node_id).unwrap();
             assert!((node.frequency_hz - 780.0).abs() < 1e-2);
             assert!((node.gain_db - 6.0).abs() < 1e-2);
-            assert!(v.deferred_play.is_none());
+            assert!(v.audio_pub.deferred_play.is_none());
             assert!(v.error.is_none(), "{:?}", v.error);
             v.audio = None;
         });
@@ -3874,8 +3882,8 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
                 .store(false, std::sync::atomic::Ordering::Release);
             v.device_panel.degraded_plugins = Default::default();
             v.toggle_solo(track, false);
-            assert!(v.recovery.generation().is_none());
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.generation().is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             let healthy_solo = next_service_event(&v.service);
             v.receive(healthy_solo);
             assert!(
@@ -3891,12 +3899,12 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
             v.device_panel.degraded_plugins =
                 crate::editor_backend::DegradedDevices::new(vec![other_faulted_id]);
             v.toggle_solo(track, false);
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             // Second genuine failure surfaces an actionable terminal and leaves retry available.
             v.fail_audio_recovery("fixture recovery failure");
-            assert!(v.recovery.generation().is_none());
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.generation().is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert_eq!(
                 v.status.as_str(),
                 "audio unavailable · restart audio to restore playback"
@@ -3940,8 +3948,8 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
             .unwrap();
             assert!(!v.device_panel.gesture.is_recovery_pending());
             v.toggle_solo(track, false);
-            assert!(v.recovery.generation().is_none());
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.generation().is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert_eq!(
                 v.error.as_deref(),
                 Some("finish the current edit before restarting audio")
@@ -3968,12 +3976,12 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
         );
         editor.update(&mut app, |v, _| {
             v.toggle_mute(track);
-            assert!(v.recovery.generation().is_some());
-            assert!(v.recovery.deferred_edit.is_some());
+            assert!(v.audio_pub.recovery.generation().is_some());
+            assert!(v.audio_pub.recovery.deferred_edit.is_some());
             v.retire_audio_for_future_generation();
             v.project_generation += 1;
-            assert!(v.recovery.generation().is_none());
-            assert!(v.recovery.deferred_edit.is_none());
+            assert!(v.audio_pub.recovery.generation().is_none());
+            assert!(v.audio_pub.recovery.deferred_edit.is_none());
             assert!(!v.finish_audio_recovery_tick());
             let state = v.state.as_ref().unwrap();
             assert!(!state.project.track(track).unwrap().muted());
@@ -4001,7 +4009,12 @@ fn stranded_released_pair_drag_recovers_solo_and_mute_while_playing_and_paused(
         );
         editor.update(&mut app, |v, _| {
             v.toggle_mute(track);
-            let deferred = v.recovery.deferred_edit.as_mut().expect("deferred mute");
+            let deferred = v
+                .audio_pub
+                .recovery
+                .deferred_edit
+                .as_mut()
+                .expect("deferred mute");
             let stranded = deferred
                 .stranded_gesture
                 .as_mut()
@@ -4213,8 +4226,8 @@ fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
         let redone = next_service_event(&v.service);
         v.receive(redone);
 
-        assert!(v.recovery.generation().is_none());
-        assert!(v.pending_restart_request.is_none());
+        assert!(v.audio_pub.recovery.generation().is_none());
+        assert!(v.audio_pub.pending_restart_request.is_none());
         assert_eq!(
             v.audio.as_ref().unwrap().control.output_identity(),
             identity
@@ -4229,8 +4242,8 @@ fn single_degraded_vst3_isolates_unrelated_edits_and_stop_from_teardown(
         // Pressing Stop with a single degraded VST3 uses RestoreStoppedPlayback
         // rather than tearing down the audio output.
         v.stop();
-        assert!(v.recovery.generation().is_none());
-        assert!(v.pending_restart_request.is_none());
+        assert!(v.audio_pub.recovery.generation().is_none());
+        assert!(v.audio_pub.pending_restart_request.is_none());
         assert!(
             restarted.try_recv().is_err(),
             "Stop with a single degraded VST3 must not trigger full audio restart"

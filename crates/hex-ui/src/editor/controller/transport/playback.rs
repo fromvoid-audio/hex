@@ -16,8 +16,8 @@ impl EditorView {
             self.error = Some("session playback requires an audio output".into());
             return;
         };
-        if self.recovery.generation().is_some()
-            || self.stopped_playback_restore.is_some()
+        if self.audio_pub.recovery.generation().is_some()
+            || self.audio_pub.stopped_playback_restore.is_some()
             || self.persistence.opening_project
             || self.persistence.close_prompt_open
             || self.edit_pending()
@@ -102,8 +102,8 @@ impl EditorView {
             self.error = Some("session playback requires an audio output".into());
             return;
         };
-        if self.recovery.generation().is_some()
-            || self.stopped_playback_restore.is_some()
+        if self.audio_pub.recovery.generation().is_some()
+            || self.audio_pub.stopped_playback_restore.is_some()
             || self.persistence.opening_project
             || self.persistence.close_prompt_open
             || self.edit_pending()
@@ -135,7 +135,7 @@ impl EditorView {
         let token = match crate::editor::play_intent::prepare_admission(
             &mut self.play_intent,
             Some(true),
-            self.pending_audio_commands.len(),
+            self.audio_pub.pending_audio_commands.len(),
             UI_REQUEST_CAPACITY,
         ) {
             Ok(Some(token)) => token,
@@ -156,7 +156,7 @@ impl EditorView {
         let mut pending =
             crate::editor::session_grid::launch_action(command, revision, self.project_generation);
         pending.intent_token = Some(token);
-        self.pending_audio_commands.push_back(pending);
+        self.audio_pub.pending_audio_commands.push_back(pending);
         self.session_grid.pending_session_ticket = None;
         self.play_intent.admit(token, true);
         self.status = "session launch requested · waiting for audio callback".into();
@@ -168,21 +168,25 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn metronome_pending(&self) -> bool {
-        self.pending_metronome_ticket.is_some_and(|ticket| {
-            if self
-                .audio
-                .as_ref()
-                .is_some_and(|audio| audio.control.has_action_outcomes())
-            {
-                return true;
-            }
-            self.audio_status().is_some_and(|status| {
-                audio_command_prefix(status, self.document_audio_mode) < ticket
+        self.audio_pub
+            .pending_metronome_ticket
+            .is_some_and(|ticket| {
+                if self
+                    .audio
+                    .as_ref()
+                    .is_some_and(|audio| audio.control.has_action_outcomes())
+                {
+                    return true;
+                }
+                self.audio_status().is_some_and(|status| {
+                    audio_command_prefix(status, self.audio_pub.document_audio_mode) < ticket
+                })
             })
-        }) || self
-            .pending_audio_commands
-            .iter()
-            .any(|pending| matches!(pending.action, PlaybackAction::SetMetronome(_)))
+            || self
+                .audio_pub
+                .pending_audio_commands
+                .iter()
+                .any(|pending| matches!(pending.action, PlaybackAction::SetMetronome(_)))
     }
 
     pub(in crate::editor) fn toggle_metronome(&mut self) {
@@ -232,8 +236,8 @@ impl EditorView {
             .is_some_and(|status| status.playing.load(Acquire));
         if (!allow_playing && self.desired_playing(playing))
             || (allow_playing && self.desired_playing(playing) != playing)
-            || !self.pending_audio_commands.is_empty()
-            || self.stopped_playback_restore.is_some()
+            || !self.audio_pub.pending_audio_commands.is_empty()
+            || self.audio_pub.stopped_playback_restore.is_some()
         {
             self.error = Some("applying edit · wait for audio".into());
             return;
@@ -254,11 +258,11 @@ impl EditorView {
                 return;
             }
         };
-        self.latency_rebuild = None;
+        self.audio_pub.latency_rebuild = None;
         self.device_panel.sampler_edit_resume = None;
-        self.deferred_play = None;
-        self.deferred_toggle_play = None;
-        self.deferred_metadata_seek = None;
+        self.audio_pub.deferred_play = None;
+        self.audio_pub.deferred_toggle_play = None;
+        self.audio_pub.deferred_metadata_seek = None;
         self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         let Some(ticket) = self.audio.as_mut().and_then(|audio| {
@@ -281,7 +285,7 @@ impl EditorView {
             Some(true),
             Some(ticket),
         );
-        self.pending_seek_ticket = Some(ticket);
+        self.audio_pub.pending_seek_ticket = Some(ticket);
         clear_stale_playback_unavailable_error(&mut self.error);
         #[cfg(test)]
         {
@@ -298,18 +302,18 @@ impl EditorView {
     ) {
         self.settings.playback.pending = None;
         self.wake_poll();
-        if !self.pending_audio_commands.is_empty()
-            || self.stopped_playback_restore.is_some()
+        if !self.audio_pub.pending_audio_commands.is_empty()
+            || self.audio_pub.stopped_playback_restore.is_some()
             || self.seek_pending()
         {
             self.error = Some("applying edit · wait for audio".into());
             return;
         }
-        self.latency_rebuild = None;
+        self.audio_pub.latency_rebuild = None;
         self.device_panel.sampler_edit_resume = None;
-        self.deferred_play = None;
-        self.deferred_toggle_play = None;
-        self.deferred_metadata_seek = None;
+        self.audio_pub.deferred_play = None;
+        self.audio_pub.deferred_toggle_play = None;
+        self.audio_pub.deferred_metadata_seek = None;
         self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
         let Some(ticket) = self.audio.as_mut().and_then(|audio| {
@@ -321,7 +325,7 @@ impl EditorView {
             self.error = Some("playback unavailable · retry".into());
             return;
         };
-        self.pending_seek_ticket = Some(ticket);
+        self.audio_pub.pending_seek_ticket = Some(ticket);
         clear_stale_playback_unavailable_error(&mut self.error);
         #[cfg(test)]
         {
@@ -339,9 +343,9 @@ impl EditorView {
         }
         self.wake_poll();
         if !matches!(action, PlaybackAction::SetMetronome(_)) {
-            self.latency_rebuild = None;
+            self.audio_pub.latency_rebuild = None;
             self.device_panel.sampler_edit_resume = None;
-            self.deferred_play = None;
+            self.audio_pub.deferred_play = None;
         }
         if self.section_install_pending()
             && (intent_desired_playing(action) == Some(true)
@@ -351,11 +355,11 @@ impl EditorView {
             return;
         }
         if intent_desired_playing(action) == Some(true)
-            && (self.stopped_playback_restore.is_some()
+            && (self.audio_pub.stopped_playback_restore.is_some()
                 || self.stopped_plugin_parameter_terminal_pending())
         {
-            self.deferred_play = Some((action, revision, self.project_generation));
-            let message = if self.stopped_playback_restore.is_some() {
+            self.audio_pub.deferred_play = Some((action, revision, self.project_generation));
+            let message = if self.audio_pub.stopped_playback_restore.is_some() {
                 "restoring stopped playback · playback starts when ready"
             } else {
                 "applying vst3 parameter · playback starts when ready"
@@ -371,11 +375,11 @@ impl EditorView {
             if matches!(
                 action,
                 PlaybackAction::Transport(PlaybackCommand::PlayFromWithNoteChase { .. })
-            ) && self.recovery.generation().is_some()
+            ) && self.audio_pub.recovery.generation().is_some()
             {
                 // Recovery already owns this start. Keep its explicit policy
                 // in the existing generation-bound deferred action slot.
-                self.deferred_play = Some((action, revision, self.project_generation));
+                self.audio_pub.deferred_play = Some((action, revision, self.project_generation));
             }
             return;
         }
@@ -391,7 +395,7 @@ impl EditorView {
         let intent_token = match crate::editor::play_intent::prepare_admission(
             &mut self.play_intent,
             desired_playing,
-            self.pending_audio_commands.len(),
+            self.audio_pub.pending_audio_commands.len(),
             UI_REQUEST_CAPACITY,
         ) {
             Ok(token) => token,
@@ -410,7 +414,7 @@ impl EditorView {
             revision,
             intent_token,
         };
-        if self.pending_audio_commands.is_empty() {
+        if self.audio_pub.pending_audio_commands.is_empty() {
             let result = self.audio.as_mut().map(|audio| {
                 if let Some(trace) = &self.transport_trace {
                     trace.attempt(audio, action)
@@ -421,7 +425,7 @@ impl EditorView {
             match result {
                 Some(Ok(ticket)) => {
                     if matches!(action, PlaybackAction::SetMetronome(_)) {
-                        self.pending_metronome_ticket = Some(ticket);
+                        self.audio_pub.pending_metronome_ticket = Some(ticket);
                     }
                     self.admit_play_intent(pending, desired_playing, Some(ticket));
                     if matches!(
@@ -431,7 +435,7 @@ impl EditorView {
                                 | PlaybackCommand::PlayFromWithNoteChase { .. }
                         )
                     ) {
-                        self.pending_seek_ticket = Some(ticket);
+                        self.audio_pub.pending_seek_ticket = Some(ticket);
                     }
                     if matches!(
                         action,
@@ -446,8 +450,9 @@ impl EditorView {
                     }
                 }
                 Some(Err(rejected)) => {
-                    if self.pending_audio_commands.len() < UI_REQUEST_CAPACITY {
-                        self.pending_audio_commands
+                    if self.audio_pub.pending_audio_commands.len() < UI_REQUEST_CAPACITY {
+                        self.audio_pub
+                            .pending_audio_commands
                             .push_back(PendingPlaybackAction {
                                 action: rejected,
                                 ..pending
@@ -466,7 +471,7 @@ impl EditorView {
                                     | PlaybackCommand::PlayFromWithNoteChase { .. }
                             )
                         ) {
-                            self.pending_seek_ticket = None;
+                            self.audio_pub.pending_seek_ticket = None;
                         }
                         if matches!(
                             rejected,
@@ -486,14 +491,14 @@ impl EditorView {
                 }
             }
         } else {
-            self.pending_audio_commands.push_back(pending);
+            self.audio_pub.pending_audio_commands.push_back(pending);
             if matches!(
                 action,
                 PlaybackAction::Transport(
                     PlaybackCommand::PlayFrom(_) | PlaybackCommand::PlayFromWithNoteChase { .. }
                 )
             ) {
-                self.pending_seek_ticket = None;
+                self.audio_pub.pending_seek_ticket = None;
             }
             if matches!(
                 action,
@@ -534,7 +539,7 @@ impl EditorView {
 
     pub(in crate::editor) fn stop(&mut self) {
         self.settings.playback.pending = None;
-        self.escape_stop_armed = false;
+        self.interaction.escape_stop_armed = false;
         if self.finish_audio_recording_before_stop() {
             return;
         }
@@ -542,7 +547,7 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn stop_at_beginning(&mut self) {
-        self.play_start_at_beginning = true;
+        self.interaction.play_start_at_beginning = true;
         self.stop();
     }
 
@@ -552,21 +557,21 @@ impl EditorView {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(Acquire));
-        if self.escape_stop_armed && !self.desired_playing(playing) {
+        if self.interaction.escape_stop_armed && !self.desired_playing(playing) {
             self.stop_at_beginning();
         } else {
             self.stop();
         }
-        self.escape_stop_armed = true;
+        self.interaction.escape_stop_armed = true;
     }
 
     pub(in super::super) fn stop_transport(&mut self, stop_output: bool) {
         self.settings.playback.pending = None;
-        self.paused_republish = None;
+        self.audio_pub.paused_republish = None;
         self.cancel_native_automation_touch();
         use crate::editor::audio_admission::LatencyRebuild;
         let native_restore = matches!(
-            self.latency_rebuild.take(),
+            self.audio_pub.latency_rebuild.take(),
             Some(
                 LatencyRebuild::Waiting {
                     runtime_audio: Some(_),
@@ -585,11 +590,11 @@ impl EditorView {
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.
         let can_restore = stop_output
-            && self.stopped_playback_restore.is_none()
+            && self.audio_pub.stopped_playback_restore.is_none()
             && !self.edit_pending()
             && self.device_panel.gesture.snapshot().is_none()
             && self.settings.tuning.client.snapshot().is_none()
-            && self.recovery.generation().is_none();
+            && self.audio_pub.recovery.generation().is_none();
         let restart_degraded = can_restore && self.has_output_fault_requiring_recovery();
         let restore = can_restore
             && !restart_degraded
@@ -599,8 +604,8 @@ impl EditorView {
                         // Priority Stop ends the transport epochs even when
                         // the same project revision is already audible.
                         || self.has_resident_vst3()
-                        || self.applied_project_revision != Some(state.revision)
-                        || self.audible_playback.as_ref().is_none_or(|audible| {
+                        || self.audio_pub.applied_project_revision != Some(state.revision)
+                        || self.audio_pub.audible_playback.as_ref().is_none_or(|audible| {
                             audible.audio_revision
                                 != audio
                                     .control
@@ -624,11 +629,11 @@ impl EditorView {
             {
                 return false;
             }
-            if self.recovery.generation().is_some() {
+            if self.audio_pub.recovery.generation().is_some() {
                 return self.has_resident_vst3() && status.applied_revision.load(Acquire) == 0;
             }
             matches!(
-                self.stopped_playback_restore,
+                self.audio_pub.stopped_playback_restore,
                 Some(
                     StoppedPlaybackRestore::Preparing
                         | StoppedPlaybackRestore::Ready
@@ -651,17 +656,17 @@ impl EditorView {
         self.cancel_scrub();
         self.cancel_section_launch_wait();
         self.invalidate_prepared_seek();
-        self.offline_cursor = 0;
-        self.recovery.stop();
-        self.pending_audio_commands.clear();
-        self.pending_metronome_ticket = None;
-        self.pending_seek_ticket = None;
+        self.audio_pub.offline_cursor = 0;
+        self.audio_pub.recovery.stop();
+        self.audio_pub.pending_audio_commands.clear();
+        self.audio_pub.pending_metronome_ticket = None;
+        self.audio_pub.pending_seek_ticket = None;
         self.session_grid.pending_session_ticket = None;
         self.play_intent.priority_stop();
-        self.deferred_play = None;
-        self.deferred_toggle_play = None;
-        self.deferred_metadata_seek = None;
-        self.status = if self.play_start_at_beginning {
+        self.audio_pub.deferred_play = None;
+        self.audio_pub.deferred_toggle_play = None;
+        self.audio_pub.deferred_metadata_seek = None;
+        self.status = if self.interaction.play_start_at_beginning {
             "stopped · play start at beginning"
         } else {
             "stopped"
@@ -674,8 +679,8 @@ impl EditorView {
         } else if restore && !self.update_preparing() {
             self.queue_stopped_playback_restore();
         } else if stop_output
-            && self.stopped_playback_restore.is_none()
-            && self.recovery.generation().is_none()
+            && self.audio_pub.stopped_playback_restore.is_none()
+            && self.audio_pub.recovery.generation().is_none()
             && self.has_resident_vst3()
             && let Some(output) = self
                 .audio
@@ -684,7 +689,7 @@ impl EditorView {
         {
             // Read-only inventory and in-flight edit terminals can overlap Stop.
             // Let them drain before renewing the exact stopped document/output.
-            self.stopped_playback_restore = Some(
+            self.audio_pub.stopped_playback_restore = Some(
                 crate::editor::audio_admission::StoppedPlaybackRestore::WaitingForEdits {
                     generation: self.project_generation,
                     output,

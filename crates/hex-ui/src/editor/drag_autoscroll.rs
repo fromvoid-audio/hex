@@ -142,7 +142,7 @@ impl EditorView {
         };
         let horizon = self.viewport_horizon(horizon);
         let viewport = self.visible_viewport(horizon);
-        if let Some(drag) = self.active_clip_drag.clone() {
+        if let Some(drag) = self.interaction.active_clip_drag.clone() {
             if !self.drag_start_is_current(&drag) {
                 return false;
             }
@@ -170,7 +170,9 @@ impl EditorView {
                 drag.lane_hovered.set(hovered);
                 return true;
             }
-            if self.arrangement_bounds_epoch == self.drag_layout_generation {
+            if self.timeline_caches.arrangement_bounds_epoch
+                == self.timeline_caches.drag_layout_generation
+            {
                 let (preview, hovered) = self.clip_drag_drop_position(&drag, x, y);
                 let preview_changed = drag.preview.replace(preview) != preview;
                 let hovered_changed = drag.lane_hovered.replace(hovered) != hovered;
@@ -205,7 +207,9 @@ impl EditorView {
                 self.refresh_browser_audio_drag(&drag);
                 return true;
             }
-            if self.arrangement_bounds_epoch == self.drag_layout_generation {
+            if self.timeline_caches.arrangement_bounds_epoch
+                == self.timeline_caches.drag_layout_generation
+            {
                 let before = drag.destination.get();
                 let sampler_line = self.device_panel.sampler_load.header_insertion_line_y;
                 self.refresh_browser_audio_drag(&drag);
@@ -214,7 +218,7 @@ impl EditorView {
             }
             return false;
         }
-        if let Some(drag) = self.active_trim_drag.clone() {
+        if let Some(drag) = self.interaction.active_trim_drag.clone() {
             if !self.trim_drag_current(&drag) {
                 self.cancel_trim_gesture(cx);
                 return true;
@@ -222,7 +226,12 @@ impl EditorView {
             let Some(x) = drag.last_pointer_x.get() else {
                 return false;
             };
-            let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+            let Some(lane) = self
+                .timeline_caches
+                .drag_lanes
+                .get(&drag.source_track)
+                .copied()
+            else {
                 return false;
             };
             let Some(next) = next_viewport(&drag.scroll, viewport, u64::MAX, lane, x, now) else {
@@ -244,7 +253,12 @@ impl EditorView {
             let Some(x) = drag.last_pointer_x.get() else {
                 return false;
             };
-            let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+            let Some(lane) = self
+                .timeline_caches
+                .drag_lanes
+                .get(&drag.source_track)
+                .copied()
+            else {
                 return false;
             };
             let Some(next) = next_viewport(&drag.scroll, viewport, u64::MAX, lane, x, now) else {
@@ -274,10 +288,10 @@ impl EditorView {
         y: f32,
         now: Instant,
     ) -> bool {
-        let Some(bounds) = self
-            .arrangement_bounds
-            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)
-        else {
+        let Some(bounds) = self.timeline_caches.arrangement_bounds.filter(|_| {
+            self.timeline_caches.arrangement_bounds_epoch
+                == self.timeline_caches.drag_layout_generation
+        }) else {
             return false;
         };
         let handle = self.track_scroll.clone();
@@ -297,7 +311,8 @@ impl EditorView {
         handle.set_offset(point(offset.x, px(next_y)));
         // Invalidate cached lane and insertion geometry immediately. GPUI will
         // repaint the list; until then, all drop-target epoch checks refuse it.
-        self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
+        self.timeline_caches.drag_layout_generation =
+            self.timeline_caches.drag_layout_generation.wrapping_add(1);
         true
     }
 }

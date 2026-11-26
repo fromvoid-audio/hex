@@ -40,6 +40,7 @@ pub(super) fn render_body(
     // Working-lane labels must match the audible routing, including during a
     // pending mode edit; an older l/r graph must not be presented as m/s.
     let audible_routing = view
+        .audio_pub
         .audible_playback
         .as_ref()
         .filter(|candidate| candidate.project_generation == view.project_generation)

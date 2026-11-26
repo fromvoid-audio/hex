@@ -108,7 +108,7 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
             }
             editor.read_with(&visual, |v, _| {
                 assert!(v.midi_editor.active_trim_drag.is_none());
-                assert!(v.pending_trim.is_some());
+                assert!(v.interaction.pending_trim.is_some());
                 assert_eq!(v.worker_requests_pending, 1);
                 assert!(matches!(v.test_probes.last_enqueued_edit, Some(Command::StretchMidiClipEdge {clip:id,edge:which,..}) if id == clip && which == edge));
                 assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
@@ -116,7 +116,7 @@ fn midi_shift_stretch_both_edges_projects_notes_through_release_ack_and_one_undo
             pump(&editor, &mut visual);
             let actual = editor.read_with(&visual, |v, _| {
                 assert!(v.error.is_none(), "{:?}", v.error);
-                assert!(v.pending_trim.is_none());
+                assert!(v.interaction.pending_trim.is_none());
                 let c = v.state.as_ref().unwrap().project.midi_clip(clip).unwrap();
                 assert_eq!(
                     (c.start(), c.length(), c.source_start()),
@@ -337,7 +337,9 @@ fn midi_shift_stretch_escape_focus_and_real_document_replacement_retire_without_
         visual.simulate_mouse_up(target, MouseButton::Left, shift);
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert!(v.midi_editor.active_trim_drag.is_none() && v.pending_trim.is_none());
+            assert!(
+                v.midi_editor.active_trim_drag.is_none() && v.interaction.pending_trim.is_none()
+            );
             assert!(!matches!(
                 v.test_probes.last_enqueued_edit,
                 Some(Command::StretchMidiClipEdge { .. })
@@ -397,7 +399,7 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
             edge: TrimEdge::Right,
             beat: BeatTime::from_raw(candidate.start().raw() + candidate.length().raw()),
         });
-        v.pending_trim = Some(super::PendingTrim {
+        v.interaction.pending_trim = Some(super::PendingTrim {
             replayed: false,
             generation: v.project_generation,
             revision: state.revision,
@@ -411,9 +413,19 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
             },
         });
         assert!(v.enqueue(Request::Edit(Command::RemoveMidiClip(clip))));
-        assert!(v.pending_trim.as_ref().unwrap().remaining.is_none());
+        assert!(
+            v.interaction
+                .pending_trim
+                .as_ref()
+                .unwrap()
+                .remaining
+                .is_none()
+        );
         assert!(v.enqueue(request));
-        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(2));
+        assert_eq!(
+            v.interaction.pending_trim.as_ref().unwrap().remaining,
+            Some(2)
+        );
         v.retire_trim_gesture(false, cx);
     });
     visual.run_until_parked();
@@ -422,7 +434,10 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
         let first = next(&v.service);
         assert!(first.request_complete);
         v.receive(first);
-        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(1));
+        assert_eq!(
+            v.interaction.pending_trim.as_ref().unwrap().remaining,
+            Some(1)
+        );
         let second = event(&v.service);
         assert!(second.request_complete);
         assert!(
@@ -434,7 +449,7 @@ fn midi_shift_stretch_pending_receipt_ignores_earlier_ack_and_retires_real_worke
             second.error
         );
         v.receive(second);
-        assert!(v.pending_trim.is_none());
+        assert!(v.interaction.pending_trim.is_none());
         assert!(v.state.as_ref().unwrap().project.midi_clip(clip).is_none());
         cx.notify();
     });

@@ -45,7 +45,8 @@ pub(super) struct ClipPaintGesture {
 
 impl EditorView {
     pub(super) fn clip_paint_held(&self) -> bool {
-        self.clip_paint_gesture
+        self.interaction
+            .clip_paint_gesture
             .as_ref()
             .is_some_and(|g| g.receipt.is_none())
     }
@@ -61,12 +62,13 @@ impl EditorView {
             && !self.persistence.close_prompt_open
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
-            && self.active_clip_drag.is_none()
+            && self.interaction.active_clip_drag.is_none()
             && self.browser.active_audio_drag.is_none()
             && self.device_panel.active_native_drag.is_none()
-            && self.active_trim_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
             && self
+                .interaction
                 .clip_paint_gesture
                 .as_ref()
                 .is_none_or(|g| g.receipt.is_none())
@@ -138,7 +140,7 @@ impl EditorView {
         let Some(minimum_end) = minimum_end.filter(|end| *end > start) else {
             return false;
         };
-        self.clip_paint_gesture = Some(ClipPaintGesture {
+        self.interaction.clip_paint_gesture = Some(ClipPaintGesture {
             paint: Paint {
                 track,
                 anchor: start,
@@ -153,10 +155,10 @@ impl EditorView {
             source: Arc::clone(state),
             receipt: None,
         });
-        self.pointer_down = None;
+        self.interaction.pointer_down = None;
         self.cancel_time_selection_gesture();
-        self.time_selection = None;
-        self.time_selection_project_scope = false;
+        self.interaction.time_selection = None;
+        self.interaction.time_selection_project_scope = false;
         self.selected_track = Some(track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
@@ -166,6 +168,7 @@ impl EditorView {
     /// Native capture owns held input only; its cancellation cannot retire a receipt.
     pub(super) fn capture_clip_paint(&self, window: &mut Window, cx: &Context<Self>) -> bool {
         let Some(held) = self
+            .interaction
             .clip_paint_gesture
             .as_ref()
             .filter(|g| g.receipt.is_none())
@@ -192,10 +195,15 @@ impl EditorView {
                     return;
                 };
                 let _ = owner.update(cx, |view, cx| {
-                    if !view.clip_paint_gesture.as_ref().is_some_and(|g| {
-                        let p = g.paint;
-                        g.receipt.is_none() && p.stamp() == stamp
-                    }) {
+                    if !view
+                        .interaction
+                        .clip_paint_gesture
+                        .as_ref()
+                        .is_some_and(|g| {
+                            let p = g.paint;
+                            g.receipt.is_none() && p.stamp() == stamp
+                        })
+                    {
                         return;
                     }
                     if !view.focus.is_focused(window) {
@@ -219,6 +227,7 @@ impl EditorView {
             move |_, cx| {
                 let _ = cancelled.update(cx, |view, cx| {
                     if view
+                        .interaction
                         .clip_paint_gesture
                         .as_ref()
                         .is_some_and(|g| g.receipt.is_none() && g.paint.stamp() == stamp)
@@ -234,6 +243,7 @@ impl EditorView {
 
     pub(super) fn update_clip_paint(&mut self, x: f32, y: f32, free: bool) -> bool {
         let Some(mut paint) = self
+            .interaction
             .clip_paint_gesture
             .as_ref()
             .filter(|g| g.receipt.is_none())
@@ -264,7 +274,7 @@ impl EditorView {
             } else {
                 end.max(paint.anchor)
             };
-            if let Some(g) = self.clip_paint_gesture.as_mut() {
+            if let Some(g) = self.interaction.clip_paint_gesture.as_mut() {
                 g.paint = paint;
             }
         }
@@ -276,10 +286,10 @@ impl EditorView {
             return false;
         }
         self.update_clip_paint(x, y, free);
-        let Some(mut gesture) = self.clip_paint_gesture.take() else {
+        let Some(mut gesture) = self.interaction.clip_paint_gesture.take() else {
             return true;
         };
-        self.suppress_cursor_click = true;
+        self.interaction.suppress_cursor_click = true;
         if !self.clip_paint_is_current(gesture.paint)
             || self
                 .visible_lane_at(x, y)
@@ -289,7 +299,7 @@ impl EditorView {
         }
         let intent = gesture.paint.intent();
         gesture.receipt = Some(Receipt::new(gesture.paint.generation));
-        self.clip_paint_gesture = Some(gesture);
+        self.interaction.clip_paint_gesture = Some(gesture);
         self.enqueue(Request::PaintMidiClip(intent));
         true
     }
@@ -298,17 +308,18 @@ impl EditorView {
         if !self.clip_paint_held() {
             return false;
         }
-        self.clip_paint_gesture.take().is_some()
+        self.interaction.clip_paint_gesture.take().is_some()
     }
 
     pub(super) fn pending_clip_paint_matches(&self, request: &Request) -> bool {
-        self.clip_paint_gesture.as_ref().is_some_and(|g| {
+        self.interaction.clip_paint_gesture.as_ref().is_some_and(|g| {
             g.receipt.as_ref().is_some_and(Receipt::is_queued)
                 && matches!(request, Request::PaintMidiClip(intent) if *intent == g.paint.intent())
         })
     }
     pub(super) fn clip_paint_submitted(&mut self) {
         if let Some(receipt) = self
+            .interaction
             .clip_paint_gesture
             .as_mut()
             .and_then(|g| g.receipt.as_mut())
@@ -318,19 +329,21 @@ impl EditorView {
     }
     pub(super) fn retire_pending_clip_paint(&mut self) -> bool {
         if self
+            .interaction
             .clip_paint_gesture
             .as_ref()
             .is_none_or(|g| g.receipt.is_none())
         {
             return false;
         }
-        self.clip_paint_gesture.take().is_some()
+        self.interaction.clip_paint_gesture.take().is_some()
     }
     pub(super) fn clip_paint_request_complete(&mut self, event: &Event) {
         if event.project_replaced {
             self.cancel_clip_paint();
         }
         let disposition = self
+            .interaction
             .clip_paint_gesture
             .as_mut()
             .and_then(|g| g.receipt.as_mut())
@@ -347,7 +360,7 @@ impl EditorView {
     }
 
     pub(super) fn clip_paint_overlay(&self, track: TrackId, viewport: Viewport) -> Option<Div> {
-        let gesture = self.clip_paint_gesture.as_ref()?;
+        let gesture = self.interaction.clip_paint_gesture.as_ref()?;
         let paint = gesture.paint;
         if paint.track != track || (gesture.receipt.is_none() && !self.clip_paint_is_current(paint))
         {

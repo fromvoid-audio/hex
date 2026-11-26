@@ -733,8 +733,8 @@ fn eq_spectrum_follows_the_installed_graph_during_pending_and_refused_publicatio
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.audio_admission.canonical_revision(project);
-        view.audio_admission.applied(project, revision);
+        view.audio_pub.audio_admission.canonical_revision(project);
+        view.audio_pub.audio_admission.applied(project, revision);
         cx.notify();
     });
     visual.run_until_parked();
@@ -759,10 +759,13 @@ fn eq_spectrum_follows_the_installed_graph_during_pending_and_refused_publicatio
         let pair = analyzed_tone(original, 440.0, amplitude, captured_at);
         editor.update(cx, |view, cx| {
             if refused {
-                view.audio_admission
+                view.audio_pub
+                    .audio_admission
                     .rejected(project, revision + 1, "fixture refusal");
             } else {
-                view.audio_admission.published(project, revision + 1);
+                view.audio_pub
+                    .audio_admission
+                    .published(project, revision + 1);
             }
             view.device_panel.eq_spectrum.test_now = Some(captured_at);
             view.device_panel
@@ -2089,8 +2092,8 @@ fn recovery_retires_endpoint_status(cx: &mut TestAppContext, setup_failure: bool
                 generation: view.project_generation,
                 revision: view.state.as_ref().unwrap().revision,
             };
-            view.audio_admission.canonical_revision(project);
-            view.audio_admission.published(project, 1);
+            view.audio_pub.audio_admission.canonical_revision(project);
+            view.audio_pub.audio_admission.published(project, 1);
             view.audio = Some(crate::editor_backend::EditorAudio {
                 control: client,
                 sample_rate: 48_000,

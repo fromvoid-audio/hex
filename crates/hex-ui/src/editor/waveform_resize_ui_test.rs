@@ -329,14 +329,17 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     visual.run_until_parked();
                     assert!(visual.debug_bounds("trim-live-preview").is_some());
                     editor.update(&mut visual, |view, cx| {
-                        view.waveform_geometry_cache.borrow_mut().clear();
+                        view.timeline_caches
+                            .waveform_geometry_cache
+                            .borrow_mut()
+                            .clear();
                         cx.notify();
                     });
                     visual.run_until_parked();
                     editor.read_with(&visual, |view, _| {
-                        let drag = view.active_trim_drag.as_ref().expect("actual active trim");
+                        let drag = view.interaction.active_trim_drag.as_ref().expect("actual active trim");
                         assert_eq!(drag.source_track, track);
-                        let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
+                        let rendered = view.timeline_caches.waveform_geometry_cache.borrow().rendered_waveforms();
                         assert_eq!(rendered.len(), 1, "only the actual preview waveform is painted");
                         let preview = drag.preview.borrow();
                         let preview = &preview.as_ref().unwrap().clip;
@@ -373,15 +376,22 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     // Rebuild the ordinary retained clip scene as well: its
                     // previous painted paths legitimately bypass geometry-cache
                     // preparation, which this probe observes.
-                    view.clip_content_cache = Default::default();
-                    view.waveform_geometry_cache.borrow_mut().clear();
+                    view.timeline_caches.clip_content_cache = Default::default();
+                    view.timeline_caches
+                        .waveform_geometry_cache
+                        .borrow_mut()
+                        .clear();
                     cx.notify();
                 });
                 visual.run_until_parked();
                 editor.read_with(&visual, |view, _| {
                     assert!(view.test_probes.last_enqueued_edit.is_none());
-                    assert!(view.active_trim_drag.is_none());
-                    let rendered = view.waveform_geometry_cache.borrow().rendered_waveforms();
+                    assert!(view.interaction.active_trim_drag.is_none());
+                    let rendered = view
+                        .timeline_caches
+                        .waveform_geometry_cache
+                        .borrow()
+                        .rendered_waveforms();
                     assert_eq!(rendered.len(), 1);
                     assert!(
                         rendered[0].spans.iter().all(|span| *span > 1.0),
@@ -518,7 +528,8 @@ fn check_silent_left_prefix_through_ack(
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         let preview = editor.read_with(&visual, |v, _| {
-            v.active_trim_drag
+            v.interaction
+                .active_trim_drag
                 .as_ref()
                 .unwrap()
                 .preview
@@ -537,15 +548,22 @@ fn check_silent_left_prefix_through_ack(
             }
             for _ in 0..3 {
                 editor.update(&mut visual, |v, cx| {
-                    v.clip_content_cache = Default::default();
-                    v.waveform_geometry_cache.borrow_mut().clear();
+                    v.timeline_caches.clip_content_cache = Default::default();
+                    v.timeline_caches
+                        .waveform_geometry_cache
+                        .borrow_mut()
+                        .clear();
                     cx.notify();
                 });
                 visual.run_until_parked();
                 assert_eq!(visual.debug_bounds("trim-live-preview"), Some(held));
                 editor.read_with(&visual, |v, _| {
                     assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-                    let waveforms = v.waveform_geometry_cache.borrow().rendered_waveforms();
+                    let waveforms = v
+                        .timeline_caches
+                        .waveform_geometry_cache
+                        .borrow()
+                        .rendered_waveforms();
                     assert_eq!(
                         waveforms.len(),
                         1,
@@ -564,7 +582,7 @@ fn check_silent_left_prefix_through_ack(
         }
         pump_move(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert!(v.pending_trim.is_none());
+            assert!(v.interaction.pending_trim.is_none());
             assert_eq!(v.state.as_ref().unwrap().project.clip(clip), Some(&preview));
         });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));

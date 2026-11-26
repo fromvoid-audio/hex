@@ -52,14 +52,14 @@ impl EditorView {
     }
 
     pub(super) fn section_layout(&self) -> Option<[f32; 4]> {
-        (self.main_track_lane_epoch == self.drag_layout_generation)
+        (self.timeline_caches.main_track_lane_epoch == self.timeline_caches.drag_layout_generation)
             .then(|| self.section_geometry())
             .flatten()
     }
     // Render advances the layout epoch before Main's paint measurement. Frozen
     // display uses the cached geometry; input separately requires a fresh epoch.
     pub(super) fn section_geometry(&self) -> Option<[f32; 4]> {
-        let lane = self.main_track_lane_bounds?;
+        let lane = self.timeline_caches.main_track_lane_bounds?;
         Some([lane.left, lane.top, lane.width, lane.height])
     }
     pub(in crate::editor) fn section_pointer(

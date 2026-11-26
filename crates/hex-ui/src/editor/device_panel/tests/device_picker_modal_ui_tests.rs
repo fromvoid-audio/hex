@@ -73,16 +73,20 @@ fn modal_captures_workspace_gestures_shortcuts_scroll_and_context_lifecycle(
         let padding = point(card.right() - px(2.0), main.center().y);
         assert!(card.contains(&padding) && main.contains(&padding));
         for held in [false, true] {
-            editor.update(&mut visual, |view, _| view.time_selection_key_held = held);
+            editor.update(&mut visual, |view, _| {
+                view.interaction.time_selection_key_held = held
+            });
             visual.simulate_mouse_down(padding, MouseButton::Left, Modifiers::default());
             editor.read_with(&visual, |view, _| {
                 assert!(!view.sections.held());
-                assert!(view.time_selection_gesture.is_none());
+                assert!(view.interaction.time_selection_gesture.is_none());
             });
             visual.simulate_mouse_up(padding, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
         }
-        editor.update(&mut visual, |view, _| view.time_selection_key_held = false);
+        editor.update(&mut visual, |view, _| {
+            view.interaction.time_selection_key_held = false
+        });
         let ruler = visual.debug_bounds("timeline-ruler").unwrap();
         visual.simulate_event(gpui::ScrollWheelEvent {
             position: ruler.center(),
@@ -125,7 +129,9 @@ fn modal_captures_workspace_gestures_shortcuts_scroll_and_context_lifecycle(
         // A real query/input drag overlaps the arranger at these compact sizes.
         visual.simulate_input("not a device");
         visual.run_until_parked();
-        editor.update(&mut visual, |view, _| view.time_selection_key_held = true);
+        editor.update(&mut visual, |view, _| {
+            view.interaction.time_selection_key_held = true
+        });
         let input = visual.debug_bounds("device-picker-search").unwrap();
         let down = point(input.center().x, input.top() + px(1.0));
         visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
@@ -141,10 +147,10 @@ fn modal_captures_workspace_gestures_shortcuts_scroll_and_context_lifecycle(
         );
         visual.run_until_parked();
         editor.update(&mut visual, |view, _| {
-            assert!(view.time_selection_gesture.is_none());
-            assert!(view.time_range_move_gesture.is_none());
-            assert!(view.time_selection.is_none());
-            view.time_selection_key_held = false;
+            assert!(view.interaction.time_selection_gesture.is_none());
+            assert!(view.interaction.time_range_move_gesture.is_none());
+            assert!(view.interaction.time_selection.is_none());
+            view.interaction.time_selection_key_held = false;
         });
         click(&mut visual, "device-picker-search-clear");
         let list = visual.debug_bounds("device-picker-list").unwrap();
@@ -195,7 +201,7 @@ fn modal_captures_workspace_gestures_shortcuts_scroll_and_context_lifecycle(
             assert_eq!(view.state.as_ref().unwrap().revision, original.1);
             assert_eq!(view.viewport, original.2);
             assert_eq!(view.browser.open, original.3);
-            assert!(view.loop_rail_gesture.is_none());
+            assert!(view.interaction.loop_rail_gesture.is_none());
         });
     }
     click(&mut visual, "device-add-toggle");
