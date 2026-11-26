@@ -96,7 +96,7 @@ fn oracle(
 }
 
 #[test]
-fn all_saturator_controls_drive_real_pcm_with_partition_seek_clear_and_history() {
+fn saturator_drive_output_mix_and_curve_drive_pcm_with_partition_seek_clear_and_history() {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 32).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -126,7 +126,8 @@ fn all_saturator_controls_drive_real_pcm_with_partition_seek_clear_and_history()
         (p::DRIVE, 0.5, 0.75),
         (p::OUTPUT, 1.0, 1.0),
         (p::DRY_WET, 0.0, 1.0),
-        (p::CURVE, 0.0, 1.0),
+        // Analog clip and digital clip occupy indices 0 and 1 of eight choices.
+        (p::CURVE, 0.0, 1.0 / 7.0),
     ];
     for &(parameter, a, b) in authored {
         editor
