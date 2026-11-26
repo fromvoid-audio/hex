@@ -222,6 +222,34 @@ impl EditorView {
             vec![primary]
         }
     }
+    /// Returns whether `track` contains at least one currently selected clip.
+    /// Single-clip anchored selections resolve in O(1) so unselected tracks
+    /// keep their sub-pixel Arrangement LOD fast path active.
+    pub(super) fn track_has_selected_clip(&self, track: &hex_project::Track) -> bool {
+        let Some(primary) = self.selected_clip else {
+            return false;
+        };
+        let track_id = track.id();
+        let single_primary = !self.clip_selection.members.contains(&primary)
+            || self.clip_selection.members.len() == 1;
+        if single_primary {
+            if let Some((anchor_track, anchor_clip)) = self.clip_selection.anchor
+                && anchor_clip == primary
+            {
+                return anchor_track == track_id;
+            }
+            return track.clips().iter().any(|c| c.id() == primary)
+                || track.midi_clips().iter().any(|c| c.id() == primary);
+        }
+        track
+            .clips()
+            .iter()
+            .any(|c| self.clip_selection.members.contains(&c.id()))
+            || track
+                .midi_clips()
+                .iter()
+                .any(|c| self.clip_selection.members.contains(&c.id()))
+    }
     pub(super) fn select_clip_header(
         &mut self,
         track: TrackId,
@@ -519,5 +547,47 @@ mod tests {
             selected(&editor, &mut visual),
             BTreeSet::from([clips[0], clips[1], clips[3], clips[4]])
         );
+    }
+    #[gpui::test]
+    fn track_has_selected_clip_scopes_selection_per_track(cx: &mut TestAppContext) {
+        let (project, clips, other) = fixture();
+        let clips_track = project.tracks()[0].id();
+        let other_track = project.tracks()[1].id();
+        let (handle, editor) = window(cx, project);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+
+        // Selecting a single clip on clips_track only disables LOD on clips_track.
+        click(&mut visual, clips[0], Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            assert!(view.track_has_selected_clip(p.track(clips_track).unwrap()));
+            assert!(!view.track_has_selected_clip(p.track(other_track).unwrap()));
+        });
+
+        // Additive selection on other_track marks both tracks; toggling off restores per-track scope.
+        let command = Modifiers {
+            platform: true,
+            ..Modifiers::default()
+        };
+        click(&mut visual, other, command);
+        editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            assert!(view.track_has_selected_clip(p.track(clips_track).unwrap()));
+            assert!(view.track_has_selected_clip(p.track(other_track).unwrap()));
+        });
+        click(&mut visual, clips[0], command);
+        editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            assert!(!view.track_has_selected_clip(p.track(clips_track).unwrap()));
+            assert!(view.track_has_selected_clip(p.track(other_track).unwrap()));
+        });
+        // Clearing all clips keeps LOD enabled on both tracks.
+        click(&mut visual, other, command);
+        editor.read_with(&visual, |view, _| {
+            let p = &view.state.as_ref().unwrap().project;
+            assert!(!view.track_has_selected_clip(p.track(clips_track).unwrap()));
+            assert!(!view.track_has_selected_clip(p.track(other_track).unwrap()));
+        });
     }
 }

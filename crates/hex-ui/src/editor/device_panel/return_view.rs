@@ -150,11 +150,11 @@ pub(super) fn render(
             ),
         );
     }
-    let catalog = view
+    let catalog_unavailable = view
         .device_panel
         .effect_catalog
-        .clone()
-        .unwrap_or_else(|| Ok(Vec::new()));
+        .as_ref()
+        .is_some_and(Result::is_err);
     let mut root = div()
         .id("device-panel")
         .debug_selector(|| "device-panel".into())
@@ -222,7 +222,7 @@ pub(super) fn render(
     let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
-    if catalog.is_err() {
+    if catalog_unavailable {
         root = root.child(menu_message("device catalog unavailable"));
     }
     root

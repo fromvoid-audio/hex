@@ -471,13 +471,14 @@ impl EditorView {
                 );
             }
             BrowserSection::Instruments => {
-                match self
+                let catalog_error = self
                     .browser
                     .device_catalog
-                    .clone()
-                    .unwrap_or_else(|| Ok(Vec::new()))
-                {
-                    Ok(_) => {
+                    .as_ref()
+                    .and_then(|catalog| catalog.as_ref().err())
+                    .cloned();
+                match catalog_error {
+                    None => {
                         let entries = self.browser_visible_devices(cx);
                         if entries.is_empty() {
                             panel = panel.child(
@@ -515,7 +516,7 @@ impl EditorView {
                             panel = panel.child(self.browser_results(list, count, cx));
                         }
                     }
-                    Err(error) => {
+                    Some(error) => {
                         panel = panel.child(
                             div()
                                 .flex_1()
