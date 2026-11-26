@@ -1233,7 +1233,18 @@ impl EditorView {
                 )
                 .debug_selector(move || format!("console-launch-scene-{}", scene_id.value())),
             )
-            .child(
+            .child({
+                let scene_drag_entity = cx.entity();
+                let drag_color = hex_project::ElementColor::TRACK_CHOICES
+                    [index % hex_project::ElementColor::TRACK_CHOICES.len()];
+                let scene_drag_payload = crate::editor::arrangement_sections::ConsoleSceneDrag {
+                    project_generation: generation,
+                    revision,
+                    scene: scene_id,
+                    name: scene.name().to_owned(),
+                    duration: state.project.default_scene_placement_length(scene_id),
+                    color: drag_color,
+                };
                 div()
                     .id(("session-scene-select", scene_id.value()))
                     .debug_selector(move || format!("console-scene-menu-{}", scene_id.value()))
@@ -1243,6 +1254,20 @@ impl EditorView {
                     .child(theme::text(hex_session::service::text::verbatim(
                         scene.name(),
                     )))
+                    .on_drag(scene_drag_payload, move |payload, _, _, cx| {
+                        let name = payload.name.clone();
+                        let color = payload.color;
+                        scene_drag_entity.update(cx, |view, cx| {
+                            view.begin_console_scene_drag(payload.clone());
+                            cx.notify();
+                        });
+                        cx.new(
+                            |_| crate::editor::arrangement_sections::ConsoleSceneDragGhost {
+                                name,
+                                color,
+                            },
+                        )
+                    })
                     .on_click(cx.listener(move |view, _, window, cx| {
                         if view.session_callback_current(revision, generation)
                             && view.focus_empty_details(window, cx)
@@ -1252,8 +1277,8 @@ impl EditorView {
                             view.select_session_scene(scene_id);
                         }
                         cx.notify();
-                    })),
-            );
+                    }))
+            });
         #[cfg(feature = "ui-test-support")]
         let scene_column = scene_column.debug_selector(|| "session-scene-column".into());
         let tail = self.console_column_surface(

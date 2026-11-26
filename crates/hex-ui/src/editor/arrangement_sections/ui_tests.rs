@@ -1399,3 +1399,5 @@ mod edit_and_menu_tests;
 mod linked_scene_ui_tests;
 #[path = "ui_tests/playback_and_loop_tests.rs"]
 mod playback_and_loop_tests;
+#[path = "ui_tests/scene_drop_ui_tests.rs"]
+mod scene_drop_ui_tests;

@@ -1172,6 +1172,8 @@ impl EditorView {
         true
     }
     pub(in crate::editor) fn cancel_section_pointer(&mut self) -> bool {
-        self.sections.gesture.take().is_some()
+        let gesture = self.sections.gesture.take().is_some();
+        let scene_drag = self.sections.scene_drag.take().is_some();
+        gesture || scene_drag
     }
 }
