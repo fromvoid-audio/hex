@@ -3948,7 +3948,7 @@ fn source_manager_edits_unassigned_operator_with_its_specialized_panel(cx: &mut 
         .unwrap();
     visual.simulate_click(title.center(), Modifiers::default());
     visual.simulate_keystrokes(".");
-    super::device_comparison_tests::pump_until(&editor, cx, |view| {
+    settle(&editor, &mut visual, |view| {
         view.state
             .as_ref()
             .unwrap()
