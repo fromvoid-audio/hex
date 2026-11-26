@@ -96,18 +96,27 @@ pub(super) fn measured_render(
 }
 
 // These readiness fixtures render identical left and right channels. Keep an
-// exact PCM oracle for both the committed source and the short output-only
+// PCM oracle for both the committed source and the short output-only
 // bridge. Each checked window starts with a settled signal or a settled hold.
 fn assert_stream_window(
     output: &[Frame],
     committed: usize,
     previous: Frame,
     recovering: bool,
+    tolerance: f32,
     source: impl Fn(usize) -> f32,
 ) {
     let interpolate = |from: f32, to: f32, index: usize| {
         let gain = (index + 1).min(64) as f32 / 64.0;
         from * (1.0 - gain) + to * gain
+    };
+    let assert_pcm = |index: usize, actual: Frame, expected: Frame| {
+        for (actual, expected) in actual.into_iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() <= tolerance,
+                "frame {index}: {actual} != {expected}"
+            );
+        }
     };
     let mut last = previous;
     for (index, frame) in output[..committed].iter().enumerate() {
@@ -117,13 +126,13 @@ fn assert_stream_window(
         } else {
             [value; 2]
         };
-        assert_eq!(*frame, last, "committed frame {index}");
+        assert_pcm(index, *frame, last);
     }
     for (index, frame) in output[committed..].iter().enumerate() {
-        assert_eq!(
+        assert_pcm(
+            committed + index,
             *frame,
             last.map(|from| interpolate(from, 0.0, index)),
-            "held frame {index}"
         );
     }
 }
@@ -2586,7 +2595,7 @@ fn pending_replacement_case(
             std::thread::yield_now();
         }
         assert_eq!(control.status.position.load(Acquire), 4352);
-        assert_stream_window(&output, 256, previous, recovering, |_| 0.25);
+        assert_stream_window(&output, 256, previous, recovering, 0.0, |_| 0.25);
         control
             .command(PlaybackCommand::Seek(boundary - 256))
             .unwrap();
@@ -2792,7 +2801,7 @@ fn pending_replacement_case(
                 control.status.position.load(Acquire),
                 before + committed as u64
             );
-            assert_stream_window(&large, committed, previous, recovering, |_| 0.25);
+            assert_stream_window(&large, committed, previous, recovering, 0.0, |_| 0.25);
             previous = *large.last().unwrap();
             total_committed += committed;
             std::thread::yield_now();
@@ -2823,7 +2832,10 @@ fn pending_replacement_case(
         finish(&mut retirement);
         return;
     }
-    let render_checked = |data: &mut _, output: &mut [Frame; 256]| {
+    control.set_audio_diagnostics(AudioDiagnosticsFlags::READINESS);
+    let mut mute_started = None;
+    let mut unmute_started = None;
+    let mut render_checked = |control: &mut Control, data: &mut _, output: &mut [Frame; 256]| {
         let before = control.status.position.load(Acquire);
         let performance_before = control.status.performance_frame.load(Acquire);
         let previous = output[255];
@@ -2856,11 +2868,40 @@ fn pending_replacement_case(
             assert_eq!(revision, b_revision);
             0.5
         };
+        // Page readiness determines when the old track can begin its mute.
+        // The new track ramps up only after its own revision is installed.
+        while let Some(event) = control.take_audio_diagnostic() {
+            if event.revision == b_revision
+                && event.kind
+                    == (AudioDiagnosticKind::PublicationWaiting {
+                        reason: PublicationWaitReason::NativeRemovalFade,
+                    })
+            {
+                mute_started.get_or_insert(performance_before);
+            }
+        }
+        if revision == b_revision && previous_revision == a_revision && mute_started.is_some() {
+            unmute_started = Some(performance_before);
+        }
+        let ramp_start = if revision == a_revision {
+            mute_started
+        } else {
+            unmute_started
+        };
+        // Five milliseconds at 48 kHz. The DSP accumulates f32 gain each frame.
+        const RAMP: u64 = 240;
+        let ramp_offset = ramp_start.map(|start| performance_before - start);
+        let tolerance = if ramp_offset.is_some_and(|offset| offset < RAMP) {
+            1e-6
+        } else {
+            0.0
+        };
         assert_stream_window(
             output,
             committed,
             previous,
             recovering && revision == previous_revision,
+            tolerance,
             |index| {
                 let position = (before + index as u64) % frames;
                 let remaining = frames - position;
@@ -2869,7 +2910,15 @@ fn pending_replacement_case(
                 } else {
                     1.0
                 };
-                expected * seam_gain
+                let gain = ramp_offset.map_or(1.0, |offset| {
+                    let progress = (offset + index as u64 + 1).min(RAMP) as f32 / RAMP as f32;
+                    if revision == a_revision {
+                        1.0 - progress
+                    } else {
+                        progress
+                    }
+                });
+                expected * seam_gain * gain
             },
         );
     };
@@ -2931,7 +2980,7 @@ fn pending_replacement_case(
         finish(&mut retirement);
         return;
     }
-    render_checked(&mut data, &mut output);
+    render_checked(&mut control, &mut data, &mut output);
     #[cfg(feature = "stream-test-support")]
     if looping && !retained_restart {
         assert!(
@@ -2946,7 +2995,7 @@ fn pending_replacement_case(
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut attempts = 0usize;
         while control.status.applied_revision.load(Acquire) != b_revision {
-            render_checked(&mut data, &mut output);
+            render_checked(&mut control, &mut data, &mut output);
             attempts += 1;
             assert!(control.status.rejected_revision().is_none());
             assert!(
@@ -3502,7 +3551,7 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
         std::thread::yield_now();
     }
     assert_eq!(control.status.position.load(Acquire), 4224);
-    assert_stream_window(&output, 256, previous, recovering, |_| 0.5);
+    assert_stream_window(&output, 256, previous, recovering, 0.0, |_| 0.5);
     control.command(PlaybackCommand::Seek(3840)).unwrap();
     while control.status.position.load(Acquire) != 3968 {
         measured_render(&mut data, &mut output[..128]);
@@ -3855,7 +3904,7 @@ fn partial_domain_readiness_case(replace_while_stalled: bool) {
             control.status.position.load(Acquire),
             hex_engine::STREAM_PAGE_FRAMES as u64
         );
-        assert_stream_window(&output, 0, previous, false, |_| 0.0);
+        assert_stream_window(&output, 0, previous, false, 0.0, |_| 0.0);
         result = observed(&mut data);
         if result.0 {
             break;
