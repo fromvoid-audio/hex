@@ -1,12 +1,28 @@
 //! Safe OS publication operations, isolated from rendering and UI consent.
 use super::*;
 
+/// Maximum file size hashed completely by [`OverwriteConsent`]. Files larger
+/// than this ceiling hash bounded head, middle, and tail windows plus file
+/// length so interactive save confirmation stays bounded in memory and time.
+const FULL_DIGEST_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+const SAMPLED_WINDOW_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ContentDigest {
+    sha256: [u8; 32],
+    full_file: bool,
+}
+
 /// Concrete regular destination accepted for replacement. Inspection performs
 /// no write; callers obtain explicit user consent before passing this policy.
+/// In addition to file metadata (`len`, `mtime`, Unix `dev`/`ino`), consent
+/// captures a content digest so in-place same-length, restored-mtime mutations
+/// are detected instead of silently accepted (`#8086`).
 #[derive(Clone, Debug)]
 pub struct OverwriteConsent {
     path: PathBuf,
     metadata: fs::Metadata,
+    digest: std::sync::Arc<ContentDigest>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -42,9 +58,15 @@ impl OverwriteConsent {
                 "overwrite requires an existing regular file",
             ));
         }
+        let digest =
+            digest_regular_file(path, metadata.len()).map_err(|source| ExportError::Io {
+                operation: "fingerprint the confirmed overwrite destination",
+                source,
+            })?;
         Ok(Self {
             path: path.to_owned(),
             metadata,
+            digest: std::sync::Arc::new(digest),
         })
     }
 
@@ -65,7 +87,10 @@ impl OverwriteConsent {
                 return false;
             }
         }
-        true
+        match digest_regular_file(path, metadata.len()) {
+            Ok(actual) => actual == *self.digest,
+            Err(_) => false,
+        }
     }
 
     pub(super) fn validate(&self, path: &Path) -> Result<(), ExportError> {
@@ -132,7 +157,58 @@ impl From<io::Error> for NewPublicationError {
     }
 }
 
-use std::io::{Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom};
+
+fn digest_regular_file(path: &Path, expected_len: u64) -> io::Result<ContentDigest> {
+    let mut file = File::open(path)?;
+    let mut hasher = crate::stale_temporary::Sha256::new();
+    hasher.update(&expected_len.to_le_bytes());
+    let mut buf = [0_u8; 16 * 1024];
+    if expected_len <= FULL_DIGEST_LIMIT_BYTES {
+        let mut total = 0_u64;
+        loop {
+            let n = file.read(&mut buf)?;
+            if n == 0 {
+                break;
+            }
+            total = total.saturating_add(n as u64);
+            if total > expected_len {
+                return Err(io::Error::other("file grew during consent fingerprint"));
+            }
+            hasher.update(&buf[..n]);
+        }
+        if total != expected_len {
+            return Err(io::Error::other("file shrank during consent fingerprint"));
+        }
+        return Ok(ContentDigest {
+            sha256: hasher.finalize(),
+            full_file: true,
+        });
+    }
+    // Bounded head, middle, and tail windows for files > 64 MiB.
+    let offsets = [
+        0_u64,
+        expected_len / 2 - (SAMPLED_WINDOW_BYTES as u64 / 2),
+        expected_len.saturating_sub(SAMPLED_WINDOW_BYTES as u64),
+    ];
+    for offset in offsets {
+        file.seek(SeekFrom::Start(offset))?;
+        let mut remaining = SAMPLED_WINDOW_BYTES;
+        while remaining > 0 {
+            let to_read = remaining.min(buf.len());
+            let n = file.read(&mut buf[..to_read])?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+            remaining -= n;
+        }
+    }
+    Ok(ContentDigest {
+        sha256: hasher.finalize(),
+        full_file: false,
+    })
+}
 
 /// Outcome of source-descriptor-bound create-new WAV publication (`#8105` / `#8094`).
 ///
