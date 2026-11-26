@@ -775,7 +775,12 @@ fn read_pcm(
             .events
             .as_slice()
             .iter()
-            .any(|event| !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90 | 0xa0))
+            .any(|event| match event.bytes[0] & 0xf0 {
+                0x80 | 0x90 | 0xa0 => false,
+                // VST3 legacy channel events never carry an SDK note ID.
+                0xb0 | 0xc0 | 0xd0 | 0xe0 => event.note_id.is_some(),
+                _ => true,
+            })
         || (config.output_channels == 1
             && block.pcm[..usize::from(config.quantum)]
                 .iter()

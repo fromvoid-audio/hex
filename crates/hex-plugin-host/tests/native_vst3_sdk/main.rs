@@ -379,6 +379,11 @@ fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
         (169, false),
         (170, false),
         (171, false),
+        (174, true),
+        (175, false),
+        (176, false),
+        (177, false),
+        (178, false),
     ] {
         let case = Case::new();
         let mut instance = Prepared::prepare(
@@ -421,7 +426,7 @@ fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
         }
         let pcm = input.pcm;
         let reply = instance.exchange_on_worker(input);
-        if variant >= 169 || (variant == 168 && split) {
+        if matches!(variant, 169..=171 | 175..=178) || (variant == 168 && split) {
             assert!(
                 matches!(reply, Err(Error::Worker(7))),
                 "invalid processor reply variant {variant} was published"
@@ -432,7 +437,7 @@ fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
         let reply = reply.unwrap();
         assert_eq!(reply.binding, binding);
         for (i, input) in pcm[..8].iter().enumerate() {
-            let scale = if variant == 167 && i >= 4 { 0.625 } else { 0.5 };
+            let scale = if split && i >= 4 { 0.625 } else { 0.5 };
             assert_eq!(reply.pcm[i], [input[0] * scale, input[1] * scale]);
         }
         let events = reply.events.as_slice();
@@ -464,6 +469,31 @@ fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
                     .events
                     .as_slice()
                     .is_empty()
+            );
+        } else if variant == 174 {
+            let messages: Vec<_> = events
+                .iter()
+                .map(|event| {
+                    (
+                        event.frame,
+                        event.len,
+                        event.bytes,
+                        event.is_live,
+                        event.vst3_output_note_id(),
+                    )
+                })
+                .collect();
+            assert_eq!(
+                messages,
+                [
+                    (0, 3, [0x92, 61, 64], false, Some(23)),
+                    (0, 3, [0xb3, 0, 127], true, None),
+                    (1, 3, [0xb0, 74, 23], true, None),
+                    (2, 2, [0xd2, 67, 0], true, None),
+                    (4, 3, [0xe1, 2, 103], true, None),
+                    (6, 2, [0xc0, 72, 0], true, None),
+                    (7, 3, [0xa3, 61, 125], true, None),
+                ]
             );
         } else {
             assert_eq!(events.len(), 64);

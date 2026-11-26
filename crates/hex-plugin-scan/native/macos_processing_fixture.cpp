@@ -213,8 +213,11 @@ constexpr int midi_effect_variant=165, auxiliary_event_effect_variant=166;
 constexpr int output_notes_variant=167, full_output_notes_variant=168, excess_output_notes_variant=169,
     outside_output_slice_variant=170, unsupported_output_event_variant=171;
 constexpr int active_aux_outputs_variant=172, double_aux_outputs_variant=173;
+constexpr int channel_output_variant=174, invalid_output_channel_variant=175,
+    invalid_output_value_variant=176, invalid_output_second_value_variant=177, system_output_variant=178;
 static bool has_note_output(int variant) {
-    return variant>=output_notes_variant && variant<=unsupported_output_event_variant;
+    return (variant>=output_notes_variant && variant<=unsupported_output_event_variant) ||
+        (variant>=channel_output_variant && variant<=system_output_variant);
 }
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
@@ -1223,6 +1226,32 @@ public:
                     event.noteOff={2,61,1.0f,0,0};
                     if(data.outputEvents->addEvent(event)!=kResultOk) return kInvalidArgument;
                 }
+            } else if(fault>=channel_output_variant) {
+                // An independently generated mix of notes and channel-voice events in two SDK slices.
+                if(block==0) {
+                    event.noteOn.noteId=23;
+                    if(data.outputEvents->addEvent(event)!=kResultOk) return kInvalidArgument;
+                }
+                event.type=Event::kLegacyMIDICCOutEvent;
+                event.flags=Event::kIsLive;
+                const auto send=[&](int32 offset,uint8 control,int8 channel,int8 value,int8 second) {
+                    event.sampleOffset=offset;
+                    event.midiCCOut={control,channel,value,second};
+                    return data.outputEvents->addEvent(event);
+                };
+                if(fault==channel_output_variant) {
+                    if(block==0 && (send(0,0,3,127,0)!=kResultOk || send(1,74,0,23,0)!=kResultOk ||
+                       send(2,kAfterTouch,2,67,0)!=kResultOk)) return kInvalidArgument;
+                    if(block==1 && (send(0,kPitchBend,1,2,103)!=kResultOk ||
+                       send(2,kCtrlProgramChange,0,72,0)!=kResultOk ||
+                       send(3,kCtrlPolyPressure,3,61,125)!=kResultOk)) return kInvalidArgument;
+                } else {
+                    // Ignore SDK refusal to prove a partial reply is still fenced.
+                    if(fault==invalid_output_channel_variant) send(0,74,4,3,0);
+                    if(fault==invalid_output_value_variant) send(0,74,0,-1,0);
+                    if(fault==invalid_output_second_value_variant) send(0,kPitchBend,2,32,-1);
+                    if(fault==system_output_variant) send(0,kCtrlQuarterFrame,1,27,0);
+                }
             } else if(fault==full_output_notes_variant || fault==excess_output_notes_variant) {
                 for(int n=0;n<64;++n) {
                     event.noteOn.noteId=n+1;
@@ -1561,7 +1590,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>double_aux_outputs_variant) return false;next_fault=value;
+        if (value>system_output_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

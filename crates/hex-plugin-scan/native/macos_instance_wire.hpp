@@ -672,6 +672,14 @@ struct Packet {
             if(frame>=frames) return false;
             auto& out=output_events[output_event_count++];
             out={};out[0]=static_cast<uint8_t>(frame);out[1]=static_cast<uint8_t>(frame>>8);out[2]=3;
+            out[6]=(event.flags&Steinberg::Vst::Event::kIsLive)?1:0;
+            if(event.type==Steinberg::Vst::Event::kLegacyMIDICCOutEvent) {
+                const auto message=hex_instance::channel_voice_output(event.midiCCOut);
+                if(!message) return false;
+                out[2]=message->length;
+                std::copy(message->bytes.begin(),message->bytes.end(),out.begin()+3);
+                continue;
+            }
             int32_t id=-1;float value=0;
             switch(event.type) {
             case Steinberg::Vst::Event::kNoteOnEvent:
@@ -689,7 +697,6 @@ struct Packet {
             // MIDI represents a zero-velocity note-on as a release. Preserve
             // the SDK gate even for an onset below the first velocity step.
             if(event.type==Steinberg::Vst::Event::kNoteOnEvent && !out[5]) out[5]=1;
-            out[6]=(event.flags&Steinberg::Vst::Event::kIsLive)?1:0;
             const uint32_t raw=id==-1?0u:(id==0?UINT32_MAX:static_cast<uint32_t>(id));
             for(size_t byte=0;byte<4;++byte) out[8+byte]=static_cast<uint8_t>(raw>>(byte*8));
         }
