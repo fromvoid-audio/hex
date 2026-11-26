@@ -428,13 +428,14 @@ impl crate::inline_owned::InlinePreparedProcessor for PreparedSaturator {
             ),
             settings: self.settings,
             sample_rate: self.sample_rate,
-            drive_gain: self.drive_gain,
-            output_gain: self.output_gain,
+            gain_ramps: [
+                hex_dsp::LinearRamp::settled(self.drive_gain),
+                hex_dsp::LinearRamp::settled(self.output_gain),
+            ],
             kernel: Kernel::shared(),
             channels: [Oversampler::default(); 2],
             delay: [[0.0; 2]; LATENCY_FRAMES],
             delay_index: 0,
-            gain_ramp_remaining: [0; 2],
         };
         runtime.check_inline_ownership();
         runtime
@@ -461,22 +462,35 @@ pub struct SaturatorRuntime {
     controls: crate::parameter_binding::Controls<SaturatorSettings, 4>,
     settings: SaturatorSettings,
     sample_rate: u32,
-    drive_gain: f64,
-    output_gain: f64,
+    gain_ramps: [hex_dsp::LinearRamp; 2],
     kernel: &'static Kernel,
     channels: [Oversampler; 2],
     /// Dry input, delayed by the oversampler latency.
     delay: [[f64; 2]; LATENCY_FRAMES],
     delay_index: usize,
-    gain_ramp_remaining: [u32; 2],
 }
 
 /// Direct-edit gain ramp frames: 5 ms at every rate, like Compressor's dry/wet.
 fn gain_ramp_frames(sample_rate: u32) -> u32 {
-    sample_rate.div_ceil(200)
+    hex_dsp::ramp_frames_for_ms(sample_rate, 5.0).unwrap_or(1)
 }
 
 impl SaturatorRuntime {
+    #[inline]
+    fn drive_gain(&self) -> f64 {
+        self.gain_ramps[0].value()
+    }
+
+    #[inline]
+    fn output_gain(&self) -> f64 {
+        self.gain_ramps[1].value()
+    }
+
+    #[inline]
+    fn gains_settled(&self) -> bool {
+        self.gain_ramps[0].is_settled() && self.gain_ramps[1].is_settled()
+    }
+
     /// Renders one frame and advances every history. Bypassed frames keep
     /// their input; an active direct-edit ramp advances only when audible.
     fn render_frame(&mut self, frame: &mut StereoFrame, bypassed: bool) {
@@ -492,17 +506,19 @@ impl SaturatorRuntime {
                 0.0
             }
         });
+        let drive_gain = self.drive_gain();
+        let output_gain = self.output_gain();
         let mut processed = [0.0; 2];
         for (channel, (stage, value)) in self.channels.iter_mut().zip(input).enumerate() {
             let shaped = match settings.curve {
                 SaturationCurve::SoftClip => {
-                    stage.process_sample(value, self.drive_gain, self.kernel, &SoftClip)
+                    stage.process_sample(value, drive_gain, self.kernel, &SoftClip)
                 }
                 SaturationCurve::DigitalClip => {
-                    stage.process_sample(value, self.drive_gain, self.kernel, &DigitalClip)
+                    stage.process_sample(value, drive_gain, self.kernel, &DigitalClip)
                 }
             };
-            processed[channel] = shaped * self.output_gain;
+            processed[channel] = shaped * output_gain;
         }
         let dry = std::mem::replace(&mut self.delay[self.delay_index], input);
         self.delay_index = (self.delay_index + 1) % LATENCY_FRAMES;
@@ -530,45 +546,36 @@ impl SaturatorRuntime {
     /// suppresses a direct edit. Authored values retain their per-frame law.
     #[inline]
     fn advance_gain_ramp(&mut self) {
-        if self.gain_ramp_remaining == [0; 2] {
+        if self.gains_settled() {
             return;
         }
-        for (index, (gain, target)) in [
-            (&mut self.drive_gain, self.base.drive_gain),
-            (&mut self.output_gain, self.base.output_gain),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let remaining = &mut self.gain_ramp_remaining[index];
-            if *remaining == 0 || self.controls.has_value(index) {
+        for (index, ramp) in self.gain_ramps.iter_mut().enumerate() {
+            if ramp.is_settled() || self.controls.has_value(index) {
                 continue;
             }
-            *gain += (target - *gain) / f64::from(*remaining);
-            *remaining -= 1;
-            if *remaining == 0 {
-                *gain = target;
-            }
+            ramp.advance_by_remaining();
         }
     }
 
     /// Bypass is already a discontinuity; resume from exact fallback targets.
     fn finish_gain_ramp(&mut self) {
-        if self.gain_ramp_remaining == [0; 2] {
+        if self.gains_settled() {
             return;
         }
-        for (index, (gain, target)) in [
-            (&mut self.drive_gain, self.base.drive_gain),
-            (&mut self.output_gain, self.base.output_gain),
-        ]
-        .into_iter()
-        .enumerate()
+        for (index, (ramp, target)) in self
+            .gain_ramps
+            .iter_mut()
+            .zip([self.base.drive_gain, self.base.output_gain])
+            .enumerate()
         {
-            if self.gain_ramp_remaining[index] != 0 && !self.controls.has_value(index) {
-                *gain = target;
+            if ramp.is_active() {
+                if !self.controls.has_value(index) {
+                    ramp.reset(target);
+                } else {
+                    ramp.reset(ramp.value());
+                }
             }
         }
-        self.gain_ramp_remaining = [0; 2];
     }
 }
 
@@ -612,7 +619,7 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         frames: &mut [StereoFrame],
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
-        if self.gain_ramp_remaining == [0; 2]
+        if self.gains_settled()
             && self.channels[0].is_drained()
             && self.channels[1].is_drained()
             && frames
@@ -623,7 +630,7 @@ impl NativeProcessorRuntime for SaturatorRuntime {
             self.delay_index = (self.delay_index + frames.len()) % LATENCY_FRAMES;
             return;
         }
-        if self.gain_ramp_remaining != [0; 2] {
+        if !self.gains_settled() {
             for frame in frames {
                 self.render_frame(frame, false);
             }
@@ -632,8 +639,8 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         let settings = self.settings;
         let wet = f64::from(settings.dry_wet);
         let dry_mix = 1.0 - wet;
-        let drive = self.drive_gain;
-        let output_gain = self.output_gain;
+        let drive = self.drive_gain();
+        let output_gain = self.output_gain();
         let kernel = self.kernel;
         for chunk in frames.chunks_mut(BLOCK_CHUNK) {
             let n = chunk.len();
@@ -716,10 +723,11 @@ impl NativeProcessorRuntime for SaturatorRuntime {
     fn reset(&mut self) {
         self.controls.reset();
         self.settings = self.base.settings;
-        self.drive_gain = self.base.drive_gain;
-        self.output_gain = self.base.output_gain;
+        self.gain_ramps = [
+            hex_dsp::LinearRamp::settled(self.base.drive_gain),
+            hex_dsp::LinearRamp::settled(self.base.output_gain),
+        ];
         self.clear_history();
-        self.gain_ramp_remaining = [0; 2];
     }
 
     fn is_quiescent(&self) -> bool {
@@ -749,17 +757,14 @@ impl NativeProcessorRuntime for SaturatorRuntime {
             self.controls.inherit(&previous.controls);
             self.settings = previous.settings;
         }
-        self.drive_gain = previous.drive_gain;
-        self.output_gain = previous.output_gain;
-        for (index, (gain, target, old_target, parameter)) in [
+        let frames = gain_ramp_frames(self.sample_rate);
+        for (index, (target, old_target, parameter)) in [
             (
-                self.drive_gain,
                 self.base.drive_gain,
                 previous.base.drive_gain,
                 parameter::DRIVE,
             ),
             (
-                self.output_gain,
                 self.base.output_gain,
                 previous.base.output_gain,
                 parameter::OUTPUT,
@@ -768,16 +773,17 @@ impl NativeProcessorRuntime for SaturatorRuntime {
         .into_iter()
         .enumerate()
         {
-            self.gain_ramp_remaining[index] = if gain == target {
-                0
+            let mut ramp = previous.gain_ramps[index];
+            if ramp.value() == target {
+                ramp.reset(target);
             } else if target == old_target
                 && (self.base.supports(parameter) || !previous.controls.has_value(index))
             {
                 // Transactional twins retain each in-flight trajectory.
-                previous.gain_ramp_remaining[index]
             } else {
-                gain_ramp_frames(self.sample_rate)
-            };
+                ramp.retarget(target, frames);
+            }
+            self.gain_ramps[index] = ramp;
         }
     }
 

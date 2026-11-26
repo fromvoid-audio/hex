@@ -82,25 +82,23 @@ pub(super) enum TransientGain {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct OutputGainRamp {
     from: f32,
-    elapsed: u32,
-    total: u32,
+    progress: hex_dsp::LinearRamp,
 }
 impl OutputGainRamp {
     pub(super) const INACTIVE: Self = Self {
         from: 1.0,
-        elapsed: 0,
-        total: 0,
+        progress: hex_dsp::LinearRamp::settled(1.0),
     };
     pub(super) fn active(self) -> bool {
-        self.elapsed < self.total
+        self.progress.is_active()
     }
-    fn at(self, target: f32, elapsed: u32) -> f32 {
-        if elapsed >= self.total {
+    fn at(self, target: f32) -> f32 {
+        if !self.progress.is_active() {
             return target;
         }
         (f64::from(self.from)
-            + (f64::from(target) - f64::from(self.from)) * f64::from(elapsed)
-                / f64::from(self.total)) as f32
+            + (f64::from(target) - f64::from(self.from)) * self.progress.value()
+                / self.progress.target()) as f32
     }
     pub(super) fn inherited(
         old: Self,
@@ -128,17 +126,16 @@ impl OutputGainRamp {
         Self::start(effective, rate)
     }
     pub(super) fn start(from: f32, rate: u32) -> Self {
-        Self {
-            from,
-            elapsed: 0,
-            total: rate.div_ceil(200).max(1),
-        }
+        let total = hex_dsp::ramp_frames_for_ms(rate, 5.0).unwrap_or(1).max(1);
+        let mut progress = hex_dsp::LinearRamp::settled(0.0);
+        progress.retarget(f64::from(total), total);
+        Self { from, progress }
     }
     pub(super) fn next(&mut self, target: f32) -> f32 {
-        if self.active() {
-            self.elapsed += 1;
+        if self.progress.is_active() {
+            self.progress.advance();
         }
-        self.at(target, self.elapsed)
+        self.at(target)
     }
     pub(super) fn apply(&mut self, target: f32, frames: &mut [StereoFrame]) -> Option<f32> {
         let mut last = None;

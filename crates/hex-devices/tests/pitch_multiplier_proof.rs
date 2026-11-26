@@ -1,7 +1,7 @@
 //! Private original math only; no Fine mapping, envelope application or runtime.
 mod support;
 
-#[path = "../src/pitch_multiplier.rs"]
+#[path = "support/pitch_multiplier.rs"]
 mod pitch;
 use hex_devices::operator_state::{OPERATOR_METADATA, parameter};
 use hex_lattice::NativeInstrumentDefinition;

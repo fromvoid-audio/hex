@@ -1,9 +1,9 @@
 //! Feedback-only private transport/layout proof. Not a native history adapter.
 mod support;
 
-#[path = "../src/operator_filter_lowpass.rs"]
+#[path = "support/operator_filter_lowpass.rs"]
 pub mod filter;
-#[path = "../src/operator_filter_packing.rs"]
+#[path = "support/operator_filter_packing.rs"]
 pub mod packing;
 use hex_devices::operator_state::{OPERATOR_METADATA, OperatorSettings, parameter};
 use hex_lattice::{NativeInstrumentDefinition, PreparedSharedAnalyticNote};

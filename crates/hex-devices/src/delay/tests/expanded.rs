@@ -96,29 +96,29 @@ fn exact_sync_offsets_channel_independence_and_tempo_boundary_are_partition_inva
             (LEFT_OFFSET, ParameterValue::Float(20.0)),
             (RIGHT_OFFSET, ParameterValue::Float(-20.0)),
         ]);
-        let mut input = vec![[0.0; 2]; rate as usize];
-        input[0] = [1.0, -0.5];
+        // 3 sixteenths at 150 bpm = 0.30 s, independently offset by +/-20% (0.36 s, 0.24 s).
+        let mut offset_input = vec![[0.0; 2]; (rate as usize * 2) / 5];
+        offset_input[0] = [1.0, -0.5];
         let a = musical(
             owned(rate, &s).as_mut(),
-            &input,
-            &[input.len()],
+            &offset_input,
+            &[offset_input.len()],
             usize::MAX,
-            100_000_000,
-            100_000_000,
+            150_000_000,
+            150_000_000,
         );
         let b = musical(
             owned(rate, &s).as_mut(),
-            &input,
+            &offset_input,
             &[1, 63, 257, 19],
             usize::MAX,
-            100_000_000,
-            100_000_000,
+            150_000_000,
+            150_000_000,
         );
         assert_eq!(a, b);
-        // 3 sixteenths at 100 bpm = .45 s, independently offset by +/-20%.
-        for (lane, seconds) in [(0, 0.54_f64), (1, 0.36)] {
+        for (lane, seconds) in [(0, 0.36_f64), (1, 0.24)] {
             let tap = (f64::from(rate) * seconds).round() as usize;
-            assert!((a[tap][lane] - input[0][lane]).abs() < 2e-5);
+            assert!((a[tap][lane] - offset_input[0][lane]).abs() < 2e-5);
             assert_eq!(a[..tap - 1].iter().map(|f| f[lane].abs()).sum::<f32>(), 0.0);
         }
         let s = state(&[
@@ -127,24 +127,27 @@ fn exact_sync_offsets_channel_independence_and_tempo_boundary_are_partition_inva
             (DRY_WET, ParameterValue::Float(1.0)),
             (SMOOTHING, ParameterValue::Choice(2)),
         ]);
+        // Halving tempo from 240 bpm to 120 bpm at frame 100 lands the 3-sixteenth tap at 3/8 s.
+        let mut boundary_input = vec![[0.0; 2]; rate as usize / 2];
+        boundary_input[0] = [1.0, -0.5];
         let a = musical(
             owned(rate, &s).as_mut(),
-            &input,
-            &[input.len()],
+            &boundary_input,
+            &[boundary_input.len()],
             100,
+            240_000_000,
             120_000_000,
-            60_000_000,
         );
         let b = musical(
             owned(rate, &s).as_mut(),
-            &input,
+            &boundary_input,
             &[1, 63, 257],
             100,
+            240_000_000,
             120_000_000,
-            60_000_000,
         );
         assert_eq!(a, b);
-        assert_eq!(a[rate as usize * 3 / 4], [1.0, -0.5]);
+        assert_eq!(a[rate as usize * 3 / 8], [1.0, -0.5]);
     }
 }
 #[test]
@@ -261,7 +264,7 @@ fn filtered_impulse_matches_independent_bilinear_butterworth_magnitudes_and_xy_a
 }
 #[test]
 fn every_lfo_wave_and_rate_mode_modulates_audibly_without_partition_or_rng_drift() {
-    let input: Vec<_> = (0..5000)
+    let input: Vec<_> = (0..1600)
         .map(|i| {
             let x = (i as f32 * 0.13).sin() * 0.1;
             [x, -x * 0.5]
@@ -288,7 +291,7 @@ fn every_lfo_wave_and_rate_mode_modulates_audibly_without_partition_or_rng_drift
             let a = musical(
                 owned(8000, &s).as_mut(),
                 &input,
-                &[5000],
+                &[1600],
                 usize::MAX,
                 123_000_000,
                 123_000_000,

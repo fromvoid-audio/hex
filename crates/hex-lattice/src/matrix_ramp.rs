@@ -22,38 +22,38 @@ use hex_dsp::{StereoFrame, StereoMatrix};
 
 /// Frames for a static matrix ramp: 5 ms rounded up, at least one frame.
 pub(crate) fn matrix_ramp_frames(sample_rate: u32) -> u32 {
-    sample_rate.div_ceil(200).max(1)
+    hex_dsp::ramp_frames_for_ms(sample_rate, 5.0)
+        .unwrap_or(1)
+        .max(1)
 }
 
-/// Fixed ramp position. Inactive when `elapsed >= total`.
+/// Fixed ramp position backed by [`hex_dsp::LinearRamp`]. Inactive when settled.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct MatrixRamp {
     from: [[f32; 2]; 2],
-    elapsed: u32,
-    total: u32,
+    progress: hex_dsp::LinearRamp,
 }
 
 impl MatrixRamp {
     pub(crate) const INACTIVE: Self = Self {
         from: [[1.0, 0.0], [0.0, 1.0]],
-        elapsed: 0,
-        total: 0,
+        progress: hex_dsp::LinearRamp::settled(1.0),
     };
 
     pub(crate) fn is_active(self) -> bool {
-        self.elapsed < self.total
+        self.progress.is_active()
     }
 
-    /// Effective coefficients after `elapsed` frames toward `target`.
+    /// Effective coefficients at the current ramp progress toward `target`.
     pub(crate) fn current(self, target: StereoMatrix) -> [[f32; 2]; 2] {
         if !self.is_active() {
             return target.coefficients();
         }
-        self.coefficients_at(target.coefficients(), self.elapsed)
+        self.coefficients_at(target.coefficients())
     }
 
-    fn coefficients_at(self, target: [[f32; 2]; 2], elapsed: u32) -> [[f32; 2]; 2] {
-        let position = f64::from(elapsed) / f64::from(self.total);
+    fn coefficients_at(self, target: [[f32; 2]; 2]) -> [[f32; 2]; 2] {
+        let position = self.progress.value() / self.progress.target();
         let mut result = target;
         for (row, output) in result.iter_mut().enumerate() {
             for (column, value) in output.iter_mut().enumerate() {
@@ -86,11 +86,10 @@ impl MatrixRamp {
         if from == candidate_matrix.coefficients() {
             return Self::INACTIVE;
         }
-        Self {
-            from,
-            elapsed: 0,
-            total: matrix_ramp_frames(sample_rate),
-        }
+        let total = matrix_ramp_frames(sample_rate);
+        let mut progress = hex_dsp::LinearRamp::settled(0.0);
+        progress.retarget(f64::from(total), total);
+        Self { from, progress }
     }
 
     /// Apply the matrix to a block, advancing an active ramp one step per
@@ -103,9 +102,9 @@ impl MatrixRamp {
                 if !self.is_active() {
                     break;
                 }
-                self.elapsed += 1;
+                self.progress.advance();
                 *frame = if self.is_active() {
-                    let m = self.coefficients_at(coefficients, self.elapsed);
+                    let m = self.coefficients_at(coefficients);
                     [
                         m[0][0] * frame[0] + m[0][1] * frame[1],
                         m[1][0] * frame[0] + m[1][1] * frame[1],

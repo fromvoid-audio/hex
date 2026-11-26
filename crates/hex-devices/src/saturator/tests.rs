@@ -548,7 +548,7 @@ fn direct_gain_edit_ramps_across_handoff_at_every_rate() {
     };
     let gains = |runtime: &dyn NativeProcessorRuntime| {
         let runtime = runtime.as_any().downcast_ref::<SaturatorRuntime>().unwrap();
-        (runtime.drive_gain, runtime.output_gain)
+        (runtime.drive_gain(), runtime.output_gain())
     };
     let resources = &hex_lattice::EMPTY_DEVICE_RESOURCES;
     for rate in [8_000, 44_100, 48_000, 192_000] {
@@ -642,7 +642,7 @@ fn direct_gain_edits_ramp_even_when_wet_is_automated() {
         .as_any()
         .downcast_ref::<SaturatorRuntime>()
         .unwrap()
-        .drive_gain;
+        .drive_gain();
     let mut candidate = prepare(&new);
     candidate.copy_history_from(previous.as_ref());
     candidate
@@ -657,7 +657,7 @@ fn direct_gain_edits_ramp_even_when_wet_is_automated() {
         .as_any()
         .downcast_ref::<SaturatorRuntime>()
         .unwrap()
-        .drive_gain;
+        .drive_gain();
     let target = amplitude_from_db(12.0).unwrap();
     assert!(
         first > old_gain && first < target,
@@ -699,8 +699,8 @@ fn automated_drive_stays_exact_while_direct_output_ramps_across_partitions() {
         .process_block_with_automation(&mut one, None, &Drive, &hex_lattice::EMPTY_DEVICE_RESOURCES)
         .unwrap();
     let state = whole.as_any().downcast_ref::<SaturatorRuntime>().unwrap();
-    assert_eq!(state.drive_gain, amplitude_from_db(6.0).unwrap());
-    assert_eq!(state.output_gain, amplitude_from_db(-6.0).unwrap());
+    assert_eq!(state.drive_gain(), amplitude_from_db(6.0).unwrap());
+    assert_eq!(state.output_gain(), amplitude_from_db(-6.0).unwrap());
     let mut chunked = prepare(&new);
     chunked.copy_history_from(previous.as_ref());
     let mut split = [[0.1, -0.1]; 248];
@@ -731,8 +731,8 @@ fn automated_drive_stays_exact_while_direct_output_ramps_across_partitions() {
         .as_any()
         .downcast_ref::<SaturatorRuntime>()
         .unwrap();
-    assert_eq!(state.drive_gain, amplitude_from_db(6.0).unwrap());
-    assert_eq!(state.output_gain, amplitude_from_db(-6.0).unwrap());
+    assert_eq!(state.drive_gain(), amplitude_from_db(6.0).unwrap());
+    assert_eq!(state.output_gain(), amplitude_from_db(-6.0).unwrap());
 }
 
 /// Pulse #4146: both curves at +36 db drive keep summed non-harmonic
@@ -909,8 +909,8 @@ fn retained_gain_eligibility_preserves_manual_ramps_and_transactional_twins() {
                 )
                 .unwrap();
             let state = actual.as_any().downcast_ref::<SaturatorRuntime>().unwrap();
-            assert_eq!(state.drive_gain, amplitude_from_db(18.0).unwrap());
-            assert_eq!(state.output_gain, amplitude_from_db(-3.0).unwrap());
+            assert_eq!(state.drive_gain(), amplitude_from_db(18.0).unwrap());
+            assert_eq!(state.output_gain(), amplitude_from_db(-3.0).unwrap());
         }
     }
 }

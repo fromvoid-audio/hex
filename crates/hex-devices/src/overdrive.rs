@@ -304,7 +304,9 @@ fn targets(settings: Settings, rate: u32) -> [f64; 6] {
     [
         hp,
         lp,
-        10.0_f64.powf(f64::from(settings.0[2]) * 1.5),
+        hex_dsp::Decibels::new(f64::from(settings.0[2]) * 30.0)
+            .and_then(hex_dsp::Decibels::linear_amplitude)
+            .map_or(1.0, hex_dsp::LinearAmplitude::value),
         pole(
             (500.0 * 40.0_f64.powf(f64::from(settings.0[3]))).min(f64::from(rate) * 0.45),
             f64::from(rate),

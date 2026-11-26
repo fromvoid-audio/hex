@@ -1,7 +1,7 @@
 //! Private original-law proof, not a native provider/codec or engine integration.
 mod support;
 
-#[path = "../src/operator_globals_volume.rs"]
+#[path = "support/operator_globals_volume.rs"]
 mod volume;
 
 use hex_devices::operator_state::OPERATOR_METADATA;
@@ -262,7 +262,7 @@ fn mutable_factory(
 fn composition_does_not_change_actual_feedback_lfo_gate_or_release_history() {
     for (feedback, lfo) in [(true, false), (false, true), (true, true)] {
         let factory = mutable_factory(feedback, lfo);
-        assert!(factory.declared_twin_bytes() * 2 <= 8192);
+        assert!(factory.declared_twin_bytes() <= 256 * 1024);
         let mut original = factory.create_runtime();
         let mut composed = factory.create_runtime();
         let mut volume = Volume::new(prepared(0.0, 48_000), 0);

@@ -1,6 +1,6 @@
 //! Standalone private kernel probe using the existing allowed test-only counter.
 //! No audio callback, provider, publication or native deadline coverage.
-#[path = "../../../hex-devices/src/operator_filter_lowpass.rs"]
+#[path = "../../../hex-devices/tests/support/operator_filter_lowpass.rs"]
 mod filter;
 use filter::{Error, Lowpass, PreparedLowpass};
 

@@ -638,11 +638,10 @@ impl CompressorRuntime {
         };
         self.envelope =
             hex_dsp::flush_quiet(coefficient * self.envelope + (1.0 - coefficient) * detector);
-        let level_db = if self.envelope > 0.0 {
-            20.0 * self.envelope.log10()
-        } else {
-            SILENCE_FLOOR_DB
-        };
+        let level_db = hex_dsp::LinearAmplitude::new(self.envelope)
+            .ok()
+            .and_then(hex_dsp::LinearAmplitude::decibels)
+            .map_or(SILENCE_FLOOR_DB, hex_dsp::Decibels::value);
         let reduction_db = gain_reduction_db(
             level_db,
             f64::from(self.settings.threshold_db),
@@ -672,7 +671,9 @@ impl CompressorRuntime {
             frame[1] = right as f32;
             return;
         }
-        let gain = 10.0_f64.powf(self.gain_db / 20.0);
+        let gain = hex_dsp::Decibels::new(self.gain_db)
+            .and_then(hex_dsp::Decibels::linear_amplitude)
+            .map_or(0.0, hex_dsp::LinearAmplitude::value);
         if mix == 1.0 {
             // Preserve the original fully-wet operation order and rounding.
             frame[0] = (left * gain) as f32;
@@ -765,7 +766,7 @@ impl NativeProcessorRuntime for CompressorRuntime {
             if self.settings.detector != previous.settings.detector {
                 self.detector_ramp.retarget(
                     f64::from(self.settings.detector == Detector::Rms),
-                    self.sample_rate.div_ceil(200),
+                    hex_dsp::ramp_frames_for_ms(self.sample_rate, 5.0).unwrap_or(1),
                 );
             }
             self.envelope = previous.envelope;
@@ -779,7 +780,7 @@ impl NativeProcessorRuntime for CompressorRuntime {
                 // Same preparation/history handoff as the existing gain smoother.
                 self.mix_ramp.retarget(
                     f64::from(self.settings.dry_wet),
-                    self.sample_rate.div_ceil(200),
+                    hex_dsp::ramp_frames_for_ms(self.sample_rate, 5.0).unwrap_or(1),
                 );
             }
         }
@@ -843,7 +844,15 @@ pub fn transfer_curve(
         } else if mix == 0.0 {
             input_db
         } else {
-            input_db + 20.0 * ((1.0 - mix) + mix * 10.0_f64.powf(wet_gain_db / 20.0)).log10()
+            let wet_linear = hex_dsp::Decibels::new(wet_gain_db)
+                .and_then(hex_dsp::Decibels::linear_amplitude)
+                .map_or(0.0, hex_dsp::LinearAmplitude::value);
+            let blended = (1.0 - mix) + mix * wet_linear;
+            input_db
+                + hex_dsp::LinearAmplitude::new(blended)
+                    .ok()
+                    .and_then(hex_dsp::LinearAmplitude::decibels)
+                    .map_or(SILENCE_FLOOR_DB, hex_dsp::Decibels::value)
         };
         [x as f32, ((output_db + 66.0) / 90.0) as f32]
     });
