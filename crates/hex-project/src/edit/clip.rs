@@ -675,6 +675,44 @@ impl Project {
         playback_frames: u64,
         conversion_version: u32,
     ) -> Result<AssetId, Invalid> {
+        self.add_prepared_asset_with_original(
+            path,
+            source_sample_rate,
+            source_frames,
+            playback_frames,
+            conversion_version,
+            None,
+        )
+    }
+
+    pub(crate) fn add_prepared_original_asset(
+        &mut self,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+        playback_frames: u64,
+        conversion_version: u32,
+        original_source: crate::OriginalSourceFacts,
+    ) -> Result<AssetId, Invalid> {
+        self.add_prepared_asset_with_original(
+            path,
+            source_sample_rate,
+            source_frames,
+            playback_frames,
+            conversion_version,
+            Some(original_source),
+        )
+    }
+
+    fn add_prepared_asset_with_original(
+        &mut self,
+        path: PathBuf,
+        source_sample_rate: u32,
+        source_frames: u64,
+        playback_frames: u64,
+        conversion_version: u32,
+        original_source: Option<crate::OriginalSourceFacts>,
+    ) -> Result<AssetId, Invalid> {
         if path.as_os_str().is_empty() {
             return Err(Invalid("media needs a path and frames"));
         }
@@ -692,7 +730,7 @@ impl Project {
         self.assets.insert(
             id,
             Asset {
-                original_source: None,
+                original_source,
                 id,
                 path,
                 source_sample_rate,

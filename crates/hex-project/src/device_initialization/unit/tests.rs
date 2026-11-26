@@ -398,3 +398,353 @@ fn replacement_unit_allows_cross_type_while_same_provider_unit_still_refuses() {
         unit_b
     );
 }
+
+#[test]
+fn registers_fresh_and_reuses_existing_originals_in_one_edit_with_reserved_ids_snapshot_and_undo() {
+    use super::super::{RegisterUnitOriginal, ReservedUnitOriginal, UnitAssetResolution};
+    use std::path::PathBuf;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let _clip_asset = {
+        let Created::Asset(id) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("ordinary-clip.wav"),
+                sample_rate: 48_000,
+                frames: 32,
+            })
+            .unwrap()
+        else {
+            panic!("clip asset")
+        };
+        id
+    };
+    let existing_id = {
+        let Created::Asset(id) = editor
+            .execute(Command::ImportDeviceAsset {
+                path: PathBuf::from("existing-original.wav"),
+                sample_rate: 44_100,
+                frames: 24,
+            })
+            .unwrap()
+        else {
+            panic!("existing original")
+        };
+        id
+    };
+    let existing_facts = asset_facts(11);
+    let fresh_facts = asset_facts(22);
+    let mut snapshot = editor.project().snapshot();
+    snapshot
+        .assets
+        .iter_mut()
+        .find(|asset| asset.id == existing_id.value())
+        .unwrap()
+        .original_source = Some(existing_facts);
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+
+    let existing_entry = PortableDeviceAsset {
+        source_rate: 44_100,
+        source_frames: 24,
+        facts: existing_facts,
+    };
+    let fresh_entry = PortableDeviceAsset {
+        source_rate: 96_000,
+        source_frames: 32,
+        facts: fresh_facts,
+    };
+    let unit = PortableDeviceUnit::new(
+        DeviceUnitClass::Effect,
+        vec![
+            root_with_media(),
+            // Child shares manifest entry 2 with the root's inactive B bank to prove deduplication.
+            node(Some(0), bound(effect(6), 2)),
+        ],
+        vec![existing_entry, fresh_entry],
+    )
+    .unwrap();
+    assert_eq!(
+        editor.project().find_portable_original(existing_entry),
+        Some(existing_id)
+    );
+    assert_eq!(editor.project().find_portable_original(fresh_entry), None);
+
+    let resolutions = vec![
+        UnitAssetResolution::Existing(existing_id),
+        UnitAssetResolution::Register(RegisterUnitOriginal {
+            path: PathBuf::from("preset-store/fresh-original.wav"),
+            source_rate: 96_000,
+            source_frames: 32,
+            facts: fresh_facts,
+        }),
+    ];
+    let insert = || Command::InsertMainDevice {
+        before: None,
+        state: effect(0),
+    };
+    let expected_fresh_id = AssetId(editor.project().next_identity());
+    let initialization = super::super::DeviceInitialization::new_unit_with_originals(
+        editor.project(),
+        insert(),
+        unit.clone(),
+        resolutions,
+    )
+    .unwrap();
+    assert_eq!(
+        initialization.resolved_unit_assets(),
+        &[existing_id, expected_fresh_id]
+    );
+    assert_eq!(
+        initialization.reserved_unit_originals(),
+        &[ReservedUnitOriginal {
+            manifest_index: 1,
+            asset: expected_fresh_id,
+        }]
+    );
+
+    let before = editor.project().snapshot();
+    // Refused audio preparation must leave project, assets, next_id and history untouched.
+    let refused = editor.execute_prepared_transition(
+        Command::InitializeDevice(Box::new(initialization.clone())),
+        |old, candidate| {
+            assert!(old.asset(expected_fresh_id).is_none());
+            let staged = candidate.asset(expected_fresh_id).unwrap();
+            assert_eq!(staged.original_source(), Some(fresh_facts));
+            assert_eq!(staged.source_sample_rate(), 96_000);
+            assert_eq!(staged.source_frames(), 32);
+            Err::<(), _>(Invalid("prepared audio refused"))
+        },
+    );
+    assert_eq!(refused, Err(Invalid("prepared audio refused")));
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+
+    // Accepted audio preparation binds both A/B states and child to the exact destination IDs.
+    let (Created::Device(root), prepared_fresh_id) = editor
+        .execute_prepared_transition(
+            Command::InitializeDevice(Box::new(initialization)),
+            |old, candidate| {
+                assert!(old.asset(expected_fresh_id).is_none());
+                let staged = candidate.asset(expected_fresh_id).unwrap();
+                assert_eq!(staged.original_source(), Some(fresh_facts));
+                Ok::<_, Invalid>(staged.id())
+            },
+        )
+        .unwrap()
+    else {
+        panic!("root device")
+    };
+    assert_eq!(prepared_fresh_id, expected_fresh_id);
+
+    let after = editor.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap(),
+        *editor.project()
+    );
+    let project = editor.project();
+    assert_eq!(project.assets().count(), 3);
+    let fresh_asset = project.asset(expected_fresh_id).unwrap();
+    assert_eq!(
+        fresh_asset.path(),
+        std::path::Path::new("preset-store/fresh-original.wav")
+    );
+    assert_eq!(fresh_asset.source_sample_rate(), 96_000);
+    assert_eq!(fresh_asset.source_frames(), 32);
+    assert_eq!(fresh_asset.original_source(), Some(fresh_facts));
+    assert_eq!(
+        project.find_portable_original(fresh_entry),
+        Some(expected_fresh_id)
+    );
+
+    let restored = project.device(root).unwrap();
+    assert_eq!(
+        restored.state().asset_references()[0].asset.value(),
+        existing_id.value()
+    );
+    assert_eq!(
+        restored.comparison().unwrap().inactive().asset_references()[0]
+            .asset
+            .value(),
+        expected_fresh_id.value()
+    );
+    let child = &project.main_devices()[1];
+    assert_eq!(child.parent(), Some(root));
+    assert_eq!(
+        child.state().asset_references()[0].asset.value(),
+        expected_fresh_id.value()
+    );
+    assert_eq!(project.capture_portable_device_unit(root).unwrap(), unit);
+
+    // One undo removes both the installed unit and the freshly registered original.
+    let high_water = after.next_id;
+    assert!(editor.undo());
+    let mut expected_undone = before;
+    expected_undone.next_id = high_water;
+    assert_eq!(editor.project().snapshot(), expected_undone);
+    assert!(editor.project().asset(expected_fresh_id).is_none());
+    assert!(editor.project().asset(existing_id).is_some());
+
+    assert!(editor.redo());
+    assert_eq!(editor.project().snapshot(), after);
+}
+
+#[test]
+fn refuses_invalid_duplicate_wrong_original_and_stale_reserved_unit_originals() {
+    use super::super::{RegisterUnitOriginal, UnitAssetResolution};
+    use std::path::PathBuf;
+
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let clip_id = {
+        let Created::Asset(id) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("ordinary-clip.wav"),
+                sample_rate: 48_000,
+                frames: 16,
+            })
+            .unwrap()
+        else {
+            panic!("clip asset")
+        };
+        id
+    };
+    let existing_id = {
+        let Created::Asset(id) = editor
+            .execute(Command::AddAsset {
+                path: PathBuf::from("stamped-original.wav"),
+                sample_rate: 48_000,
+                frames: 16,
+            })
+            .unwrap()
+        else {
+            panic!("stamped original")
+        };
+        id
+    };
+    let mut snapshot = editor.project().snapshot();
+    snapshot
+        .assets
+        .iter_mut()
+        .find(|asset| asset.id == existing_id.value())
+        .unwrap()
+        .original_source = Some(asset_facts(1));
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+    let before = editor.project().snapshot();
+
+    let unit = PortableDeviceUnit::new(
+        DeviceUnitClass::Effect,
+        vec![root_with_media()],
+        vec![
+            PortableDeviceAsset {
+                source_rate: 48_000,
+                source_frames: 16,
+                facts: asset_facts(1),
+            },
+            PortableDeviceAsset {
+                source_rate: 48_000,
+                source_frames: 16,
+                facts: asset_facts(2),
+            },
+        ],
+    )
+    .unwrap();
+    let insert = || Command::InsertMainDevice {
+        before: None,
+        state: effect(0),
+    };
+    let valid_register = || {
+        UnitAssetResolution::Register(RegisterUnitOriginal {
+            path: PathBuf::from("fresh.wav"),
+            source_rate: 48_000,
+            source_frames: 16,
+            facts: asset_facts(2),
+        })
+    };
+
+    // Ordinary clip asset (no original_source) cannot satisfy Existing.
+    assert_eq!(
+        super::super::DeviceInitialization::new_unit_with_originals(
+            editor.project(),
+            insert(),
+            unit.clone(),
+            vec![UnitAssetResolution::Existing(clip_id), valid_register()],
+        )
+        .unwrap_err(),
+        Invalid("destination original audio does not match the preset")
+    );
+
+    // Duplicate registration of an original already in the project is refused.
+    assert_eq!(
+        super::super::DeviceInitialization::new_unit_with_originals(
+            editor.project(),
+            insert(),
+            unit.clone(),
+            vec![
+                UnitAssetResolution::Register(RegisterUnitOriginal {
+                    path: PathBuf::from("dup.wav"),
+                    source_rate: 48_000,
+                    source_frames: 16,
+                    facts: asset_facts(1),
+                }),
+                valid_register(),
+            ],
+        )
+        .unwrap_err(),
+        Invalid("destination original audio is already registered")
+    );
+
+    // Empty path or mismatched metadata/digest is refused.
+    assert_eq!(
+        super::super::DeviceInitialization::new_unit_with_originals(
+            editor.project(),
+            insert(),
+            unit.clone(),
+            vec![
+                UnitAssetResolution::Existing(existing_id),
+                UnitAssetResolution::Register(RegisterUnitOriginal {
+                    path: PathBuf::new(),
+                    source_rate: 48_000,
+                    source_frames: 16,
+                    facts: asset_facts(2),
+                }),
+            ],
+        )
+        .unwrap_err(),
+        Invalid("media needs a path and frames")
+    );
+    assert_eq!(
+        super::super::DeviceInitialization::new_unit_with_originals(
+            editor.project(),
+            insert(),
+            unit.clone(),
+            vec![
+                UnitAssetResolution::Existing(existing_id),
+                UnitAssetResolution::Register(RegisterUnitOriginal {
+                    path: PathBuf::from("wrong.wav"),
+                    source_rate: 48_000,
+                    source_frames: 16,
+                    facts: asset_facts(99),
+                }),
+            ],
+        )
+        .unwrap_err(),
+        Invalid("registered original audio does not match the preset")
+    );
+
+    // Stale reserved ID refuses if another edit advances next_id before execution.
+    let stale = super::super::DeviceInitialization::new_unit_with_originals(
+        editor.project(),
+        insert(),
+        unit,
+        vec![UnitAssetResolution::Existing(existing_id), valid_register()],
+    )
+    .unwrap();
+    assert_eq!(editor.project().snapshot(), before);
+    assert!(!editor.can_undo());
+
+    let _ = add_track(&mut editor, "advances next_id");
+    let after_track = editor.project().snapshot();
+    assert_eq!(
+        editor.execute(Command::InitializeDevice(Box::new(stale))),
+        Err(Invalid("reserved original asset identity is stale"))
+    );
+    assert_eq!(editor.project().snapshot(), after_track);
+}

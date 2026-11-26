@@ -195,12 +195,41 @@ fn strip_vst3_approvals(node: &mut PortableDeviceNode) -> Result<(), Invalid> {
 }
 
 impl Project {
+    /// Find an existing non-offline destination original whose canonical facts,
+    /// source rate and source frame count match a portable manifest entry.
+    pub fn find_portable_original(&self, expected: PortableDeviceAsset) -> Option<AssetId> {
+        self.assets().find_map(|asset| {
+            (!self.asset_offline(asset.id())
+                && asset.original_source() == Some(expected.facts)
+                && asset.source_sample_rate() == expected.source_rate
+                && asset.source_frames() == expected.source_frames)
+                .then_some(asset.id())
+        })
+    }
+
     /// Capture one authored serial subtree. The project inventory visits every
     /// canonical source once, so aliases never duplicate a device or its media.
     pub fn capture_portable_device_unit(
         &self,
         root: DeviceId,
     ) -> Result<PortableDeviceUnit, Invalid> {
+        self.capture_portable_device_unit_with_verified_originals(root, |_| None)
+    }
+
+    /// Capture one authored serial subtree using worker-verified resident
+    /// original facts when canonical `original_source` metadata is not yet
+    /// stamped on an asset. Does not clone or mutate the project.
+    ///
+    /// If an asset already carries canonical `original_source` facts and the
+    /// callback also reports facts, any disagreement is refused explicitly.
+    pub fn capture_portable_device_unit_with_verified_originals<F>(
+        &self,
+        root: DeviceId,
+        mut verified_original: F,
+    ) -> Result<PortableDeviceUnit, Invalid>
+    where
+        F: FnMut(AssetId) -> Option<OriginalSourceFacts>,
+    {
         let class = if self
             .native_sources()
             .iter()
@@ -228,12 +257,17 @@ impl Project {
             if nodes.len() == MAX_PORTABLE_DEVICE_UNIT_NODES {
                 return Err(Invalid("portable device unit node limit reached"));
             }
-            let state = portable_state(self, &mut assets, device.state())?;
+            let state = portable_state(self, &mut assets, device.state(), &mut verified_original)?;
             let comparison = device
                 .comparison()
                 .map(|comparison| {
-                    portable_state(self, &mut assets, comparison.inactive())
-                        .map(|inactive| DeviceComparison::new(comparison.active(), inactive))
+                    portable_state(
+                        self,
+                        &mut assets,
+                        comparison.inactive(),
+                        &mut verified_original,
+                    )
+                    .map(|inactive| DeviceComparison::new(comparison.active(), inactive))
                 })
                 .transpose()?;
             let modulation = relative_modulation(device.modulation())?;
@@ -253,22 +287,42 @@ impl Project {
     }
 }
 
-fn portable_state(
+fn portable_state<F>(
     project: &Project,
     assets: &mut Vec<PortableDeviceAsset>,
     original: &NativeDeviceState,
-) -> Result<NativeDeviceState, Invalid> {
+    verified_original: &mut F,
+) -> Result<NativeDeviceState, Invalid>
+where
+    F: FnMut(AssetId) -> Option<OriginalSourceFacts>,
+{
     if original.asset_references().is_empty() {
         return Ok(original.clone());
     }
     let mut references = Vec::with_capacity(original.asset_references().len());
     for reference in original.asset_references() {
+        let asset_id = AssetId(reference.asset.value());
         let source = project
-            .asset(AssetId(reference.asset.value()))
+            .asset(asset_id)
             .ok_or(Invalid("device original asset is missing"))?;
-        let facts = source.original_source().ok_or(Invalid(
-            "device asset has no verified original content identity",
-        ))?;
+        if project.asset_offline(asset_id) {
+            return Err(Invalid("device original asset is offline"));
+        }
+        let worker_facts = verified_original(asset_id);
+        let facts = match (source.original_source(), worker_facts) {
+            (Some(stamped), Some(verified)) if stamped != verified => {
+                return Err(Invalid(
+                    "device original content identity disagrees with canonical metadata",
+                ));
+            }
+            (Some(stamped), _) => stamped,
+            (None, Some(verified)) => verified,
+            (None, None) => {
+                return Err(Invalid(
+                    "device asset has no verified original content identity",
+                ));
+            }
+        };
         let asset = PortableDeviceAsset {
             source_rate: source.source_sample_rate(),
             source_frames: source.source_frames(),

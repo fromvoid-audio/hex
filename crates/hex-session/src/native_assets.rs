@@ -45,6 +45,22 @@ pub(crate) struct ReconstructedOriginalSources<'a> {
     pub cancel: &'a AtomicBool,
 }
 impl Session {
+    /// Capture one portable device unit using canonical asset facts when
+    /// stamped, or this session's verified resident original facts when
+    /// canonical metadata is not yet stamped. Does not clone or change the
+    /// project.
+    pub fn capture_portable_device_unit(
+        &self,
+        root: hex_project::DeviceId,
+    ) -> Result<hex_project::PortableDeviceUnit, hex_project::Invalid> {
+        self.project()
+            .capture_portable_device_unit_with_verified_originals(root, |asset| {
+                self.native_assets
+                    .original_source_facts_on_control(asset)
+                    .ok()
+            })
+    }
+
     pub fn with_native_reservation(
         mut self,
         reservation: ResidentNativeReservation,
