@@ -865,6 +865,12 @@ fn envelope_fields(
             ControlPresentation::CompactSelector,
             None,
         )),
+        Some(ParameterValue::Choice(5)) => Some((
+            695 + operator as u32 * 5,
+            "ratio",
+            ControlPresentation::InlineValue,
+            None,
+        )),
         _ => None,
     };
     let mut loop_cell = div()
