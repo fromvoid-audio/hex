@@ -33,6 +33,17 @@ pub(crate) fn pair_bytes(
             scratch,
         )));
     }
+    if let Some(chorus) = entry.owned_runtime::<hex_devices::chorus::ChorusRuntime>() {
+        let (inline, [committed, scratch]) = chorus
+            .control_storage()
+            .ok_or(AudioStorageError::Overflow)?;
+        return Ok(Some((
+            inline
+                .checked_add(committed)
+                .ok_or(AudioStorageError::Overflow)?,
+            scratch,
+        )));
+    }
     if let Some(reverb) = entry.owned_runtime::<hex_devices::reverb::ReverbRuntime>() {
         let storage = reverb
             .control_storage()
@@ -123,5 +134,6 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::eq8::EQ8_TYPE_ID
         || id == hex_devices::rattle::RATTLE_TYPE_ID
         || id == hex_devices::delay::TYPE_ID
+        || id == hex_devices::chorus::CHORUS_TYPE_ID
         || id == hex_devices::limiter::TYPE_ID
 }
