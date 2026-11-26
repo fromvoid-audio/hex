@@ -605,4 +605,8 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
 }
 
 #[cfg(test)]
+mod crossfade_roundtrip_tests;
+#[cfg(test)]
 mod fade_clock_tests;
+#[cfg(test)]
+mod manifest_roundtrip_tests;
