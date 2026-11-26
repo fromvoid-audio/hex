@@ -6,7 +6,7 @@
 //! key, not proof of identity: two files that differ only in their middle bytes
 //! share a fingerprint. Relinking therefore keeps its decoded frame/rate check as
 //! confirmation; no full-content hash is computed or stored.
-use super::header::{AudioHeaderMetadata, parse_audio_header};
+use super::header::{AudioHeaderMetadata, parse_audio_header_with_reader};
 use std::{
     fs::File,
     io::{self, Read, Seek, SeekFrom},
@@ -64,7 +64,7 @@ impl Fingerprint {
         reader.seek(SeekFrom::Start(0))?;
         reader.read_exact(&mut block)?;
         hash = fnv(hash, &block);
-        let audio = parse_audio_header(&block);
+        let audio = parse_audio_header_with_reader(&block, reader, size);
         let tail = size
             .saturating_sub(FINGERPRINT_BLOCK)
             .min(FINGERPRINT_BLOCK);

@@ -236,6 +236,7 @@ fn query_normalization_matches_legacy_global_place_and_native_path_semantics() {
                 let mut expected = filtered(&catalog.entries, query, source);
                 if let Some(listing) = listing {
                     let folded = query.to_lowercase();
+                    let terms: Vec<_> = folded.split_whitespace().collect();
                     let mut seen: BTreeSet<_> = expected.iter().map(|e| e.path.clone()).collect();
                     for e in listing.entries.iter().take(MAX_RETAINED_ENTRIES) {
                         if !source.is_none_or(|s| e.path.starts_with(s)) {
@@ -244,7 +245,8 @@ fn query_normalization_matches_legacy_global_place_and_native_path_semantics() {
                         let matches = if source.is_some() {
                             !filtered(std::slice::from_ref(e), query, source).is_empty()
                         } else {
-                            e.name.to_lowercase().contains(&folded)
+                            let name = e.name.to_lowercase();
+                            terms.iter().all(|term| name.contains(term))
                         };
                         if matches && seen.insert(e.path.clone()) {
                             expected.push(e.clone());

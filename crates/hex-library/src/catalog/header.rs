@@ -95,7 +95,15 @@ impl AudioHeaderMetadata {
     }
 }
 
+use std::io::{Read, Seek, SeekFrom};
+
 const MAX_HEADER_CHUNKS: usize = 128;
+
+/// Standard `KSDATAFORMAT_SUBTYPE_*` GUID tail (bytes 2..16) shared by PCM (`0x0001`)
+/// and IEEE float (`0x0003`) in `WAVEFORMATEXTENSIBLE`.
+const WAVE_EXTENSIBLE_GUID_TAIL: [u8; 14] = [
+    0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71,
+];
 
 /// Parse lightweight audio header metadata from the leading bytes already read
 /// for content fingerprinting. Returns `None` for non-audio or truncated headers.
@@ -104,8 +112,8 @@ pub fn parse_audio_header(head: &[u8]) -> Option<AudioHeaderMetadata> {
         return None;
     }
     match &head[0..4] {
-        b"RIFF" if &head[8..12] == b"WAVE" => parse_riff_wave(head, false),
-        b"RF64" | b"BW64" if &head[8..12] == b"WAVE" => parse_riff_wave(head, true),
+        b"RIFF" if &head[8..12] == b"WAVE" => parse_riff_wave(head, false).0,
+        b"RF64" | b"BW64" if &head[8..12] == b"WAVE" => parse_riff_wave(head, true).0,
         b"FORM" if &head[8..12] == b"AIFF" => parse_aiff(head, false),
         b"FORM" if &head[8..12] == b"AIFC" => parse_aiff(head, true),
         b"fLaC" => parse_flac(head),
@@ -113,24 +121,133 @@ pub fn parse_audio_header(head: &[u8]) -> Option<AudioHeaderMetadata> {
     }
 }
 
-fn parse_riff_wave(head: &[u8], is_rf64: bool) -> Option<AudioHeaderMetadata> {
+/// Like [`parse_audio_header`], with a bounded seek-only fallback when a RIFF/RF64
+/// WAVE `fmt ` or `data` chunk lies beyond the leading 64 KiB fingerprint buffer.
+pub(super) fn parse_audio_header_with_reader(
+    head: &[u8],
+    reader: &mut (impl Read + Seek),
+    file_size: u64,
+) -> Option<AudioHeaderMetadata> {
+    if head.len() < 12 {
+        return None;
+    }
+    match &head[0..4] {
+        b"RIFF" if &head[8..12] == b"WAVE" => {
+            let (meta, complete) = parse_riff_wave(head, false);
+            if complete || file_size <= head.len() as u64 {
+                meta
+            } else {
+                parse_riff_wave_reader(reader, file_size, false).or(meta)
+            }
+        }
+        b"RF64" | b"BW64" if &head[8..12] == b"WAVE" => {
+            let (meta, complete) = parse_riff_wave(head, true);
+            if complete || file_size <= head.len() as u64 {
+                meta
+            } else {
+                parse_riff_wave_reader(reader, file_size, true).or(meta)
+            }
+        }
+        b"FORM" if &head[8..12] == b"AIFF" => parse_aiff(head, false),
+        b"FORM" if &head[8..12] == b"AIFC" => parse_aiff(head, true),
+        b"fLaC" => parse_flac(head),
+        _ => None,
+    }
+}
+
+struct WaveFmt {
+    sample_rate: u32,
+    channels: u16,
+    bit_depth: u16,
+    block_align: u16,
+    is_float: bool,
+}
+
+fn parse_wave_fmt(body: &[u8]) -> Option<WaveFmt> {
+    if body.len() < 16 {
+        return None;
+    }
+    let format_tag = u16::from_le_bytes(body[0..2].try_into().ok()?);
+    let channels = u16::from_le_bytes(body[2..4].try_into().ok()?);
+    let sample_rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
+    let block_align = u16::from_le_bytes(body[12..14].try_into().ok()?);
+    let bit_depth = u16::from_le_bytes(body[14..16].try_into().ok()?);
+    let is_float = match format_tag {
+        1 => false,
+        3 => true,
+        0xFFFE => {
+            if body.len() < 40 {
+                return None;
+            }
+            let cb_size = u16::from_le_bytes(body[16..18].try_into().ok()?);
+            if cb_size < 22 || body[26..40] != WAVE_EXTENSIBLE_GUID_TAIL {
+                return None;
+            }
+            let sub_tag = u16::from_le_bytes(body[24..26].try_into().ok()?);
+            match sub_tag {
+                1 => false,
+                3 => true,
+                _ => return None,
+            }
+        }
+        _ => return None,
+    };
+    Some(WaveFmt {
+        sample_rate,
+        channels,
+        bit_depth,
+        block_align,
+        is_float,
+    })
+}
+
+fn finish_wave_metadata(
+    fmt: Option<WaveFmt>,
+    data_size: Option<u64>,
+    is_rf64: bool,
+) -> Option<AudioHeaderMetadata> {
+    let fmt = fmt?;
+    if fmt.sample_rate == 0 || fmt.channels == 0 || fmt.bit_depth == 0 {
+        return None;
+    }
+    let frame_count = match (data_size, fmt.block_align) {
+        (Some(bytes), align) if align > 0 => bytes / u64::from(align),
+        _ => 0,
+    };
+    let codec = match (is_rf64, fmt.is_float) {
+        (false, false) => AudioCodec::WavPcm,
+        (false, true) => AudioCodec::WavFloat,
+        (true, false) => AudioCodec::Rf64Pcm,
+        (true, true) => AudioCodec::Rf64Float,
+    };
+    Some(AudioHeaderMetadata {
+        sample_rate: fmt.sample_rate,
+        channels: fmt.channels,
+        bit_depth: fmt.bit_depth,
+        frame_count,
+        codec,
+    })
+}
+
+fn parse_riff_wave(head: &[u8], is_rf64: bool) -> (Option<AudioHeaderMetadata>, bool) {
     let mut offset = 12_usize;
-    let mut sample_rate = 0_u32;
-    let mut channels = 0_u16;
-    let mut bit_depth = 0_u16;
-    let mut block_align = 0_u16;
-    let mut is_float = false;
-    let mut found_fmt = false;
+    let mut fmt: Option<WaveFmt> = None;
     let mut ds64_data_size: Option<u64> = None;
     let mut data_size: Option<u64> = None;
 
     for _ in 0..MAX_HEADER_CHUNKS {
-        if offset.checked_add(8)? > head.len() {
+        let Some(header_end) = offset.checked_add(8) else {
+            break;
+        };
+        if header_end > head.len() {
             break;
         }
         let id = &head[offset..offset + 4];
-        let chunk_size = u32::from_le_bytes(head[offset + 4..offset + 8].try_into().ok()?);
-        let body_start = offset + 8;
+        let Ok(size_bytes) = head[offset + 4..offset + 8].try_into() else {
+            break;
+        };
+        let chunk_size = u32::from_le_bytes(size_bytes);
+        let body_start = header_end;
         let body_end = body_start
             .saturating_add(chunk_size as usize)
             .min(head.len());
@@ -138,28 +255,20 @@ fn parse_riff_wave(head: &[u8], is_rf64: bool) -> Option<AudioHeaderMetadata> {
 
         match id {
             b"ds64" if is_rf64 && body.len() >= 16 => {
-                ds64_data_size = Some(u64::from_le_bytes(body[8..16].try_into().ok()?));
+                if let Ok(raw) = body[8..16].try_into() {
+                    ds64_data_size = Some(u64::from_le_bytes(raw));
+                }
             }
-            b"fmt " if body.len() >= 16 => {
-                let format_tag = u16::from_le_bytes(body[0..2].try_into().ok()?);
-                channels = u16::from_le_bytes(body[2..4].try_into().ok()?);
-                sample_rate = u32::from_le_bytes(body[4..8].try_into().ok()?);
-                block_align = u16::from_le_bytes(body[12..14].try_into().ok()?);
-                bit_depth = u16::from_le_bytes(body[14..16].try_into().ok()?);
-                is_float = match format_tag {
-                    1 => false,
-                    3 => true,
-                    0xFFFE if body.len() >= 40 => {
-                        let sub_tag = u16::from_le_bytes(body[24..26].try_into().ok()?);
-                        match sub_tag {
-                            1 => false,
-                            3 => true,
-                            _ => return None,
-                        }
-                    }
-                    _ => return None,
-                };
-                found_fmt = true;
+            b"fmt " => {
+                // Only reject an unsupported codec when the chunk body is intact;
+                // if `fmt ` was truncated at the 64 KiB boundary, allow the reader
+                // fallback to read the full chunk.
+                let body_complete = body_start.saturating_add(chunk_size as usize) <= head.len();
+                match parse_wave_fmt(body) {
+                    Some(parsed) => fmt = Some(parsed),
+                    None if body_complete => return (None, true),
+                    None => {}
+                }
             }
             b"data" => {
                 data_size = Some(if is_rf64 && chunk_size == u32::MAX {
@@ -167,15 +276,22 @@ fn parse_riff_wave(head: &[u8], is_rf64: bool) -> Option<AudioHeaderMetadata> {
                 } else {
                     u64::from(chunk_size)
                 });
-                if found_fmt {
+                if fmt.is_some() {
                     break;
                 }
             }
             _ => {}
         }
 
-        let padded = u64::from(chunk_size).checked_add(u64::from(chunk_size & 1))?;
-        let next = u64::try_from(body_start).ok()?.checked_add(padded)?;
+        let Some(padded) = u64::from(chunk_size).checked_add(u64::from(chunk_size & 1)) else {
+            break;
+        };
+        let Some(next) = u64::try_from(body_start)
+            .ok()
+            .and_then(|s| s.checked_add(padded))
+        else {
+            break;
+        };
         let Ok(next_usize) = usize::try_from(next) else {
             break;
         };
@@ -185,26 +301,71 @@ fn parse_riff_wave(head: &[u8], is_rf64: bool) -> Option<AudioHeaderMetadata> {
         offset = next_usize;
     }
 
-    if !found_fmt || sample_rate == 0 || channels == 0 || bit_depth == 0 {
-        return None;
+    let complete = fmt.is_some() && data_size.is_some();
+    (finish_wave_metadata(fmt, data_size, is_rf64), complete)
+}
+
+fn parse_riff_wave_reader(
+    reader: &mut (impl Read + Seek),
+    file_size: u64,
+    is_rf64: bool,
+) -> Option<AudioHeaderMetadata> {
+    let mut offset = 12_u64;
+    let mut fmt: Option<WaveFmt> = None;
+    let mut ds64_data_size: Option<u64> = None;
+    let mut data_size: Option<u64> = None;
+    let mut header = [0_u8; 8];
+    let mut scratch = [0_u8; 40];
+
+    for _ in 0..MAX_HEADER_CHUNKS {
+        let body_start = offset.checked_add(8)?;
+        if body_start > file_size {
+            break;
+        }
+        reader.seek(SeekFrom::Start(offset)).ok()?;
+        reader.read_exact(&mut header).ok()?;
+        let id = &header[0..4];
+        let chunk_size = u32::from_le_bytes(header[4..8].try_into().ok()?);
+        let available = file_size.saturating_sub(body_start);
+        let chunk_len = u64::from(chunk_size).min(available);
+
+        match id {
+            b"ds64" if is_rf64 && chunk_len >= 16 => {
+                reader.read_exact(&mut scratch[..16]).ok()?;
+                ds64_data_size = Some(u64::from_le_bytes(scratch[8..16].try_into().ok()?));
+            }
+            b"fmt " => {
+                let to_read = (chunk_len as usize).min(scratch.len());
+                reader.read_exact(&mut scratch[..to_read]).ok()?;
+                fmt = Some(parse_wave_fmt(&scratch[..to_read])?);
+            }
+            b"data" => {
+                data_size = Some(if is_rf64 && chunk_size == u32::MAX {
+                    ds64_data_size.unwrap_or(0)
+                } else {
+                    u64::from(chunk_size)
+                });
+                if fmt.is_some() {
+                    break;
+                }
+            }
+            _ => {}
+        }
+
+        let effective_size = if is_rf64 && id == b"data" && chunk_size == u32::MAX {
+            ds64_data_size?
+        } else {
+            u64::from(chunk_size)
+        };
+        let padded = effective_size.checked_add(effective_size & 1)?;
+        let next = body_start.checked_add(padded)?;
+        if next <= offset || next > file_size {
+            break;
+        }
+        offset = next;
     }
-    let frame_count = match (data_size, block_align) {
-        (Some(bytes), align) if align > 0 => bytes / u64::from(align),
-        _ => 0,
-    };
-    let codec = match (is_rf64, is_float) {
-        (false, false) => AudioCodec::WavPcm,
-        (false, true) => AudioCodec::WavFloat,
-        (true, false) => AudioCodec::Rf64Pcm,
-        (true, true) => AudioCodec::Rf64Float,
-    };
-    Some(AudioHeaderMetadata {
-        sample_rate,
-        channels,
-        bit_depth,
-        frame_count,
-        codec,
-    })
+
+    finish_wave_metadata(fmt, data_size, is_rf64)
 }
 
 fn parse_aiff(head: &[u8], is_aifc: bool) -> Option<AudioHeaderMetadata> {
@@ -229,10 +390,16 @@ fn parse_aiff(head: &[u8], is_aifc: bool) -> Option<AudioHeaderMetadata> {
             if sample_rate == 0 || channels == 0 || bit_depth == 0 {
                 return None;
             }
-            let codec = if is_aifc && body.len() >= 22 {
+            let codec = if is_aifc {
+                if body.len() < 22 {
+                    return None;
+                }
                 match &body[18..22] {
+                    b"NONE" | b"sowt" | b"twos" | b"raw " | b"in24" | b"in32" => {
+                        AudioCodec::AiffPcm
+                    }
                     b"fl32" | b"FL32" | b"fl64" | b"FL64" => AudioCodec::AifcFloat,
-                    _ => AudioCodec::AiffPcm,
+                    _ => return None,
                 }
             } else {
                 AudioCodec::AiffPcm
@@ -418,5 +585,107 @@ mod tests {
         assert_eq!(parse_audio_header(b""), None);
         assert_eq!(parse_audio_header(b"not audio bytes"), None);
         assert_eq!(parse_audio_header(&wav[..20]), None);
+    }
+
+    #[test]
+    fn validates_aifc_fourccs_wave_extensible_guid_tail_and_data_past_64k() {
+        // 1. AIFC compression 4CCs: uncompressed PCM/float accepted, compressed codecs rejected.
+        let make_aifc = |fourcc: &[u8; 4]| {
+            let mut buf = Vec::new();
+            buf.extend_from_slice(b"FORM");
+            buf.extend_from_slice(&34_u32.to_be_bytes());
+            buf.extend_from_slice(b"AIFC");
+            buf.extend_from_slice(b"COMM");
+            buf.extend_from_slice(&22_u32.to_be_bytes());
+            buf.extend_from_slice(&2_u16.to_be_bytes());
+            buf.extend_from_slice(&44_100_u32.to_be_bytes());
+            buf.extend_from_slice(&24_u16.to_be_bytes());
+            buf.extend_from_slice(&[0x40, 0x0e, 0xac, 0x44, 0, 0, 0, 0, 0, 0]);
+            buf.extend_from_slice(fourcc);
+            buf
+        };
+        assert_eq!(
+            parse_audio_header(&make_aifc(b"sowt")).unwrap().codec,
+            AudioCodec::AiffPcm
+        );
+        assert_eq!(
+            parse_audio_header(&make_aifc(b"NONE")).unwrap().codec,
+            AudioCodec::AiffPcm
+        );
+        assert_eq!(
+            parse_audio_header(&make_aifc(b"fl32")).unwrap().codec,
+            AudioCodec::AifcFloat
+        );
+        for compressed in [b"ima4", b"ulaw", b"alaw", b"QDM2"] {
+            assert_eq!(
+                parse_audio_header(&make_aifc(compressed)),
+                None,
+                "compressed AIFC {compressed:?} must not be classified as AiffPcm"
+            );
+        }
+
+        // 2. WAVEFORMATEXTENSIBLE must verify full 16-byte GUID tail, not only first 2 bytes.
+        let make_extensible_wav = |sub_tag: u16, tail: [u8; 14]| {
+            let mut out = Vec::new();
+            out.extend_from_slice(b"RIFF");
+            out.extend_from_slice(&100_u32.to_le_bytes());
+            out.extend_from_slice(b"WAVE");
+            out.extend_from_slice(b"fmt ");
+            out.extend_from_slice(&40_u32.to_le_bytes());
+            out.extend_from_slice(&0xFFFE_u16.to_le_bytes()); // WAVE_FORMAT_EXTENSIBLE
+            out.extend_from_slice(&2_u16.to_le_bytes()); // channels
+            out.extend_from_slice(&48_000_u32.to_le_bytes()); // sample_rate
+            out.extend_from_slice(&(48_000_u32 * 6).to_le_bytes()); // byte_rate
+            out.extend_from_slice(&6_u16.to_le_bytes()); // block_align
+            out.extend_from_slice(&24_u16.to_le_bytes()); // bit_depth
+            out.extend_from_slice(&22_u16.to_le_bytes()); // cbSize
+            out.extend_from_slice(&24_u16.to_le_bytes()); // wValidBitsPerSample
+            out.extend_from_slice(&3_u32.to_le_bytes()); // dwChannelMask
+            out.extend_from_slice(&sub_tag.to_le_bytes());
+            out.extend_from_slice(&tail);
+            out.extend_from_slice(b"data");
+            out.extend_from_slice(&(48_000_u32 * 6).to_le_bytes());
+            out
+        };
+        let valid_pcm = make_extensible_wav(1, WAVE_EXTENSIBLE_GUID_TAIL);
+        let meta_pcm = parse_audio_header(&valid_pcm).unwrap();
+        assert_eq!(meta_pcm.codec, AudioCodec::WavPcm);
+        assert_eq!(meta_pcm.frame_count, 48_000);
+
+        let valid_float = make_extensible_wav(3, WAVE_EXTENSIBLE_GUID_TAIL);
+        assert_eq!(
+            parse_audio_header(&valid_float).unwrap().codec,
+            AudioCodec::WavFloat
+        );
+
+        let mut bad_tail = WAVE_EXTENSIBLE_GUID_TAIL;
+        bad_tail[13] ^= 0x01;
+        assert_eq!(
+            parse_audio_header(&make_extensible_wav(1, bad_tail)),
+            None,
+            "corrupted WAVEFORMATEXTENSIBLE GUID tail must be rejected"
+        );
+
+        // 3. WAV with >64 KiB JUNK chunk before `data` resolves exact frame_count via reader.
+        let junk_len = 70_000_u32;
+        let data_bytes = 96_000_u32 * 6;
+        let mut big_wav = Vec::new();
+        big_wav.extend_from_slice(b"RIFF");
+        big_wav.extend_from_slice(&(4 + 24 + 8 + junk_len + 8 + data_bytes).to_le_bytes());
+        big_wav.extend_from_slice(b"WAVE");
+        big_wav.extend_from_slice(&wav_bytes(48_000, 2, 24, 0, false)[12..36]); // fmt chunk
+        big_wav.extend_from_slice(b"JUNK");
+        big_wav.extend_from_slice(&junk_len.to_le_bytes());
+        big_wav.resize(big_wav.len() + junk_len as usize, 0);
+        big_wav.extend_from_slice(b"data");
+        big_wav.extend_from_slice(&data_bytes.to_le_bytes());
+        let file_size = big_wav.len() as u64;
+        let mut cursor = std::io::Cursor::new(&big_wav);
+        let head = &big_wav[..64 * 1024];
+        let meta = parse_audio_header_with_reader(head, &mut cursor, file_size).unwrap();
+        assert_eq!(meta.codec, AudioCodec::WavPcm);
+        assert_eq!(meta.sample_rate, 48_000);
+        assert_eq!(meta.frame_count, 96_000);
+        assert_eq!(meta.duration_ms(), 2_000);
     }
 }

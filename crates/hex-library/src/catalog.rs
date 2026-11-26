@@ -60,6 +60,9 @@ pub struct SampleRecord {
     pub fingerprint: Option<Fingerprint>,
     /// Lightweight audio header facts captured during the single fingerprint read.
     pub audio: Option<AudioHeaderMetadata>,
+    /// Whether lightweight audio header parsing was attempted for this record
+    /// (`false` for legacy `hexsmp2` records so the next scan populates metadata).
+    pub audio_inspected: bool,
 }
 
 /// Sort order for metadata-aware browser queries.
@@ -137,15 +140,24 @@ impl SampleCatalog {
 
     /// Attach a normalized lowercase tag to `path`. Returns `Ok(true)` if newly added.
     pub fn add_tag(&mut self, path: &Path, tag: &str) -> Result<bool, &'static str> {
+        validate_sample_path(path)?;
         let normalized = normalize_label(tag)?;
-        let set = self.tags.entry(path.to_path_buf()).or_default();
-        if set.contains(&normalized) {
-            return Ok(false);
+        if let Some(set) = self.tags.get_mut(path) {
+            if set.contains(&normalized) {
+                return Ok(false);
+            }
+            if set.len() >= MAX_TAGS_PER_SAMPLE {
+                return Err("sample tag limit reached");
+            }
+            return Ok(set.insert(normalized));
         }
-        if set.len() >= MAX_TAGS_PER_SAMPLE {
-            return Err("sample tag limit reached");
+        if self.tags.len() >= MAX_SAMPLES {
+            return Err("tagged sample limit reached");
         }
-        Ok(set.insert(normalized))
+        let mut set = BTreeSet::new();
+        set.insert(normalized);
+        self.tags.insert(path.to_path_buf(), set);
+        Ok(true)
     }
 
     /// Remove a tag from `path`. Returns `true` if the tag was present.
@@ -206,6 +218,7 @@ impl SampleCatalog {
         collection: &str,
         path: &Path,
     ) -> Result<bool, &'static str> {
+        validate_sample_path(path)?;
         let normalized = normalize_label(collection)?;
         if !self.collections.contains_key(&normalized) {
             if self.collections.len() >= MAX_COLLECTIONS {
@@ -260,42 +273,47 @@ impl SampleCatalog {
     /// under `new` after a place was relocated, so a later incremental scan can reuse
     /// fingerprints of moved files whose size and mtime are unchanged. Paths outside `old` stay.
     pub fn relocate_root(&mut self, old: &Path, new: &Path) {
-        if old == new {
+        if old == new || !old.is_absolute() || !new.is_absolute() {
             return;
         }
         let mut moved = false;
         for entry in &mut self.entries {
-            let Ok(relative) = entry.path.strip_prefix(old) else {
+            let Some(path) = remap_under_root(&entry.path, old, new) else {
                 continue;
             };
-            let path = new.join(relative);
             if let Some(record) = self.records.remove(&entry.path) {
                 self.records.insert(path.clone(), record);
             }
             entry.path = path;
             moved = true;
         }
-        // Remap persistent user tags and collection memberships under `old`.
-        let remapped_tags: Vec<(PathBuf, BTreeSet<String>)> = self
+        // Remap persistent user tags and collection memberships under `old`, keeping
+        // merged tag sets bounded by MAX_TAGS_PER_SAMPLE and deterministic.
+        let mut remapped_tags: Vec<(PathBuf, BTreeSet<String>)> = self
             .tags
             .drain()
             .map(|(path, set)| {
-                let next = path
-                    .strip_prefix(old)
-                    .map_or(path.clone(), |rel| new.join(rel));
+                let next = remap_under_root(&path, old, new).unwrap_or(path);
                 (next, set)
             })
             .collect();
+        remapped_tags.sort_by(|a, b| a.0.cmp(&b.0));
         for (path, set) in remapped_tags {
-            self.tags.entry(path).or_default().extend(set);
+            if set.is_empty() {
+                continue;
+            }
+            let target = self.tags.entry(path).or_default();
+            for tag in set {
+                if target.len() >= MAX_TAGS_PER_SAMPLE {
+                    break;
+                }
+                target.insert(tag);
+            }
         }
         for members in self.collections.values_mut() {
             let remapped: BTreeSet<PathBuf> = members
                 .iter()
-                .map(|path| {
-                    path.strip_prefix(old)
-                        .map_or_else(|_| path.clone(), |rel| new.join(rel))
-                })
+                .map(|path| remap_under_root(path, old, new).unwrap_or_else(|| path.clone()))
                 .collect();
             *members = remapped;
         }
@@ -326,11 +344,28 @@ impl SampleCatalog {
         source: Option<&Path>,
         listing: Option<&DirectoryListing>,
     ) -> Vec<LibraryEntry> {
-        let mut entries = self.filtered(query, source);
+        let lowered = query.to_lowercase();
+        let parsed = parse_query_tokens(&lowered);
+        if parsed.impossible {
+            return Vec::new();
+        }
+        let mut entries = self.query_parsed(
+            &CatalogQuery {
+                text: query,
+                source,
+                ..CatalogQuery::default()
+            },
+            &parsed,
+        );
         let mut folded = String::new();
         if let Some(listing) = listing {
-            let query = query.to_lowercase();
-            let terms: Vec<_> = query.split_whitespace().collect();
+            let collection_set = match parsed.inline_collection {
+                Some(name) => match self.collections.get(name) {
+                    Some(members) => Some(members),
+                    None => return entries,
+                },
+                None => None,
+            };
             let extra = {
                 let mut seen = entries
                     .iter()
@@ -342,10 +377,42 @@ impl SampleCatalog {
                     .take(MAX_RETAINED_ENTRIES)
                     .filter(|entry| source.is_none_or(|root| entry.path.starts_with(root)))
                     .filter(|entry| {
+                        if let Some(members) = collection_set
+                            && !members.contains(&entry.path)
+                        {
+                            return false;
+                        }
+                        let entry_tags = self.tags.get(&entry.path);
+                        for tag in &parsed.inline_tags {
+                            if !entry_tags.is_some_and(|set| set.contains(*tag)) {
+                                return false;
+                            }
+                        }
+                        let audio = self.records.get(&entry.path).and_then(|r| r.audio);
+                        if let Some(codec) = parsed.inline_codec
+                            && audio.is_none_or(|m| m.codec != codec)
+                        {
+                            return false;
+                        }
+                        if let Some(rate) = parsed.inline_rate
+                            && audio.is_none_or(|m| m.sample_rate != rate)
+                        {
+                            return false;
+                        }
+                        if let Some(ch) = parsed.inline_channels
+                            && audio.is_none_or(|m| m.channels != ch)
+                        {
+                            return false;
+                        }
                         if source.is_some() {
-                            matches_path_terms(&entry.path, &terms, &mut folded)
+                            matches_path_or_tags(
+                                &entry.path,
+                                entry_tags,
+                                &parsed.text_terms,
+                                &mut folded,
+                            )
                         } else {
-                            lowercase_into(&entry.name, &mut folded).contains(&query)
+                            matches_name_terms(&entry.name, &parsed.text_terms, &mut folded)
                         }
                     })
                     .filter(|entry| seen.insert(entry.path.as_path()))
@@ -383,54 +450,36 @@ impl SampleCatalog {
     /// Operates purely in memory over indexed catalog state with zero disk I/O.
     pub fn query(&self, q: &CatalogQuery<'_>) -> Vec<LibraryEntry> {
         let lowered = q.text.to_lowercase();
-        let mut text_terms: Vec<&str> = Vec::new();
-        let mut inline_tags: Vec<&str> = Vec::new();
-        let mut inline_collection: Option<&str> = None;
-        let mut inline_rate: Option<u32> = None;
-        let mut inline_channels: Option<u16> = None;
-        let mut inline_codec: Option<AudioCodec> = None;
-        let mut impossible = false;
-
-        for token in lowered.split_whitespace() {
-            if let Some(val) = token.strip_prefix("tag:") {
-                if !val.is_empty() {
-                    inline_tags.push(val);
-                }
-            } else if let Some(val) = token.strip_prefix("col:") {
-                if !val.is_empty() {
-                    inline_collection = Some(val);
-                }
-            } else if let Some(val) = token.strip_prefix("rate:") {
-                if let Ok(sr) = val.parse::<u32>() {
-                    inline_rate = Some(sr);
-                } else {
-                    impossible = true;
-                }
-            } else if let Some(val) = token.strip_prefix("ch:") {
-                if let Ok(ch) = val.parse::<u16>() {
-                    inline_channels = Some(ch);
-                } else {
-                    impossible = true;
-                }
-            } else if let Some(val) = token.strip_prefix("codec:") {
-                if let Some(codec) = AudioCodec::from_token(val) {
-                    inline_codec = Some(codec);
-                } else {
-                    impossible = true;
-                }
-            } else {
-                text_terms.push(token);
-            }
-        }
-        if impossible {
+        let parsed = parse_query_tokens(&lowered);
+        if parsed.impossible {
             return Vec::new();
         }
+        self.query_parsed(q, &parsed)
+    }
 
-        let required_tag = q.tag.and_then(|t| normalize_label(t).ok());
-        let required_collection = q
-            .collection
-            .and_then(|c| normalize_label(c).ok())
-            .or_else(|| inline_collection.map(str::to_owned));
+    fn query_parsed(&self, q: &CatalogQuery<'_>, parsed: &ParsedQuery<'_>) -> Vec<LibraryEntry> {
+        let required_tag = match q.tag {
+            Some(tag) => match normalize_label(tag) {
+                Ok(normalized) => Some(normalized),
+                Err(_) => return Vec::new(),
+            },
+            None => None,
+        };
+        let explicit_collection = match q.collection {
+            Some(collection) => match normalize_label(collection) {
+                Ok(normalized) => Some(normalized),
+                Err(_) => return Vec::new(),
+            },
+            None => None,
+        };
+        if let (Some(explicit), Some(inline)) =
+            (explicit_collection.as_deref(), parsed.inline_collection)
+            && explicit != inline
+        {
+            return Vec::new();
+        }
+        let required_collection =
+            explicit_collection.or_else(|| parsed.inline_collection.map(str::to_owned));
         let collection_set = match required_collection.as_deref() {
             Some(name) => match self.collections.get(name) {
                 Some(members) => Some(members),
@@ -438,9 +487,9 @@ impl SampleCatalog {
             },
             None => None,
         };
-        let required_rate = q.sample_rate.or(inline_rate);
-        let required_channels = q.channels.or(inline_channels);
-        let required_codec = q.codec.or(inline_codec);
+        let required_rate = q.sample_rate.or(parsed.inline_rate);
+        let required_channels = q.channels.or(parsed.inline_channels);
+        let required_codec = q.codec.or(parsed.inline_codec);
 
         let mut folded = String::new();
         let mut results: Vec<LibraryEntry> = self
@@ -461,7 +510,7 @@ impl SampleCatalog {
                 {
                     return false;
                 }
-                for tag in &inline_tags {
+                for tag in &parsed.inline_tags {
                     if !entry_tags.is_some_and(|set| set.contains(*tag)) {
                         return false;
                     }
@@ -492,7 +541,7 @@ impl SampleCatalog {
                 {
                     return false;
                 }
-                matches_path_or_tags(&entry.path, entry_tags, &text_terms, &mut folded)
+                matches_path_or_tags(&entry.path, entry_tags, &parsed.text_terms, &mut folded)
             })
             .cloned()
             .collect();
@@ -555,6 +604,125 @@ impl SampleCatalog {
     }
 }
 
+struct ParsedQuery<'a> {
+    text_terms: Vec<&'a str>,
+    inline_tags: Vec<&'a str>,
+    inline_collection: Option<&'a str>,
+    inline_rate: Option<u32>,
+    inline_channels: Option<u16>,
+    inline_codec: Option<AudioCodec>,
+    impossible: bool,
+}
+
+fn parse_query_tokens(lowered: &str) -> ParsedQuery<'_> {
+    let mut parsed = ParsedQuery {
+        text_terms: Vec::new(),
+        inline_tags: Vec::new(),
+        inline_collection: None,
+        inline_rate: None,
+        inline_channels: None,
+        inline_codec: None,
+        impossible: false,
+    };
+    for token in lowered.split_whitespace() {
+        if let Some(val) = token.strip_prefix("tag:") {
+            if !val.is_empty() {
+                if normalize_label(val).is_ok() {
+                    parsed.inline_tags.push(val);
+                } else {
+                    parsed.impossible = true;
+                }
+            }
+        } else if let Some(val) = token.strip_prefix("col:") {
+            if !val.is_empty() {
+                if normalize_label(val).is_err()
+                    || parsed
+                        .inline_collection
+                        .is_some_and(|existing| existing != val)
+                {
+                    parsed.impossible = true;
+                } else {
+                    parsed.inline_collection = Some(val);
+                }
+            }
+        } else if let Some(val) = token.strip_prefix("rate:") {
+            if let Ok(sr) = val.parse::<u32>() {
+                if parsed.inline_rate.is_some_and(|existing| existing != sr) {
+                    parsed.impossible = true;
+                } else {
+                    parsed.inline_rate = Some(sr);
+                }
+            } else {
+                parsed.impossible = true;
+            }
+        } else if let Some(val) = token.strip_prefix("ch:") {
+            if let Ok(ch) = val.parse::<u16>() {
+                if parsed
+                    .inline_channels
+                    .is_some_and(|existing| existing != ch)
+                {
+                    parsed.impossible = true;
+                } else {
+                    parsed.inline_channels = Some(ch);
+                }
+            } else {
+                parsed.impossible = true;
+            }
+        } else if let Some(val) = token.strip_prefix("codec:") {
+            if let Some(codec) = AudioCodec::from_token(val) {
+                if parsed
+                    .inline_codec
+                    .is_some_and(|existing| existing != codec)
+                {
+                    parsed.impossible = true;
+                } else {
+                    parsed.inline_codec = Some(codec);
+                }
+            } else {
+                parsed.impossible = true;
+            }
+        } else {
+            parsed.text_terms.push(token);
+        }
+    }
+    parsed
+}
+
+fn encoded_path_len(path: &Path) -> usize {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().len()
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().count().saturating_mul(2)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        path.to_string_lossy().len()
+    }
+}
+
+fn validate_sample_path(path: &Path) -> Result<(), &'static str> {
+    if !path.is_absolute() {
+        return Err("sample path must be absolute");
+    }
+    let len = encoded_path_len(path);
+    if len == 0 || len > MAX_PATH_BYTES {
+        return Err("sample path exceeds size limit");
+    }
+    Ok(())
+}
+
+fn remap_under_root(path: &Path, old: &Path, new: &Path) -> Option<PathBuf> {
+    let relative = path.strip_prefix(old).ok()?;
+    let candidate = new.join(relative);
+    validate_sample_path(&candidate).ok()?;
+    Some(candidate)
+}
+
 pub(super) fn normalize_label(raw: &str) -> Result<String, &'static str> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
@@ -586,13 +754,12 @@ fn matches_path_or_tags(
     })
 }
 
-fn matches_path_terms(path: &Path, terms: &[&str], folded: &mut String) -> bool {
+fn matches_name_terms(name: &str, terms: &[&str], folded: &mut String) -> bool {
     if terms.is_empty() {
         return true;
     }
-    let path = path.to_string_lossy();
-    let path = lowercase_into(&path, folded);
-    terms.iter().all(|term| path.contains(term))
+    let lowered = lowercase_into(name, folded);
+    terms.iter().all(|term| lowered.contains(term))
 }
 
 /// Reuse query-local ASCII capacity. Full Unicode lowering stays with `str` so
@@ -798,18 +965,19 @@ impl Walk<'_> {
             && previous.modified_ns == modified_ns
             && modified_ns != 0
             && previous.fingerprint.is_some()
+            && previous.audio_inspected
         {
             self.result.reused += 1;
             return Some(*previous);
         }
-        let (fingerprint, audio) = match Fingerprint::inspect_file(path) {
+        let (fingerprint, audio, audio_inspected) = match Fingerprint::inspect_file(path) {
             Ok((fingerprint, audio)) => {
                 self.result.fingerprinted += 1;
-                (Some(fingerprint), audio)
+                (Some(fingerprint), audio, true)
             }
             Err(_) => {
                 self.result.unreadable += 1;
-                (None, None)
+                (None, None, false)
             }
         };
         Some(SampleRecord {
@@ -817,6 +985,7 @@ impl Walk<'_> {
             modified_ns,
             fingerprint,
             audio,
+            audio_inspected,
         })
     }
 }

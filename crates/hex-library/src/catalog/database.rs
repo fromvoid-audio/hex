@@ -187,16 +187,17 @@ impl SampleCatalog {
             }
         }
         // Write user tags in deterministic path order so identical state produces identical bytes.
-        let mut sorted_tags: Vec<(Vec<u8>, &BTreeSet<String>)> = self
+        let mut sorted_tags: Vec<(Vec<u8>, &Path, &BTreeSet<String>)> = self
             .tags
             .iter()
             .filter(|(_, set)| !set.is_empty())
-            .map(|(path, set)| (encode_path(path), set))
+            .map(|(path, set)| (encode_path(path), path.as_path(), set))
             .collect();
         sorted_tags.sort_by(|a, b| a.0.cmp(&b.0));
         bytes.extend_from_slice(&(sorted_tags.len() as u32).to_le_bytes());
-        for (raw_path, set) in sorted_tags {
-            if raw_path.is_empty()
+        for (raw_path, path, set) in sorted_tags {
+            if !path.is_absolute()
+                || raw_path.is_empty()
                 || raw_path.len() > MAX_PATH_BYTES
                 || set.len() > MAX_TAGS_PER_SAMPLE
             {
@@ -390,15 +391,20 @@ fn read_record(reader: &mut &[u8], version: u8) -> io::Result<Option<SampleRecor
     } else {
         None
     };
+    let audio_inspected = version >= 3 && tag[0] != RECORD_UNREADABLE;
     Ok(Some(SampleRecord {
         size,
         modified_ns,
         fingerprint,
         audio,
+        audio_inspected,
     }))
 }
 
 fn write_path(bytes: &mut Vec<u8>, path: &Path) -> io::Result<()> {
+    if !path.is_absolute() {
+        return Err(invalid());
+    }
     let raw = encode_path(path);
     if raw.is_empty()
         || raw.len() > MAX_PATH_BYTES
