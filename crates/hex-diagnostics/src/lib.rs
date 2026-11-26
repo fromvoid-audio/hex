@@ -115,35 +115,103 @@ impl Category {
 }
 const RECEIVE_INTERVAL: Duration = Duration::from_millis(50);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
+const FLUSH_BATCH_RECORDS: usize = 32;
 
+#[derive(Clone, Copy)]
+enum PlatformPaths {
+    MacOs,
+    Windows,
+    OtherUnix,
+}
+
+impl PlatformPaths {
+    const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(windows) {
+            Self::Windows
+        } else {
+            Self::OtherUnix
+        }
+    }
+}
+
+fn default_directory_for_platform(
+    platform: PlatformPaths,
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+    app_data: Option<std::ffi::OsString>,
+    xdg_state_home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    match platform {
+        PlatformPaths::MacOs => {
+            let home = home
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "home directory is unavailable".to_owned())?;
+            Ok(PathBuf::from(home).join("Library").join("Logs").join("hex"))
+        }
+        PlatformPaths::Windows => {
+            if let Some(appdata) = app_data.filter(|value| !value.is_empty()) {
+                return Ok(PathBuf::from(appdata).join("hex").join("logs"));
+            }
+            let base = user_profile
+                .filter(|value| !value.is_empty())
+                .or_else(|| home.filter(|value| !value.is_empty()))
+                .ok_or_else(|| "home directory is unavailable".to_owned())?;
+            Ok(PathBuf::from(base)
+                .join("AppData")
+                .join("Roaming")
+                .join("hex")
+                .join("logs"))
+        }
+        PlatformPaths::OtherUnix => {
+            if let Some(xdg) = xdg_state_home
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+            {
+                return Ok(xdg.join("hex").join("logs"));
+            }
+            let home = home
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "home directory is unavailable".to_owned())?;
+            Ok(PathBuf::from(home)
+                .join(".local")
+                .join("state")
+                .join("hex")
+                .join("logs"))
+        }
+    }
+}
+
+/// Resolve the default session log directory from explicit environment values.
+///
+/// Aligns with `hex-preferences` platform conventions:
+/// - macOS: `<HOME>/Library/Logs/hex`
+/// - Windows: `%APPDATA%\hex\logs` (fallback `%USERPROFILE%\AppData\Roaming\hex\logs` / `<HOME>\AppData\Roaming\hex\logs`)
+/// - Linux / other Unix: `$XDG_STATE_HOME/hex/logs` (when absolute), else `<HOME>/.local/state/hex/logs`
 fn default_directory_from(
     home: Option<std::ffi::OsString>,
     user_profile: Option<std::ffi::OsString>,
+    app_data: Option<std::ffi::OsString>,
+    xdg_state_home: Option<std::ffi::OsString>,
 ) -> Result<PathBuf, String> {
-    let home = home
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            #[cfg(windows)]
-            {
-                user_profile.filter(|value| !value.is_empty())
-            }
-            #[cfg(not(windows))]
-            {
-                let _ = user_profile;
-                None
-            }
-        })
-        .ok_or_else(|| "home directory is unavailable".to_owned())?;
-    let home = PathBuf::from(home);
-    Ok(if cfg!(target_os = "macos") {
-        home.join("Library").join("Logs").join("hex")
-    } else {
-        home.join(".local").join("state").join("hex").join("logs")
-    })
+    default_directory_for_platform(
+        PlatformPaths::current(),
+        home,
+        user_profile,
+        app_data,
+        xdg_state_home,
+    )
 }
 
 pub fn default_directory() -> Result<PathBuf, String> {
-    default_directory_from(env::var_os("HOME"), env::var_os("USERPROFILE"))
+    default_directory_from(
+        env::var_os("HOME"),
+        env::var_os("USERPROFILE"),
+        env::var_os("APPDATA"),
+        env::var_os("XDG_STATE_HOME"),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -441,6 +509,7 @@ fn await_startup(
 
 trait LogWriter {
     fn line(&mut self, value: &str) -> std::io::Result<()>;
+    fn flush(&mut self) -> std::io::Result<()>;
 }
 fn run_worker(
     directory: PathBuf,
@@ -448,6 +517,23 @@ fn run_worker(
     receiver: Receiver<Record>,
     startup: SyncSender<Result<PathBuf, String>>,
     shared: Arc<Shared>,
+) {
+    run_worker_with_pruner(
+        directory,
+        context,
+        receiver,
+        startup,
+        shared,
+        rolling::prune,
+    );
+}
+fn run_worker_with_pruner(
+    directory: PathBuf,
+    context: Context,
+    receiver: Receiver<Record>,
+    startup: SyncSender<Result<PathBuf, String>>,
+    shared: Arc<Shared>,
+    prune: impl FnOnce(&std::path::Path, &std::path::Path) -> std::io::Result<()>,
 ) {
     if shared.closing.load(Ordering::Acquire) {
         return;
@@ -462,8 +548,20 @@ fn run_worker(
     if shared.closing.load(Ordering::Acquire) {
         return;
     }
-    if let Err(error) = rolling::prune(&directory, writer.path()) {
-        shared.fail(format!("session log retention failed: {error}"));
+    // Retention pruning failure is non-fatal: record a warning line in the new
+    // session file without closing admission so the active session keeps logging.
+    if let Err(error) = prune(&directory, writer.path()) {
+        let mut line = format!(
+            "diagnostics_retention_warning writer_unix_nanos={} elapsed_nanos={} error=",
+            unix_nanos(),
+            shared.started.elapsed().as_nanos(),
+        );
+        event::quoted(&mut line, event::bounded(&error.to_string()));
+        line.push('\n');
+        if let Err(write_error) = writer.line(&line).and_then(|()| writer.flush()) {
+            let _ = startup.send(Err(write_error.to_string()));
+            return;
+        }
     }
     if startup.send(Ok(writer.path().to_owned())).is_err() {
         return;
@@ -500,26 +598,75 @@ fn run_records(writer: &mut impl LogWriter, receiver: &Receiver<Record>, shared:
                     Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                 }
             }
-            let _ = write_statistics(writer, shared, "session_finished", &mut reported, true);
+            if write_statistics(writer, shared, "session_finished", &mut reported, true) {
+                let _ = flush_writer(writer, shared);
+            }
             return;
         }
         match receiver.recv_timeout(RECEIVE_INTERVAL) {
-            Ok(record) => {
-                if !write_record(writer, &record, shared) {
+            Ok(first) => {
+                if !write_record(writer, &first, shared) {
+                    abandon(receiver, shared);
+                    return;
+                }
+                let mut disconnected = false;
+                for _ in 1..FLUSH_BATCH_RECORDS {
+                    match receiver.try_recv() {
+                        Ok(record) => {
+                            if !write_record(writer, &record, shared) {
+                                abandon(receiver, shared);
+                                return;
+                            }
+                        }
+                        Err(TryRecvError::Empty) => break,
+                        Err(TryRecvError::Disconnected) => {
+                            disconnected = true;
+                            break;
+                        }
+                    }
+                }
+                if disconnected {
+                    if write_statistics(writer, shared, "session_finished", &mut reported, true) {
+                        let _ = flush_writer(writer, shared);
+                    }
+                    return;
+                }
+                if !write_statistics(writer, shared, "diagnostics_loss", &mut reported, false) {
+                    abandon(receiver, shared);
+                    return;
+                }
+                if !flush_writer(writer, shared) {
                     abandon(receiver, shared);
                     return;
                 }
             }
-            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Timeout) => {
+                let stats_before = reported;
+                if !write_statistics(writer, shared, "diagnostics_loss", &mut reported, false) {
+                    abandon(receiver, shared);
+                    return;
+                }
+                if reported != stats_before && !flush_writer(writer, shared) {
+                    abandon(receiver, shared);
+                    return;
+                }
+            }
             Err(RecvTimeoutError::Disconnected) => {
-                let _ = write_statistics(writer, shared, "session_finished", &mut reported, true);
+                if write_statistics(writer, shared, "session_finished", &mut reported, true) {
+                    let _ = flush_writer(writer, shared);
+                }
                 return;
             }
         }
-        if !write_statistics(writer, shared, "diagnostics_loss", &mut reported, false) {
-            abandon(receiver, shared);
-            return;
-        }
+    }
+}
+fn flush_writer(writer: &mut impl LogWriter, shared: &Shared) -> bool {
+    if let Err(error) = writer.flush() {
+        shared.write_failed.fetch_add(1, Ordering::Relaxed);
+        shared.fail(format!("session log flush failed: {error}"));
+        false
+    } else {
+        true
     }
 }
 fn write_record(writer: &mut impl LogWriter, record: &Record, shared: &Shared) -> bool {

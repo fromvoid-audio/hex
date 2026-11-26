@@ -2,8 +2,8 @@
 //! Callers run filesystem access and filtering off the UI and audio threads.
 use std::{
     fs::File,
-    io::{self, Read},
-    path::Path,
+    io::{self, BufRead, BufReader, Read},
+    path::{Path, PathBuf},
 };
 
 use crate::{Level, MAX_EVENT_BYTES, MAX_SEGMENT_BYTES, RETAINED_SEGMENTS};
@@ -52,7 +52,82 @@ pub struct LogFilter<'a> {
     pub since_unix_nanos: Option<u128>,
     pub until_unix_nanos: Option<u128>,
 }
-impl LogFilter<'_> {
+/// Pre-compiled event filter with reusable scratch capacity for zero-allocation
+/// repeated matching across many log lines.
+#[derive(Debug)]
+pub struct CompiledLogFilter<'a> {
+    level: Option<Level>,
+    category: Option<&'a str>,
+    lowercase_query: Option<String>,
+    since_unix_nanos: Option<u128>,
+    until_unix_nanos: Option<u128>,
+    scratch: String,
+}
+
+impl<'a> CompiledLogFilter<'a> {
+    /// Match one parsed [`LogLine`] reusing internal scratch capacity.
+    pub fn matches(&mut self, line: &LogLine) -> bool {
+        let Some(event) = line.event.as_ref() else {
+            return true;
+        };
+        self.matches_parts(
+            &line.text,
+            Some((
+                event.level.as_str(),
+                event.category.as_str(),
+                event.unix_nanos,
+            )),
+        )
+    }
+
+    /// Match one parsed [`LogLine`] using a caller-supplied scratch buffer.
+    pub fn matches_with_scratch(&self, line: &LogLine, scratch: &mut String) -> bool {
+        let Some(event) = line.event.as_ref() else {
+            return true;
+        };
+        matches_event_fields(
+            self.level,
+            self.category,
+            self.since_unix_nanos,
+            self.until_unix_nanos,
+            &line.text,
+            Some((
+                event.level.as_str(),
+                event.category.as_str(),
+                event.unix_nanos,
+            )),
+            self.lowercase_query.as_deref(),
+            scratch,
+        )
+    }
+
+    fn matches_parts(&mut self, text: &str, event: Option<(&str, &str, u128)>) -> bool {
+        matches_event_fields(
+            self.level,
+            self.category,
+            self.since_unix_nanos,
+            self.until_unix_nanos,
+            text,
+            event,
+            self.lowercase_query.as_deref(),
+            &mut self.scratch,
+        )
+    }
+}
+
+impl<'a> LogFilter<'a> {
+    /// Fold any text query once and allocate reusable scratch space for repeated matches.
+    pub fn compile(&self) -> CompiledLogFilter<'a> {
+        CompiledLogFilter {
+            level: self.level,
+            category: self.category,
+            lowercase_query: self.text.map(str::to_lowercase),
+            since_unix_nanos: self.since_unix_nanos,
+            until_unix_nanos: self.until_unix_nanos,
+            scratch: String::new(),
+        }
+    }
+
     pub fn matches(&self, line: &LogLine) -> bool {
         if line.event.is_none() {
             return true;
@@ -80,20 +155,39 @@ impl LogFilter<'_> {
         query: Option<&str>,
         scratch: &mut String,
     ) -> bool {
-        let Some((level, category, unix_nanos)) = event else {
-            return true;
-        };
-        self.level.is_none_or(|minimum| {
-            Level::parse(level).is_some_and(|actual| actual.meets_minimum(minimum))
-        }) && self.category.is_none_or(|expected| category == expected)
-            && self
-                .since_unix_nanos
-                .is_none_or(|since| unix_nanos >= since)
-            && self
-                .until_unix_nanos
-                .is_none_or(|until| unix_nanos <= until)
-            && query.is_none_or(|query| contains_case_insensitive(text, query, scratch))
+        matches_event_fields(
+            self.level,
+            self.category,
+            self.since_unix_nanos,
+            self.until_unix_nanos,
+            text,
+            event,
+            query,
+            scratch,
+        )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn matches_event_fields(
+    level: Option<Level>,
+    category: Option<&str>,
+    since_unix_nanos: Option<u128>,
+    until_unix_nanos: Option<u128>,
+    text: &str,
+    event: Option<(&str, &str, u128)>,
+    query: Option<&str>,
+    scratch: &mut String,
+) -> bool {
+    let Some((event_level, event_category, unix_nanos)) = event else {
+        return true;
+    };
+    level.is_none_or(|minimum| {
+        Level::parse(event_level).is_some_and(|actual| actual.meets_minimum(minimum))
+    }) && category.is_none_or(|expected| event_category == expected)
+        && since_unix_nanos.is_none_or(|since| unix_nanos >= since)
+        && until_unix_nanos.is_none_or(|until| unix_nanos <= until)
+        && query.is_none_or(|query| contains_case_insensitive(text, query, scratch))
 }
 
 fn contains_case_insensitive(text: &str, lowercase_query: &str, scratch: &mut String) -> bool {
@@ -170,8 +264,8 @@ pub fn read_session(active: &Path) -> io::Result<LogSnapshot> {
 }
 
 /// Read one page of at most 100,000 lines, in oldest-to-newest order. The
-/// function buffers at most four bounded segment texts, counts their complete
-/// lines, then retains only the requested page. Missing archives are normal;
+/// function streams segments sequentially without holding all segment texts in
+/// memory at once, retaining only the requested page. Missing archives are normal;
 /// missing active files and other I/O failures are returned. A page request
 /// beyond the available history is clamped and reported. Concurrent rotation
 /// may change the snapshot; segment and sequence discontinuities are reported.
@@ -181,79 +275,141 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
     read_selected(active, Some(requested_page), &LogFilter::default()).map(|(page, _, _)| page)
 }
 
+fn open_segment(path: &Path, index: usize) -> io::Result<Option<File>> {
+    match File::open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(error) if index != 0 && error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!("{}: {error}", path.display()),
+        )),
+    }
+}
+
+fn segment_paths(active: &Path) -> Vec<(usize, PathBuf)> {
+    (0..RETAINED_SEGMENTS)
+        .rev()
+        .map(|index| {
+            let path = if index == 0 {
+                active.to_owned()
+            } else {
+                active.with_extension(format!("{index}.log"))
+            };
+            (index, path)
+        })
+        .collect()
+}
+
+struct SegmentStreamStats {
+    exceeded_limit: bool,
+    incomplete_tail: bool,
+    invalid_utf8: bool,
+}
+
+/// Stream complete `\n`-terminated lines from one segment up to `SEGMENT_READ_LIMIT`
+/// bytes using a single reusable line buffer, never holding the entire 8 MiB segment
+/// in memory at once.
+fn stream_segment_lines(
+    file: File,
+    path: &Path,
+    raw_line: &mut Vec<u8>,
+    mut on_line: impl FnMut(&str),
+) -> io::Result<SegmentStreamStats> {
+    let mut reader = BufReader::new(file.take(SEGMENT_READ_LIMIT + 1));
+    let mut bytes_seen = 0_u64;
+    let mut exceeded_limit = false;
+    let mut incomplete_tail = false;
+    let mut invalid_utf8 = false;
+
+    loop {
+        raw_line.clear();
+        let read = reader.read_until(b'\n', raw_line).map_err(|error| {
+            io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+        })?;
+        if read == 0 {
+            break;
+        }
+        let next_total = bytes_seen.saturating_add(read as u64);
+        if next_total > SEGMENT_READ_LIMIT {
+            exceeded_limit = true;
+            let keep = SEGMENT_READ_LIMIT.saturating_sub(bytes_seen) as usize;
+            raw_line.truncate(keep);
+            if !raw_line.is_empty() && raw_line.last() != Some(&b'\n') {
+                incomplete_tail = true;
+                break;
+            }
+            if raw_line.is_empty() {
+                break;
+            }
+        }
+        bytes_seen = next_total;
+        if raw_line.last() != Some(&b'\n') {
+            incomplete_tail = true;
+            break;
+        }
+        let mut slice = raw_line.as_slice();
+        if let Some(stripped) = slice.strip_suffix(b"\n") {
+            slice = stripped;
+        }
+        if let Some(stripped) = slice.strip_suffix(b"\r") {
+            slice = stripped;
+        }
+        match std::str::from_utf8(slice) {
+            Ok(line) => on_line(line),
+            Err(_) => {
+                invalid_utf8 = true;
+                let lossy = String::from_utf8_lossy(slice);
+                on_line(lossy.as_ref());
+            }
+        }
+        if exceeded_limit {
+            break;
+        }
+    }
+
+    Ok(SegmentStreamStats {
+        exceeded_limit,
+        incomplete_tail,
+        invalid_utf8,
+    })
+}
+
 fn read_selected(
     active: &Path,
     requested_page: Option<usize>,
     filter: &LogFilter<'_>,
 ) -> io::Result<(LogPage, usize, usize)> {
     let mut snapshot = LogSnapshot::default();
-    let mut segments = Vec::new();
-    for index in (0..RETAINED_SEGMENTS).rev() {
-        let path = if index == 0 {
-            active.to_owned()
-        } else {
-            active.with_extension(format!("{index}.log"))
-        };
-        let file = match File::open(&path) {
-            Ok(file) => file,
-            Err(error) if index != 0 && error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("{}: {error}", path.display()),
-                ));
-            }
-        };
-        let mut bytes = Vec::new();
-        file.take(SEGMENT_READ_LIMIT + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| {
-                io::Error::new(error.kind(), format!("{}: {error}", path.display()))
+    let paths = segment_paths(active);
+    let mut raw_line = Vec::new();
+
+    // Determine page window via a lightweight streaming line count only when paging is requested;
+    // filtered exports (`requested_page == None`) run in a single sequential streaming pass.
+    let (page, start, end) = if let Some(requested) = requested_page {
+        let mut total = 0_usize;
+        for &(index, ref path) in &paths {
+            let Some(file) = open_segment(path, index)? else {
+                continue;
+            };
+            let _ = stream_segment_lines(file, path, &mut raw_line, |_| {
+                total = total.saturating_add(1);
             })?;
-        if bytes.len() as u64 > SEGMENT_READ_LIMIT {
-            bytes.truncate(SEGMENT_READ_LIMIT as usize);
+        }
+        let last_page = total.saturating_sub(1) / MAX_LINES;
+        let page = requested.min(last_page);
+        if page != requested {
             snapshot
                 .warnings
-                .push(format!("{}: segment exceeds read limit", path.display()));
+                .push("requested page is no longer available".into());
         }
-        if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
-            snapshot
-                .warnings
-                .push(format!("{}: incomplete final line omitted", path.display()));
-            bytes.truncate(
-                bytes
-                    .iter()
-                    .rposition(|b| *b == b'\n')
-                    .map_or(0, |pos| pos + 1),
-            );
-        }
-        let text = match String::from_utf8(bytes) {
-            Ok(text) => text,
-            Err(error) => {
-                snapshot
-                    .warnings
-                    .push(format!("{}: invalid utf-8 replaced", path.display()));
-                String::from_utf8_lossy(error.as_bytes()).into_owned()
-            }
-        };
-        segments.push((path, text));
-    }
-    let total: usize = segments.iter().map(|(_, text)| text.lines().count()).sum();
-    let last_page = total.saturating_sub(1) / MAX_LINES;
-    let page = requested_page.unwrap_or(0).min(last_page);
-    if requested_page.is_some_and(|requested| page != requested) {
-        snapshot
-            .warnings
-            .push("requested page is no longer available".into());
-    }
-    let end = total.saturating_sub(page.saturating_mul(MAX_LINES));
-    let start = if requested_page.is_some() {
-        end.saturating_sub(MAX_LINES)
+        let end = total.saturating_sub(page.saturating_mul(MAX_LINES));
+        let start = end.saturating_sub(MAX_LINES);
+        (page, start, end)
     } else {
-        0
+        (0, 0, usize::MAX)
     };
-    let query = filter.text.map(str::to_lowercase);
-    let mut scratch = String::new();
+
+    let mut compiled = filter.compile();
     let mut matching_events = 0;
     let mut omitted_lines = 0;
     let mut retained_bytes = 0_usize;
@@ -262,41 +418,41 @@ fn read_selected(
     let mut previous_segment: Option<u64> = None;
     let mut sequence_discontinuity = false;
     let mut truncated = false;
-    for (path, text) in segments {
-        if snapshot.header.is_none()
-            && let Some(line) = text
-                .lines()
-                .next()
-                .filter(|line| line.starts_with("session_started "))
-        {
-            let clipped: String = line.chars().take(4096).collect();
-            snapshot.header = Some(if clipped.len() < line.len() {
-                format!("{clipped} [header clipped]")
-            } else {
-                clipped
-            });
-        }
-        if let Some(segment) = text
-            .lines()
-            .next()
-            .filter(|line| line.starts_with("session_started "))
-            .and_then(|line| {
-                line.split_ascii_whitespace()
-                    .find_map(|field| field.strip_prefix("segment="))
-            })
-            .and_then(|value| value.parse::<u64>().ok())
-        {
-            if previous_segment.map_or(segment != 0, |previous| {
-                previous.checked_add(1) != Some(segment)
-            }) {
-                snapshot
-                    .warnings
-                    .push("session segments are missing or changed during reading".into());
-            }
-            previous_segment = Some(segment);
-        }
+
+    for (index, path) in paths {
+        let Some(file) = open_segment(&path, index)? else {
+            continue;
+        };
+        let mut first_line = true;
         let mut malformed = false;
-        for line in text.lines() {
+        let stats = stream_segment_lines(file, &path, &mut raw_line, |line| {
+            if first_line {
+                first_line = false;
+                if line.starts_with("session_started ") {
+                    if snapshot.header.is_none() {
+                        let clipped: String = line.chars().take(4096).collect();
+                        snapshot.header = Some(if clipped.len() < line.len() {
+                            format!("{clipped} [header clipped]")
+                        } else {
+                            clipped
+                        });
+                    }
+                    if let Some(segment) = line
+                        .split_ascii_whitespace()
+                        .find_map(|field| field.strip_prefix("segment="))
+                        .and_then(|value| value.parse::<u64>().ok())
+                    {
+                        if previous_segment.map_or(segment != 0, |previous| {
+                            previous.checked_add(1) != Some(segment)
+                        }) {
+                            snapshot.warnings.push(
+                                "session segments are missing or changed during reading".into(),
+                            );
+                        }
+                        previous_segment = Some(segment);
+                    }
+                }
+            }
             let event = if line.starts_with("event ") {
                 match parse_event(line) {
                     Some(event) => Some(event),
@@ -322,13 +478,11 @@ fn read_selected(
                 });
             }
             if (start..end).contains(&position)
-                && filter.matches_record(
+                && compiled.matches_parts(
                     line,
                     event
                         .as_ref()
                         .map(|event| (event.level, event.category, event.unix_nanos)),
-                    query.as_deref(),
-                    &mut scratch,
                 )
             {
                 matching_events += usize::from(event.is_some());
@@ -348,6 +502,21 @@ fn read_selected(
                 }
             }
             position += 1;
+        })?;
+        if stats.exceeded_limit {
+            snapshot
+                .warnings
+                .push(format!("{}: segment exceeds read limit", path.display()));
+        }
+        if stats.incomplete_tail {
+            snapshot
+                .warnings
+                .push(format!("{}: incomplete final line omitted", path.display()));
+        }
+        if stats.invalid_utf8 {
+            snapshot
+                .warnings
+                .push(format!("{}: invalid utf-8 replaced", path.display()));
         }
         if malformed {
             snapshot
@@ -631,6 +800,27 @@ mod tests {
 
         // Non-event context lines remain unfiltered regardless of text query.
         assert!(filter.matches_record("session_started", None, Some("nomatch"), &mut scratch));
+
+        // CompiledLogFilter folds once and reuses caller or internal scratch cleanly.
+        let line = LogLine {
+            text: "event seq=5 AudioCallback Underrun".into(),
+            event: Some(LogEvent {
+                unix_nanos: 15,
+                elapsed_nanos: 1,
+                sequence: 5,
+                level: "info".into(),
+                category: "audio".into(),
+            }),
+        };
+        let compiled_filter = LogFilter {
+            category: Some("audio"),
+            text: Some("UNDERRUN"),
+            ..LogFilter::default()
+        };
+        let mut compiled = compiled_filter.compile();
+        assert!(compiled.matches(&line));
+        assert!(compiled.matches_with_scratch(&line, &mut scratch));
+        assert_eq!(scratch.as_ptr(), initial_ptr);
     }
 }
 
