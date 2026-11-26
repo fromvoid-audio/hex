@@ -1026,6 +1026,10 @@ impl Render for EditorView {
                 if super::device_panel::picker_is_open(view) {
                     return;
                 }
+                if view.review_marker_key(event, window, cx) {
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "space"
                     && event.keystroke.modifiers == gpui::Modifiers::default()
                     && !window.context_stack().iter().any(|context| {

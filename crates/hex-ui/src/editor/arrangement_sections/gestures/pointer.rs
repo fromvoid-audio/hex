@@ -122,6 +122,7 @@ impl EditorView {
                             || view.gain_numeric_editing(cx)
                             || view.clip_numeric_editing(cx)
                             || view.project_tempo_editing(cx)
+                            || view.pointer_hits_review_handle(event.position)
                             || view.pointer_hits_section_launch(
                                 f32::from(event.position.x),
                                 f32::from(event.position.y),

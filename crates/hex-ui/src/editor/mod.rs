@@ -564,7 +564,6 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("down", NextTrack, Some("hex_editor")),
         KeyBinding::new("enter", LaunchSessionSelection, Some("hex_editor")),
         escape_binding(),
-        KeyBinding::new("cmd-i", ImportAudio, Some("hex_editor")),
         KeyBinding::new("t", AddTrack, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-alt-b", ToggleBrowser, None),
         KeyBinding::new("cmd-f", CreateFadesOrSearch, None),

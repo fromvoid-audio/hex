@@ -165,7 +165,7 @@ impl EditorView {
                 .bg(rgb(theme::color(theme::PaletteRole::Background)));
             let main = self.main_track_row(viewport, &[], &[], window.scale_factor(), window, cx);
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(upper, returns, main, None, true, cx);
+            return self.arrangement_surface(upper, returns, main, None, viewport, cx);
         };
         let locator_state = self
             .locator_display_state()
@@ -293,14 +293,7 @@ impl EditorView {
                 cx,
             );
             let returns = self.return_tracks_view(cx);
-            return self.arrangement_surface(
-                upper,
-                returns,
-                main,
-                guide_line,
-                empty_viewport.start == 0,
-                cx,
-            );
+            return self.arrangement_surface(upper, returns, main, guide_line, empty_viewport, cx);
         }
 
         self.refresh_locators(&locator_state, viewport);
@@ -413,7 +406,7 @@ impl EditorView {
             ));
         let main = self.main_track_row(viewport, &bands, &grid, window.scale_factor(), window, cx);
         let returns = self.return_tracks_view(cx);
-        self.arrangement_surface(upper, returns, main, guide_line, viewport.start == 0, cx)
+        self.arrangement_surface(upper, returns, main, guide_line, viewport, cx)
     }
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -609,6 +602,7 @@ impl EditorView {
                                 || view.settings.theme.open
                                 || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
+                                || view.pointer_hits_review_handle(event.position)
                                 || view.pointer_hits_bottom_play_start_marker(
                                     event.position,
                                     event.modifiers,
@@ -1027,12 +1021,12 @@ impl EditorView {
     }
 
     fn arrangement_surface(
-        &self,
+        &mut self,
         upper: Div,
         returns: impl IntoElement,
         main: Div,
         clip_move_guide: Option<Div>,
-        at_start: bool,
+        viewport: Viewport,
         cx: &mut Context<Self>,
     ) -> Div {
         let entity = cx.entity();
@@ -1046,7 +1040,7 @@ impl EditorView {
             .flex_shrink_0()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_r_1()
-            .border_color(rgb(theme::color(if at_start {
+            .border_color(rgb(theme::color(if viewport.start == 0 {
                 theme::PaletteRole::Muted
             } else {
                 theme::PaletteRole::Border
@@ -1065,7 +1059,8 @@ impl EditorView {
             .child(self.arrangement_playback_layer(cx))
             .children(clip_move_guide)
             .child(self.track_resize_events(cx))
-            .children([self.track_reorder_events(cx)]);
+            .children([self.track_reorder_events(cx)])
+            .children(self.review_marker_layer(viewport, cx));
         div()
             .debug_selector(|| "arrangement-surface".into())
             .relative()

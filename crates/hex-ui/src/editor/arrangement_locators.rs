@@ -77,6 +77,8 @@ struct NameEdit {
 pub(super) struct Locators {
     focus: FocusHandle,
     selected: Option<(u64, LocatorId)>,
+    review_frames: std::collections::BTreeSet<u64>,
+    review_handle_bounds: Vec<gpui::Bounds<gpui::Pixels>>,
     cache: Option<(Weak<Project>, Vec<ArrangementLocatorAppearance>)>,
     drag: Option<Drag>,
     pending: Option<Pending>,
@@ -90,6 +92,8 @@ impl Locators {
         Self {
             focus: cx.focus_handle(),
             selected: None,
+            review_frames: Default::default(),
+            review_handle_bounds: Vec::new(),
             cache: None,
             drag: None,
             pending: None,
@@ -212,6 +216,8 @@ impl Locators {
             self.committed = None;
         }
         if event.project_replaced {
+            self.review_frames.clear();
+            self.review_handle_bounds.clear();
             self.selected = None;
             self.drag = None;
             self.name = None;
@@ -226,6 +232,7 @@ fn position(frame: u64, viewport: Viewport) -> f32 {
 
 mod actions;
 mod render;
+mod review_markers;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
