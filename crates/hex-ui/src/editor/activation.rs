@@ -18,14 +18,27 @@ pub(super) struct PendingClipActivation {
     receipt: Receipt,
 }
 
+impl PendingClipActivation {
+    pub(super) fn affects_track(&self, track: &hex_project::Track) -> bool {
+        track
+            .clips()
+            .iter()
+            .any(|clip| self.clips.contains(&clip.id()))
+            || track
+                .midi_clips()
+                .iter()
+                .any(|clip| self.clips.contains(&clip.id()))
+    }
+}
+
 pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
-    matches!(event.keystroke.key.as_str(), "c" | "0")
+    matches!(event.keystroke.key.as_str(), "c" | "/")
         && event.keystroke.modifiers == Modifiers::default()
         && !event.is_held
 }
 
 impl EditorView {
-    /// Device adapters consume their exact-focus keys before this ancestor.
+    /// Selected device adapters consume header and parameter shortcuts before this ancestor.
     /// Header focus targets the explicit track selection before retained ranges;
     /// otherwise only the current workspace's explicit selection is eligible. Nested text/plot/piano focus
     /// and the capture-phase musical keyboard retain their existing authority.

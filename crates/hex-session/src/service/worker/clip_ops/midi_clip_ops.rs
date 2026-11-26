@@ -85,7 +85,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         Request::Edit(command)
             if ctx.worker.session.audio_mode() == DocumentAudioMode::VerifiedStreaming
-                && !ctx.worker.session.uses_ordinary_worker_publication()
+                && !ctx
+                    .worker
+                    .session
+                    .uses_ordinary_worker_publication_for_command(&command)
                 && ctx.worker.resident_snapshot.is_none()
                 && (matches!(&command, Command::PasteDevices { .. })
                     || resident_audio::device_insert::graph_edit_operation(&command).is_some()
@@ -143,7 +146,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         Request::Edit(command)
             if ctx.worker.events.resident_publication_enabled()
-                && (ctx.worker.session.uses_ordinary_worker_publication()
+                && (ctx
+                    .worker
+                    .session
+                    .uses_ordinary_worker_publication_for_command(&command)
                     || ctx.worker.resident_snapshot.is_some()) =>
         {
             let recoverable_edit = ctx.outcome.time_range_copy

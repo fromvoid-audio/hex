@@ -118,6 +118,17 @@ fn shared_source_housing_excludes_local_prefix_and_suffix(cx: &mut TestAppContex
             .active_variant()
             == hex_project::DeviceVariant::B
     });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("/");
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(source_effect)
+            .unwrap()
+            .bypassed()
+    });
 }
 
 macro_rules! source_matrix_case {

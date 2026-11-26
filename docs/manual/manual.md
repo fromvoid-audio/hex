@@ -358,7 +358,7 @@ corner and stays visible after release.
 with the arrange timeline focused, **b** keeps the originals and inserts
 bounced audio on a new track below
 each source track. **command+b** does the same and then deactivates the bounced
-source clips or time selection, exactly as **c** or **0** would; one undo restores
+source clips or time selection, exactly as **c** or **/** would; one undo restores
 both the bounce and the sources' activation. a nonempty time selection takes precedence over selected clips.
 each selected track produces one audio clip spanning its selected clips and gaps.
 clip bounces render instrument and effect release tails, but the new clip keeps the
@@ -514,13 +514,13 @@ the entire arranger, including unselected tracks. audio and midi clips fade into
 the background while the curves own editing. the toolbar control stays highlighted
 while this mode is on; the key and toolbar always switch the same view.
 repeat to return to clip editing. switching views preserves clips, selection,
-automation and undo history. **c** and **0** keep contextual activation for focused
+automation and undo history. **c** and **/** keep contextual activation for focused
 devices and track headers; in clip editing they affect the selected clips or time
 span. a partial time span splits clips at its edges. automation lanes prevent
 activation of the retained background clips. text fields and the computer midi
 keyboard keep their own input.
 
-in the focused midi editor, **c** or **0** toggles the selected notes. inactive
+in the focused midi editor, **c** or **/** toggles the selected notes. inactive
 notes remain editable and are silent during playback; copies retain their state.
 
 click empty space in a lane to add a point, drag a point to change its time or
@@ -722,14 +722,14 @@ waveform and drag an event by its header to place it on either side of the scope
 pan or zoom out to reach more of the timeline. the scope stays where it is, and
 events outside it stay available for editing. extend the scope to play them.
 
-select an event, then press **c** or **0** to change its activation.
+select an event, then press **c** or **/** to change its activation.
 inactive events keep their source and position and contribute silence. hold **f**
 to show its fade controls. release **f** to hide default
 controls; edited fades remain visible. the computer midi keyboard must be off.
 
 for a grouped event, **src** selects an event inside its retained source. use
 the adjacent left and right arrows to choose another source event, and **c** or
-**0** to change its activation. use the up and down arrows to move through nested
+**/** to change its activation. use the up and down arrows to move through nested
 sources. choose **src** again to return to the grouped event.
 
 drag an upper square to change a fade length. drag a diamond horizontally and
@@ -954,9 +954,11 @@ choose **cancel** to keep the current chain playing. choose **proceed** to fade
 out briefly, install the device and resume from the same position. held notes
 and effect tails may reset after a confirmed interruption.
 
-click a device header to focus its card, then press **0** to toggle its bypass.
+click a device header to focus its card, then press **/** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
-while a parameter field or browser search has focus, **0** remains text input.
+with that device selected, press **/** while adjusting a knob or editing a numeric
+parameter to apply the current value and toggle bypass. press **/** again to
+compare. a browser search keeps **/** as text.
 
 with a native device header focused, press **,** to hear settings a or **.** to
 hear settings b. press **option-,** to copy a to b or **option-.** to copy b
@@ -1196,7 +1198,7 @@ the complete edit.
 | drop a bounce of dragged clips | hold b while releasing a clip drag |
 | arrangement automation view | a / toolbar a control |
 | show all arrangement automation lanes | shift+a |
-| contextual activation | c / 0 |
+| contextual activation | c or / |
 | export | command+shift+e |
 | changelog | command+shift+l |
 

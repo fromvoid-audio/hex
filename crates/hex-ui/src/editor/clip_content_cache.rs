@@ -238,6 +238,14 @@ impl EditorView {
             return false;
         }
         let track_id = track.id();
+        if self
+            .interaction
+            .pending_clip_activation
+            .as_ref()
+            .is_some_and(|pending| pending.affects_track(track))
+        {
+            return false;
+        }
         if let Some(edit) = self.clip_name_edit.as_ref()
             && track_contains_clip(track, edit.clip)
         {
@@ -434,7 +442,7 @@ impl EditorView {
         let parent = cx.weak_entity();
         let fresh = !self.clip_content_cache_allowed_for(track, track_index)
             || self
-                .held_arrangement_event_clip()
+                .displayed_arrangement_event_clip()
                 .is_some_and(|clip| track.clips().iter().any(|candidate| candidate.id() == clip));
         let has_active_drag = cx.has_active_drag();
         let entity = if let Some(entity) = self

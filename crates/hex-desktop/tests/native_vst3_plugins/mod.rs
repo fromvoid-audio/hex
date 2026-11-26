@@ -483,6 +483,23 @@ fn assert_stopped_hosted_removal_history(
 #[test]
 #[ignore = "explicit original SDK helper and source fixtures required"]
 fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return_main() {
+    const CHILD: &str = "HEX_TEST_NATIVE_LIFECYCLE_STACK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let name = std::thread::current().name().unwrap().to_owned();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--ignored"])
+            .env(CHILD, "1")
+            .env("RUST_MIN_STACK", "2097152")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success() && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        return;
+    }
     let _native = native_fixture();
     for location in 0..3 {
         let files = Files::new();
