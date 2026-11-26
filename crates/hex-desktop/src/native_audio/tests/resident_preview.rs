@@ -575,6 +575,379 @@ fn held_group_move_auditions_both_clips_and_commits_once() {
 }
 
 #[test]
+fn held_verified_mixed_file_and_midi_move_auditions_and_commits_without_callback_allocations() {
+    use hex_project::{BeatTime, ClipGroupPosition, Command, Created};
+    use hex_session::service::{
+        ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let clip_wav = files.wav(48_000, 96_000);
+    let mut h = ResidentHarness::with_event_capacity(262_144, Arc::new(AtomicBool::new(true)), 8);
+    assert!(h.next().error.is_none());
+    let _ = h.applied(0);
+
+    // 1. Open genuine VerifiedStreaming document and import a file-backed WAV clip.
+    let fresh = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    assert!(fresh.project_replaced);
+    h.release_relinquished_output();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.pump();
+        if h.audio.is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "verified output did not open");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let imported = h.run(Request::Import(clip_wav));
+    let audio_track = imported.state.project.tracks()[0].id();
+    let audio_clip = imported.state.project.tracks()[0].clips()[0].id();
+    let import_ctx = imported
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.render();
+        if h.audio
+            .as_ref()
+            .and_then(|audio| audio.status())
+            .is_some_and(|status| {
+                status
+                    .applied_audio_source()
+                    .is_some_and(|applied| applied.context == import_ctx)
+            })
+        {
+            break;
+        }
+        assert!(Instant::now() < deadline, "verified import did not install");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // 2. Add a MIDI track with an audible instrument + MIDI clip (triggers verified->ordinary handoff).
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "verified-midi".into(),
+    }));
+    let Some(Created::Track(midi_track)) = added.created else {
+        panic!("expected midi track")
+    };
+    let added_ctx = added
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.render();
+        if h.audio
+            .as_ref()
+            .and_then(|audio| audio.status())
+            .is_some_and(|status| {
+                status
+                    .applied_audio_source()
+                    .is_some_and(|applied| applied.context == added_ctx)
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "verified add track did not install"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let before_handoff = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire);
+    let inst = h.run(Request::AddNativeDevice {
+        track: midi_track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    assert!(
+        inst.state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .uses_ordinary_worker_publication()
+    );
+    let (applied, _) = h.applied(before_handoff);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .ordinary_owner_active()
+    );
+    let beat = |q| BeatTime::from_quarters(q).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track: midi_track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(midi_clip)) = placed.created else {
+        panic!("expected midi clip")
+    };
+    let (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip: midi_clip,
+        start: beat(1),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    let (applied, _) = h.applied(applied);
+    let looped = h.run(Request::Edit(Command::SetLoopRegion {
+        start: 0,
+        end: 8192,
+        enabled: true,
+    }));
+    let (applied, metadata) = h.applied(applied);
+    let original = looped.state.project.snapshot();
+    assert!(
+        looped
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .sources()
+            .values()
+            .any(|binding| matches!(binding, hex_session::AudioSourceBinding::VerifiedFile(_)))
+    );
+
+    // 3. Play and verify old file-backed audio clip placement inside loop 0..8192 before preview.
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let block = h.render();
+        if block.iter().any(|frame| (frame[0] - 0.25).abs() < 0.01) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "verified file-backed clip did not render before drag"
+        );
+        std::thread::yield_now();
+    }
+
+    // 4. Held drag of the verified audio clip moves it out of 0..8192 before release (zero callback allocations).
+    let audio_target = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 41,
+        sequence: 1,
+        clips: vec![audio_clip].into(),
+        anchor: audio_clip,
+        destination: ArrangementMoveDestination::Existing(audio_track),
+        position: ClipGroupPosition::Audio(48_000),
+        mode: ArrangementMoveMode::Move,
+    };
+    assert!(
+        h.service
+            .audition_arrangement_move(Some(audio_target.clone()))
+    );
+    let (preview_rev, preview_meta) = h.applied(applied);
+    assert_eq!(preview_meta.clip_preview, Some(audio_target.identity()));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let block = h.render();
+        if block.iter().all(|f| f[0].abs() < 1e-4) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "held verified audio move did not silence loop window"
+        );
+        std::thread::yield_now();
+    }
+    assert!(h.service.try_event().is_err());
+
+    // 5. Escape / cancel restores canonical verified file playback.
+    assert!(!h.service.audition_arrangement_move(None));
+    let (restored_rev, restored_meta) = h.applied(preview_rev);
+    assert!(restored_meta.clip_preview.is_none());
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let block = h.render();
+        if block.iter().any(|frame| (frame[0] - 0.25).abs() < 0.01) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "cancel did not restore verified file playback"
+        );
+        std::thread::yield_now();
+    }
+
+    // 6. Held MIDI clip move with rapid target update -> release -> exactly-once Undo/Redo.
+    let midi_first = ArrangementMoveAudition {
+        context: metadata.context,
+        gesture: 42,
+        sequence: 1,
+        clips: vec![midi_clip].into(),
+        anchor: midi_clip,
+        destination: ArrangementMoveDestination::Existing(midi_track),
+        position: ClipGroupPosition::Midi(beat(1)),
+        mode: ArrangementMoveMode::Move,
+    };
+    let midi_final = ArrangementMoveAudition {
+        sequence: 2,
+        position: ClipGroupPosition::Midi(beat(2)),
+        ..midi_first.clone()
+    };
+    assert!(h.service.audition_arrangement_move(Some(midi_first)));
+    assert!(
+        h.service
+            .audition_arrangement_move(Some(midi_final.clone()))
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut current_rev = restored_rev;
+    loop {
+        let (next_rev, next_meta) = h.applied(current_rev);
+        current_rev = next_rev;
+        if next_meta.clip_preview == Some(midi_final.identity()) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "coalesced verified MIDI move did not apply latest target"
+        );
+    }
+    h.service.finish_arrangement_move_audition();
+    let committed = h.run(Request::MoveExistingClips {
+        project_generation: midi_final.context.project_generation,
+        revision: midi_final.context.editor_revision,
+        command: Command::MoveMidiClipWithOverwrite {
+            clip: midi_clip,
+            track: midi_track,
+            start: beat(2),
+        },
+    });
+    assert!(committed.error.is_none(), "{:?}", committed.error);
+    let moved_snapshot = committed.state.project.snapshot();
+    h.service.retire_arrangement_move_audition();
+    let (committed_rev, committed_meta) = h.applied(current_rev);
+    assert!(committed_meta.clip_preview.is_none());
+    let undone = h.run(Request::Undo);
+    assert_eq!(undone.state.project.snapshot(), original);
+    let (undone_rev, _) = h.applied(committed_rev);
+    let redone = h.run(Request::Redo);
+    assert_eq!(redone.state.project.snapshot(), moved_snapshot);
+    let _ = h.applied(undone_rev);
+}
+
+#[test]
+#[ignore = "optimized latency measurement for #3259; run in --release with -- --ignored --nocapture"]
+fn measure_held_clip_move_audition_latency_release() {
+    use hex_project::{BeatTime, ClipGroupPosition, Command, Created};
+    use hex_session::service::{
+        ArrangementMoveAudition, ArrangementMoveDestination, ArrangementMoveMode,
+    };
+    let _native = native_fixture();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(262_144);
+    assert!(h.next().error.is_none());
+    let (applied, _) = h.applied(0);
+    let imported = h.run(Request::Import(files.wav(48_000, 96_000)));
+    let (applied, _) = h.applied(applied);
+    let audio_track = imported.state.project.tracks()[0].id();
+    let audio_clip = imported.state.project.tracks()[0].clips()[0].id();
+    let added = h.run(Request::Edit(Command::AddTrack {
+        name: "midi".into(),
+    }));
+    let Some(Created::Track(midi_track)) = added.created else {
+        panic!("track")
+    };
+    let (applied, _) = h.applied(applied);
+    h.run(Request::AddNativeDevice {
+        track: midi_track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    let (applied, _) = h.applied(applied);
+    let beat = |q| BeatTime::from_quarters(q).unwrap();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track: midi_track,
+        start: BeatTime::ZERO,
+        length: beat(4),
+    }));
+    let Some(Created::Clip(midi_clip)) = placed.created else {
+        panic!("clip")
+    };
+    let (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip: midi_clip,
+        start: beat(0),
+        duration: beat(1),
+        pitch: 60,
+        channel: 0,
+        velocity: 100,
+    }));
+    let (mut rev, metadata) = h.applied(applied);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+
+    let mut samples_us = Vec::new();
+    for step in 0u64..25 {
+        let target = ArrangementMoveAudition {
+            context: metadata.context,
+            gesture: 100,
+            sequence: step + 1,
+            clips: vec![audio_clip].into(),
+            anchor: audio_clip,
+            destination: ArrangementMoveDestination::Existing(audio_track),
+            position: ClipGroupPosition::Audio(if step % 2 == 0 { 24_000 } else { 48_000 }),
+            mode: ArrangementMoveMode::Move,
+        };
+        // Respect clip audition move cadence between measured drags so each sample
+        // measures pointer-target submission -> worker prepare -> callback apply.
+        std::thread::sleep(Duration::from_millis(35));
+        let started = Instant::now();
+        assert!(h.service.audition_arrangement_move(Some(target.clone())));
+        let (next_rev, next_meta) = h.applied(rev);
+        let elapsed_us = started.elapsed().as_micros();
+        assert_eq!(next_meta.clip_preview, Some(target.identity()));
+        rev = next_rev;
+        if step >= 5 {
+            samples_us.push(elapsed_us);
+        }
+    }
+    samples_us.sort_unstable();
+    let min_ms = samples_us[0] as f64 / 1000.0;
+    let median_ms = samples_us[samples_us.len() / 2] as f64 / 1000.0;
+    let p95_ms = samples_us[(samples_us.len() * 95) / 100] as f64 / 1000.0;
+    let max_ms = *samples_us.last().unwrap() as f64 / 1000.0;
+    println!(
+        "held-drag pointer-target-to-admitted-audio latency (headless, 48000 Hz, 64-frame blocks, 1 audio clip + 1 sine MIDI track, 5 warmup, n={}): min={min_ms:.3} ms median={median_ms:.3} ms p95={p95_ms:.3} ms max={max_ms:.3} ms",
+        samples_us.len()
+    );
+}
+
+#[test]
 fn held_stretch_audition_reaches_playing_callback_and_releases_once() {
     use hex_session::service::ArrangementStretchAudition;
 
