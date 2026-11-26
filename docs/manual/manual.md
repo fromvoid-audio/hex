@@ -954,6 +954,10 @@ with that device selected, press **/** while adjusting a knob or editing a numer
 parameter to apply the current value and toggle bypass. press **/** again to
 compare. a browser search keeps **/** as text.
 
+with a native device header focused, press **,** to hear settings a or **.** to
+hear settings b. press **option-,** to copy a to b or **option-.** to copy b
+to a. copying keeps the current slot selected and can be undone with **cmd-z**.
+
 double-click a device title to collapse its body or expand it again. with a
 device header focused, press **-** to collapse the selected devices and **+**
 to expand them. collapsed devices keep their header controls and continue
