@@ -86,23 +86,37 @@ pub(super) fn selector(
     row
 }
 
+const NODE_SIZE: f32 = 3.6;
+const NODE_HALF: f32 = NODE_SIZE * 0.5;
+const OUTPUT_BUS_INSET: f32 = 3.0;
+
+fn diagram_node_centers(index: usize, width: f32, height: f32) -> [[f32; 2]; 4] {
+    let positions = POSITIONS[index];
+    std::array::from_fn(|operator| {
+        [
+            3.0 + (width - 6.0) * positions[operator][0],
+            2.0 + (height - 10.0) * positions[operator][1],
+        ]
+    })
+}
+
 pub(super) fn diagram(index: usize, selected: bool) -> impl IntoElement {
     let topology = hex_engine::native_operator_algorithms[index];
-    let positions = POSITIONS[index];
     let colors = std::array::from_fn::<_, 4, _>(|operator| {
         theme::device_identity_style(operator, true, false).surface
     });
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
+            let centers = diagram_node_centers(
+                index,
+                f32::from(bounds.size.width),
+                f32::from(bounds.size.height),
+            );
             let position = |operator: usize| {
                 point(
-                    bounds.left()
-                        + px(3.0)
-                        + (bounds.size.width - px(6.0)) * positions[operator][0],
-                    bounds.top()
-                        + px(2.0)
-                        + (bounds.size.height - px(10.0)) * positions[operator][1],
+                    bounds.left() + px(centers[operator][0]),
+                    bounds.top() + px(centers[operator][1]),
                 )
             };
             let mut edges = PathBuilder::stroke(px(0.75));
@@ -122,7 +136,7 @@ pub(super) fn diagram(index: usize, selected: bool) -> impl IntoElement {
                     edges.line_to(middle - direction * 1.5 - side);
                 }
             }
-            let output_y = bounds.bottom() - px(3.0);
+            let output_y = bounds.bottom() - px(OUTPUT_BUS_INSET);
             let mut left = bounds.right();
             let mut right = bounds.left();
             for &carrier in topology.carriers {
@@ -151,8 +165,8 @@ pub(super) fn diagram(index: usize, selected: bool) -> impl IntoElement {
                 let center = position(operator);
                 window.paint_quad(gpui::fill(
                     gpui::Bounds::new(
-                        center - point(px(1.8), px(1.8)),
-                        gpui::size(px(3.6), px(3.6)),
+                        center - point(px(NODE_HALF), px(NODE_HALF)),
+                        gpui::size(px(NODE_SIZE), px(NODE_SIZE)),
                     ),
                     rgb(color),
                 ));
@@ -230,4 +244,44 @@ pub(in crate::editor::device_panel) fn select(
         }
     }
     cx.notify();
+}
+
+#[cfg(all(test, not(feature = "ui-test-support")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_eleven_routing_diagrams_fit_compact_tiles_without_overlap() {
+        assert_eq!(
+            POSITIONS.len(),
+            hex_engine::native_operator_algorithms.len()
+        );
+        for (width, height) in [(38.0_f32, 34.0_f32), (24.0_f32, 28.0_f32)] {
+            let output_y = height - OUTPUT_BUS_INSET;
+            for (index, topology) in hex_engine::native_operator_algorithms.iter().enumerate() {
+                assert!(!topology.carriers.is_empty());
+                let centers = diagram_node_centers(index, width, height);
+                for (op, [cx, cy]) in centers.iter().enumerate() {
+                    let left = cx - NODE_HALF;
+                    let right = cx + NODE_HALF;
+                    let top = cy - NODE_HALF;
+                    let bottom = cy + NODE_HALF;
+                    assert!(
+                        left >= 0.0 && right <= width && top >= 0.0 && bottom <= output_y,
+                        "preset {index} op {op} rect [{left}, {top}, {right}, {bottom}] exceeds ({width}x{height}, bus {output_y})"
+                    );
+                }
+                for a in 0..4 {
+                    for b in (a + 1)..4 {
+                        let overlap_x = (centers[a][0] - centers[b][0]).abs() < NODE_SIZE;
+                        let overlap_y = (centers[a][1] - centers[b][1]).abs() < NODE_SIZE;
+                        assert!(
+                            !(overlap_x && overlap_y),
+                            "preset {index} nodes {a} and {b} overlap at ({width}x{height})"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
