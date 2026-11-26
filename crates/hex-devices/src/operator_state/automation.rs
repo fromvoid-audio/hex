@@ -15,7 +15,7 @@ pub const FILTER_RESONANCE: ParameterId =
     ParameterId::from_static(crate::operator_filter::FIRST + 5);
 pub const FILTER_MORPH: ParameterId = ParameterId::from_static(crate::operator_filter::FIRST + 6);
 
-pub(super) const TARGET_COUNT: usize = 28;
+pub(super) const TARGET_COUNT: usize = 29;
 pub(super) const TIME_IDX: usize = 18;
 pub(super) const TONE_IDX: usize = 19;
 pub(super) const VOLUME_IDX: usize = 20;
@@ -23,9 +23,10 @@ pub(super) const TRANSPOSE_IDX: usize = 21;
 pub(super) const SPREAD_IDX: usize = 22;
 pub(super) const GLIDE_TIME_IDX: usize = 23;
 pub(super) const PITCH_ENV_AMOUNT_IDX: usize = 24;
-pub(super) const FILTER_FREQ_IDX: usize = 25;
-pub(super) const FILTER_RES_IDX: usize = 26;
-pub(super) const FILTER_MORPH_IDX: usize = 27;
+pub(super) const FILTER_ENV_AMOUNT_IDX: usize = 25;
+pub(super) const FILTER_FREQ_IDX: usize = 26;
+pub(super) const FILTER_RES_IDX: usize = 27;
+pub(super) const FILTER_MORPH_IDX: usize = 28;
 
 pub(super) const TARGET_IDS: [ParameterId; TARGET_COUNT] = [
     parameter::oscillator_ratio(1), // 1
@@ -53,6 +54,7 @@ pub(super) const TARGET_IDS: [ParameterId; TARGET_COUNT] = [
     parameter::SPREAD,              // 641
     parameter::GLIDE_TIME,          // 643
     parameter::PITCH_ENV_AMOUNT,    // 651
+    parameter::FILTER_ENV_AMOUNT,   // 671
     FILTER_FREQUENCY,               // 20_005
     FILTER_RESONANCE,               // 20_006
     FILTER_MORPH,                   // 20_007
@@ -145,6 +147,7 @@ pub(super) fn base_target_values(settings: &OperatorSettings) -> [f32; TARGET_CO
         settings.pitch_perf.spread,
         settings.pitch_perf.glide_time,
         settings.pitch_env.amount(),
+        settings.filter_env.amount(),
         read_f32(settings.filter.read(FILTER_FREQUENCY)),
         read_f32(settings.filter.read(FILTER_RESONANCE)),
         read_f32(settings.filter.read(FILTER_MORPH)),
