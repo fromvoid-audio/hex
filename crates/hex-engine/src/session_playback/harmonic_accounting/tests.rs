@@ -122,12 +122,9 @@ fn proposal_preserves_actual_legacy_prefix_signed_zero_and_inactive_bank_bits() 
         original.state_version(),
         hex_devices::operator_state::OPERATOR_STATE_VERSION
     );
-    // Version 18 frames the 14 positional sections (1,760 bytes) with an 8-byte
-    // HXOP header and 14 * 6-byte section headers (1,852 bytes total).
-    assert_eq!(original.payload().len(), 1852);
     assert_eq!(&original.payload()[..4], b"HXOP");
     let original_bytes = original.payload().to_vec();
-    // TAG_AMPLITUDE_VELOCITY payload begins at byte 320 in canonical v18 TLV.
+    // Appended Vector sections leave the amplitude-velocity bits in this prefix.
     assert_eq!(&original.payload()[320..324], &(-0.0f32).to_le_bytes());
     assert_eq!(
         crate::native_device_parameter_for_class(
