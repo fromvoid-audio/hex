@@ -188,18 +188,20 @@ impl EditorView {
             .then(|| self.expression_mode_tabs(cx));
         let expression_controls = (self.midi_editor.velocity.open && !is_velocity)
             .then(|| self.expression_mode_controls(clip, cx));
-        let left = div()
-            .w(px(228.0))
+        let header = div()
+            .h(px(18.0))
             .flex_shrink_0()
             .flex()
-            .flex_col()
-            .px_1()
-            .text_xs()
+            .items_center()
+            .justify_between()
             .child(
                 div()
                     .id("midi-velocity-toggle")
                     .debug_selector(|| "midi-velocity-toggle".into())
                     .h(px(18.0))
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .cursor_pointer()
                     .child(theme::text(if self.midi_editor.velocity.open {
                         format!("▾ {label}")
@@ -216,17 +218,17 @@ impl EditorView {
                         }),
                     ),
             )
-            .children(mode_tabs)
-            .children(expression_controls)
-            .when(self.midi_editor.velocity.open && is_velocity, |left| {
+            .when(self.midi_editor.velocity.open && is_velocity, |header| {
                 let captured = self.velocity_random_context();
                 let enabled = !self.edit_pending() && !self.midi_editor.selection.is_empty();
-                left.child(
+                header.child(
                     div()
                         .flex()
+                        .flex_shrink_0()
                         .items_center()
                         .gap_1()
                         .text_xs()
+                        .line_height(px(18.0))
                         .child(
                             div()
                                 .id("midi-velocity-randomize")
@@ -320,6 +322,16 @@ impl EditorView {
                         ),
                 )
             });
+        let left = div()
+            .w(px(228.0))
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .px_1()
+            .text_xs()
+            .child(header)
+            .children(mode_tabs)
+            .children(expression_controls);
         let mut row = div()
             .flex()
             .flex_row()
