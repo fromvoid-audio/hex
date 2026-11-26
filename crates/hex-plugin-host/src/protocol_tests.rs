@@ -763,7 +763,18 @@ fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_
         is_live: false,
         ..cc
     };
+    let live_cc = MidiEvent {
+        note_id: pressure.note_id,
+        ..cc
+    };
+    let live_bend = MidiEvent {
+        frame: 4,
+        note_id: pressure.note_id,
+        ..bend
+    };
     block.events.push(cc).unwrap();
+    block.events.push(live_cc).unwrap();
+    block.events.push(live_bend).unwrap();
     block.events.push(sequenced_cc).unwrap();
     let authored_cc = MidiEvent {
         note_id: pressure.note_id,
@@ -790,6 +801,8 @@ fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_
             channel_pressure,
             bend,
             cc,
+            live_cc,
+            live_bend,
             sequenced_cc,
             authored_cc,
             authored_bend
@@ -802,8 +815,8 @@ fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_
             ..cc
         },
         MidiEvent {
-            note_id: pressure.note_id,
-            ..cc
+            bytes: [0xb2, 75, 64],
+            ..live_cc
         },
         MidiEvent { len: 2, ..bend },
         MidiEvent {
@@ -811,8 +824,8 @@ fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_
             ..bend
         },
         MidiEvent {
-            note_id: pressure.note_id,
-            ..bend
+            note_id: std::num::NonZeroU32::new(u32::MAX),
+            ..live_bend
         },
         MidiEvent {
             note_id: std::num::NonZeroU32::new(1),
