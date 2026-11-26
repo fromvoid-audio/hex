@@ -226,8 +226,9 @@ fn main_limiter_quiet_timing_changes_publish_and_render_the_new_delay() {
         .command(PlaybackCommand::Play)
         .unwrap();
     let frames: Vec<_> = (0..12).flat_map(|_| h.render()).collect();
-    // Both mid/side stages retain 6 ms lookahead plus 31 true-peak frames.
-    let latency = 2 * (288 + 31);
+    // Each mid/side stage holds 6 ms lookahead and 31 reconstruction
+    // frames. The final true-peak output guard adds 11 frames once.
+    let latency = 2 * (288 + 31) + 11;
     assert!(frames[..latency].iter().flatten().all(|v| *v == 0.0));
     assert!(
         frames[latency..]
