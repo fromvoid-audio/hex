@@ -284,6 +284,11 @@ impl NewFolder {
                     root_name,
                 )?;
                 outcome.path = path.clone();
+                if let Some(retained) = outcome.retained_stage.take()
+                    && let Some(file_name) = retained.file_name()
+                {
+                    outcome.retained_stage = Some(root.join(file_name));
+                }
                 outcome.warning = rustix::fs::fsync(&custody.parent_fd)
                     .map_err(io::Error::from)
                     .err()
@@ -296,6 +301,11 @@ impl NewFolder {
             {
                 publication::rename_directory_exclusive(stage, root)?;
                 outcome.path = path.clone();
+                if let Some(retained) = outcome.retained_stage.take()
+                    && let Some(file_name) = retained.file_name()
+                {
+                    outcome.retained_stage = Some(root.join(file_name));
+                }
                 outcome.warning = root
                     .parent()
                     .and_then(|parent| sync_directory(parent).err())
@@ -519,7 +529,7 @@ pub fn collect_sample(
         Err(error) => return Err(error.into()),
     }
     let len = input.metadata()?.len();
-    let temporary = replacement::prepare_temp_with(&directory, None, |file| {
+    let mut temporary = replacement::prepare_temp_with(&directory, None, |file| {
         let mut input = BufReader::new(input.take(len));
         loop {
             check_cancelled(&cancelled)?;
@@ -537,7 +547,15 @@ pub fn collect_sample(
         Ok(())
     })?;
     check_cancelled(&cancelled)?;
-    publication::publish_new(&temporary.path, &target)?;
+    let mut staged = File::open(&temporary.path)?;
+    let published =
+        publication::publish_new_isolated_from_file(&mut staged, &temporary.path, &target)?;
+    drop(staged);
+    // Disarm Drop cleanup: exclusive rename already consumed the staging name,
+    // and non-consuming modes retain an isolated stage rather than unlinking
+    // by pathname.
+    temporary.disarm();
+    let _ = published;
     files::finish_publication(&temporary.path, &target).map_err(|(_, error)| error.into())
 }
 

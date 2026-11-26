@@ -21,9 +21,68 @@
 //! (see [`Published::staging_remains`]) and synchronizing the parent directory.
 use std::{
     fs::{self, File, OpenOptions},
-    io,
+    io::{self, Seek, SeekFrom},
     path::Path,
 };
+
+/// How an isolated create-new save became visible at its destination (`#8145` / `#8144`).
+///
+/// Unlike [`Published::Linked`], every variant guarantees the destination has
+/// an independent inode (`nlink == 1`) isolated from any retained staging
+/// pathname:
+/// 1. [`Self::Renamed`]: exclusive no-replace rename (`RENAME_EXCL` on macOS
+///    APFS/HFS+/FAT32, `RENAME_NOREPLACE` on Linux). Atomic and consumes the
+///    staging pathname so no post-publication `unlink` runs.
+/// 2. [`Self::Cloned`]: macOS APFS `fclonefileat` from the open staging file
+///    descriptor. Atomic, no-replace, source-descriptor-bound, and creates an
+///    independent CoW inode; the staging pathname is retained rather than
+///    unlinked by path.
+/// 3. [`Self::Copied`]: when neither exclusive rename nor `fclonefileat` is
+///    supported (including ExFAT and simulated hard-link-only volumes where
+///    POSIX `link(2)` cannot isolate the published inode without an unsafe
+///    check-then-unlink race), creates an exclusive destination (`O_CREAT |
+///    O_EXCL`) and copies bytes directly from the open staging descriptor.
+///    Preserves inode isolation, source-descriptor binding, no-replace, and
+///    foreign files at the staging path, at the documented trade-off of
+///    non-atomic creation on crash mid-copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum IsolatedPublished {
+    /// Exclusive rename moved staging to destination; staging name is gone.
+    Renamed,
+    /// Descriptor-bound CoW clone created an independent inode; staging remains.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Cloned,
+    /// Descriptor-bound exclusive copy created an independent inode; staging remains.
+    Copied,
+}
+
+impl IsolatedPublished {
+    pub(crate) fn staging_remains(self) -> bool {
+        !matches!(self, Self::Renamed)
+    }
+}
+
+/// Publish a complete, synced staging file at an absent `destination` while
+/// guaranteeing that the published inode is isolated from any retained staging
+/// pathname (`#8145` / `#8144`).
+pub(crate) fn publish_new_isolated_from_file(
+    source: &mut File,
+    staging: &Path,
+    destination: &Path,
+) -> io::Result<IsolatedPublished> {
+    match rename_exclusive(staging, destination) {
+        Ok(()) => return Ok(IsolatedPublished::Renamed),
+        Err(error) if !rename_unsupported(&error) => return Err(error),
+        Err(_) => {}
+    }
+    match clone_from_file(source, destination) {
+        Ok(()) => return Ok(IsolatedPublished::Cloned),
+        Err(error) if !clone_unsupported(&error) => return Err(error),
+        Err(_) => {}
+    }
+    copy_exclusive_from_file(source, destination)?;
+    Ok(IsolatedPublished::Copied)
+}
 
 /// How a staging file became visible at its destination.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -247,26 +306,65 @@ fn publish_directory_exclusive_windows(staging: &Path, destination: &Path) -> io
     Ok(())
 }
 
-fn copy_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
-    let mut source = File::open(staging)?;
+#[cfg(target_os = "macos")]
+fn clone_from_file(source: &File, destination: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(error) = simulate::clone_error() {
+        return Err(error);
+    }
+    rustix::fs::fclonefileat(
+        source,
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::CloneFlags::empty(),
+    )
+    .map_err(io::Error::from)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clone_from_file(_: &File, _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor clone is unsupported on this platform",
+    ))
+}
+
+fn clone_unsupported(error: &io::Error) -> bool {
+    #[cfg(unix)]
+    if let Some(code) = error.raw_os_error() {
+        return [
+            libc::ENOTSUP,
+            libc::EOPNOTSUPP,
+            libc::EINVAL,
+            libc::ENOSYS,
+            libc::EXDEV,
+        ]
+        .contains(&code);
+    }
+    error.kind() == io::ErrorKind::Unsupported
+}
+
+fn copy_exclusive_from_file(source: &mut File, destination: &Path) -> io::Result<()> {
+    source.seek(SeekFrom::Start(0))?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        // Keep private staging files private; umask can only narrow this.
         options.mode(source.metadata()?.permissions().mode() & 0o777);
     }
     let mut target = options.open(destination)?;
-    // Even an exclusively created pathname can have been replaced since opening
-    // it. Preserve the current entry on copy/sync failure instead of unlinking
-    // by path.
     #[cfg(test)]
     if let Some(error) = simulate::on_copy_after_open(destination) {
         return Err(error);
     }
-    io::copy(&mut source, &mut target)?;
+    io::copy(source, &mut target)?;
     target.sync_all()
+}
+
+fn copy_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
+    let mut source = File::open(staging)?;
+    copy_exclusive_from_file(&mut source, destination)
 }
 
 fn link_unsupported(error: &io::Error) -> bool {
@@ -303,7 +401,13 @@ pub(crate) mod simulate {
         /// Hard links fail with this errno; exclusive rename works.
         #[cfg_attr(not(unix), allow(dead_code))]
         NoHardLinks(i32),
-        /// Neither hard links nor exclusive rename exist (copy fallback).
+        /// Exclusive rename is unsupported; descriptor clone (`fclonefileat`) works on macOS.
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        CloneOnly,
+        /// Exclusive rename and descriptor clone are unsupported; only hard links work (`#8145`).
+        #[cfg_attr(not(unix), allow(dead_code))]
+        LinkOnly,
+        /// Neither hard links nor exclusive rename nor clone exist (copy fallback).
         NoAtomicCreate,
     }
 
@@ -352,6 +456,7 @@ pub(crate) mod simulate {
     pub(super) fn link_error() -> Option<io::Error> {
         match VOLUME.with(Cell::get)? {
             Volume::NoHardLinks(code) => Some(io::Error::from_raw_os_error(code)),
+            Volume::CloneOnly | Volume::LinkOnly => None,
             Volume::NoAtomicCreate => Some(unsupported_error()),
         }
     }
@@ -363,7 +468,19 @@ pub(crate) mod simulate {
     pub(super) fn rename_error() -> Option<io::Error> {
         match VOLUME.with(Cell::get)? {
             Volume::NoHardLinks(_) => None,
-            Volume::NoAtomicCreate => Some(unsupported_error()),
+            Volume::CloneOnly | Volume::LinkOnly | Volume::NoAtomicCreate => {
+                Some(unsupported_error())
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn clone_error() -> Option<io::Error> {
+        match VOLUME.with(Cell::get)? {
+            Volume::CloneOnly => None,
+            Volume::NoHardLinks(_) | Volume::LinkOnly | Volume::NoAtomicCreate => {
+                Some(unsupported_error())
+            }
         }
     }
 }
