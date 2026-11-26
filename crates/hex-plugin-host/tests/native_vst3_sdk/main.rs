@@ -1114,20 +1114,14 @@ fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure(
     assert!(matches!(failed.cause(), Error::Protocol(_)));
     assert!(matches!(
         &failed.custody,
-        preparation_failure::Custody::Native(Lease {
-            child: ChildCustody::Owned(_, _),
-            ..
-        })
+        preparation_failure::Custody::Native(lease) if matches!(lease.child, ChildCustody::Owned(_, _))
     ));
     let original = failed.take_cause_on_control();
     assert!(matches!(original, Error::Protocol(_)));
     assert!(
         matches!(
             &failed.custody,
-            preparation_failure::Custody::Native(Lease {
-                child: ChildCustody::Owned(_, _),
-                ..
-            })
+            preparation_failure::Custody::Native(lease) if matches!(lease.child, ChildCustody::Owned(_, _))
         ),
         "moving the diagnostic does not dispose its actual child"
     );

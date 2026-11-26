@@ -352,11 +352,6 @@ impl Session {
             }
             return Ok(result);
         }
-        if self.audio_mode != DocumentAudioMode::Resident {
-            return Err(SessionError::Invalid(
-                "sampler offline export requires resident document mode",
-            ));
-        }
         let limits = self.native_reservation.ok_or(SessionError::Invalid(
             "sampler requires an explicit resident reservation",
         ))?;
@@ -496,11 +491,6 @@ impl Session {
             }
             media.validate_clip_sources(candidate)?;
             let sources = if resources::requires_private_sampler_sources(candidate) {
-                if audio_mode != DocumentAudioMode::Resident {
-                    return Err(SessionError::Invalid(
-                        "sampler offline export requires resident document mode",
-                    ));
-                }
                 let limits = reservation.ok_or(SessionError::Invalid(
                     "sampler requires an explicit resident reservation",
                 ))?;

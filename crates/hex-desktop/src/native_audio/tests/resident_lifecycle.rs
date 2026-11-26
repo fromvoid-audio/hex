@@ -1571,3 +1571,281 @@ fn ordinary_long_repitch_plays_and_reopens_through_verified_workers() {
     finish_replacement(&mut h, &reopened, output);
     audible(&mut h, FAR_ARRANGEMENT_FRAME);
 }
+
+#[test]
+fn verified_canonical_playback_renders_file_backed_audio_and_audible_sampler_with_ordinary_resources()
+ {
+    let _native = native_fixture();
+    let files = Files::new();
+    let sampler_files = Files::new();
+    let clip_wav = files.wav(48_000, 8192);
+    let sampler_wav = sampler_files.wav(48_000, 4096);
+    let mut h = ResidentHarness::with_event_capacity(8192, Arc::new(AtomicBool::new(true)), 8);
+    assert!(h.next().error.is_none());
+    let _ = h.applied(0);
+
+    // 1. Switch to genuine VerifiedStreaming mode (retaining native_reservation).
+    let fresh = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    assert!(fresh.error.is_none(), "{:?}", fresh.error);
+    assert!(fresh.project_replaced);
+    h.release_relinquished_output();
+    let fresh_gen = fresh
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context()
+        .project_generation;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.pump();
+        if h.audio.is_some() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "verified output did not open");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // 2. Import a verified file-backed WAV clip.
+    let imported = h.run(Request::Import(clip_wav));
+    assert!(imported.error.is_none(), "{:?}", imported.error);
+    let import_source = imported.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(
+        import_source.audio_mode(),
+        hex_session::DocumentAudioMode::VerifiedStreaming
+    );
+    assert!(
+        import_source
+            .sources()
+            .values()
+            .any(|binding| matches!(binding, AudioSourceBinding::VerifiedFile(_)))
+    );
+    assert!(!import_source.uses_ordinary_worker_publication());
+    let import_ctx = import_source.context();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.render();
+        if h.audio
+            .as_ref()
+            .and_then(|audio| audio.status())
+            .is_some_and(|status| {
+                status
+                    .applied_audio_source()
+                    .is_some_and(|applied| applied.context == import_ctx)
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "verified file-only clip did not install"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // 3. Add a MIDI track, load a native original sample into a Sampler, and place a MIDI note.
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "verified-sampler".into(),
+    }));
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let added_ctx = added
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.render();
+        if h.audio
+            .as_ref()
+            .and_then(|audio| audio.status())
+            .is_some_and(|status| {
+                status
+                    .applied_audio_source()
+                    .is_some_and(|applied| applied.context == added_ctx)
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "verified add-midi-track graph did not install"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let Some(Created::Track(midi_track)) = added.created else {
+        panic!("expected midi track")
+    };
+    let before_load = h
+        .audio
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_revision
+        .load(Acquire);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: fresh_gen,
+        revision: added.state.revision,
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track: midi_track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
+        path: sampler_wav,
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    let mixed_source = loaded.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(
+        mixed_source.audio_mode(),
+        hex_session::DocumentAudioMode::VerifiedStreaming
+    );
+    assert!(mixed_source.uses_ordinary_worker_publication());
+    assert!(
+        mixed_source
+            .sources()
+            .values()
+            .any(|binding| matches!(binding, AudioSourceBinding::VerifiedFile(_)))
+    );
+    let (after_load, _) = h.applied(before_load);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .ordinary_owner_active(),
+        "loading a native original sampler into a verified document must hand off to the ordinary owner"
+    );
+
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track: midi_track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    assert!(placed.error.is_none(), "{:?}", placed.error);
+    let (after_place, _) = h.applied(after_load);
+    let Some(Created::Clip(midi_clip)) = placed.created else {
+        panic!("expected midi clip")
+    };
+    let noted = h.run(Request::Edit(Command::AddMidiNote {
+        clip: midi_clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    assert!(noted.error.is_none(), "{:?}", noted.error);
+    let _ = h.applied(after_place);
+    let noted_ctx = noted
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        h.render();
+        if h.audio
+            .as_ref()
+            .and_then(|audio| audio.status())
+            .is_some_and(|status| {
+                status.ordinary_owner_active()
+                    && status
+                        .recording_source()
+                        .is_some_and(|applied| applied.context == noted_ctx)
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mixed verified+sampler graph did not install via continuous ordinary handoff"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+
+    // 4. Play and verify audible output from the combined file-backed + sampler graph (zero callback allocations).
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut rendered_nonzero = false;
+    while Instant::now() < deadline {
+        let block = h.render();
+        if block.iter().any(|frame| frame[0].abs() > 0.01) {
+            rendered_nonzero = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        rendered_nonzero,
+        "mixed verified file + sampler graph must render audible PCM"
+    );
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Stop)
+        .unwrap();
+    for _ in 0..8 {
+        h.render();
+    }
+
+    // 5. Save and reopen the mixed verified document, verifying custody and playback continuity.
+    let saved_path = files.0.join("verified-mixed-canonical.hex");
+    let saved = h.run(Request::SaveNew(saved_path.clone()));
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+    assert!(saved.save_complete);
+    let expected = hex_storage::load(&saved_path).unwrap();
+
+    let output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let reopened = h.run(Request::OpenWithAudioMode {
+        source: hex_session::service::ProjectSource::Saved(saved_path),
+        relinks: std::collections::BTreeMap::new(),
+        mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    assert!(reopened.error.is_none(), "{:?}", reopened.error);
+    assert!(reopened.open_complete);
+    assert_eq!(reopened.state.project.as_ref(), &expected);
+    let reopened_source = reopened.state.canonical_audio_source.as_ref().unwrap();
+    assert_eq!(
+        reopened_source.audio_mode(),
+        hex_session::DocumentAudioMode::VerifiedStreaming
+    );
+    assert!(reopened_source.uses_ordinary_worker_publication());
+    finish_replacement(&mut h, &reopened, output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut reopened_nonzero = false;
+    while Instant::now() < deadline {
+        let block = h.render();
+        if block.iter().any(|frame| frame[0].abs() > 0.01) {
+            reopened_nonzero = true;
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        reopened_nonzero,
+        "reopened mixed verified file + sampler document must render audible PCM"
+    );
+}

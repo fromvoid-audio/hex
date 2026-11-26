@@ -11,7 +11,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
         Request::Edit(_)
             if ctx.outcome.failed_plugin_adoption
                 && (!ctx.worker.events.resident_publication_enabled()
-                    || ctx.worker.session.audio_mode() != DocumentAudioMode::Resident) =>
+                    || (!ctx.worker.session.uses_ordinary_worker_publication()
+                        && ctx.worker.resident_snapshot.is_none())) =>
         {
             ctx.outcome.error = Some("vst3 recovery lost its resident publication path".into());
         }
@@ -84,6 +85,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         Request::Edit(command)
             if ctx.worker.session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && !ctx.worker.session.uses_ordinary_worker_publication()
+                && ctx.worker.resident_snapshot.is_none()
                 && (matches!(&command, Command::PasteDevices { .. })
                     || resident_audio::device_insert::graph_edit_operation(&command).is_some()
                     || ctx.worker.session.should_stage_verified_group_route(
@@ -140,7 +143,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         Request::Edit(command)
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident =>
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some()) =>
         {
             let recoverable_edit = ctx.outcome.time_range_copy
                 || matches!(command, Command::ResizeAudioClipView { .. });
