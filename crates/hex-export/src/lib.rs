@@ -564,6 +564,15 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
     // A matching name and an available advisory lock do not establish file
     // ownership. Retain unclaimed files, including possible recovery copies.
     let (file, temporary_path) = create_temporary(path)?;
+    let mut publish_handle = file.try_clone().map_err(|source| {
+        retained_stage(
+            temporary_path.clone(),
+            ExportError::Io {
+                operation: "retain a handle to the temporary file",
+                source,
+            },
+        )
+    })?;
     // When available, keep this lock until return for older cooperating sweeps.
     let _ownership = stale_temporary::hold(&file);
     let write_result = (|| {
@@ -593,24 +602,26 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
     };
 
     let (staging_remains, recovery_path) = match publication {
-        Publication::CreateNew => match publication::publish_new(&temporary_path, path) {
-            Ok(published) => (published.staging_remains(), None),
-            Err(error) => {
-                let cause = match error {
-                    publication::NewPublicationError::BeforeCopy(source) => ExportError::Io {
-                        operation: "publish the wav without replacing the destination",
-                        source,
-                    },
-                    publication::NewPublicationError::IncompleteCopy(source) => {
-                        ExportError::IncompleteDestination {
-                            path: path.to_owned(),
+        Publication::CreateNew => {
+            match publication::publish_new_from_file(&mut publish_handle, &temporary_path, path) {
+                Ok(published) => (published.staging_remains(), None),
+                Err(error) => {
+                    let cause = match error {
+                        publication::NewPublicationError::BeforeCopy(source) => ExportError::Io {
+                            operation: "publish the wav without replacing the destination",
                             source,
+                        },
+                        publication::NewPublicationError::IncompleteCopy(source) => {
+                            ExportError::IncompleteDestination {
+                                path: path.to_owned(),
+                                source,
+                            }
                         }
-                    }
-                };
-                return Err(retained_stage(temporary_path, cause));
+                    };
+                    return Err(retained_stage(temporary_path, cause));
+                }
             }
-        },
+        }
         Publication::Replace(consent) => {
             if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
                 if matches!(error, ExportError::PublicationConflict { .. }) {
@@ -735,6 +746,7 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
         let temporary_name = stale_temporary::name(std::process::id(), identifier);
         let temporary_path = parent.join(temporary_name);
         match OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .open(&temporary_path)

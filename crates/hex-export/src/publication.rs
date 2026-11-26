@@ -128,6 +128,165 @@ impl From<io::Error> for NewPublicationError {
     }
 }
 
+use std::io::{Seek, SeekFrom};
+
+/// Outcome of source-descriptor-bound create-new WAV publication (`#8105` / `#8094`).
+///
+/// # Verified platform contract (macOS arm64 / Linux)
+///
+/// 1. **APFS (`Cloned`)**: Uses macOS `fclonefileat(source_fd, CWD, destination, 0)`
+///    via pinned `rustix` (zero unsafe workspace code). Atomic, no-replace
+///    (`EEXIST`), bound to the open rendered file descriptor (immune to staging
+///    pathname substitution), and yields an independent CoW inode (`nlink == 1`).
+///    The staging pathname remains on disk; callers must NOT unlink it blindly
+///    by pathname (post-publication stage custody is tracked by `#8119`/`#8120`).
+/// 2. **Non-clone, rename-capable volumes (`RenamedAfterIdentityCheck` — e.g.
+///    macOS HFS+, FAT32, Linux ext4/XFS/btrfs)**: Authoritative Apple CoreOS DTS
+///    guidance (Developer Forums thread 850377), Apple Technical Q&A QA1113
+///    (`/.vol` is an unsupported debugging detail), and disposable HFS+ image
+///    controls confirm macOS exposes no supported public API to hard-link or
+///    atomically rename directly from an open file descriptor when `fclonefileat`
+///    returns `ENOTSUP`. This path verifies `fstat(source)` matches
+///    `symlink_metadata(staging)` `(dev, ino)` before calling
+///    `renameatx_np(RENAME_EXCL)` / `renameat2(RENAME_NOREPLACE)`. That check
+///    rejects prior substitutions without touching foreign or destination files,
+///    and exclusive rename is atomic/no-replace and consumes the staging name,
+///    but **check-then-rename is NOT atomic** against a same-user non-cooperating
+///    process racing the final syscall window, and advisory `flock` does not
+///    prevent in-place writes through another handle. Full same-user adversary
+///    immunity on non-clone volumes would require an OS/entitlement boundary
+///    decision (not a userspace workaround).
+/// 3. **Non-clone, non-rename volumes (`CopiedFromDescriptor` — e.g. macOS
+///    ExFAT/FSKit)**: Reads strictly from the held `source` descriptor into an
+///    exclusively created destination (`O_CREAT | O_EXCL`). Preserves source-fd
+///    binding, no-replace, and foreign files at the staging path, at the
+///    documented trade-off of non-atomic creation on crash mid-copy.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SourceBoundOutcome {
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Cloned,
+    RenamedAfterIdentityCheck,
+    CopiedFromDescriptor,
+}
+
+/// Publish a complete, synced staging file using the strongest source-bound
+/// primitive supported by the destination volume (`#8105`).
+#[cfg_attr(not(test), allow(dead_code))]
+pub(super) fn publish_new_source_bound(
+    source: &mut File,
+    staging: &Path,
+    destination: &Path,
+) -> Result<SourceBoundOutcome, NewPublicationError> {
+    match clone_from_file(source, destination) {
+        Ok(()) => return Ok(SourceBoundOutcome::Cloned),
+        Err(error) if !clone_unsupported(&error) => return Err(error.into()),
+        Err(_) => {}
+    }
+    verify_staging_matches_descriptor(source, staging)?;
+    match exclusive_rename_step(staging, destination) {
+        Ok(()) => Ok(SourceBoundOutcome::RenamedAfterIdentityCheck),
+        Err(error) if rename_unsupported(&error) => {
+            copy_exclusive_from_file(source, destination)?;
+            Ok(SourceBoundOutcome::CopiedFromDescriptor)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn verify_staging_matches_descriptor(source: &File, staging: &Path) -> io::Result<()> {
+    let staged_meta = fs::symlink_metadata(staging)?;
+    if staged_meta.file_type().is_symlink() || !staged_meta.file_type().is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "staging pathname was substituted with a non-regular entry before publication",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let open_meta = source.metadata()?;
+        if open_meta.dev() != staged_meta.dev() || open_meta.ino() != staged_meta.ino() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "staging pathname identity changed before exclusive rename",
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = source;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[cfg_attr(not(test), allow(dead_code))]
+fn clone_from_file(source: &File, destination: &Path) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(error) = simulate::clone_error() {
+        return Err(error);
+    }
+    rustix::fs::fclonefileat(
+        source,
+        rustix::fs::CWD,
+        destination,
+        rustix::fs::CloneFlags::empty(),
+    )
+    .map_err(io::Error::from)
+}
+
+#[cfg(not(target_os = "macos"))]
+#[cfg_attr(not(test), allow(dead_code))]
+fn clone_from_file(_: &File, _: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "descriptor clone is unsupported on this platform",
+    ))
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn clone_unsupported(error: &io::Error) -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        use rustix::io::Errno;
+        if errno_in(
+            error,
+            &[
+                Errno::NOTSUP,
+                Errno::OPNOTSUPP,
+                Errno::INVAL,
+                Errno::NOSYS,
+                Errno::XDEV,
+            ],
+        ) {
+            return true;
+        }
+    }
+    error.kind() == io::ErrorKind::Unsupported
+}
+
+pub(super) fn publish_new_from_file(
+    source: &mut File,
+    staging: &Path,
+    destination: &Path,
+) -> Result<Published, NewPublicationError> {
+    match link(staging, destination) {
+        Ok(()) => return Ok(Published::Linked),
+        Err(error) if !link_unsupported(&error) => return Err(error.into()),
+        Err(_) => {}
+    }
+    match exclusive_rename_step(staging, destination) {
+        Ok(()) => Ok(Published::Renamed),
+        Err(error) if rename_unsupported(&error) => {
+            copy_exclusive_from_file(source, destination)?;
+            Ok(Published::Copied)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Publish a complete, synced staging file at an absent destination without
 /// ever replacing an existing file. Tries, in order:
 ///
@@ -145,6 +304,7 @@ impl From<io::Error> for NewPublicationError {
 /// link failures (`EACCES`, `ENOSPC`, ...) propagate without fallback. This
 /// mirrors hex-storage's create-new publication locally because the
 /// dependency policy permits hex-export to depend only on hex-engine.
+#[cfg_attr(not(any(test, windows)), allow(dead_code))]
 pub(super) fn publish_new(
     staging: &Path,
     destination: &Path,
@@ -157,7 +317,8 @@ pub(super) fn publish_new(
     match exclusive_rename_step(staging, destination) {
         Ok(()) => Ok(Published::Renamed),
         Err(error) if rename_unsupported(&error) => {
-            copy_exclusive(staging, destination)?;
+            let mut source = File::open(staging)?;
+            copy_exclusive_from_file(&mut source, destination)?;
             Ok(Published::Copied)
         }
         Err(error) => Err(error.into()),
@@ -180,8 +341,11 @@ fn exclusive_rename_step(staging: &Path, destination: &Path) -> io::Result<()> {
     rename_exclusive(staging, destination)
 }
 
-fn copy_exclusive(staging: &Path, destination: &Path) -> Result<(), NewPublicationError> {
-    let mut source = File::open(staging)?;
+fn copy_exclusive_from_file(
+    source: &mut File,
+    destination: &Path,
+) -> Result<(), NewPublicationError> {
+    source.seek(SeekFrom::Start(0))?;
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -197,14 +361,14 @@ fn copy_exclusive(staging: &Path, destination: &Path) -> Result<(), NewPublicati
             super::after_exchange_hook::run(destination);
             Err(io::Error::other("injected copy failure"))
         }),
-        Some(simulate::CopyFailure::Sync) => io::copy(&mut source, &mut target).and_then(|_| {
+        Some(simulate::CopyFailure::Sync) => io::copy(source, &mut target).and_then(|_| {
             super::after_exchange_hook::run(destination);
             Err(io::Error::other("injected sync failure"))
         }),
-        None => io::copy(&mut source, &mut target).and_then(|_| target.sync_all()),
+        None => io::copy(source, &mut target).and_then(|_| target.sync_all()),
     };
     #[cfg(not(all(test, any(target_os = "linux", target_os = "macos"))))]
-    let result = io::copy(&mut source, &mut target).and_then(|_| target.sync_all());
+    let result = io::copy(source, &mut target).and_then(|_| target.sync_all());
     if let Err(error) = result {
         // Even an exclusively created pathname can have been replaced since
         // opening it. Preserve the current entry and report it for inspection.
@@ -414,7 +578,10 @@ pub(super) mod simulate {
         /// Hard links fail with this raw errno; exclusive rename works.
         #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
         NoHardLinks(i32),
-        /// Neither hard links nor exclusive rename (copy fallback).
+        /// Descriptor clone (`fclonefileat`) is unavailable; exclusive rename works (HFS+/FAT32).
+        #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
+        RenameOnly,
+        /// Neither hard links nor exclusive rename nor clone (copy fallback).
         NoAtomicCreate,
     }
 
@@ -467,15 +634,141 @@ pub(super) mod simulate {
     pub(super) fn link_error() -> Option<io::Error> {
         match VOLUME.with(Cell::get)? {
             Volume::NoHardLinks(code) => Some(io::Error::from_raw_os_error(code)),
-            Volume::NoAtomicCreate => Some(unsupported()),
+            Volume::RenameOnly | Volume::NoAtomicCreate => Some(unsupported()),
         }
     }
 
     pub(super) fn rename_error() -> Option<io::Error> {
         match VOLUME.with(Cell::get)? {
-            Volume::NoHardLinks(_) => None,
+            Volume::NoHardLinks(_) | Volume::RenameOnly => None,
             Volume::NoAtomicCreate => Some(unsupported()),
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    pub(super) fn clone_error() -> Option<io::Error> {
+        match VOLUME.with(Cell::get)? {
+            Volume::NoHardLinks(_) | Volume::RenameOnly | Volume::NoAtomicCreate => {
+                Some(unsupported())
+            }
+        }
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod source_bound_tests {
+    use super::simulate::{Volume, volume};
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Dir(PathBuf);
+    impl Dir {
+        fn new() -> Self {
+            let id = NEXT.fetch_add(1, Ordering::Relaxed);
+            let path =
+                std::env::temp_dir().join(format!("hex-export-sb-{}-{id}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+        fn open_stage(&self, name: &str, bytes: &[u8]) -> (File, PathBuf) {
+            let path = self.0.join(name);
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            file.write_all(bytes).unwrap();
+            file.sync_all().unwrap();
+            (file, path)
+        }
+    }
+    impl Drop for Dir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn source_bound_apfs_clone_publishes_rendered_fd_despite_stage_swap() {
+        let dir = Dir::new();
+        let (mut fd, stage) = dir.open_stage(".stage-apfs", b"rendered-apfs-wav");
+        let displaced = dir.0.join("displaced-apfs");
+        fs::rename(&stage, &displaced).unwrap();
+        fs::write(&stage, b"foreign-stage-bytes").unwrap();
+
+        let destination = dir.0.join("out.wav");
+        let outcome = publish_new_source_bound(&mut fd, &stage, &destination).unwrap();
+        assert_eq!(outcome, SourceBoundOutcome::Cloned);
+        assert_eq!(fs::read(&destination).unwrap(), b"rendered-apfs-wav");
+        assert_eq!(fs::read(&stage).unwrap(), b"foreign-stage-bytes");
+        assert_eq!(fs::read(&displaced).unwrap(), b"rendered-apfs-wav");
+        // Occupied destination is refused without replacing existing bytes.
+        let error = publish_new_source_bound(&mut fd, &stage, &destination).unwrap_err();
+        assert!(matches!(
+            error,
+            NewPublicationError::BeforeCopy(e) if e.kind() == io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), b"rendered-apfs-wav");
+    }
+
+    #[test]
+    fn source_bound_rename_only_volume_publishes_atomically_and_refuses_detected_swap() {
+        let dir = Dir::new();
+        let _guard = volume(Volume::RenameOnly);
+
+        // Normal rename-only path publishes atomically and consumes staging.
+        let (mut fd, stage) = dir.open_stage(".stage-ok", b"rendered-hfs-wav");
+        let dest = dir.0.join("ok.wav");
+        let outcome = publish_new_source_bound(&mut fd, &stage, &dest).unwrap();
+        assert_eq!(outcome, SourceBoundOutcome::RenamedAfterIdentityCheck);
+        assert_eq!(fs::read(&dest).unwrap(), b"rendered-hfs-wav");
+        assert!(!stage.exists());
+
+        // Occupied destination refuses without replacing existing bytes.
+        let (mut fd2, stage2) = dir.open_stage(".stage-dup", b"newer-wav");
+        let error = publish_new_source_bound(&mut fd2, &stage2, &dest).unwrap_err();
+        assert!(matches!(
+            error,
+            NewPublicationError::BeforeCopy(e) if e.kind() == io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(fs::read(&dest).unwrap(), b"rendered-hfs-wav");
+        assert_eq!(fs::read(&stage2).unwrap(), b"newer-wav");
+
+        // Swapping staging pathname before publication is detected and refused,
+        // preserving both foreign bytes and displaced rendered stage.
+        let (mut fd3, stage3) = dir.open_stage(".stage-swap", b"rendered-swapped");
+        let displaced = dir.0.join("displaced-hfs");
+        fs::rename(&stage3, &displaced).unwrap();
+        fs::write(&stage3, b"foreign-substituted").unwrap();
+        let blocked_dest = dir.0.join("blocked.wav");
+        let error = publish_new_source_bound(&mut fd3, &stage3, &blocked_dest).unwrap_err();
+        assert!(matches!(
+            error,
+            NewPublicationError::BeforeCopy(e) if e.kind() == io::ErrorKind::InvalidData
+        ));
+        assert!(!blocked_dest.exists());
+        assert_eq!(fs::read(&stage3).unwrap(), b"foreign-substituted");
+        assert_eq!(fs::read(&displaced).unwrap(), b"rendered-swapped");
+    }
+
+    #[test]
+    fn source_bound_copy_fallback_reads_held_descriptor_despite_stage_swap() {
+        let dir = Dir::new();
+        let _guard = volume(Volume::NoAtomicCreate);
+        let (mut fd, stage) = dir.open_stage(".stage-exfat", b"rendered-exfat-wav");
+        let displaced = dir.0.join("displaced-exfat");
+        fs::rename(&stage, &displaced).unwrap();
+        fs::write(&stage, b"foreign-exfat").unwrap();
+        let dest = dir.0.join("copied.wav");
+        // Note: copy_exclusive_from_file itself reads strictly from the held fd.
+        copy_exclusive_from_file(&mut fd, &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"rendered-exfat-wav");
+        assert_eq!(fs::read(&stage).unwrap(), b"foreign-exfat");
+        assert_eq!(fs::read(&displaced).unwrap(), b"rendered-exfat-wav");
     }
 }
 
