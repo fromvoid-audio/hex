@@ -10,7 +10,7 @@ const ROW_HEIGHT: f32 = 40.0;
 
 #[derive(Default)]
 pub(in crate::editor::device_panel) struct State {
-    pub(super) filter_response: Option<super::filter_response::Control>,
+    pub(in crate::editor::device_panel) filter_response: Option<super::filter_response::Control>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
     pub(in crate::editor::device_panel) routing_popup: Option<usize>,
     pub(super) routing_blur: Option<gpui::Subscription>,
@@ -106,13 +106,17 @@ pub(in crate::editor::device_panel) fn retire_removed(
         .retain(|device, _| alive.contains(device));
 }
 
-/// Retain owner-scoped focus/cache state, but retire a hidden routing popup.
+/// Retain owner-scoped focus/cache state, but retire a hidden routing popup
+/// and release any active filter-response pointer capture.
 pub(in crate::editor::device_panel) fn cancel_interactions(
     view: &mut EditorView,
-    _cx: &mut Context<EditorView>,
+    cx: &mut Context<EditorView>,
 ) {
     for state in view.device_panel.operator_previews.values_mut() {
         state.routing_popup = None;
+        if let Some(control) = state.filter_response.as_ref() {
+            control.release_pointer_capture(cx);
+        }
     }
 }
 
@@ -132,7 +136,12 @@ pub(in crate::editor::device_panel) fn cancel_hidden(
 
 pub(in crate::editor::device_panel) fn cancel_all(
     view: &mut EditorView,
-    _cx: &mut Context<EditorView>,
+    cx: &mut Context<EditorView>,
 ) {
-    view.device_panel.operator_previews.clear();
+    let previews = std::mem::take(&mut view.device_panel.operator_previews);
+    for (_, state) in previews {
+        if let Some(control) = state.filter_response {
+            control.release_pointer_capture(cx);
+        }
+    }
 }
