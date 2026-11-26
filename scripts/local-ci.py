@@ -885,7 +885,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
         # Compressor plans run reviewed contract tests, but still lint every
         # extra configuration so an unexercised cfg branch cannot stop compiling.
         lint_features.update(f"{name}/{feature}" for feature in extra)
-        if boundary["kind"] == "compressor" or name not in tested:
+        if boundary["kind"] == "compressor" or name not in tested or (standalone_ui and name == "hex-ui"):
             continue
         single_features = set(single[name].split(",")) if name in single else set()
         uncovered_single = sorted(single_features & extra)

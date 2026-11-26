@@ -1705,7 +1705,13 @@ class SingleRunFeatureTests(unittest.TestCase):
                     "scope": "rust", "affected_packages": affected, "boundary": boundary, "cargo_inventory": inventory})}
                 self.assertNotIn("affected-tests", steps)
                 self.assertIn(f"feature-test-{pkg}-0", steps)
-                self.assertNotIn(f"feature-test-{pkg}-1", steps)
+                if pkg == "hex-desktop":
+                    profile_step = steps[f"feature-test-{pkg}-1"]
+                    self.assertEqual(profile_step.argv[profile_step.argv.index("--features") + 1], "profiling-tools")
+                    lint = steps["affected-feature-clippy"].argv
+                    self.assertIn("hex-desktop/profiling-tools", lint[lint.index("--features") + 1].split(","))
+                else:
+                    self.assertNotIn(f"feature-test-{pkg}-1", steps)
                 self.assertIn(expected_features, steps[f"feature-test-{pkg}-0"].argv)
                 self.assertIn(pkg, steps["affected-clippy"].argv)
                 if probe_step is not None:
@@ -2024,6 +2030,7 @@ class SingleRunFeatureTests(unittest.TestCase):
                 features = feature_lint[feature_lint.index("--features") + 1].split(",")
                 self.assertIn("hex-ui/ui-test-support", features)
                 self.assertIn("hex-ui/ui-unit-tier", features)
+                self.assertIn("hex-ui/profiling-tools", features)
 
     def test_standalone_ui_unit_selection_preserves_other_routes(self):
         root, inventory = self.live()
