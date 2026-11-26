@@ -125,7 +125,7 @@ pub(crate) fn metadata_pair(
             }
             for action in [
                 hex_project::DeviceComparisonAction::Switch,
-                hex_project::DeviceComparisonAction::CopyToInactive,
+                hex_project::DeviceComparisonAction::CopyFrom(device.active_variant()),
             ] {
                 let mut trial = hex_project::Editor::new(from.clone(), 1)?;
                 trial.execute(hex_project::Command::CompareDevice {
@@ -201,6 +201,20 @@ mod metadata_tests {
         assert!(
             !metadata_pair(&source, copy.project()).unwrap(),
             "no-op is not a metadata edit"
+        );
+        copy.execute(Command::CompareDevice {
+            device,
+            expected: Slot::A,
+            action: Action::CopyFrom(Slot::A),
+        })
+        .unwrap();
+        assert!(
+            metadata_pair(&source, copy.project()).unwrap(),
+            "capturing the first reference keeps live audio"
+        );
+        assert!(
+            metadata_pair(copy.project(), &source).unwrap(),
+            "undo keeps live audio"
         );
         let active = switched.device(device).unwrap().state().clone();
         let inactive = hex_engine::patch_native_device_parameter_for_class(

@@ -198,10 +198,29 @@ fn compressor_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         title(&mut visual, device);
-        visual.simulate_keystrokes("p");
+        let (select, copy_active, copy_inactive) = match active {
+            DeviceVariant::A => (".", "alt-,", "alt-."),
+            DeviceVariant::B => (",", "alt-.", "alt-,"),
+        };
+        for (shortcut, expected_mix) in [(copy_active, current), (copy_inactive, inactive)] {
+            visual.simulate_keystrokes(shortcut);
+            pump_until(&editor, cx, settled);
+            compressor_pair(&editor, cx, device, active, expected_mix, expected_mix);
+            visual.simulate_keystrokes("cmd-z");
+            pump_until(&editor, cx, settled);
+            compressor_pair(&editor, cx, device, active, current, inactive);
+            visual.run_until_parked();
+        }
+        visual.simulate_keystrokes(select);
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         compressor_pair(&editor, cx, device, next, inactive, current);
+        let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+        visual.simulate_keystrokes(select);
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, revision)
+        });
     }
     eprintln!(
         "compressor generic A/B: return={on_return}; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved"
@@ -317,7 +336,7 @@ fn slot(editor: &Entity<EditorView>, cx: &TestAppContext, device: DeviceId) -> D
 }
 
 #[gpui::test]
-fn device_comparison_click_title_p_menu_copy_and_real_undo_are_one_shared_route(
+fn device_comparison_click_title_period_menu_copy_and_real_undo_are_one_shared_route(
     cx: &mut TestAppContext,
 ) {
     let directory = Directory::new();
@@ -341,8 +360,12 @@ fn device_comparison_click_title_p_menu_copy_and_real_undo_are_one_shared_route(
         );
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
-    // Focus comes from the real title click/menu restoration, never a fixture-set card focus.
+    // The removed toggle leaves the focused card on A.
     visual.simulate_keystrokes("p");
+    pump_until(&editor, cx, settled);
+    assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
+    // Focus comes from the real title click/menu restoration, never a fixture-set card focus.
+    visual.simulate_keystrokes(".");
     pump_until(&editor, cx, settled);
     visual.run_until_parked();
     assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
@@ -364,7 +387,7 @@ fn device_comparison_click_title_p_menu_copy_and_real_undo_are_one_shared_route(
 }
 
 #[gpui::test]
-fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut TestAppContext) {
+fn device_comparison_period_respects_browser_ime_musical_and_modal_focus(cx: &mut TestAppContext) {
     let directory = Directory::new();
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let original = state.project.clone();
@@ -376,9 +399,9 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
     });
-    visual.simulate_input("p 🎹");
+    visual.simulate_input("p,. 🎹");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).text(), "p 🎹");
+        assert_eq!(view.browser.search.read(cx).text(), "p,. 🎹");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     visual.update(|window, cx| {
@@ -390,7 +413,7 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
         });
     });
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        keystroke: gpui::Keystroke::parse(".").unwrap(),
         is_held: false,
     });
     editor.read_with(cx, |view, _| {
@@ -414,12 +437,12 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
     });
     title(&mut visual, device);
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        keystroke: gpui::Keystroke::parse(".").unwrap(),
         is_held: true,
     });
     assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
     visual.update(|window, cx| editor.update(cx, |view, cx| view.open_theme_settings(window, cx)));
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, original)
     });
@@ -514,9 +537,7 @@ fn catalog_fixture(
 }
 
 #[gpui::test]
-fn device_comparison_every_available_catalog_header_and_return_uses_actual_p(
-    cx: &mut TestAppContext,
-) {
+fn device_comparison_every_available_catalog_header_and_return_selects_b(cx: &mut TestAppContext) {
     let mut expected = 0;
     let mut observed = 0;
     for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
@@ -544,7 +565,7 @@ fn device_comparison_every_available_catalog_header_and_return_uses_actual_p(
                 visual.run_until_parked();
                 point_for(&mut visual, "device-comparison", device);
                 title(&mut visual, device);
-                visual.simulate_keystrokes("p");
+                visual.simulate_keystrokes(".");
                 pump_until(&editor, cx, settled);
                 assert_eq!(
                     slot(&editor, cx, device),
@@ -617,22 +638,22 @@ fn device_comparison_real_numeric_edits_keep_independent_slots_and_copy_is_one_u
     visual.simulate_resize(size(px(1600.0), px(700.0)));
     visual.run_until_parked();
     title(&mut visual, device);
-    for _ in 0..2 {
-        visual.simulate_keystrokes("p");
+    for key in [".", ","] {
+        visual.simulate_keystrokes(key);
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
     }
     enter_balance(&mut visual, &editor, cx, device, "25 r");
     assert_eq!(balance(&editor, cx, device), 0.25);
     title(&mut visual, device);
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     pump_until(&editor, cx, settled);
     visual.run_until_parked();
     assert_eq!(balance(&editor, cx, device), 0.0);
     enter_balance(&mut visual, &editor, cx, device, "50 l");
     assert_eq!(balance(&editor, cx, device), -0.5);
     title(&mut visual, device);
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(",");
     pump_until(&editor, cx, settled);
     visual.run_until_parked();
     assert_eq!(balance(&editor, cx, device), 0.25);
@@ -693,7 +714,7 @@ fn device_comparison_pending_press_does_not_apply_after_worker_completion(cx: &m
         });
         window.dispatch_input(
             gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
-                keystroke: gpui::Keystroke::parse("p").unwrap(),
+                keystroke: gpui::Keystroke::parse(".").unwrap(),
                 is_held: false,
             }),
             cx,
@@ -703,14 +724,14 @@ fn device_comparison_pending_press_does_not_apply_after_worker_completion(cx: &m
     visual.run_until_parked();
     assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        keystroke: gpui::Keystroke::parse(".").unwrap(),
         is_held: true,
     });
     assert_eq!(slot(&editor, cx, device), DeviceVariant::A);
     visual.simulate_event(gpui::KeyUpEvent {
-        keystroke: gpui::Keystroke::parse("p").unwrap(),
+        keystroke: gpui::Keystroke::parse(".").unwrap(),
     });
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     pump_until(&editor, cx, settled);
     assert_eq!(slot(&editor, cx, device), DeviceVariant::B);
 }
@@ -750,7 +771,7 @@ fn device_comparison_stale_menu_removal_preserves_real_keyboard_undo(cx: &mut Te
 }
 
 #[gpui::test]
-fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
+fn device_comparison_numeric_draft_and_eq_graph_own_period(cx: &mut TestAppContext) {
     let directory = Directory::new();
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let original = state.project.clone();
@@ -766,7 +787,7 @@ fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
     visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("invalid p");
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     editor.read_with(cx, |view, cx| {
         let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
             device,
@@ -794,14 +815,14 @@ fn device_comparison_numeric_draft_and_eq_graph_own_p(cx: &mut TestAppContext) {
     eq_ui_tests::eq_double_click(&mut visual, graph.center());
     pump_until(&editor, cx, settled);
     let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     editor.read_with(cx, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project, before)
     });
 }
 
 #[gpui::test]
-fn device_comparison_title_click_and_p_in_one_dispatch_frame_targets_clicked_card(
+fn device_comparison_title_click_and_period_in_one_dispatch_frame_targets_clicked_card(
     cx: &mut TestAppContext,
 ) {
     let directory = Directory::new();
@@ -840,14 +861,14 @@ fn device_comparison_title_click_and_p_in_one_dispatch_frame_targets_clicked_car
         );
         window.dispatch_input(
             gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
-                keystroke: gpui::Keystroke::parse("p").unwrap(),
+                keystroke: gpui::Keystroke::parse(".").unwrap(),
                 is_held: false,
             }),
             cx,
         );
         window.dispatch_input(
             gpui::PlatformInput::KeyUp(gpui::KeyUpEvent {
-                keystroke: gpui::Keystroke::parse("p").unwrap(),
+                keystroke: gpui::Keystroke::parse(".").unwrap(),
             }),
             cx,
         );
@@ -884,7 +905,9 @@ fn device_comparison_right_click_nonselected_badge_switches_only_its_target(
 }
 
 #[gpui::test]
-fn device_comparison_review_dismiss_nonselected_menu_keeps_p_on_target(cx: &mut TestAppContext) {
+fn device_comparison_review_dismiss_nonselected_menu_keeps_comparison_on_target(
+    cx: &mut TestAppContext,
+) {
     let directory = Directory::new();
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let instrument = state
@@ -902,12 +925,12 @@ fn device_comparison_review_dismiss_nonselected_menu_keeps_p_on_target(cx: &mut 
     menu(&mut visual, device);
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     pump_until(&editor, cx, settled);
     assert_eq!(
         slot(&editor, cx, device),
         DeviceVariant::B,
-        "dismiss must not restore a different card's P owner"
+        "dismiss must not restore a different card's comparison focus"
     );
     assert_eq!(slot(&editor, cx, instrument), DeviceVariant::A);
 }
@@ -2010,7 +2033,10 @@ fn auto_pan_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         title(&mut visual, device);
-        visual.simulate_keystrokes("p");
+        visual.simulate_keystrokes(match next {
+            DeviceVariant::A => ",",
+            DeviceVariant::B => ".",
+        });
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         auto_pan_pair(&mut visual, &editor, cx, device, next, inactive, current);
@@ -2289,7 +2315,7 @@ fn compressor_rms_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
     title(&mut visual, device);
     let before_switch =
         editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(",");
     pump_until(&editor, cx, settled);
     assert_rms_banks(
         &mut visual,
@@ -2366,7 +2392,10 @@ fn compressor_rms_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         title(&mut visual, device);
-        visual.simulate_keystrokes("p");
+        visual.simulate_keystrokes(match next {
+            DeviceVariant::A => ",",
+            DeviceVariant::B => ".",
+        });
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         assert_rms_banks(&mut visual, &editor, cx, device, next, [inactive, current]);

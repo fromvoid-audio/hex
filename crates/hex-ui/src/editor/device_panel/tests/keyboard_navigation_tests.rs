@@ -477,8 +477,8 @@ fn device_d_transfers_focus_to_new_copy_for_delete_bypass_fold_compare_and_prese
         assert!(!view.device_panel.collapsed.contains(&copy));
     });
 
-    // A/B compare (`p`) acts on the new copy immediately.
-    visual.simulate_keystrokes("p");
+    // Select B (`.`) acts on the new copy immediately.
+    visual.simulate_keystrokes(".");
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
