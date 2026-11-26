@@ -60,6 +60,9 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
         (650, ParameterValue::Bool(true)),   // Pitch env enabled
         (651, ParameterValue::Float(60.0)),  // Pitch env amount (60%)
         (654, ParameterValue::Float(12.0)),  // Pitch env peak (+12 st)
+        (671, ParameterValue::Float(36.0)),  // Filter env amount (+36 st)
+        (685, ParameterValue::Float(40.0)),  // Filter freq<vel (+40%)
+        (686, ParameterValue::Float(50.0)),  // Filter freq<key (+50%)
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,

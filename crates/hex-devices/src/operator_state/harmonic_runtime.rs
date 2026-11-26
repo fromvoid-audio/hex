@@ -187,11 +187,22 @@ impl Factory {
         } else {
             None
         };
+        let filter_env = if settings.filter.armed && settings.filter_env.amount() != 0.0 {
+            Some(mod_env::Machine::prepare(
+                settings.filter_env.spec(),
+                self.rate,
+                beat,
+                running,
+            )?)
+        } else {
+            None
+        };
         Ok(Voice {
             note,
             phases,
             machines,
             pitch_env,
+            filter_env,
             ..Voice::default()
         })
     }
@@ -324,6 +335,7 @@ pub(super) struct Voice {
     pub glide_semitones: f64,
     pub glide_target_pitch: f64,
     pub pitch_env: Option<mod_env::Machine>,
+    pub filter_env: Option<mod_env::Machine>,
 }
 #[derive(Clone, Copy)]
 pub(super) struct ParameterRamp {
