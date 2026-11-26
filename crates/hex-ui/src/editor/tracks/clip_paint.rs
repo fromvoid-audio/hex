@@ -322,7 +322,7 @@ impl EditorView {
                 || self.shows_audio_clip_loop_preview()
                 || self.shows_midi_clip_loop_preview()
                 || self.audio_detail.event.gesture.is_some()
-                || self.held_arrangement_event_clip().is_some();
+                || self.displayed_arrangement_event_clip().is_some();
 
             if !has_potential_overlays {
                 let canvas = crate::editor::track_lane_canvas::TrackLaneCanvas::new(

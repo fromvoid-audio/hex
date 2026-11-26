@@ -300,9 +300,22 @@ impl EditorView {
                 && self.audio_detail.event.revision == revision
         })
     }
-    pub(super) fn held_arrangement_event_clip(&self) -> Option<ClipId> {
-        self.held_arrangement_event_amplitude()
-            .map(|(clip, _)| clip)
+    /// Keep the affected track's cached scene responsive until the exact
+    /// receipt installs or refuses the authored amplitude edit.
+    pub(super) fn displayed_arrangement_event_clip(&self) -> Option<ClipId> {
+        self.audio_detail
+            .event
+            .pending
+            .as_ref()
+            .filter(|pending| {
+                pending.owner.1 == self.project_generation
+                    && is_event_amplitude_edit(&pending.operation)
+            })
+            .map(|pending| pending.owner.0)
+            .or_else(|| {
+                self.held_arrangement_event_amplitude()
+                    .map(|(clip, _)| clip)
+            })
     }
 
     fn held_arrangement_event_amplitude(&self) -> Option<(ClipId, &AudioEventEdit)> {

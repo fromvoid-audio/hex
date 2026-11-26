@@ -442,7 +442,7 @@ impl EditorView {
         let parent = cx.weak_entity();
         let fresh = !self.clip_content_cache_allowed_for(track, track_index)
             || self
-                .held_arrangement_event_clip()
+                .displayed_arrangement_event_clip()
                 .is_some_and(|clip| track.clips().iter().any(|candidate| candidate.id() == clip));
         let has_active_drag = cx.has_active_drag();
         let entity = if let Some(entity) = self
