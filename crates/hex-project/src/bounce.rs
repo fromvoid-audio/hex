@@ -339,20 +339,6 @@ impl Project {
                     "cannot independently bounce console cells while another shared-source contributor has midi",
                 ));
             }
-            // Clearing a receiver would silence every other linked track even
-            // when it currently has no clips. Keep their source route intact.
-            if track.source_id().is_some_and(|source| {
-                self.native_source(source)
-                    .is_some_and(|definition| definition.receiver() == Some(*id))
-                    && self
-                        .tracks()
-                        .iter()
-                        .any(|peer| peer.id() != *id && peer.source_id() == Some(source))
-            }) {
-                return Err(Invalid(
-                    "cannot bounce this shared source receiver · unlink or reroute linked tracks first",
-                ));
-            }
             if track.clips().iter().any(|c| !c.active())
                 || track.midi_clips().iter().any(|c| !c.active())
             {
@@ -1226,7 +1212,7 @@ mod tests {
     }
 
     #[test]
-    fn whole_track_bounce_refuses_to_disconnect_other_source_contributors() {
+    fn whole_track_shared_receiver_bounce_preserves_retained_source_path_and_contributors() {
         let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let Created::Track(receiver) = editor
             .execute(Command::InsertTrackWithDevice {
@@ -1252,11 +1238,6 @@ mod tests {
             .unwrap()
             .source_id()
             .unwrap();
-        let item = editor
-            .project()
-            .plan_arrangement_bounce(&BounceTarget::Track(receiver), true)
-            .unwrap()
-            .remove(0);
         let Created::Track(peer) = editor
             .execute(Command::AddMidiTrack {
                 name: "linked".into(),
@@ -1271,20 +1252,14 @@ mod tests {
                 source: Some(source),
             })
             .unwrap();
-        editor
-            .execute(Command::Gain {
-                track: peer,
-                gain: 0.5,
-            })
-            .unwrap();
-        assert!(editor.undo());
         let original = editor.project().clone();
-        let err = editor
+        let plan = editor
             .project()
             .plan_arrangement_bounce(&BounceTarget::Track(receiver), true)
-            .unwrap_err();
-        assert!(err.to_string().contains("linked tracks"), "{err}");
-        let err = editor
+            .unwrap();
+        assert_eq!(plan.len(), 1);
+        let item = &plan[0];
+        editor
             .execute(Command::CommitArrangementBounce {
                 target: BounceTarget::Track(receiver),
                 in_place: true,
@@ -1297,18 +1272,45 @@ mod tests {
                     path: "bounced.wav".into(),
                 }],
             })
-            .unwrap_err();
-        assert!(err.to_string().contains("linked tracks"), "{err}");
-        assert_eq!(editor.project(), &original);
-        assert!(editor.can_redo());
+            .unwrap();
+        let bounced = editor.project().clone();
+        let after = bounced.track(receiver).unwrap();
+        assert!(after.retained_source_path());
+        assert_eq!(after.source_id(), Some(source));
+        assert!(after.midi_clips().is_empty());
+        assert_eq!(after.clips().len(), 1);
         assert_eq!(
-            editor.project().native_source(source).unwrap().receiver(),
+            bounced.native_source(source).unwrap().receiver(),
             Some(receiver)
         );
+        assert_eq!(bounced.track(peer).unwrap().source_id(), Some(source));
         assert_eq!(
-            editor.project().track(peer).unwrap().source_id(),
-            Some(source)
+            bounced
+                .source_contributors(source)
+                .map(|track| track.id())
+                .collect::<Vec<_>>(),
+            vec![peer]
         );
+        assert_eq!(Project::from_snapshot(bounced.snapshot()).unwrap(), bounced);
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().snapshot().tracks,
+            original.snapshot().tracks
+        );
+        assert_eq!(
+            editor.project().snapshot().native_sources,
+            original.snapshot().native_sources
+        );
+        assert!(editor.project().snapshot().retained_source_paths.is_empty());
+        assert!(
+            !editor
+                .project()
+                .track(receiver)
+                .unwrap()
+                .retained_source_path()
+        );
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &bounced);
     }
 
     #[test]

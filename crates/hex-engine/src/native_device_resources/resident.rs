@@ -180,6 +180,29 @@ impl ResidentDeviceAssets {
         let (_, a) = self.assets.iter().find(|(id, _)| *id == asset)?;
         a.bank.source_view(&a.bank.source_token(asset).ok()?).ok()
     }
+
+    /// Borrow one host-owned resident source as a read-only `DeviceResourceView`
+    /// with its verified content and derivation identity for control-side
+    /// preparation or borrowed callback rendering. No owning handle escapes.
+    pub fn resource_view(
+        &self,
+        slot: hex_lattice_contract::DeviceAssetSlot,
+        asset: AssetId,
+    ) -> Option<hex_lattice::DeviceResourceView<'_>> {
+        let (_, entry) = self.assets.iter().find(|(id, _)| *id == asset)?;
+        let identity = entry.catalog.identity(asset)?;
+        let source = entry
+            .bank
+            .source_view(&entry.bank.source_token(asset).ok()?)
+            .ok()?;
+        let pcm = source.resident_frames()?;
+        Some(hex_lattice::DeviceResourceView {
+            slot,
+            identity,
+            sample_rate: source.sample_rate(),
+            pcm: hex_lattice::DeviceResourcePcm::Stereo(pcm),
+        })
+    }
     fn inventory<'a>(
         &'a self,
         destination: Option<&'a Vec<(AssetId, NativeBankLoan)>>,

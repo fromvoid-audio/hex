@@ -49,6 +49,7 @@ pub mod subtractive;
 pub mod tuning_audition;
 pub mod utility;
 pub mod utility_filters;
+pub mod wavetable;
 
 // Private mathematical precursor; no native registration or production API.
 #[cfg(test)]
