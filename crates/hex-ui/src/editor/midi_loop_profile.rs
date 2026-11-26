@@ -103,7 +103,7 @@ fn profile_long_midi_loop_repaint(cx: &mut TestAppContext) {
                 project: Arc::clone(&old.project),
                 waveforms: Default::default(),
                 source_overviews: Default::default(),
-                audio_clip_waveforms: std::collections::BTreeMap::new(),
+                audio_clip_waveforms: Default::default(),
                 midi_preview: Arc::clone(&old.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                 timeline_frames: end,

@@ -69,6 +69,7 @@ pub(crate) fn latest_timeline_content_end(project: &Project) -> u64 {
         .max(locator_end)
 }
 
+#[cfg(test)]
 pub(crate) fn run_export_worker(
     work: Receiver<ExportWork>,
     events: SyncSender<ExportEvent>,
@@ -76,6 +77,30 @@ pub(crate) fn run_export_worker(
     finished: SyncSender<u64>,
     shutdown: Arc<AtomicBool>,
     wake_hook: client::WakeHook,
+    #[cfg(test)] test_hook: ExportTestHook,
+) {
+    run_export_worker_with_signal(
+        work,
+        events,
+        exporter,
+        finished,
+        shutdown,
+        wake_hook,
+        Arc::new(WakeSignal::default()),
+        #[cfg(test)]
+        test_hook,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_export_worker_with_signal(
+    work: Receiver<ExportWork>,
+    events: SyncSender<ExportEvent>,
+    exporter: Exporter,
+    finished: SyncSender<u64>,
+    shutdown: Arc<AtomicBool>,
+    wake_hook: client::WakeHook,
+    drain_signal: Arc<WakeSignal>,
     #[cfg(test)] test_hook: ExportTestHook,
 ) {
     while let Ok(work) = work.recv() {
@@ -221,6 +246,7 @@ pub(crate) fn run_export_worker(
             });
         }
         loop {
+            let seq = drain_signal.snapshot();
             match events.try_send(event) {
                 Ok(()) => {
                     wake_hook.wake();
@@ -234,7 +260,7 @@ pub(crate) fn run_export_worker(
                     event = returned;
                 }
             }
-            thread::sleep(std::time::Duration::from_millis(5));
+            drain_signal.wait_since(seq, std::time::Duration::from_millis(5));
         }
         if !terminal_delivered {
             return;

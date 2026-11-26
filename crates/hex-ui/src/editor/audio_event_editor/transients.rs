@@ -148,7 +148,7 @@ mod tests {
                 canonical_audio_source: None,
                 comparison_audio: None,
                 project: Arc::clone(&state.project),
-                waveforms: [(asset, Arc::new(waveform))].into(),
+                waveforms: Arc::new([(asset, Arc::new(waveform))].into()),
                 source_overviews: Default::default(),
                 audio_clip_waveforms: Default::default(),
                 midi_preview: Arc::clone(&state.midi_preview),

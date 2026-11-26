@@ -43,17 +43,27 @@ impl Service {
     /// delay shutdown and does not provide durable recovery reporting.
     pub fn shutdown(&mut self, timeout: Duration) -> Result<(), ShutdownError> {
         self.shutdown.store(true, Ordering::Release);
-        // Disconnect wakes a worker blocked in its idle request receive.
+        // Disconnect wakes a worker blocked in its idle request receive; notify
+        // all condvar signals so any bounded backpressure/fence wait exits immediately.
         self.requests = None;
+        self.export_drain_signal.notify();
+        self.outcome_drain_signal.notify();
+        self.worker_wake_signal.notify();
         let Some(worker) = self.worker.as_ref() else {
             return Ok(());
         };
         let deadline = Instant::now().checked_add(timeout);
         while !worker.is_finished() {
-            if deadline.is_none_or(|deadline| Instant::now() >= deadline) {
-                return Err(ShutdownError::Timeout(timeout));
+            let seq = self.worker_exited.snapshot();
+            if worker.is_finished() {
+                break;
             }
-            thread::sleep(Duration::from_millis(2));
+            let Some(remaining) = deadline.and_then(|d| d.checked_duration_since(Instant::now()))
+            else {
+                return Err(ShutdownError::Timeout(timeout));
+            };
+            self.worker_exited
+                .wait_since(seq, remaining.min(Duration::from_millis(2)));
         }
         match self.worker.take().map(JoinHandle::join) {
             Some(Err(_)) => Err(ShutdownError::WorkerPanicked),

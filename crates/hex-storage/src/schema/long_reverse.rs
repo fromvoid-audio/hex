@@ -165,22 +165,26 @@ mod tests {
     #[test]
     fn long_reverse_round_trips_over_unchanged_older_document() {
         let (base, reversed, _) = fixture();
-        let base_bytes = crate::encode(&base).unwrap();
+        let base_bytes = crate::encode_stacked_legacy(&base).unwrap();
         assert_eq!(crate::decode(&base_bytes).unwrap(), base);
         assert_eq!(
             crate::schema_version_for(&reversed),
-            LONG_REVERSE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
-        let bytes = crate::encode(&reversed).unwrap();
+        let bytes = crate::encode_stacked_legacy(&reversed).unwrap();
         let document: Document<'_> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(document.base.get().as_bytes(), base_bytes);
         assert_eq!(crate::decode(&bytes).unwrap(), reversed);
+        assert_eq!(
+            crate::decode(&crate::encode(&reversed).unwrap()).unwrap(),
+            reversed
+        );
     }
 
     #[test]
     fn malformed_long_reverse_inventory_is_refused() {
         let (_, reversed, clip) = fixture();
-        let bytes = crate::encode(&reversed).unwrap();
+        let bytes = crate::encode_stacked_legacy(&reversed).unwrap();
         let original: Value = serde_json::from_slice(&bytes).unwrap();
         for ids in [vec![], vec![clip, clip], vec![clip + 1]] {
             let mut invalid = original.clone();

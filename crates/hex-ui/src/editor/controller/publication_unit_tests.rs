@@ -419,7 +419,7 @@ fn candidate(audio_revision: u64, project_revision: u64, generation: u64) -> Pla
             project,
             waveforms: Default::default(),
             source_overviews: Default::default(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: 0,

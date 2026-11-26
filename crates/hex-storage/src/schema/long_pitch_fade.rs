@@ -207,10 +207,14 @@ mod tests {
         let project = editor.project();
         assert_eq!(
             crate::schema_version_for(project),
-            LONG_PITCH_FADE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(
             &crate::decode(&crate::encode(project).unwrap()).unwrap(),
+            project
+        );
+        assert_eq!(
+            &crate::decode(&crate::encode_stacked_legacy(project).unwrap()).unwrap(),
             project
         );
     }
@@ -279,14 +283,18 @@ mod tests {
         let project = editor.project();
         assert_eq!(
             crate::schema_version_for(project),
-            LONG_PITCH_FADE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
-        let bytes = crate::encode(project).unwrap();
+        let bytes = crate::encode_stacked_legacy(project).unwrap();
         let document: Document<'_> = serde_json::from_slice(&bytes).unwrap();
         let base: Value = serde_json::from_str(document.base.get()).unwrap();
         assert_eq!(base["version"], crate::LONG_PITCH_SCHEMA_VERSION);
         assert!(crate::decode(document.base.get().as_bytes()).is_ok());
         assert_eq!(&crate::decode(&bytes).unwrap(), project);
+        assert_eq!(
+            &crate::decode(&crate::encode(project).unwrap()).unwrap(),
+            project
+        );
         let mut malformed: Value = serde_json::from_slice(&bytes).unwrap();
         malformed["clips"][0]["cents"] = 0.into();
         assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());

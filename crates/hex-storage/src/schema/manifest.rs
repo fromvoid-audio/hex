@@ -586,7 +586,7 @@ pub(crate) fn schema_version_for(project: &Project) -> u32 {
     if max_version >= CAPABILITY_MANIFEST_SCHEMA_VERSION {
         return max_version;
     }
-    if post_112_count >= 4 {
+    if post_112_count >= 1 {
         return CAPABILITY_MANIFEST_SCHEMA_VERSION;
     }
     if max_version >= crate::S_CURVE_FADE_SCHEMA_VERSION {
@@ -638,13 +638,14 @@ pub(crate) fn contains_track_io_routing(project: &Project) -> bool {
 }
 
 /// True when `project` should be saved directly as unified schema 126..=129
-/// rather than stacking four or more historical post-112 `RawValue` wrappers.
-/// Projects with 0..=3 post-112 features retain their oldest compatible format.
+/// rather than stacking historical post-112 `RawValue` wrappers.
+/// Projects with zero post-112 features retain their oldest compatible format;
+/// historical schemas `1..=125` remain readable via explicit versioned decoders.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
     contains_track_io_routing(project)
         || contains_automation_curves_and_freeze(project)
         || contains_midi_expression(project)
-        || post_112_feature_count(project) >= 4
+        || post_112_feature_count(project) >= 1
 }
 
 /// Deterministic, strictly sorted capability manifest for `project`.

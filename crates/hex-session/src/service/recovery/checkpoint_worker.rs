@@ -1,5 +1,6 @@
 //! One control-owned publication worker. No journal is shared between threads.
 use super::PreparedCheckpoint;
+use crate::service::WakeSignal;
 use std::{
     path::PathBuf,
     sync::{
@@ -8,6 +9,7 @@ use std::{
         mpsc::{self, Receiver, SyncSender, TrySendError},
     },
     thread::{self, JoinHandle},
+    time::Duration,
 };
 
 type Publication = (
@@ -28,24 +30,29 @@ pub(super) struct CheckpointWorker {
     pending: Option<Receiver<Publication>>,
     thread: Option<JoinHandle<()>>,
     ready: Arc<AtomicBool>,
+    ready_signal: Arc<WakeSignal>,
 }
 
 impl CheckpointWorker {
     pub(super) fn new() -> Result<Self, String> {
         let (sender, receiver) = mpsc::sync_channel::<Job>(1);
         let ready = Arc::new(AtomicBool::new(false));
+        let ready_signal = Arc::new(WakeSignal::default());
         let worker_ready = Arc::clone(&ready);
+        let worker_signal = Arc::clone(&ready_signal);
         let thread = thread::Builder::new()
             .name("hex-recovery-checkpoint".into())
             .spawn(move || {
                 while let Ok(mut job) = receiver.recv() {
                     let result = job.checkpoint.publish(&mut job.journal);
                     let completed = std::time::Instant::now();
-                    // Publish readiness before the one-slot reply. A control
-                    // poll may then wait briefly for the corresponding send.
+                    // Publish readiness before the one-slot reply and wake any
+                    // blocked durability fence immediately via condvar.
                     worker_ready.store(true, Ordering::Release);
                     let _ = job.reply.send((job.journal, result, completed));
+                    worker_signal.notify();
                 }
+                worker_signal.notify();
             })
             .map_err(|error| format!("could not start recovery checkpoint worker: {error}"))?;
         Ok(Self {
@@ -53,6 +60,7 @@ impl CheckpointWorker {
             pending: None,
             thread: Some(thread),
             ready,
+            ready_signal,
         })
     }
 
@@ -98,6 +106,15 @@ impl CheckpointWorker {
         self.pending.is_some()
             && (self.ready.load(Ordering::Acquire)
                 || self.thread.as_ref().is_some_and(JoinHandle::is_finished))
+    }
+
+    /// Block up to `timeout` until a pending checkpoint completes, waking
+    /// immediately on the worker's condvar notification instead of sleeping.
+    pub(super) fn wait_ready(&self, timeout: Duration) {
+        let seq = self.ready_signal.snapshot();
+        if !self.ready() {
+            self.ready_signal.wait_since(seq, timeout);
+        }
     }
 
     /// Wait only on the service control worker; publication itself owns the journal.

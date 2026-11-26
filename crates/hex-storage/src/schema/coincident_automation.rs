@@ -188,10 +188,10 @@ mod tests {
             .execute(Command::AddArrangementLocator { frame: 500 })
             .unwrap();
         let prior = editor.project().clone();
-        let prior_bytes = crate::encode(&prior).unwrap();
+        let prior_bytes = crate::encode_stacked_legacy(&prior).unwrap();
         assert_eq!(
             crate::schema_version_for(&prior),
-            crate::ARRANGEMENT_LOCATOR_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(crate::decode(&prior_bytes).unwrap(), prior);
 
@@ -204,12 +204,16 @@ mod tests {
         let expected = editor.project();
         assert_eq!(
             crate::schema_version_for(expected),
-            COINCIDENT_AUTOMATION_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
-        let bytes = crate::encode(expected).unwrap();
+        let bytes = crate::encode_stacked_legacy(expected).unwrap();
         let document: Document<'_> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(document.base.get().as_bytes(), prior_bytes);
         assert_eq!(crate::decode(&bytes).unwrap(), *expected);
+        assert_eq!(
+            crate::decode(&crate::encode(expected).unwrap()).unwrap(),
+            *expected
+        );
 
         let folder =
             std::env::temp_dir().join(format!("hex-coincident-automation-{}", std::process::id()));

@@ -305,7 +305,9 @@ fn bounded_audio_detail_fixture(
                     canonical_audio_source: None,
                     comparison_audio: None,
                     project: Arc::new(project),
-                    waveforms: std::collections::BTreeMap::from([(asset, peaks)]),
+                    waveforms: std::sync::Arc::new(std::collections::BTreeMap::from([(
+                        asset, peaks,
+                    )])),
                     source_overviews: Default::default(),
                     audio_clip_waveforms: Default::default(),
                     midi_preview: Arc::default(),

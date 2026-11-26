@@ -344,7 +344,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                 project: Arc::new(project),
                 // A matching ordinary derivative waveform is never authority
                 // for a native original when its qualified overview is absent.
-                waveforms: std::collections::BTreeMap::from([(
+                waveforms: Arc::new(std::collections::BTreeMap::from([(
                     asset,
                     Arc::new(
                         hex_media::waveform::Waveform::from_peaks(
@@ -359,7 +359,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                         )
                         .unwrap(),
                     ),
-                )]),
+                )])),
                 source_overviews: cache,
                 audio_clip_waveforms: Default::default(),
                 midi_preview: Arc::default(),

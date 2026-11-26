@@ -214,20 +214,24 @@ mod tests {
     #[test]
     fn long_pitch_composes_with_long_reverse_and_round_trips_complete_state() {
         let (base, pitched, _) = fixture();
-        let base_bytes = crate::encode(&base).unwrap();
+        let base_bytes = crate::encode_stacked_legacy(&base).unwrap();
         assert_eq!(
             crate::schema_version_for(&base),
-            crate::LONG_REVERSE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(
             crate::schema_version_for(&pitched),
-            LONG_PITCH_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
-        let encoded = crate::encode(&pitched).unwrap();
+        let encoded = crate::encode_stacked_legacy(&pitched).unwrap();
         let document: Document<'_> = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(document.base.get().as_bytes(), base_bytes);
         let reopened = crate::decode(&encoded).unwrap();
         assert_eq!(reopened, pitched);
+        assert_eq!(
+            crate::decode(&crate::encode(&pitched).unwrap()).unwrap(),
+            pitched
+        );
         let mut pitch_count = 0;
         for clip in reopened.tracks().iter().flat_map(|track| track.clips()) {
             if let Some(edit) = clip

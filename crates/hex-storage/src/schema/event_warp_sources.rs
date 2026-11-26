@@ -304,12 +304,17 @@ mod tests {
                 operation: AudioEventEdit::Split { at: 2 * beat },
             })
             .unwrap();
-        let prior = super::super::musical_event_source::encode_scoped(editor.project()).unwrap();
+        let prior = crate::encode_stacked_legacy(editor.project()).unwrap();
         assert_eq!(
             crate::decode(&prior).unwrap().snapshot(),
             editor.project().snapshot()
         );
-        assert_eq!(crate::encode(editor.project()).unwrap(), prior);
+        assert_eq!(
+            crate::decode(&crate::encode(editor.project()).unwrap())
+                .unwrap()
+                .snapshot(),
+            editor.project().snapshot()
+        );
 
         assert!(
             warp.move_marker(24_000, BeatTime::from_raw(beat + beat / 4))
@@ -325,13 +330,19 @@ mod tests {
             })
             .unwrap();
         let project = editor.project();
-        let encoded = crate::encode(project).unwrap();
+        let encoded = crate::encode_stacked_legacy(project).unwrap();
         assert_eq!(
             crate::schema_version_for(project),
-            EVENT_WARP_SOURCE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(
             crate::decode(&encoded).unwrap().snapshot(),
+            project.snapshot()
+        );
+        assert_eq!(
+            crate::decode(&crate::encode(project).unwrap())
+                .unwrap()
+                .snapshot(),
             project.snapshot()
         );
         let document: Value = serde_json::from_slice(&encoded).unwrap();
@@ -373,7 +384,7 @@ mod tests {
         let project = editor.project();
         let root = &project.clip(group).unwrap().audio_events().sources[0];
         assert_eq!(root.clip.audio_events().warp_sources.len(), 1);
-        let encoded = crate::encode(project).unwrap();
+        let encoded = crate::encode_stacked_legacy(project).unwrap();
         let document: Value = serde_json::from_slice(&encoded).unwrap();
         assert_eq!(
             document["event_warp_sources"][0]["path"],
@@ -381,6 +392,12 @@ mod tests {
         );
         assert_eq!(
             crate::decode(&encoded).unwrap().snapshot(),
+            project.snapshot()
+        );
+        assert_eq!(
+            crate::decode(&crate::encode(project).unwrap())
+                .unwrap()
+                .snapshot(),
             project.snapshot()
         );
     }

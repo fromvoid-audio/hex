@@ -250,6 +250,12 @@ impl RecoveryTracker {
         completed
     }
 
+    fn wait_async_ready(&self, timeout: std::time::Duration) {
+        if let Some(worker) = self.worker.as_ref() {
+            worker.wait_ready(timeout);
+        }
+    }
+
     /// Block only at explicit durability/lifecycle fences (Save, Open, New,
     /// RestartRecovery, sample-rate replacement, and shutdown/exit) until both
     /// the in-flight checkpoint and any coalesced latest snapshot have finished
@@ -264,7 +270,7 @@ impl RecoveryTracker {
             while self.in_flight.is_some() {
                 while !self.async_ready() {
                     poll_audio();
-                    std::thread::sleep(super::super::stopped_arrangement::FENCE_POLL);
+                    self.wait_async_ready(super::super::stopped_arrangement::FENCE_POLL);
                 }
                 if let Some(done) = self.collect_in_flight(journal) {
                     completed.push(done);
@@ -292,7 +298,7 @@ impl RecoveryTracker {
         while self.in_flight.is_some() {
             while !self.async_ready() {
                 poll_audio();
-                std::thread::sleep(super::super::stopped_arrangement::FENCE_POLL);
+                self.wait_async_ready(super::super::stopped_arrangement::FENCE_POLL);
             }
             let _ = self.collect_in_flight(context.journal);
         }

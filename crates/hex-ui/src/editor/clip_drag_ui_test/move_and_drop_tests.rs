@@ -954,7 +954,7 @@ fn rendered_midi_drag_moves_between_rows_and_remains_pickable(cx: &mut TestAppCo
             project: Arc::new(moved_project.project().clone()),
             waveforms: Default::default(),
             source_overviews: Default::default(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: Arc::new(moved_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
             timeline_frames: TIMELINE_FRAMES,
