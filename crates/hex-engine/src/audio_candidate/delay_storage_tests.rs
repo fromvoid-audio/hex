@@ -66,18 +66,20 @@ fn sealed_delay_retains_the_original_stereo_echo_law() {
 fn closed_delay_charges_both_real_rings_and_the_transaction_box() {
     let state = DEFINITION.default_state().unwrap();
     for rate in [8_000, 48_000, 192_000] {
-        let factory = DelayDefinition::prepare_owned(&state, rate, &[]).unwrap();
-        let runtime = factory.create_runtime().unwrap();
-        let actual = runtime.as_any().downcast_ref::<DelayRuntime>().unwrap();
-        let (inline, rings) = actual.control_storage().unwrap();
-        assert_eq!(inline, std::mem::size_of::<DelayRuntime>());
-        let one_ring = (rate as usize * 16 + 4) * std::mem::size_of::<[f32; 2]>();
-        assert_eq!(rings, [one_ring; 2]);
-        assert_eq!(
-            actual.fixed_storage_pair_bytes(),
-            Some(inline + 2 * one_ring)
-        );
-        assert_eq!(factory.declared_pair_bytes(), inline + 2 * one_ring);
+        for (automated, seconds) in [(&[][..], 4), (&[hex_devices::delay::TIME][..], 16)] {
+            let factory = DelayDefinition::prepare_owned(&state, rate, automated).unwrap();
+            let runtime = factory.create_runtime().unwrap();
+            let actual = runtime.as_any().downcast_ref::<DelayRuntime>().unwrap();
+            let (inline, rings) = actual.control_storage().unwrap();
+            assert_eq!(inline, std::mem::size_of::<DelayRuntime>());
+            let one_ring = (rate as usize * seconds + 4) * std::mem::size_of::<[f32; 2]>();
+            assert_eq!(rings, [one_ring; 2]);
+            assert_eq!(
+                actual.fixed_storage_pair_bytes(),
+                Some(inline + 2 * one_ring)
+            );
+            assert_eq!(factory.declared_pair_bytes(), inline + 2 * one_ring);
+        }
     }
 }
 
