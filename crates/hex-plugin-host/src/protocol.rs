@@ -8,6 +8,7 @@ use std::io::Cursor;
 mod capture;
 mod editor_pcm;
 mod edits;
+pub(crate) mod output_buses;
 mod parameter_page;
 pub(crate) use editor_pcm::pcm_packet_extent;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -51,7 +52,8 @@ pub(crate) fn control_limit(magic: &[u8]) -> usize {
     let prefix = match magic {
         b"HXVICF03" => return CONFIG_LIMIT,
         b"HXVIMD03" => return PARAMETER_PAGE_LIMIT,
-        b"HXVIST02" => 39,
+        b"HXVIST02" | b"HXVIST03" => 39,
+        b"HXVIOB01" => return output_buses::BODY_LIMIT,
         b"HXVIFA05" => 146,
         b"HXVIQF04" => 162,
         b"HXVIAR03" => 170,
@@ -110,9 +112,16 @@ impl Configuration {
     /// A separate bounded frame keeps the existing path/configuration bound.
     /// The worker validates both frames before entering the selected module.
     pub fn startup_request(&self) -> Result<Vec<u8>> {
+        self.startup_request_with_magic(*b"HXVIST02")
+    }
+    #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+    pub(crate) fn startup_with_output_buses(&self) -> Result<Vec<u8>> {
+        self.startup_request_with_magic(*b"HXVIST03")
+    }
+    fn startup_request_with_magic(&self, magic: [u8; 8]) -> Result<Vec<u8>> {
         self.validate()?;
         let mut out = control_prefix(
-            *b"HXVIST02",
+            magic,
             39 + self
                 .restore
                 .as_ref()

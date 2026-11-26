@@ -54,6 +54,7 @@ pub struct Pending {
     pub(super) control_packet: Packet,
     pub(super) config: Configuration,
     pub(super) facts: Facts,
+    output_buses: Option<Box<[hex_plugin_state::buses::BusDescriptor]>>,
     pub(super) limits: Limits,
     pub(super) packet: Packet,
     pub(super) source: Source,
@@ -351,7 +352,9 @@ impl Pending {
                 .send(&request, until, &mut || token.check())?;
             pending
                 .channel
-                .send(&config.startup_request()?, until, &mut || token.check())?;
+                .send(&config.startup_with_output_buses()?, until, &mut || {
+                    token.check()
+                })?;
             let shm = pending
                 .channel
                 .create_and_send_shm_fd(until, &mut || token.check())?;
@@ -369,6 +372,21 @@ impl Pending {
                 return Err(Error::Protocol("worker did not report preparation facts"));
             }
             let facts = Facts::decode(packet.body()?, &config)?;
+            pending
+                .channel
+                .read(&mut packet, until, &mut || token.check())?;
+            if packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    packet.body()?,
+                    config.binding,
+                )?));
+            }
+            if packet.magic() != b"HXVIOB01" {
+                return Err(Error::Protocol(
+                    "worker did not report its negotiated output buses",
+                ));
+            }
+            let output_buses = protocol::output_buses::decode(packet.body()?, &config)?;
             packet.shrink_to_pcm();
             if let Some((started, timings)) = instance_started.zip(timings.as_deref_mut()) {
                 timings.instance_to_facts = Some(started.elapsed());
@@ -378,9 +396,9 @@ impl Pending {
                 None => {}
                 Some(_) => return Err(Error::Custody("prepared worker already exited".into())),
             }
-            Ok(facts)
+            Ok((facts, output_buses))
         })();
-        let facts = match prepared {
+        let (facts, output_buses) = match prepared {
             Ok(facts) => facts,
             Err(cause) => {
                 return Err(PreparationFailure::native(
@@ -396,12 +414,18 @@ impl Pending {
             control_packet,
             config,
             facts,
+            output_buses,
             limits: options.limits,
             packet,
             source,
             build: owned_build,
             offline: false,
         })
+    }
+    /// Original negotiated SDK slots, including inactive outputs, on the control lane.
+    /// None means the helper could not identify every descriptor. These facts do not route audio.
+    pub fn negotiated_audio_outputs(&self) -> Option<&[hex_plugin_state::buses::BusDescriptor]> {
+        self.output_buses.as_deref()
     }
     pub fn facts(&self) -> Facts {
         self.facts
@@ -520,6 +544,7 @@ impl Pending {
             lease: self.lease,
             config: self.config,
             ready,
+            output_buses: self.output_buses,
             limits: self.limits,
             sequence: 0,
             packet: self.packet,

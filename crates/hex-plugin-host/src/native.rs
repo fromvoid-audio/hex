@@ -65,6 +65,7 @@ pub struct Prepared {
     lease: Lease,
     config: Configuration,
     ready: Ready,
+    output_buses: Option<Box<[hex_plugin_state::buses::BusDescriptor]>>,
     limits: Limits,
     sequence: u64,
     packet: Packet,
@@ -150,6 +151,11 @@ impl Prepared {
     }
     pub fn grouped_editor_callbacks_enabled(&self) -> bool {
         self.grouped_editor_callbacks
+    }
+    /// Original negotiated SDK slots, including inactive outputs, on the control lane.
+    /// None means the helper could not identify every descriptor. These facts do not route audio.
+    pub fn negotiated_audio_outputs(&self) -> Option<&[hex_plugin_state::buses::BusDescriptor]> {
+        self.output_buses.as_deref()
     }
     pub fn ready(&self) -> &Ready {
         &self.ready
