@@ -193,15 +193,21 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
                 .unwrap();
             with_processor.apply(SessionPlaybackCommand::Play).unwrap();
             render_checkpoint_prefix(&mut with_processor, 1);
-            // Model a retiring device during its de-click fade. A live instance
-            // with the destination's identity would instead request re-enable.
-            previous.tail_mutable_instruments[tails - 1] =
-                Some(crate::mutable_instrument::MutableInstrumentTail::new(
-                    track,
-                    with_processor.mutable_instruments[0].take().unwrap(),
-                    Default::default(),
-                    Some(48_000),
-                ));
+            // Use the same detached-owner fixture as the other slots. Import
+            // the held history from the real pair without re-enabling its receiver.
+            let mut tail_runtime = MutableInstrumentTrackRuntime::new(&factory, 48_000).unwrap();
+            tail_runtime.enable_source_live();
+            let stage = tail_runtime
+                .prepare_midi_processor(std::num::NonZeroU64::new(1).unwrap(), &processor)
+                .unwrap();
+            tail_runtime.install_prepared_midi_processor(stage);
+            tail_runtime
+                .inherit_from(with_processor.mutable_instruments[0].as_ref().unwrap())
+                .unwrap();
+            previous.tail_mutable_instruments[tails - 1]
+                .as_mut()
+                .unwrap()
+                .runtime = tail_runtime;
         }
         let result = candidate.try_inherit_state_from(&mut previous);
         if extra == 0 && !with_midi_tail {
@@ -217,7 +223,11 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
                     .all(Option::is_none)
             );
         } else {
-            assert_eq!(result, Err(SessionPlaybackError::ReleaseBankFull));
+            assert_eq!(
+                result,
+                Err(SessionPlaybackError::ReleaseBankFull),
+                "extra bytes per twin {extra}, MIDI tail {with_midi_tail}"
+            );
             assert_eq!(
                 previous.tail_mutable_instruments.iter().flatten().count(),
                 tails
