@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import errno
@@ -1519,6 +1520,37 @@ class FreshTargetReservation:
                     or stream.read(len(payload) + 1) != payload):
                 raise TargetCacheError("published owner marker identity or bytes changed")
 
+    @staticmethod
+    def _exchange_entries(directory: int, first: str, second: str) -> None:
+        """Atomically exchange two directory entries without overwriting either inode.
+
+        Uses macOS ``renameatx_np(..., RENAME_SWAP)`` or Linux ``renameat2(..., RENAME_EXCHANGE)``.
+        Raises OSError(ENOTSUP) on platforms or filesystems without atomic exchange; callers
+        must fail closed rather than falling back to destructive rename(2).
+        """
+        libc = ctypes.CDLL(None, use_errno=True)
+        first_bytes = os.fsencode(first)
+        second_bytes = os.fsencode(second)
+        if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+            renameatx = libc.renameatx_np
+            renameatx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            renameatx.restype = ctypes.c_int
+            rename_swap = 0x00000002
+            if renameatx(directory, first_bytes, directory, second_bytes, rename_swap) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, os.strerror(code), first, None, second)
+            return
+        if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+            renameat2 = libc.renameat2
+            renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            renameat2.restype = ctypes.c_int
+            rename_exchange = 2
+            if renameat2(directory, first_bytes, directory, second_bytes, rename_exchange) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, os.strerror(code), first, None, second)
+            return
+        raise OSError(errno.ENOTSUP, "atomic entry exchange is unsupported on this platform")
+
     def _publish_owner(self, owner_name: str, payload: bytes, *, release=False) -> os.stat_result:
         """Publish a verified owner while retaining the same cooperative lock."""
         directory = self._state_fd
@@ -2773,26 +2805,135 @@ class LocalCiRunner:
             raise TargetCacheError("release toolchain/config/dependency inputs changed during build")
 
     @staticmethod
-    def _write_release_owner(path: Path, payload: dict[str, object], *, before_replace=None) -> None:
+    def _write_release_owner(
+        path: Path,
+        payload: dict[str, object],
+        *,
+        before_replace=None,
+        reserved_exchange: tuple[FreshTargetReservation, os.stat_result, bytes, str] | None = None,
+    ) -> None:
         if path.is_symlink():
             raise TargetCacheError("release ownership marker is a symlink")
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        with temporary.open("x", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-            if before_replace is not None:
-                before_replace()
-                if not FreshTargetReservation._same_regular_file(
-                        temporary.lstat(), os.fstat(stream.fileno())):
-                    raise TargetCacheError("ready release staging marker identity changed")
-        temporary.replace(path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
+        if reserved_exchange is None:
+            temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump(payload, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                if before_replace is not None:
+                    before_replace()
+                    if not FreshTargetReservation._same_regular_file(
+                            temporary.lstat(), os.fstat(stream.fileno())):
+                        raise TargetCacheError("ready release staging marker identity changed")
+            temporary.replace(path)
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            return
+
+        reservation, expected_owner, expected_pending_bytes, selected_target = reserved_exchange
+        directory = reservation._state_fd
+        owner_name = path.name
+        temporary_name = f"{owner_name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        ready_bytes = (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+        ready_stat: os.stat_result | None = None
+        exchanged = False
+
+        def open_new(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+
+        def open_readonly(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+
+        def unlink_if_matches(name: str, expected_stat: os.stat_result) -> None:
+            try:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            if FreshTargetReservation._same_regular_file(current, expected_stat):
+                try:
+                    os.unlink(name, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+
         try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+            with open(temporary_name, "xb", opener=open_new) as stream:
+                ready_stat = os.fstat(stream.fileno())
+                stream.write(ready_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+                if before_replace is not None:
+                    before_replace()
+                current_stage = os.stat(temporary_name, dir_fd=directory, follow_symlinks=False)
+                if not FreshTargetReservation._same_regular_file(current_stage, ready_stat):
+                    raise TargetCacheError("ready release staging marker identity changed")
+
+            # Atomically exchange temporary_name <-> owner_name without overwriting
+            # either inode. If a noncooperating same-user process substituted
+            # owner_name after before_replace(), its competing inode is moved intact
+            # into temporary_name and restored below without losing any bytes.
+            try:
+                FreshTargetReservation._exchange_entries(directory, temporary_name, owner_name)
+                exchanged = True
+            except OSError as error:
+                raise TargetCacheError(
+                    f"atomic release owner exchange failed (pending owner preserved): {error}"
+                ) from error
+
+            # Authenticate the swapped-out entry at temporary_name against our exact
+            # expected pending inode and bytes.
+            swapped_out_matches = False
+            try:
+                with open(temporary_name, "rb", opener=open_readonly) as swapped:
+                    swapped_stat = os.fstat(swapped.fileno())
+                    swapped_bytes = swapped.read(len(expected_pending_bytes) + 1)
+                    swapped_out_matches = (
+                        FreshTargetReservation._same_regular_file(swapped_stat, expected_owner)
+                        and swapped_bytes == expected_pending_bytes
+                    )
+            except OSError:
+                swapped_out_matches = False
+
+            custody_error: BaseException | None = None
+            if swapped_out_matches:
+                try:
+                    reservation._verify(selected_target, release_owner=ready_stat, require_empty=False)
+                    reservation._require_owner_payload(owner_name, ready_stat, ready_bytes)
+                    reservation._verify(selected_target, release_owner=ready_stat, require_empty=False)
+                except BaseException as error:
+                    custody_error = error
+
+            if not swapped_out_matches or custody_error is not None:
+                # Roll back the atomic exchange if owner_name is still our ready inode,
+                # restoring the competing (or pending) inode intact at owner_name.
+                try:
+                    current_owner = os.stat(owner_name, dir_fd=directory, follow_symlinks=False)
+                    if FreshTargetReservation._same_regular_file(current_owner, ready_stat):
+                        FreshTargetReservation._exchange_entries(directory, temporary_name, owner_name)
+                        os.fsync(directory)
+                        unlink_if_matches(temporary_name, ready_stat)
+                        os.fsync(directory)
+                except OSError:
+                    # Preserve both entries on disk if rollback cannot complete safely.
+                    pass
+                if not swapped_out_matches:
+                    raise TargetCacheError(
+                        "competing release owner replaced pending marker during final publication; "
+                        "preserved competing owner bytes"
+                    )
+                assert custody_error is not None
+                raise custody_error
+
+            os.fsync(directory)
+            unlink_if_matches(temporary_name, expected_owner)
+            os.fsync(directory)
+        except BaseException:
+            if not exchanged and ready_stat is not None:
+                unlink_if_matches(temporary_name, ready_stat)
+            raise
 
     def inspect_recreated_release_target(self) -> dict[str, object]:
         """Read-only explicit recovery authority, while the target lock is held.
@@ -3173,7 +3314,12 @@ class LocalCiRunner:
                     reservation._require_owner_payload(owner_path.name, fresh_owner, pending_bytes)
                     reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
 
-                self._write_release_owner(owner_path, pending, before_replace=verify_pending_owner)
+                self._write_release_owner(
+                    owner_path,
+                    pending,
+                    before_replace=verify_pending_owner,
+                    reserved_exchange=(reservation, fresh_owner, pending_bytes, str(target)),
+                )
             else:
                 self._write_release_owner(owner_path, pending)
             report["state"] = "ready"

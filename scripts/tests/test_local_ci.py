@@ -1511,6 +1511,113 @@ class LocalCiRunnerTests(unittest.TestCase):
                     staging, = owner.parent.glob(f"{owner.name}.*.tmp")
                     self.assertEqual(staging.read_bytes(), b"competing ready staging entry\n")
 
+    def test_reserved_release_after_check_before_replace_substitution_preserves_competing_owner(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-post-check-race")
+        owner = self._release_owner_path(target)
+        unrelated = owner.parent / "unrelated-user-file.txt"
+        unrelated.write_bytes(b"do not touch\n")
+        competing_bytes = b"competing same-user release owner payload\n"
+        competing_stat = None
+        real_exchange = local_ci.FreshTargetReservation._exchange_entries
+        substituted = False
+
+        def race_before_exchange(directory, first, second):
+            nonlocal substituted, competing_stat
+            if not substituted:
+                substituted = True
+                # Deterministic after-check, before-replace substitution:
+                # before_replace() already succeeded; now replace owner_path
+                # with a brand-new competing file right before atomic exchange.
+                owner.unlink()
+                owner.write_bytes(competing_bytes)
+                competing_stat = owner.lstat()
+            return real_exchange(directory, first, second)
+
+        captured_report = {}
+        with patch.object(local_ci.FreshTargetReservation, "_exchange_entries", side_effect=race_before_exchange), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "competing release owner"):
+            with runner.guarded_release(reservation=reservation) as report:
+                captured_report = report
+                self._finish_reserved_release(runner, report, target)
+
+        self.assertTrue(substituted)
+        self.assertNotEqual(captured_report.get("state"), "ready")
+        # Competing owner bytes AND original inode are preserved intact at owner_path!
+        self.assertEqual(owner.read_bytes(), competing_bytes)
+        after_stat = owner.lstat()
+        self.assertEqual((after_stat.st_dev, after_stat.st_ino), (competing_stat.st_dev, competing_stat.st_ino))
+        self.assertEqual(list(owner.parent.glob(f"{owner.name}.*.tmp")), [])
+        self.assertEqual(unrelated.read_bytes(), b"do not touch\n")
+
+    def test_reserved_release_after_check_target_or_lock_substitution_rolls_back_to_pending(self):
+        for kind in ("target", "lock"):
+            with self.subTest(kind=kind):
+                runner, reservation, target = self._reserved_release_runner(
+                    f"reserved-release-post-check-{kind}")
+                owner = self._release_owner_path(target)
+                lock_path, _ = local_ci.target_state_paths(target, runner.target_state_dir)
+                backup = target.with_name(target.name + ".orig")
+                real_exchange = local_ci.FreshTargetReservation._exchange_entries
+                substituted = False
+
+                def race_before_exchange(directory, first, second):
+                    nonlocal substituted
+                    if not substituted:
+                        substituted = True
+                        if kind == "target":
+                            target.rename(backup)
+                            target.mkdir()
+                        else:
+                            lock_path.unlink()
+                            lock_path.write_bytes(b"competing lock\n")
+                    return real_exchange(directory, first, second)
+
+                captured_report = {}
+                with patch.object(local_ci.FreshTargetReservation, "_exchange_entries", side_effect=race_before_exchange), \
+                        self.assertRaises(local_ci.TargetCacheError):
+                    with runner.guarded_release(reservation=reservation) as report:
+                        captured_report = report
+                        self._finish_reserved_release(runner, report, target)
+
+                self.assertTrue(substituted)
+                self.assertNotEqual(captured_report.get("state"), "ready")
+                # Rolled back cleanly so owner stays pending, never falsely ready.
+                self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+                self.assertEqual(list(owner.parent.glob(f"{owner.name}.*.tmp")), [])
+                if kind == "lock":
+                    self.assertEqual(lock_path.read_bytes(), b"competing lock\n")
+
+    def test_reserved_release_unsupported_exchange_refuses_and_preserves_pending_and_recovery(self):
+        runner, reservation, target = self._reserved_release_runner("reserved-release-enotsup")
+        owner = self._release_owner_path(target)
+        unrelated = owner.parent / "keep-me.txt"
+        unrelated.write_bytes(b"unrelated bytes\n")
+
+        def fail_enotsup(_directory, _first, _second):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+        captured_report = {}
+        with patch.object(local_ci.FreshTargetReservation, "_exchange_entries", side_effect=fail_enotsup), \
+                self.assertRaisesRegex(local_ci.TargetCacheError, "atomic release owner exchange failed"):
+            with runner.guarded_release(reservation=reservation) as report:
+                captured_report = report
+                self._finish_reserved_release(runner, report, target)
+
+        self.assertNotEqual(captured_report.get("state"), "ready")
+        self.assertEqual(json.loads(owner.read_text())["state"], "pending")
+        self.assertEqual(list(owner.parent.glob(f"{owner.name}.*.tmp")), [])
+        self.assertEqual(unrelated.read_bytes(), b"unrelated bytes\n")
+
+        # Ordinary explicit recovery via adopt=True succeeds on the preserved pending target
+        # without deleting or modifying unrelated files.
+        recovery_env = dict(self.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        recovery = self.runner("reserved-release-enotsup-recover", env=recovery_env)
+        with recovery.guarded_release(adopt=True) as report:
+            self._finish_reserved_release(recovery, report, target)
+        self.assertEqual(report["state"], "ready")
+        self.assertEqual(json.loads(owner.read_text())["state"], "ready")
+        self.assertEqual(unrelated.read_bytes(), b"unrelated bytes\n")
+
     def test_release_unknown_pending_and_explicit_recovery(self):
         target = self.repo / "cargo-target"
         target.mkdir()
