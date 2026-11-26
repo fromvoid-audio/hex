@@ -30,6 +30,7 @@ mod automation_playback;
 mod automation_tint;
 mod bindings;
 mod bypass;
+mod chorus_panel;
 mod delay_panel;
 mod overdrive_panel;
 mod rattle_panel;
