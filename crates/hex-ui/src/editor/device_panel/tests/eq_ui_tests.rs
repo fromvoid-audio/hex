@@ -608,6 +608,18 @@ fn creation_history_and_round_trip(cx: &mut TestAppContext, owner: CreationOwner
         });
         visual.run_until_parked();
     }
+    let graph = visual
+        .debug_bounds(selector("eq-response", device))
+        .unwrap();
+    let shell = visual
+        .debug_bounds(selector("device-shell", device))
+        .unwrap();
+    assert!(
+        graph.size.width >= px(crate::device_composition::EQ8_FRAME_WIDTH * 0.7)
+            && graph.left() >= shell.left()
+            && graph.right() <= shell.right(),
+        "editable EQ graph must occupy the visible housing: graph={graph:?}, shell={shell:?}"
+    );
     for (index, (x, y, kind, hint)) in [
         (0.02, 0.4, hex_engine::eq::NodeKind::LowCut, "low-cut"),
         (0.98, 0.4, hex_engine::eq::NodeKind::HighCut, "high-cut"),
