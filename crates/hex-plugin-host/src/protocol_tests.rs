@@ -1567,22 +1567,31 @@ fn controller_pages_preserve_sdk_ids_text_and_explicit_conversion_states() {
     assert_eq!(page.as_slice()[0].flags, 1 << 29);
     assert!(!page.as_slice()[0].is_editable());
 
-    // Four records fit the existing control bound without truncating strings.
+    // A full 64-record page fits the bounded HXVIMD03 limit without truncating strings,
+    // enumerating MAX_CONTROLLER_PARAMETERS (8,192) in 128 round-trips.
+    assert_eq!(PARAMETER_PAGE_SIZE, 64);
+    assert_eq!(
+        usize::from(MAX_CONTROLLER_PARAMETERS).div_ceil(PARAMETER_PAGE_SIZE),
+        128
+    );
     let mut full = body[..72].to_vec();
-    full[67..69].copy_from_slice(&4_u16.to_le_bytes());
-    full[71] = 4;
-    for id in [9, 0, 3, 17] {
+    full[67..69].copy_from_slice(&(PARAMETER_PAGE_SIZE as u16).to_le_bytes());
+    full[71] = PARAMETER_PAGE_SIZE as u8;
+    let expected_ids: Vec<u32> = (0..PARAMETER_PAGE_SIZE as u32)
+        .map(|i| (i * 17 + 9) % 1000)
+        .collect();
+    for &id in &expected_ids {
         record(&mut full, id, 1);
     }
     full.extend(0_u8..32);
-    assert!(full.len() < CONTROL_LIMIT);
+    assert!(full.len() <= PARAMETER_PAGE_LIMIT);
     let ParameterPageProgress::Page(page) = parameter_page(&full, &config, 1, 7, query).unwrap()
     else {
         panic!("full page")
     };
     assert_eq!(
         page.as_slice().iter().map(|p| p.id).collect::<Vec<_>>(),
-        [9, 0, 3, 17]
+        expected_ids
     );
 
     for end in 0..body.len() {

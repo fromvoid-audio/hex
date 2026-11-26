@@ -7,6 +7,8 @@
 #![deny(unsafe_code)]
 
 mod raw;
+#[allow(unsafe_code)]
+mod wakeup;
 
 use raw::{REP_SLOTS_OFFSET, REQ_SLOTS_OFFSET, RawMapping};
 use std::{
@@ -17,6 +19,17 @@ use std::{
     },
     sync::atomic::Ordering,
 };
+pub use wakeup::RtWakeup;
+
+/// Apple Silicon L1/L2 cache line granularity (128 bytes).
+pub const CACHE_LINE_BYTES: usize = raw::CACHE_LINE_BYTES;
+pub const OFF_REQ_WRITE_SEQ: usize = raw::OFF_REQ_WRITE_SEQ;
+pub const OFF_REQ_SLOT_LEN: usize = raw::OFF_REQ_SLOT_LEN;
+pub const OFF_REQ_READ_SEQ: usize = raw::OFF_REQ_READ_SEQ;
+pub const OFF_REP_WRITE_SEQ: usize = raw::OFF_REP_WRITE_SEQ;
+pub const OFF_REP_SLOT_LEN: usize = raw::OFF_REP_SLOT_LEN;
+pub const OFF_REP_READ_SEQ: usize = raw::OFF_REP_READ_SEQ;
+pub const OFF_FAULT_FLAG: usize = raw::OFF_FAULT_FLAG;
 
 /// Single-byte doorbell marker sent on the Unix domain socket after publishing
 /// a packet in shared memory. Disjoint from all ASCII `'H'` (`0x48`) control headers.
@@ -407,5 +420,50 @@ mod tests {
         host.rep_read_seq = u64::MAX;
         worker.corrupt_shared_sequences(None, None, Some(u64::MAX), None);
         assert_eq!(host.read_reply(&mut rep_buf), Err(ShmError::RingEmpty));
+    }
+
+    #[test]
+    fn sequence_counters_occupy_distinct_128_byte_cache_lines() {
+        let lines = [
+            OFF_REQ_WRITE_SEQ / CACHE_LINE_BYTES,
+            OFF_REQ_READ_SEQ / CACHE_LINE_BYTES,
+            OFF_REP_WRITE_SEQ / CACHE_LINE_BYTES,
+            OFF_REP_READ_SEQ / CACHE_LINE_BYTES,
+            OFF_FAULT_FLAG / CACHE_LINE_BYTES,
+        ];
+        assert_eq!(CACHE_LINE_BYTES, 128);
+        for (i, &a) in lines.iter().enumerate() {
+            assert_ne!(a, 0, "counter must not share line 0 with immutable header");
+            for &b in &lines[i + 1..] {
+                assert_ne!(a, b, "counters must occupy distinct 128-byte cache lines");
+            }
+        }
+        assert_eq!(OFF_REQ_SLOT_LEN / CACHE_LINE_BYTES, lines[0]);
+        assert_eq!(OFF_REP_SLOT_LEN / CACHE_LINE_BYTES, lines[2]);
+    }
+
+    #[test]
+    fn rt_wakeup_signals_and_times_out_cleanly() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+
+        let wakeup = Arc::new(RtWakeup::new().unwrap());
+        // Pre-signaled token wakes immediately without sleeping.
+        wakeup.signal();
+        let started = Instant::now();
+        assert!(wakeup.wait_timeout(Duration::from_millis(250)));
+        assert!(started.elapsed() < Duration::from_millis(100));
+
+        // Unsignaled wait returns false after timeout.
+        assert!(!wakeup.wait_timeout(Duration::from_millis(5)));
+
+        // Cross-thread wakeup wakes parked waiter promptly.
+        let waiter = Arc::clone(&wakeup);
+        let handle = std::thread::spawn(move || waiter.wait_timeout(Duration::from_secs(2)));
+        std::thread::sleep(Duration::from_millis(5));
+        let signal_at = Instant::now();
+        wakeup.signal();
+        assert!(handle.join().unwrap());
+        assert!(signal_at.elapsed() < Duration::from_millis(250));
     }
 }

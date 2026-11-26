@@ -5,7 +5,7 @@
 #include "macos_editor_position.hpp"
 
 namespace hex_instance {
-inline constexpr size_t CONTROLLER_PAGE_COUNT=4;
+inline constexpr size_t CONTROLLER_PAGE_COUNT=64;
 inline constexpr uint8 TOGGLE_EDITOR=6;
 inline constexpr uint8 CLOSE_EDITOR=7;
 inline constexpr uint8 SELECTED_PARAMETERS=8;
@@ -69,7 +69,7 @@ struct ControllerParameterPage {
     std::array<unsigned char,32> descriptor_signature{};
     std::array<ControllerParameter,CONTROLLER_PAGE_COUNT> parameters{};
 };
-static_assert(sizeof(ControllerParameterPage)<8192,
+static_assert(sizeof(ControllerParameterPage)<=131072,
               "one bounded controller page, separate from the existing Host pool");
 
 // Validate SDK UTF-16 and clear bytes after its terminator before IPC. A plugin

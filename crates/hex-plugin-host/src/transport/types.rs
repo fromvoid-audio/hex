@@ -75,6 +75,72 @@ pub struct CommittedQuantum {
     pub state: CommittedQuantumState,
 }
 
+const WAKE_AWAKE: u32 = 0;
+const WAKE_NOTIFIED: u32 = 1;
+const WAKE_PARKED: u32 = 2;
+
+#[cfg(unix)]
+struct WorkerWakeup {
+    inner: hex_shm_ring::RtWakeup,
+}
+
+#[cfg(unix)]
+impl WorkerWakeup {
+    fn new() -> Result<Self, Fault> {
+        hex_shm_ring::RtWakeup::new()
+            .map(|inner| Self { inner })
+            .map_err(|_| Fault::Configuration)
+    }
+
+    #[inline]
+    fn signal(&self) {
+        self.inner.signal();
+    }
+
+    #[inline]
+    fn wait_timeout(&self, timeout: std::time::Duration) {
+        let _ = self.inner.wait_timeout(timeout);
+    }
+}
+
+#[cfg(not(unix))]
+struct WorkerWakeup {
+    state: std::sync::Mutex<u64>,
+    cvar: std::sync::Condvar,
+}
+
+#[cfg(not(unix))]
+impl WorkerWakeup {
+    fn new() -> Result<Self, Fault> {
+        Ok(Self {
+            state: std::sync::Mutex::new(0),
+            cvar: std::sync::Condvar::new(),
+        })
+    }
+
+    #[inline]
+    fn signal(&self) {
+        if let Ok(mut tokens) = self.state.lock() {
+            *tokens = tokens.saturating_add(1);
+            self.cvar.notify_one();
+        }
+    }
+
+    fn wait_timeout(&self, timeout: std::time::Duration) {
+        if let Ok(mut tokens) = self.state.lock() {
+            if *tokens > 0 {
+                *tokens -= 1;
+                return;
+            }
+            if let Ok((mut guard, _)) = self.cvar.wait_timeout(tokens, timeout)
+                && *guard > 0
+            {
+                *guard -= 1;
+            }
+        }
+    }
+}
+
 pub(super) struct Revocation {
     pub(super) binding: Binding,
     pub(super) callback_fault: AtomicU8,
@@ -98,16 +164,18 @@ pub(super) struct Revocation {
     // The low bit reserves the admitted input, and the high bit records
     // revocation atomically against a callback's handoff decision.
     pub(super) parameter_input_generation: AtomicU64,
-    // Lock-free/allocation-free wakeup for the joining transport worker.
-    // Registered once on worker startup; callback finish unparks only when parked.
-    pub(super) worker_thread: std::sync::OnceLock<std::thread::Thread>,
-    pub(super) worker_parked: AtomicBool,
+    // Wait-free real-time wakeup for the joining transport worker.
+    // Uses a 3-state single-atomic protocol (AWAKE/NOTIFIED/PARKED) with
+    // Release-Acquire ordering (no SeqCst fence, no Thread::unpark() mutex).
+    worker_wakeup: WorkerWakeup,
+    worker_wake_state: AtomicU32,
 }
 impl Revocation {
     pub(super) const REPORTED: u8 = 1 << 7;
 
-    pub(super) fn new(binding: Binding) -> Self {
-        Self {
+    pub(super) fn new(binding: Binding) -> Result<Self, Fault> {
+        let worker_wakeup = WorkerWakeup::new()?;
+        Ok(Self {
             binding,
             callback_fault: AtomicU8::new(0),
             received_prefix: AtomicU64::new(0),
@@ -126,23 +194,35 @@ impl Revocation {
             quantum_state: AtomicU8::new(0),
             editor_scope: AtomicU64::new(0),
             parameter_input_generation: AtomicU64::new(0),
-            worker_thread: std::sync::OnceLock::new(),
-            worker_parked: AtomicBool::new(false),
-        }
-    }
-
-    pub(super) fn register_worker_thread(&self, thread: std::thread::Thread) {
-        let _ = self.worker_thread.set(thread);
+            worker_wakeup,
+            worker_wake_state: AtomicU32::new(WAKE_AWAKE),
+        })
     }
 
     pub(super) fn wake_worker(&self) {
-        std::sync::atomic::fence(std::sync::atomic::Ordering::SeqCst);
-        if self.worker_parked.load(Acquire)
-            && self.worker_parked.swap(false, AcqRel)
-            && let Some(thread) = self.worker_thread.get()
-        {
-            thread.unpark();
+        if self.worker_wake_state.swap(WAKE_NOTIFIED, AcqRel) == WAKE_PARKED {
+            self.worker_wakeup.signal();
         }
+    }
+
+    pub(super) fn park_worker_timeout(
+        &self,
+        timeout: std::time::Duration,
+        should_stay_awake: impl FnOnce() -> bool,
+    ) {
+        self.worker_wake_state.swap(WAKE_AWAKE, AcqRel);
+        if should_stay_awake() {
+            return;
+        }
+        if self
+            .worker_wake_state
+            .compare_exchange(WAKE_AWAKE, WAKE_PARKED, AcqRel, Acquire)
+            .is_err()
+        {
+            return;
+        }
+        self.worker_wakeup.wait_timeout(timeout);
+        self.worker_wake_state.swap(WAKE_AWAKE, AcqRel);
     }
 
     pub(super) fn revoke(&self) {

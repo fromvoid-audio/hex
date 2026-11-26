@@ -1,5 +1,48 @@
 //! Pre-admission native helper startup, handshake, and configuration phase.
 use super::*;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ChildCustodyProbeKey {
+    helper: PathBuf,
+    len: u64,
+    mtime_secs: u64,
+    mtime_nanos: u32,
+}
+
+static CHILD_CUSTODY_PROBED: OnceLock<Mutex<HashSet<ChildCustodyProbeKey>>> = OnceLock::new();
+
+fn child_custody_probe_key(helper: &Path) -> Option<ChildCustodyProbeKey> {
+    let metadata = std::fs::metadata(helper).ok()?;
+    let modified = metadata.modified().ok()?;
+    let since_epoch = modified.duration_since(UNIX_EPOCH).ok()?;
+    Some(ChildCustodyProbeKey {
+        helper: helper.to_path_buf(),
+        len: metadata.len(),
+        mtime_secs: since_epoch.as_secs(),
+        mtime_nanos: since_epoch.subsec_nanos(),
+    })
+}
+
+fn is_child_custody_probe_cached(key: &ChildCustodyProbeKey) -> bool {
+    CHILD_CUSTODY_PROBED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map(|set| set.contains(key))
+        .unwrap_or(false)
+}
+
+fn record_child_custody_probe_cached(key: ChildCustodyProbeKey) {
+    if let Ok(mut set) = CHILD_CUSTODY_PROBED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+    {
+        set.insert(key);
+    }
+}
 
 /// Source-bound configured component awaiting actual graph presentation facts.
 /// No processing/state capture or canonical/audio acceptance has occurred. Keep
@@ -198,37 +241,48 @@ impl Pending {
             },
         )
         .map_err(PreparationFailure::before_native)?;
-        // No foreign module is loaded by this exact executable's probe. A
-        // missing/auto-reaped child refuses before any SDK instance starts.
+        // Verify process-wide SIGCHLD waitable-child custody once per verified
+        // helper executable identity instead of spawning an extra `.app` process
+        // on every plugin instantiation. A missing/auto-reaped child still refuses
+        // before any SDK instance starts on the first spawn.
         let probe_started = timings.as_ref().map(|_| Instant::now());
-        let probe_until =
-            end_after(options.limits.startup).map_err(PreparationFailure::before_native)?;
-        let probe = Command::new(build.helper())
-            .arg("--child-custody-probe")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(Error::Io)
-            .map_err(PreparationFailure::before_native)?;
-        let mut probe = ChildCustody::Owned(probe, None);
-        let status = match wait(&mut probe, probe_until, &mut || cancellation.token.check()) {
-            Ok(status) => status,
-            Err(cause) => {
-                return Err(PreparationFailure::probe(
-                    cause,
-                    probe,
-                    options.limits.retirement,
-                ));
+        let probe_key = child_custody_probe_key(build.helper());
+        let already_verified = probe_key
+            .as_ref()
+            .is_some_and(is_child_custody_probe_cached);
+        if !already_verified {
+            let probe_until =
+                end_after(options.limits.startup).map_err(PreparationFailure::before_native)?;
+            let probe = Command::new(build.helper())
+                .arg("--child-custody-probe")
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(Error::Io)
+                .map_err(PreparationFailure::before_native)?;
+            let mut probe = ChildCustody::Owned(probe, None);
+            let status = match wait(&mut probe, probe_until, &mut || cancellation.token.check()) {
+                Ok(status) => status,
+                Err(cause) => {
+                    return Err(PreparationFailure::probe(
+                        cause,
+                        probe,
+                        options.limits.retirement,
+                    ));
+                }
+            };
+            if !status.success() {
+                return Err(PreparationFailure::before_native(Error::Custody(
+                    "waitable-child preflight did not exit normally".into(),
+                )));
             }
-        };
+            if let Some(key) = probe_key {
+                record_child_custody_probe_cached(key);
+            }
+        }
         if let Some((started, timings)) = probe_started.zip(timings.as_deref_mut()) {
             timings.waitable_probe = Some(started.elapsed());
-        }
-        if !status.success() {
-            return Err(PreparationFailure::before_native(Error::Custody(
-                "waitable-child preflight did not exit normally".into(),
-            )));
         }
         let (data, child_data) = UnixStream::pair()
             .map_err(Error::Io)
@@ -486,5 +540,37 @@ impl Pending {
             grouped_editor_callbacks: self.source.grouped_editor_callbacks,
             offline: self.offline,
         })
+    }
+}
+
+#[cfg(test)]
+mod probe_cache_tests {
+    use super::*;
+
+    #[test]
+    fn child_custody_probe_cache_keys_on_helper_identity() {
+        let dir = std::env::temp_dir().join(format!("hex-probe-cache-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("helper-a");
+        let b = dir.join("helper-b");
+        std::fs::write(&a, b"v1").unwrap();
+        std::fs::write(&b, b"v1").unwrap();
+
+        let key_a = child_custody_probe_key(&a).unwrap();
+        let key_b = child_custody_probe_key(&b).unwrap();
+        assert!(!is_child_custody_probe_cached(&key_a));
+        assert!(!is_child_custody_probe_cached(&key_b));
+
+        record_child_custody_probe_cached(key_a.clone());
+        assert!(is_child_custody_probe_cached(&key_a));
+        assert!(!is_child_custody_probe_cached(&key_b));
+
+        // Changing helper binary content invalidates the cache key.
+        std::fs::write(&a, b"v2-longer").unwrap();
+        let key_a_changed = child_custody_probe_key(&a).unwrap();
+        assert_ne!(key_a, key_a_changed);
+        assert!(!is_child_custody_probe_cached(&key_a_changed));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

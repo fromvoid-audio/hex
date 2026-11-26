@@ -32,28 +32,21 @@ impl Worker {
     pub fn has_queued_request(&self) -> bool {
         self.requests.slots() != 0
     }
-    /// Register the current worker thread for event-driven wakeups from callback
-    /// submission and control-plane signals. Call once before the worker loop.
-    pub fn register_wakeup_thread(&self) {
-        self.revoked.register_worker_thread(std::thread::current());
-    }
+    /// Retained for worker startup callers; wait-free kernel wakeups no longer
+    /// require thread-handle registration for `std::thread::Thread::unpark()`.
+    pub fn register_wakeup_thread(&self) {}
     /// Park this worker until `timeout`, callback submission, revocation, or an
-    /// explicit control wake. Re-checks all wake conditions after publishing the
-    /// parked flag so no wakeup can be lost.
+    /// explicit control wake using a wait-free kernel wakeup primitive (Mach
+    /// semaphore on macOS). Re-checks all wake conditions after clearing any
+    /// prior notification so no wakeup can be lost.
     pub fn park_timeout(
         &self,
         timeout: std::time::Duration,
         should_stay_awake: impl FnOnce() -> bool,
     ) {
-        self.revoked
-            .worker_parked
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        if self.requests.slots() != 0 || self.revoked.is_revoked() || should_stay_awake() {
-            self.revoked.worker_parked.store(false, Release);
-            return;
-        }
-        std::thread::park_timeout(timeout);
-        self.revoked.worker_parked.store(false, Release);
+        self.revoked.park_worker_timeout(timeout, || {
+            self.requests.slots() != 0 || self.revoked.is_revoked() || should_stay_awake()
+        });
     }
     #[cfg(any(test, feature = "test-support"))]
     pub fn pending_requests_for_test(&self) -> usize {
