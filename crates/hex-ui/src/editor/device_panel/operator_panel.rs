@@ -1335,6 +1335,8 @@ mod tests {
         exposed.extend(600..=616);
         // Registered global performance parameters; their panel controls have separate owners.
         exposed.extend([617, 618, 619, 640, 641, 642, 643]);
+        // Registered pitch-envelope controls, including all five destination switches.
+        exposed.extend(650..=670);
         exposed.extend(620..=639);
         exposed.extend(82..=388);
         exposed.extend(20_001..=20_007);
@@ -1364,7 +1366,7 @@ mod tests {
             exposed, actual,
             "the UI inventory accounts for the complete registered metadata"
         );
-        assert_eq!(exposed.len(), 439);
+        assert_eq!(exposed.len(), 460);
         assert_eq!(exposed.first(), Some(&1));
         assert_eq!(exposed.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
