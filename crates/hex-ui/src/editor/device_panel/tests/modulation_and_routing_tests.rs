@@ -977,7 +977,7 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     visual.run_until_parked();
     let selector: &'static str =
         Box::leak(format!("source-effect-modulation-{}", device.value()).into_boxed_str());
-    let bounds = visual
+    let compact = visual
         .debug_bounds(selector)
         .expect("source effect on its receiver");
     let click = |visual: &mut VisualTestContext, key: String| {
@@ -985,13 +985,41 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
         let element = visual
             .debug_bounds(key)
             .unwrap_or_else(|| panic!("missing {key}"));
+        let bounds = visual
+            .debug_bounds(selector)
+            .expect("current source effect");
         assert!(
             bounds.contains(&element.center()),
-            "{key} belongs to another card"
+            "{key} outside source effect: control {element:?}, card {bounds:?}, compact {compact:?}"
         );
         visual.simulate_click(element.center(), Modifiers::default());
         visual.run_until_parked();
     };
+    click(&mut visual, "device-modulator-toggle".into());
+    let bounds = visual
+        .debug_bounds(selector)
+        .expect("expanded source effect");
+    let panel = visual
+        .debug_bounds("device-modulator-panel")
+        .expect("open modulator panel");
+    assert_eq!(bounds.size.width, compact.size.width + panel.size.width);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.chain_window.source_effect_width(device),
+            f32::from(bounds.size.width)
+        )
+    });
+    click(&mut visual, "device-modulator-toggle".into());
+    assert_eq!(
+        visual.debug_bounds(selector).unwrap().size.width,
+        compact.size.width
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.device_panel.chain_window.source_effect_width(device),
+            f32::from(compact.size.width)
+        )
+    });
     click(&mut visual, "device-modulator-toggle".into());
     click(&mut visual, format!("add-modulator-{}", device.value()));
     visual.simulate_keystrokes("enter");
@@ -1037,7 +1065,7 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
             mapping_targets += 1;
             if !bounds.contains(&target.center()) {
                 visual.simulate_event(gpui::ScrollWheelEvent {
-                    position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+                    position: point(bounds.right() - px(16.0), bounds.bottom() - px(14.0)),
                     delta: gpui::ScrollDelta::Pixels(point(
                         px(0.0),
                         bounds.center().y - target.center().y,
@@ -1055,7 +1083,7 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     }
     assert!(mapping_targets > 1);
     visual.simulate_event(gpui::ScrollWheelEvent {
-        position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+        position: point(bounds.right() - px(16.0), bounds.bottom() - px(14.0)),
         delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
         ..Default::default()
     });
@@ -1132,7 +1160,7 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
         .expect("last supported Utility target");
     if !bounds.contains(&target.center()) {
         visual.simulate_event(gpui::ScrollWheelEvent {
-            position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+            position: point(bounds.right() - px(16.0), bounds.bottom() - px(14.0)),
             delta: gpui::ScrollDelta::Pixels(point(px(0.0), bounds.center().y - target.center().y)),
             ..Default::default()
         });
@@ -1146,7 +1174,7 @@ fn modulation_panel_edits_shared_source_effect_on_receiver_and_contributor(
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     pump_until(&editor, cx, |view| route_count(view) == 2);
     visual.simulate_event(gpui::ScrollWheelEvent {
-        position: point(bounds.center().x, bounds.bottom() - px(14.0)),
+        position: point(bounds.right() - px(16.0), bounds.bottom() - px(14.0)),
         delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(1000.0))),
         ..Default::default()
     });
