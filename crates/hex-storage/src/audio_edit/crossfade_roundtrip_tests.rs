@@ -2,7 +2,8 @@
 use hex_project::{Command, Created, Editor, Project, TimeRange};
 
 #[allow(dead_code)]
-use crate::common;
+#[path = "../../tests/common/mod.rs"]
+mod common;
 
 fn fixture() -> (Editor, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
@@ -59,7 +60,7 @@ fn fixture() -> (Editor, hex_project::TrackId) {
 fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() {
     let (mut editor, track) = fixture();
     let before = editor.project().snapshot();
-    let disjoint = hex_storage::encode(editor.project()).unwrap();
+    let disjoint = crate::encode(editor.project()).unwrap();
     // Schema51 changes only overlap admission; the retained frozen50 writer
     // has the identical field layout. This disjoint document remains valid50.
     let mut old: serde_json::Value = serde_json::from_slice(&disjoint).unwrap();
@@ -68,11 +69,11 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
     old["version"] = 50.into();
     let bytes = serde_json::to_vec(&old).unwrap();
     let saved_bytes = bytes.clone();
-    let migrated = hex_storage::decode(&bytes).unwrap();
+    let migrated = crate::decode(&bytes).unwrap();
     assert_eq!(migrated.snapshot(), before);
     assert_eq!(bytes, saved_bytes);
     assert_eq!(
-        hex_storage::decode(&hex_storage::encode(&migrated).unwrap())
+        crate::decode(&crate::encode(&migrated).unwrap())
             .unwrap()
             .snapshot(),
         before
@@ -83,24 +84,37 @@ fn current_crossfade_roundtrip_and_historical_disjoint_migration_are_complete() 
         })
         .unwrap();
     let after = editor.project().snapshot();
-    let encoded = hex_storage::encode(editor.project()).unwrap();
-    let value: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-    assert_eq!(value["version"], hex_storage::S_CURVE_FADE_SCHEMA_VERSION);
-    assert_eq!(hex_storage::decode(&encoded).unwrap().snapshot(), after);
+    let encoded = crate::encode(editor.project()).unwrap();
+    let current: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        current["version"],
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
+    );
+    assert!(
+        current["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("s_curve_fades"))
+    );
+    let historical = crate::encode_stacked_legacy(editor.project()).unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&historical).unwrap();
+    assert_eq!(value["version"], crate::S_CURVE_FADE_SCHEMA_VERSION);
+    assert_eq!(crate::decode(&historical).unwrap().snapshot(), after);
+    assert_eq!(crate::decode(&encoded).unwrap().snapshot(), after);
     // The envelope's underlying overlap document cannot be relabeled as a
     // pre51 document to bypass the old disjointness rule.
     let mut value = value["base"].clone();
-    assert_eq!(value["version"], hex_storage::CURRENT_SCHEMA_VERSION);
+    assert_eq!(value["version"], crate::CURRENT_SCHEMA_VERSION);
     common::remove_empty_host_automation(&mut value);
     common::remove_empty_aliases(&mut value);
     value["version"] = 50.into();
     assert!(
-        hex_storage::decode(&serde_json::to_vec(&value).unwrap())
+        crate::decode(&serde_json::to_vec(&value).unwrap())
             .unwrap_err()
             .to_string()
             .contains("older schema")
     );
-    assert!(hex_storage::encode_schema22(editor.project()).is_err());
+    assert!(crate::encode_schema22(editor.project()).is_err());
     assert!(editor.undo());
     assert_eq!(editor.project().snapshot(), before);
     assert!(editor.redo());
