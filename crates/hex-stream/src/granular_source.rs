@@ -5,11 +5,15 @@ use crate::{
     reference::validate_source, scan_verified_granular_region_on_control,
 };
 use hex_engine::{Frame, StreamedSourceMetadata, audio_transform::StreamedGranularRoot};
-use hex_media::{ResamplePlan, VerifiedWavReader};
+use hex_media::{
+    ResamplePlan, VerifiedReaderDataLayout, VerifiedWavManifest, VerifiedWavReader,
+    VerifiedWavReaderLimits, WavReaderLimits,
+};
 use hex_warp::{
     Mode, SequentialBeatsConfig, SequentialGranularConfig, SequentialSpectralConfig,
     SequentialWarpConfig,
 };
+use std::path::PathBuf;
 
 mod preparation;
 pub use preparation::GranularSourcePreparationLimits;
@@ -55,6 +59,77 @@ pub enum GranularSourceError {
     Page(GranularPageError),
 }
 
+/// Bounded header chunk count for reopening an already-verified granular source
+/// whose SHA-256 page manifest is pinned.
+const REOPEN_MAX_HEADER_COUNT: usize = 1_048_576;
+
+/// On-demand wrapper around a verified WAV reader so idle granular sources do
+/// not pin OS file descriptors or 64 KiB scratch buffers.
+struct LazyGranularReader {
+    path: PathBuf,
+    limits: VerifiedWavReaderLimits,
+    manifest: VerifiedWavManifest,
+    encoding: u16,
+    data_layout: VerifiedReaderDataLayout,
+    reader: Option<Box<VerifiedWavReader>>,
+}
+
+impl LazyGranularReader {
+    fn from_open_parked(reader: VerifiedWavReader) -> Self {
+        let path = reader.path().to_path_buf();
+        let manifest = reader.manifest().clone();
+        let encoding = reader.encoding();
+        let data_layout = reader.control_data_layout();
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(
+                manifest.file_len(),
+                reader.source_frames(),
+                REOPEN_MAX_HEADER_COUNT,
+                reader.max_window_frames(),
+            ),
+            manifest.manifest_bytes(),
+        );
+        // Drop the live reader immediately so preparing many warped sources
+        // does not exhaust macOS's default RLIMIT_NOFILE = 256.
+        drop(reader);
+        Self {
+            path,
+            limits,
+            manifest,
+            encoding,
+            data_layout,
+            reader: None,
+        }
+    }
+
+    fn is_open(&self) -> bool {
+        self.reader.is_some()
+    }
+
+    fn park(&mut self) {
+        self.reader = None;
+    }
+
+    fn ensure_open(
+        &mut self,
+        cancelled: impl FnMut() -> bool,
+    ) -> Result<&mut VerifiedWavReader, StreamFailureKind> {
+        if self.reader.is_none() {
+            let opened = VerifiedWavReader::open_verified_with_cancel(
+                &self.path,
+                self.limits,
+                self.manifest.clone(),
+                cancelled,
+            )
+            .map_err(crate::worker::map_import_error)?;
+            self.reader = Some(Box::new(opened));
+        }
+        self.reader
+            .as_deref_mut()
+            .ok_or(StreamFailureKind::DecodeFailed)
+    }
+}
+
 /// Reader, conversion plan, source-bound renderer and scratch owned together.
 ///
 /// Preparation and all methods may block; use only on a dedicated control/worker
@@ -66,7 +141,7 @@ pub enum GranularSourceError {
 /// to the reader and invalidates this owner on source replacement. This does not
 /// establish a whole-file snapshot or a catalog/playback lease.
 pub struct VerifiedGranularSource {
-    reader: VerifiedWavReader,
+    reader: LazyGranularReader,
     plan: ResamplePlan,
     buffers: GranularSourceBuffers,
     pages: VerifiedGranularPages,
@@ -78,43 +153,55 @@ pub(crate) struct GranularSourceData {
     pub kernel_reserved_bytes: usize,
 }
 impl VerifiedGranularSource {
+    pub(crate) fn is_reader_open(&self) -> bool {
+        self.reader.is_open()
+    }
+    pub(crate) fn park_reader(&mut self) {
+        self.reader.park();
+    }
     pub(crate) fn validate_for_catalog(
         &mut self,
         stop: &std::sync::atomic::AtomicBool,
     ) -> Result<(), StreamFailureKind> {
-        // Decode the complete float source, including data outside the chosen
-        // granular region, before granting catalog eligibility.
-        if self.reader.encoding() == 3 {
-            crate::worker::validate_finite_source(
-                &mut self.reader,
-                &mut self.buffers.source,
-                stop,
-            )?;
-        } else {
-            // A fresh verified read also checks file metadata/digest after the
-            // earlier preparation, without claiming a whole-file snapshot.
-            let count = self
-                .buffers
-                .source
-                .len()
-                .min(self.reader.max_window_frames())
-                .min(1);
-            if count == 0 {
-                return Err(StreamFailureKind::DecodeFailed);
+        let encoding = self.reader.encoding;
+        let result = (|| {
+            let reader = self
+                .reader
+                .ensure_open(|| stop.load(std::sync::atomic::Ordering::Acquire))?;
+            // Decode the complete float source, including data outside the chosen
+            // granular region, before granting catalog eligibility.
+            if encoding == 3 {
+                crate::worker::validate_finite_source(reader, &mut self.buffers.source, stop)?;
+            } else {
+                // A fresh verified read also checks file metadata/digest after the
+                // earlier preparation, without claiming a whole-file snapshot.
+                let count = self
+                    .buffers
+                    .source
+                    .len()
+                    .min(reader.max_window_frames())
+                    .min(1);
+                if count == 0 {
+                    return Err(StreamFailureKind::DecodeFailed);
+                }
+                reader
+                    .read_frames_into_with_cancel(0, &mut self.buffers.source[..count], || {
+                        stop.load(std::sync::atomic::Ordering::Acquire)
+                    })
+                    .map_err(crate::worker::map_import_error)?;
             }
-            self.reader
-                .read_frames_into_with_cancel(0, &mut self.buffers.source[..count], || {
-                    stop.load(std::sync::atomic::Ordering::Acquire)
-                })
-                .map_err(crate::worker::map_import_error)?;
-        }
-        Ok(())
+            Ok(())
+        })();
+        // Release the file descriptor immediately after catalog validation so
+        // validating large warped banks never accumulates open FDs.
+        self.reader.park();
+        result
     }
     pub(crate) fn holds_page(&self) -> bool {
         self.pages.holds_page()
     }
     pub(crate) fn admission_data(&self) -> Option<GranularSourceData> {
-        let reader = self.reader.control_data_layout();
+        let reader = self.reader.data_layout;
         let kernel = self.plan.control_kernel_data_layout();
         Some(GranularSourceData {
             processing_reserved_bytes: self.reserved_processing_bytes,
@@ -281,7 +368,7 @@ impl VerifiedGranularSource {
             ));
         }
         Ok(Self {
-            reader,
+            reader: LazyGranularReader::from_open_parked(reader),
             plan,
             buffers,
             pages,
@@ -299,13 +386,22 @@ impl VerifiedGranularSource {
         index: u64,
         frames: Box<[Frame]>,
         max_preroll_frames: u64,
-        cancelled: impl FnMut() -> bool,
+        mut cancelled: impl FnMut() -> bool,
     ) -> Result<(), (GranularPageError, Box<[Frame]>)> {
+        let reader = match self.reader.ensure_open(&mut cancelled) {
+            Ok(reader) => reader,
+            Err(kind) => {
+                return Err((
+                    GranularPageError::Step(VerifiedGranularStepError::Source(kind)),
+                    frames,
+                ));
+            }
+        };
         self.pages.begin_page(
             index,
             frames,
             max_preroll_frames,
-            &mut self.reader,
+            reader,
             &self.plan,
             cancelled,
         )
@@ -315,23 +411,36 @@ impl VerifiedGranularSource {
         index: u64,
         frames: Box<[Frame]>,
         segment_frames: u64,
-        cancelled: impl FnMut() -> bool,
+        mut cancelled: impl FnMut() -> bool,
     ) -> Result<(), (GranularPageError, Box<[Frame]>)> {
+        let reader = match self.reader.ensure_open(&mut cancelled) {
+            Ok(reader) => reader,
+            Err(kind) => {
+                return Err((
+                    GranularPageError::Step(VerifiedGranularStepError::Source(kind)),
+                    frames,
+                ));
+            }
+        };
         self.pages.begin_page_replaying(
             index,
             frames,
             segment_frames,
-            &mut self.reader,
+            reader,
             &self.plan,
             cancelled,
         )
     }
     pub fn step(
         &mut self,
-        cancelled: impl FnMut() -> bool,
+        mut cancelled: impl FnMut() -> bool,
     ) -> Result<GranularPageProgress, GranularPageError> {
+        let reader = self
+            .reader
+            .ensure_open(&mut cancelled)
+            .map_err(|kind| GranularPageError::Step(VerifiedGranularStepError::Source(kind)))?;
         self.pages.step(
-            &mut self.reader,
+            reader,
             &self.plan,
             VerifiedGranularBuffers {
                 source: &mut self.buffers.source,

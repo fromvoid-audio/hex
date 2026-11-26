@@ -13,6 +13,182 @@ fn digest_hex(digest: [u8; 32]) -> String {
     output
 }
 
+fn strip_toml_comment(line: &str) -> Result<&str, ()> {
+    let bytes = line.as_bytes();
+    let mut index = 0;
+    let mut in_double = false;
+    let mut in_single = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_double {
+            if byte == b'\\' {
+                index += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_double = false;
+            }
+        } else if in_single {
+            if byte == b'\'' {
+                in_single = false;
+            }
+        } else {
+            match byte {
+                b'"' => in_double = true,
+                b'\'' => in_single = true,
+                b'#' => return Ok(&line[..index]),
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    if in_double || in_single {
+        return Err(());
+    }
+    Ok(line)
+}
+
+fn update_bracket_depth(text: &str, depth: &mut usize) -> Result<(), ()> {
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    let mut in_double = false;
+    let mut in_single = false;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if in_double {
+            if byte == b'\\' {
+                index += 2;
+                continue;
+            }
+            if byte == b'"' {
+                in_double = false;
+            }
+        } else if in_single {
+            if byte == b'\'' {
+                in_single = false;
+            }
+        } else {
+            match byte {
+                b'"' => in_double = true,
+                b'\'' => in_single = true,
+                b'[' | b'{' => *depth += 1,
+                b']' | b'}' => {
+                    if *depth == 0 {
+                        return Err(());
+                    }
+                    *depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        index += 1;
+    }
+    if in_double || in_single {
+        return Err(());
+    }
+    Ok(())
+}
+
+fn section_overrides_source(section: &str) -> bool {
+    let normalized = section
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_ascii_lowercase();
+    normalized == "source"
+        || normalized.starts_with("source.")
+        || normalized == "patch"
+        || normalized.starts_with("patch.")
+        || normalized == "registries.crates-io"
+        || normalized.starts_with("registries.crates-io.")
+        || normalized.starts_with("registries.\"crates-io\"")
+        || normalized.starts_with("registries.'crates-io'")
+        || normalized.contains("rtrb")
+}
+
+fn key_overrides_source(section: &str, key: &str) -> bool {
+    let normalized = key
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .to_ascii_lowercase();
+    if normalized == "paths"
+        || normalized == "replace-with"
+        || normalized.starts_with("source.")
+        || normalized.starts_with("patch.")
+        || normalized.starts_with("registries.crates-io")
+        || normalized.contains("rtrb")
+    {
+        return true;
+    }
+    if section == "env" || section.starts_with("env.") || normalized.starts_with("env.") {
+        return normalized.contains("cargo_source_")
+            || normalized.contains("cargo_registries_crates_io_index");
+    }
+    false
+}
+
+/// Conservatively inspect a Cargo config file and refuse only if it is
+/// unparseable/malformed TOML or declares a source/patch/registry/env override
+/// that could replace `rtrb` or `crates-io`. Unrelated developer configs
+/// (`[build]`, `[target.*]`, `[net]`, `[alias]`, `[term]`, `[profile.*]`) do
+/// not disable the pinned `rtrb` source observation.
+fn config_may_override_rtrb_source(contents: &str) -> bool {
+    let mut current_section = String::new();
+    let mut bracket_depth = 0usize;
+    for raw_line in contents.lines() {
+        // Refuse multiline quoted strings conservatively to avoid skipping
+        // embedded overrides or mis-tracking quotes.
+        if raw_line.contains("\"\"\"") || raw_line.contains("'''") {
+            return true;
+        }
+        let Ok(uncommented) = strip_toml_comment(raw_line) else {
+            return true;
+        };
+        let line = uncommented.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if bracket_depth > 0 {
+            if update_bracket_depth(line, &mut bracket_depth).is_err() {
+                return true;
+            }
+            continue;
+        }
+        if line.starts_with('[') && line.ends_with(']') {
+            let inner = if line.starts_with("[[") && line.ends_with("]]") && line.len() >= 4 {
+                line[2..line.len() - 2].trim()
+            } else if line.len() >= 2 {
+                line[1..line.len() - 1].trim()
+            } else {
+                return true;
+            };
+            if inner.is_empty() || inner.contains('[') || inner.contains(']') {
+                return true;
+            }
+            if section_overrides_source(inner) {
+                return true;
+            }
+            current_section = inner.to_ascii_lowercase();
+            continue;
+        }
+        let Some((raw_key, raw_value)) = line.split_once('=') else {
+            // Non-TOML / unrecognized directive: refuse conservatively.
+            return true;
+        };
+        let key = raw_key.trim();
+        let value = raw_value.trim();
+        if key.is_empty() || value.is_empty() {
+            return true;
+        }
+        if key_overrides_source(&current_section, key) {
+            return true;
+        }
+        if update_bracket_depth(value, &mut bracket_depth).is_err() {
+            return true;
+        }
+    }
+    bracket_depth != 0
+}
+
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../Cargo.lock");
@@ -54,7 +230,12 @@ fn main() {
             // recompile hex-stream -> hex-audio -> hex-ui.
             if path.exists() {
                 println!("cargo:rerun-if-changed={}", path.display());
-                return;
+                let Ok(contents) = fs::read_to_string(&path) else {
+                    return;
+                };
+                if config_may_override_rtrb_source(&contents) {
+                    return;
+                }
             }
         }
     }

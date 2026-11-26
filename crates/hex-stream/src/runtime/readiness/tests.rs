@@ -792,8 +792,10 @@ fn pending_arrivals_survive_unrelated_cache_turnover_until_receipt_or_cancel() {
         loan.protected_pages(ProtectionRole::Active, active_stamp, &active)
             .is_some()
     );
-    let mut released = false;
-    for index in [3, 4, 3, 4, 3, 4, 3, 4] {
+    // With page 0 pinned by Active in a 3-slot cache, loading two distinct
+    // unrelated pages without re-touching page 1 must evict the unpinned
+    // cancelled candidate page under LRU replacement.
+    for index in [3, 4] {
         loan.pages.request_page(key, index);
         while loan.pages.page(key, index).is_none() {
             loan.pages.pump_ready(3);
@@ -803,12 +805,11 @@ fn pending_arrivals_survive_unrelated_cache_turnover_until_receipt_or_cancel() {
             );
             std::thread::yield_now();
         }
-        if loan.pages.page(key, 1).is_none() {
-            released = true;
-            break;
-        }
     }
-    assert!(released, "cancelled partial page remained protected");
+    assert!(
+        loan.pages.page(key, 1).is_none(),
+        "cancelled partial page remained protected"
+    );
     let mut loan = Some(loan);
     domain.return_pages_on_control(&mut loan).unwrap();
     let report = finish(&mut domain);

@@ -80,9 +80,20 @@ class StreamBuildInputsTests(unittest.TestCase):
             self.assertNotIn(recursive_home, observe(guarded=False))
             for path in (home / "config.toml", observed / ".cargo/config", observed.parent / ".cargo/config.toml"):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text("unsupported config")
-                self.assertNotIn(marker, observe())
-                self.assertNotIn(marker, observe(guarded=False))
+                # Harmless developer settings (e.g. sccache/linker) must NOT disable observation.
+                path.write_text('[build]\nrustc-wrapper = "sccache"\n[target.aarch64-apple-darwin]\nrustflags = [\n  "-C",\n  "link-arg=-fuse-ld=lld",\n]\n')
+                self.assertIn(marker, observe())
+                self.assertIn(marker, observe(guarded=False))
+                # Source/patch overrides and malformed configs must still be refused.
+                for blocked in (
+                    "unsupported config",
+                    '[source.crates-io]\nreplace-with = "vendored"\n',
+                    '[patch.crates-io]\nrtrb = { path = "../rtrb" }\n',
+                    'paths = ["../rtrb"]\n',
+                ):
+                    path.write_text(blocked)
+                    self.assertNotIn(marker, observe())
+                    self.assertNotIn(marker, observe(guarded=False))
                 path.unlink()
             for name in ("CARGO_SOURCE_CRATES_IO_REPLACE_WITH", "CARGO_REGISTRIES_CRATES_IO_INDEX", "CARGO_SOURCE_OTHER"):
                 self.assertNotIn(marker, observe(changes={name: "unsupported"}))

@@ -9,11 +9,15 @@ use hex_engine::{StreamResourceKey, StreamedSourceMetadata};
 use std::collections::VecDeque;
 pub(crate) mod granular;
 pub(crate) mod scalar;
-use hex_media::{ResampleKernel, ResamplePlan, ResampleVersion, VerifiedWavReader};
+use hex_media::{
+    ResampleKernel, ResamplePlan, ResampleVersion, VerifiedReaderDataLayout, VerifiedWavManifest,
+    VerifiedWavReader, VerifiedWavReaderLimits,
+};
 use hex_warp::{PitchWindow, RepitchWindow, Resampler};
 use rtrb::{Consumer, Producer, PushError};
 use scalar::ScalarJob;
 use std::{
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -77,9 +81,168 @@ pub(crate) struct WorkerQueues {
     pub(crate) failures: Producer<StreamFailure>,
 }
 
+/// Maximum simultaneously open `VerifiedWavReader` file descriptors held by the
+/// ordinary stream worker. Kept well below macOS's default soft
+/// `RLIMIT_NOFILE = 256` so 512-source projects never fail with `EMFILE`.
+pub(crate) const MAX_OPEN_STREAM_READERS: usize = 64;
+
+struct AssetEntry {
+    path: PathBuf,
+    limits: VerifiedWavReaderLimits,
+    manifest: VerifiedWavManifest,
+    source_rate: u32,
+    source_frames: u64,
+    max_window_frames: usize,
+    data_layout: VerifiedReaderDataLayout,
+    reader: Option<Box<VerifiedWavReader>>,
+    last_used: u64,
+    retired_raw_page_reads: u64,
+}
+
+pub(crate) struct ReaderPool {
+    assets: Vec<AssetEntry>,
+    max_open: usize,
+    open_count: usize,
+    tick: u64,
+}
+
+impl ReaderPool {
+    fn with_capacity(max_open: usize, capacity: usize) -> Result<Self, StreamFailureKind> {
+        let mut assets = Vec::new();
+        assets
+            .try_reserve_exact(capacity)
+            .map_err(|_| StreamFailureKind::DecodeFailed)?;
+        Ok(Self {
+            assets,
+            max_open: max_open.max(1),
+            open_count: 0,
+            tick: 0,
+        })
+    }
+
+    fn next_tick(&mut self) -> u64 {
+        self.tick = self.tick.saturating_add(1);
+        self.tick
+    }
+
+    fn find_matching(
+        &self,
+        path: &Path,
+        fingerprint: &[u8; 32],
+        limits: VerifiedWavReaderLimits,
+    ) -> Option<usize> {
+        self.assets.iter().position(|entry| {
+            entry.path == path
+                && entry.manifest.fingerprint() == fingerprint
+                && entry.limits == limits
+        })
+    }
+
+    fn evict_if_full(&mut self) {
+        while self.open_count >= self.max_open {
+            let Some(victim) = self
+                .assets
+                .iter()
+                .enumerate()
+                .filter(|(_, entry)| entry.reader.is_some())
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(index, _)| index)
+            else {
+                break;
+            };
+            if let Some(reader) = self.assets[victim].reader.take() {
+                self.assets[victim].retired_raw_page_reads = self.assets[victim]
+                    .retired_raw_page_reads
+                    .saturating_add(reader.raw_page_reads());
+                self.assets[victim].last_used = 0;
+                self.open_count = self.open_count.saturating_sub(1);
+            }
+        }
+    }
+
+    fn insert_open(
+        &mut self,
+        path: PathBuf,
+        limits: VerifiedWavReaderLimits,
+        reader: VerifiedWavReader,
+    ) -> Result<usize, StreamFailureKind> {
+        let entry = AssetEntry {
+            path,
+            limits,
+            manifest: reader.manifest().clone(),
+            source_rate: reader.sample_rate(),
+            source_frames: reader.source_frames(),
+            max_window_frames: reader.max_window_frames(),
+            data_layout: reader.control_data_layout(),
+            reader: Some(Box::new(reader)),
+            last_used: self.next_tick(),
+            retired_raw_page_reads: 0,
+        };
+        let index = self.assets.len();
+        self.assets
+            .try_reserve(1)
+            .map_err(|_| StreamFailureKind::DecodeFailed)?;
+        self.assets.push(entry);
+        self.open_count += 1;
+        Ok(index)
+    }
+
+    fn reader_mut(
+        &mut self,
+        asset_index: usize,
+        stop: &AtomicBool,
+    ) -> Result<&mut VerifiedWavReader, StreamFailureKind> {
+        if self.assets[asset_index].reader.is_none() {
+            self.evict_if_full();
+            let entry = &self.assets[asset_index];
+            let opened = VerifiedWavReader::open_verified_with_cancel(
+                &entry.path,
+                entry.limits,
+                entry.manifest.clone(),
+                || stop.load(Ordering::Acquire),
+            )
+            .map_err(map_import_error)?;
+            self.assets[asset_index].reader = Some(Box::new(opened));
+            self.open_count += 1;
+        }
+        let tick = self.next_tick();
+        let entry = &mut self.assets[asset_index];
+        entry.last_used = tick;
+        entry
+            .reader
+            .as_deref_mut()
+            .ok_or(StreamFailureKind::DecodeFailed)
+    }
+
+    fn asset(&self, asset_index: usize) -> &AssetEntry {
+        &self.assets[asset_index]
+    }
+
+    #[cfg(test)]
+    fn open_reader_count(&self) -> usize {
+        self.open_count
+    }
+
+    #[cfg(test)]
+    fn asset_count(&self) -> usize {
+        self.assets.len()
+    }
+
+    #[cfg(test)]
+    fn raw_page_reads(&self, asset_index: usize) -> u64 {
+        let entry = &self.assets[asset_index];
+        entry.retired_raw_page_reads + entry.reader.as_ref().map_or(0, |r| r.raw_page_reads())
+    }
+
+    #[cfg(test)]
+    fn page_digests(&self, asset_index: usize) -> &[[u8; 32]] {
+        self.assets[asset_index].manifest.page_digests()
+    }
+}
+
 struct Source {
     definition: SourceDefinition,
-    reader: VerifiedWavReader,
+    asset_index: usize,
     plan: ResamplePlan,
     pitch: Option<PitchWindow>,
     repitch: Option<RepitchWindow>,
@@ -413,7 +576,7 @@ pub(crate) fn run_worker(
     };
     let catalog_message = catalog.as_ref().map_or_else(
         |error| Err(*error),
-        |(sources, footprint, data)| {
+        |(sources, _pool, footprint, data)| {
             let mut data = *data;
             data.free_page_handles =
                 crate::AllocationData::of::<Box<PageBuffer>>(free_pages.capacity());
@@ -451,7 +614,7 @@ pub(crate) fn run_worker(
     if catalog_result.send(catalog_message).is_err() {
         return Ok(free_pages);
     }
-    let (mut sources, _footprint, _data) = match catalog {
+    let (mut sources, mut reader_pool, _footprint, _data) = match catalog {
         Ok(sources) => sources,
         Err(_) => return Ok(free_pages),
     };
@@ -473,46 +636,34 @@ pub(crate) fn run_worker(
             free_pages.push(page);
             did_work = true;
         }
-        if let Some(routing) = &mut granular {
-            for _ in 0..config.page_buffers {
-                let Some((mut page, status)) = routing.poll() else {
-                    break;
-                };
-                did_work = true;
-                match status {
-                    Ok(()) => {
-                        if let Err(PushError::Full(page)) = queues.ready.push(page) {
-                            held_pages.push(page);
-                        }
-                    }
-                    Err(kind) => {
-                        if let Some(key) = page.key {
-                            hold_failure(
-                                StreamFailure {
-                                    key: key.source,
-                                    page_index: key.page_index,
-                                    kind,
-                                },
-                                &mut held_failures,
-                                &mut queues.failures,
-                            );
-                        }
-                        page.key = None;
-                        page.valid_frames = 0;
-                        free_pages.push(page);
-                    }
-                }
-            }
-            if routing.faulted() {
-                break;
-            }
-        }
         let held_pages_before = held_pages.len();
         let held_failures_before = held_failures.len();
         flush_held_pages(&mut held_pages, &mut queues.ready);
         flush_held_failures(&mut held_failures, &mut queues.failures);
         if held_pages.len() < held_pages_before || held_failures.len() < held_failures_before {
             did_work = true;
+        }
+        // Respect held-page and held-failure backpressure BEFORE polling
+        // granular outcomes so `held_failures` cannot grow past its
+        // pre-reserved `request_capacity * 2` bound under a full failure queue.
+        if let Some(routing) = &mut granular {
+            if held_pages.is_empty()
+                && held_failures.is_empty()
+                && poll_granular_outcomes(
+                    routing,
+                    config.page_buffers,
+                    &mut queues.ready,
+                    &mut queues.failures,
+                    &mut held_pages,
+                    &mut held_failures,
+                    &mut free_pages,
+                )
+            {
+                did_work = true;
+            }
+            if routing.faulted() {
+                break;
+            }
         }
         if let Some(consumer) = &offline_consumer
             && (queues.ready.slots() < config.ready_capacity
@@ -577,6 +728,9 @@ pub(crate) fn run_worker(
         if stop.load(Ordering::Acquire) {
             break;
         }
+        if !held_pages.is_empty() || !held_failures.is_empty() {
+            continue;
+        }
         let deferred_granular_next = granular
             .as_mut()
             .filter(|routing| routing.can_submit())
@@ -632,7 +786,7 @@ pub(crate) fn run_worker(
             && routing.contains(audio_key)
             && !routing.can_submit()
         {
-            if !routing.push_deferred(key) {
+            if !routing.defer_or_supersede(key, &mut held_failures, &mut queues.failures) {
                 hold_failure(
                     StreamFailure {
                         key: key.source,
@@ -731,29 +885,36 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
-        #[cfg(feature = "test-support")]
-        if let Some(after) = read_failure_after {
-            source.reader.fail_page_read_after(after);
-        }
-        let rendered = render_page(
-            source,
-            PageKey {
-                source: audio_key,
-                page_index: key.page_index,
-            },
-            &mut page,
-            &mut source_scratch,
-            &mut pitch_scratch,
-            &stop,
-            #[cfg(test)]
-            test_hooks
-                .as_ref()
-                .and_then(|hooks| hooks.read_gate.as_ref()),
-        );
-        #[cfg(feature = "test-support")]
-        if read_failure_after.is_some() {
-            source.reader.clear_page_read_failure();
-        }
+        let rendered = match reader_pool.reader_mut(source.asset_index, &stop) {
+            Ok(reader) => {
+                #[cfg(feature = "test-support")]
+                if let Some(after) = read_failure_after {
+                    reader.fail_page_read_after(after);
+                }
+                let rendered = render_page(
+                    source,
+                    reader,
+                    PageKey {
+                        source: audio_key,
+                        page_index: key.page_index,
+                    },
+                    &mut page,
+                    &mut source_scratch,
+                    &mut pitch_scratch,
+                    &stop,
+                    #[cfg(test)]
+                    test_hooks
+                        .as_ref()
+                        .and_then(|hooks| hooks.read_gate.as_ref()),
+                );
+                #[cfg(feature = "test-support")]
+                if read_failure_after.is_some() {
+                    reader.clear_page_read_failure();
+                }
+                rendered
+            }
+            Err(kind) => Err(kind),
+        };
         match rendered {
             Ok(()) => {
                 match queues.ready.push(page) {
@@ -798,8 +959,58 @@ pub(crate) fn run_worker(
     }
     free_pages.append(&mut held_pages);
     drop(sources);
+    drop(reader_pool);
     drop(source_scratch);
     Ok(free_pages)
+}
+
+fn poll_granular_outcomes(
+    routing: &mut granular::GranularRouting,
+    limit: usize,
+    ready: &mut Producer<Box<PageBuffer>>,
+    failures: &mut Producer<StreamFailure>,
+    held_pages: &mut Vec<Box<PageBuffer>>,
+    held_failures: &mut Vec<StreamFailure>,
+    free_pages: &mut Vec<Box<PageBuffer>>,
+) -> bool {
+    let mut did_work = false;
+    for _ in 0..limit {
+        if !held_pages.is_empty() || !held_failures.is_empty() {
+            break;
+        }
+        let Some((mut page, status)) = routing.poll() else {
+            break;
+        };
+        did_work = true;
+        match status {
+            Ok(()) => {
+                if let Err(PushError::Full(page)) = ready.push(page) {
+                    held_pages.push(page);
+                    break;
+                }
+            }
+            Err(kind) => {
+                if let Some(key) = page.key {
+                    hold_failure(
+                        StreamFailure {
+                            key: key.source,
+                            page_index: key.page_index,
+                            kind,
+                        },
+                        held_failures,
+                        failures,
+                    );
+                }
+                page.key = None;
+                page.valid_frames = 0;
+                free_pages.push(page);
+                if !held_failures.is_empty() {
+                    break;
+                }
+            }
+        }
+    }
+    did_work
 }
 
 fn verified_membership(
@@ -913,7 +1124,7 @@ fn build_catalog(
     source_scratch: &mut Vec<[f32; 2]>,
     pitch_scratch_capacity: usize,
     stop: &AtomicBool,
-) -> Result<(Vec<Source>, CatalogFootprint, crate::WorkerData), StreamFailureKind> {
+) -> Result<(Vec<Source>, ReaderPool, CatalogFootprint, crate::WorkerData), StreamFailureKind> {
     if definitions
         .iter()
         .any(|d| d.key.pitch().is_some() || d.repitch.is_some())
@@ -924,13 +1135,8 @@ fn build_catalog(
     if definitions.len() > config.max_sources {
         return Err(StreamFailureKind::CapacityExhausted);
     }
-    let verified_reader_scratch_bytes = definitions
-        .len()
-        .checked_mul(hex_media::VERIFIED_WAV_PAGE_BYTES)
-        .ok_or(StreamFailureKind::CapacityExhausted)?;
-    if verified_reader_scratch_bytes > config.max_reader_scratch_bytes {
-        return Err(StreamFailureKind::CapacityExhausted);
-    }
+    let max_open_readers = (config.max_reader_scratch_bytes / hex_media::VERIFIED_WAV_PAGE_BYTES)
+        .clamp(1, MAX_OPEN_STREAM_READERS);
     let mut catalog_path_bytes = 0_usize;
     for definition in &definitions {
         catalog_path_bytes = catalog_path_bytes
@@ -958,6 +1164,7 @@ fn build_catalog(
     sources
         .try_reserve_exact(definitions.len())
         .map_err(|_| StreamFailureKind::DecodeFailed)?;
+    let mut reader_pool = ReaderPool::with_capacity(max_open_readers, definitions.len())?;
     let mut kernels: Vec<(u32, u32, ResampleKernel)> = Vec::new();
     // Its finite maximum is known before any reader/kernel construction; avoid
     // repeated old backing overlap while a pending Root owns this constructor.
@@ -1000,49 +1207,84 @@ fn build_catalog(
         let remaining_manifest = config.max_manifest_bytes.saturating_sub(manifest_bytes);
         let mut reader_limits = definition.reader_limits;
         reader_limits.max_manifest_bytes = reader_limits.max_manifest_bytes.min(remaining_manifest);
-        let cancelled = || stop.load(Ordering::Acquire);
-        // A caller-captured manifest avoids re-hashing a file whose length and
-        // mtime are unchanged; every page served later is still digest-verified.
-        // If that identity changed, re-hash in full: the fingerprint check below
-        // then accepts a touched-but-identical file and refuses a changed one.
-        // Move the supplied handle into the reader. A failed identity reuse
-        // must not retain an unused old manifest beside the replacement reader.
-        let reused = definition.verified_manifest.take().map(|manifest| {
-            VerifiedWavReader::open_verified_with_cancel(
-                &definition.path,
-                reader_limits,
-                manifest,
-                cancelled,
-            )
-        });
-        let mut reader = match reused {
-            Some(Ok(reader)) => reader,
-            None | Some(Err(hex_media::ImportError::SourceChanged)) => {
-                VerifiedWavReader::open_with_cancel(&definition.path, reader_limits, cancelled)
-                    .map_err(map_import_error)?
-            }
-            Some(Err(error)) => return Err(map_import_error(error)),
-        };
-        let reader_manifest = reader.page_manifest_bytes();
-        manifest_bytes = manifest_bytes
-            .checked_add(reader_manifest)
-            .ok_or(StreamFailureKind::CapacityExhausted)?;
-        if manifest_bytes > config.max_manifest_bytes {
-            return Err(StreamFailureKind::CapacityExhausted);
-        }
-        if reader.sample_rate() != definition.metadata.source_rate()
-            || reader.source_frames() != definition.metadata.source_frames()
-            || *reader.fingerprint() != definition.metadata.fingerprint()
+        let fingerprint = definition.metadata.fingerprint();
+        let asset_index = if let Some(existing) =
+            reader_pool.find_matching(&definition.path, &fingerprint, definition.reader_limits)
         {
-            return Err(StreamFailureKind::SourceChanged);
-        }
+            // Derived sources (pitched/repitched clips of the same verified
+            // asset) share the underlying asset entry and open FD slot.
+            let _ = definition.verified_manifest.take();
+            let entry = reader_pool.asset(existing);
+            let reader_manifest = entry.manifest.manifest_bytes();
+            if reader_manifest > reader_limits.max_manifest_bytes {
+                return Err(StreamFailureKind::CapacityExhausted);
+            }
+            manifest_bytes = manifest_bytes
+                .checked_add(reader_manifest)
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            if manifest_bytes > config.max_manifest_bytes {
+                return Err(StreamFailureKind::CapacityExhausted);
+            }
+            if entry.source_rate != definition.metadata.source_rate()
+                || entry.source_frames != definition.metadata.source_frames()
+            {
+                return Err(StreamFailureKind::SourceChanged);
+            }
+            existing
+        } else {
+            reader_pool.evict_if_full();
+            let cancelled = || stop.load(Ordering::Acquire);
+            // A caller-captured manifest avoids re-hashing a file whose length and
+            // mtime are unchanged; every page served later is still digest-verified.
+            // If that identity changed, re-hash in full: the fingerprint check below
+            // then accepts a touched-but-identical file and refuses a changed one.
+            // Move the supplied handle into the reader. A failed identity reuse
+            // must not retain an unused old manifest beside the replacement reader.
+            let reused = definition.verified_manifest.take().map(|manifest| {
+                VerifiedWavReader::open_verified_with_cancel(
+                    &definition.path,
+                    reader_limits,
+                    manifest,
+                    cancelled,
+                )
+            });
+            let mut reader = match reused {
+                Some(Ok(reader)) => reader,
+                None | Some(Err(hex_media::ImportError::SourceChanged)) => {
+                    VerifiedWavReader::open_with_cancel(&definition.path, reader_limits, cancelled)
+                        .map_err(map_import_error)?
+                }
+                Some(Err(error)) => return Err(map_import_error(error)),
+            };
+            let reader_manifest = reader.page_manifest_bytes();
+            manifest_bytes = manifest_bytes
+                .checked_add(reader_manifest)
+                .ok_or(StreamFailureKind::CapacityExhausted)?;
+            if manifest_bytes > config.max_manifest_bytes {
+                return Err(StreamFailureKind::CapacityExhausted);
+            }
+            if reader.sample_rate() != definition.metadata.source_rate()
+                || reader.source_frames() != definition.metadata.source_frames()
+                || *reader.fingerprint() != fingerprint
+            {
+                return Err(StreamFailureKind::SourceChanged);
+            }
+            if reader.encoding() == 3 {
+                validate_finite_source(&mut reader, source_scratch, stop)?;
+            }
+            reader_pool.insert_open(definition.path.clone(), definition.reader_limits, reader)?
+        };
+        let entry = reader_pool.asset(asset_index);
+        let source_rate = entry.source_rate;
+        let source_frames = entry.source_frames;
+        let max_window_frames = entry.max_window_frames;
         // The asset's saved conversion version selects the law; v1 media stays v1.
         let version = ResampleVersion::for_conversion(definition.metadata.conversion_version())
             .map_err(map_import_error)?;
         let kernel_index = kernels
             .iter()
-            .position(|(source_rate, target_rate, kernel)| {
-                *source_rate == reader.sample_rate()
+            .position(|(cached_source_rate, target_rate, kernel)| {
+                *cached_source_rate == source_rate
                     && *target_rate == definition.metadata.project_rate()
                     && kernel.version() == version
             });
@@ -1053,7 +1295,7 @@ fn build_catalog(
             // Reserve that full possible payload before construction so the
             // aggregate peak, not only the retained actual capacities, is bounded.
             const MAX_KERNEL_BYTES: usize = 13 * 1024 * 1024;
-            if reader.sample_rate() != definition.metadata.project_rate() {
+            if source_rate != definition.metadata.project_rate() {
                 kernel_budget_reserved = kernel_budget_reserved
                     .checked_add(MAX_KERNEL_BYTES)
                     .ok_or(StreamFailureKind::CapacityExhausted)?;
@@ -1062,7 +1304,7 @@ fn build_catalog(
                 return Err(StreamFailureKind::CapacityExhausted);
             }
             let kernel = ResampleKernel::with_version(
-                reader.sample_rate(),
+                source_rate,
                 definition.metadata.project_rate(),
                 version,
             )
@@ -1088,7 +1330,7 @@ fn build_catalog(
                 .try_reserve(1)
                 .map_err(|_| StreamFailureKind::DecodeFailed)?;
             kernels.push((
-                reader.sample_rate(),
+                source_rate,
                 definition.metadata.project_rate(),
                 kernel.clone(),
             ));
@@ -1096,8 +1338,8 @@ fn build_catalog(
         };
         let plan = ResamplePlan::with_kernel(
             kernel,
-            reader.source_frames(),
-            reader.source_frames(),
+            source_frames,
+            source_frames,
             definition.metadata.source_playback_frames(),
             hex_engine::STREAM_PAGE_FRAMES,
         )
@@ -1106,16 +1348,13 @@ fn build_catalog(
             return Err(StreamFailureKind::DecodeFailed);
         }
         let window_bound = max_source_window(
-            reader.sample_rate(),
+            source_rate,
             definition.metadata.project_rate(),
-            reader.source_frames(),
+            source_frames,
             plan.kernel_support_radius(),
         )?;
-        if window_bound > source_scratch.len() || window_bound > reader.max_window_frames() {
+        if window_bound > source_scratch.len() || window_bound > max_window_frames {
             return Err(StreamFailureKind::CapacityExhausted);
-        }
-        if reader.encoding() == 3 {
-            validate_finite_source(&mut reader, source_scratch, stop)?;
         }
         let pitch = if let Some((cents, law)) = definition.key.pitch() {
             let law = pitch_law(law);
@@ -1180,11 +1419,20 @@ fn build_catalog(
         };
         sources.push(Source {
             definition,
-            reader,
+            asset_index,
             plan,
             pitch,
             repitch,
         });
+    }
+    let verified_reader_scratch_bytes = reader_pool
+        .assets
+        .len()
+        .min(max_open_readers)
+        .checked_mul(hex_media::VERIFIED_WAV_PAGE_BYTES)
+        .ok_or(StreamFailureKind::CapacityExhausted)?;
+    if verified_reader_scratch_bytes > config.max_reader_scratch_bytes {
+        return Err(StreamFailureKind::CapacityExhausted);
     }
     let scratch_bytes = source_scratch
         .capacity()
@@ -1199,7 +1447,7 @@ fn build_catalog(
     for source in &sources {
         let Source {
             definition,
-            reader,
+            asset_index,
             plan,
             pitch: _,
             repitch: _,
@@ -1218,7 +1466,7 @@ fn build_catalog(
             verified_manifest: _,
             repitch: _,
         } = definition;
-        let layout = reader.control_data_layout();
+        let layout = reader_pool.asset(*asset_index).data_layout;
         data.definition_paths = data
             .definition_paths
             .checked_add(path.capacity())
@@ -1265,6 +1513,7 @@ fn build_catalog(
     let source_count = sources.len();
     Ok((
         sources,
+        reader_pool,
         CatalogFootprint {
             granular_data_bytes: 0,
             sources: source_count,
@@ -1346,8 +1595,10 @@ pub(crate) fn validate_finite_source(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_page(
     source: &mut Source,
+    reader: &mut VerifiedWavReader,
     key: PageKey,
     page: &mut PageBuffer,
     source_scratch: &mut [[f32; 2]],
@@ -1392,19 +1643,18 @@ fn render_page(
                 .map_err(map_import_error)?;
             let n =
                 usize::try_from(last - first).map_err(|_| StreamFailureKind::CapacityExhausted)?;
-            if n > source_scratch.len() || n > source.reader.max_window_frames() {
+            if n > source_scratch.len() || n > reader.max_window_frames() {
                 return Err(StreamFailureKind::CapacityExhausted);
             }
             #[cfg(test)]
             let read_gate = read_gate.filter(|gate| gate.key == key && !gate.used.get());
             #[cfg(test)]
             if let Some(after) = read_gate.and_then(|gate| gate.failure_after_page_reads) {
-                source.reader.fail_page_read_after(after);
+                reader.fail_page_read_after(after);
             }
             #[cfg(test)]
             let mut checks = 0;
-            source
-                .reader
+            reader
                 .read_frames_into_with_cancel(first, &mut source_scratch[..n], || {
                     #[cfg(test)]
                     if let Some(gate) = read_gate {
@@ -1454,7 +1704,7 @@ fn render_page(
         .map_err(map_import_error)?;
     let source_count =
         usize::try_from(source_end - source_start).map_err(|_| StreamFailureKind::DecodeFailed)?;
-    if source_count > source_scratch.len() || source_count > source.reader.max_window_frames() {
+    if source_count > source_scratch.len() || source_count > reader.max_window_frames() {
         return Err(StreamFailureKind::CapacityExhausted);
     }
     let input = &mut source_scratch[..source_count];
@@ -1462,12 +1712,11 @@ fn render_page(
     let read_gate = read_gate.filter(|gate| gate.key == key && !gate.used.get());
     #[cfg(test)]
     if let Some(after) = read_gate.and_then(|gate| gate.failure_after_page_reads) {
-        source.reader.fail_page_read_after(after);
+        reader.fail_page_read_after(after);
     }
     #[cfg(test)]
     let mut checks = 0;
-    source
-        .reader
+    reader
         .read_frames_into_with_cancel(source_start, input, || {
             #[cfg(test)]
             if let Some(gate) = read_gate.filter(|gate| gate.key == key) {
@@ -1555,7 +1804,11 @@ fn hold_failure(
 ) {
     match queue.push(failure) {
         Ok(()) => {}
-        Err(PushError::Full(failure)) => held.push(failure),
+        Err(PushError::Full(failure)) => {
+            if held.len() < held.capacity() {
+                held.push(failure);
+            }
+        }
     }
 }
 
@@ -1877,7 +2130,7 @@ pub(crate) mod tests {
                 ),
                 Err(StreamFailureKind::CapacityExhausted)
             ));
-            let (mut sources, _, data) = build_catalog(
+            let (mut sources, mut pool, _, data) = build_catalog(
                 &config,
                 vec![definition],
                 &mut source_scratch,
@@ -1888,8 +2141,8 @@ pub(crate) mod tests {
             assert!(data.bytes().unwrap() <= bound);
             let source = &mut sources[0];
             let mut native = vec![[0.0; 2]; 4096];
-            source
-                .reader
+            pool.reader_mut(source.asset_index, &AtomicBool::new(false))
+                .unwrap()
                 .read_frames_into_with_cancel(0, &mut native, || false)
                 .unwrap();
             let mut converted = vec![[0.0; 2]; input_frames as usize];
@@ -1917,8 +2170,12 @@ pub(crate) mod tests {
                 hex_warp::render_with_resampler(&request, Resampler::V2, &mut || false).unwrap();
             for page_index in [1, 0] {
                 let mut page = PageBuffer::new().unwrap();
+                let reader = pool
+                    .reader_mut(source.asset_index, &AtomicBool::new(false))
+                    .unwrap();
                 render_page(
                     source,
+                    reader,
                     PageKey {
                         source: key,
                         page_index,
@@ -1977,7 +2234,7 @@ pub(crate) mod tests {
             preparation_data_bound(config, std::slice::from_ref(&definition), 1).unwrap();
         let mut source_scratch = vec![[0.0; 2]; config.source_scratch_frames];
         let pitch_scratch = vec![[0.0; 2]; PITCH_SCRATCH_FRAMES];
-        let (_, footprint, data) = build_catalog(
+        let (_, _, footprint, data) = build_catalog(
             &config,
             vec![definition],
             &mut source_scratch,
@@ -2007,7 +2264,7 @@ pub(crate) mod tests {
             WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
             1024 * 1024,
         );
-        let reader = VerifiedWavReader::open(&fixture.0, limits).expect("verified source");
+        let mut reader = VerifiedWavReader::open(&fixture.0, limits).expect("verified source");
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
         let asset = match editor
             .execute(Command::AddAsset {
@@ -2037,7 +2294,7 @@ pub(crate) mod tests {
                 .expect("identity plan");
         let mut source = Source {
             definition: SourceDefinition::new(fixture.0.clone(), metadata, limits),
-            reader,
+            asset_index: 0,
             plan,
             pitch: None,
             repitch: None,
@@ -2052,6 +2309,7 @@ pub(crate) mod tests {
         assert_eq!(
             render_page(
                 &mut source,
+                &mut reader,
                 key,
                 &mut page,
                 &mut scratch,
@@ -2248,13 +2506,13 @@ pub(crate) mod tests {
         let config = StreamConfig::initial();
         let mut scratch = vec![[0.0; 2]; config.source_scratch_frames];
         let stop = AtomicBool::new(false);
-        let (sources, _, data) =
+        let (sources, pool, _, data) =
             build_catalog(&config, vec![definition()], &mut scratch, 0, &stop).expect("rebuild");
         let manifest_data =
             verified.page_manifest_bytes() + hex_media::VerifiedWavManifest::owner_payload_bytes();
         assert_eq!(data.manifests, manifest_data);
         assert_eq!(
-            sources[0].reader.raw_page_reads(),
+            pool.raw_page_reads(sources[0].asset_index),
             1,
             "an unchanged pre-verified source reads only its header page"
         );
@@ -2283,18 +2541,20 @@ pub(crate) mod tests {
         ));
         let (bound, _) =
             preparation_data_bound(shared_config, &definitions, definitions.capacity()).unwrap();
-        let (shared, footprint, data) =
+        let (shared, shared_pool, footprint, data) =
             build_catalog(&shared_config, definitions, &mut scratch, 0, &stop).unwrap();
         assert_eq!(data.manifests, 2 * manifest_data);
         assert_eq!(footprint.manifest_bytes, 2 * verified.page_manifest_bytes());
+        assert_eq!(shared[0].asset_index, shared[1].asset_index);
+        assert_eq!(shared_pool.open_reader_count(), 1);
         assert!(std::ptr::eq(
-            shared[0].reader.page_digests().as_ptr(),
-            shared[1].reader.page_digests().as_ptr(),
+            shared_pool.page_digests(shared[0].asset_index).as_ptr(),
+            shared_pool.page_digests(shared[1].asset_index).as_ptr(),
         ));
         assert!(data.bytes().unwrap() <= bound);
-        drop(shared);
+        drop((shared, shared_pool));
         // Without a manifest the same rebuild hashes every page.
-        let (sources, _, _) = build_catalog(
+        let (sources, pool, _, _) = build_catalog(
             &config,
             vec![SourceDefinition::new(
                 fixture.0.clone(),
@@ -2306,8 +2566,8 @@ pub(crate) mod tests {
             &stop,
         )
         .expect("full rebuild");
-        assert_eq!(sources[0].reader.raw_page_reads(), 4);
-        drop(sources);
+        assert_eq!(pool.raw_page_reads(sources[0].asset_index), 4);
+        drop((sources, pool));
         // A touched but byte-identical file fails the identity check and is
         // re-hashed in full, which still matches the expected fingerprint.
         let mut file = OpenOptions::new()
@@ -2323,10 +2583,11 @@ pub(crate) mod tests {
             .unwrap()
         };
         touch(&file, 5);
-        let (sources, _, _) = build_catalog(&config, vec![definition()], &mut scratch, 0, &stop)
-            .expect("touched rebuild");
-        assert_eq!(sources[0].reader.raw_page_reads(), 4);
-        drop(sources);
+        let (sources, pool, _, _) =
+            build_catalog(&config, vec![definition()], &mut scratch, 0, &stop)
+                .expect("touched rebuild");
+        assert_eq!(pool.raw_page_reads(sources[0].asset_index), 4);
+        drop((sources, pool));
         // A content change on disk is refused.
         use std::io::{Seek, SeekFrom};
         file.seek(SeekFrom::Start(100)).unwrap();
@@ -2336,5 +2597,476 @@ pub(crate) mod tests {
             build_catalog(&config, vec![definition()], &mut scratch, 0, &stop),
             Err(StreamFailureKind::SourceChanged)
         ));
+    }
+
+    #[test]
+    fn reader_pool_shares_derived_sources_and_caps_open_fds_below_macos_rlimit() {
+        const DISTINCT_FILES: usize = 270;
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(1024 * 1024, 4096, 128, 8192),
+            1024 * 1024,
+        );
+        let mut fixtures = Vec::with_capacity(DISTINCT_FILES);
+        let mut definitions = Vec::with_capacity(DISTINCT_FILES + 2);
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let mut first_raw = None;
+        for index in 0..DISTINCT_FILES {
+            let fixture = Fixture::pcm16_frames(64);
+            let verified = VerifiedWavReader::open(&fixture.0, limits).unwrap();
+            let Created::Asset(asset) = editor
+                .execute(Command::AddAsset {
+                    path: format!("pool-{index}.wav").into(),
+                    sample_rate: 48_000,
+                    frames: 64,
+                })
+                .unwrap()
+            else {
+                panic!("asset")
+            };
+            let metadata = StreamedSourceMetadata::new(
+                StreamSourceKey::new(index as u64 + 1, asset),
+                48_000,
+                48_000,
+                64,
+                64,
+                IDENTITY_CONVERSION,
+                *verified.fingerprint(),
+            )
+            .unwrap();
+            let manifest = verified.manifest().clone();
+            drop(verified);
+            if index == 0 {
+                first_raw = Some((fixture.0.clone(), metadata.clone(), manifest.clone()));
+            }
+            definitions.push(
+                SourceDefinition::new(fixture.0.clone(), metadata, limits)
+                    .with_verified_manifest(manifest),
+            );
+            fixtures.push(fixture);
+        }
+        // Add two pitched derived clips of asset 0; they must share asset 0's
+        // underlying ReaderPool entry rather than opening duplicate FDs.
+        let (first_path, first_meta, first_manifest) = first_raw.unwrap();
+        for cents in [200, -300] {
+            let pitched = first_meta
+                .with_plain_pitch(cents, hex_project::WarpResampler::V2)
+                .unwrap();
+            definitions.push(
+                SourceDefinition::new(first_path.clone(), pitched, limits)
+                    .with_verified_manifest(first_manifest.clone()),
+            );
+        }
+
+        let config = StreamConfig::initial();
+        let mut scratch = vec![[0.0; 2]; config.source_scratch_frames];
+        let mut pitch_scratch = vec![[0.0; 2]; PITCH_SCRATCH_FRAMES];
+        let stop = AtomicBool::new(false);
+        let (mut sources, mut pool, footprint, _) = build_catalog(
+            &config,
+            definitions,
+            &mut scratch,
+            pitch_scratch.capacity(),
+            &stop,
+        )
+        .expect("270+ sources must build without hitting macOS RLIMIT_NOFILE = 256");
+
+        assert_eq!(sources.len(), DISTINCT_FILES + 2);
+        assert_eq!(pool.asset_count(), DISTINCT_FILES);
+        assert!(
+            pool.open_reader_count() <= MAX_OPEN_STREAM_READERS,
+            "open readers {} exceeded cap {}",
+            pool.open_reader_count(),
+            MAX_OPEN_STREAM_READERS
+        );
+        assert_eq!(
+            footprint.verified_reader_scratch_bytes,
+            MAX_OPEN_STREAM_READERS * hex_media::VERIFIED_WAV_PAGE_BYTES
+        );
+        // Derived pitched clips of asset 0 share its exact AssetEntry.
+        let asset0_sources: Vec<_> = sources
+            .iter()
+            .filter(|s| s.definition.path == first_path)
+            .collect();
+        assert_eq!(asset0_sources.len(), 3);
+        assert_eq!(asset0_sources[0].asset_index, asset0_sources[1].asset_index);
+        assert_eq!(asset0_sources[0].asset_index, asset0_sources[2].asset_index);
+
+        // Rendering from an evicted early source reopens under its pinned
+        // manifest while keeping open_reader_count strictly capped.
+        let first_idx = sources
+            .iter()
+            .position(|s| s.definition.path == first_path && s.pitch.is_none())
+            .unwrap();
+        let key = sources[first_idx].definition.key;
+        let mut page = PageBuffer::new().unwrap();
+        let reader = pool
+            .reader_mut(sources[first_idx].asset_index, &stop)
+            .expect("reopen evicted source");
+        render_page(
+            &mut sources[first_idx],
+            reader,
+            PageKey {
+                source: key,
+                page_index: 0,
+            },
+            &mut page,
+            &mut scratch,
+            &mut pitch_scratch,
+            &stop,
+            None,
+        )
+        .expect("render reopened page");
+        assert!(pool.open_reader_count() <= MAX_OPEN_STREAM_READERS);
+        assert_eq!(page.valid_frames, 64);
+        assert_eq!(page.frames[1], [1.0 / 32768.0, -1.0 / 32768.0]);
+        drop((sources, pool, fixtures));
+    }
+
+    #[test]
+    fn held_failures_backpressure_blocks_granular_polling_and_preserves_capacity() {
+        let fixture = Fixture::pcm16_frames(8192);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(1024 * 1024, 8192, 128, 8192),
+            1024 * 1024,
+        );
+        let reader = VerifiedWavReader::open(&fixture.0, limits).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "granular-bp.wav".into(),
+                sample_rate: 48_000,
+                frames: 8192,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let raw = StreamedSourceMetadata::new(
+            StreamSourceKey::new(120, asset),
+            48_000,
+            48_000,
+            8192,
+            8192,
+            IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        let region = hex_warp::SourceRegion::new(8192, 0, 8192, 0, false, vec![]).unwrap();
+        let map = hex_warp::TimeMap::new(
+            vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: 8192,
+                source_start_q32: 0,
+                source_end_q32: 8192_i128 << 32,
+            }],
+            8192,
+        )
+        .unwrap();
+        let root = hex_engine::audio_transform::StreamedGranularRoot::new_warped(
+            &raw,
+            region,
+            map,
+            hex_warp::Mode::Tones { grain_ms: 30 },
+            0,
+            Resampler::V2,
+            Vec::new(),
+        )
+        .unwrap();
+        let kernel = ResampleKernel::new(48_000, 48_000).unwrap();
+        let plan =
+            ResamplePlan::with_kernel(kernel, 8192, 8192, 8192, hex_engine::STREAM_PAGE_FRAMES)
+                .unwrap();
+        let granular_source = crate::VerifiedGranularSource::prepare_from_reader_on_control(
+            raw,
+            root,
+            reader,
+            plan,
+            crate::GranularSourcePreparationLimits {
+                source_scratch_frames: 8192,
+                checkpoint_entries: 4,
+                checkpoint_budget: 2 * 1024 * 1024,
+                max_processing_bytes: 8 * 1024 * 1024,
+                max_construction_peak_bytes: hex_warp::MAX_SCRATCH_BYTES * 3,
+            },
+            || false,
+        )
+        .unwrap();
+        let gkey = granular_source.metadata().key();
+        let bank = crate::GranularWorkerBank::try_new_on_control(
+            vec![granular_source],
+            crate::GranularBankAllowance {
+                max_sources: 4,
+                max_data_bytes: 32 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let mut config = StreamConfig::with_pool_pages(4);
+        config.request_capacity = 2;
+        let allowance = crate::GranularWorkerAllowance {
+            max_data_bytes: 64 * 1024 * 1024,
+            max_shared_handles: 64,
+        };
+        let prepared = granular::PreparedGranular::new(bank, config, allowance).unwrap();
+        let mut routing = prepared.start(&AtomicBool::new(false)).unwrap();
+
+        // Submit an out-of-range page (page_index 999) so the granular worker
+        // produces a failure outcome.
+        let page = PageBuffer::new().unwrap();
+        routing
+            .submit(
+                crate::ResourcePageKey {
+                    source: gkey.into(),
+                    page_index: 999,
+                },
+                page,
+            )
+            .ok()
+            .expect("submit out-of-range granular page");
+        // Wait briefly for the granular worker to enqueue the failure result.
+        std::thread::sleep(Duration::from_millis(20));
+
+        // Fill the failure queue and pre-populate `held_failures` to its exact
+        // pre-reserved capacity; polling under backpressure must not poll
+        // granular outcomes or grow `held_failures`.
+        let (mut ready_tx, _ready_rx) = rtrb::RingBuffer::new(1);
+        let (mut failure_tx, mut failure_rx) = rtrb::RingBuffer::new(1);
+        let sentinel = StreamFailure {
+            key: gkey.into(),
+            page_index: 0,
+            kind: StreamFailureKind::Cancelled,
+        };
+        failure_tx.push(sentinel).unwrap();
+        let mut held_pages = Vec::with_capacity(4);
+        let mut held_failures = Vec::new();
+        held_failures.try_reserve_exact(1).unwrap();
+        held_failures.push(sentinel);
+        let reserved_cap = held_failures.capacity();
+        let mut free_pages = Vec::with_capacity(4);
+
+        // With `held_failures` non-empty, `poll_granular_outcomes` must return
+        // false immediately without pulling the failure from `routing` or
+        // growing `held_failures`.
+        assert!(!poll_granular_outcomes(
+            &mut routing,
+            4,
+            &mut ready_tx,
+            &mut failure_tx,
+            &mut held_pages,
+            &mut held_failures,
+            &mut free_pages,
+        ));
+        assert_eq!(held_failures.len(), 1);
+        assert_eq!(held_failures.capacity(), reserved_cap);
+        assert!(free_pages.is_empty());
+
+        // Drain the backpressure; now polling retrieves the granular failure
+        // and returns the loaned page cleanly.
+        assert_eq!(failure_rx.pop(), Ok(sentinel));
+        flush_held_failures(&mut held_failures, &mut failure_tx);
+        assert!(held_failures.is_empty());
+        assert_eq!(failure_rx.pop(), Ok(sentinel));
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !poll_granular_outcomes(
+            &mut routing,
+            4,
+            &mut ready_tx,
+            &mut failure_tx,
+            &mut held_pages,
+            &mut held_failures,
+            &mut free_pages,
+        ) {
+            assert!(Instant::now() < deadline, "granular failure not delivered");
+            std::thread::yield_now();
+        }
+        assert_eq!(free_pages.len(), 1);
+        assert!(failure_rx.pop().is_ok());
+        routing.stop_into(&mut free_pages).unwrap();
+    }
+
+    #[test]
+    fn granular_routing_supersedes_active_replay_on_seek_jump_but_keeps_lookahead() {
+        let fixture = Fixture::pcm16_frames(32_767);
+        let limits = VerifiedWavReaderLimits::new(
+            WavReaderLimits::new(1024 * 1024, 32_767, 128, 32_768),
+            1024 * 1024,
+        );
+        let reader = VerifiedWavReader::open(&fixture.0, limits).unwrap();
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
+        let Created::Asset(asset) = editor
+            .execute(Command::AddAsset {
+                path: "granular-seek.wav".into(),
+                sample_rate: 48_000,
+                frames: 32_767,
+            })
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        let raw = StreamedSourceMetadata::new(
+            StreamSourceKey::new(121, asset),
+            48_000,
+            48_000,
+            32_767,
+            32_767,
+            IDENTITY_CONVERSION,
+            *reader.fingerprint(),
+        )
+        .unwrap();
+        let region = hex_warp::SourceRegion::new(32_767, 0, 32_767, 0, false, vec![]).unwrap();
+        let map = hex_warp::TimeMap::new(
+            vec![hex_warp::MapSegment {
+                output_start: 0,
+                output_end: 32_767,
+                source_start_q32: 0,
+                source_end_q32: 32_767_i128 << 32,
+            }],
+            32_767,
+        )
+        .unwrap();
+        let root = hex_engine::audio_transform::StreamedGranularRoot::new_warped(
+            &raw,
+            region,
+            map,
+            hex_warp::Mode::Tones { grain_ms: 30 },
+            0,
+            Resampler::V2,
+            Vec::new(),
+        )
+        .unwrap();
+        let kernel = ResampleKernel::new(48_000, 48_000).unwrap();
+        let plan = ResamplePlan::with_kernel(
+            kernel,
+            32_767,
+            32_767,
+            32_767,
+            hex_engine::STREAM_PAGE_FRAMES,
+        )
+        .unwrap();
+        let granular_source = crate::VerifiedGranularSource::prepare_from_reader_on_control(
+            raw,
+            root,
+            reader,
+            plan,
+            crate::GranularSourcePreparationLimits {
+                source_scratch_frames: 32_768,
+                checkpoint_entries: 4,
+                checkpoint_budget: 2 * 1024 * 1024,
+                max_processing_bytes: 8 * 1024 * 1024,
+                max_construction_peak_bytes: hex_warp::MAX_SCRATCH_BYTES * 3,
+            },
+            || false,
+        )
+        .unwrap();
+        let gkey = granular_source.metadata().key();
+        let bank = crate::GranularWorkerBank::try_new_on_control(
+            vec![granular_source],
+            crate::GranularBankAllowance {
+                max_sources: 4,
+                max_data_bytes: 32 * 1024 * 1024,
+            },
+        )
+        .unwrap();
+        let config = StreamConfig::with_pool_pages(4);
+        let allowance = crate::GranularWorkerAllowance {
+            max_data_bytes: 64 * 1024 * 1024,
+            max_shared_handles: 64,
+        };
+        let prepared = granular::PreparedGranular::new(bank, config, allowance).unwrap();
+        let mut routing = prepared.start(&AtomicBool::new(false)).unwrap();
+        assert_eq!(routing.current_epoch(), 1);
+
+        // Start a segmented replay at page 6.
+        let page = PageBuffer::new().unwrap();
+        routing
+            .submit(
+                crate::ResourcePageKey {
+                    source: gkey.into(),
+                    page_index: 6,
+                },
+                page,
+            )
+            .ok()
+            .expect("submit active page");
+        assert!(!routing.can_submit());
+
+        let (mut failure_tx, mut failure_rx) = rtrb::RingBuffer::new(8);
+        let mut held_failures = Vec::with_capacity(8);
+
+        // Sequential lookahead (+1) must NOT supersede the active loan.
+        assert!(routing.defer_or_supersede(
+            crate::ResourcePageKey {
+                source: gkey.into(),
+                page_index: 7,
+            },
+            &mut held_failures,
+            &mut failure_tx,
+        ));
+        assert_eq!(routing.current_epoch(), 1);
+        assert!(failure_rx.pop().is_err());
+
+        // Jumping backward to page 0 (scrub/seek) MUST advance the demand epoch
+        // via `supersede_on_control()`, cancel stale deferred page 7, and put
+        // page 0 at the front of `deferred`.
+        assert!(routing.defer_or_supersede(
+            crate::ResourcePageKey {
+                source: gkey.into(),
+                page_index: 0,
+            },
+            &mut held_failures,
+            &mut failure_tx,
+        ));
+        assert_eq!(routing.current_epoch(), 2);
+        assert_eq!(
+            failure_rx.pop(),
+            Ok(StreamFailure {
+                key: gkey.into(),
+                page_index: 7,
+                kind: StreamFailureKind::Cancelled,
+            })
+        );
+        assert_eq!(
+            routing.pop_deferred(),
+            Some(crate::ResourcePageKey {
+                source: gkey.into(),
+                page_index: 0,
+            })
+        );
+
+        // The superseded active page 6 completes as Cancelled (never Ready).
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (reclaimed, status) = loop {
+            if let Some(outcome) = routing.poll() {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline, "superseded loan did not cancel");
+            std::thread::yield_now();
+        };
+        assert_eq!(status, Err(StreamFailureKind::Cancelled));
+        let mut free_pages = vec![reclaimed];
+
+        // Now submit the jumped target page 0 at epoch 2 and verify it completes Ready.
+        let page0 = free_pages.pop().unwrap();
+        routing
+            .submit(
+                crate::ResourcePageKey {
+                    source: gkey.into(),
+                    page_index: 0,
+                },
+                page0,
+            )
+            .ok()
+            .expect("submit jumped page 0");
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let (ready_page, ready_status) = loop {
+            if let Some(outcome) = routing.poll() {
+                break outcome;
+            }
+            assert!(Instant::now() < deadline, "jumped page 0 did not finish");
+            std::thread::yield_now();
+        };
+        assert_eq!(ready_status, Ok(()));
+        assert!(ready_page.valid_frames > 0);
+        free_pages.push(ready_page);
+        routing.stop_into(&mut free_pages).unwrap();
     }
 }
