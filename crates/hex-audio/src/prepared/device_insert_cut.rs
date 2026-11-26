@@ -169,8 +169,15 @@ impl Callback {
 
     /// The rejected candidate may restore only the exact active predecessor.
     pub(super) fn restore_refused_native_removal(&mut self, next: &mut Publication) {
-        if let PublicationPolicy::DeviceInsert { predecessor, .. } = next.policy
-            && self.recording_source() == Some(predecessor)
+        let can_restore = match next.policy {
+            PublicationPolicy::DeviceInsert { predecessor, .. } => {
+                self.recording_source() == Some(predecessor)
+            }
+            PublicationPolicy::InheritRuntime => next.playback.native_removal_started(),
+            _ => false,
+        };
+        if can_restore
+            && !self.status.closing.load(Acquire)
             && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
         {
             next.playback

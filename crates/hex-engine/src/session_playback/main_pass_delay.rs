@@ -19,7 +19,10 @@ impl SessionPlayback {
             + self
                 .main_pass_delay
                 .as_ref()
-                .filter(|_| self.native_removal.is_none())
+                .filter(|_| {
+                    self.native_removal
+                        .is_none_or(|pending| pending.is_mute_fade())
+                })
                 .map_or(0, |delay| delay.latency_frames())
     }
 

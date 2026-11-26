@@ -209,6 +209,21 @@ impl Playback {
             .map_err(PlaybackHandoffError::Session)
     }
 
+    /// Plan and advance a short pre-commit fade-out for tracks transitioning
+    /// from unmuted to muted during live playback.
+    pub fn advance_mute_fade_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<crate::session_playback::NativeRemovalProgress, PlaybackHandoffError> {
+        use crate::session_playback::NativeRemovalProgress;
+        let (Some(next), Some(old)) = (&mut self.session_runtime, &mut previous.session_runtime)
+        else {
+            return Ok(NativeRemovalProgress::NotApplicable);
+        };
+        next.advance_mute_fade_from(old)
+            .map_err(PlaybackHandoffError::Session)
+    }
+
     /// Plan a stage-local removal before the stream owner proves its pages.
     pub fn plan_native_removal_from(
         &mut self,

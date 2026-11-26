@@ -276,6 +276,30 @@ impl Callback {
                         }
                     }
                 }
+            } else if !tempo_cut
+                && !confirmed_insert
+                && next.policy.inherits_runtime()
+                && next.streams.is_none()
+                && stale_fence.is_none()
+                && !forced_refusal
+                && !self.status.stream_buffering.load(Acquire)
+                && let Some(active) = self.active.as_mut().and_then(ActivePublication::legacy_mut)
+            {
+                match next.playback.advance_mute_fade_from(&mut active.playback) {
+                    Ok(hex_engine::session_playback::NativeRemovalProgress::Fading) => {
+                        self.deferred = Some(next);
+                        return;
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        self.reject_publication(
+                            next.revision,
+                            PlaybackHandoffRejection::from_error(error),
+                        );
+                        self.return_rejected_graph(next);
+                        return;
+                    }
+                }
             }
             let mut promotions = None;
             if confirmed_insert && stale_fence.is_none() && self.device_insert_uses_streams(&next) {
@@ -563,6 +587,41 @@ impl Callback {
                                 self.reject_publication(next.revision, reason);
                                 self.return_rejected_graph(next);
                                 return;
+                            }
+                        }
+                        if !inserting
+                            && !tempo_cut
+                            && !confirmed_insert
+                            && next.policy.inherits_runtime()
+                            && !self.status.stream_buffering.load(Acquire)
+                            && let Some(active) =
+                                self.active.as_mut().and_then(ActivePublication::legacy_mut)
+                        {
+                            match next.playback.advance_mute_fade_from(&mut active.playback) {
+                                Ok(hex_engine::session_playback::NativeRemovalProgress::Fading) => {
+                                    self.trace_audio(
+                                        AudioDiagnosticKind::PublicationWaiting {
+                                            reason: PublicationWaitReason::NativeRemovalFade,
+                                        },
+                                        next.revision,
+                                        next.source_context,
+                                        frames.unwrap_or(0),
+                                    );
+                                    self.deferred = Some(next);
+                                    return;
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    if let Some(streams) = next.streams.as_mut() {
+                                        streams.cancel_install(&mut self.domain_pages);
+                                    }
+                                    self.reject_publication(
+                                        next.revision,
+                                        PlaybackHandoffRejection::from_error(error),
+                                    );
+                                    self.return_rejected_graph(next);
+                                    return;
+                                }
                             }
                         }
                         // Page planning may span callbacks. Revalidate the

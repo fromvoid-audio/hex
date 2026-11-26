@@ -161,6 +161,24 @@ impl ClaimedAudioCandidateRuntime {
         next.advance_planned_native_removal_from(old)
     }
 
+    /// Plan and advance a short pre-commit fade-out for tracks transitioning
+    /// from unmuted to muted during live playback.
+    pub fn advance_mute_fade_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<crate::session_playback::NativeRemovalProgress, crate::PlaybackHandoffError> {
+        if self.identity() == previous.identity() {
+            return Err(crate::PlaybackHandoffError::RuntimeFenceChanged);
+        }
+        let (Some(next), Some(old)) = (
+            self.device_insert_runtime(),
+            previous.device_insert_runtime(),
+        ) else {
+            return Ok(crate::session_playback::NativeRemovalProgress::NotApplicable);
+        };
+        next.advance_mute_fade_from(old)
+    }
+
     /// A returned candidate with an armed removal must restore its predecessor.
     pub fn native_removal_started(&self) -> bool {
         self.current_playback()

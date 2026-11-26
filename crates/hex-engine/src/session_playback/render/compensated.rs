@@ -782,7 +782,13 @@ impl SessionPlayback {
                 };
                 let mix = if automated {
                     fader.follow(mix.channel_gain());
-                    mix
+                    if fader.mute_active() {
+                        let scale = fader.next_mute_scale();
+                        let gain = mix.channel_gain();
+                        mix.with_channel_gain([gain[0] * scale, gain[1] * scale])
+                    } else {
+                        mix
+                    }
                 } else {
                     mix.with_channel_gain(fader.next())
                 };
@@ -2462,7 +2468,16 @@ impl SessionPlayback {
                                         }
                                         let mix = if automated {
                                             fader.follow(mix.channel_gain());
-                                            mix
+                                            if fader.mute_active() {
+                                                let scale = fader.next_mute_scale();
+                                                let gain = mix.channel_gain();
+                                                mix.with_channel_gain([
+                                                    gain[0] * scale,
+                                                    gain[1] * scale,
+                                                ])
+                                            } else {
+                                                mix
+                                            }
                                         } else {
                                             mix.with_channel_gain(fader.next())
                                         };
@@ -3120,7 +3135,16 @@ impl SessionPlayback {
                                     }
                                     let mix = if automated {
                                         fader.follow(mix.channel_gain());
-                                        mix
+                                        if fader.mute_active() {
+                                            let scale = fader.next_mute_scale();
+                                            let gain = mix.channel_gain();
+                                            mix.with_channel_gain([
+                                                gain[0] * scale,
+                                                gain[1] * scale,
+                                            ])
+                                        } else {
+                                            mix
+                                        }
                                     } else {
                                         mix.with_channel_gain(fader.next())
                                     };

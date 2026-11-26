@@ -126,6 +126,309 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn live_mute_unmute_solo_cancel_and_compensated_fade_smoothly() {
+        use super::super::track_fader::TrackFader;
+
+        fn assert_smooth_steps(samples: &[Frame], prev: Frame, max_step: f32) {
+            let mut last = prev;
+            for (index, &frame) in samples.iter().enumerate() {
+                for ch in 0..2 {
+                    let delta = (frame[ch] - last[ch]).abs();
+                    assert!(
+                        delta <= max_step,
+                        "step jump at frame {index} ch {ch}: {} -> {} (delta {delta} > {max_step})",
+                        last[ch],
+                        frame[ch]
+                    );
+                }
+                last = frame;
+            }
+        }
+
+        // Verify exact fade length and smoothness across rates and block sizes,
+        // including mute, unmute, solo/unsolo, and cancellation rollback.
+        for (rate, block) in [(44_100, 31), (48_000, 1), (48_000, 64), (96_000, 256)] {
+            let fade = TrackFader::fade_frames(rate) as usize;
+            let len = fade * 8 + 512;
+            let sig_a: Frame = [0.4, -0.2];
+            let sig_b: Frame = [0.2, 0.3];
+            let mut editor = Editor::new(Project::new(rate).unwrap(), 16).unwrap();
+            let Created::Imported {
+                track: track_a,
+                asset: asset_a,
+                ..
+            } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "a".into(),
+                    path: "a.wav".into(),
+                    sample_rate: rate,
+                    frames: len as u64,
+                })
+                .unwrap()
+            else {
+                panic!("import a");
+            };
+            let Created::Imported {
+                track: track_b,
+                asset: asset_b,
+                ..
+            } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: "b".into(),
+                    path: "b.wav".into(),
+                    sample_rate: rate,
+                    frames: len as u64,
+                })
+                .unwrap()
+            else {
+                panic!("import b");
+            };
+            let media = BTreeMap::from([
+                (asset_a, Audio::new(rate, vec![sig_a; len]).unwrap()),
+                (asset_b, Audio::new(rate, vec![sig_b; len]).unwrap()),
+            ]);
+            let table = Arc::new(crate::SineTable::new());
+            let prep = |p: &Project| {
+                Arc::new(PreparedRevision::prepare(p, &media, Arc::clone(&table), None).unwrap())
+            };
+            let sum = [sig_a[0] + sig_b[0], sig_a[1] + sig_b[1]];
+            let rev_both = prep(editor.project());
+            editor
+                .execute(Command::Mute {
+                    track: track_b,
+                    muted: true,
+                })
+                .unwrap();
+            let rev_b_muted = prep(editor.project());
+            editor
+                .execute(Command::Mute {
+                    track: track_b,
+                    muted: false,
+                })
+                .unwrap();
+            editor
+                .execute(Command::ToggleSolo {
+                    track: track_a,
+                    exclusive: true,
+                })
+                .unwrap();
+            let rev_a_solo = prep(editor.project());
+            editor
+                .execute(Command::ToggleSolo {
+                    track: track_a,
+                    exclusive: true,
+                })
+                .unwrap();
+            let rev_unsolo = prep(editor.project());
+
+            let mut old = SessionPlayback::new(Arc::clone(&rev_both)).unwrap();
+            old.apply(SessionPlaybackCommand::Play).unwrap();
+            let mut buf = vec![[0.0; 2]; block];
+            old.render(&mut buf).unwrap();
+            assert_eq!(buf[block - 1], sum);
+
+            // 1. Live mute track B + cancel halfway -> smooth recovery to sum.
+            let mut cancel_cand = SessionPlayback::new(Arc::clone(&rev_b_muted)).unwrap();
+            assert_eq!(
+                cancel_cand.advance_mute_fade_from(&mut old).unwrap(),
+                NativeRemovalProgress::Fading
+            );
+            let mut mid = vec![[0.0; 2]; (fade / 2).max(1)];
+            old.render(&mut mid).unwrap();
+            assert_smooth_steps(
+                &mid,
+                sum,
+                (sig_b[0].abs().max(sig_b[1].abs())) / fade as f32 + 1e-4,
+            );
+            cancel_cand.cancel_native_removal_from(&mut old);
+            let mut recovered = vec![[0.0; 2]; fade + 8];
+            old.render(&mut recovered).unwrap();
+            assert_smooth_steps(
+                &recovered,
+                *mid.last().unwrap(),
+                (sig_b[0].abs().max(sig_b[1].abs())) / fade as f32 + 1e-4,
+            );
+            assert!((recovered.last().unwrap()[0] - sum[0]).abs() < 1e-5);
+
+            // 2. Live mute track B to completion, then unmute smoothly.
+            let mut mute_cand = SessionPlayback::new(Arc::clone(&rev_b_muted)).unwrap();
+            let mut rendered = Vec::new();
+            loop {
+                match mute_cand.advance_mute_fade_from(&mut old).unwrap() {
+                    NativeRemovalProgress::Fading => {
+                        let mut chunk = vec![[0.0; 2]; block];
+                        old.render(&mut chunk).unwrap();
+                        rendered.extend_from_slice(&chunk);
+                    }
+                    NativeRemovalProgress::Ready => break,
+                    NativeRemovalProgress::NotApplicable => panic!("expected mute fade"),
+                }
+            }
+            assert!(rendered.len() >= fade);
+            assert_smooth_steps(
+                &rendered,
+                sum,
+                (sig_b[0].abs().max(sig_b[1].abs())) / fade as f32 + 1e-4,
+            );
+            assert!((rendered.last().unwrap()[0] - sig_a[0]).abs() < 1e-5);
+            mute_cand.try_inherit_state_live_from(&mut old).unwrap();
+            let mut post_mute = vec![[0.0; 2]; 16];
+            mute_cand.render(&mut post_mute).unwrap();
+            assert_eq!(post_mute[0], sig_a);
+
+            // Unmute track B -> ramps smoothly from sig_a back to sum.
+            let mut unmute_cand = SessionPlayback::new(Arc::clone(&rev_both)).unwrap();
+            assert_eq!(
+                unmute_cand.advance_mute_fade_from(&mut mute_cand).unwrap(),
+                NativeRemovalProgress::NotApplicable
+            );
+            unmute_cand
+                .try_inherit_state_live_from(&mut mute_cand)
+                .unwrap();
+            let mut ramp_in = vec![[0.0; 2]; fade + 8];
+            unmute_cand.render(&mut ramp_in).unwrap();
+            assert_smooth_steps(
+                &ramp_in,
+                sig_a,
+                (sig_b[0].abs().max(sig_b[1].abs())) / fade as f32 + 1e-4,
+            );
+            assert!((ramp_in.last().unwrap()[0] - sum[0]).abs() < 1e-5);
+
+            // 3. Solo track A -> track B fades out smoothly while A stays steady; unsolo ramps B in.
+            let mut solo_cand = SessionPlayback::new(Arc::clone(&rev_a_solo)).unwrap();
+            let mut solo_out = Vec::new();
+            loop {
+                match solo_cand.advance_mute_fade_from(&mut unmute_cand).unwrap() {
+                    NativeRemovalProgress::Fading => {
+                        let mut chunk = vec![[0.0; 2]; block];
+                        unmute_cand.render(&mut chunk).unwrap();
+                        solo_out.extend_from_slice(&chunk);
+                    }
+                    NativeRemovalProgress::Ready => break,
+                    NativeRemovalProgress::NotApplicable => panic!("expected solo fade"),
+                }
+            }
+            assert_smooth_steps(
+                &solo_out,
+                sum,
+                (sig_b[0].abs().max(sig_b[1].abs())) / fade as f32 + 1e-4,
+            );
+            assert!((solo_out.last().unwrap()[0] - sig_a[0]).abs() < 1e-5);
+            solo_cand
+                .try_inherit_state_live_from(&mut unmute_cand)
+                .unwrap();
+            let mut unsolo_cand = SessionPlayback::new(Arc::clone(&rev_unsolo)).unwrap();
+            unsolo_cand
+                .try_inherit_state_live_from(&mut solo_cand)
+                .unwrap();
+            let mut unsolo_in = vec![[0.0; 2]; fade + 8];
+            unsolo_cand.render(&mut unsolo_in).unwrap();
+            assert_smooth_steps(
+                &unsolo_in,
+                sig_a,
+                (sig_b[0].abs().max(sig_b[1].abs())) / fade as f32 + 1e-4,
+            );
+            assert!((unsolo_in.last().unwrap()[0] - sum[0]).abs() < 1e-5);
+        }
+
+        // Compensated routing: latency-bearing Limiter (True Peak) on track A;
+        // muting zero-latency track B fades smoothly at Main without stepping.
+        let rate = 48_000;
+        let fade = TrackFader::fade_frames(rate) as usize;
+        let len = 4096;
+        let mut editor = Editor::new(Project::new(rate).unwrap(), 16).unwrap();
+        let Created::Imported {
+            track: track_a,
+            asset: asset_a,
+            ..
+        } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "comp-a".into(),
+                path: "comp-a.wav".into(),
+                sample_rate: rate,
+                frames: len as u64,
+            })
+            .unwrap()
+        else {
+            panic!("comp a");
+        };
+        let Created::Imported {
+            track: track_b,
+            asset: asset_b,
+            ..
+        } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "comp-b".into(),
+                path: "comp-b.wav".into(),
+                sample_rate: rate,
+                frames: len as u64,
+            })
+            .unwrap()
+        else {
+            panic!("comp b");
+        };
+        let limiter_state = hex_devices::limiter::DEFINITION.default_state().unwrap();
+        let limiter_state = crate::patch_native_device_parameter(
+            &limiter_state,
+            hex_devices::limiter::parameter::MODE,
+            hex_lattice_contract::ParameterValue::Choice(2),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertDevice {
+                track: track_a,
+                before: None,
+                state: limiter_state,
+            })
+            .unwrap();
+        let media = BTreeMap::from([
+            (asset_a, Audio::new(rate, vec![[0.15, 0.15]; len]).unwrap()),
+            (asset_b, Audio::new(rate, vec![[0.25, -0.25]; len]).unwrap()),
+        ]);
+        let table = Arc::new(crate::SineTable::new());
+        let before = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        );
+        assert!(before.arrangement().main_latency_frames() > 0);
+        editor
+            .execute(Command::Mute {
+                track: track_b,
+                muted: true,
+            })
+            .unwrap();
+        let after = Arc::new(
+            PreparedRevision::prepare(editor.project(), &media, Arc::clone(&table), None).unwrap(),
+        );
+        let mut old = SessionPlayback::new(before).unwrap();
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        // Warm up past main latency so both tracks are settled at Main output.
+        let mut warmup = vec![[0.0; 2]; 512];
+        old.render(&mut warmup).unwrap();
+        let settled = *warmup.last().unwrap();
+        let mut next = SessionPlayback::new(after).unwrap();
+        let mut out = Vec::new();
+        loop {
+            match next.advance_mute_fade_from(&mut old).unwrap() {
+                NativeRemovalProgress::Fading => {
+                    let mut chunk = [[0.0; 2]; 64];
+                    old.render(&mut chunk).unwrap();
+                    out.extend_from_slice(&chunk);
+                }
+                NativeRemovalProgress::Ready => break,
+                NativeRemovalProgress::NotApplicable => panic!("expected compensated mute fade"),
+            }
+        }
+        next.try_inherit_state_live_from(&mut old).unwrap();
+        let mut tail = vec![[0.0; 2]; 512];
+        next.render(&mut tail).unwrap();
+        out.extend_from_slice(&tail);
+        assert_smooth_steps(&out, settled, 0.25 / fade as f32 + 2e-4);
+        let final_frame = *out.last().unwrap();
+        assert!((final_frame[0] - 0.15).abs() < 1e-3);
+        assert!((final_frame[1] - 0.15).abs() < 1e-3);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -134,6 +437,26 @@ pub(super) struct PendingNativeRemoval {
     runtime: u64,
     epoch: u64,
     started_at: Option<NonZeroU64>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MuteFadeMask([u64; 4]);
+
+impl MuteFadeMask {
+    fn set(&mut self, index: usize) {
+        if index < 256 {
+            self.0[index / 64] |= 1u64 << (index % 64);
+        }
+    }
+    fn is_empty(self) -> bool {
+        self.0 == [0; 4]
+    }
+    fn iter_indices(self) -> impl Iterator<Item = usize> {
+        self.0.into_iter().enumerate().flat_map(|(word, bits)| {
+            (0..64usize)
+                .filter_map(move |bit| ((bits & (1u64 << bit)) != 0).then_some(word * 64 + bit))
+        })
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -158,6 +481,7 @@ enum RemovalTransition {
         id: ReturnId,
         device: u64,
     },
+    Mute(MuteFadeMask),
 }
 
 #[derive(Clone, Copy)]
@@ -223,6 +547,10 @@ impl PendingNativeRemoval {
         }
     }
 
+    pub(super) fn is_mute_fade(self) -> bool {
+        matches!(self.transition, RemovalTransition::Mute(_))
+    }
+
     pub(super) fn device_transition(self) -> Option<NativeRemovalTransition> {
         match self.transition {
             RemovalTransition::Device(transition) | RemovalTransition::MainPass(transition) => {
@@ -234,7 +562,8 @@ impl PendingNativeRemoval {
             | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return { .. }
-            | RemovalTransition::ReturnPowerOn { .. } => None,
+            | RemovalTransition::ReturnPowerOn { .. }
+            | RemovalTransition::Mute(_) => None,
         }
     }
 
@@ -369,12 +698,22 @@ impl PendingNativeRemoval {
             | RemovalTransition::Instrument(_)
             | RemovalTransition::Move(_)
             | RemovalTransition::Return { .. }
-            | RemovalTransition::ReturnPowerOn { .. } => None,
+            | RemovalTransition::ReturnPowerOn { .. }
+            | RemovalTransition::Mute(_) => None,
         }
     }
 
     pub(super) fn ready_on(self, previous: &SessionPlayback) -> bool {
         match self.transition {
+            RemovalTransition::Mute(mask) => {
+                !previous.playing
+                    || mask.iter_indices().all(|index| {
+                        previous
+                            .track_faders
+                            .get(index)
+                            .is_some_and(|fader| fader.mute_ready())
+                    })
+            }
             RemovalTransition::Move(movement) => {
                 movement.indices().into_iter().all(|index| {
                     previous
@@ -641,6 +980,18 @@ impl SessionPlayback {
                         true
                     })
                 }
+                RemovalTransition::Mute(mask) => {
+                    let rate = previous.revision.arrangement().sample_rate();
+                    let mut started_any = false;
+                    for index in mask.iter_indices() {
+                        let Some(fader) = previous.track_faders.get_mut(index) else {
+                            return Err(SessionPlaybackError::DeviceRuntime);
+                        };
+                        fader.begin_mute(rate);
+                        started_any = true;
+                    }
+                    started_any
+                }
             };
             if !started {
                 self.native_removal = None;
@@ -792,8 +1143,101 @@ impl SessionPlayback {
                         fader.cancel_removal(track.mix().channel_gain(), arrangement.sample_rate());
                     }
                 }
+                RemovalTransition::Mute(mask) => {
+                    let rate = previous.revision.arrangement().sample_rate();
+                    for index in mask.iter_indices() {
+                        if let Some(fader) = previous.track_faders.get_mut(index) {
+                            fader.cancel_mute(rate);
+                        }
+                    }
+                }
             }
         }
+    }
+
+    /// Stage a short pre-commit fade-out on predecessor tracks transitioning
+    /// from unmuted to muted during live playback (including solo changes).
+    /// Excludes shared-source contributors so receiver routes stay unaffected.
+    pub(crate) fn plan_mute_fade_from(
+        &mut self,
+        previous: &Self,
+    ) -> Result<bool, SessionPlaybackError> {
+        if let Some(pending) = self.native_removal {
+            if !pending.is_mute_fade() {
+                return Ok(false);
+            }
+            return if pending.matches(previous) {
+                Ok(true)
+            } else {
+                Err(SessionPlaybackError::InvalidCommand)
+            };
+        }
+        if !previous.playing || self.live_restart || previous.return_fade.is_some() {
+            return Ok(false);
+        }
+        let old = previous.revision.arrangement();
+        let new = self.revision.arrangement();
+        if old.sample_rate() != new.sample_rate()
+            || old.main_latency_frames() != new.main_latency_frames()
+            || old.tracks().len() != new.tracks().len()
+            || old.tracks().len() > 256
+            || previous.routes.len() != old.tracks().len()
+            || self.routes.len() != new.tracks().len()
+            || !old
+                .tracks()
+                .iter()
+                .map(|track| track.canonical_track_id())
+                .eq(new.tracks().iter().map(|track| track.canonical_track_id()))
+            || !old
+                .return_buses()
+                .iter()
+                .map(|bus| bus.id)
+                .eq(new.return_buses().iter().map(|bus| bus.id))
+            || previous.track_faders[..previous.routes.len()]
+                .iter()
+                .any(|fader| fader.is_removing())
+        {
+            return Ok(false);
+        }
+        let mut mask = MuteFadeMask::default();
+        for (index, (old_track, new_track)) in old.tracks().iter().zip(new.tracks()).enumerate() {
+            if !old_track.mix().muted()
+                && new_track.mix().muted()
+                && old_track.source_id.is_none()
+                && new_track.source_id.is_none()
+                && previous.revision.gain_recording_track() != old_track.canonical_track_id()
+            {
+                mask.set(index);
+            }
+        }
+        if mask.is_empty() {
+            return Ok(false);
+        }
+        self.native_removal = Some(PendingNativeRemoval {
+            transition: RemovalTransition::Mute(mask),
+            runtime: previous.capture_runtime,
+            epoch: previous.capture_epoch,
+            started_at: None,
+        });
+        Ok(true)
+    }
+
+    /// Plan and advance a short pre-commit fade-out on predecessor tracks that
+    /// transition from unmuted to muted during live playback.
+    pub fn advance_mute_fade_from(
+        &mut self,
+        previous: &mut Self,
+    ) -> Result<NativeRemovalProgress, SessionPlaybackError> {
+        if let Some(pending) = self.native_removal {
+            if !pending.is_mute_fade() {
+                return Ok(NativeRemovalProgress::NotApplicable);
+            }
+            return self.advance_planned_native_removal_from(previous);
+        }
+        if !self.plan_mute_fade_from(previous)? {
+            return Ok(NativeRemovalProgress::NotApplicable);
+        }
+        self.advance_planned_native_removal_from(previous)
     }
 
     fn native_removal_ready(&self, transition: NativeRemovalTransition) -> bool {
