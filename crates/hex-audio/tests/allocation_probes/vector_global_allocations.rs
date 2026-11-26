@@ -63,6 +63,11 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
         (671, ParameterValue::Float(36.0)),  // Filter env amount (+36 st)
         (685, ParameterValue::Float(40.0)),  // Filter freq<vel (+40%)
         (686, ParameterValue::Float(50.0)),  // Filter freq<key (+50%)
+        (20004, ParameterValue::Choice(2)),  // Nonlinear filter circuit (ms2)
+        (690, ParameterValue::Float(14.0)),  // Filter drive (+14 dB)
+        (687, ParameterValue::Choice(3)),    // Shaper type (sine)
+        (688, ParameterValue::Float(55.0)),  // Shaper drive (55%)
+        (689, ParameterValue::Float(75.0)),  // Shaper dry/wet (75%)
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,

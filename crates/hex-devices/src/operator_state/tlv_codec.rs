@@ -30,11 +30,13 @@ pub(super) const TAG_PERFORMANCE: u16 = 15;
 pub(super) const TAG_PITCH_PERF: u16 = 16;
 pub(super) const TAG_PITCH_ENV: u16 = 17;
 pub(super) const TAG_FILTER_ENV: u16 = 18;
+pub(super) const TAG_FILTER_SHAPER: u16 = 19;
 const V18_SECTION_COUNT: u16 = 14;
 const V19_SECTION_COUNT: u16 = 15;
 const V20_SECTION_COUNT: u16 = 16;
 const V21_SECTION_COUNT: u16 = 17;
-const SECTION_COUNT: u16 = 18;
+const V22_SECTION_COUNT: u16 = 18;
+const SECTION_COUNT: u16 = 19;
 #[cfg(test)]
 pub(super) const CANONICAL_BYTES: usize = HEADER_BYTES
     + SECTION_COUNT as usize * ENTRY_HEADER_BYTES
@@ -42,7 +44,8 @@ pub(super) const CANONICAL_BYTES: usize = HEADER_BYTES
     + performance::BYTES
     + pitch_perf::BYTES
     + pitch_env::BYTES
-    + filter_env::BYTES;
+    + filter_env::BYTES
+    + filter_shaper::BYTES;
 
 pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
     let total_bytes = HEADER_BYTES
@@ -51,7 +54,8 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
         + performance::BYTES
         + pitch_perf::BYTES
         + pitch_env::BYTES
-        + filter_env::BYTES;
+        + filter_env::BYTES
+        + filter_shaper::BYTES;
     if total_bytes > MAX_TLV_BYTES {
         return Err(DeviceContractError::StateTooLarge);
     }
@@ -61,6 +65,41 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&SECTION_COUNT.to_le_bytes());
+    write_v18_sections(&mut out, settings);
+    write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
+        settings.performance.append(buf);
+    });
+    write_section(&mut out, TAG_PITCH_PERF, pitch_perf::BYTES, |buf| {
+        settings.pitch_perf.append(buf);
+    });
+    write_section(&mut out, TAG_PITCH_ENV, pitch_env::BYTES, |buf| {
+        settings.pitch_env.append(buf);
+    });
+    write_section(&mut out, TAG_FILTER_ENV, filter_env::BYTES, |buf| {
+        settings.filter_env.append(buf);
+    });
+    write_section(&mut out, TAG_FILTER_SHAPER, filter_shaper::BYTES, |buf| {
+        settings.filter_shaper.append(buf);
+    });
+    debug_assert_eq!(out.len(), total_bytes);
+    Ok(out)
+}
+
+#[cfg(test)]
+pub(super) fn encode_v22(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
+    let total_bytes = HEADER_BYTES
+        + usize::from(V22_SECTION_COUNT) * ENTRY_HEADER_BYTES
+        + PAYLOAD_BYTES
+        + performance::BYTES
+        + pitch_perf::BYTES
+        + pitch_env::BYTES
+        + filter_env::BYTES;
+    let mut out = Vec::new();
+    out.try_reserve_exact(total_bytes)
+        .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&V22_SECTION_COUNT.to_le_bytes());
     write_v18_sections(&mut out, settings);
     write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
         settings.performance.append(buf);
@@ -255,7 +294,8 @@ pub(super) fn decode(
         PERFORMANCE_STATE_VERSION => V19_SECTION_COUNT,
         PITCH_PERF_STATE_VERSION => V20_SECTION_COUNT,
         PITCH_ENV_STATE_VERSION => V21_SECTION_COUNT,
-        FILTER_ENV_STATE_VERSION => SECTION_COUNT,
+        FILTER_ENV_STATE_VERSION => V22_SECTION_COUNT,
+        FILTER_SHAPER_STATE_VERSION => SECTION_COUNT,
         _ => return Err(DeviceContractError::UnsupportedStateVersion),
     };
     if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TLV_BYTES {
@@ -296,6 +336,7 @@ pub(super) fn decode(
     let mut pitch_perf = pitch_perf::Settings::default();
     let mut pitch_env = pitch_env::Settings::default();
     let mut filter_env = filter_env::Settings::default();
+    let mut filter_shaper = filter_shaper::Settings::default();
 
     for _ in 0..section_count {
         let header = bytes
@@ -388,6 +429,9 @@ pub(super) fn decode(
             }
             TAG_FILTER => {
                 filter = crate::operator_filter::Settings::decode(section)?;
+                if state_version < FILTER_SHAPER_STATE_VERSION && filter.circuit() != 0 {
+                    return Err(DeviceContractError::MalformedState);
+                }
             }
             TAG_HARMONICS => {
                 harmonics = harmonics::Harmonics::decode(section)?;
@@ -419,6 +463,9 @@ pub(super) fn decode(
             }
             TAG_FILTER_ENV if state_version >= FILTER_ENV_STATE_VERSION => {
                 filter_env = filter_env::Settings::decode(section)?;
+            }
+            TAG_FILTER_SHAPER if state_version >= FILTER_SHAPER_STATE_VERSION => {
+                filter_shaper = filter_shaper::Settings::decode(section)?;
             }
             _ => return Err(DeviceContractError::MalformedState),
         }
@@ -452,6 +499,7 @@ pub(super) fn decode(
         pitch_perf,
         pitch_env,
         filter_env,
+        filter_shaper,
     };
     result.kernel_parts()?;
     Ok(result)
