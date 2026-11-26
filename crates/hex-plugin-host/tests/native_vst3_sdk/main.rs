@@ -437,7 +437,7 @@ fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
         let reply = reply.unwrap();
         assert_eq!(reply.binding, binding);
         for (i, input) in pcm[..8].iter().enumerate() {
-            let scale = if variant == 167 && i >= 4 { 0.625 } else { 0.5 };
+            let scale = if split && i >= 4 { 0.625 } else { 0.5 };
             assert_eq!(reply.pcm[i], [input[0] * scale, input[1] * scale]);
         }
         let events = reply.events.as_slice();
