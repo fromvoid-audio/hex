@@ -46,6 +46,8 @@ class Instance final {
     int32 event_input_channels_ = 0, event_output_channels_ = 0;
     int32 aux_input_channels_ = 0;
     int32 output_bus_count_ = 1;
+    // SDK descriptors copied during final layout verification, before processing.
+    std::array<BusInfo,max_instrument_outputs> output_bus_info_{};
     uint32_t active_aux_outputs_mask_ = 0;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
@@ -276,10 +278,12 @@ public:
         outputs[0]=main_output;
         const auto additional_output_matches=[&](int32 index,SpeakerArrangement& actual) {
             BusInfo info{};
-            return audio_bus_info(component,kOutput,index,info) &&
+            if (!(audio_bus_info(component,kOutput,index,info) &&
                 (info.busType==kMain || info.busType==kAux) &&
                 processor->getBusArrangement(kOutput,index,actual)==kResultOk &&
-                SpeakerArr::getChannelCount(actual)==info.channelCount;
+                SpeakerArr::getChannelCount(actual)==info.channelCount)) return false;
+            output_bus_info_[index]=info;
+            return true;
         };
         for (int32 i=1;i<output_count;++i)
             if (!additional_output_matches(i,outputs[i])) return ConfigurationResult::ArrangementMismatch;
@@ -359,6 +363,7 @@ public:
         configuration_=sdk;
         aux_input_channels_=aux_in_channels;
         output_bus_count_=output_count;
+        output_bus_info_[0]=first_output;
         active_aux_outputs_mask_=active_out_mask;
         if (double_processing_) {
             if (!double_processing_->aux_input.prepare(aux_in_channels,request.maximum_frames) ||
@@ -384,6 +389,13 @@ public:
     }
     // Immutable while the serialized processing lane owns the instance.
     int32 event_output_channels() const { return event_output_channels_; }
+    int32 output_bus_count() const { return output_bus_count_; }
+    bool negotiated_output_bus(int32 index,BusInfo& info,bool& active_bus) const {
+        if (!configured || index<0 || index>=output_bus_count_ || index>=max_instrument_outputs) return false;
+        info=output_bus_info_[index];
+        active_bus=index==0?output_active:(active_aux_outputs_mask_&(uint32_t{1}<<index))!=0;
+        return true;
+    }
     int32 event_input_channels() const { return event_input_channels_; }
     int32 aux_input_channels() const { return aux_input_channels_; }
     uint32_t active_aux_outputs_mask() const { return active_aux_outputs_mask_; }

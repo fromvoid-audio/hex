@@ -247,6 +247,7 @@ impl Channel {
                     let magic = &out.bytes[..8];
                     if ![
                         b"HXVIFA05",
+                        b"HXVIOB01",
                         b"HXVIRD06",
                         b"HXVIQF04",
                         b"HXVIAR03",

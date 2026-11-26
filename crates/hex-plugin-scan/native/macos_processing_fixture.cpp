@@ -708,7 +708,7 @@ public:
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
     const bool active_aux_outputs=fault==active_aux_outputs_variant || fault==double_aux_outputs_variant;
-    const bool multiple_outputs=(fault>=128 && fault<=130) || active_aux_outputs;
+    const bool multiple_outputs=(fault>=128 && fault<=130) || active_aux_outputs || fault==179;
     const bool multiple_aux_inputs=fault>=multiple_aux_inputs_variant && fault<=multiple_aux_mismatch_variant;
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
@@ -972,7 +972,13 @@ public:
         }
         if (fault==12 && arranged) ++info.channelCount;
         info.flags=BusInfo::kDefaultActive;
-        const char16_t name[]=u"main";std::memcpy(info.name,name,sizeof(name));
+        const char16_t main_name[]=u"main";
+        const char16_t aux_name[]=u"Aux μ";
+        const char16_t third_name[]=u"Output 3";
+        if(extra_output && index==1) std::memcpy(info.name,aux_name,sizeof(aux_name));
+        else if(extra_output) std::memcpy(info.name,third_name,sizeof(third_name));
+        else std::memcpy(info.name,main_name,sizeof(main_name));
+        if(extra_output && index==2 && fault==179) info.name[0]=static_cast<char16>(0xdc00);
         return kResultOk;
     }
     tresult PLUGIN_API getBusArrangement(BusDirection direction,int32 index,SpeakerArrangement& value) override {

@@ -140,6 +140,7 @@ struct Config {
 // entry. Echoing its exact copied envelope in Facts binds restoration to this
 // unique operation without treating an SDK capture as canonical state.
 struct Startup {
+    bool report_output_buses=false;
     Bytes payload;
     hex_instance::CapturedState state{};
     bool restored() const { return !payload.empty(); }
@@ -150,7 +151,8 @@ struct Startup {
 };
 inline Startup startup(int fd,const Config& config) {
     std::array<uint8_t,12> header{};
-    if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVIST02",8))
+    if(read_exact(fd,header.data(),header.size())!=1 ||
+       (std::memcmp(header.data(),"HXVIST02",8) && std::memcmp(header.data(),"HXVIST03",8)))
         throw std::runtime_error("startup state frame refused");
     const auto size=number(header.data()+8,4);
     if(size<39 || size>39+hex_instance::StateStream::envelope_capacity) throw std::runtime_error("startup state frame bound");
@@ -162,6 +164,7 @@ inline Startup startup(int fd,const Config& config) {
     if(known>1 || count>hex_instance::StateStream::envelope_capacity || count!=in.bytes.size()-in.at || (!known && count) || (known && count<96))
         throw std::runtime_error("startup state extent refused");
     Startup result{};
+    result.report_output_buses=!std::memcmp(header.data(),"HXVIST03",8);
     if(!known) return result;
     result.payload.assign(in.bytes.begin()+in.at,in.bytes.end());
     const auto* p=result.payload.data();

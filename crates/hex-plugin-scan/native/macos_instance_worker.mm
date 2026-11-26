@@ -354,6 +354,31 @@ wire::Bytes state_payload(const wire::Config& config,const hex_instance::Capture
     wire::number(out,state.component_bytes,4);wire::number(out,state.controller_bytes,4);
     out.insert(out.end(),state.bytes.begin(),state.bytes.begin()+state.component_bytes+state.controller_bytes);return out;
 }
+// Pre-admission facts only. A label that cannot be represented makes this
+// optional inventory unavailable without disturbing ordinary stereo playback.
+wire::Bytes output_bus_inventory(const wire::Config& config,const hex_instance::Instance& instance) {
+    wire::Bytes out;
+    config.stamp(out);
+    out.insert(out.end(),config.cid.begin(),config.cid.end());
+    const auto count_at=out.size();
+    out.push_back(0);
+    const auto count=instance.output_bus_count();
+    if(count<1 || count>hex_instance::max_instrument_outputs) return out;
+    for(int32 index=0;index<count;++index) {
+        BusInfo info{}; bool active=false;
+        if(!instance.negotiated_output_bus(index,info,active) || !hex_instance::controller_text(info.name)) {
+            out.resize(count_at+1); return out;
+        }
+        const auto length=std::find(std::begin(info.name),std::end(info.name),0)-std::begin(info.name);
+        wire::number(out,index,1);
+        wire::number(out,info.channelCount,1);
+        wire::number(out,(active?1:0)|((info.flags&BusInfo::kDefaultActive)?2:0)|(info.busType==kAux?4:0),1);
+        wire::number(out,length,1);
+        for(auto n=0;n<length;++n) wire::number(out,static_cast<uint16>(info.name[n]),2);
+    }
+    out[count_at]=static_cast<uint8_t>(count);
+    return out;
+}
 wire::Bytes facts_body(const wire::Config& config,uint32 latency,uint32 tail,bool presentation_available,hex_instance::NoteExpressionCapabilities expression,const wire::Startup& startup) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     out.insert(out.end(),config.executable_hash.begin(),config.executable_hash.end());
@@ -489,6 +514,7 @@ int main(int argc,char** argv) {
             if(!latency || !tail || !available || !expression) throw Refusal{};
             failure=ProtocolFailure;
             if(!wire::send(channel,"HXVIFA05",facts_body(*config,*latency,*tail,*available,*expression,restoration))) throw Refusal{};
+            if(restoration.report_output_buses && !wire::send(channel,"HXVIOB01",output_bus_inventory(*config,instance))) throw Refusal{};
             wire::PresentationPlan supplied;
             if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;

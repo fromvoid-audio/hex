@@ -369,6 +369,64 @@ fn source() -> Source {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn negotiated_output_buses_preserve_sdk_slots_names_and_actual_activation() {
+    use hex_plugin_state::buses::BusKind;
+    let build = build();
+    for variant in [0, 128, 172, 173, 179] {
+        let case = Case::new();
+        let mut preparation = options().preparation;
+        if variant != 0 {
+            preparation.input_channels = 0;
+        }
+        let pending = Pending::prepare(
+            &build,
+            source(),
+            preparation,
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(variant),
+        )
+        .unwrap();
+        let original = pending.negotiated_audio_outputs().map(<[_]>::to_vec);
+        if variant == 179 {
+            assert!(
+                original.is_none(),
+                "unreadable SDK label makes the inventory unavailable"
+            );
+        } else {
+            let buses = original.as_ref().unwrap();
+            let actual: Vec<_> = buses
+                .iter()
+                .map(|bus| {
+                    (
+                        bus.address.index,
+                        bus.kind,
+                        bus.channel_count,
+                        bus.name.as_str(),
+                        bus.default_active,
+                        bus.active,
+                    )
+                })
+                .collect();
+            let mut expected = vec![(0, BusKind::Main, 2, "main", true, true)];
+            if variant != 0 {
+                let active = variant != 128;
+                expected.extend([
+                    (1, BusKind::Auxiliary, 1, "Aux μ", true, active),
+                    (2, BusKind::Main, 2, "Output 3", true, active),
+                ]);
+            }
+            assert_eq!(actual, expected);
+        }
+        let mut instance = pending
+            .complete_on_control(Some(options().presentation))
+            .unwrap();
+        assert_eq!(instance.negotiated_audio_outputs(), original.as_deref());
+        assert!(instance.stop_and_reap_on_control().unwrap().status.success());
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
     use crate::transport::{ProcessTiming, SegmentTiming, channel};
     for (variant, split) in [
@@ -1669,10 +1727,9 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
     let storage = instance.retained_storage_on_control().unwrap();
     assert!(storage.data_bytes <= bound.max_prepared_data_bytes);
-    let control_paths = instance
-        .control
-        .as_ref()
-        .map_or(0, |control| control.storage_bytes().unwrap() - crate::channel::PCM_BYTES);
+    let control_paths = instance.control.as_ref().map_or(0, |control| {
+        control.storage_bytes().unwrap() - crate::channel::PCM_BYTES
+    });
     assert_eq!(
         storage.data_bytes,
         pending_storage.data_bytes - provenance_bytes
@@ -1689,6 +1746,13 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
                 .control
                 .as_ref()
                 .map_or(0, |control| control.storage_bytes().unwrap())
+            + std::mem::size_of_val(instance.negotiated_audio_outputs().unwrap())
+            + instance
+                .negotiated_audio_outputs()
+                .unwrap()
+                .iter()
+                .map(|bus| bus.name.capacity())
+                .sum::<usize>()
             + instance.ready.initial_state.payload().len()
             + saved.payload().len()
             + std::mem::size_of::<UnixStream>()

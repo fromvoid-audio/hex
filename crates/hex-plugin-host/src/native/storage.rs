@@ -189,7 +189,8 @@ impl Source {
             .checked_add(self.executable.relative_path.len())?;
         let config_data = config_paths
             .checked_add(std::mem::size_of::<UnixStream>())?
-            .checked_add(std::mem::size_of::<AtomicBool>())?;
+            .checked_add(std::mem::size_of::<AtomicBool>())?
+            .checked_add(protocol::output_buses::MAX_RETAINED_BYTES)?;
         Some(PreparationStorageBound {
             input_data_bytes,
             max_pending_data_bytes: input_data_bytes
@@ -232,6 +233,9 @@ impl Pending {
         let build = self.build.retained_storage()?;
         Some(PendingStorage {
             data_bytes: data
+                .checked_add(protocol::output_buses::retained_bytes(
+                    self.negotiated_audio_outputs().unwrap_or_default(),
+                )?)?
                 .checked_add(self.source.metadata_backing()?)?
                 .checked_add(build.data_bytes)?
                 .checked_add(self.packet.storage_bytes())?
@@ -273,6 +277,9 @@ impl Prepared {
         };
         Some(PreparedStorage {
             data_bytes: data_bytes
+                .checked_add(protocol::output_buses::retained_bytes(
+                    self.negotiated_audio_outputs().unwrap_or_default(),
+                )?)?
                 .checked_add(self.packet.storage_bytes())?
                 .checked_add(control_data)?
                 .checked_add(authored_data)?,
