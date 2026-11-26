@@ -668,7 +668,7 @@ fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
         Err(DeviceContractError::InvalidParameterValue)
     );
     for value in [
-        ParameterValue::Choice(5),
+        ParameterValue::Choice(Waveform::COUNT as u32),
         ParameterValue::Choice(u32::MAX),
         ParameterValue::Float(f32::NAN),
         ParameterValue::Float(1.0),
@@ -681,14 +681,14 @@ fn shape_codec_semantics_preview_and_rapid_retarget_remain_validated() {
         );
     }
     let mut corrupt = base.payload().to_vec();
-    corrupt[12..16].copy_from_slice(&5_u32.to_le_bytes());
+    corrupt[24..28].copy_from_slice(&(Waveform::COUNT as u32).to_le_bytes());
     assert!(
         waveform_preview(
             &NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION, corrupt).unwrap()
         )
         .is_err()
     );
-    for shape in 0..5 {
+    for shape in 0..Waveform::COUNT as u32 {
         let state = choice(&base, shape);
         assert_eq!(AUTO_PAN_DEFINITION.migrate_state(&state).unwrap(), state);
         assert_eq!(
@@ -857,8 +857,10 @@ fn auto_pan_v1_state_migrates_to_a_sine_waveform() {
         Err(DeviceContractError::MalformedState)
     );
     assert_eq!(
-        AUTO_PAN_DEFINITION
-            .migrate_state(&NativeDeviceState::new(AUTO_PAN_TYPE_ID, 3, vec![0; 16]).unwrap()),
+        AUTO_PAN_DEFINITION.migrate_state(
+            &NativeDeviceState::new(AUTO_PAN_TYPE_ID, AUTO_PAN_STATE_VERSION + 1, vec![0; 16])
+                .unwrap()
+        ),
         Err(DeviceContractError::UnsupportedStateVersion)
     );
 }
@@ -1037,4 +1039,227 @@ fn auto_pan_power_off_skips_automation_and_restarts_at_initial_phase() {
         expected[40..],
         "restart must use fresh phase and authored controls"
     );
+}
+
+#[test]
+fn v1_and_v2_states_migrate_losslessly_to_v3_and_render_bit_identically() {
+    // v1 (12 bytes): amount=0.8, rate=2.5, right_phase=120.0
+    let mut v1_bytes = Vec::with_capacity(STATE_BYTES_V1);
+    for value in [0.8_f32, 2.5, 120.0] {
+        v1_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let v1 = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 1, v1_bytes).unwrap();
+    let migrated_v1 = AUTO_PAN_DEFINITION.migrate_state(&v1).unwrap();
+    assert_eq!(migrated_v1.state_version(), AUTO_PAN_STATE_VERSION);
+    assert_eq!(migrated_v1.payload().len(), STATE_BYTES);
+    assert_eq!(
+        AUTO_PAN_DEFINITION.read_parameter(&migrated_v1, parameter::WAVEFORM),
+        Ok(ParameterValue::Choice(0))
+    );
+    assert_eq!(
+        AUTO_PAN_DEFINITION.read_parameter(&migrated_v1, parameter::MODE),
+        Ok(ParameterValue::Choice(0))
+    );
+
+    // v2 (16 bytes): adds Triangle waveform (1)
+    let mut v2_bytes = v1.payload().to_vec();
+    v2_bytes.extend_from_slice(&1u32.to_le_bytes());
+    let v2 = NativeDeviceState::new(AUTO_PAN_TYPE_ID, 2, v2_bytes).unwrap();
+    let migrated_v2 = AUTO_PAN_DEFINITION.migrate_state(&v2).unwrap();
+    assert_eq!(migrated_v2.state_version(), AUTO_PAN_STATE_VERSION);
+    assert_eq!(
+        AUTO_PAN_DEFINITION.read_parameter(&migrated_v2, parameter::WAVEFORM),
+        Ok(ParameterValue::Choice(1))
+    );
+
+    // Bit-identical PCM rendering between v2 and migrated v3.
+    let mut a = [[0.7_f32, -0.5_f32]; 256];
+    let mut b = a;
+    runtime(&v2, 48_000).process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    runtime(&migrated_v2, 48_000).process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn tremolo_mode_locks_channels_while_panning_offsets_right_channel() {
+    let base = patch(
+        &AUTO_PAN_DEFINITION.default_state().unwrap(),
+        parameter::AMOUNT,
+        1.0,
+    );
+    let tremolo = AUTO_PAN_DEFINITION
+        .patch_parameter(&base, parameter::MODE, ParameterValue::Choice(1))
+        .unwrap();
+    let mut pan_frames = [[1.0_f32, 1.0_f32]; 480];
+    let mut trem_frames = pan_frames;
+    runtime(&base, 48_000).process_block(&mut pan_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    runtime(&tremolo, 48_000).process_block(&mut trem_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    // In Tremolo mode, L and R are strictly identical at every frame.
+    for frame in &trem_frames {
+        assert_eq!(frame[0], frame[1]);
+    }
+    // In Panning mode (180 deg offset), L and R diverge cleanly.
+    assert!(pan_frames.iter().any(|f| (f[0] - f[1]).abs() > 0.05));
+    let preview = waveform_preview(&tremolo).unwrap();
+    assert_eq!(preview.left, preview.right);
+}
+
+#[test]
+fn sync_mode_tracks_clock_tempo_and_beat_position_across_divisions() {
+    struct SyncClock {
+        bpm: u32,
+        sample_rate: f64,
+        start_beat: f64,
+    }
+    impl NativeInstrumentClock for SyncClock {
+        fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+            let beats = self.start_beat
+                + (offset as f64 / self.sample_rate) * (f64::from(self.bpm) / 60_000_000.0);
+            Some((beats * Q32_32_SCALE) as u64)
+        }
+        fn tempo_micro_bpm_at_offset(&self, _offset: usize) -> Option<u32> {
+            Some(self.bpm)
+        }
+    }
+
+    let base = AUTO_PAN_DEFINITION.default_state().unwrap();
+    let synced = AUTO_PAN_DEFINITION
+        .patch_parameter(
+            &AUTO_PAN_DEFINITION
+                .patch_parameter(
+                    &patch(&base, parameter::AMOUNT, 1.0),
+                    parameter::RATE_MODE,
+                    ParameterValue::Choice(1),
+                )
+                .unwrap(),
+            parameter::SYNC_DIVISION,
+            ParameterValue::Choice(9), // 1/4 = 1.0 beat per cycle
+        )
+        .unwrap();
+    // At 120 BPM (2 beats/sec), 1/4 beat = 2 Hz: at beat 0.25, Sine is at +1.0 (gain 1.0);
+    // at beat 0.75, Sine is at 0.0 (gain 0.0).
+    let clock_peak = SyncClock {
+        bpm: 120_000_000,
+        sample_rate: 48_000.0,
+        start_beat: 0.25,
+    };
+    let clock_trough = SyncClock {
+        bpm: 120_000_000,
+        sample_rate: 48_000.0,
+        start_beat: 0.75,
+    };
+    let mut peak = [[1.0_f32, 1.0_f32]; 1];
+    let mut trough = [[1.0_f32, 1.0_f32]; 1];
+    runtime(&synced, 48_000).process_block_with_clock(
+        &mut peak,
+        Some(&clock_peak),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    runtime(&synced, 48_000).process_block_with_clock(
+        &mut trough,
+        Some(&clock_trough),
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    assert!((peak[0][0] - 1.0).abs() < 1e-5, "peak={peak:?}");
+    assert!(trough[0][0].abs() < 1e-5, "trough={trough:?}");
+    // Right channel (180 deg offset) is inverted relative to left.
+    assert!(peak[0][1].abs() < 1e-5, "peak right={peak:?}");
+    assert!((trough[0][1] - 1.0).abs() < 1e-5, "trough right={trough:?}");
+}
+
+#[test]
+fn shape_offset_invert_spin_modulate_and_random_waveform_behave_and_stay_partition_invariant() {
+    let default = AUTO_PAN_DEFINITION.default_state().unwrap();
+    let full = patch(&default, parameter::AMOUNT, 1.0);
+
+    // Offset shifts phase by 90 deg: Sine starts at peak (1.0) instead of midpoint (0.5).
+    let offset90 = patch(&full, parameter::OFFSET, 90.0);
+    let mut f = [[1.0_f32, 1.0_f32]; 1];
+    runtime(&offset90, 48_000).process_block(&mut f, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!((f[0][0] - 1.0).abs() < 1e-5);
+
+    // Invert flips polarity: Sine at 90 deg (normally 1.0) becomes 0.0.
+    let inverted = AUTO_PAN_DEFINITION
+        .patch_parameter(&offset90, parameter::INVERT, ParameterValue::Bool(true))
+        .unwrap();
+    let mut fi = [[1.0_f32, 1.0_f32]; 1];
+    runtime(&inverted, 48_000).process_block(&mut fi, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(fi[0][0].abs() < 1e-5);
+
+    // Shape pushes mid-lobe Sine toward 1.0 (e.g. phase 0.125: raw ~0.854 -> shaped > 0.99).
+    let shaped = patch(
+        &patch(&full, parameter::OFFSET, 45.0),
+        parameter::SHAPE,
+        1.0,
+    );
+    let unshaped = patch(&full, parameter::OFFSET, 45.0);
+    let mut fs = [[1.0_f32, 1.0_f32]; 1];
+    let mut fu = [[1.0_f32, 1.0_f32]; 1];
+    runtime(&shaped, 48_000).process_block(&mut fs, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    runtime(&unshaped, 48_000).process_block(&mut fu, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(
+        fs[0][0] > fu[0][0] + 0.1,
+        "shaped={fs:?} vs unshaped={fu:?}"
+    );
+
+    // Att | Mod: Modulate mode swings into negative polarity (-1.0 at trough).
+    let modulate = AUTO_PAN_DEFINITION
+        .patch_parameter(&inverted, parameter::MOD_MODE, ParameterValue::Choice(1))
+        .unwrap();
+    let mut fm = [[1.0_f32, 1.0_f32]; 1];
+    runtime(&modulate, 48_000).process_block(&mut fm, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(
+        (fm[0][0] + 1.0).abs() < 1e-5,
+        "modulate trough must invert polarity to -1.0, got {fm:?}"
+    );
+
+    // Spin detunes right channel rate relative to left even at right_phase = 0 deg.
+    let spin = AUTO_PAN_DEFINITION
+        .patch_parameter(
+            &patch(
+                &patch(
+                    &patch(&full, parameter::RATE, 4.0),
+                    parameter::RIGHT_PHASE,
+                    0.0,
+                ),
+                parameter::SPIN,
+                1.0,
+            ),
+            parameter::STEREO_MODE,
+            ParameterValue::Choice(1),
+        )
+        .unwrap();
+    let mut spin_frames = [[1.0_f32, 1.0_f32]; 4800];
+    runtime(&spin, 48_000).process_block(&mut spin_frames, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(
+        spin_frames
+            .iter()
+            .any(|frame| (frame[0] - frame[1]).abs() > 0.5),
+        "spin mode must detune right channel from left"
+    );
+
+    // Random waveform is deterministic, resets cleanly, and is block-partition invariant.
+    let random_state = AUTO_PAN_DEFINITION
+        .patch_parameter(
+            &patch(&spin, parameter::RATE, 4.0),
+            parameter::WAVEFORM,
+            ParameterValue::Choice(5),
+        )
+        .unwrap();
+    let mut whole = [[0.8_f32, -0.6_f32]; 600];
+    let mut rt_whole = runtime(&random_state, 48_000);
+    rt_whole.process_block(&mut whole, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let mut chunked = [[0.8_f32, -0.6_f32]; 600];
+    let mut rt_chunk = runtime(&random_state, 48_000);
+    let mut pos = 0;
+    for step in [1, 7, 19, 64, 131, 378] {
+        let end = (pos + step).min(chunked.len());
+        rt_chunk.process_block(&mut chunked[pos..end], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        pos = end;
+    }
+    assert_eq!(whole, chunked);
+    rt_whole.reset();
+    let mut after_reset = [[0.8_f32, -0.6_f32]; 600];
+    rt_whole.process_block(&mut after_reset, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(whole, after_reset);
 }

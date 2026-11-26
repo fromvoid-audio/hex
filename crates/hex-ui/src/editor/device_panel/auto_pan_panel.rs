@@ -1,20 +1,35 @@
-//! Compact Auto Pan composition using shared controls and provider-owned preview.
+//! Compact Auto Pan-Tremolo composition using shared controls and provider-owned preview.
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, parameter_control_with_presentation,
+    effective_parameter_value, numeric_display::NumericDisplayCodec,
+    parameter_control_with_presentation,
 };
 use crate::theme;
-use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px};
+use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_engine::{AutoPanWaveformPreview, NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::ParameterId;
 use hex_project::DeviceId;
 
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::AUTO_PAN_FRAME_WIDTH;
-const PARAMETERS: [(ParameterId, &str); 3] = [
-    (ParameterId::from_static(1), "amount"),
-    (ParameterId::from_static(2), "rate"),
-    (ParameterId::from_static(3), "phase"),
-];
+const PARAM_COUNT: usize = 13;
+
+const AMOUNT: ParameterId = ParameterId::from_static(1);
+const RATE: ParameterId = ParameterId::from_static(2);
+const RIGHT_PHASE: ParameterId = ParameterId::from_static(3);
+const WAVEFORM: ParameterId = ParameterId::from_static(4);
+const MODE: ParameterId = ParameterId::from_static(5);
+const RATE_MODE: ParameterId = ParameterId::from_static(6);
+const SYNC_DIVISION: ParameterId = ParameterId::from_static(7);
+const OFFSET: ParameterId = ParameterId::from_static(8);
+const SHAPE: ParameterId = ParameterId::from_static(9);
+const INVERT: ParameterId = ParameterId::from_static(10);
+const STEREO_MODE: ParameterId = ParameterId::from_static(11);
+const SPIN: ParameterId = ParameterId::from_static(12);
+const MOD_MODE: ParameterId = ParameterId::from_static(13);
+
+const DIAL_GAP: f32 = 4.0;
+const STEREO_RAIL_WIDTH: f32 = hex_widgets::MICRO_DIAL_WIDTH * 2.0 + DIAL_GAP + 12.0;
+const MAIN_RAIL_WIDTH: f32 = hex_widgets::COMPACT_DIAL_WIDTH * 2.0 + DIAL_GAP + 12.0;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 thread_local! {
@@ -30,7 +45,7 @@ pub(super) struct PreviewCache {
     generation: u64,
     variant: hex_project::DeviceVariant,
     state: hex_lattice_contract::NativeDeviceState,
-    values: [hex_lattice_contract::ParameterValue; 4],
+    values: [hex_lattice_contract::ParameterValue; PARAM_COUNT],
     curve: Result<AutoPanWaveformPreview, String>,
 }
 
@@ -48,7 +63,7 @@ pub(super) fn preview(
     device_view: &NativeDeviceView,
 ) -> Result<AutoPanWaveformPreview, String> {
     use hex_lattice_contract::ParameterValue;
-    let mut values = [ParameterValue::Float(0.0); 4];
+    let mut values = [ParameterValue::Float(0.0); PARAM_COUNT];
     let mut canonical_values = values;
     for (index, value) in values.iter_mut().enumerate() {
         let id = ParameterId::from_static(index as u32 + 1);
@@ -130,7 +145,7 @@ pub(super) fn render_body(
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
     };
-    let mut control = |id, label, presentation| {
+    let mut control = |id, label: Option<&'static str>, presentation, codec| {
         device_view
             .parameters
             .iter()
@@ -143,23 +158,73 @@ pub(super) fn render_body(
                     identity,
                     parameter,
                     presentation,
-                    ControlText {
-                        label: Some(label),
-                        ..ControlText::default()
-                    },
+                    ControlText { label, codec },
                 )
             })
             .unwrap_or_else(|| div().child(theme::text("unsupported")))
     };
-    let mut controls = crate::device_composition::rail_column();
-    for (id, label) in PARAMETERS {
-        controls = controls.child(control(id, label, ControlPresentation::CompactDial));
-    }
-    let chooser = control(
-        ParameterId::from_static(4),
-        "wave",
+
+    let mode = control(MODE, None, ControlPresentation::CompactWideSelector, None);
+    let waveform = control(
+        WAVEFORM,
+        Some("wave"),
         ControlPresentation::CompactSelector,
+        None,
     );
+    let rate_mode = control(RATE_MODE, None, ControlPresentation::CompactSelector, None);
+    let sync_division = control(
+        SYNC_DIVISION,
+        None,
+        ControlPresentation::CompactWideSelector,
+        None,
+    );
+
+    let stereo_mode = control(
+        STEREO_MODE,
+        None,
+        ControlPresentation::CompactSelector,
+        None,
+    );
+    let invert = control(
+        INVERT,
+        Some("inv"),
+        ControlPresentation::CompactButton,
+        None,
+    );
+    let right_phase = control(
+        RIGHT_PHASE,
+        Some("phase"),
+        ControlPresentation::MicroDial,
+        None,
+    );
+    let spin = control(
+        SPIN,
+        Some("spin"),
+        ControlPresentation::MicroDial,
+        Some(NumericDisplayCodec::Percent),
+    );
+    let offset = control(OFFSET, Some("offset"), ControlPresentation::MicroDial, None);
+    let shape = control(
+        SHAPE,
+        Some("shape"),
+        ControlPresentation::MicroDial,
+        Some(NumericDisplayCodec::Percent),
+    );
+
+    let amount = control(
+        AMOUNT,
+        Some("amount"),
+        ControlPresentation::CompactDial,
+        None,
+    );
+    let rate = control(RATE, Some("rate"), ControlPresentation::CompactDial, None);
+    let mod_mode = control(
+        MOD_MODE,
+        None,
+        ControlPresentation::CompactWideSelector,
+        None,
+    );
+
     let mut graph = div()
         .debug_selector(move || format!("auto-pan-waveform-{device}", device = device.value()))
         .w_full()
@@ -181,17 +246,90 @@ pub(super) fn render_body(
         }
         Err(_) => graph = graph.child(theme::text("preview unavailable")),
     }
-    let rail = crate::device_composition::dense_rail(controls)
-        .w(px(64.0))
-        .flex_shrink_0();
-    let main = crate::device_composition::plot_column(
-        div().h(px(14.0)).flex_shrink_0().child(chooser),
-        graph,
-        div().child(theme::text("static l/r")),
-    );
-    crate::device_composition::centered_rails(rail)
+
+    let left = div()
+        .flex_1()
+        .min_w(px(150.0))
+        .h_full()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(div().h(px(14.0)).flex_shrink_0().child(mode))
+        .child(crate::device_composition::plot(graph))
+        .child(
+            div()
+                .h(px(16.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap(px(4.0))
+                .child(waveform)
+                .child(rate_mode),
+        )
+        .child(div().h(px(14.0)).flex_shrink_0().child(sync_division));
+
+    let dial_row = |a: Div, b: Div| {
+        div()
+            .flex()
+            .justify_around()
+            .gap(px(DIAL_GAP))
+            .child(a)
+            .child(b)
+    };
+    let stereo_rail = crate::device_composition::dense_rail(
+        crate::device_composition::rail_column()
+            .h_full()
+            .justify_between()
+            .gap(px(4.0))
+            .child(
+                div()
+                    .h(px(18.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(4.0))
+                    .child(stereo_mode)
+                    .child(invert),
+            )
+            .child(dial_row(right_phase, spin))
+            .child(dial_row(offset, shape)),
+    )
+    .w(px(STEREO_RAIL_WIDTH))
+    .flex_shrink_0();
+
+    let main_caption = div()
+        .h(px(10.0))
+        .flex_shrink_0()
+        .text_size(px(7.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text("pan · tremolo"));
+    let main_rail = crate::device_composition::dense_rail(
+        crate::device_composition::rail_column()
+            .h_full()
+            .justify_between()
+            .gap(px(4.0))
+            .child(main_caption)
+            .child(
+                div()
+                    .flex()
+                    .justify_around()
+                    .gap(px(DIAL_GAP))
+                    .child(amount)
+                    .child(rate),
+            )
+            .child(div().h(px(16.0)).flex_shrink_0().child(mod_mode)),
+    )
+    .w(px(MAIN_RAIL_WIDTH))
+    .flex_shrink_0();
+
+    crate::device_composition::body()
         .gap(px(4.0))
-        .child(main)
+        .py(px(3.0))
+        .child(left)
+        .child(stereo_rail)
+        .child(main_rail)
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))

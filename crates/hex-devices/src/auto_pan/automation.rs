@@ -1,4 +1,4 @@
-//! Producer-independent canonical values feed the existing Auto Pan transitions.
+//! Producer-independent canonical values feed the existing Auto Pan-Tremolo transitions.
 //! This adapter owns no curves, clock, modulation graph or resource custody.
 use super::*;
 
@@ -9,7 +9,7 @@ pub(super) fn supported(parameter: ParameterId) -> bool {
     parameter
         .value()
         .checked_sub(1)
-        .is_some_and(|index| index < 4)
+        .is_some_and(|index| (index as usize) < PARAM_COUNT)
         && binding.declares_arrangement_automation()
         && binding.semantics.smoothing == hex_lattice_contract::ParameterSmoothing::DeviceManaged
         && binding.semantics.change_impact == hex_lattice_contract::ParameterChangeImpact::ValueOnly
@@ -31,7 +31,7 @@ impl AutoPanDefinition {
             return Err(DeviceContractError::InvalidParameterValue);
         }
         let settings = decode(state)?;
-        let mut automation_mask = 0u8;
+        let mut automation_mask = 0u32;
         for parameter in parameters {
             let binding = crate::parameter_binding::binding(&BINDINGS, *parameter)?;
             binding.semantics.validate(binding.descriptor)?;
@@ -41,8 +41,9 @@ impl AutoPanDefinition {
             let shift = parameter
                 .value()
                 .checked_sub(1)
+                .filter(|shift| (*shift as usize) < PARAM_COUNT)
                 .ok_or(DeviceContractError::UnknownParameter)?;
-            automation_mask |= 1u8
+            automation_mask |= 1u32
                 .checked_shl(shift)
                 .ok_or(DeviceContractError::UnknownParameter)?;
         }
@@ -63,7 +64,7 @@ impl PreparedAutoPan {
             && parameter
                 .value()
                 .checked_sub(1)
-                .and_then(|shift| 1u8.checked_shl(shift))
+                .and_then(|shift| 1u32.checked_shl(shift))
                 .is_some_and(|bit| self.automation_mask & bit != 0)
     }
     pub(super) fn check_inline_ownership(&self) {
@@ -73,7 +74,7 @@ impl PreparedAutoPan {
             ramp_frames,
             automation_mask,
         } = self;
-        let _: (&u32, &u32, &u8) = (sample_rate, ramp_frames, automation_mask);
+        let _: (&u32, &u32, &u32) = (sample_rate, ramp_frames, automation_mask);
         settings.check_inline();
     }
 }
@@ -84,8 +85,21 @@ impl AutoPanSettings {
             rate_hz,
             right_phase_degrees,
             waveform,
+            mode,
+            rate_mode,
+            sync_division,
+            offset_degrees,
+            shape,
+            invert,
+            stereo_mode,
+            spin,
+            mod_mode,
         } = self;
-        let _: (&f32, &f32, &f32, &Waveform) = (amount, rate_hz, right_phase_degrees, waveform);
+        let _: (&f32, &f32, &f32) = (amount, rate_hz, right_phase_degrees);
+        let _: (&f32, &f32, &f32) = (offset_degrees, shape, spin);
+        let _: (&Waveform, &PanMode, &RateMode, &SyncDivision) =
+            (waveform, mode, rate_mode, sync_division);
+        let _: (&bool, &StereoMode, &ModMode) = (invert, stereo_mode, mod_mode);
     }
 }
 impl AutoPanTargets {
@@ -95,8 +109,21 @@ impl AutoPanTargets {
             rate_hz,
             right_phase_degrees,
             waveform,
+            mode,
+            rate_mode,
+            sync_division,
+            offset_degrees,
+            shape,
+            invert,
+            stereo_mode,
+            spin,
+            mod_mode,
         } = self;
-        let _: (&f64, &f64, &f64, &Waveform) = (amount, rate_hz, right_phase_degrees, waveform);
+        let _: (&f64, &f64, &f64) = (amount, rate_hz, right_phase_degrees);
+        let _: (&f64, &f64, &f64) = (offset_degrees, shape, spin);
+        let _: (&Waveform, &PanMode, &RateMode, &SyncDivision) =
+            (waveform, mode, rate_mode, sync_division);
+        let _: (&bool, &StereoMode, &ModMode) = (invert, stereo_mode, mod_mode);
     }
 }
 impl AutoPanDspState {
@@ -105,19 +132,39 @@ impl AutoPanDspState {
             sample_rate,
             ramp_frames,
             phase_cycles,
+            cycle_count,
+            right_phase_cycles,
+            right_cycle_count,
             amount,
             rate_hz,
             right_phase_degrees,
+            offset_degrees,
+            shape,
+            spin,
+            tremolo_mix,
+            invert_mix,
+            mod_mix,
             waveform_weights,
             targets,
         } = self;
-        let _: (&u32, &u32, &f64) = (sample_rate, ramp_frames, phase_cycles);
+        let _: (&u32, &u32, &f64, &u64) = (sample_rate, ramp_frames, phase_cycles, cycle_count);
+        let _: (&f64, &u64) = (right_phase_cycles, right_cycle_count);
         let _: (
             &hex_dsp::LinearRamp,
             &hex_dsp::LinearRamp,
             &hex_dsp::LinearRamp,
-            &[hex_dsp::LinearRamp; 5],
-        ) = (amount, rate_hz, right_phase_degrees, waveform_weights);
+            &hex_dsp::LinearRamp,
+        ) = (amount, rate_hz, right_phase_degrees, offset_degrees);
+        let _: (
+            &hex_dsp::LinearRamp,
+            &hex_dsp::LinearRamp,
+            &hex_dsp::LinearRamp,
+            &hex_dsp::LinearRamp,
+        ) = (shape, spin, tremolo_mix, invert_mix);
+        let _: (
+            &hex_dsp::LinearRamp,
+            &[hex_dsp::LinearRamp; Waveform::COUNT],
+        ) = (mod_mix, waveform_weights);
         targets.check_inline();
     }
 }
@@ -135,6 +182,7 @@ impl AutoPanRuntime {
     pub(super) fn process_automated(
         &mut self,
         frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
         values: &dyn hex_lattice::NativeParameterAutomation,
         bypassed: bool,
     ) -> Result<(), DeviceContractError> {
@@ -150,7 +198,12 @@ impl AutoPanRuntime {
                 self.controls.install(next);
             }
             let original = *frame;
-            self.dsp.process_frame(frame);
+            let (tempo_bpm, beat) = if self.dsp.targets.rate_mode == RateMode::Sync {
+                clock_timing(clock, offset)
+            } else {
+                (FALLBACK_TEMPO_BPM, None)
+            };
+            self.dsp.process_frame(frame, tempo_bpm, beat);
             if bypassed {
                 *frame = original;
             }
