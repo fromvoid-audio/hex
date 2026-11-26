@@ -18,6 +18,7 @@ pub struct Status {
     pub(super) publication_pending: admission::PublicationAdmission,
     pub(super) preview_used: AtomicBool,
     pub(super) constructor_mode: AtomicBool,
+    pub(super) ordinary_owner_active: AtomicBool,
     pub(super) verified_streaming_mode: AtomicBool,
     pub(super) applied_source: applied_source::AppliedSourceStatus,
     pub(super) recording_source: applied_source::AppliedSourceStatus,
@@ -182,6 +183,12 @@ impl Status {
         self.publication_pending.load(Acquire)
     }
 
+    /// True once a combined-configured output has completed its one-way
+    /// verified-to-ordinary owner handoff on the callback.
+    pub fn ordinary_owner_active(&self) -> bool {
+        self.ordinary_owner_active.load(Acquire)
+    }
+
     #[cfg(feature = "worker-test-support")]
     pub(crate) fn headless_shutdown_requested(&self) -> bool {
         self.closing.load(Acquire)
@@ -305,6 +312,7 @@ impl Status {
             publication_pending: admission::PublicationAdmission::default(),
             preview_used: AtomicBool::new(false),
             constructor_mode: AtomicBool::new(false),
+            ordinary_owner_active: AtomicBool::new(false),
             verified_streaming_mode: AtomicBool::new(false),
             applied_source: applied_source::AppliedSourceStatus::default(),
             recording_source: applied_source::AppliedSourceStatus::default(),

@@ -113,7 +113,8 @@ impl Custody {
                 && state.retired_runtime.is_none()
                 && match returned.kind {
                     AudioCandidateReturnKind::NeverInstalled
-                    | AudioCandidateReturnKind::FinalActive => {
+                    | AudioCandidateReturnKind::FinalActive
+                    | AudioCandidateReturnKind::HandedOffToOrdinary => {
                         state.manifest.is_none() && state.covering_successor.is_none()
                     }
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

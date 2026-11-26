@@ -623,6 +623,13 @@ impl Active {
             kind: AudioCandidateReturnKind::Replaced,
         }
     }
+    pub(crate) fn return_handed_off_to_ordinary(self) -> Returned {
+        Returned {
+            stamp: self.state.stamp,
+            state: Some(self.state),
+            kind: AudioCandidateReturnKind::HandedOffToOrdinary,
+        }
+    }
     pub(crate) fn return_final(
         self,
         authority: &crate::native_callback_owner::FinalReleaseAuthority,

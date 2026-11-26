@@ -219,6 +219,18 @@ impl Callback {
                         ))
                     .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
+                PublicationPolicy::HandoffFromVerified { predecessor } => {
+                    let matches_predecessor = match (predecessor, self.active.as_ref()) {
+                        (Some(expected), Some(ActivePublication::Eligible(active))) => {
+                            expected.output_identity == self.candidate_root.root_id()
+                                && active.applied_audio_source() == Some(expected)
+                        }
+                        (None, None) => true,
+                        _ => false,
+                    };
+                    (!matches_predecessor || self.status.ordinary_owner_active.load(Acquire))
+                        .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             let monitor_handoff = stale_fence
@@ -843,6 +855,7 @@ impl Callback {
                     | PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
                     | PublicationPolicy::InstallUnderStoppedArrangement(_)
                     | PublicationPolicy::InstallUnderNativeEpoch(_)
+                    | PublicationPolicy::HandoffFromVerified { .. }
             ) {
                 None
             } else {
@@ -1141,22 +1154,26 @@ impl Callback {
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
                     // Candidate ownership cannot enter this legacy replacement
-                    // path; the queue decision above retains it in the same slot.
-                    if matches!(
-                        self.active,
-                        Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
-                    ) {
-                        self.return_graph(next);
+                    // path; Eligible ownership enters only through an explicit
+                    // verified-to-ordinary handoff validated above.
+                    let verified_handoff =
+                        matches!(next.policy, PublicationPolicy::HandoffFromVerified { .. });
+                    if matches!(self.active, Some(ActivePublication::Candidate(_)))
+                        || (!verified_handoff
+                            && matches!(self.active, Some(ActivePublication::Eligible(_))))
+                    {
+                        self.return_rejected_graph(next);
                         return;
                     }
                     let diagnostic_context = next.source_context;
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let clear_empty_native_epoch =
                         matches!(next.policy, PublicationPolicy::InstallUnderNativeEpoch(_));
-                    let reset_audible = matches!(
-                        next.policy,
-                        PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
-                    );
+                    let reset_audible = verified_handoff
+                        || matches!(
+                            next.policy,
+                            PublicationPolicy::InstallQuantizedSeekWhenReady { .. }
+                        );
                     if let Some((previous, successor, epoch)) = monitor_handoff {
                         self.input_monitor
                             .preserve_graph_release(previous, successor, epoch);
@@ -1185,13 +1202,26 @@ impl Callback {
                                 .map(|active| active.playback.as_ref()),
                         );
                     }
-                    if let Some(ActivePublication::Legacy(previous)) = previous {
-                        self.return_graph(previous);
+                    match previous {
+                        Some(ActivePublication::Legacy(previous)) => {
+                            self.return_graph(previous);
+                        }
+                        Some(ActivePublication::Eligible(previous)) => {
+                            self.return_publication(ReturnedPublication::Eligible(
+                                previous.return_handed_off_to_ordinary(),
+                            ));
+                        }
+                        Some(ActivePublication::Candidate(_)) | None => {}
                     }
                     self.finish_pending_stream_play();
+                    if verified_handoff {
+                        self.status.stream_buffering.store(false, Release);
+                    }
                     self.publish_active_routes(true);
                     self.recovery_seek_pending = None;
-                    if self.recovery_position_frozen && !self.status.device_fault.load(Acquire) {
+                    if (verified_handoff || self.recovery_position_frozen)
+                        && !self.status.device_fault.load(Acquire)
+                    {
                         self.recovery_position_frozen = false;
                         self.publish_transport();
                     }
@@ -1200,6 +1230,9 @@ impl Callback {
                     self.status.stream_source_changed.store(false, Release);
                     self.status.stream_read_failed.store(false, Release);
                     self.status.applied_source.publish(None);
+                    if verified_handoff {
+                        self.status.ordinary_owner_active.store(true, Release);
+                    }
                     self.status.applied_revision.store(revision, Release);
                     self.status.publication_pending.store(false, Release);
                     if let Some(receipt) = self

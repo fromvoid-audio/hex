@@ -400,8 +400,9 @@ impl PublicationControl {
     /// must cover both declared limits, with checked arithmetic. These are
     /// caller limits, not an RSS or allocator bound. The combined ceiling
     /// includes one ordinary demand workspace for every permitted graph.
-    /// This grants no ordinary publication or cross-kind switching authority;
-    /// the exposed client retains its verified publication policy.
+    /// The exposed client retains its verified publication policy until an
+    /// explicit `publish_ordinary_handoff_from_verified_on_control` commits
+    /// one-way ordinary ownership on the callback.
     /// If construction fails after configuring the
     /// verified root, the output is closed and must be discarded rather than
     /// exposed.
@@ -598,6 +599,70 @@ impl PublicationControl {
         self.publish_admitted_with_source(
             playback,
             policy,
+            source_context.project_generation,
+            Some(source_context),
+            None,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            None,
+            admit,
+        )
+    }
+
+    /// Admit and submit a one-way continuous handoff from verified constructor
+    /// ownership to ordinary worker-owned resource publication on a
+    /// combined-configured output. Preserves the active verified graph and
+    /// output while preparing and on refusal; commits ordinary ownership only
+    /// when the callback installs this exact graph. After callback install,
+    /// verified staging refuses and subsequent ordinary worker publications
+    /// reuse this exact output, source root, and resource book.
+    #[allow(clippy::result_large_err)] // Refusals return the actual graph inline without allocating on failure.
+    pub fn publish_ordinary_handoff_from_verified_on_control<E>(
+        &mut self,
+        playback: Playback,
+        expected_output_identity: u64,
+        expected_predecessor: Option<AppliedAudioSource>,
+        source_context: hex_engine::AudioSourceContext,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        let refusal = if !self.status.constructor_mode.load(Acquire)
+            || !self.candidate_root.ordinary_streams_configured()
+            || self.device_resources.is_none()
+        {
+            Some("ordinary handoff requires a combined-configured output")
+        } else if self.status.ordinary_owner_active.load(Acquire) {
+            Some("ordinary owner handoff already completed")
+        } else if expected_output_identity != self.candidate_root.root_id() {
+            Some("ordinary handoff output identity mismatch")
+        } else {
+            match expected_predecessor {
+                Some(predecessor)
+                    if predecessor.output_identity != expected_output_identity
+                        || self.status.applied_audio_source() != Some(predecessor) =>
+                {
+                    Some("ordinary handoff predecessor source changed")
+                }
+                None if self.status.applied_audio_source().is_some()
+                    || self.status.applied_revision.load(Acquire) != 0 =>
+                {
+                    Some("ordinary handoff requires its exact active verified source")
+                }
+                _ => None,
+            }
+        };
+        if let Some(reason) = refusal {
+            return Err(AdmittedPublishError::Publication(PublishError {
+                kind: PublishErrorKind::Other,
+                reason,
+                playback,
+            }));
+        }
+        self.publish_admitted_with_source(
+            playback,
+            PublicationPolicy::HandoffFromVerified {
+                predecessor: expected_predecessor,
+            },
             source_context.project_generation,
             Some(source_context),
             None,
@@ -917,9 +982,17 @@ impl PublicationControl {
             if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
         {
             Some("arrangement stopped fence is no longer ready")
-        } else if self.status.constructor_mode.load(Acquire)
-            || (self.candidate_root.domains_configured()
-                && !self.candidate_root.ordinary_streams_configured())
+        } else if matches!(policy, PublicationPolicy::HandoffFromVerified { .. })
+            && (!self.status.constructor_mode.load(Acquire)
+                || self.status.ordinary_owner_active.load(Acquire)
+                || !self.candidate_root.ordinary_streams_configured())
+        {
+            Some("ordinary handoff requires an active combined verified output")
+        } else if !matches!(policy, PublicationPolicy::HandoffFromVerified { .. })
+            && ((self.status.constructor_mode.load(Acquire)
+                && !self.status.ordinary_owner_active.load(Acquire))
+                || (self.candidate_root.domains_configured()
+                    && !self.candidate_root.ordinary_streams_configured()))
         {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.recording_active() {
