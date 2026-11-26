@@ -147,3 +147,13 @@ The opt-in Hex playback integration owns its scheduling admission and releases
 the policy before idle and controller work. The native regression checks actual
 kernel admission, refused nesting, and repeated restoration without opening
 an audio device.
+
+## Auxiliary macOS worker semaphore
+
+`platform::CoreAudioWorkerSemaphore` wraps Apple's `<mach/semaphore.h>` FIFO
+kernel semaphore (`semaphore_create`, `semaphore_signal`, `semaphore_signal_all`,
+`semaphore_wait`, `semaphore_timedwait`, `semaphore_destroy`) using direct
+by-value `semaphore_t` FFI bindings. `signal` and `signal_all` are single
+non-blocking Mach traps with zero allocation and zero user-space mutexes so
+audio callbacks can wake idle DSP wave workers in microseconds without busy
+spinning across Mach time-constraint computation budgets.

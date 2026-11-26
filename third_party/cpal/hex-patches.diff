@@ -1,3 +1,5 @@
+diff --git a/src/host/coreaudio/macos/device.rs b/src/host/coreaudio/macos/device.rs
+index 1302299..c9f297d 100644
 --- a/src/host/coreaudio/macos/device.rs
 +++ b/src/host/coreaudio/macos/device.rs
 @@ -1,6 +1,6 @@
@@ -8,7 +10,7 @@
  use crate::host::coreaudio::macos::loopback::LoopbackDevice;
  use crate::host::coreaudio::macos::StreamInner;
  use crate::traits::DeviceTrait;
-@@ -14,7 +14,9 @@
+@@ -14,7 +14,9 @@ use coreaudio::audio_unit::render_callback::{self, data};
  use coreaudio::audio_unit::{AudioUnit, Element, Scope};
  use objc2_audio_toolbox::{
      kAudioOutputUnitProperty_CurrentDevice, kAudioOutputUnitProperty_EnableIO,
@@ -19,7 +21,7 @@
  };
  use objc2_core_audio::kAudioDevicePropertyDeviceUID;
  use objc2_core_audio::kAudioObjectPropertyElementMain;
-@@ -28,18 +30,24 @@
+@@ -28,18 +30,24 @@ use objc2_core_audio::{
      AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
      AudioObjectPropertyScope, AudioObjectSetPropertyData,
  };
@@ -47,7 +49,7 @@
  use std::sync::mpsc::{channel, RecvTimeoutError};
  use std::sync::{Arc, Mutex};
  use std::time::{Duration, Instant};
-@@ -203,8 +211,23 @@
+@@ -203,8 +211,23 @@ fn set_sample_rate(
      Ok(())
  }
  
@@ -72,12 +74,10 @@
          coreaudio::audio_unit::IOType::DefaultOutput
      } else {
          coreaudio::audio_unit::IOType::HalOutput
-@@ -240,6 +263,41 @@
-     )?;
- 
+@@ -242,6 +265,41 @@ fn audio_unit_from_device(device: &Device, input: bool) -> Result<AudioUnit, cor
      Ok(audio_unit)
-+}
-+
+ }
+ 
 +#[cfg(test)]
 +mod route_probe_regression {
 +    use super::*;
@@ -111,10 +111,12 @@
 +        let previous = get_io_buffer_frame_size_range(&unit).expect("Audio Unit buffer range");
 +        assert_eq!(*config.buffer_size(), previous);
 +    }
- }
- 
++}
++
  fn get_io_buffer_frame_size_range(
-@@ -320,19 +378,19 @@
+     audio_unit: &AudioUnit,
+ ) -> Result<SupportedBufferSize, coreaudio::Error> {
+@@ -320,19 +378,19 @@ impl DeviceTrait for Device {
          sample_format: SampleFormat,
          data_callback: D,
          error_callback: E,
@@ -138,7 +140,7 @@
          )
      }
  }
-@@ -342,12 +400,55 @@
+@@ -342,14 +400,57 @@ pub struct Device {
      pub(crate) audio_device_id: AudioDeviceID,
  }
  
@@ -148,8 +150,8 @@
 -
  fn is_default_output_device(device: &Device) -> bool {
      default_output_device().is_some_and(|d| d.audio_device_id == device.audio_device_id)
-+}
-+
+ }
+ 
 +// Both input and output streams (including the system default output) must
 +// forward DeviceIsAlive disconnect errors to the caller's error callback.
 +fn stream_disconnect_callback<E>(callback: Arc<Mutex<E>>) -> super::ErrorCallback
@@ -195,10 +197,12 @@
 +        disconnect(StreamError::DeviceNotAvailable);
 +        assert_eq!(observed.load(Ordering::Relaxed), 1);
 +    }
- }
- 
++}
++
  impl Device {
-@@ -688,8 +789,45 @@
+     /// Construct a new device given its ID.
+     /// Useful for constructing hidden devices.
+@@ -688,8 +789,45 @@ impl Device {
                      description: format!("unexpected scope (neither input nor output): {scope:?}"),
                  }),
              }?;
@@ -246,7 +250,7 @@
  
              let config = SupportedStreamConfig {
                  sample_rate: asbd.mSampleRate as _,
-@@ -743,6 +881,7 @@
+@@ -743,6 +881,7 @@ impl Device {
          D: FnMut(&Data, &InputCallbackInfo) + Send + 'static,
          E: FnMut(StreamError) + Send + 'static,
      {
@@ -254,7 +258,7 @@
          // The scope and element for working with a device's input stream.
          let scope = Scope::Output;
          let element = Element::Input;
-@@ -784,13 +923,6 @@
+@@ -784,13 +923,6 @@ impl Device {
              let len = data_byte_size as usize / bytes_per_channel;
              let data = Data::from_parts(data, len, sample_format);
  
@@ -268,7 +272,7 @@
              let buffer_frames = len / channels as usize;
              // Use device buffer size for latency calculation if available
              let latency_frames = device_buffer_frames.unwrap_or(
-@@ -799,9 +931,9 @@
+@@ -799,9 +931,9 @@ impl Device {
                  buffer_frames,
              );
              let delay = frames_to_duration(latency_frames, sample_rate);
@@ -281,7 +285,7 @@
              let timestamp = crate::InputStreamTimestamp { callback, capture };
  
              let info = InputCallbackInfo { timestamp };
-@@ -809,19 +941,12 @@
+@@ -809,19 +941,12 @@ impl Device {
              Ok(())
          })?;
  
@@ -303,7 +307,7 @@
                  audio_unit,
                  device_id: self.audio_device_id,
                  _loopback_device: loopback_aggregate,
-@@ -843,19 +968,69 @@
+@@ -843,19 +968,69 @@ impl Device {
          Ok(stream)
      }
  
@@ -376,7 +380,7 @@
  
          // The scope and element for working with a device's output stream.
          let scope = Scope::Input;
-@@ -863,6 +1038,26 @@
+@@ -863,6 +1038,26 @@ impl Device {
  
          // Configure device buffer (see comprehensive documentation in input stream above)
          configure_stream_format_and_buffer(&mut audio_unit, config, sample_format, scope, element)?;
@@ -403,7 +407,7 @@
  
          let error_callback = Arc::new(Mutex::new(error_callback));
          let error_callback_disconnect = error_callback.clone();
-@@ -887,13 +1082,6 @@
+@@ -887,13 +1082,6 @@ impl Device {
              let len = data_byte_size as usize / bytes_per_channel;
              let mut data = Data::from_parts(data, len, sample_format);
  
@@ -417,7 +421,7 @@
              let buffer_frames = len / channels as usize;
              // Use device buffer size for latency calculation if available
              let latency_frames = device_buffer_frames.unwrap_or(
-@@ -901,10 +1089,13 @@
+@@ -901,10 +1089,13 @@ impl Device {
                  // (may overestimate latency for BufferSize::Default)
                  buffer_frames,
              );
@@ -435,7 +439,7 @@
              let timestamp = crate::OutputStreamTimestamp { callback, playback };
  
              let info = OutputCallbackInfo { timestamp };
-@@ -912,19 +1103,28 @@
+@@ -912,19 +1103,28 @@ impl Device {
              Ok(())
          })?;
  
@@ -473,7 +477,7 @@
                  audio_unit,
                  device_id: self.audio_device_id,
                  _loopback_device: None,
-@@ -943,8 +1143,1094 @@
+@@ -943,10 +1143,1096 @@ impl Device {
              .audio_unit
              .start()?;
  
@@ -482,8 +486,8 @@
 +        }
          Ok(stream)
      }
-+}
-+
+ }
+ 
 +fn bounded_output_error(description: &str) -> BuildStreamError {
 +    BackendSpecificError {
 +        description: description.into(),
@@ -1565,9 +1569,13 @@
 +        return Err(bounded_output_error("invalid coreaudio device buffer size"));
 +    }
 +    Ok(frames)
- }
- 
++}
++
  /// Configure stream format and buffer size for CoreAudio stream.
+ ///
+ /// This handles the common setup tasks for both input and output streams:
+diff --git a/src/host/coreaudio/macos/mod.rs b/src/host/coreaudio/macos/mod.rs
+index f34041e..676e15d 100644
 --- a/src/host/coreaudio/macos/mod.rs
 +++ b/src/host/coreaudio/macos/mod.rs
 @@ -1,5 +1,5 @@
@@ -1577,7 +1585,7 @@
  
  use super::OSStatus;
  use crate::host::coreaudio::macos::loopback::LoopbackDevice;
-@@ -21,7 +21,8 @@
+@@ -21,7 +21,8 @@ mod device;
  pub mod enumerate;
  mod loopback;
  mod property_listener;
@@ -1587,7 +1595,7 @@
  
  /// Coreaudio host, the default host on macOS.
  #[derive(Debug)]
-@@ -172,6 +173,7 @@
+@@ -172,6 +173,7 @@ impl DisconnectManager {
  
  struct StreamInner {
      playing: bool,
@@ -1595,7 +1603,7 @@
      audio_unit: AudioUnit,
      // Track the device with which the audio unit was spawned.
      //
-@@ -184,9 +186,22 @@
+@@ -184,9 +186,22 @@ struct StreamInner {
      _loopback_device: Option<LoopbackDevice>,
  }
  
@@ -1618,7 +1626,7 @@
              if let Err(e) = self.audio_unit.start() {
                  let description = format!("{e}");
                  let err = BackendSpecificError { description };
-@@ -199,6 +214,7 @@
+@@ -199,6 +214,7 @@ impl StreamInner {
  
      fn pause(&mut self) -> Result<(), PauseStreamError> {
          if self.playing {
@@ -1626,7 +1634,7 @@
              if let Err(e) = self.audio_unit.stop() {
                  let description = format!("{e}");
                  let err = BackendSpecificError { description };
-@@ -367,3 +383,156 @@
+@@ -367,3 +383,288 @@ mod test {
          }
      }
  }
@@ -1759,10 +1767,142 @@
 +    }
 +}
 +
++/// Real-time-safe Mach kernel semaphore for waking auxiliary audio workers.
++///
++/// Construct and drop on control. `signal` and `signal_all` issue a single
++/// non-blocking Mach trap with zero allocation and zero user-space locks,
++/// making them safe to invoke from CoreAudio callbacks when workers are parked.
++pub struct WorkerSemaphore {
++    sem: mach2::mach_types::semaphore_t,
++}
++
++// SAFETY: Mach semaphore port names are process-wide kernel objects safe to
++// signal and wait on concurrently from any thread in the owning task.
++unsafe impl Send for WorkerSemaphore {}
++unsafe impl Sync for WorkerSemaphore {}
++
++mod mach_semaphore_ffi {
++    use mach2::{
++        clock_types::mach_timespec_t,
++        kern_return::kern_return_t,
++        mach_types::{semaphore_t, task_t},
++        sync_policy::sync_policy_t,
++    };
++
++    // Match Apple's `<mach/semaphore.h>` and `<mach/task.h>` ABI directly:
++    // `mach2` 0.4/0.5 declares `semaphore_*` with `*mut semaphore_t` instead
++    // of by-value `semaphore_t`.
++    extern "C" {
++        pub(super) fn semaphore_create(
++            task: task_t,
++            semaphore: *mut semaphore_t,
++            policy: sync_policy_t,
++            value: std::ffi::c_int,
++        ) -> kern_return_t;
++        pub(super) fn semaphore_signal(semaphore: semaphore_t) -> kern_return_t;
++        pub(super) fn semaphore_signal_all(semaphore: semaphore_t) -> kern_return_t;
++        pub(super) fn semaphore_wait(semaphore: semaphore_t) -> kern_return_t;
++        pub(super) fn semaphore_timedwait(
++            semaphore: semaphore_t,
++            wait_time: mach_timespec_t,
++        ) -> kern_return_t;
++        pub(super) fn semaphore_destroy(task: task_t, semaphore: semaphore_t) -> kern_return_t;
++    }
++}
++
++impl WorkerSemaphore {
++    /// Allocate a new Mach FIFO semaphore initialized to zero count.
++    pub fn new() -> Result<Self, BackendSpecificError> {
++        use mach2::{
++            kern_return::KERN_SUCCESS, mach_types::semaphore_t, port::MACH_PORT_NULL,
++            sync_policy::SYNC_POLICY_FIFO, traps::mach_task_self,
++        };
++        let mut sem: semaphore_t = MACH_PORT_NULL;
++        // SAFETY: `mach_task_self()` identifies the current task and `sem` is valid out-storage.
++        let status = unsafe {
++            mach_semaphore_ffi::semaphore_create(mach_task_self(), &mut sem, SYNC_POLICY_FIFO, 0)
++        };
++        if status != KERN_SUCCESS || sem == MACH_PORT_NULL {
++            return Err(BackendSpecificError {
++                description: format!("mach semaphore_create failed (kern_return={status})"),
++            });
++        }
++        Ok(Self { sem })
++    }
++
++    /// Wake one waiting worker thread (RT-safe Mach trap).
++    #[inline]
++    pub fn signal(&self) {
++        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
++        let _ = unsafe { mach_semaphore_ffi::semaphore_signal(self.sem) };
++    }
++
++    /// Wake all currently parked worker threads (RT-safe Mach trap).
++    #[inline]
++    pub fn signal_all(&self) {
++        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
++        let _ = unsafe { mach_semaphore_ffi::semaphore_signal_all(self.sem) };
++    }
++
++    /// Block the calling worker thread until signaled.
++    #[inline]
++    pub fn wait(&self) {
++        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
++        let _ = unsafe { mach_semaphore_ffi::semaphore_wait(self.sem) };
++    }
++
++    /// Block the calling worker thread until signaled or `timeout` elapses.
++    /// Returns `true` if signaled (or interrupted), `false` if the timeout expired.
++    #[inline]
++    pub fn wait_timeout(&self, timeout: std::time::Duration) -> bool {
++        use mach2::{clock_types::mach_timespec_t, kern_return::KERN_OPERATION_TIMED_OUT};
++        let wait_time = mach_timespec_t {
++            tv_sec: u32::try_from(timeout.as_secs()).unwrap_or(u32::MAX),
++            tv_nsec: timeout.subsec_nanos() as i32,
++        };
++        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
++        let status = unsafe { mach_semaphore_ffi::semaphore_timedwait(self.sem, wait_time) };
++        status != KERN_OPERATION_TIMED_OUT
++    }
++}
++
++impl Drop for WorkerSemaphore {
++    fn drop(&mut self) {
++        // SAFETY: destroy the owned Mach semaphore exactly once.
++        unsafe {
++            let _ = mach_semaphore_ffi::semaphore_destroy(mach2::traps::mach_task_self(), self.sem);
++        }
++    }
++}
++
 +#[cfg(test)]
 +mod worker_time_constraint_regression {
-+    use super::WorkerTimeConstraint;
-+    use std::time::Duration;
++    use super::{WorkerSemaphore, WorkerTimeConstraint};
++    use std::{
++        sync::Arc,
++        time::{Duration, Instant},
++    };
++
++    #[test]
++    fn worker_semaphore_signals_and_times_out() {
++        let sem = Arc::new(WorkerSemaphore::new().unwrap());
++        assert!(!sem.wait_timeout(Duration::from_millis(2)));
++        sem.signal();
++        assert!(sem.wait_timeout(Duration::from_millis(50)));
++
++        let worker_sem = Arc::clone(&sem);
++        let handle = std::thread::spawn(move || {
++            let start = Instant::now();
++            assert!(worker_sem.wait_timeout(Duration::from_secs(2)));
++            start.elapsed()
++        });
++        std::thread::sleep(Duration::from_millis(5));
++        let signal_at = Instant::now();
++        sem.signal_all();
++        let waited = handle.join().unwrap();
++        assert!(waited >= Duration::from_millis(4));
++        assert!(signal_at.elapsed() < Duration::from_millis(250));
++    }
 +
 +    #[test]
 +    fn current_thread_repeatedly_enters_and_releases_time_constraint() {
@@ -1783,18 +1923,22 @@
 +        }
 +    }
 +}
+diff --git a/src/host/coreaudio/mod.rs b/src/host/coreaudio/mod.rs
+index dd9b85f..1ed2301 100644
 --- a/src/host/coreaudio/mod.rs
 +++ b/src/host/coreaudio/mod.rs
-@@ -25,7 +25,7 @@
+@@ -25,7 +25,9 @@ pub use self::ios::{
  };
  
  #[cfg(target_os = "macos")]
 -pub use self::macos::{Host, Stream};
-+pub use self::macos::{Host, OutputTiming, OutputTimingReceipt, Stream, WorkerTimeConstraint};
++pub use self::macos::{
++    Host, OutputTiming, OutputTimingReceipt, Stream, WorkerSemaphore, WorkerTimeConstraint,
++};
  
  // Common helper methods used by both macOS and iOS
  
-@@ -73,17 +73,120 @@
+@@ -73,19 +75,122 @@ fn asbd_from_config(
      }
  }
  
@@ -1819,8 +1963,8 @@
      let secs = nanos / 1_000_000_000;
      let subsec_nanos = nanos - secs * 1_000_000_000;
      Ok(crate::StreamInstant::new(secs as i64, subsec_nanos as u32))
-+}
-+
+ }
+ 
 +/// The boot-wide conversion ratio for timestamps already supplied by Core Audio.
 +/// Reading the Mach timebase can enter the kernel during initialization. Prepare
 +/// it before stream startup. This value does not read or advance a clock.
@@ -1915,18 +2059,23 @@
 +            .timestamps(1, max_ns)
 +            .is_none());
 +    }
- }
- 
++}
++
  // Convert the given duration in frames at the given sample rate to a `std::time::Duration`.
+ #[inline]
+ fn frames_to_duration(frames: usize, rate: crate::SampleRate) -> std::time::Duration {
+diff --git a/src/platform/mod.rs b/src/platform/mod.rs
+index 0f62026..0853d4a 100644
 --- a/src/platform/mod.rs
 +++ b/src/platform/mod.rs
-@@ -732,6 +732,11 @@
+@@ -732,6 +732,12 @@ mod platform_impl {
  mod platform_impl {
      #[cfg_attr(docsrs, doc(cfg(any(target_os = "macos", target_os = "ios"))))]
      pub use crate::host::coreaudio::Host as CoreAudioHost;
 +    #[cfg(target_os = "macos")]
 +    pub use crate::host::coreaudio::{
 +        OutputTiming as CoreAudioOutputTiming, OutputTimingReceipt as CoreAudioOutputTimingReceipt,
++        WorkerSemaphore as CoreAudioWorkerSemaphore,
 +        WorkerTimeConstraint as CoreAudioWorkerTimeConstraint,
 +    };
      #[cfg(all(feature = "jack", target_os = "macos"))]

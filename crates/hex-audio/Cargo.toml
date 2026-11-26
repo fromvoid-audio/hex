@@ -23,6 +23,7 @@ hex-lattice-contract = { path = "../hex-lattice-contract" }
 hex-engine = { path = "../hex-engine" }
 hex-stream = { path = "../hex-stream" }
 cpal = "=0.17.3"
+crossbeam-queue = "=0.3.14"
 rtrb = "=0.3.4"
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
