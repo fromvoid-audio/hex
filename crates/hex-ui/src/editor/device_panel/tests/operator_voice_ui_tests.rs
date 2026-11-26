@@ -198,3 +198,109 @@ fn primary_voice_popup_cancels_outside_and_refuses_invalid_working_drafts(cx: &m
         );
     });
 }
+
+#[gpui::test]
+fn performance_dial_column_binds_time_tone_volume_and_pan_within_body_height(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(2000.0), px(540.0)));
+    visual.run_until_parked();
+
+    let column = visual
+        .debug_bounds(selector(format!(
+            "operator-performance-column-{}",
+            device.value()
+        )))
+        .expect("far-right performance dial column");
+    let preview = visual
+        .debug_bounds(selector(format!("operator-preview-{}", device.value())))
+        .unwrap();
+    let body = visual
+        .debug_bounds(selector(format!("operator-body-{}", device.value())))
+        .unwrap();
+    assert!(column.left() >= preview.right());
+    assert!(column.right() <= body.right());
+    assert!(column.size.height <= px(crate::device_composition::BODY_HEIGHT));
+    assert_eq!(
+        visual
+            .debug_bounds(selector(format!("instrument-device-{}", device.value())))
+            .unwrap()
+            .size
+            .height,
+        px(200.0)
+    );
+
+    // Four stacked dials (time, tone, volume, pan) sit top-to-bottom without overlap.
+    let mut prev_bottom = px(0.0);
+    for parameter in [617_u32, 618, 619, 605] {
+        let dial = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}",
+                device.value()
+            )))
+            .expect("performance dial mounted");
+        assert!(column.contains(&dial.center()));
+        assert!(dial.top() >= prev_bottom);
+        assert!(dial.bottom() <= column.bottom());
+        prev_bottom = dial.bottom();
+    }
+    // Pan uses bipolar DialLayout::Pan (centre reset marker present).
+    assert!(
+        visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-605-pan-reset",
+                device.value()
+            )))
+            .is_some()
+    );
+
+    // Every shown control binds its canonical parameter through the shared adapter
+    // with single-step Undo/Redo.
+    for (parameter, typed, expected) in [
+        (617_u32, "-25", -25.0_f32),
+        (618_u32, "60", 60.0_f32),
+        (619_u32, "-6", -6.0_f32),
+        (605_u32, "20 r", 20.0_f32),
+    ] {
+        let before = editor.read_with(cx, |view, _| {
+            operator_parameter_value(view.state.as_ref().unwrap(), track, device, parameter)
+        });
+        let value_bounds = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}-value",
+                device.value()
+            )))
+            .expect("dial readout");
+        visual.simulate_click(value_bounds.center(), Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(typed);
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Float(expected)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter) == before
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Float(expected)
+                })
+        });
+    }
+}

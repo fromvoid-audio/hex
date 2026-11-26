@@ -32,6 +32,7 @@ struct SubBlockSample {
     shaper_drive_pct: f64,
     shaper_wet_pct: f64,
     filter_drive_db: f64,
+    pan_override: Option<f32>,
     base_filter_triplet: [f32; 3],
 }
 
@@ -60,6 +61,7 @@ impl Default for SubBlockSample {
             shaper_drive_pct: 0.0,
             shaper_wet_pct: 100.0,
             filter_drive_db: 0.0,
+            pan_override: None,
             base_filter_triplet: [1000.0, 0.0, 0.0],
         }
     }
@@ -136,10 +138,11 @@ impl Runtime {
             | (1 << 2)
             | (1 << 4)
             | (1 << 6)
-            | (1 << 14)
-            | (1 << 15)
-            | (1 << 16)
-            | (1 << 17);
+            | (1 << automation::FINE_OFFSET_BASE_IDX)
+            | (1 << (automation::FINE_OFFSET_BASE_IDX + 1))
+            | (1 << (automation::FINE_OFFSET_BASE_IDX + 2))
+            | (1 << (automation::FINE_OFFSET_BASE_IDX + 3));
+        const PAN_MASK: u64 = 1 << automation::PAN_IDX;
         const FILTER_MASK: u64 = (1 << automation::FILTER_FREQ_IDX)
             | (1 << automation::FILTER_RES_IDX)
             | (1 << automation::FILTER_MORPH_IDX);
@@ -351,8 +354,14 @@ impl Runtime {
                             let base_ratio = f64::from(base_targets[op * 2]).max(0.5);
                             scales[op] = f64::from(ratio).clamp(0.5, 32.0) / base_ratio;
                         }
-                        if let Some(fine_hz) = Self::read_target(values, mask, 14 + op, offset) {
-                            let base_fine = f64::from(base_targets[14 + op]);
+                        if let Some(fine_hz) = Self::read_target(
+                            values,
+                            mask,
+                            automation::FINE_OFFSET_BASE_IDX + op,
+                            offset,
+                        ) {
+                            let base_fine =
+                                f64::from(base_targets[automation::FINE_OFFSET_BASE_IDX + op]);
                             fine_deltas[op] = (f64::from(fine_hz).clamp(-1000.0, 1000.0)
                                 - base_fine)
                                 * step_per_hz;
@@ -506,6 +515,12 @@ impl Runtime {
                 } else {
                     base_filter_drive_db
                 };
+                let pan_override = if (mask & PAN_MASK) != 0 {
+                    Self::read_target(values, mask, automation::PAN_IDX, offset)
+                        .map(|v| v.clamp(-50.0, 50.0))
+                } else {
+                    None
+                };
                 let base_filter_triplet = [
                     base_targets[automation::FILTER_FREQ_IDX],
                     base_targets[automation::FILTER_RES_IDX],
@@ -534,6 +549,7 @@ impl Runtime {
                     shaper_drive_pct,
                     shaper_wet_pct,
                     filter_drive_db,
+                    pan_override,
                     base_filter_triplet,
                 };
                 if law.active() {
@@ -1090,7 +1106,21 @@ fn render_voice_sample(
             }
         }
     }
-    let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
+    let pan_gains = if let Some(pan) = ctx.pan_override {
+        let mut g = factory.settings.global;
+        g.pan = (f64::from(pan)
+            + if quality {
+                voice.effective.pan_delta
+            } else {
+                0.0
+            })
+        .clamp(-50.0, 50.0) as f32;
+        g.gains(voice.note.midi_origin().0, voice.sequence)
+    } else if quality {
+        voice.pan_gains
+    } else {
+        [1.0, 1.0]
+    };
     let gain_scale = if quality {
         voice.effective.gain as f32
     } else {

@@ -28,8 +28,12 @@ pub const VECTOR_ADVANCED_DETAIL_WIDTH: f32 = 340.0;
 pub const VECTOR_OPTIONS_WIDTH: f32 = 80.0;
 pub const VECTOR_WAVEFORM_WIDTH: f32 = 220.0;
 pub const VECTOR_PREVIEW_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + 148.0;
-pub const VECTOR_WIDTH: f32 =
-    VECTOR_SHELL_WIDTH + VECTOR_DETAIL_WIDTH + VECTOR_PREVIEW_WIDTH + 30.0;
+pub const VECTOR_PERFORMANCE_COLUMN_WIDTH: f32 = hex_widgets::MICRO_DIAL_WIDTH + 6.0;
+pub const VECTOR_WIDTH: f32 = VECTOR_SHELL_WIDTH
+    + VECTOR_DETAIL_WIDTH
+    + VECTOR_PREVIEW_WIDTH
+    + VECTOR_PERFORMANCE_COLUMN_WIDTH
+    + 30.0;
 
 pub fn body() -> Div {
     hex_widgets::device_body(theme::device_style(DeviceStyleRole::Layout))

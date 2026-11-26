@@ -55,7 +55,6 @@ pub(super) fn controls(
         (602, "rtg", ControlPresentation::CompactButton),
         (603, "interpol.", ControlPresentation::CompactButton),
         (604, "antialias", ControlPresentation::CompactButton),
-        (605, "pan", ControlPresentation::InlineValue),
         (606, "pan<key", ControlPresentation::InlineValue),
         (607, "pan<rnd", ControlPresentation::InlineValue),
     ] {
@@ -68,7 +67,7 @@ pub(super) fn controls(
             id(parameter),
             presentation,
             Some(""),
-            (parameter == 605).then_some(super::super::numeric_display::NumericDisplayCodec::Pan),
+            None,
         );
         row = row.child(
             div()
