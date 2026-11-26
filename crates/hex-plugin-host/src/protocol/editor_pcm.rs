@@ -1,7 +1,7 @@
 //! Effective SDK editor input carried beside one original successful PCM reply.
 //! No editor receipt is consumed here and this is not host output acceptance.
 use super::*;
-use crate::transport::{MAX_PARAMETER_POINTS, wire::HEADER_BYTES};
+use crate::transport::{MAX_EVENTS, MAX_PARAMETER_POINTS, wire::HEADER_BYTES};
 use std::io::Read;
 
 pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
@@ -46,12 +46,17 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
     };
     let version = wire_version
         & !(EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_BIT);
+    let events = usize::from(u16::from_le_bytes([header[8], header[9]]));
+    let valid_events = match version {
+        1 | 2 => events == 0,
+        3 => pcm && frames != 0 && (1..=MAX_EVENTS).contains(&events),
+        _ => false,
+    };
     let parameters = usize::from(u16::from_le_bytes([header[10], header[11]]));
     let len = usize::from(header[12]);
     if !(pcm || terminal)
         || frames > MAX_FRAMES
-        || header[8..10] != [0; 2]
-        || !matches!(version, 1 | 2)
+        || !valid_events
         || (version == 1 && parameters != 0)
         || parameters > MAX_PARAMETER_POINTS
         || restore > limit
@@ -66,7 +71,7 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         return Err(Error::Protocol("unsupported instance PCM extent or events"));
     }
     Ok(Layout {
-        pcm_end: HEADER_BYTES + frames * 8 + parameters * 16,
+        pcm_end: HEADER_BYTES + frames * 8 + events * 12 + parameters * 16,
         len,
         editor,
         touch,
@@ -297,6 +302,111 @@ mod tests {
             bytes.extend([0; 4]);
         }
         bytes
+    }
+
+    #[test]
+    fn identified_output_notes_precede_parameters_editor_and_timing() {
+        let config = super::super::tests::config();
+        let edit = EditorPerform {
+            sequence: 5,
+            gesture: 1,
+            id: 17,
+            normalized: 0.875,
+        };
+        let mut bytes = packet(&config, 4, &[edit]);
+        let frames = usize::from(config.quantum);
+        let event_start = HEADER_BYTES + frames * 8;
+        bytes[HEADER_BYTES..HEADER_BYTES + 4].copy_from_slice(&0.25_f32.to_le_bytes());
+        bytes[4] = 3;
+        bytes[5] |= (SDK_TIMING_BIT >> 8) as u8;
+        bytes[8..10].copy_from_slice(&3_u16.to_le_bytes());
+        bytes[10..12].copy_from_slice(&1_u16.to_le_bytes());
+        let mut rows = Vec::new();
+        let notes = [
+            (0_u16, 0x92, 103),
+            (3, 0xa2, 49),
+            (config.quantum - 1, 0x82, 0),
+        ];
+        for (offset, status, value) in notes {
+            rows.extend(offset.to_le_bytes());
+            rows.extend([3, status, 60, value, 0, 0]);
+            rows.extend(42_u32.to_le_bytes());
+        }
+        rows.extend(6_u16.to_le_bytes());
+        rows.extend([0, 0]);
+        rows.extend(9_u32.to_le_bytes());
+        rows.extend(0.25_f64.to_le_bytes());
+        bytes.splice(event_start..event_start, rows);
+        bytes.extend(123_u64.to_le_bytes());
+
+        assert_eq!(
+            pcm_packet_extent(&bytes[..HEADER_BYTES]).unwrap(),
+            bytes.len()
+        );
+        let decoded = editor_pcm(&bytes, &config, 4, 3).unwrap();
+        assert_eq!(decoded.block.pcm[0], [0.25, 0.0]);
+        assert_eq!(decoded.performs.as_slice(), [edit]);
+        assert_eq!(decoded.sdk_process_ns, Some(123));
+        let parameters = decoded.block.parameters.as_slice();
+        assert_eq!(parameters.len(), 1);
+        assert_eq!(
+            (
+                parameters[0].frame,
+                parameters[0].id,
+                parameters[0].normalized
+            ),
+            (6, 9, 0.25)
+        );
+        let events = decoded.block.events.as_slice();
+        assert_eq!(events.len(), notes.len());
+        for (event, (frame, status, value)) in events.iter().zip(notes) {
+            assert_eq!(
+                (event.frame, event.bytes, event.note_id.unwrap().get()),
+                (frame, [status, 60, value], 42)
+            );
+        }
+
+        let mut plain = bytes[..event_start + 3 * 12 + 16].to_vec();
+        plain[5] = 0;
+        plain[12] = 0;
+        assert_eq!(pcm(&plain, &config, 4).unwrap().events.as_slice(), events);
+        assert_eq!(
+            timed_pcm(&plain, &config, 4).unwrap().0.events.as_slice(),
+            events
+        );
+        assert!(pcm(&plain[..plain.len() - 1], &config, 4).is_err());
+        for (index, value) in [
+            (event_start + 3, 0xb2),
+            (event_start, config.quantum as u8),
+            (event_start + 7, 1),
+        ] {
+            let mut malformed = plain.clone();
+            malformed[index] = value;
+            assert!(pcm(&malformed, &config, 4).is_err());
+        }
+        for count in [0, crate::transport::MAX_EVENTS as u16 + 1] {
+            plain[8..10].copy_from_slice(&count.to_le_bytes());
+            assert!(pcm_packet_extent(&plain[..HEADER_BYTES]).is_err());
+        }
+        plain[8..10].copy_from_slice(&(crate::transport::MAX_EVENTS as u16).to_le_bytes());
+        plain[6..8].copy_from_slice(&(MAX_FRAMES as u16).to_le_bytes());
+        plain[10..12].copy_from_slice(&(MAX_PARAMETER_POINTS as u16).to_le_bytes());
+        plain[5] = ((EDITOR_PCM_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_BIT) >> 8) as u8;
+        plain[12..14].fill(MAX_PARAMETER_EDITS as u8);
+        let maximum_extent = pcm_packet_extent(&plain[..HEADER_BYTES]).unwrap();
+        assert_eq!(
+            maximum_extent,
+            HEADER_BYTES
+                + MAX_FRAMES * 8
+                + crate::transport::MAX_EVENTS * 12
+                + MAX_PARAMETER_POINTS * 16
+                + MAX_PARAMETER_EDITS * (EDITOR_POINT_BYTES + EDITOR_RESTORE_BYTES)
+                + 8
+        );
+        #[cfg(unix)]
+        assert!(maximum_extent <= crate::channel::PCM_BYTES);
+        plain[..4].copy_from_slice(b"HXVE");
+        assert!(pcm_packet_extent(&plain[..HEADER_BYTES]).is_err());
     }
 
     #[test]
