@@ -1302,10 +1302,19 @@ fn ordinary_case(sampler: bool, keyboard: bool, grouped: bool, stop_restart: boo
         let seek = control
             .command_with_ticket(PlaybackCommand::PlayFrom(0))
             .unwrap();
+        // The eight-frame source has ended at the old playhead. Its output
+        // stays silent for the 128-frame seek fade before the target replays.
+        let mut outgoing = [[1.0; 2]; 128];
+        measured_render(&mut data, &mut outgoing);
+        assert_eq!(outgoing, [[0.0; 2]; 128]);
         assert_eq!(
-            measured_block(&mut data),
-            [[if grouped { 0.1875 } else { 0.25 }; 2]; 8]
+            control.status.stream_applied_command_prefix.load(Acquire),
+            play
         );
+        let source = if grouped { 0.1875 } else { 0.25 };
+        let replay = std::array::from_fn(|i| [source * (i + 1) as f32 / 128.0; 2]);
+        assert_eq!(measured_block(&mut data), replay);
+        assert_eq!(control.status.position.load(Acquire), 8);
         assert_eq!(
             control.status.stream_applied_command_prefix.load(Acquire),
             seek

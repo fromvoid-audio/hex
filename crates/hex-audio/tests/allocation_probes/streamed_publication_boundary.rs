@@ -329,7 +329,18 @@ fn ordinary_stream_publication(compensated: bool) {
     let seek = client
         .command_with_ticket(PlaybackCommand::PlayFrom(0))
         .unwrap();
-    assert_eq!(render(&mut backend), expected);
+    // Both eight-frame sources have finished at their old position, including
+    // the compensated output. The seek remains pending through the outgoing ramp.
+    let old_position = client.status().unwrap().position.load(Acquire);
+    for rendered in (8..=128).step_by(8) {
+        assert_eq!(render(&mut backend), [[0.0; 2]; 8]);
+        let status = client.status().unwrap();
+        assert_eq!(status.position.load(Acquire), old_position + rendered);
+        assert_eq!(status.stream_applied_command_prefix.load(Acquire), play);
+    }
+    let replay = std::array::from_fn(|i| expected[i].map(|sample| sample * (i + 1) as f32 / 128.0));
+    assert_eq!(render(&mut backend), replay);
+    assert_eq!(client.status().unwrap().position.load(Acquire), 8);
     assert_eq!(
         client
             .status()

@@ -684,7 +684,13 @@ fn create_parameter_control(
             )
             .ok()?
             .with_dial_layout(
-                if display_codec == Some(numeric_display::NumericDisplayCodec::Balance) {
+                if matches!(
+                    display_codec,
+                    Some(
+                        numeric_display::NumericDisplayCodec::Balance
+                            | numeric_display::NumericDisplayCodec::Pan
+                    )
+                ) {
                     DialLayout::Pan
                 } else {
                     DialLayout::ReadoutGap
