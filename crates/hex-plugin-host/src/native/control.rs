@@ -1,5 +1,6 @@
 //! Dedicated out-of-band VST3 control channel, decoupled from the real-time
 //! audio PCM socket so AppKit UI stalls and periodic polls never block DSP.
+use super::exchange::{self, EditSequenceMode, ExchangeChannel};
 use super::*;
 use crate::protocol::{ControllerRequest, ParameterPageProgress, ParameterPageQuery};
 
@@ -115,6 +116,16 @@ impl ControlClient {
         Err(error)
     }
 
+    fn exchange_io(&mut self) -> ExchangeChannel<'_> {
+        ExchangeChannel {
+            channel: &mut self.channel,
+            packet: &mut self.packet,
+            config: &self.config,
+            cancellation: &self.cancellation,
+            exchange_limit: self.limits.exchange,
+        }
+    }
+
     pub fn check_deadlines(&self) -> Result<()> {
         let now = Instant::now();
         if self
@@ -148,52 +159,16 @@ impl ControlClient {
                 .checked_add(1)
                 .ok_or(Error::Protocol("parameter edit operation exhausted"))?;
             let min_sequence = self.observed_blocks;
-            let request = if recovery {
-                protocol::recovery_edit_request(&self.config, min_sequence, operation)?
-            } else {
-                protocol::edit_request(&self.config, min_sequence, operation)?
-            };
-            let until = end_after(self.limits.exchange)?;
-            let token = self.cancellation.clone();
-            self.channel.send(&request, until, &mut || token.check())?;
-            self.channel
-                .read(&mut self.packet, until, &mut || token.check())?;
-            if self.packet.magic() == b"HXVIER01" {
-                return Err(Error::Worker(protocol::error(
-                    self.packet.body()?,
-                    self.config.binding,
-                )?));
-            }
-            let magic = if recovery { b"HXVIGE02" } else { b"HXVIGE01" };
-            if self.packet.magic() != magic {
-                return Err(Error::Protocol("missing parameter edit acknowledgement"));
-            }
-            let body = self.packet.body()?;
             let previous = (self.last_edit_sequence, self.last_edit_frame);
-            let (result, observed_sequence) = if recovery {
-                protocol::recovery_edits_at_least(
-                    body,
-                    &self.config,
-                    min_sequence,
-                    operation,
-                    previous,
-                )?
-            } else {
-                let (edits, observed_sequence) = protocol::parameter_edits_at_least(
-                    body,
-                    &self.config,
-                    min_sequence,
-                    operation,
-                    previous,
-                )?;
-                (
-                    protocol::RecoveryEdits {
-                        edits,
-                        pending_latency_restart: None,
-                    },
-                    observed_sequence,
-                )
-            };
+            let mut io = self.exchange_io();
+            let (result, observed_sequence) = exchange::poll_edits_exchange(
+                &mut io,
+                EditSequenceMode::AtLeast(min_sequence),
+                operation,
+                previous,
+                recovery,
+                false,
+            )?;
             self.require_live()?;
             self.observed_blocks = self.observed_blocks.max(observed_sequence);
             self.edit_query_sequence = operation;
@@ -240,7 +215,20 @@ impl ControlClient {
             sequence: self.observed_blocks,
             until,
         };
-        match self.parameter_page_exchange(pending, false) {
+        let mut io = self.exchange_io();
+        let outcome = exchange::parameter_page_exchange(
+            &mut io,
+            pending.sequence,
+            pending.operation,
+            pending.query,
+            pending.until,
+            false,
+        )
+        .and_then(|res| {
+            self.require_live()?;
+            Ok(res)
+        });
+        match outcome {
             Ok(ParameterPageProgress::Pending) => {
                 self.parameter_page = Some(pending);
                 self.parameter_page_sequence = operation;
@@ -258,7 +246,20 @@ impl ControlClient {
         let pending = self
             .parameter_page
             .ok_or(Error::Protocol("controller page is not pending"))?;
-        match self.parameter_page_exchange(pending, true) {
+        let mut io = self.exchange_io();
+        let outcome = exchange::parameter_page_exchange(
+            &mut io,
+            pending.sequence,
+            pending.operation,
+            pending.query,
+            pending.until,
+            true,
+        )
+        .and_then(|res| {
+            self.require_live()?;
+            Ok(res)
+        });
+        match outcome {
             Ok(result) => {
                 if !matches!(result, ParameterPageProgress::Pending) {
                     self.parameter_page = None;
@@ -267,43 +268,6 @@ impl ControlClient {
             }
             Err(error) => self.refuse(error),
         }
-    }
-
-    fn parameter_page_exchange(
-        &mut self,
-        pending: PendingControlPage,
-        poll: bool,
-    ) -> Result<ParameterPageProgress> {
-        let request = protocol::parameter_page_request(
-            &self.config,
-            pending.sequence,
-            pending.operation,
-            pending.query,
-            poll,
-        )?;
-        let until = end_after(self.limits.exchange)?.min(pending.until);
-        let token = self.cancellation.clone();
-        self.channel.send(&request, until, &mut || token.check())?;
-        self.channel
-            .read(&mut self.packet, until, &mut || token.check())?;
-        if self.packet.magic() == b"HXVIER01" {
-            return Err(Error::Worker(protocol::error(
-                self.packet.body()?,
-                self.config.binding,
-            )?));
-        }
-        if self.packet.magic() != b"HXVIMD03" {
-            return Err(Error::Protocol("missing controller page acknowledgement"));
-        }
-        let result = protocol::parameter_page(
-            self.packet.body()?,
-            &self.config,
-            pending.sequence,
-            pending.operation,
-            pending.query,
-        )?;
-        self.require_live()?;
-        Ok(result)
     }
 
     pub fn begin_state_capture_on_control(&mut self) -> Result<()> {
@@ -320,7 +284,14 @@ impl ControlClient {
             sequence: self.observed_blocks,
             until: end_after(self.limits.startup)?,
         };
-        match self.live_capture_exchange(pending, false) {
+        let mut io = self.exchange_io();
+        match exchange::live_capture_exchange(
+            &mut io,
+            pending.sequence,
+            pending.operation,
+            pending.until,
+            false,
+        ) {
             Ok(None) => {
                 self.live_capture = Some(pending);
                 self.live_capture_sequence = operation;
@@ -340,7 +311,14 @@ impl ControlClient {
         let pending = self
             .live_capture
             .ok_or(Error::Protocol("native capture is not pending"))?;
-        match self.live_capture_exchange(pending, true) {
+        let mut io = self.exchange_io();
+        match exchange::live_capture_exchange(
+            &mut io,
+            pending.sequence,
+            pending.operation,
+            pending.until,
+            true,
+        ) {
             Ok(state) => {
                 if state.is_some() {
                     self.live_capture = None;
@@ -353,35 +331,5 @@ impl ControlClient {
             }
             Err(cause) => self.refuse(cause),
         }
-    }
-
-    fn live_capture_exchange(
-        &mut self,
-        pending: PendingControlCapture,
-        poll: bool,
-    ) -> Result<Option<NativeDeviceState>> {
-        let request = protocol::live_capture_request(
-            &self.config,
-            pending.sequence,
-            pending.operation,
-            poll,
-        )?;
-        let until = end_after(self.limits.exchange)?.min(pending.until);
-        let token = self.cancellation.clone();
-        self.channel.send(&request, until, &mut || token.check())?;
-        self.channel
-            .read(&mut self.packet, until, &mut || token.check())?;
-        let reply = protocol::live_capture_reply(
-            self.packet.magic(),
-            self.packet.body()?,
-            &self.config,
-            pending.sequence,
-            pending.operation,
-        );
-        self.packet.shrink_to_pcm();
-        if matches!(reply, Ok(_) | Err(Error::CaptureRefused(_))) {
-            token.check()?;
-        }
-        reply
     }
 }

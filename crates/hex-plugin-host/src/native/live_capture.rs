@@ -1,6 +1,7 @@
 //! One live main-lane capture, serviced only by the original serialized worker.
 //! PCM exchanges keep their existing bounded path; no second socket reader or
 //! native owner is created. These calls must never run on the Hex callback.
+use super::exchange::{self, ExchangeChannel};
 use super::*;
 
 #[derive(Clone, Copy)]
@@ -42,8 +43,21 @@ impl Prepared {
             operation,
             until: end_after(self.limits.startup)?,
         };
-        let result = self.live_capture_exchange(pending, false);
-        match result {
+        let sequence = self.sequence;
+        let mut io = ExchangeChannel {
+            channel: &mut self.lease.channel,
+            packet: &mut self.packet,
+            config: &self.config,
+            cancellation: &self.lease.cancellation,
+            exchange_limit: self.limits.exchange,
+        };
+        match exchange::live_capture_exchange(
+            &mut io,
+            sequence,
+            pending.operation,
+            pending.until,
+            false,
+        ) {
             Ok(None) => {
                 self.live_capture = Some(pending);
                 self.live_capture_sequence = operation;
@@ -78,7 +92,21 @@ impl Prepared {
         let pending = self
             .live_capture
             .ok_or(Error::Protocol("native capture is not pending"))?;
-        match self.live_capture_exchange(pending, true) {
+        let sequence = self.sequence;
+        let mut io = ExchangeChannel {
+            channel: &mut self.lease.channel,
+            packet: &mut self.packet,
+            config: &self.config,
+            cancellation: &self.lease.cancellation,
+            exchange_limit: self.limits.exchange,
+        };
+        match exchange::live_capture_exchange(
+            &mut io,
+            sequence,
+            pending.operation,
+            pending.until,
+            true,
+        ) {
             Ok(state) => {
                 if state.is_some() {
                     self.live_capture = None;
@@ -110,36 +138,5 @@ impl Prepared {
         self.faulted = true;
         self.lease.cancel_native();
         Err(cause)
-    }
-
-    fn live_capture_exchange(
-        &mut self,
-        pending: PendingCapture,
-        poll: bool,
-    ) -> Result<Option<NativeDeviceState>> {
-        let request =
-            protocol::live_capture_request(&self.config, self.sequence, pending.operation, poll)?;
-        let until = end_after(self.limits.exchange)?.min(pending.until);
-        let token = self.lease.cancellation.clone();
-        self.lease
-            .channel
-            .send(&request, until, &mut || token.check())?;
-        self.lease
-            .channel
-            .read(&mut self.packet, until, &mut || token.check())?;
-        let reply = protocol::live_capture_reply(
-            self.packet.magic(),
-            self.packet.body()?,
-            &self.config,
-            self.sequence,
-            pending.operation,
-        );
-        self.packet.shrink_to_pcm();
-        // Cancellation wins over a decoded reply or refusal; a worker error or
-        // malformed frame stays the terminal cause.
-        if matches!(reply, Ok(_) | Err(Error::CaptureRefused(_))) {
-            token.check()?;
-        }
-        reply
     }
 }

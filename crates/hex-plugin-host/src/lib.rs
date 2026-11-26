@@ -44,7 +44,6 @@ pub(crate) use include_vst3_sdk_tests;
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
 mod channel;
 mod error;
-pub mod format;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod native;
 pub mod protocol;
@@ -52,7 +51,3 @@ pub mod protocol;
 pub mod transport;
 
 pub use error::{CustodyError, Error, NATIVE_DIAGNOSTIC_DATA_BYTES, Result};
-pub use format::{
-    AtomicCancellationGuardian, BoundedTransportControl, BoundedTransportWorker,
-    CancellationGuardian, HostedPluginSession, PluginFormat, PluginSupervisionLimits,
-};
