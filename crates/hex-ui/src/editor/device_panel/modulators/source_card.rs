@@ -339,12 +339,13 @@ pub(in crate::editor) fn source_effect_card(
     let rendered = hex_widgets::device_frame_with_modulators(
         device_comparison::source_title(id, metadata.name, cx),
         theme::device_frame_style(selected),
-        div(),
+        bypass_action(view, device, class, cx),
         device_comparison::actions(view, device, class, selected, cx),
         body,
         modulation,
     )
     .h_full();
     let card = outer.track_focus(&focus).child(rendered);
+    let card = keyboard::activation_card(view, cx, id, class, focus.clone(), card);
     device_comparison::card(view, cx, id, class, focus, card)
 }

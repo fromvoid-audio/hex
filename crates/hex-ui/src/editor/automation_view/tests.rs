@@ -59,7 +59,7 @@ fn toolbar_roundtrip_fades_audio_and_midi_without_activation_selection_or_histor
         );
     }
     for key in [
-        "0",
+        "/",
         "c",
         "cmd-d",
         "e",
@@ -560,7 +560,7 @@ fn a_and_toolbar_share_global_layers_without_assigning_parameters(cx: &mut TestA
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before.0);
         assert_eq!(view.selected_clip_ids(), before.1);
     });
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         assert!(!view.automation_view.enabled);

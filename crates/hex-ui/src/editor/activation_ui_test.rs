@@ -6,16 +6,16 @@ use super::{
 use gpui::{TestAppContext, VisualTestContext};
 
 #[gpui::test]
-fn activation_c_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut TestAppContext) {
+fn activation_c_and_slash_toggle_mixed_clips_atomically_with_history(cx: &mut TestAppContext) {
     let (handle, editor, audio, midi, _files) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     click(&mut visual, audio, false);
     click(&mut visual, midi, true);
     // Modified keys and auto-repeat must not toggle selected clips.
-    visual.simulate_keystrokes("alt-c");
+    visual.simulate_keystrokes("0 alt-/");
     visual.simulate_event(gpui::KeyDownEvent {
-        keystroke: gpui::Keystroke::parse("c").unwrap(),
+        keystroke: gpui::Keystroke::parse("/").unwrap(),
         is_held: true,
     });
     pump(&editor, &mut visual);
@@ -25,7 +25,7 @@ fn activation_c_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut Tes
             Some(true)
         );
     });
-    for (key, expected) in [("c", false), ("0", true)] {
+    for (key, expected) in [("c", false), ("/", true)] {
         let headers = [audio, midi].map(|clip| {
             let selector: &'static str =
                 Box::leak(format!("clip-name-{}", clip.value()).into_boxed_str());
@@ -40,7 +40,7 @@ fn activation_c_and_zero_toggle_mixed_clips_atomically_with_history(cx: &mut Tes
         });
         let pending = headers.map(|(selector, before)| {
             let after = visual.rendered_background(selector).unwrap();
-            assert_ne!(after, before);
+            assert_ne!(after, before, "{key} should repaint {selector}");
             (selector, after)
         });
         pump(&editor, &mut visual);
@@ -172,7 +172,7 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
                 "console focus does not toggle arranger mode"
             );
         });
-        visual.simulate_keystrokes("c");
+        visual.simulate_keystrokes("/");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             let p = &v.state.as_ref().unwrap().project;
@@ -191,7 +191,7 @@ fn activation_session_cells_and_typing_focus_do_not_fall_back_to_track(cx: &mut 
         });
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("a c 0");
+    visual.simulate_keystrokes("a c /");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
@@ -267,7 +267,7 @@ fn activation_header_mute_applies_selection_atomically_and_rejects_deselected_fo
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), muted)
     });
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(
