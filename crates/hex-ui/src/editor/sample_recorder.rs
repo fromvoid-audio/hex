@@ -12,11 +12,10 @@ use hex_audio::{
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, TryRecvError},
     },
-    thread::JoinHandle,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -56,17 +55,48 @@ struct RollingCollector {
     output: u64,
     generation: u64,
     source: RollingSource,
+    sample_rate: u32,
     history: Arc<Mutex<RollingHistory>>,
+    buffered_frames: Arc<AtomicUsize>,
+    clear_requested: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
+    wake: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl RollingCollector {
+    fn buffered_seconds(&self) -> f64 {
+        if self.sample_rate == 0 {
+            0.0
+        } else {
+            self.buffered_frames.load(Ordering::Acquire) as f64 / f64::from(self.sample_rate)
+        }
+    }
+
+    /// Signal the background drain worker to clear the ring buffer without
+    /// acquiring `self.history` on the GPUI UI thread.
+    fn request_clear(&self) {
+        self.clear_requested.store(true, Ordering::Release);
+        self.buffered_frames.store(0, Ordering::Release);
+        self.notify_worker(false);
+    }
+
+    fn notify_worker(&self, stopping: bool) {
+        let (lock, cvar) = &*self.wake;
+        if let Ok(mut state) = lock.lock() {
+            if stopping {
+                *state = true;
+            }
+            cvar.notify_all();
+        }
+    }
 }
 
 impl Drop for RollingCollector {
     fn drop(&mut self) {
+        // Wake the sleeping drain thread immediately via condvar and detach
+        // teardown so dropping on the GPUI UI thread never blocks on join().
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.notify_worker(true);
     }
 }
 
@@ -345,30 +375,51 @@ impl EditorView {
                     RollingHistory::new(rate, rolling_recorder::ROLLING_WINDOW_SECONDS)
                 {
                     let history = Arc::new(Mutex::new(history));
+                    let buffered_frames = Arc::new(AtomicUsize::new(0));
+                    let clear_requested = Arc::new(AtomicBool::new(false));
                     let stop = Arc::new(AtomicBool::new(false));
+                    let wake = Arc::new((Mutex::new(false), Condvar::new()));
                     let thread_history = Arc::clone(&history);
+                    let thread_buffered = Arc::clone(&buffered_frames);
+                    let thread_clear = Arc::clone(&clear_requested);
                     let thread_stop = Arc::clone(&stop);
-                    if let Ok(thread) = std::thread::Builder::new()
+                    let thread_wake = Arc::clone(&wake);
+                    if std::thread::Builder::new()
                         .name("hex-rolling-audio".into())
                         .spawn(move || {
                             while !thread_stop.load(Ordering::Acquire) {
                                 if let Ok(mut guard) = thread_history.lock() {
+                                    if thread_clear.swap(false, Ordering::AcqRel) {
+                                        guard.clear();
+                                    }
                                     guard.drain(&mut reader);
+                                    thread_buffered
+                                        .store(guard.buffered_frames(), Ordering::Release);
                                 }
-                                if reader.is_disconnected() {
+                                if reader.is_disconnected() || thread_stop.load(Ordering::Acquire) {
                                     break;
                                 }
-                                std::thread::sleep(Duration::from_millis(15));
+                                let (lock, cvar) = &*thread_wake;
+                                if let Ok(stopped) = lock.lock()
+                                    && !*stopped
+                                    && !thread_clear.load(Ordering::Acquire)
+                                {
+                                    let _ = cvar.wait_timeout(stopped, Duration::from_millis(15));
+                                }
                             }
                         })
+                        .is_ok()
                     {
                         self.device_panel.sample_recorder.rolling = Some(RollingCollector {
                             output,
                             generation,
                             source,
+                            sample_rate: rate,
                             history,
+                            buffered_frames,
+                            clear_requested,
                             stop,
-                            thread: Some(thread),
+                            wake,
                         });
                         self.device_panel.sample_recorder.rolling_source = Some(source);
                         changed = true;
@@ -410,9 +461,7 @@ impl EditorView {
             if let Some(audio) = self.audio.as_mut() {
                 let _ = audio.control.set_rolling_source(generation, next_source);
             }
-            if let Ok(mut guard) = collector.history.lock() {
-                guard.clear();
-            }
+            collector.request_clear();
             collector.generation = generation;
             collector.source = next_source;
             self.device_panel.sample_recorder.rolling_source = Some(next_source);
@@ -445,9 +494,7 @@ impl EditorView {
                     .control
                     .set_rolling_source(self.project_generation, next);
             }
-            if let Ok(mut guard) = collector.history.lock() {
-                guard.clear();
-            }
+            collector.request_clear();
             collector.source = next;
             collector.generation = self.project_generation;
         }
@@ -468,26 +515,19 @@ impl EditorView {
                 Some("rolling audio recorder is waiting for active audio output".into());
             return;
         };
-        let snapshot = match collector.history.lock() {
-            Ok(guard) => guard.snapshot(),
-            Err(_) => {
-                self.device_panel.sample_recorder.error =
-                    Some("rolling audio buffer is unavailable".into());
-                return;
-            }
-        };
-        if snapshot.frames.is_empty() {
+        if collector.buffered_frames.load(Ordering::Acquire) == 0 {
             self.device_panel.sample_recorder.visible = true;
             self.device_panel.sample_recorder.error = Some("rolling audio buffer is empty".into());
             return;
         }
-        let label = match snapshot.source {
+        let label = match collector.source {
             RollingSource::Main => "rolling · main".to_owned(),
             RollingSource::Track(id) => self.sample_source_name(Source::Track(id)).map_or_else(
                 || format!("rolling · track {id}"),
                 |name| format!("rolling · {name}"),
             ),
         };
+        let history = Arc::clone(&collector.history);
         let document = self
             .state
             .as_ref()
@@ -501,6 +541,15 @@ impl EditorView {
             .name("hex-rolling-keep".into())
             .spawn(move || {
                 let result = (|| {
+                    // Snapshot on the background worker so the GPUI UI thread
+                    // never locks `history` or copies 23-92 MB of PCM.
+                    let snapshot = history
+                        .lock()
+                        .map_err(|_| "rolling audio buffer is unavailable".to_owned())?
+                        .snapshot();
+                    if snapshot.frames.is_empty() {
+                        return Err("rolling audio buffer is empty".into());
+                    }
                     let root = hex_session::service::sample_take_root(document.as_deref())?;
                     std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
                     let dir = root.join(&dir_name);
@@ -576,7 +625,7 @@ impl EditorView {
             .sample_recorder
             .rolling
             .as_ref()
-            .and_then(|c| c.history.lock().ok().map(|h| h.buffered_seconds()))
+            .map(RollingCollector::buffered_seconds)
             .unwrap_or(0.0);
         format!("60s ram: {source_text} ({secs:.1}s)")
     }
@@ -1068,9 +1117,12 @@ mod tests {
                 output: 99,
                 generation: view.project_generation,
                 source: RollingSource::Main,
+                sample_rate: 48_000,
                 history: Arc::clone(&shared_history),
+                buffered_frames: Arc::new(AtomicUsize::new(128)),
+                clear_requested: Arc::new(AtomicBool::new(false)),
                 stop: Arc::new(AtomicBool::new(true)),
-                thread: None,
+                wake: Arc::new((Mutex::new(true), Condvar::new())),
             });
             cx.notify();
         });
@@ -1108,5 +1160,98 @@ mod tests {
             // Rolling RAM buffer remains intact after keeping.
             assert_eq!(shared_history.lock().unwrap().buffered_frames(), 128);
         });
+    }
+
+    #[gpui::test]
+    fn rolling_status_and_keep_never_lock_history_on_ui_thread_and_drop_is_nonblocking(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (mut visual, editor, _env, _) = crate::editor::midi_canvas::creation_tests::fixture(cx);
+        visual.run_until_parked();
+
+        let mut history = RollingHistory::new(48_000, 1).unwrap();
+        history.push_frames(&[[0.5, -0.5]; 4800]);
+        let shared_history = Arc::new(Mutex::new(history));
+        let stop = Arc::new(AtomicBool::new(false));
+        let wake = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_exited = Arc::new(AtomicBool::new(false));
+        let t_stop = Arc::clone(&stop);
+        let t_wake = Arc::clone(&wake);
+        let t_exited = Arc::clone(&worker_exited);
+        let worker = std::thread::Builder::new()
+            .name("hex-rolling-drop-test".into())
+            .spawn(move || {
+                while !t_stop.load(Ordering::Acquire) {
+                    let (lock, cvar) = &*t_wake;
+                    if let Ok(stopped) = lock.lock()
+                        && !*stopped
+                    {
+                        // Long wait proves Drop wakes immediately via condvar and does not join.
+                        let _ = cvar.wait_timeout(stopped, Duration::from_secs(5));
+                    }
+                }
+                t_exited.store(true, Ordering::Release);
+            })
+            .unwrap();
+
+        editor.update(&mut visual, |view, _| {
+            view.device_panel.sample_recorder.rolling = Some(RollingCollector {
+                output: 101,
+                generation: view.project_generation,
+                source: RollingSource::Main,
+                sample_rate: 48_000,
+                history: Arc::clone(&shared_history),
+                buffered_frames: Arc::new(AtomicUsize::new(4800)),
+                clear_requested: Arc::new(AtomicBool::new(false)),
+                stop,
+                wake,
+            });
+        });
+
+        // Hold `shared_history` locked on a background guard while exercising UI-thread
+        // status rendering and `keep_rolling_capture`: neither may lock `history`.
+        let held = shared_history.lock().unwrap();
+        editor.update(&mut visual, |view, _| {
+            assert_eq!(view.rolling_status_label(), "60s ram: main (0.1s)");
+            view.keep_rolling_capture();
+            assert!(
+                view.device_panel.sample_recorder.keep_job.is_some(),
+                "keep_rolling_capture must spawn background worker without locking history on UI thread"
+            );
+        });
+        drop(held);
+
+        let deadline = crate::test_wait::hang_deadline();
+        loop {
+            let done = editor.update(&mut visual, |view, _| {
+                view.tick_rolling_keep_job();
+                view.device_panel.sample_recorder.keep_job.is_none()
+            });
+            if done {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "rolling keep timeout");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.device_panel.sample_recorder.recent.len(), 1);
+            assert_eq!(
+                view.device_panel.sample_recorder.recent[0].take.frames,
+                4800
+            );
+        });
+
+        // Dropping RollingCollector on the UI thread must return immediately and wake the worker.
+        let started = std::time::Instant::now();
+        editor.update(&mut visual, |view, _| {
+            view.device_panel.sample_recorder.rolling = None;
+        });
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "RollingCollector::drop blocked the UI thread for {:?}",
+            started.elapsed()
+        );
+        worker.join().unwrap();
+        assert!(worker_exited.load(Ordering::Acquire));
     }
 }

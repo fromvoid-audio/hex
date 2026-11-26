@@ -194,19 +194,12 @@ impl EditorView {
 
     fn play_start_interaction_available(&self, cx: &Context<Self>) -> bool {
         self.mode == EditorMode::Arrangement
-            && self.context_menu.is_none()
-            && !super::device_panel::picker_is_open(self)
-            && !super::device_panel::source_naming(self)
-            && !(self.audio_detail.clip_view_open
-                && self.device_panel.active
-                && self.device_panel.add_menu_is_open(self.state.as_deref()))
-            && self.session_grid.send_menu_track.is_none()
+            && !self.has_blocking_overlay()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.sections.held()
             && !self.locators.naming()
-            && !self.settings.changelog.is_open()
             && !self.project_tempo_editing(cx)
             && !self.gain_numeric_editing(cx)
             && !self.clip_numeric_editing(cx)
@@ -220,11 +213,6 @@ impl EditorView {
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
             && !self.device_panel.preset_dialog_open
-            && !self.settings.theme.open
-            && !self.settings.tuning.open
-            && !self.controller_input_is_open()
-            && self.settings.missing_media.is_none()
-            && !self.update_preparing()
             && self.interaction.pointer_down.is_none()
             && !self.gain_lane.pointer_is_active()
             && !self.automation_view.devices.pointer_active()
@@ -268,13 +256,7 @@ impl EditorView {
         };
         kind_valid
             && self.mode == EditorMode::Arrangement
-            && self.context_menu.is_none()
-            && !super::device_panel::picker_is_open(self)
-            && !super::device_panel::source_naming(self)
-            && !(self.audio_detail.clip_view_open
-                && self.device_panel.active
-                && self.device_panel.add_menu_is_open(self.state.as_deref()))
-            && self.session_grid.send_menu_track.is_none()
+            && !self.has_blocking_overlay()
             && !self.locators.naming()
             && !self.sections.held()
             && !self.persistence.opening_project
@@ -284,12 +266,6 @@ impl EditorView {
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
             && !self.device_panel.preset_dialog_open
-            && !self.settings.theme.open
-            && !self.settings.tuning.open
-            && !self.settings.changelog.is_open()
-            && !self.controller_input_is_open()
-            && self.settings.missing_media.is_none()
-            && !self.update_preparing()
             && drag.generation == self.project_generation
             && self
                 .state
@@ -837,7 +813,7 @@ impl EditorView {
         {
             structural_changed |= self.cancel_locked_play_start_drag();
         }
-        if self.context_menu.is_some()
+        if self.has_blocking_overlay()
             || self.persistence.close_prompt_open
             || (self.mode != EditorMode::Arrangement
                 && (self.interaction.time_selection_gesture.is_some()
