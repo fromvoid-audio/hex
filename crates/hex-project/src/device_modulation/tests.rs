@@ -544,3 +544,63 @@ fn modulator_slots_retain_their_historical_envelope_limit() {
         );
     }
 }
+
+#[test]
+fn removing_a_slot_modulator_removes_all_its_mappings_in_one_undoable_edit() {
+    let (mut editor, device) = fixture();
+    let dest = ModulationDestination::Device {
+        device_type: crate::DEFAULT_INSTRUMENT_TYPE_ID,
+        target: DeviceAutomationTarget::HostOutputGain,
+        vst3_class: None,
+    };
+    let s1 = ModulationSourceId::new(2).unwrap();
+    let s2 = ModulationSourceId::new(3).unwrap();
+    let cross_dest = ModulationDestination::Modulator {
+        source: s1,
+        module_type: DeviceTypeId::from_static("test.modulator"),
+        parameter: ParameterId::from_static(1),
+    };
+    let initial = DeviceModulation::new(
+        vec![source(2), source(3)],
+        vec![
+            route(4, 2, dest),       // outgoing from s1
+            route(5, 3, cross_dest), // incoming to s1
+            route(6, 3, dest),       // unrelated route on s2
+        ],
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: initial.clone(),
+        })
+        .unwrap();
+
+    let after_remove = initial.remove_source(s1).unwrap();
+    assert_eq!(after_remove.sources().len(), 1);
+    assert_eq!(after_remove.sources()[0].id, s2);
+    assert_eq!(after_remove.routes().len(), 1);
+    assert_eq!(after_remove.routes()[0].id.value(), 6);
+    assert!(after_remove.remove_source(s1).is_err());
+
+    editor
+        .execute(Command::ReplaceDeviceModulation {
+            device,
+            modulation: after_remove.clone(),
+        })
+        .unwrap();
+    assert_eq!(
+        editor.project().device(device).unwrap().modulation(),
+        &after_remove
+    );
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().device(device).unwrap().modulation(),
+        &initial
+    );
+    assert!(editor.redo());
+    assert_eq!(
+        editor.project().device(device).unwrap().modulation(),
+        &after_remove
+    );
+}

@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = LFO_EXT_STATE_VERSION;
+pub const OPERATOR_STATE_VERSION: u32 = MOD_MATRIX_STATE_VERSION;
+const MOD_MATRIX_STATE_VERSION: u32 = 26;
 const LFO_EXT_STATE_VERSION: u32 = 25;
 const OSC_ENV_SHAPE_STATE_VERSION: u32 = 24;
 const FILTER_SHAPER_STATE_VERSION: u32 = 23;
@@ -57,7 +58,13 @@ mod harmonic_runtime;
 mod harmonics;
 mod keytrack;
 mod mod_env;
+pub mod mod_matrix;
 mod modulation;
+pub use mod_matrix::{
+    LfoSlotMigration, ModMatrix, QUALITY_UPGRADE_COMPATIBILITY_WARNING, VectorModError,
+    VectorModRoute, VectorModSource, VectorModTarget, check_route_eligibility,
+    migrate_lfo_to_shared_slot, operator_state_requires_quality_upgrade_warning,
+};
 mod osc_env_shape;
 mod performance;
 mod pitch_env;
@@ -759,6 +766,7 @@ pub struct OperatorSettings {
     filter_shaper: filter_shaper::Settings,
     osc_env_shape: osc_env_shape::Settings,
     lfo_ext: lfo_ext::Settings,
+    pub mod_matrix: mod_matrix::ModMatrix,
 }
 
 impl OperatorSettings {
@@ -771,7 +779,7 @@ impl OperatorSettings {
             }
         }
         fields[12..32].copy_from_slice(&algorithms::CATALOG[0].routing_fields());
-        Self {
+        let mut settings = Self {
             fields,
             waveforms: [OperatorWaveform::Sine; OPERATORS],
             tuning: tuning::TuningState::default(),
@@ -793,7 +801,10 @@ impl OperatorSettings {
             filter_shaper: filter_shaper::Settings::default(),
             osc_env_shape: osc_env_shape::Settings::default(),
             lfo_ext: lfo_ext::Settings::default(),
-        }
+            mod_matrix: mod_matrix::ModMatrix::default(),
+        };
+        settings.mod_matrix = mod_matrix::ModMatrix::migrate_from_settings(&settings, false);
+        settings
     }
 
     /// Global voice settings select the mutable harmonic renderer. This
@@ -816,6 +827,7 @@ impl OperatorSettings {
                 | FILTER_SHAPER_STATE_VERSION
                 | OSC_ENV_SHAPE_STATE_VERSION
                 | LFO_EXT_STATE_VERSION
+                | MOD_MATRIX_STATE_VERSION
         ) {
             return tlv_codec::decode(state.payload(), state.state_version());
         }
@@ -990,7 +1002,8 @@ impl OperatorSettings {
         if tuning.fixed_flags() != pitch_keytrack.fixed_flags() {
             return Err(DeviceContractError::MalformedState);
         }
-        let result = Self {
+        let mut result = Self {
+            mod_matrix: mod_matrix::ModMatrix::default(),
             lfo_ext: lfo_ext::Settings::default(),
             osc_env_shape: osc_env_shape::Settings::default(),
             filter_shaper: filter_shaper::Settings::default(),
@@ -1013,13 +1026,19 @@ impl OperatorSettings {
             enabled,
             harmonics,
         };
+        result.mod_matrix = mod_matrix::ModMatrix::migrate_from_settings(&result, false);
         result.kernel_parts()?;
         Ok(result)
     }
 
     pub fn to_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         self.kernel_parts()?;
-        let payload = tlv_codec::encode(self)?;
+        let mut synced = *self;
+        synced.mod_matrix = mod_matrix::ModMatrix::migrate_from_settings(
+            self,
+            self.mod_matrix.quality_upgraded_from_legacy,
+        );
+        let payload = tlv_codec::encode(&synced)?;
         NativeDeviceState::new(OPERATOR_TYPE_ID, OPERATOR_STATE_VERSION, payload)
     }
 
@@ -1335,7 +1354,15 @@ impl NativeDeviceMetadata for OperatorMetadata {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let settings = OperatorSettings::from_state(state)?;
+        let mut settings = OperatorSettings::from_state(state)?;
+        if state.state_version() < MOD_MATRIX_STATE_VERSION {
+            let legacy_quality_disabled =
+                !settings.global.interpolation || !settings.global.antialias;
+            settings.global.interpolation = true;
+            settings.global.antialias = true;
+            settings.mod_matrix =
+                mod_matrix::ModMatrix::migrate_from_settings(&settings, legacy_quality_disabled);
+        }
         settings.to_state()
     }
     fn read_parameter(
