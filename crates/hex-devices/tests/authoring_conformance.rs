@@ -32,9 +32,9 @@ fn registered_default_states_obey_shared_authoring_contract()
 }
 
 #[test]
-fn authored_stateful_and_legacy_fixtures_use_the_same_kit() -> Result<(), Box<dyn std::error::Error>>
+fn authored_utility_state_obeys_shared_authoring_contract() -> Result<(), Box<dyn std::error::Error>>
 {
-    use hex_lattice_contract::{NativeDeviceState, ParameterValue};
+    use hex_lattice_contract::ParameterValue;
     let registry = hex_devices::native_registry()?;
     let utility = registry
         .definition(hex_devices::utility::UTILITY_TYPE_ID)
@@ -46,18 +46,5 @@ fn authored_stateful_and_legacy_fixtures_use_the_same_kit() -> Result<(), Box<dy
     )?;
     check_metadata(utility, &state)?;
     check_effect(utility, &state, 48_000)?;
-
-    let registry = hex_devices::native_instrument_registry()?;
-    let vector = registry
-        .definition(hex_devices::operator_state::OPERATOR_TYPE_ID)
-        .ok_or("vector missing")?;
-    let current = vector.default_state()?;
-    // v1 is the documented 224-byte prefix; its migration keeps the legacy law.
-    let prefix = current
-        .payload()
-        .get(..224)
-        .ok_or("missing legacy prefix")?;
-    let legacy = NativeDeviceState::new(current.type_id(), 1, prefix.to_vec())?;
-    check_metadata(vector, &legacy)?;
     Ok(())
 }

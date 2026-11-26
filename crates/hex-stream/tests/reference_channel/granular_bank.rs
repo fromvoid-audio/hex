@@ -963,7 +963,7 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
     use hex_stream::{StreamConfig, StreamRuntime, test_support::PageGate};
     let (_raw_wav, raw, expected) = raw_definition();
     let raw_key = raw.metadata.key();
-    let (_wav, source, _) = source(WarpMode::Tones { grain_ms: 32 });
+    let (_wav, source, _) = source_at_rate(WarpMode::Tones { grain_ms: 32 }, 96_000);
     let key = source.metadata().key();
     let bank = admit(vec![source]);
     let allowance = runtime_allowance(&bank, 3);
@@ -972,6 +972,7 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
         page_index: 0,
     });
     let mut config = StreamConfig::with_pool_pages(3);
+    config.request_capacity = 2;
     config.ready_capacity = 1;
     config.max_ready_pages_per_pump = 1;
     let mut runtime = StreamRuntime::new_with_granular_page_gate(
@@ -987,24 +988,28 @@ fn runtime_raw_service_and_stop_progress_while_granular_work_is_held() {
     runtime.request_page(key, 0);
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
     runtime.request_page(key, 1);
+    // The first sequential page is deferred. A later raw reply proves the
+    // worker serviced that request before the remaining granular demand.
+    let actual = runtime_page(&mut runtime, raw_key, 0);
+    assert_eq!(actual, expected[..STREAM_PAGE_FRAMES]);
+    runtime.request_page(key, 2);
+    runtime.request_page(key, 3);
     let mut failures = [hex_stream::StreamFailure {
         key: key.into(),
-        page_index: 1,
+        page_index: 3,
         kind: StreamFailureKind::Cancelled,
     }; 1];
     let deadline = Instant::now() + Duration::from_secs(3);
     while runtime.take_failures(&mut failures) == 0 {
         assert!(
             Instant::now() < deadline,
-            "granular loan saturation not reported"
+            "full granular request queue did not report refusal"
         );
         thread::yield_now();
     }
     assert_eq!(failures[0].key, key.into());
-    assert_eq!(failures[0].page_index, 1);
+    assert_eq!(failures[0].page_index, 3);
     assert_eq!(failures[0].kind, StreamFailureKind::CapacityExhausted);
-    let actual = runtime_page(&mut runtime, raw_key, 0);
-    assert_eq!(actual, expected[..STREAM_PAGE_FRAMES]);
     for index in [1, 0, 1] {
         let start = index as usize * STREAM_PAGE_FRAMES;
         assert_eq!(
