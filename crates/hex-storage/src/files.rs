@@ -145,6 +145,11 @@ impl FileToken {
             })
         }
     }
+
+    /// True when the original on-disk document bytes already contain `needle`.
+    pub fn contains_bytes(&self, needle: &[u8]) -> bool {
+        !needle.is_empty() && self.0.windows(needle.len()).any(|window| window == needle)
+    }
 }
 
 /// Decode and capture the same single read, preserving original saved-format
