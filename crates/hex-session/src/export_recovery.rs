@@ -100,18 +100,35 @@ impl ExportRecoveryNotice {
     /// previous-file recovery path.
     pub fn from_export_event(event: &ExportEvent) -> Option<Self> {
         match &event.result {
-            Ok(report) => report.recovery_path.as_ref().map(|recovery| Self {
-                revision: event.revision,
-                kind: ExportRecoveryKind::PublishedNotificationFailed,
-                destination_path: report.path.clone(),
-                staging_path: None,
-                recovery_path: Some(recovery.clone()),
-                message: format!(
-                    "export published at {}; previous file retained at {}",
-                    hex_storage::text::verbatim(report.path.display()),
-                    hex_storage::text::verbatim(recovery.display())
-                ),
-            }),
+            Ok(report) => {
+                if report.recovery_path.is_none() && report.retained_stage.is_none() {
+                    return None;
+                }
+                let mut msg = format!(
+                    "export published at {}",
+                    hex_storage::text::verbatim(report.path.display())
+                );
+                if let Some(recovery) = &report.recovery_path {
+                    msg.push_str(&format!(
+                        "; previous file retained at {}",
+                        hex_storage::text::verbatim(recovery.display())
+                    ));
+                }
+                if let Some(stage) = &report.retained_stage {
+                    msg.push_str(&format!(
+                        "; inspect the staging path at {} before removing anything",
+                        hex_storage::text::verbatim(stage.display())
+                    ));
+                }
+                Some(Self {
+                    revision: event.revision,
+                    kind: ExportRecoveryKind::PublishedNotificationFailed,
+                    destination_path: report.path.clone(),
+                    staging_path: report.retained_stage.clone(),
+                    recovery_path: report.recovery_path.clone(),
+                    message: msg,
+                })
+            }
             Err(failure) => {
                 if let Some(source) = failure.source_error() {
                     let (kind, destination_path, staging_path, recovery_path) = match source {
@@ -139,11 +156,12 @@ impl ExportRecoveryNotice {
                         hex_export::ExportError::PublishedButNotDurable {
                             path,
                             recovery_path,
+                            retained_stage,
                             ..
                         } => (
                             ExportRecoveryKind::PublishedButNotDurable,
                             path.clone(),
-                            None,
+                            retained_stage.clone(),
                             recovery_path.clone(),
                         ),
                         _ => (
@@ -166,7 +184,7 @@ impl ExportRecoveryNotice {
                         revision: event.revision,
                         kind: ExportRecoveryKind::PublishedNotificationFailed,
                         destination_path: report.path.clone(),
-                        staging_path: None,
+                        staging_path: report.retained_stage.clone(),
                         recovery_path: report.recovery_path.clone(),
                         message: failure.message().to_owned(),
                     })

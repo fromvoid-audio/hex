@@ -97,6 +97,11 @@ pub struct ExportReport {
     pub clipped_samples: u64,
     /// The displaced file retained after confirmed replacement, if any.
     pub recovery_path: Option<PathBuf>,
+    /// Unremoved staging pathname retained after non-renaming create-new
+    /// publication (`fclonefileat` or descriptor-bound exclusive copy), when
+    /// applicable. Callers must instruct inspection without claiming its
+    /// current entry still has the original staging identity (`#8119`/`#8120`).
+    pub retained_stage: Option<PathBuf>,
     /// Exact linear gain applied by opt-in export normalization (`1.0` when off
     /// or when normalizing digital silence).
     pub applied_gain_linear: f64,
@@ -135,10 +140,11 @@ pub enum ExportError {
         operation: &'static str,
         source: io::Error,
     },
-    /// The destination was linked successfully, but a durability or cleanup step failed.
+    /// The destination was published successfully, but a durability step failed.
     PublishedButNotDurable {
         path: PathBuf,
         recovery_path: Option<PathBuf>,
+        retained_stage: Option<PathBuf>,
         operation: &'static str,
         source: io::Error,
     },
@@ -196,6 +202,7 @@ impl fmt::Display for ExportError {
             Self::PublishedButNotDurable {
                 path,
                 recovery_path,
+                retained_stage,
                 operation,
                 source,
             } => {
@@ -206,6 +213,13 @@ impl fmt::Display for ExportError {
                 )?;
                 if let Some(recovery_path) = recovery_path {
                     write!(f, "; previous file is at {}", recovery_path.display())?;
+                }
+                if let Some(retained_stage) = retained_stage {
+                    write!(
+                        f,
+                        "; inspect the staging path at {} before removing anything",
+                        retained_stage.display()
+                    )?;
                 }
                 Ok(())
             }
@@ -643,28 +657,21 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
         }
     };
 
-    // A create-new hard link or copy leaves our staging name; exclusive rename
-    // consumed it. A replacement instead keeps the displaced file for review.
-    let cleanup_error = staging_remains
-        .then(|| fs::remove_file(&temporary_path).err())
-        .flatten();
+    // Never unlink `temporary_path` by pathname after create-new publication:
+    // exclusive rename already consumed it, while descriptor-bound clone/copy
+    // intentionally retain `temporary_path` rather than risking deletion of a
+    // foreign file substituted at that pathname (`#8119` / `#8094`).
+    let retained_stage = staging_remains.then(|| temporary_path.clone());
     #[cfg(unix)]
     let sync_error = sync_parent_directory(path).err();
     #[cfg(not(unix))]
     let sync_error: Option<io::Error> = None;
 
-    if let Some(source) = cleanup_error {
-        return Err(ExportError::PublishedButNotDurable {
-            path: path.to_path_buf(),
-            recovery_path: recovery_path.clone(),
-            operation: "remove the temporary file",
-            source,
-        });
-    }
     if let Some(source) = sync_error {
         return Err(ExportError::PublishedButNotDurable {
             path: path.to_path_buf(),
             recovery_path: recovery_path.clone(),
+            retained_stage,
             operation: "synchronize the destination directory",
             source,
         });
@@ -677,6 +684,7 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
         data_bytes,
         clipped_samples,
         recovery_path,
+        retained_stage,
         applied_gain_linear: applied_gain.linear,
         applied_gain_db: applied_gain.db,
     })
@@ -2047,10 +2055,25 @@ mod tests {
             let dir = TestDir::new();
             let _volume = volume(capability);
             let path = dir.0.join("usb.wav");
-            render_new(&path, &source, 0, 2).expect("export without hard links");
+            let report = render_new(&path, &source, 0, 2).expect("export without hard links");
             assert_eq!(fs::read(&path).unwrap(), expected);
-            // Only the export remains: no staging leftovers.
-            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+            match capability {
+                Volume::NoAtomicCreate => {
+                    // Non-renaming publication (`fclonefileat` or copy fallback)
+                    // retains the staging path rather than unlinking by pathname
+                    // and reports it truthfully on `ExportReport::retained_stage`.
+                    let stage = report
+                        .retained_stage
+                        .expect("non-renaming create-new export must report retained_stage");
+                    assert!(stage.exists());
+                    assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 2);
+                }
+                _ => {
+                    // Exclusive rename consumes staging cleanly with no leftover.
+                    assert_eq!(report.retained_stage, None);
+                    assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+                }
+            }
 
             let staging = dir.0.join("staging");
             fs::write(&staging, b"newer").unwrap();
@@ -2070,14 +2093,103 @@ mod tests {
         for errno in [rustix::io::Errno::ACCESS, rustix::io::Errno::NOSPC] {
             let dir = TestDir::new();
             let _volume = volume(Volume::NoHardLinks(errno.raw_os_error()));
+            let staging = dir.0.join("stage.wav");
             let path = dir.0.join("refused.wav");
-            let error = render_new(&path, &project(vec![[0.5, -0.5]; 2], 1.0), 0, 2)
-                .expect_err("link failure is reported");
-            let (_, cause) = retained(error);
-            assert!(
-                matches!(&cause, ExportError::Io { source, .. } if source.raw_os_error() == Some(errno.raw_os_error()))
-            );
-            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+            fs::write(&staging, b"rendered").unwrap();
+            let error = publication::publish_new(&staging, &path)
+                .expect_err("link failure is reported without fallback");
+            assert!(matches!(
+                error,
+                publication::NewPublicationError::BeforeCopy(source)
+                    if source.raw_os_error() == Some(errno.raw_os_error())
+            ));
+            assert!(!path.exists());
+            assert_eq!(fs::read(&staging).unwrap(), b"rendered");
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn create_new_substitution_before_and_after_publication_publishes_rendered_audio_and_preserves_foreign_files()
+     {
+        use publication::simulate::{Volume, volume};
+
+        struct SwapStageBeforePublish {
+            dir: PathBuf,
+            swapped_stage: std::sync::Arc<std::sync::Mutex<Option<PathBuf>>>,
+            displaced: PathBuf,
+        }
+        impl BlockRenderer for SwapStageBeforePublish {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                frames.fill([0.5, -0.5]);
+                Ok(())
+            }
+            fn before_publication(&mut self) -> Result<(), ExportError> {
+                let stage = fs::read_dir(&self.dir)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.starts_with(".hex-export-"))
+                    })
+                    .expect("active staging file");
+                fs::rename(&stage, &self.displaced).unwrap();
+                fs::write(&stage, b"foreign-substituted-before-publish").unwrap();
+                *self.swapped_stage.lock().unwrap() = Some(stage);
+                Ok(())
+            }
+        }
+
+        // Case 1: Pre-publication staging substitution. Because `publish_new_from_file`
+        // checks descriptor identity before exclusive rename and publishes directly
+        // from the held descriptor (`fclonefileat` on APFS or descriptor-bound copy),
+        // the rendered WAV is published intact, the foreign file at the staging
+        // pathname survives untouched, and `report.retained_stage` names it.
+        let dir = TestDir::new();
+        let target = dir.0.join("Rendered.wav");
+        let displaced = dir.0.join("displaced-original.tmp");
+        let swapped = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let report = publish(&target, 48_000, 0, 2, &Publication::CreateNew, || {
+            Ok(SwapStageBeforePublish {
+                dir: dir.0.clone(),
+                swapped_stage: std::sync::Arc::clone(&swapped),
+                displaced: displaced.clone(),
+            })
+        })
+        .expect("descriptor-bound publication succeeds despite staging swap");
+        let stage_path = swapped.lock().unwrap().clone().expect("recorded stage");
+        assert_eq!(report.retained_stage.as_deref(), Some(stage_path.as_path()));
+        assert_eq!(
+            fs::read(&stage_path).unwrap(),
+            b"foreign-substituted-before-publish"
+        );
+        let published_bytes = fs::read(&target).unwrap();
+        assert_eq!(&published_bytes[..4], b"RIFF");
+        assert_eq!(published_bytes, fs::read(&displaced).unwrap());
+
+        // Case 2: Post-publication sync failure on non-renaming volume retains
+        // and reports `retained_stage` alongside `path`.
+        let dir2 = TestDir::new();
+        let target2 = dir2.0.join("CopyFallback.wav");
+        let _vol = volume(Volume::NoAtomicCreate);
+        let _fault = after_exchange_hook::fail_sync();
+        let err = publish(&target2, 48_000, 0, 2, &Publication::CreateNew, || {
+            Ok(Constant([0.25, -0.25]))
+        })
+        .expect_err("sync failure must report PublishedButNotDurable");
+        match err {
+            ExportError::PublishedButNotDurable {
+                path,
+                recovery_path: None,
+                retained_stage: Some(stage),
+                ..
+            } => {
+                assert_eq!(path, target2);
+                assert!(stage.exists());
+                assert_eq!(&fs::read(&target2).unwrap()[..4], b"RIFF");
+            }
+            other => panic!("expected PublishedButNotDurable with retained_stage, got {other:?}"),
         }
     }
 

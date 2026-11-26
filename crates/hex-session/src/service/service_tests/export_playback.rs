@@ -1103,6 +1103,7 @@ fn dropping_service_detaches_an_active_export_worker() {
                 data_bytes: frames * 4,
                 clipped_samples: 0,
                 recovery_path: None,
+                retained_stage: None,
                 applied_gain_linear: 1.0,
                 applied_gain_db: 0.0,
             })
