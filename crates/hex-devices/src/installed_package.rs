@@ -1109,6 +1109,272 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
     }
 }
 
+/// Unavailable placeholder effect adapter (`#2993`). Preserves opaque package
+/// state, pinned `PackageIdentityEnvelope`, and asset references verbatim
+/// without loading or executing module code. Refuses active audio processing
+/// (`ForeignProcessingUnavailable`) until the user resolves, reinstalls,
+/// bypasses, or removes the device.
+pub struct UnavailablePackageEffect {
+    type_id: DeviceTypeId,
+    state_version: u32,
+}
+
+impl UnavailablePackageEffect {
+    pub fn new(type_id: DeviceTypeId, state_version: u32) -> Self {
+        Self {
+            type_id,
+            state_version,
+        }
+    }
+}
+
+impl NativeDeviceMetadata for UnavailablePackageEffect {
+    fn type_id(&self) -> DeviceTypeId {
+        self.type_id
+    }
+
+    fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &[]
+    }
+
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state.type_id() != self.type_id {
+            return Err(DeviceContractError::WrongDeviceType);
+        }
+        // Validate envelope syntax without executing any untrusted codec.
+        let _ = PackageIdentityEnvelope::decode_with_raw_state(state.payload())?;
+        Ok(state.clone())
+    }
+
+    fn read_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn patch_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+        _value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+}
+
+impl NativeDeviceDefinition for UnavailablePackageEffect {
+    fn prepare_matrix(
+        &self,
+        _state: &NativeDeviceState,
+    ) -> Result<StereoMatrix, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn prepare_runtime_factory(
+        &self,
+        _state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+}
+
+/// Unavailable placeholder instrument adapter (`#2993`). Preserves opaque
+/// package state verbatim without executing untrusted codecs, while preparing
+/// a visibly silent, allocation-free mutable runtime so unaffected tracks and
+/// project editing remain usable.
+pub struct UnavailablePackageInstrument {
+    type_id: DeviceTypeId,
+    state_version: u32,
+}
+
+impl UnavailablePackageInstrument {
+    pub fn new(type_id: DeviceTypeId, state_version: u32) -> Self {
+        Self {
+            type_id,
+            state_version,
+        }
+    }
+}
+
+impl NativeDeviceMetadata for UnavailablePackageInstrument {
+    fn type_id(&self) -> DeviceTypeId {
+        self.type_id
+    }
+
+    fn state_version(&self) -> u32 {
+        self.state_version
+    }
+
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &[]
+    }
+
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state.type_id() != self.type_id {
+            return Err(DeviceContractError::WrongDeviceType);
+        }
+        let _ = PackageIdentityEnvelope::decode_with_raw_state(state.payload())?;
+        Ok(state.clone())
+    }
+
+    fn read_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+
+    fn patch_parameter(
+        &self,
+        _state: &NativeDeviceState,
+        _parameter: ParameterId,
+        _value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    }
+}
+
+impl NativeInstrumentDefinition for UnavailablePackageInstrument {
+    fn prepare_instrument(
+        &self,
+        state: &NativeDeviceState,
+        _context: &DevicePreparationContext<'_>,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        let _ = self.migrate_state(state)?;
+        Ok(Box::new(PreparedUnavailableInstrument))
+    }
+}
+
+struct PreparedUnavailableInstrument;
+
+impl PreparedNativeInstrument for PreparedUnavailableInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
+    fn prepare_note(
+        &self,
+        _pitch: u8,
+        _velocity: u8,
+    ) -> Result<PreparedAnalyticNote, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
+        Ok(Some(Box::new(UnavailableInstrumentFactory)))
+    }
+}
+
+struct UnavailableInstrumentFactory;
+
+impl PreparedMutableInstrumentRuntime for UnavailableInstrumentFactory {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+
+    fn runtime_version(&self) -> u32 {
+        1
+    }
+
+    fn declared_twin_bytes(&self) -> usize {
+        std::mem::size_of::<SilentUnavailableInstrumentRuntime>()
+    }
+
+    fn max_events_per_block(&self) -> usize {
+        PACKAGE_ABI_MAX_NOTE_EVENTS as usize
+    }
+
+    fn max_active_occurrences(&self) -> usize {
+        MAX_PACKAGE_VOICES
+    }
+
+    fn max_release_tail_frames(&self) -> u64 {
+        0
+    }
+
+    fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
+        Box::new(SilentUnavailableInstrumentRuntime)
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+struct SilentUnavailableInstrumentRuntime;
+
+impl MutableInstrumentRuntime for SilentUnavailableInstrumentRuntime {
+    fn preflight_events(
+        &self,
+        events: &[NativeInstrumentEvent],
+        frame_count: usize,
+        _resources: &dyn DeviceResources,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if events.len() > PACKAGE_ABI_MAX_NOTE_EVENTS as usize {
+            return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
+        }
+        for &ev in events {
+            if ev.frame_offset() >= frame_count {
+                return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+            }
+        }
+        Ok(())
+    }
+
+    fn process_block(
+        &mut self,
+        _events: &[NativeInstrumentEvent],
+        _frames: &mut [StereoFrame],
+        _resources: &dyn DeviceResources,
+    ) {
+        // Visibly unavailable instrument renders silence without mutating state.
+    }
+
+    fn reset(&mut self) {}
+
+    fn is_quiescent(&self) -> bool {
+        true
+    }
+
+    fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
+        previous.as_any().is::<Self>()
+    }
+
+    fn copy_history_from(&mut self, _previous: &dyn MutableInstrumentRuntime) {}
+
+    fn fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1286,5 +1552,81 @@ mod tests {
         drop(util_rt);
         drop(util_factory);
         assert_eq!(util_def.active_module_leases(), 1);
+    }
+
+    #[test]
+    fn unavailable_package_effect_refuses_processing_and_instrument_renders_silence_preserving_state()
+     {
+        let util_id = DeviceTypeId::new("hex.pkg.utility").unwrap();
+        let sine_id = DeviceTypeId::new("hex.pkg.sine").unwrap();
+        let env = PackageIdentityEnvelope {
+            publisher_id: "hex.factory".to_owned(),
+            type_id: "hex.pkg.utility".to_owned(),
+            package_major: 1,
+            package_minor: 0,
+            package_patch: 0,
+            state_version: 1,
+            abi_version: 1,
+            ui_version: 1,
+            package_sha256: [0x55; 32],
+        };
+        let state = NativeDeviceState::new(
+            util_id,
+            1,
+            env.encode_with_raw_state(b"preserved-opaque").unwrap(),
+        )
+        .unwrap();
+
+        let tuning = TuningTable::default();
+        let ctx = DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &tuning,
+            resources: &EMPTY_DEVICE_RESOURCES,
+        };
+
+        let unavailable_fx = UnavailablePackageEffect::new(util_id, 1);
+        assert_eq!(unavailable_fx.migrate_state(&state).unwrap(), state);
+        assert_eq!(
+            unavailable_fx.prepare_matrix(&state),
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        );
+        assert!(matches!(
+            unavailable_fx.prepare_runtime_factory(&state, &ctx),
+            Err(DeviceContractError::ForeignProcessingUnavailable)
+        ));
+
+        let sine_env = PackageIdentityEnvelope {
+            type_id: "hex.pkg.sine".to_owned(),
+            ..env
+        };
+        let sine_state = NativeDeviceState::new(
+            sine_id,
+            1,
+            sine_env.encode_with_raw_state(b"preserved-sine").unwrap(),
+        )
+        .unwrap();
+        let unavailable_inst = UnavailablePackageInstrument::new(sine_id, 1);
+        assert_eq!(
+            unavailable_inst.migrate_state(&sine_state).unwrap(),
+            sine_state
+        );
+        let prepared = unavailable_inst
+            .prepare_instrument(&sine_state, &ctx)
+            .unwrap();
+        let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+        let mut rt = factory.create_runtime();
+        let mut buf = [[0.0f32; 2]; 32];
+        rt.process_block(
+            &[NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 69,
+                velocity: 127,
+            }],
+            &mut buf,
+            &EMPTY_DEVICE_RESOURCES,
+        );
+        assert_eq!(buf, [[0.0; 2]; 32]);
+        assert!(rt.is_quiescent());
     }
 }

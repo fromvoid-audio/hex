@@ -28,11 +28,11 @@
 //!   recovery.
 
 use fs2::FileExt;
-use hex_lattice_contract::DeviceTypeId;
 use hex_lattice_contract::package_abi::{
     CAP_AUDIO_EFFECT, CAP_INSTRUMENT, CAP_KNOWN_MASK_V1, DEVICE_KIND_AUDIO_EFFECT,
-    DEVICE_KIND_INSTRUMENT, ManifestVersions, PACKAGE_ABI_VERSION_V1,
+    DEVICE_KIND_INSTRUMENT, ManifestVersions, PACKAGE_ABI_VERSION_V1, PackageIdentityEnvelope,
 };
+use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
@@ -243,6 +243,44 @@ pub enum InstallOutcome {
     AlreadyInstalled(InstalledPackageRecord),
 }
 
+/// Reason why a pinned `NativeDeviceState` package generation cannot be
+/// resolved for active execution (`#2993`). Original opaque state remains
+/// preserved verbatim until the user resolves, reinstalls, bypasses, or removes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnavailablePackageReason {
+    Missing {
+        expected: PackageIdentityEnvelope,
+    },
+    Quarantined {
+        expected: PackageIdentityEnvelope,
+        record: Box<InstalledPackageRecord>,
+    },
+    VersionAbsent {
+        expected: PackageIdentityEnvelope,
+        installed_versions: Vec<(u16, u16, u16)>,
+    },
+    HashConflict {
+        expected: PackageIdentityEnvelope,
+        installed_sha256: String,
+    },
+    IncompatibleAbi {
+        expected: PackageIdentityEnvelope,
+        installed_abi: u32,
+    },
+    PublisherMismatch {
+        expected: PackageIdentityEnvelope,
+        installed_publisher: String,
+    },
+}
+
+/// Deterministic exact-version resolution result for a persisted native device
+/// package state. Never performs silent latest-version substitution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PackageResolution {
+    Available(Box<InstalledPackageRecord>),
+    Unavailable(UnavailablePackageReason),
+}
+
 /// Errors returned by `.hexdevice` validation, installation, or recovery.
 #[derive(Debug)]
 pub enum PackageInstallError {
@@ -356,12 +394,30 @@ pub fn encode_hexdevice_archive(
 /// Compute lowercase hex SHA-256 digest for arbitrary bytes.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
+    sha256_bytes_to_hex(&digest)
+}
+
+fn sha256_bytes_to_hex(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
         use std::fmt::Write as _;
         let _ = write!(&mut out, "{byte:02x}");
     }
     out
+}
+
+fn decode_sha256_hex(hex: &str) -> Result<[u8; 32], PackageInstallError> {
+    if hex.len() != 64 {
+        return Err(PackageInstallError::InvalidManifest(
+            "invalid sha256 hex length",
+        ));
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16)
+            .map_err(|_| PackageInstallError::InvalidManifest("invalid sha256 hex byte"))?;
+    }
+    Ok(out)
 }
 
 /// Normalize a relative archive path into a collision key that detects ASCII
@@ -817,6 +873,194 @@ impl DevicePackageCatalog {
             rec.type_id == type_id
                 && (rec.package_major, rec.package_minor, rec.package_patch) == version
         }))
+    }
+
+    /// Update quarantine state on an installed generation atomically (e.g., when
+    /// tampering or OS quarantine policy blocks execution while preserving state).
+    pub fn set_quarantined(
+        &self,
+        type_id: &str,
+        version: (u16, u16, u16),
+        quarantined: bool,
+    ) -> Result<bool, PackageInstallError> {
+        let _lock = self.lock_exclusive()?;
+        let mut catalog = self.read_catalog_unlocked()?;
+        let Some(entry) = catalog.packages.iter_mut().find(|rec| {
+            rec.type_id == type_id
+                && (rec.package_major, rec.package_minor, rec.package_patch) == version
+        }) else {
+            return Ok(false);
+        };
+        entry.quarantined = quarantined;
+        self.write_catalog_atomic_unlocked(&catalog)?;
+        Ok(true)
+    }
+
+    /// Deterministically resolve a persisted `NativeDeviceState` against the
+    /// installed catalog by exact `(publisher, type_id, version, state_version,
+    /// abi_version, package_sha256)` without loading or executing module code
+    /// and without silent latest-version substitution (`#2993`).
+    pub fn resolve_exact_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<PackageResolution, PackageInstallError> {
+        let (expected, _raw) = PackageIdentityEnvelope::decode_with_raw_state(state.payload())
+            .map_err(|_| {
+                PackageInstallError::InvalidManifest("malformed package identity envelope")
+            })?;
+        let type_id = state.type_id();
+        let state_type = type_id
+            .as_str()
+            .map_err(|_| PackageInstallError::InvalidManifest("invalid state type_id"))?;
+        if state_type != expected.type_id || state.state_version() != expected.state_version {
+            return Err(PackageInstallError::InvalidManifest(
+                "state metadata disagrees with pinned package identity envelope",
+            ));
+        }
+
+        let all = self.list()?;
+        let matching_type: Vec<InstalledPackageRecord> = all
+            .into_iter()
+            .filter(|rec| rec.type_id == expected.type_id)
+            .collect();
+        if matching_type.is_empty() {
+            return Ok(PackageResolution::Unavailable(
+                UnavailablePackageReason::Missing { expected },
+            ));
+        }
+        if let Some(mismatch) = matching_type
+            .iter()
+            .find(|rec| rec.publisher_id != expected.publisher_id)
+        {
+            return Ok(PackageResolution::Unavailable(
+                UnavailablePackageReason::PublisherMismatch {
+                    expected,
+                    installed_publisher: mismatch.publisher_id.clone(),
+                },
+            ));
+        }
+        let expected_ver = (
+            expected.package_major,
+            expected.package_minor,
+            expected.package_patch,
+        );
+        let Some(exact_ver) = matching_type
+            .iter()
+            .find(|rec| (rec.package_major, rec.package_minor, rec.package_patch) == expected_ver)
+        else {
+            let installed_versions = matching_type
+                .iter()
+                .map(|r| (r.package_major, r.package_minor, r.package_patch))
+                .collect();
+            return Ok(PackageResolution::Unavailable(
+                UnavailablePackageReason::VersionAbsent {
+                    expected,
+                    installed_versions,
+                },
+            ));
+        };
+        if exact_ver.abi_version != expected.abi_version {
+            return Ok(PackageResolution::Unavailable(
+                UnavailablePackageReason::IncompatibleAbi {
+                    expected,
+                    installed_abi: exact_ver.abi_version,
+                },
+            ));
+        }
+        let expected_hex = sha256_bytes_to_hex(&expected.package_sha256);
+        if exact_ver.package_sha256 != expected_hex {
+            return Ok(PackageResolution::Unavailable(
+                UnavailablePackageReason::HashConflict {
+                    expected,
+                    installed_sha256: exact_ver.package_sha256.clone(),
+                },
+            ));
+        }
+        if exact_ver.quarantined {
+            return Ok(PackageResolution::Unavailable(
+                UnavailablePackageReason::Quarantined {
+                    expected,
+                    record: Box::new(exact_ver.clone()),
+                },
+            ));
+        }
+        Ok(PackageResolution::Available(Box::new(exact_ver.clone())))
+    }
+
+    /// Explicitly upgrade or rebind a pinned `NativeDeviceState` to a
+    /// compatible installed generation (`#2993`). Refuses quarantined targets,
+    /// publisher/type/ABI/state-version mismatches, and unrequested downgrades.
+    /// Preserves raw device state bytes, asset references, and host metadata.
+    pub fn rebind_compatible_state(
+        &self,
+        state: &NativeDeviceState,
+        target: &InstalledPackageRecord,
+        allow_downgrade: bool,
+    ) -> Result<NativeDeviceState, PackageInstallError> {
+        if target.quarantined {
+            return Err(PackageInstallError::UntrustedProvenance(
+                "cannot rebind to a quarantined package generation",
+            ));
+        }
+        let (expected, raw_inner) = PackageIdentityEnvelope::decode_with_raw_state(state.payload())
+            .map_err(|_| {
+                PackageInstallError::InvalidManifest("malformed package identity envelope")
+            })?;
+        if target.type_id != expected.type_id {
+            return Err(PackageInstallError::InvalidManifest(
+                "cannot rebind to a different device type_id",
+            ));
+        }
+        if target.publisher_id != expected.publisher_id {
+            return Err(PackageInstallError::PublisherTakeover {
+                type_id: target.type_id.clone(),
+                existing_publisher: expected.publisher_id,
+                candidate_publisher: target.publisher_id.clone(),
+            });
+        }
+        if target.abi_version != expected.abi_version
+            || target.state_version != expected.state_version
+        {
+            return Err(PackageInstallError::InvalidManifest(
+                "target generation ABI or state_version is incompatible for rebind",
+            ));
+        }
+        let from_ver = (
+            expected.package_major,
+            expected.package_minor,
+            expected.package_patch,
+        );
+        let to_ver = (
+            target.package_major,
+            target.package_minor,
+            target.package_patch,
+        );
+        if to_ver < from_ver && !allow_downgrade {
+            return Err(PackageInstallError::InvalidManifest(
+                "unrequested package downgrade refused",
+            ));
+        }
+        let sha = decode_sha256_hex(&target.package_sha256)?;
+        let rebound_env = PackageIdentityEnvelope {
+            publisher_id: target.publisher_id.clone(),
+            type_id: target.type_id.clone(),
+            package_major: target.package_major,
+            package_minor: target.package_minor,
+            package_patch: target.package_patch,
+            state_version: target.state_version,
+            abi_version: target.abi_version,
+            ui_version: target.ui_version,
+            package_sha256: sha,
+        };
+        let payload = rebound_env
+            .encode_with_raw_state(raw_inner)
+            .map_err(|_| PackageInstallError::InvalidManifest("failed to encode rebound state"))?;
+        let rebound = NativeDeviceState::new(state.type_id(), target.state_version, payload)
+            .and_then(|s| s.with_host_metadata_from(state))
+            .map_err(|_| {
+                PackageInstallError::InvalidManifest("failed to construct rebound state")
+            })?;
+        Ok(rebound)
     }
 
     /// Atomically validate and install a `.hexdevice` archive file into an
@@ -1462,5 +1706,153 @@ mod tests {
         let listed = catalog.list().unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].package_minor, 0);
+    }
+
+    #[test]
+    fn exact_version_pinning_save_reopen_undo_quarantine_reinstall_and_rebind() {
+        use hex_project::{Command, Editor, Project};
+
+        let tmp = TempLib::new("pinning");
+        let (policy, auth) = test_policy();
+        let lib_a = tmp.0.join("lib_a");
+        let lib_b = tmp.0.join("lib_b");
+        let cat_a = DevicePackageCatalog::open_and_recover(&lib_a).unwrap();
+        let cat_b = DevicePackageCatalog::open_and_recover(&lib_b).unwrap();
+
+        let pkg_v1 = make_valid_archive("hex.factory", "hex.pkg.utility", (1, 0, 0), 10, &auth);
+        let pkg_v1_1 = make_valid_archive("hex.factory", "hex.pkg.utility", (1, 1, 0), 20, &auth);
+
+        let rec_v1 = match cat_a.install_bytes(&pkg_v1, &policy, None).unwrap() {
+            InstallOutcome::Installed(r) => r,
+            other => panic!("expected Installed, got {other:?}"),
+        };
+        let rec_v1_1 = match cat_a.install_bytes(&pkg_v1_1, &policy, None).unwrap() {
+            InstallOutcome::Installed(r) => r,
+            other => panic!("expected Installed, got {other:?}"),
+        };
+
+        // Construct pinned NativeDeviceState for v1.0.0 with custom opaque payload bytes.
+        let env_v1 = PackageIdentityEnvelope {
+            publisher_id: rec_v1.publisher_id.clone(),
+            type_id: rec_v1.type_id.clone(),
+            package_major: 1,
+            package_minor: 0,
+            package_patch: 0,
+            state_version: 1,
+            abi_version: PACKAGE_ABI_VERSION_V1,
+            ui_version: 1,
+            package_sha256: decode_sha256_hex(&rec_v1.package_sha256).unwrap(),
+        };
+        let raw_payload = b"opaque-authored-device-state-bytes";
+        let state_v1 = NativeDeviceState::new(
+            DeviceTypeId::new("hex.pkg.utility").unwrap(),
+            1,
+            env_v1.encode_with_raw_state(raw_payload).unwrap(),
+        )
+        .unwrap();
+
+        // Insert TWO copied instances into a real Project -> distinct DeviceIds, identical pinned envelope.
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state_v1.clone(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state_v1.clone(),
+            })
+            .unwrap();
+        let dev_a = editor.project().main_devices()[0].id();
+        let dev_b = editor.project().main_devices()[1].id();
+        assert_ne!(dev_a, dev_b);
+
+        // Save and reopen via canonical hex-storage without evaluating any untrusted module codec.
+        let proj_path = tmp.0.join("pinned.hex");
+        crate::save_new(&proj_path, editor.project()).unwrap();
+        let reopened = crate::load(&proj_path).unwrap();
+        let reopened_state = reopened.device(dev_a).unwrap().state().clone();
+        assert_eq!(reopened_state, state_v1);
+
+        // 1. Exact resolution succeeds when v1.0.0 is installed.
+        assert_eq!(
+            cat_a.resolve_exact_state(&reopened_state).unwrap(),
+            PackageResolution::Available(Box::new(rec_v1.clone()))
+        );
+
+        // 2. Missing package in empty catalog preserves opaque state and reports Missing.
+        assert!(matches!(
+            cat_b.resolve_exact_state(&reopened_state).unwrap(),
+            PackageResolution::Unavailable(UnavailablePackageReason::Missing { .. })
+        ));
+
+        // 3. Installing ONLY v1.1.0 in lib_b must NOT silently substitute for pinned v1.0.0!
+        let _ = cat_b.install_bytes(&pkg_v1_1, &policy, None).unwrap();
+        assert!(matches!(
+            cat_b.resolve_exact_state(&reopened_state).unwrap(),
+            PackageResolution::Unavailable(UnavailablePackageReason::VersionAbsent {
+                ref installed_versions,
+                ..
+            }) if installed_versions == &vec![(1, 1, 0)]
+        ));
+
+        // 4. Reinstalling the exact original v1.0.0 package restores Available without mutating project!
+        let _ = cat_b.install_bytes(&pkg_v1, &policy, None).unwrap();
+        assert_eq!(
+            cat_b.resolve_exact_state(&reopened_state).unwrap(),
+            PackageResolution::Available(Box::new(rec_v1.clone()))
+        );
+
+        // 5. Quarantining v1.0.0 reports Quarantined while keeping opaque bytes intact.
+        assert!(
+            cat_a
+                .set_quarantined("hex.pkg.utility", (1, 0, 0), true)
+                .unwrap()
+        );
+        assert!(matches!(
+            cat_a.resolve_exact_state(&reopened_state).unwrap(),
+            PackageResolution::Unavailable(UnavailablePackageReason::Quarantined { .. })
+        ));
+        assert!(
+            cat_a
+                .set_quarantined("hex.pkg.utility", (1, 0, 0), false)
+                .unwrap()
+        );
+
+        // 6. Explicit compatible upgrade rebind to v1.1.0 + Undo/Redo preserves opaque payload!
+        let upgraded = cat_a
+            .rebind_compatible_state(&reopened_state, &rec_v1_1, false)
+            .unwrap();
+        let (upgraded_env, upgraded_raw) =
+            PackageIdentityEnvelope::decode_with_raw_state(upgraded.payload()).unwrap();
+        assert_eq!(upgraded_env.package_minor, 1);
+        assert_eq!(upgraded_raw, raw_payload);
+        assert_eq!(
+            cat_a.resolve_exact_state(&upgraded).unwrap(),
+            PackageResolution::Available(Box::new(rec_v1_1.clone()))
+        );
+
+        // Unrequested downgrade back to v1.0.0 is refused unless allow_downgrade=true.
+        assert!(matches!(
+            cat_a.rebind_compatible_state(&upgraded, &rec_v1, false),
+            Err(PackageInstallError::InvalidManifest(_))
+        ));
+
+        // Apply upgrade in Editor, then Undo restores exact v1.0.0 pin and Redo restores v1.1.0.
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: dev_a,
+                state: upgraded.clone(),
+            })
+            .unwrap();
+        assert_eq!(editor.project().device(dev_a).unwrap().state(), &upgraded);
+        assert!(editor.undo());
+        assert_eq!(editor.project().device(dev_a).unwrap().state(), &state_v1);
+        assert!(editor.redo());
+        assert_eq!(editor.project().device(dev_a).unwrap().state(), &upgraded);
+        // Second copied instance remained pinned to v1.0.0 throughout!
+        assert_eq!(editor.project().device(dev_b).unwrap().state(), &state_v1);
     }
 }
