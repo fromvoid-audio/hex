@@ -374,6 +374,8 @@ pub struct MidiEvent {
     pub bytes: [u8; 3],
     pub len: u8,
     /// An optional scheduled note identity, bound to one native epoch.
+    /// Authored identified pitch bend spans ±4800 cents. Identified CC74
+    /// carries brightness. Both target the preceding onset on this channel.
     pub note_id: Option<std::num::NonZeroU32>,
     /// True for monitored live input (VST3 `Event::kIsLive`); false for sequenced playback.
     pub is_live: bool,
@@ -382,6 +384,8 @@ impl MidiEvent {
     pub(super) fn valid(self, frames: usize) -> bool {
         let status = self.bytes[0] & 0xf0;
         let carries_note_identity = matches!(status, 0x80 | 0x90 | 0xa0);
+        let authored_expression =
+            !self.is_live && (status == 0xe0 || (status == 0xb0 && self.bytes[1] == 74));
         let expected = match status {
             0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0 => 3,
             0xc0 | 0xd0 => 2,
@@ -393,9 +397,9 @@ impl MidiEvent {
                 .iter()
                 .all(|b| *b < 128)
             && (self.len == 3 || self.bytes[2] == 0)
-            && self
-                .note_id
-                .is_none_or(|id| carries_note_identity && i32::try_from(id.get()).is_ok())
+            && self.note_id.is_none_or(|id| {
+                (carries_note_identity || authored_expression) && i32::try_from(id.get()).is_ok()
+            })
             && (!self.is_live || carries_note_identity || matches!(status, 0xb0 | 0xd0 | 0xe0))
     }
 }

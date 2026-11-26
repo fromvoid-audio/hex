@@ -406,14 +406,33 @@ fn clip_cc_pitch_bend_and_per_note_mpe_reach_hosted_vst3_instrument() {
         "expected clip CC1 mod wheel, got {:?}",
         endpoint.received
     );
-    let bend_count = endpoint
+    let onset = endpoint
         .received
         .iter()
-        .filter(|n| n.kind == ForeignNoteKind::PitchBend && n.channel == 2)
-        .count();
+        .position(|n| n.kind == ForeignNoteKind::On)
+        .unwrap();
+    let gate = endpoint.received[onset];
+    assert!(gate.note_id.is_some());
+    let expression = &endpoint.received[onset + 1..onset + 4];
+    assert!(expression.iter().all(|n| n.note_id == gate.note_id
+        && n.frame == gate.frame
+        && n.channel == gate.channel
+        && !n.is_live));
+    // 700 authored cents rounds to 1195 signed bend units.
+    assert_eq!(expression[0].kind, ForeignNoteKind::PitchBend);
+    assert_eq!(
+        i32::from(expression[0].pitch) + 128 * i32::from(expression[0].value),
+        8192 + 1195
+    );
+    assert_eq!(expression[1].kind, ForeignNoteKind::ControlChange);
+    assert_eq!(expression[2].kind, ForeignNoteKind::PolyPressure);
     assert!(
-        bend_count >= 2,
-        "expected both per-note MPE pitch bend and clip pitch bend, got {bend_count} in {:?}",
-        endpoint.received
+        endpoint
+            .received
+            .iter()
+            .any(|n| n.kind == ForeignNoteKind::PitchBend
+                && n.note_id.is_none()
+                && n.pitch == 0
+                && n.value == 96)
     );
 }

@@ -818,6 +818,47 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertGreater(render(resumed, [(0x92, 100, 42)]), 0)
         self.assertEqual(render(resumed, [(0x82, 0, 42)]), 0)
 
+    def test_authored_expression_targets_held_id_and_supported_sdk_type(self):
+        events = [(0, 0x91, 60, 127, 51), (1, 0x92, 60, 127, 52),
+                  (1, 0xe1, 127, 127, 51), (2, 0xb2, 74, 96, 52),
+                  (3, 0xe1, 0, 0, 51), (4, 0xe2, 0, 64, 52),
+                  (5, 0x81, 60, 0, 51), (7, 0x82, 60, 0, 52)]
+        def send(session, events):
+            header = bytearray(session.packet(8))
+            struct.pack_into("<HHH", header, 4, 3, 8, len(events))
+            records = b"".join(struct.pack("<HBBBB2xI", frame, 3, status, a, b, identity)
+                               for frame, status, a, b, identity in events)
+            session.socket.sendall(header + bytes(64) + records)
+        trace = self.root / "expressions.bin"
+        with patch.dict(os.environ, {"HEX_ORIGINAL_EVENT_TRACE": str(trace)}):
+            session = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(session.message()[0], b"HXVIRD06")
+        send(session, events)
+        self.assertEqual(session.message()[0], b"HXVB")
+        session.sequence += 1
+        session.frames += 8
+        self.terminal(session, 0, message=session.stop())
+        raw = trace.read_bytes()
+        rows = list(struct.iter_unpack("<6q", raw[8:]))
+        self.assertEqual([(kind, frame, identity, flags) for kind, frame, _, identity, flags, _ in rows],
+                         [(0, 0, 51, 0), (0, 1, 52, 0), (4, 1, 51, 0), (4, 2, 52, 0),
+                          (4, 3, 51, 0), (1, 5, 51, 0), (1, 7, 52, 0)])
+        bits = lambda value: struct.unpack("<q", struct.pack("<d", value))[0]
+        self.assertEqual([row[2] for row in rows if row[0] == 4],
+                         [bits(0.7), bits(96 / 127), bits(0.3)])
+
+        absent = self.session(variant=115, channels=(0, 2))
+        self.assertEqual(absent.message()[0], b"HXVIRD06")
+        send(absent, [(1, 0x92, 60, 127, 52), (2, 0xb2, 74, 96, 52), (6, 0x82, 60, 0, 52)])
+        magic, reply = absent.message()
+        self.assertEqual(magic, b"HXVB")
+        self.assertEqual(struct.unpack("<16f", reply[64:]), (0.,) * 2 + (.5,) * 10 + (0.,) * 4)
+        absent.sequence += 1
+        absent.frames += 8
+        send(absent, [(0, 0xb2, 74, 96, 52)])
+        self.error(absent, 8)
+        self.terminal(absent, 8)
+
     def test_dense_identified_input_notes_cross_sdk_with_exact_offsets_and_ids(self):
         def send(session, notes, version=3):
             header = bytearray(session.packet(8))

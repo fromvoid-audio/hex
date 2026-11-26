@@ -805,7 +805,7 @@ int main(int argc,char** argv) {
                 if(complete) live_stage.store(LiveIdle,std::memory_order_release);
                 return true;
             };
-            std::thread worker([&] {
+            std::thread worker([&,processing_expression=*expression]() mutable {
                 bool started=false;
                 try {
                     // Match the Rust transport worker's high QoS baseline so
@@ -1251,6 +1251,7 @@ int main(int argc,char** argv) {
                                 next_presentation=packet.resumed_presentation;
                                 epoch_stage=ResumeRequested;startup_changed.notify_all();wake_main();
                                 startup_changed.wait(lock,[&]{return epoch_stage==ResumeConfigured || worker_failure.load();});
+                                if(!worker_failure.load()) processing_expression=*expression;
                             }
                             if(worker_failure.load()) break;
                             phase.store(2,std::memory_order_release);
@@ -1323,7 +1324,8 @@ int main(int argc,char** argv) {
                                 else valid=false;
                             }
                         }
-                        if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count))) {
+                        if(!valid || (event_channels && !held_notes.stage(packet.notes,packet.note_count,
+                                processing_expression.tuning,processing_expression.brightness))) {
                             worker_failure.store(ProtocolFailure);break;
                         }
                         if(!editor_touch.open_quantum(packet.editor_touch)) {

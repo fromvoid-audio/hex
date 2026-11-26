@@ -77,7 +77,12 @@ struct EventTrace {
         const bool on=event.type==Event::kNoteOnEvent;
         entries[base].store(event.type,std::memory_order_relaxed);
         entries[base+1].store(event.sampleOffset,std::memory_order_relaxed);
-        if(event.type==Event::kPolyPressureEvent) {
+        if(event.type==Event::kNoteExpressionValueEvent) {
+            int64_t value_bits=0;
+            std::memcpy(&value_bits,&event.noteExpressionValue.value,sizeof(value_bits));
+            entries[base+2].store(value_bits,std::memory_order_relaxed);
+            entries[base+3].store(event.noteExpressionValue.noteId,std::memory_order_relaxed);
+        } else if(event.type==Event::kPolyPressureEvent) {
             entries[base+2].store(event.polyPressure.pitch,std::memory_order_relaxed);
             entries[base+3].store(event.polyPressure.noteId,std::memory_order_relaxed);
         } else {
@@ -710,7 +715,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     unsigned inactive_outputs=0;
     bool event_active=false;
     float note_signal=0;
-    struct Voice { int32 id=-1; float gain=0; };
+    struct Voice { int32 id=-1; float gain=0; int16 channel=-1; };
     std::array<Voice,2> named_voices{};
     bool activation_restart_sent=false;
     bool activated_once=false;
@@ -1068,6 +1073,16 @@ public:
         return fault==122?kNotImplemented:kResultOk;
     }
     bool apply_note_event(const Event& event) {
+        if(event.type==Event::kNoteExpressionValueEvent) {
+            const auto& expression=event.noteExpressionValue;
+            const auto voice=std::find_if(named_voices.begin(),named_voices.end(),
+                [&](const Voice& v) { return v.id==expression.noteId; });
+            if(fault!=authored_instrument_variant || voice==named_voices.end() || event.flags ||
+               (voice->channel==1?expression.typeId!=kTuningTypeID:
+                voice->channel!=2 || expression.typeId!=kBrightnessTypeID)) return false;
+            voice->gain=static_cast<float>(expression.value);
+            return true;
+        }
         if(event.type==Event::kPolyPressureEvent) {
             const auto& pressure=event.polyPressure;
             if(pressure.channel!=(fault==127?0:2) || pressure.pitch!=60) return false;
@@ -1081,8 +1096,9 @@ public:
             return true;
         }
         const bool on=event.type==Event::kNoteOnEvent;
-        if ((!on && event.type!=Event::kNoteOffEvent) ||
-            (on?event.noteOn.channel:event.noteOff.channel)!=(fault==127?0:2) ||
+        if(!on && event.type!=Event::kNoteOffEvent) return false;
+        const auto channel=on?event.noteOn.channel:event.noteOff.channel;
+        if ((channel!=(fault==127?0:2) && !(fault==authored_instrument_variant && channel==1)) ||
             (on?event.noteOn.pitch:event.noteOff.pitch)!=60) return false;
         const auto id=on?event.noteOn.noteId:event.noteOff.noteId;
         if(id==-1) note_signal=on?event.noteOn.velocity:0;
@@ -1094,7 +1110,7 @@ public:
                 const auto free=std::find_if(named_voices.begin(),named_voices.end(),
                     [](const Voice& voice) {return voice.id==-1;});
                 if(free==named_voices.end()) return false;
-                *free={id,event.noteOn.velocity};
+                *free={id,event.noteOn.velocity,channel};
             } else {
                 if(existing==named_voices.end()) return false;
                 *existing={};

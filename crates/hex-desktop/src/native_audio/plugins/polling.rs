@@ -159,14 +159,21 @@ impl Plugins {
                 // check could advance newly arrived Facts during background poll.
                 let progress = control.native_source_preparation_progress(source.binding);
                 let at_facts = matches!(progress, Some(Progress::Facts(_)));
-                if at_facts && !pending.facts_observed {
+                if let Some(Progress::Facts(facts)) = progress
+                    && !pending.facts_observed
+                {
                     pending.facts_observed = true;
                     record_insertion_stage(
                         self.diagnostics.as_ref(),
                         source.binding,
                         source.project_generation,
                         "native_facts",
-                        format_args!(""),
+                        format_args!(
+                            " tuning_channels={:#06x} brightness_channels={:#06x} unreadable_expression_channels={:#06x}",
+                            facts.note_expression.tuning_channels,
+                            facts.note_expression.brightness_channels,
+                            facts.note_expression.unreadable_channels,
+                        ),
                     );
                 }
                 #[cfg(all(test, feature = "allocation-probe"))]

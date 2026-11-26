@@ -891,8 +891,11 @@ impl ForeignArrangement {
                     if events.len() == authored_capacity {
                         return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
                     }
-                    let bend = ((i32::from(expr.pitch_offset_cents) * 8191) / 4800)
-                        .clamp(-8192, 8191) as i16;
+                    // Identified sequenced pitch uses ±48 semitones. Rounding
+                    // preserves every authored integer cent through the worker.
+                    let cents = f64::from(expr.pitch_offset_cents);
+                    let span = if cents < 0.0 { 8192.0 } else { 8191.0 };
+                    let bend = (cents * span / 4800.0).round() as i16;
                     events.push(ForeignNote::pitch_bend(
                         frame,
                         channel,
