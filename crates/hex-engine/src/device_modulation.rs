@@ -237,6 +237,14 @@ fn operator_modulation_supported(state: &NativeDeviceState) -> bool {
             .is_ok_and(|settings| settings.has_global_voice_runtime())
 }
 
+/// True when any Vector (`hex.instrument.operator`) device in `project` was
+/// migrated from a pre-v26 state that had `interpolation` or `antialias` off.
+pub fn project_has_operator_quality_upgrade(project: &Project) -> bool {
+    project.devices().any(|device| {
+        hex_devices::operator_state::operator_state_requires_quality_upgrade_warning(device.state())
+    })
+}
+
 /// Whether this native instrument's current provider configuration can prepare
 /// a modulation bank. A bound receiver and the destination's own eligibility
 /// are checked separately when routing a source.
