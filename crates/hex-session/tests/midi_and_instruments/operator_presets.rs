@@ -631,6 +631,9 @@ fn global_time_tone_volume_history_and_disk_reopen_round_trip() {
         (641, ParameterValue::Float(55.0)),
         (642, ParameterValue::Bool(true)),
         (643, ParameterValue::Float(0.12)),
+        (650, ParameterValue::Bool(true)),
+        (651, ParameterValue::Float(75.0)),
+        (654, ParameterValue::Float(12.0)),
     ];
     for &(id, value) in edits {
         let before = session.project().device(device).unwrap().state().clone();
