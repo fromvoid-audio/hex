@@ -193,10 +193,15 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
                 .unwrap();
             with_processor.apply(SessionPlaybackCommand::Play).unwrap();
             render_checkpoint_prefix(&mut with_processor, 1);
-            previous.tail_mutable_instruments[tails - 1]
-                .as_mut()
-                .unwrap()
-                .runtime = with_processor.mutable_instruments[0].take().unwrap();
+            // Model a retiring device during its de-click fade. A live instance
+            // with the destination's identity would instead request re-enable.
+            previous.tail_mutable_instruments[tails - 1] =
+                Some(crate::mutable_instrument::MutableInstrumentTail::new(
+                    track,
+                    with_processor.mutable_instruments[0].take().unwrap(),
+                    Default::default(),
+                    Some(48_000),
+                ));
         }
         let result = candidate.try_inherit_state_from(&mut previous);
         if extra == 0 && !with_midi_tail {
