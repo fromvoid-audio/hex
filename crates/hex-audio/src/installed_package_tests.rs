@@ -1511,3 +1511,577 @@ fn vector_operator_and_fm4_instrument_packages_pass_odd_blocks_expression_tails_
         assert_eq!(def.active_module_leases(), 1);
     }
 }
+
+#[test]
+fn installed_package_borrowed_resources_leases_tails_and_zero_alloc() {
+    use hex_engine::native_device_resources::{
+        DeviceResourceAdmission, DeviceResourcePhase, DeviceResourcePublication,
+        DeviceResourcePublishError, PreparedDeviceResources, ResidentDeviceAssets,
+        ResourcePreparationError, inspect_device_resource_union,
+    };
+    use hex_engine::playback::{Playback, PlaybackCommand};
+    use hex_engine::{
+        Audio, AudioStorageLedgerReservation, OwnedAudioSource, PreparedRevision, SessionPlayback,
+        SessionPlaybackCommand, SineTable,
+    };
+    use hex_lattice_contract::package_abi::CAP_BORROWED_RESOURCES;
+    use hex_lattice_contract::{
+        DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceContractError,
+    };
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let tmp = TempDir::new("borrowed_res_3002");
+    let token = "reviewed-resource-test-token-v1";
+    let mut policy = AdmissionPolicy::host_default();
+    policy.allow_reviewed_test("hex.factory", sha256_hex(token.as_bytes()));
+
+    let res_pkg = build_package(
+        &tmp,
+        "resource_player_v1.c",
+        "hex.pkg.resource_player",
+        "resource-player",
+        DEVICE_KIND_INSTRUMENT,
+        CAP_INSTRUMENT
+            | CAP_PARAMETER_EVENTS
+            | CAP_NOTE_EVENTS
+            | CAP_ZERO_LATENCY
+            | CAP_STATE_PERSISTENCE
+            | CAP_BORROWED_RESOURCES,
+        token,
+    );
+    let sine_pkg = build_package(
+        &tmp,
+        "sine_v1.c",
+        "hex.pkg.sine",
+        "sine-dest",
+        DEVICE_KIND_INSTRUMENT,
+        CAP_INSTRUMENT
+            | CAP_PARAMETER_EVENTS
+            | CAP_NOTE_EVENTS
+            | CAP_ZERO_LATENCY
+            | CAP_STATE_PERSISTENCE,
+        token,
+    );
+
+    let lib_dir = tmp.path().join("library");
+    let catalog = DevicePackageCatalog::open_and_recover(&lib_dir).unwrap();
+    let res_rec = match catalog.install_file(&res_pkg, &policy, None).unwrap() {
+        InstallOutcome::Installed(rec) => rec,
+        other => panic!("expected Installed, got {other:?}"),
+    };
+    let sine_rec = match catalog.install_file(&sine_pkg, &policy, None).unwrap() {
+        InstallOutcome::Installed(rec) => rec,
+        other => panic!("expected Installed, got {other:?}"),
+    };
+
+    let res_def = InstalledPackageInstrument::load_on_control(
+        &lib_dir
+            .join(&res_rec.generation_rel_dir)
+            .join(&res_rec.native_module_rel_path),
+        res_rec.publisher_id.clone(),
+        hex_to_bytes32(&res_rec.package_sha256),
+    )
+    .unwrap();
+    let sine_def = InstalledPackageInstrument::load_on_control(
+        &lib_dir
+            .join(&sine_rec.generation_rel_dir)
+            .join(&sine_rec.native_module_rel_path),
+        sine_rec.publisher_id.clone(),
+        hex_to_bytes32(&sine_rec.package_sha256),
+    )
+    .unwrap();
+
+    assert!(res_def.supports_asset_resources());
+    assert!(res_def.resource_factory_inline_bound().is_some());
+    assert!(!sine_def.supports_asset_resources());
+
+    // Non-resource package must refuse non-empty asset bindings explicitly.
+    let bad_sine_state = sine_def
+        .default_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(1).unwrap(),
+        }])
+        .unwrap();
+    let tuning = TuningTable::default();
+    let empty_ctx = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    assert_eq!(
+        sine_def
+            .prepare_instrument(&bad_sine_state, &empty_ctx)
+            .err(),
+        Some(DeviceContractError::AssetResourcesUnavailable)
+    );
+    // Resource-capable package refuses missing resource inventory on control.
+    let missing_res_state = res_def
+        .default_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(1).unwrap(),
+        }])
+        .unwrap();
+    assert_eq!(
+        res_def
+            .prepare_instrument(&missing_res_state, &empty_ctx)
+            .err(),
+        Some(DeviceContractError::AssetResourcesUnavailable)
+    );
+
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments_slice: [&dyn NativeInstrumentDefinition; 2] = [&res_def, &sine_def];
+    let instruments = NativeInstrumentRegistry::new(&instruments_slice).unwrap();
+
+    // Build project at 48 kHz with Source A (24 kHz original, 32 frames -> 64 frames at 48 kHz)
+    // and Source B (16 kHz original, 64 frames).
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Asset(asset_a) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "source-a-24k.wav".into(),
+            sample_rate: 24_000,
+            frames: 32,
+        })
+        .unwrap()
+    else {
+        panic!("asset a");
+    };
+    let Created::Asset(asset_b) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "source-b-16k.wav".into(),
+            sample_rate: 16_000,
+            frames: 64,
+        })
+        .unwrap()
+    else {
+        panic!("asset b");
+    };
+
+    // Distinct stereo PCM ramps so independent PCM oracle distinguishes A vs B vs clip derivative.
+    let pcm_a: Vec<[f32; 2]> = (0..32)
+        .map(|i| [0.10 + (i as f32) * 0.01, -0.40 - (i as f32) * 0.005])
+        .collect();
+    let pcm_b: Vec<[f32; 2]> = (0..64)
+        .map(|i| [-0.60 + (i as f32) * 0.004, 0.30 + (i as f32) * 0.003])
+        .collect();
+
+    let cancel = AtomicBool::new(false);
+    let limits = AudioStorageLedgerReservation {
+        data_rows: 512,
+        handle_rows: 512,
+        root_rows: 64,
+        max_retained_bytes: 4_000_000,
+        max_construction_peak_bytes: 4_000_000,
+    };
+    let mut store = ResidentDeviceAssets::default();
+    for (asset, sr, pcm) in [
+        (asset_a, 24_000u32, pcm_a.clone()),
+        (asset_b, 16_000u32, pcm_b.clone()),
+    ] {
+        store
+            .insert_on_control(
+                (asset, OwnedAudioSource::try_resident(sr, pcm).ok().unwrap()),
+                0,
+                limits,
+                256,
+                &cancel,
+                || Ok::<_, ResourcePreparationError>(()),
+            )
+            .unwrap();
+    }
+
+    let make_res_state = |asset: hex_project::AssetId| {
+        res_def
+            .default_state()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            }])
+            .unwrap()
+    };
+
+    let Created::Track(inst_track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "pkg-res".into(),
+        })
+        .unwrap()
+    else {
+        panic!("midi track");
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track: inst_track,
+            state: make_res_state(asset_a),
+        })
+        .unwrap();
+    let Created::Clip(midi_clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track: inst_track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    // Note spanning BeatTime::ONE so frames 0..32 are pure sustained PCM matching the oracle.
+    editor
+        .execute(Command::AddMidiNote {
+            clip: midi_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+
+    // Also place an Arrangement audio clip referencing the exact SAME AssetId (`asset_a`)
+    // at project rate (48 kHz) to prove original-rate device PCM stays independent of clip derivatives.
+    let Created::Track(audio_track) = editor
+        .execute(Command::AddTrack {
+            name: "clip-deriv".into(),
+        })
+        .unwrap()
+    else {
+        panic!("audio track");
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track: audio_track,
+            asset: asset_a,
+            start: 0,
+            duration: 64,
+            source_offset: 0,
+            source_length: 64,
+            looping: false,
+        })
+        .unwrap();
+    let clip_deriv_pcm = vec![[0.05f32, 0.05f32]; 64];
+    let mut media = BTreeMap::new();
+    media.insert(asset_a, Audio::new(48_000, clip_deriv_pcm.clone()).unwrap());
+
+    // Budget & cancellation refusal on control preparation.
+    let res_a = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        limits.max_retained_bytes,
+        &cancel,
+    )
+    .unwrap();
+    assert!(
+        PreparedDeviceResources::prepare_on_control_with_registry(
+            &store,
+            editor.project(),
+            &instruments,
+            res_a.metadata_bytes().unwrap() - 1,
+            &cancel,
+        )
+        .is_err(),
+        "metadata budget exceeded must refuse cleanly"
+    );
+    cancel.store(true, Ordering::Relaxed);
+    assert!(
+        PreparedDeviceResources::prepare_on_control_with_registry(
+            &store,
+            editor.project(),
+            &instruments,
+            limits.max_retained_bytes,
+            &cancel,
+        )
+        .is_err(),
+        "cancelled preparation must refuse cleanly"
+    );
+    cancel.store(false, Ordering::Relaxed);
+
+    let transforms = hex_engine::audio_transform::AudioTransformPreparation::default();
+    let sine_table = Arc::new(SineTable::new());
+
+    // Insufficient scan-frame budget refuses cleanly.
+    assert!(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &res_a,
+            1,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .is_err()
+    );
+
+    // Generation A compilation & concurrent export owner.
+    let rev_a = Arc::new(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &res_a,
+            4096,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .unwrap(),
+    );
+    let mut export_a = SessionPlayback::new_linear_arrangement_export_with_device_resources(
+        Arc::clone(&rev_a),
+        &res_a,
+    )
+    .unwrap();
+    export_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut export_out = [[0.0f32; 2]; 32];
+    export_a.render(&mut export_out).unwrap();
+
+    // Independent PCM oracle at frame 0..32: resampled 24kHz -> 48kHz source A + 48kHz clip derivative.
+    let step_a = 24_000.0_f64 / 48_000.0_f64;
+    for (f, actual) in export_out.iter().enumerate() {
+        let pos = (f as f64) * step_a;
+        let idx0 = (pos as usize) % pcm_a.len();
+        let idx1 = (idx0 + 1).min(pcm_a.len() - 1);
+        let frac = pos - (pos.floor());
+        let exp_l = ((1.0 - frac) * f64::from(pcm_a[idx0][0]) + frac * f64::from(pcm_a[idx1][0]))
+            as f32
+            + clip_deriv_pcm[f][0];
+        let exp_r = ((1.0 - frac) * f64::from(pcm_a[idx0][1]) + frac * f64::from(pcm_a[idx1][1]))
+            as f32
+            + clip_deriv_pcm[f][1];
+        assert!(
+            (actual[0] - exp_l).abs() < 1e-5 && (actual[1] - exp_r).abs() < 1e-5,
+            "frame {f}: actual={actual:?} expected=[{exp_l}, {exp_r}]"
+        );
+    }
+
+    // Generation B (rebind instrument slot 1 to Source B at 22.05 kHz).
+    editor
+        .execute(Command::RemoveInstrument { track: inst_track })
+        .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track: inst_track,
+            state: make_res_state(asset_b),
+        })
+        .unwrap();
+    let res_b = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        limits.max_retained_bytes,
+        &cancel,
+    )
+    .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &res_b,
+            4096,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .unwrap(),
+    );
+
+    // Generation C (resource-free destination: Sine package with 0 asset references!).
+    editor
+        .execute(Command::RemoveInstrument { track: inst_track })
+        .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track: inst_track,
+            state: sine_def.default_state().unwrap(),
+        })
+        .unwrap();
+    let res_c = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        limits.max_retained_bytes,
+        &cancel,
+    )
+    .unwrap();
+    let rev_c = Arc::new(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &res_c,
+            4096,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .unwrap(),
+    );
+
+    // Real PublicationControl / DeviceResourcePublication A -> B -> C + full-queue refusal + reclamation!
+    let mut book = DeviceResourcePublication::reserve_on_control(limits, 16, 16).unwrap();
+
+    // Full-queue refusal must leave book with 0 leaked leases.
+    let pb_refused =
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&rev_a), &res_a).unwrap();
+    let full_queue = book.publish_on_control(pb_refused, |_| Err::<Playback, ()>(()));
+    assert!(matches!(
+        full_queue,
+        Err(DeviceResourcePublishError::Publication(()))
+    ));
+    assert_eq!(book.outstanding_leases(), 0);
+
+    // Publish A, B, and C (resource-free) concurrently while A's outgoing tail is still active!
+    let mut pb_a = match book.publish_on_control(
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&rev_a), &res_a).unwrap(),
+        Ok::<_, ()>,
+    ) {
+        Ok(pb) => pb,
+        Err(DeviceResourcePublishError::Resources { reason, .. }) => {
+            panic!("publish A resource refusal: {reason:?}")
+        }
+        Err(DeviceResourcePublishError::Publication(())) => panic!("publish A queue refusal"),
+    };
+    assert_eq!(book.outstanding_leases(), 1);
+
+    let mut pb_b = match book.publish_admitted_on_control(
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&rev_b), &res_b).unwrap(),
+        |candidate, prospective| {
+            let sets = [&res_a, &res_b];
+            let revisions = [rev_a.as_ref(), rev_b.as_ref()];
+            let registered = [
+                DeviceResourceAdmission::new(&sets, &[]).with_prepared_revisions(&revisions),
+                prospective,
+            ];
+            let phase = DeviceResourcePhase {
+                registered: &registered,
+                stores: &[],
+                selections: &[],
+                outbound: &[],
+                legacy: &[],
+                checked_runtime_bytes: 0,
+                construction_bytes: 0,
+            };
+            inspect_device_resource_union(&phase, &phase, limits).unwrap();
+            Ok::<_, ()>(candidate)
+        },
+    ) {
+        Ok(pb) => pb,
+        Err(DeviceResourcePublishError::Resources { reason, .. }) => {
+            panic!("publish B resource refusal: {reason:?}")
+        }
+        Err(DeviceResourcePublishError::Publication(())) => panic!("publish B queue refusal"),
+    };
+    assert_eq!(book.outstanding_leases(), 2);
+
+    // Resource-free destination C publishes cleanly with 0 additional resource leases while A & B remain live.
+    let mut pb_c = match book.publish_on_control(
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&rev_c), &res_c).unwrap(),
+        Ok::<_, ()>,
+    ) {
+        Ok(pb) => pb,
+        Err(DeviceResourcePublishError::Resources { reason, .. }) => {
+            panic!("publish C resource refusal: {reason:?}")
+        }
+        Err(DeviceResourcePublishError::Publication(())) => panic!("publish C queue refusal"),
+    };
+    assert_eq!(book.outstanding_leases(), 2);
+
+    // Render A (retaining A PCM + tail), B (22.05kHz B PCM), and C (resource-free Sine) concurrently
+    // AFTER dropping control `res_a`/`res_b`/`store` to prove runtime leases keep PCM alive!
+    drop(res_a);
+    drop(res_b);
+    drop(res_c);
+    drop(store);
+
+    pb_a.apply(PlaybackCommand::Play);
+    pb_b.apply(PlaybackCommand::Play);
+    pb_c.apply(PlaybackCommand::Play);
+
+    let mut out_a = [[0.0f32; 2]; 32];
+    let mut out_b = [[0.0f32; 2]; 32];
+    let mut out_c = [[0.0f32; 2]; 32];
+    pb_a.render(&mut out_a).unwrap();
+    pb_b.render(&mut out_b).unwrap();
+    pb_c.render(&mut out_c).unwrap();
+    // A matches independent export oracle; B matches Source B oracle at 16 kHz.
+    assert_eq!(out_a, export_out);
+    let step_b = 16_000.0_f64 / 48_000.0_f64;
+    for (f, actual) in out_b.iter().enumerate() {
+        let pos = (f as f64) * step_b;
+        let idx0 = (pos as usize) % pcm_b.len();
+        let idx1 = (idx0 + 1).min(pcm_b.len() - 1);
+        let frac = pos - pos.floor();
+        let exp_l = ((1.0 - frac) * f64::from(pcm_b[idx0][0]) + frac * f64::from(pcm_b[idx1][0]))
+            as f32
+            + clip_deriv_pcm[f][0];
+        let exp_r = ((1.0 - frac) * f64::from(pcm_b[idx0][1]) + frac * f64::from(pcm_b[idx1][1]))
+            as f32
+            + clip_deriv_pcm[f][1];
+        assert!(
+            (actual[0] - exp_l).abs() < 1e-5 && (actual[1] - exp_r).abs() < 1e-5,
+            "source B frame {f}: actual={actual:?} expected=[{exp_l}, {exp_r}]"
+        );
+    }
+
+    // Zero callback allocations/frees across real Playback::render with borrowed PCM leases!
+    #[cfg(feature = "allocation-probe")]
+    {
+        let mut probe_buf = [[0.0f32; 2]; 32];
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..16 {
+                probe_buf.fill([0.0; 2]);
+                let _ = pb_a.render(&mut probe_buf);
+                probe_buf.fill([0.0; 2]);
+                let _ = pb_b.render(&mut probe_buf);
+                probe_buf.fill([0.0; 2]);
+                let _ = pb_c.render(&mut probe_buf);
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "borrowed-resource package callback must allocate/free zero bytes"
+        );
+    }
+
+    // Repeated reclamation: retire A, B, C cleanly and verify all leases + module leases return to baseline!
+    assert!(book.retire_on_control(Box::new(pb_a)).is_ok());
+    assert_eq!(book.outstanding_leases(), 1);
+    assert!(book.retire_on_control(Box::new(pb_b)).is_ok());
+    assert_eq!(book.outstanding_leases(), 0);
+    assert!(book.retire_on_control(Box::new(pb_c)).is_ok());
+    assert_eq!(book.outstanding_leases(), 0);
+
+    drop(export_a);
+    drop(rev_a);
+    drop(rev_b);
+    drop(rev_c);
+    assert_eq!(res_def.active_module_leases(), 1);
+    assert_eq!(sine_def.active_module_leases(), 1);
+}

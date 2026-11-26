@@ -105,12 +105,18 @@ pub const PACKAGE_ABI_MAX_PARAMS: u32 = 64;
 pub const PACKAGE_ABI_MAX_PARAM_EVENTS: u32 = 64;
 /// Maximum sample-offset MIDI/note events per process call.
 pub const PACKAGE_ABI_MAX_NOTE_EVENTS: u32 = 64;
+/// Maximum borrowed immutable PCM resources per process call (`#3002`).
+pub const PACKAGE_ABI_MAX_RESOURCES: u32 = crate::MAX_DEVICE_ASSET_REFERENCES as u32;
 /// Maximum UTF-8 bytes in a parameter display label.
 pub const PACKAGE_ABI_MAX_PARAM_NAME_BYTES: usize = 64;
 /// Maximum opaque state bytes per package instance in v1.
 pub const PACKAGE_ABI_MAX_STATE_BYTES: u32 = 4_096;
 /// Maximum wire payload bytes for contained-runner IPC messages.
 pub const PACKAGE_ABI_MAX_WIRE_PAYLOAD_BYTES: u32 = 65_536;
+
+/// Explicit borrowed PCM channel layout across the C ABI (`#3002`).
+pub const RESOURCE_LAYOUT_MONO: u32 = 1;
+pub const RESOURCE_LAYOUT_STEREO_INTERLEAVED: u32 = 2;
 
 /// Device category carried across the C ABI.
 pub const DEVICE_KIND_AUDIO_EFFECT: u32 = 1;
@@ -125,6 +131,9 @@ pub const CAP_ZERO_LATENCY: u64 = 1 << 4;
 pub const CAP_STATE_PERSISTENCE: u64 = 1 << 5;
 pub const CAP_NOTE_EXPRESSION: u64 = 1 << 6;
 pub const CAP_CHANNEL_EXPRESSION: u64 = 1 << 7;
+/// Module consumes host-borrowed immutable original-rate PCM views via the
+/// optional `hex_device_abi_v1_resources_entry` vtable (`#3002`).
+pub const CAP_BORROWED_RESOURCES: u64 = 1 << 8;
 /// Bitmask of all capability bits defined in ABI v1.
 pub const CAP_KNOWN_MASK_V1: u64 = CAP_AUDIO_EFFECT
     | CAP_INSTRUMENT
@@ -133,7 +142,8 @@ pub const CAP_KNOWN_MASK_V1: u64 = CAP_AUDIO_EFFECT
     | CAP_ZERO_LATENCY
     | CAP_STATE_PERSISTENCE
     | CAP_NOTE_EXPRESSION
-    | CAP_CHANNEL_EXPRESSION;
+    | CAP_CHANNEL_EXPRESSION
+    | CAP_BORROWED_RESOURCES;
 
 /// Note & expressive event kinds in [`AbiNoteEvent::kind`].
 pub const NOTE_EVENT_ON: u32 = 1;
@@ -395,6 +405,65 @@ impl AbiProcessContext {
             || self.note_event_count > PACKAGE_ABI_MAX_NOTE_EVENTS
             || self.flags != 0
             || self.reserved != 0
+        {
+            return Err(AbiStatus::InvalidArg);
+        }
+        Ok(())
+    }
+}
+
+/// Fixed-width metadata accompanying one host-borrowed immutable original-rate
+/// PCM view across the C ABI (`#3002`). Carries explicit slot, asset ID,
+/// original sample rate, channel layout, frame extent, and verified content /
+/// derivation digests — never filesystem paths, host pointers, or ownership.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbiResourceDescriptor {
+    pub struct_size: u32,
+    pub slot: u32,
+    pub asset_id: u64,
+    pub sample_rate: u32,
+    pub channel_layout: u32,
+    pub frame_count: u64,
+    pub derivation_version: u32,
+    pub reserved: u32,
+    pub content_sha256: [u8; 32],
+    pub derivation_sha256: [u8; 32],
+}
+
+impl AbiResourceDescriptor {
+    pub const fn empty() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            slot: 0,
+            asset_id: 0,
+            sample_rate: 0,
+            channel_layout: 0,
+            frame_count: 0,
+            derivation_version: 0,
+            reserved: 0,
+            content_sha256: [0u8; 32],
+            derivation_sha256: [0u8; 32],
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), AbiStatus> {
+        if self.struct_size as usize != std::mem::size_of::<Self>() {
+            return Err(AbiStatus::SizeMismatch);
+        }
+        if self.slot == 0
+            || self.asset_id == 0
+            || self.frame_count == 0
+            || self.derivation_version == 0
+            || self.reserved != 0
+        {
+            return Err(AbiStatus::InvalidArg);
+        }
+        if !(8_000..=384_000).contains(&self.sample_rate) {
+            return Err(AbiStatus::InvalidRate);
+        }
+        if self.channel_layout != RESOURCE_LAYOUT_MONO
+            && self.channel_layout != RESOURCE_LAYOUT_STEREO_INTERLEAVED
         {
             return Err(AbiStatus::InvalidArg);
         }
@@ -701,6 +770,26 @@ mod tests {
         assert_eq!(std::mem::size_of::<AbiParamEvent>(), 16);
         assert_eq!(std::mem::size_of::<AbiNoteEvent>(), 24);
         assert_eq!(std::mem::size_of::<AbiProcessContext>(), 32);
+        assert_eq!(std::mem::size_of::<AbiResourceDescriptor>(), 104);
+        let valid_res = AbiResourceDescriptor {
+            struct_size: std::mem::size_of::<AbiResourceDescriptor>() as u32,
+            slot: 1,
+            asset_id: 42,
+            sample_rate: 44_100,
+            channel_layout: RESOURCE_LAYOUT_STEREO_INTERLEAVED,
+            frame_count: 512,
+            derivation_version: 1,
+            reserved: 0,
+            content_sha256: [0x11; 32],
+            derivation_sha256: [0x22; 32],
+        };
+        assert_eq!(valid_res.validate(), Ok(()));
+        let mut bad_layout = valid_res;
+        bad_layout.channel_layout = 99;
+        assert_eq!(bad_layout.validate(), Err(AbiStatus::InvalidArg));
+        let mut zero_frames = valid_res;
+        zero_frames.frame_count = 0;
+        assert_eq!(zero_frames.validate(), Err(AbiStatus::InvalidArg));
         assert_eq!(
             std::mem::size_of::<AbiWireRequestHeader>(),
             AbiWireRequestHeader::BYTE_LEN

@@ -14,9 +14,13 @@ extern "C" {
 #define HEX_PACKAGE_ABI_MAX_PARAMS 64u
 #define HEX_PACKAGE_ABI_MAX_PARAM_EVENTS 64u
 #define HEX_PACKAGE_ABI_MAX_NOTE_EVENTS 64u
+#define HEX_PACKAGE_ABI_MAX_RESOURCES 8u
 #define HEX_PACKAGE_ABI_MAX_PARAM_NAME_BYTES 64u
 #define HEX_PACKAGE_ABI_MAX_STATE_BYTES 4096u
 #define HEX_PACKAGE_ABI_MAX_TYPE_ID_BYTES 128u
+
+#define HEX_RESOURCE_LAYOUT_MONO 1u
+#define HEX_RESOURCE_LAYOUT_STEREO_INTERLEAVED 2u
 
 #define HEX_DEVICE_KIND_AUDIO_EFFECT 1u
 #define HEX_DEVICE_KIND_INSTRUMENT 2u
@@ -29,6 +33,7 @@ extern "C" {
 #define HEX_CAP_STATE_PERSISTENCE (1ull << 5)
 #define HEX_CAP_NOTE_EXPRESSION (1ull << 6)
 #define HEX_CAP_CHANNEL_EXPRESSION (1ull << 7)
+#define HEX_CAP_BORROWED_RESOURCES (1ull << 8)
 
 #define HEX_NOTE_EVENT_ON 1u
 #define HEX_NOTE_EVENT_OFF 2u
@@ -135,6 +140,53 @@ typedef struct HexAbiVtableV1 {
 typedef int32_t (*HexDeviceAbiEntryFn)(uint32_t requested_abi_version, HexAbiVtableV1* out_vtable);
 
 #define HEX_DEVICE_ABI_ENTRY_SYMBOL "hex_device_abi_v1_entry"
+
+/* Optional borrowed immutable PCM resource extension (#3002).
+ * Modules declaring HEX_CAP_BORROWED_RESOURCES must export
+ * HEX_DEVICE_ABI_RESOURCES_ENTRY_SYMBOL. The `samples` pointer is strictly
+ * read-only and valid ONLY for the duration of the single call; modules must
+ * never cache, retain, free, or mutate it. */
+typedef struct HexAbiResourceDescriptor {
+    uint32_t struct_size;
+    uint32_t slot;
+    uint64_t asset_id;
+    uint32_t sample_rate;
+    uint32_t channel_layout;
+    uint64_t frame_count;
+    uint32_t derivation_version;
+    uint32_t reserved;
+    uint8_t content_sha256[32];
+    uint8_t derivation_sha256[32];
+} HexAbiResourceDescriptor;
+
+typedef struct HexAbiResourceView {
+    HexAbiResourceDescriptor meta;
+    const float* samples;
+} HexAbiResourceView;
+
+typedef int32_t (*HexDeviceProcessWithResourcesFn)(
+    void* instance,
+    const HexAbiProcessContext* ctx,
+    const float* in_interleaved_stereo,
+    float* out_interleaved_stereo,
+    const HexAbiParamEvent* param_events,
+    const HexAbiNoteEvent* note_events,
+    const HexAbiResourceView* resources,
+    uint32_t resource_count
+);
+
+typedef struct HexAbiResourceVtableV1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    HexDeviceProcessWithResourcesFn process_with_resources;
+} HexAbiResourceVtableV1;
+
+typedef int32_t (*HexDeviceAbiResourcesEntryFn)(
+    uint32_t requested_abi_version,
+    HexAbiResourceVtableV1* out_vtable
+);
+
+#define HEX_DEVICE_ABI_RESOURCES_ENTRY_SYMBOL "hex_device_abi_v1_resources_entry"
 
 #ifdef __cplusplus
 }

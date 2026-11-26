@@ -934,9 +934,42 @@ impl PreparedRevision {
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         native_input: Option<crate::NativeParameterInputTarget>,
     ) -> Result<Self, Invalid> {
-        resources.validate_project(project)?;
         let instruments = hex_devices::native_instrument_registry()
             .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_device_resources_and_registries(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            transforms,
+            resources,
+            max_scan_frames,
+            cancel,
+            effects,
+            &instruments,
+            native_input,
+        )
+    }
+
+    /// The same registered-resource compiler accepting both host-provided effect
+    /// and instrument registries (including admitted installed native packages,
+    /// `#3002`). Retains exact `PreparedDeviceResources` custody, scan budgets,
+    /// cancellation, and runtime lease obligations with zero alternate scheduler.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_device_resources_and_registries(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        native_input: Option<crate::NativeParameterInputTarget>,
+    ) -> Result<Self, Invalid> {
+        resources.validate_project(project)?;
         let preparation = crate::native_device_resources::CompilerDeviceResources::new(
             resources,
             max_scan_frames,
@@ -948,7 +981,7 @@ impl PreparedRevision {
             sine_table,
             previous_session,
             effects,
-            &instruments,
+            instruments,
             transforms,
             Some(&preparation),
             native_input,
