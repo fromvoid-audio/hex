@@ -577,10 +577,22 @@ fn restart_offline_pending_work_blocks_actual_resize_capture_until_completion(
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     f.editor.update(&mut visual, |v, cx| {
+        // While trim is fenced, the same pixels belong to the clip move
+        // surface. Releasing that drag submits a separate worker request.
+        assert!(v.pending_clip_move_active());
+        assert_eq!(v.worker_requests_pending, 2);
         v.receive(restart);
+        assert!(v.pending_clip_move_active());
+        assert_eq!(v.worker_requests_pending, 1);
+        v.receive(ok(&v.service));
+        assert!(!v.pending_clip_move_active());
+        assert_eq!(v.worker_requests_pending, 0);
         cx.notify();
     });
     visual.run_until_parked();
+    let down =
+        crate::editor::clip_drag_ui_test::trim_grab_point(visual.debug_bounds(selector).unwrap());
+    let moved = gpui::point(down.x - gpui::px(12.0), down.y);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
