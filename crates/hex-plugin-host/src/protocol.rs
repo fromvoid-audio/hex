@@ -765,7 +765,7 @@ fn read_pcm(
     sequence: u64,
 ) -> Result<Block> {
     config.validate()?;
-    let block = crate::transport::wire::read(&mut reader)
+    let block = crate::transport::wire::read_native_reply(&mut reader)
         .map_err(Error::Io)?
         .ok_or(Error::Protocol("missing instance PCM reply"))?;
     if reader.read(&mut [0]).map_err(Error::Io)? != 0

@@ -415,6 +415,85 @@ mod tests {
     }
 
     #[test]
+    fn sdk_output_identity_survives_native_reply_and_callback_without_input_admission() {
+        let config = super::super::tests::config();
+        let mut bytes = packet(&config, 0, &[]);
+        bytes[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        let ids = [
+            0_u32,
+            u32::MAX,
+            42,
+            (-10_000_i32) as u32,
+            (-1000_i32) as u32,
+            i32::MAX as u32,
+        ];
+        bytes[8..10].copy_from_slice(&(ids.len() as u16).to_le_bytes());
+        for (frame, id) in ids.into_iter().enumerate() {
+            bytes.extend((frame as u16).to_le_bytes());
+            bytes.extend([3, 0x90, 60, 100, 0, 0]);
+            bytes.extend(id.to_le_bytes());
+        }
+        let decoded = pcm(&bytes, &config, 0).unwrap();
+        assert!(config.validate_block(&decoded, 0).is_err());
+        assert!(crate::transport::wire::read(&mut bytes.as_slice()).is_err());
+
+        let (_control, mut callback, mut worker) =
+            crate::transport::channel(config.binding, config.quantum).unwrap();
+        let input = [[0.0; 2]; 8];
+        let mut output = input;
+        for sequence in 0..2 {
+            assert!(
+                callback
+                    .stage(&input, &[], &mut output)
+                    .unwrap()
+                    .as_slice()
+                    .is_empty()
+            );
+            callback.finish(true).unwrap();
+            let request = worker.receive().unwrap().unwrap();
+            assert_eq!(request.sequence, sequence);
+            worker
+                .complete(if sequence == 0 { decoded } else { request })
+                .unwrap();
+        }
+        let mut events = None;
+        let counts = allocation_counter::measure(|| {
+            events = Some(callback.stage(&input, &[], &mut output).unwrap());
+            callback.finish(true).unwrap();
+        });
+        assert_eq!(
+            (
+                counts.count_total,
+                counts.bytes_total,
+                counts.count_current,
+                counts.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let events = events.unwrap();
+        let sdk_ids = [
+            None,
+            Some(0),
+            Some(42),
+            Some(-10_000),
+            Some(-1_000),
+            Some(i32::MAX),
+        ];
+        assert_eq!(events.as_slice().len(), ids.len());
+        for (frame, (event, id)) in events.as_slice().iter().zip(ids).enumerate() {
+            assert_eq!(usize::from(event.frame), frame);
+            assert_eq!(event.note_id.map_or(0, |id| id.get()), id);
+            assert_eq!(event.vst3_output_note_id(), sdk_ids[frame]);
+        }
+
+        let last = bytes.len();
+        for invalid in [(-10_001_i32) as u32, (-999_i32) as u32, (-2_i32) as u32] {
+            bytes[last - 4..].copy_from_slice(&invalid.to_le_bytes());
+            assert!(pcm(&bytes, &config, 0).is_err());
+        }
+    }
+
+    #[test]
     fn sdk_timing_is_bound_to_the_validated_pcm_and_editor_reply() {
         let config = super::super::tests::config();
         let mut bytes = packet(&config, 4, &[]);
