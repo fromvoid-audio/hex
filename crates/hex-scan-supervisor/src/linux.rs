@@ -99,6 +99,43 @@ impl Pending {
     }
 }
 
+impl Drop for Pending {
+    fn drop(&mut self) {
+        if self.state.is_complete() {
+            return;
+        }
+        if !self.state.direct_reaped {
+            // Issue any group kill only while the direct child is still
+            // unreaped so its PID retains process-group ownership.
+            if let Some(pid) = self.pid {
+                let _ = process::kill_process_group(pid, Signal::KILL);
+            }
+            let _ = self.child.kill();
+            loop {
+                match self.child.wait() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            self.state.record_direct_reaped();
+        }
+        if let Some(pid) = self.pid {
+            loop {
+                match process::waitpgid(pid, WaitOptions::NOHANG) {
+                    Ok(Some((descendant, _))) => {
+                        self.state
+                            .record_descendant(descendant.as_raw_nonzero().get());
+                    }
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Ok(None) | Err(_) => break,
+                }
+            }
+        }
+        self.state.record_complete();
+    }
+}
+
 struct LinuxSubreaperStrategy;
 
 impl SupervisionStrategy for LinuxSubreaperStrategy {
@@ -124,26 +161,43 @@ impl SupervisionStrategy for LinuxSubreaperStrategy {
 
     fn terminate_and_pending(
         &self,
-        child: Child,
+        mut child: Child,
         pid: Pid,
         _exited: bool,
         cause: &mut Option<String>,
     ) -> Pending {
         // The direct child has not been reaped: its PID keeps group identity reserved.
         // No group signal is ever issued after direct reaping, preventing PID reuse.
-        let term = process::kill_process_group(pid, Signal::TERM);
-        std::thread::sleep(Duration::from_millis(5));
-        let kill = process::kill_process_group(pid, Signal::KILL);
-        if term.is_err() && term != Err(rustix::io::Errno::SRCH) {
-            *cause = Some("scoped termination failed".into());
-        }
-        if kill.is_err() && kill != Err(rustix::io::Errno::SRCH) {
-            *cause = Some("scoped kill failed".into());
+        let mut group_scoped = false;
+        if process::getpgid(Some(pid)) == Ok(pid) {
+            group_scoped = true;
+            let term = process::kill_process_group(pid, Signal::TERM);
+            std::thread::sleep(Duration::from_millis(5));
+            if process::getpgid(Some(pid)) == Ok(pid) {
+                let kill = process::kill_process_group(pid, Signal::KILL);
+                if kill.is_err() && kill != Err(rustix::io::Errno::SRCH) {
+                    *cause = Some("scoped kill failed".into());
+                }
+            } else {
+                group_scoped = false;
+                if let Err(error) = child.kill()
+                    && error.raw_os_error() != Some(rustix::io::Errno::SRCH.raw_os_error())
+                {
+                    *cause = Some("direct child kill failed".into());
+                }
+            }
+            if term.is_err() && term != Err(rustix::io::Errno::SRCH) {
+                *cause = Some("scoped termination failed".into());
+            }
+        } else if let Err(error) = child.kill()
+            && error.raw_os_error() != Some(rustix::io::Errno::SRCH.raw_os_error())
+        {
+            *cause = Some("direct child kill failed".into());
         }
         Pending {
             child,
             pid: Some(pid),
-            state: GroupCleanupState::new(true),
+            state: GroupCleanupState::new(group_scoped),
         }
     }
 

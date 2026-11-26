@@ -437,6 +437,33 @@ impl DirectPending {
     }
 }
 
+impl Drop for DirectPending {
+    fn drop(&mut self) {
+        if !self.direct_reaped {
+            let _ = kill_unreaped_child(&mut self.child);
+            loop {
+                match self.child.wait() {
+                    Ok(_) => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(_) => break,
+                }
+            }
+            self.direct_reaped = true;
+        }
+        self.complete = true;
+    }
+}
+
+fn kill_unreaped_child(child: &mut Child) -> Result<(), String> {
+    match child.kill() {
+        Ok(()) => Ok(()),
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+            Ok(())
+        }
+        Err(_) => Err("direct child kill failed".into()),
+    }
+}
+
 struct DirectChildStrategy;
 
 impl SupervisionStrategy for DirectChildStrategy {
@@ -459,7 +486,7 @@ impl SupervisionStrategy for DirectChildStrategy {
 
     fn terminate_and_pending(
         &self,
-        child: Child,
+        mut child: Child,
         pid: Pid,
         exited: bool,
         cause: &mut Option<String>,
@@ -476,20 +503,25 @@ impl SupervisionStrategy for DirectChildStrategy {
             let term = process::kill_process_group(pid, Signal::TERM);
             std::thread::sleep(Duration::from_millis(5));
             // Identity remains reserved by the unreaped direct child. Revalidate the
-            // group before the last signal; a failed capability stays a failure.
+            // group before the last signal; if the child left its process group
+            // (e.g. via `setsid()`/`setpgid()`), escalate directly to `child.kill()`
+            // on the unreaped `Child` handle (zero PID-reuse risk).
             if process::getpgid(Some(pid)) == Ok(pid) {
                 let kill = process::kill_process_group(pid, Signal::KILL);
                 if kill.is_err() && kill != Err(rustix::io::Errno::SRCH) {
                     *cause = Some("scoped kill failed".into());
                 }
             } else {
-                *cause = Some("owned group identity unavailable before kill".into());
+                group_scoped = false;
+                if let Err(error) = kill_unreaped_child(&mut child) {
+                    *cause = Some(error);
+                }
             }
             if term.is_err() && term != Err(rustix::io::Errno::SRCH) {
                 *cause = Some("scoped termination failed".into());
             }
-        } else {
-            *cause = Some("owned group identity unavailable; no signal authorized".into());
+        } else if let Err(error) = kill_unreaped_child(&mut child) {
+            *cause = Some(error);
         }
         DirectPending {
             child,
@@ -586,6 +618,9 @@ mod tests {
 
         // Closing the peer (POLLHUP / EOF) cancels when `cancel_on_disconnect`
         // is true, and stays false when `cancel_on_disconnect` is false.
+        // Shut down the write half explicitly so parallel subprocess-spawning
+        // tests cannot delay EOF during a transient fork-before-exec window.
+        let _ = writer.shutdown(std::net::Shutdown::Write);
         drop(writer);
         assert!(!fd_cancelled(&mut reader, false).unwrap());
         assert!(fd_cancelled(&mut reader, true).unwrap());
@@ -625,5 +660,89 @@ mod tests {
         };
         assert!(fd_cancelled(&mut flaky, true).unwrap());
         assert_eq!(flaky.remaining_interrupts, 0);
+    }
+
+    #[test]
+    fn detached_pgid_child_is_killed_and_reaped_promptly() {
+        // Spawn a child that leaves its own process group (joining its parent's
+        // process group via `setpgid(0, getpgid(getppid()))`, mirroring a
+        // plugin/helper that detaches via `setpgid`/`setsid`) and then sleeps.
+        // `DirectChildStrategy::terminate_and_pending` must escalate to direct
+        // `child.kill()` on the unreaped `Child` handle instead of leaving it
+        // alive forever.
+        let mut child = Command::new("/usr/bin/python3")
+            .arg("-c")
+            .arg("import os, sys, time; os.setpgid(0, os.getpgid(os.getppid())); sys.stdout.write('ready\\n'); sys.stdout.flush(); time.sleep(30)")
+            .process_group(0)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn python3 helper");
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        let mut line = [0_u8; 6];
+        child
+            .stdout
+            .as_mut()
+            .expect("stdout pipe")
+            .read_exact(&mut line)
+            .expect("wait for detached child ready");
+        assert_eq!(&line, b"ready\n");
+        assert_ne!(
+            process::getpgid(Some(pid)),
+            Ok(pid),
+            "test child must have left its initial process group"
+        );
+
+        let mut cause = Some("deadline exceeded".to_string());
+        let mut pending = DirectChildStrategy.terminate_and_pending(child, pid, false, &mut cause);
+        assert_eq!(cause.as_deref(), Some("deadline exceeded"));
+        assert!(!pending.cleanup().group_signals_scoped);
+
+        let start = Instant::now();
+        let mut reaped = false;
+        while start.elapsed() < Duration::from_millis(500) {
+            if pending.poll().unwrap() {
+                reaped = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(
+            reaped,
+            "detached-pgid child must be killed and reaped promptly"
+        );
+        assert!(pending.cleanup().direct_reaped);
+        assert!(!pending.cleanup().pending);
+    }
+
+    #[test]
+    fn direct_pending_drop_kills_and_reaps_unreaped_child() {
+        let child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn sleep child");
+        let pid = Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        let pending = DirectPending {
+            child,
+            pid: Some(pid),
+            direct_reaped: false,
+            complete: false,
+            group_scoped: true,
+        };
+        drop(pending);
+        // After Drop completes, the direct child has been killed and reaped, so
+        // waiting on its PID must fail with ECHILD.
+        let wait_result = process::waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        );
+        assert!(
+            matches!(wait_result, Err(rustix::io::Errno::CHILD)),
+            "expected ECHILD after DirectPending::drop reaped child"
+        );
     }
 }
