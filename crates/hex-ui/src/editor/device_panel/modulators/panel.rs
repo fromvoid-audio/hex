@@ -152,13 +152,17 @@ fn macro_panel_with_targets(
     cx: &mut Context<EditorView>,
     device: &Device,
     view_data: Option<&NativeDeviceView>,
-    _is_effect: bool,
+    is_effect: bool,
 ) -> Option<AnyElement> {
     let state = view.state.as_ref()?;
     let id = device.id();
     let revision = state.revision;
     let generation = view.project_generation;
     let bank = device.modulation();
+    if !is_effect && bank.is_empty() && !hex_engine::instrument_modulation_supported(device.state())
+    {
+        return None;
+    }
     let has_target = view_data.map_or_else(
         || vst3_parameters::has_mapping_target(view, id),
         |view_data| {
@@ -249,6 +253,10 @@ pub(in crate::editor) fn panel_with_targets(
     let revision = state.revision;
     let generation = view.project_generation;
     let bank = device.modulation();
+    if !is_effect && bank.is_empty() && !hex_engine::instrument_modulation_supported(device.state())
+    {
+        return None;
+    }
     let has_target = view_data.map_or_else(
         || vst3_parameters::has_mapping_target(view, id),
         |view_data| {

@@ -237,7 +237,10 @@ fn operator_modulation_supported(state: &NativeDeviceState) -> bool {
             .is_ok_and(|settings| settings.has_global_voice_runtime())
 }
 
-fn instrument_modulation_supported(state: &NativeDeviceState) -> bool {
+/// Whether this native instrument's current provider configuration can prepare
+/// a modulation bank. A bound receiver and the destination's own eligibility
+/// are checked separately when routing a source.
+pub fn instrument_modulation_supported(state: &NativeDeviceState) -> bool {
     state.type_id() == hex_devices::fm4::device::FM4_TYPE_ID
         || loaded_sampler_modulation_supported(state)
         || operator_modulation_supported(state)
