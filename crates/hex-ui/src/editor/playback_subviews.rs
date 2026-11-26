@@ -699,11 +699,35 @@ impl Render for AudioDetailPlayheadView {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum MeterLatchKey {
+    ArrangementTrack(TrackId),
+    ConsoleTrack(TrackId),
+    Return(ReturnId),
+    Main,
+}
+
+#[derive(Clone, Copy, Default)]
+struct MeterClipLatch {
+    latched: bool,
+    previous_signal: bool,
+}
+
+impl MeterClipLatch {
+    fn observe(&mut self, clipping: bool) {
+        if clipping && !self.previous_signal {
+            self.latched = true;
+        }
+        self.previous_signal = clipping;
+    }
+}
+
 /// Isolated Console and Arrangement track/return/main stereo meters.
 pub(super) struct LiveMetersView {
     tracks: BTreeMap<TrackId, MeterReading>,
     returns: BTreeMap<ReturnId, MeterReading>,
     main: MeterReading,
+    clip_latches: std::collections::HashMap<MeterLatchKey, [MeterClipLatch; 2]>,
     palette: ThemePreferences,
     slots: Rc<RefCell<PlaybackOverlaySlots>>,
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -716,11 +740,30 @@ impl LiveMetersView {
             tracks: BTreeMap::new(),
             returns: BTreeMap::new(),
             main: MeterReading::default(),
+            clip_latches: std::collections::HashMap::new(),
             palette: theme::preferences(),
             slots,
             #[cfg(all(test, feature = "ui-test-support"))]
             render_count: 0,
         }
+    }
+
+    fn clear_clip_latch(&mut self, key: MeterLatchKey, channel: usize) {
+        if let Some(latches) = self.clip_latches.get_mut(&key)
+            && let Some(latch) = latches.get_mut(channel)
+        {
+            latch.latched = false;
+        }
+    }
+
+    fn observe_latch(&mut self, key: MeterLatchKey, reading: MeterReading) -> [bool; 2] {
+        let latches = self.clip_latches.entry(key).or_default();
+        for (ch, latch) in latches.iter_mut().enumerate() {
+            let peak = reading.level[ch];
+            let clipping = reading.clipped[ch] || (peak.is_finite() && peak > 1.0);
+            latch.observe(clipping);
+        }
+        [latches[0].latched, latches[1].latched]
     }
 
     fn sync_from(
@@ -754,46 +797,49 @@ impl LiveMetersView {
         self.tracks.extend(meters.iter_track_readings());
         self.returns.clear();
         self.returns.extend(meters.iter_return_readings());
+        // Retain latches for live tracks/returns/main and update edge-triggered clips.
+        let live_tracks = &self.tracks;
+        let live_returns = &self.returns;
+        self.clip_latches.retain(|key, _| match key {
+            MeterLatchKey::ArrangementTrack(id) | MeterLatchKey::ConsoleTrack(id) => {
+                live_tracks.contains_key(id)
+            }
+            MeterLatchKey::Return(id) => live_returns.contains_key(id),
+            MeterLatchKey::Main => true,
+        });
         true
     }
 }
 
+struct BatchedMeterEntry {
+    #[cfg(feature = "ui-test-support")]
+    target: MeterTarget,
+    bounds: Bounds<Pixels>,
+    clip_rect: Bounds<Pixels>,
+    reading: MeterReading,
+    latched: [bool; 2],
+}
+
 impl Render for LiveMetersView {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         #[cfg(all(test, feature = "ui-test-support"))]
         {
             self.render_count = self.render_count.saturating_add(1);
         }
-        let Ok(slots) = self.slots.try_borrow() else {
-            return div().absolute().inset_0();
+        let meter_slots: Vec<MeterSlot> = match self.slots.try_borrow() {
+            Ok(slots) => slots.meters.clone(),
+            Err(_) => return div().absolute().inset_0(),
         };
-        let mut container = div()
-            .debug_selector(|| "live-meters-layer".into())
-            .absolute()
-            .inset_0();
-        for slot in &slots.meters {
-            let meter = match slot.target {
-                MeterTarget::ArrangementTrack { id, height } => {
-                    super::track_meters::render_arrangement_bars(
-                        id,
-                        self.tracks.get(&id).copied().unwrap_or_default(),
-                        height,
-                    )
-                }
-                MeterTarget::ConsoleTrack { id, height } => div()
-                    .debug_selector(move || format!("console-track-meter-{}", id.value()))
-                    .children([super::track_meters::render(
-                        id,
-                        self.tracks.get(&id).copied().unwrap_or_default(),
-                        height,
-                    )]),
-                MeterTarget::Return { id, height } => super::track_meters::render_return(
-                    id,
-                    self.returns.get(&id).copied().unwrap_or_default(),
-                    height,
-                ),
-                MeterTarget::Main { height } => super::track_meters::render_main(self.main, height),
-            };
+        let style = theme::track_meter_style();
+        let colors = theme::meter_colors();
+        let bar_w = hex_widgets::STEREO_PEAK_BAR_WIDTH;
+        let bar_gap = hex_widgets::STEREO_PEAK_BAR_GAP;
+        let unity_fraction = hex_ui_model::track_meter_scale::UNITY_FRACTION;
+        let headroom_fraction = hex_ui_model::track_meter_scale::fraction(10_f32.powf(3.0 / 20.0));
+
+        let mut entries = Vec::with_capacity(meter_slots.len());
+        let mut latched_caps: Vec<(MeterLatchKey, usize, Bounds<Pixels>)> = Vec::new();
+        for slot in meter_slots {
             let clip = slot.clip_mask;
             let bounds = slot.bounds;
             if bounds.bottom() <= clip.top()
@@ -807,25 +853,218 @@ impl Render for LiveMetersView {
             let clip_top = clip.top().max(bounds.top());
             let clip_right = clip.right().min(bounds.right());
             let clip_bottom = clip.bottom().min(bounds.bottom());
-            let clip_w = (clip_right - clip_left).max(px(0.0));
-            let clip_h = (clip_bottom - clip_top).max(px(0.0));
+            let clip_rect = Bounds::new(
+                gpui::point(clip_left, clip_top),
+                gpui::size(
+                    (clip_right - clip_left).max(px(0.0)),
+                    (clip_bottom - clip_top).max(px(0.0)),
+                ),
+            );
+            let (latch_key, reading) = match slot.target {
+                MeterTarget::ArrangementTrack { id, .. } => (
+                    MeterLatchKey::ArrangementTrack(id),
+                    self.tracks.get(&id).copied().unwrap_or_default(),
+                ),
+                MeterTarget::ConsoleTrack { id, .. } => (
+                    MeterLatchKey::ConsoleTrack(id),
+                    self.tracks.get(&id).copied().unwrap_or_default(),
+                ),
+                MeterTarget::Return { id, .. } => (
+                    MeterLatchKey::Return(id),
+                    self.returns.get(&id).copied().unwrap_or_default(),
+                ),
+                MeterTarget::Main { .. } => (MeterLatchKey::Main, self.main),
+            };
+            let latched = self.observe_latch(latch_key, reading);
+            for (ch, &is_latched) in latched.iter().enumerate() {
+                if is_latched {
+                    let bar_x = bounds.origin.x + px((ch as f32) * (bar_w + bar_gap));
+                    let cap_bounds = Bounds::new(
+                        gpui::point(bar_x, bounds.origin.y),
+                        gpui::size(px(bar_w), px(4.0).min(bounds.size.height)),
+                    );
+                    let visible_cap = cap_bounds.intersect(&clip_rect);
+                    if !visible_cap.is_empty() {
+                        latched_caps.push((latch_key, ch, visible_cap));
+                    }
+                }
+            }
+            entries.push(BatchedMeterEntry {
+                #[cfg(feature = "ui-test-support")]
+                target: slot.target,
+                bounds,
+                clip_rect,
+                reading,
+                latched,
+            });
+        }
+
+        let batched_canvas = canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                for entry in &entries {
+                    let well_bounds = entry.bounds;
+                    let well_h = f32::from(well_bounds.size.height).max(0.0);
+                    #[cfg(feature = "ui-test-support")]
+                    let base_id = match entry.target {
+                        MeterTarget::ArrangementTrack { id, .. } => {
+                            format!("track-output-meter-{}", id.value())
+                        }
+                        MeterTarget::ConsoleTrack { id, .. } => {
+                            window.record_debug_bounds(
+                                format!("console-track-meter-{}", id.value()),
+                                well_bounds,
+                            );
+                            format!("track-output-meter-{}", id.value())
+                        }
+                        MeterTarget::Return { id, .. } => {
+                            format!("return-output-meter-{}", id.value())
+                        }
+                        MeterTarget::Main { .. } => "main-output-meter".to_string(),
+                    };
+                    #[cfg(feature = "ui-test-support")]
+                    window.record_debug_bounds(base_id.clone(), well_bounds);
+
+                    window.with_content_mask(
+                        Some(gpui::ContentMask {
+                            bounds: entry.clip_rect,
+                        }),
+                        |window| {
+                            for (ch, _side) in ["left", "right"].into_iter().enumerate() {
+                                let bar_x =
+                                    well_bounds.origin.x + px((ch as f32) * (bar_w + bar_gap));
+                                let bar_bounds = Bounds::new(
+                                    gpui::point(bar_x, well_bounds.origin.y),
+                                    gpui::size(px(bar_w), well_bounds.size.height),
+                                );
+                                #[cfg(feature = "ui-test-support")]
+                                let channel_id = format!("{base_id}-{_side}");
+                                #[cfg(feature = "ui-test-support")]
+                                window.record_debug_bounds(channel_id.clone(), bar_bounds);
+
+                                // 1. Background rail.
+                                window.paint_quad(gpui::fill(bar_bounds, rgb(style.rail)));
+
+                                // 2. Active signal fill anchored at bottom.
+                                let peak = entry.reading.level[ch];
+                                let hold = entry.reading.peak_hold[ch];
+                                let clipped =
+                                    entry.reading.clipped[ch] || (peak.is_finite() && peak > 1.0);
+                                let frac =
+                                    hex_ui_model::track_meter_scale::fraction(peak).clamp(0.0, 1.0);
+                                let fill_h = if frac.is_finite() { well_h * frac } else { 0.0 };
+                                let fill_bounds = Bounds::new(
+                                    gpui::point(bar_x, well_bounds.origin.y + px(well_h - fill_h)),
+                                    gpui::size(px(bar_w), px(fill_h)),
+                                );
+                                if fill_h > 0.0 {
+                                    window.paint_quad(gpui::fill(fill_bounds, rgb(style.accent)));
+                                }
+                                #[cfg(feature = "ui-test-support")]
+                                window
+                                    .record_debug_bounds(format!("{channel_id}-fill"), fill_bounds);
+
+                                // 3. Latched clipping cap (4 px at top).
+                                if entry.latched[ch] {
+                                    let cap_bounds = Bounds::new(
+                                        gpui::point(bar_x, well_bounds.origin.y),
+                                        gpui::size(px(bar_w), px(4.0).min(well_bounds.size.height)),
+                                    );
+                                    window.paint_quad(gpui::fill(cap_bounds, rgb(colors.clipping)));
+                                    #[cfg(feature = "ui-test-support")]
+                                    window.record_debug_bounds(
+                                        format!("{channel_id}-above"),
+                                        cap_bounds,
+                                    );
+                                }
+
+                                // 4. Peak-hold 1 px bar.
+                                let hold_frac = hex_ui_model::track_meter_scale::fraction(hold);
+                                if hold_frac.is_finite() && hold_frac > 0.0 {
+                                    let clamped_hold = hold_frac.clamp(0.0, 1.0);
+                                    let hold_color = if clipped || (hold.is_finite() && hold > 1.0)
+                                    {
+                                        colors.clipping
+                                    } else {
+                                        style.text
+                                    };
+                                    let hold_bounds = Bounds::new(
+                                        gpui::point(
+                                            bar_x,
+                                            well_bounds.origin.y
+                                                + px(well_h * (1.0 - clamped_hold)),
+                                        ),
+                                        gpui::size(px(bar_w), px(1.0)),
+                                    );
+                                    window.paint_quad(gpui::fill(hold_bounds, rgb(hold_color)));
+                                    #[cfg(feature = "ui-test-support")]
+                                    window.record_debug_bounds(
+                                        format!("{channel_id}-peak-hold"),
+                                        hold_bounds,
+                                    );
+                                }
+
+                                // 5. 1 px border outline.
+                                window.paint_quad(gpui::outline(
+                                    bar_bounds,
+                                    rgb(style.border),
+                                    gpui::BorderStyle::Solid,
+                                ));
+
+                                // 6. Unity and +3 dBFS headroom marks.
+                                for (_name, mark_frac) in
+                                    [("unity", unity_fraction), ("headroom", headroom_fraction)]
+                                {
+                                    let mark_bounds = Bounds::new(
+                                        gpui::point(
+                                            bar_x,
+                                            well_bounds.origin.y + px(well_h * (1.0 - mark_frac)),
+                                        ),
+                                        gpui::size(px(bar_w), px(1.0)),
+                                    );
+                                    window.paint_quad(gpui::fill(mark_bounds, rgb(style.text)));
+                                    #[cfg(feature = "ui-test-support")]
+                                    window.record_debug_bounds(
+                                        format!("{channel_id}-{_name}"),
+                                        mark_bounds,
+                                    );
+                                }
+                            }
+                        },
+                    );
+                }
+            },
+        )
+        .absolute()
+        .inset_0();
+
+        let mut container = div()
+            .debug_selector(|| "live-meters-layer".into())
+            .absolute()
+            .inset_0()
+            .child(batched_canvas);
+
+        // Mount interactive click targets only for currently latched clipping caps
+        // (zero elements during normal non-clipping playback).
+        for (index, (key, ch, cap_bounds)) in latched_caps.into_iter().enumerate() {
             container = container.child(
                 div()
+                    .id(("live-meter-clip-cap", index))
                     .absolute()
-                    .left(clip_left)
-                    .top(clip_top)
-                    .w(clip_w)
-                    .h(clip_h)
-                    .overflow_hidden()
-                    .child(
-                        div()
-                            .absolute()
-                            .left(bounds.left() - clip_left)
-                            .top(bounds.top() - clip_top)
-                            .w(bounds.size.width)
-                            .h(bounds.size.height)
-                            .children([meter]),
-                    ),
+                    .left(cap_bounds.origin.x)
+                    .top(cap_bounds.origin.y)
+                    .w(cap_bounds.size.width)
+                    .h(cap_bounds.size.height)
+                    .cursor_pointer()
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        cx.stop_propagation();
+                        view.clear_clip_latch(key, ch);
+                        cx.notify();
+                    })),
             );
         }
         container

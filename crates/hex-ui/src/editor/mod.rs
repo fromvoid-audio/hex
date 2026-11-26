@@ -261,6 +261,7 @@ mod theme_settings;
 mod time_gesture;
 mod time_move_preview;
 mod time_selection;
+#[cfg(feature = "profiling-tools")]
 pub(super) mod time_selection_profile;
 mod time_selection_tool;
 mod timeline_strip;
@@ -1227,6 +1228,7 @@ impl EditorView {
         )
     }
 
+    #[cfg(any(all(test, feature = "ui-test-support"), feature = "profiling-tools"))]
     fn new_with_browser_preferences_path(
         window: &mut Window,
         cx: &mut Context<Self>,

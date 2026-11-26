@@ -88,12 +88,13 @@ impl TrackLaneCanvas {
         let is_excluded = |id: ClipId| self.excluded.contains(&id);
 
         // Ultra-dense LOD fast path: when an entire bin fits inside a sub-pixel
-        // column and contains no selected/hovered/excluded/focus-filtered clips,
-        // emit one narrow span for the whole bin in O(1).
+        // column and this track contains no selected/hovered/excluded/focus-filtered
+        // clips, emit one narrow span for the whole bin in O(1). Scoping selection
+        // per track keeps LOD active across all unselected tracks.
+        let track_has_selected_clip = view.track_has_selected_clip(track);
         let use_lod = !view.arrangement_focus.projection.enabled
             && self.excluded.is_empty()
-            && view.selected_clip().is_none()
-            && view.selected_clip_ids().is_empty()
+            && !track_has_selected_clip
             && hovered_clip.is_none();
 
         if use_lod && let Some(lod_bins) = track_index_data.lod_level_for_pixel(frames_per_dev_px) {

@@ -16,6 +16,7 @@
 use gpui::{App, Application};
 use startup_failure::{Stage, StartupFailure};
 use std::cell::{Cell, RefCell};
+#[cfg(feature = "profiling-tools")]
 use std::io::Write;
 use std::process::ExitCode;
 use std::rc::Rc;
@@ -27,6 +28,7 @@ mod native_audio;
 mod native_sources;
 mod startup_failure;
 mod streamed_export;
+#[cfg(feature = "profiling-tools")]
 mod time_selection_profile;
 mod update_lease;
 mod update_supervisor;
@@ -50,20 +52,23 @@ fn main() -> ExitCode {
     let update_lease = update_lease::acquire_for_current_executable()
         .map_err(StartupFailure::at(Stage::UpdateCustody));
 
-    let mut arguments = std::env::args_os().skip(1);
-    if arguments
-        .next()
-        .is_some_and(|argument| argument == "--profile-time-selection")
+    #[cfg(feature = "profiling-tools")]
     {
-        // A terminal-only profiling mode: errors stay on stderr.
-        let result = update_lease
-            .map_err(|failure| failure.to_string())
-            .and_then(|_lease| time_selection_profile::run(arguments));
-        if let Err(error) = result {
-            let _ = writeln!(std::io::stderr().lock(), "{error}");
-            return ExitCode::FAILURE;
+        let mut arguments = std::env::args_os().skip(1);
+        if arguments
+            .next()
+            .is_some_and(|argument| argument == "--profile-time-selection")
+        {
+            // A terminal-only profiling mode: errors stay on stderr.
+            let result = update_lease
+                .map_err(|failure| failure.to_string())
+                .and_then(|_lease| time_selection_profile::run(arguments));
+            if let Err(error) = result {
+                let _ = writeln!(std::io::stderr().lock(), "{error}");
+                return ExitCode::FAILURE;
+            }
+            return ExitCode::SUCCESS;
         }
-        return ExitCode::SUCCESS;
     }
 
     let options = diagnostic_options(std::env::args_os().skip(1))

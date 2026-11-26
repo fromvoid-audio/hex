@@ -12,6 +12,8 @@ allocation-probe = ["hex-audio/allocation-probe"]
 ui-test-support = ["allocation-probe", "hex-ui/ui-test-support"]
 # Explicit signed recording-failure fixtures only.
 recording-fault-test-support = ["hex-session/recording-fault-test-support"]
+# Opt-in offline profiling harness (`--profile-time-selection`).
+profiling-tools = ["hex-ui/profiling-tools"]
 
 [[test]]
 name = "native_vst3_plugins"

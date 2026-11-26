@@ -351,112 +351,127 @@ pub(in crate::editor) fn render_track(
             std::iter::once(node).chain(suffix.iter().map(hex_project::TrackDeviceRef::Effect))
         })
         .collect();
-    let identities: HashMap<_, _> = track
-        .ordered_device_chain()
-        .map(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(device) => (
-                device.id(),
-                DeviceControlIdentity {
-                    class: NativeDeviceClass::Instrument,
-                    type_id: device.state().type_id(),
-                },
-            ),
-            hex_project::TrackDeviceRef::Effect(device) => (
-                device.id(),
-                DeviceControlIdentity {
-                    class: NativeDeviceClass::Effect,
-                    type_id: device.state().type_id(),
-                },
-            ),
-        })
-        .chain(
-            source_effects
-                .iter()
-                .filter(|device| modulators::source_utility_gain_available(&state.project, device))
-                .map(|device| {
-                    (
-                        device.id(),
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Effect,
-                            type_id: device.state().type_id(),
-                        },
-                    )
-                }),
-        )
-        .collect();
-    let alive: HashSet<_> = identities
-        .keys()
-        .copied()
-        .chain(source_effects.iter().map(hex_project::Device::id))
-        .collect();
-    view.device_panel.reconcile_selection(&alive);
-
-    clear_removed_processor_audition_target(
-        view,
-        hex_engine::ProcessorChainOwner::Track(track_id.value()),
-        &identities,
-    );
-    view.device_panel
-        .meter_states
-        .retain(|id, _| identities.contains_key(id));
-    if view
+    let already_reconciled = view
         .device_panel
-        .hovered_meter
-        .is_some_and(|id| !identities.contains_key(&id))
-    {
-        view.device_panel.hovered_meter = None;
-    }
-    let stale_keys: Vec<_> = view
-        .device_panel
-        .controls
-        .iter()
-        .filter(|(key, control)| {
-            identities
-                .get(&key.device)
-                .is_none_or(|identity| !parameter_control_matches_identity(control, *identity))
-        })
-        .map(|(key, _)| *key)
-        .collect();
-    let mut changed_device_ids: HashSet<_> = stale_keys.iter().map(|key| key.device).collect();
-    changed_device_ids.extend(view.device_panel.views.iter().filter_map(
-        |(device, (class, old_state, _))| {
-            identities.get(device).and_then(|identity| {
-                (*class != identity.class || old_state.type_id() != identity.type_id)
-                    .then_some(*device)
+        .reconciled_track_chain
+        .as_ref()
+        .is_some_and(|(generation, revision, project_weak, owner)| {
+            *generation == view.project_generation
+                && *revision == state.revision
+                && *owner == DevicePanelOwner::Track(track_id)
+                && project_weak.strong_count() > 0
+                && std::ptr::eq(project_weak.as_ptr(), Arc::as_ptr(&state.project))
+        });
+    if !already_reconciled {
+        let identities: HashMap<_, _> = track
+            .ordered_device_chain()
+            .map(|node| match node {
+                hex_project::TrackDeviceRef::Instrument(device) => (
+                    device.id(),
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Instrument,
+                        type_id: device.state().type_id(),
+                    },
+                ),
+                hex_project::TrackDeviceRef::Effect(device) => (
+                    device.id(),
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device.state().type_id(),
+                    },
+                ),
             })
-        },
-    ));
-    let active_target = view
-        .device_panel
-        .gesture
-        .snapshot()
-        .map(|snapshot| snapshot.target);
-    snapshot::retire_invalid_owner(view, &alive);
-    let stale_target_has_work = active_target.is_some_and(|target| match target {
-        GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
-        GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
-        GestureTarget::DeviceParameterSnapshot { device }
-        | GestureTarget::PluginParameter { device, .. }
-        | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. }
-        | GestureTarget::TrackGain { .. }
-        | GestureTarget::TrackGains { .. }
-        | GestureTarget::TrackBalance { .. }
-        | GestureTarget::MainGain
-        | GestureTarget::ReturnGain { .. } => false,
-    }) || stale_keys.iter().any(|key| {
-        matches!(
-            view.device_panel.controls.get(key),
-            Some(ParameterControl::Float { entity, .. })
-                if entity.read_with(cx, |control, _| {
-                    control.is_interacting() || control.is_editing()
+            .chain(
+                source_effects
+                    .iter()
+                    .filter(|device| {
+                        modulators::source_utility_gain_available(&state.project, device)
+                    })
+                    .map(|device| {
+                        (
+                            device.id(),
+                            DeviceControlIdentity {
+                                class: NativeDeviceClass::Effect,
+                                type_id: device.state().type_id(),
+                            },
+                        )
+                    }),
+            )
+            .collect();
+        let alive: HashSet<_> = identities
+            .keys()
+            .copied()
+            .chain(source_effects.iter().map(hex_project::Device::id))
+            .collect();
+        view.device_panel.reconcile_selection(&alive);
+
+        clear_removed_processor_audition_target(
+            view,
+            hex_engine::ProcessorChainOwner::Track(track_id.value()),
+            &identities,
+        );
+        view.device_panel
+            .meter_states
+            .retain(|id, _| identities.contains_key(id));
+        if view
+            .device_panel
+            .hovered_meter
+            .is_some_and(|id| !identities.contains_key(&id))
+        {
+            view.device_panel.hovered_meter = None;
+        }
+        let stale_keys: Vec<_> = view
+            .device_panel
+            .controls
+            .iter()
+            .filter(|(key, control)| {
+                identities
+                    .get(&key.device)
+                    .is_none_or(|identity| !parameter_control_matches_identity(control, *identity))
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        let mut changed_device_ids: HashSet<_> = stale_keys.iter().map(|key| key.device).collect();
+        changed_device_ids.extend(view.device_panel.views.iter().filter_map(
+            |(device, (class, old_state, _))| {
+                identities.get(device).and_then(|identity| {
+                    (*class != identity.class || old_state.type_id() != identity.type_id)
+                        .then_some(*device)
                 })
-        )
-    });
-    if !stale_keys.is_empty() {
-        for key in stale_keys {
-            if let Some(mut control) = view.device_panel.controls.remove(&key) {
-                cancel_control(view, cx, key, &mut control);
+            },
+        ));
+        let active_target = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .map(|snapshot| snapshot.target);
+        snapshot::retire_invalid_owner(view, &alive);
+        let stale_target_has_work = active_target.is_some_and(|target| match target {
+            GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
+            GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
+            GestureTarget::DeviceParameterSnapshot { device }
+            | GestureTarget::PluginParameter { device, .. }
+            | GestureTarget::EqNodeCreation { device } => !alive.contains(&device),
+            GestureTarget::ReturnSend { .. }
+            | GestureTarget::TrackGain { .. }
+            | GestureTarget::TrackGains { .. }
+            | GestureTarget::TrackBalance { .. }
+            | GestureTarget::MainGain
+            | GestureTarget::ReturnGain { .. } => false,
+        }) || stale_keys.iter().any(|key| {
+            matches!(
+                view.device_panel.controls.get(key),
+                Some(ParameterControl::Float { entity, .. })
+                    if entity.read_with(cx, |control, _| {
+                        control.is_interacting() || control.is_editing()
+                    })
+            )
+        });
+        if !stale_keys.is_empty() {
+            for key in stale_keys {
+                if let Some(mut control) = view.device_panel.controls.remove(&key) {
+                    cancel_control(view, cx, key, &mut control);
+                }
             }
         }
         view.device_panel
@@ -469,58 +484,64 @@ pub(in crate::editor) fn render_track(
         {
             view.device_panel.message = None;
         }
+        view.device_panel.views.retain(|id, _| alive.contains(id));
+        retire_transfer_previews(&mut view.device_panel, |device| {
+            identities
+                .get(&device)
+                .filter(|identity| identity.class == NativeDeviceClass::Effect)
+                .map(|identity| identity.type_id)
+        });
+        view.device_panel.pending_values.retain(|key, _| {
+            alive.contains(&key.device) && !changed_device_ids.contains(&key.device)
+        });
+        view.device_panel.operator_pages.retain(|device, _| {
+            identities.get(device).is_some_and(|identity| {
+                identity.class == NativeDeviceClass::Instrument
+                    && identity.type_id.as_str().ok() == Some("hex.instrument.operator")
+            })
+        });
+        view.device_panel
+            .operator_navigation_focus
+            .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
+        view.device_panel
+            .operator_section_focus
+            .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
+        let alive_operator: HashSet<_> = identities
+            .iter()
+            .filter_map(|(device, identity)| {
+                (identity.class == NativeDeviceClass::Instrument
+                    && identity.type_id.as_str().ok() == Some("hex.instrument.operator"))
+                .then_some(*device)
+            })
+            .collect();
+        operator_panel::preview::cancel_hidden(view, &alive_operator);
+        operator_panel::envelope::retire_removed(view, cx, &alive_operator);
+        operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
+        let alive_eq8: HashSet<_> = identities
+            .iter()
+            .filter_map(|(device, identity)| {
+                (identity.class == NativeDeviceClass::Effect
+                    && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq")))
+                .then_some(*device)
+            })
+            .collect();
+        retire_removed_eq8_graphs(view, cx, &alive_eq8);
+        view.device_panel
+            .eq8_panels
+            .retain(|device, _| alive_eq8.contains(device));
+        view.device_panel
+            .eq8_responses
+            .retain(|device, _| alive_eq8.contains(device));
+        view.device_panel
+            .eq8_graph_gestures
+            .retain(|device, _| alive_eq8.contains(device));
+        view.device_panel.reconciled_track_chain = Some((
+            view.project_generation,
+            state.revision,
+            Arc::downgrade(&state.project),
+            DevicePanelOwner::Track(track_id),
+        ));
     }
-    view.device_panel.views.retain(|id, _| alive.contains(id));
-    retire_transfer_previews(&mut view.device_panel, |device| {
-        identities
-            .get(&device)
-            .filter(|identity| identity.class == NativeDeviceClass::Effect)
-            .map(|identity| identity.type_id)
-    });
-    view.device_panel
-        .pending_values
-        .retain(|key, _| alive.contains(&key.device) && !changed_device_ids.contains(&key.device));
-    view.device_panel.operator_pages.retain(|device, _| {
-        identities.get(device).is_some_and(|identity| {
-            identity.class == NativeDeviceClass::Instrument
-                && identity.type_id.as_str().ok() == Some("hex.instrument.operator")
-        })
-    });
-    view.device_panel
-        .operator_navigation_focus
-        .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
-    view.device_panel
-        .operator_section_focus
-        .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
-    let alive_operator: HashSet<_> = identities
-        .iter()
-        .filter_map(|(device, identity)| {
-            (identity.class == NativeDeviceClass::Instrument
-                && identity.type_id.as_str().ok() == Some("hex.instrument.operator"))
-            .then_some(*device)
-        })
-        .collect();
-    operator_panel::preview::cancel_hidden(view, &alive_operator);
-    operator_panel::envelope::retire_removed(view, cx, &alive_operator);
-    operator_panel::harmonics::retire(view, cx, |key| alive_operator.contains(&key.0));
-    let alive_eq8: HashSet<_> = identities
-        .iter()
-        .filter_map(|(device, identity)| {
-            (identity.class == NativeDeviceClass::Effect
-                && matches!(identity.type_id.as_str(), Ok("hex.eq8" | "hex.eq")))
-            .then_some(*device)
-        })
-        .collect();
-    retire_removed_eq8_graphs(view, cx, &alive_eq8);
-    view.device_panel
-        .eq8_panels
-        .retain(|device, _| alive_eq8.contains(device));
-    view.device_panel
-        .eq8_responses
-        .retain(|device, _| alive_eq8.contains(device));
-    view.device_panel
-        .eq8_graph_gestures
-        .retain(|device, _| alive_eq8.contains(device));
 
     // Prepare the full read-only inventory, including unavailable descriptors
     // and unsupported-state errors, without constructing offscreen controls.
@@ -550,16 +571,16 @@ pub(in crate::editor) fn render_track(
             ),
         );
     }
-    let effect_catalog = view
+    let catalog_unavailable = view
         .device_panel
         .effect_catalog
-        .clone()
-        .unwrap_or_else(|| Ok(Vec::new()));
-    let instrument_catalog = view
-        .device_panel
-        .instrument_catalog
-        .clone()
-        .unwrap_or_else(|| Ok(Vec::new()));
+        .as_ref()
+        .is_some_and(Result::is_err)
+        || view
+            .device_panel
+            .instrument_catalog
+            .as_ref()
+            .is_some_and(Result::is_err);
 
     let mut root = div()
         .id("device-panel")
@@ -870,7 +891,7 @@ pub(in crate::editor) fn render_track(
         header = header.child(element);
     }
     header = header.child(add_button);
-    if effect_catalog.is_err() || instrument_catalog.is_err() {
+    if catalog_unavailable {
         header = header.child(menu_message("device catalog unavailable"));
     }
     root = root.child(header).child(chain);

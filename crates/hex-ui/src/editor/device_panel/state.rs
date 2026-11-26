@@ -60,6 +60,12 @@ pub(in crate::editor) struct DevicePanelState {
     pub(super) vst3_parameters: vst3_parameters::State,
     pub(in crate::editor) navigation: navigation::Navigation,
     pub(super) generation: u64,
+    pub(super) reconciled_track_chain: Option<(
+        u64,
+        u64,
+        std::sync::Weak<hex_project::Project>,
+        DevicePanelOwner,
+    )>,
     pub(in crate::editor) selected_device: Option<DeviceId>,
     pub(super) selected_others: HashSet<DeviceId>,
     pub(super) collapsed: HashSet<DeviceId>,
@@ -719,6 +725,7 @@ pub(in crate::editor) fn clear_owner_state(
     view.device_panel.chain_window = Default::default();
     view.device_panel.parameter_rows.clear();
     view.device_panel.owner = next_owner;
+    view.device_panel.reconciled_track_chain = None;
     view.device_panel.drag_selection = None;
     view.device_panel.select_only(None);
     if full_reset {
