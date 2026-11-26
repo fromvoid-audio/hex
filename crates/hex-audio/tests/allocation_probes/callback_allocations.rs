@@ -1,5 +1,7 @@
 //! Instrumented headless callback allocation regression; no device is opened.
 
+#[path = "callback_allocations/audio_rack.rs"]
+mod audio_rack;
 #[path = "callback_allocations/cold_track.rs"]
 mod cold_track;
 #[path = "callback_allocations/compressor.rs"]
