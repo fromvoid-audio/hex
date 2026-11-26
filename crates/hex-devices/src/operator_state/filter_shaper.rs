@@ -446,11 +446,7 @@ mod tests {
             (parameter::FILTER_DRIVE, ParameterValue::Float(24.5)),
             (ParameterId::from_static(20_004), ParameterValue::Choice(5)),
         ] {
-            assert!(
-                OPERATOR_METADATA
-                    .patch_parameter(&base, id, bad)
-                    .is_err()
-            );
+            assert!(OPERATOR_METADATA.patch_parameter(&base, id, bad).is_err());
         }
     }
 
@@ -486,7 +482,11 @@ mod tests {
                 .unwrap();
             let pcm = render(&driven, 48_000, 256, 64, 200);
             assert_ne!(pcm, clean_pcm, "circuit {circuit} must alter output");
-            assert!(pcm.iter().flatten().all(|s| s.is_finite() && s.abs() <= 2.0));
+            assert!(
+                pcm.iter()
+                    .flatten()
+                    .all(|s| s.is_finite() && s.abs() <= 2.0)
+            );
         }
 
         // Each shaper type with drive alters output; dry/wet=0 matches clean.
@@ -508,7 +508,11 @@ mod tests {
                 .unwrap();
             let pcm = render(&shaped, 48_000, 256, 64, 200);
             assert_ne!(pcm, clean_pcm, "shaper {shaper} must alter output");
-            assert!(pcm.iter().flatten().all(|s| s.is_finite() && s.abs() <= 2.0));
+            assert!(
+                pcm.iter()
+                    .flatten()
+                    .all(|s| s.is_finite() && s.abs() <= 2.0)
+            );
 
             let dry = OPERATOR_METADATA
                 .patch_parameter(
