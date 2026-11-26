@@ -174,6 +174,7 @@ fn full_queue_retry_wakes_once_without_spinning_offscreen() {
         mapping: waveform_overrange::Mapping::Clip {
             clip,
             timeline_origin: 0,
+            gain: None,
             fade: None,
         },
         columns: std::iter::once(0..1).collect(),
@@ -2341,4 +2342,126 @@ fn waveform_geometry_preparation_profile() {
     eprintln!(
         "waveform geometry prep: source=96000 frames/4096 bins, width=1200px, scale=2, columns={columns}, rounds={rounds}, uncached={uncached_elapsed:?}, warm_lookup={cached_elapsed:?}, extrema={sampled:?}, digest={digest:016x}"
     );
+}
+
+#[test]
+fn arrangement_clip_and_prepared_exact_paint_overrange_markers_only_on_affected_channel() {
+    use hex_project::{ClipFade, ClipGain, Command, Created, Editor, Project};
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+    let Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "clip".into(),
+            path: "clip.wav".into(),
+            sample_rate: 48_000,
+            frames: 8,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let clip = editor.project().clip(clip).unwrap().clone();
+    // Left channel has an over-range positive peak at frame 6; right channel stays at exact -1.0.
+    let mut samples = vec![[0.5, -1.0]; 8];
+    samples[0] = [1.5, -0.5]; // Silenced by fade-in at frame 0.
+    samples[6] = [1.5, -1.0]; // Active at frame 6: L+ exceeds 1.0, R stays exact -1.0.
+    let audio = hex_engine::Audio::new(48_000, samples).unwrap();
+    let source = Arc::new(hex_media::waveform::summarize(&audio, 8).unwrap());
+    let fade = ClipFade::new(8, 0, 4, 0).unwrap();
+
+    let cache = std::rc::Rc::new(std::cell::RefCell::new(WaveformGeometryCache::default()));
+    let mapping = WaveformMapping::Clip {
+        clip: clip.clone(),
+        timeline_origin: 0,
+        gain: None,
+        fade: Some(fade),
+    };
+    let request = WaveformGeometryRequest {
+        mapping: &mapping,
+        amplitude_scale: WaveformAmplitudeScale::Linear,
+        visible_start: 0,
+        visible_end: 8,
+        bounds: bounds(),
+        scale: 1.0,
+        columns: 4,
+        grid: None,
+    };
+    let _ = cached_waveform_geometry(&cache, &source, &request).unwrap();
+    let mut ready = false;
+    for _ in 0..200 {
+        cache.borrow_mut().poll_overrange();
+        let (geom, _) = cached_waveform_geometry(&cache, &source, &request).unwrap();
+        if matches!(geom.overrange, WaveformOverrange::Ready(_)) {
+            let channels = geom.display.channels();
+            assert_eq!(channels.len(), 2);
+            assert!(
+                channels[0].has_overrange_markers(),
+                "left channel over-range column must carry markers"
+            );
+            assert!(
+                !channels[1].has_overrange_markers(),
+                "exact -1.0 right channel must keep no-marker fast path"
+            );
+            ready = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(ready, "clip overrange worker must complete");
+
+    // Held gain attenuation pulls the left channel back to <= 1.0: both channels lose markers!
+    let attenuated = WaveformMapping::Clip {
+        clip: clip.clone(),
+        timeline_origin: 0,
+        gain: Some(0.5),
+        fade: Some(fade),
+    };
+    let req_att = WaveformGeometryRequest {
+        mapping: &attenuated,
+        ..request
+    };
+    let _ = cached_waveform_geometry(&cache, &source, &req_att).unwrap();
+    let mut ready_att = false;
+    for _ in 0..200 {
+        cache.borrow_mut().poll_overrange();
+        let (geom, _) = cached_waveform_geometry(&cache, &source, &req_att).unwrap();
+        if matches!(geom.overrange, WaveformOverrange::Ready(_)) {
+            let channels = geom.display.channels();
+            assert!(!channels[0].has_overrange_markers());
+            assert!(!channels[1].has_overrange_markers());
+            ready_att = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    assert!(ready_att, "held-gain overrange worker must complete");
+
+    // PreparedExact inline close-zoom paints markers on affected channel with gain applied once.
+    let prepared = hex_session::service::AudioClipWaveform {
+        waveform: Arc::clone(&source),
+        offset: 0,
+        length: 8,
+        event_source: None,
+        event_sources: None,
+        preview_root: None,
+        neutral_musical: None,
+    };
+    let exact = PreparedExact::for_clip(
+        editor.project(),
+        &clip,
+        &prepared,
+        None,
+        None,
+        ClipGain::UNITY,
+    )
+    .expect("prepared exact");
+    let exact_mapping = WaveformMapping::PreparedExact(exact);
+    let exact_req = WaveformGeometryRequest {
+        mapping: &exact_mapping,
+        ..request
+    };
+    let (geom, _) = cached_waveform_geometry(&cache, &source, &exact_req).unwrap();
+    assert!(matches!(geom.overrange, WaveformOverrange::Ready(_)));
+    let channels = geom.display.channels();
+    assert!(channels[0].has_overrange_markers());
+    assert!(!channels[1].has_overrange_markers());
 }

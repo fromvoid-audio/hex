@@ -1411,16 +1411,31 @@ impl EditorView {
                         {
                             return Some((waveform, WaveformMapping::PreparedMusicalFade(view)));
                         }
-                        let view = crate::editor::waveform_prepared_fade::PreparedFade::for_clip(
+                        if let Some(view) =
+                            crate::editor::waveform_prepared_fade::PreparedFade::for_clip(
+                                &state.project,
+                                clip,
+                                prepared,
+                                fade,
+                                gain.unwrap_or(clip.gain()),
+                            )
+                        {
+                            return Some((
+                                std::sync::Arc::clone(&prepared.waveform),
+                                WaveformMapping::PreparedFade(view),
+                            ));
+                        }
+                        let exact = crate::editor::waveform_prepared_fade::PreparedExact::for_clip(
                             &state.project,
                             clip,
                             prepared,
                             fade,
+                            trim,
                             gain.unwrap_or(clip.gain()),
                         )?;
                         Some((
                             std::sync::Arc::clone(&prepared.waveform),
-                            WaveformMapping::PreparedFade(view),
+                            WaveformMapping::PreparedExact(exact),
                         ))
                     })
                     .or(fallback),
@@ -1577,16 +1592,31 @@ impl EditorView {
                         {
                             return Some((waveform, WaveformMapping::PreparedMusicalFade(view)));
                         }
-                        let view = crate::editor::waveform_prepared_fade::PreparedFade::for_clip(
+                        if let Some(view) =
+                            crate::editor::waveform_prepared_fade::PreparedFade::for_clip(
+                                &state.project,
+                                clip,
+                                prepared,
+                                fade,
+                                gain.unwrap_or(clip.gain()),
+                            )
+                        {
+                            return Some((
+                                std::sync::Arc::clone(&prepared.waveform),
+                                WaveformMapping::PreparedFade(view),
+                            ));
+                        }
+                        let exact = crate::editor::waveform_prepared_fade::PreparedExact::for_clip(
                             &state.project,
                             clip,
                             prepared,
                             fade,
+                            trim,
                             gain.unwrap_or(clip.gain()),
                         )?;
                         Some((
                             std::sync::Arc::clone(&prepared.waveform),
-                            WaveformMapping::PreparedFade(view),
+                            WaveformMapping::PreparedExact(exact),
                         ))
                     })
                     .or(fallback),

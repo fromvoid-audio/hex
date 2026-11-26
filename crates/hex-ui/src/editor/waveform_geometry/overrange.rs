@@ -62,7 +62,9 @@ impl OverrangeCache {
         // checks committed gain only.
         if matches!(
             mapping,
-            WaveformMapping::Frame { .. } | WaveformMapping::PreparedFade(_)
+            WaveformMapping::Frame { .. }
+                | WaveformMapping::PreparedFade(_)
+                | WaveformMapping::PreparedExact(_)
         ) && layout.all_columns_exact()
         {
             return WaveformOverrange::NotApplicable;
@@ -71,17 +73,21 @@ impl OverrangeCache {
             WaveformMapping::Clip {
                 clip,
                 timeline_origin,
-                gain: None,
-                fade: Some(fade),
+                gain,
+                fade,
             } => waveform_overrange::Mapping::Clip {
                 clip: clip.clone(),
                 timeline_origin: *timeline_origin,
-                fade: Some(*fade),
+                gain: *gain,
+                fade: *fade,
             },
             WaveformMapping::Frame {
                 projection, clock, ..
             } => waveform_overrange::Mapping::Frame(Arc::clone(projection), *clock),
             WaveformMapping::PreparedFade(fade) => waveform_overrange::Mapping::PreparedFade(*fade),
+            WaveformMapping::PreparedExact(exact) => {
+                waveform_overrange::Mapping::PreparedExact(*exact)
+            }
             _ => return WaveformOverrange::NotApplicable,
         };
         if let Some(index) = self

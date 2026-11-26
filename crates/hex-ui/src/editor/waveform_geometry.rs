@@ -20,7 +20,7 @@ use super::waveform::{
 };
 use super::{
     waveform_frame, waveform_overrange,
-    waveform_prepared_fade::{PreparedFade, PreparedMusicalFade},
+    waveform_prepared_fade::{PreparedExact, PreparedFade, PreparedMusicalFade},
 };
 
 #[cfg(test)]
@@ -147,6 +147,7 @@ struct CoarseEntryKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum WaveformMappingKey {
     PreparedFade(PreparedFade),
+    PreparedExact(PreparedExact),
     PreparedMusicalFade(Arc<PreparedMusicalFade>),
     Frame(Arc<waveform_frame::Key>, waveform_frame::Clock),
     MusicalEventFade(
@@ -228,6 +229,7 @@ pub(super) struct WaveformPaintSample {
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
     PreparedFade(PreparedFade),
+    PreparedExact(PreparedExact),
     PreparedMusicalFade(Arc<PreparedMusicalFade>),
     Frame {
         projection: Arc<waveform_frame::Projection>,
@@ -270,7 +272,7 @@ impl WaveformMapping {
     fn can_prove_overrange(&self) -> bool {
         match self {
             Self::Frame { projection, .. } => projection.has_exact_pcm(),
-            Self::Clip { fade: Some(_), .. } | Self::PreparedFade(_) => true,
+            Self::Clip { .. } | Self::PreparedFade(_) | Self::PreparedExact(_) => true,
             _ => false,
         }
     }

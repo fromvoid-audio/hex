@@ -5,7 +5,9 @@
 //! Replacing a clip request cancels older work in bounded chunks; the result
 //! identity also prevents an already-completed stale reply from being installed.
 use super::{
-    waveform_frame, waveform_prepared_fade::PreparedFade, waveform_source::bounded_clip_overrange,
+    waveform_frame,
+    waveform_prepared_fade::{PreparedExact, PreparedFade},
+    waveform_source::bounded_clip_overrange,
 };
 use hex_project::{Clip, ClipFade};
 use hex_session::CachedOverrange as Overrange;
@@ -45,10 +47,12 @@ pub(super) enum Mapping {
     Clip {
         clip: Clip,
         timeline_origin: u64,
+        gain: Option<f32>,
         fade: Option<ClipFade>,
     },
     Frame(Arc<waveform_frame::Projection>, waveform_frame::Clock),
     PreparedFade(PreparedFade),
+    PreparedExact(PreparedExact),
 }
 
 pub(super) struct Job {
@@ -217,7 +221,7 @@ fn calculate(job: Job) -> Option<Reply> {
             frame_query = projection.query();
             frame_query.as_ref().and_then(|query| clock.resolve(query))
         }
-        Mapping::Clip { .. } | Mapping::PreparedFade(_) => None,
+        Mapping::Clip { .. } | Mapping::PreparedFade(_) | Mapping::PreparedExact(_) => None,
     };
     let mut budget = MAX_FRAMES;
     for column in request.columns {
@@ -244,17 +248,22 @@ fn calculate(job: Job) -> Option<Reply> {
                 Mapping::Clip {
                     clip,
                     timeline_origin,
+                    gain,
                     fade,
                 } => bounded_clip_overrange(
                     &request.waveform,
                     clip,
                     *timeline_origin,
                     start..end,
+                    *gain,
                     *fade,
                     CHUNK_FRAMES as usize,
                 ),
                 Mapping::PreparedFade(fade) => {
                     fade.overrange(&request.waveform, start..end, CHUNK_FRAMES as usize)
+                }
+                Mapping::PreparedExact(exact) => {
+                    exact.overrange(&request.waveform, start..end, CHUNK_FRAMES as usize)
                 }
                 Mapping::Frame(..) => frame.as_ref().and_then(|frame| {
                     waveform_frame::detail(
@@ -314,6 +323,7 @@ mod tests {
             mapping: Mapping::Clip {
                 clip: editor.project().clip(clip).unwrap().clone(),
                 timeline_origin: 0,
+                gain: None,
                 fade: Some(ClipFade::new(8, 0, 8, 0).unwrap()),
             },
             columns: vec![0..1, 7..8],
