@@ -1669,9 +1669,10 @@ fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() 
     assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
     let storage = instance.retained_storage_on_control().unwrap();
     assert!(storage.data_bytes <= bound.max_prepared_data_bytes);
-    let control_paths = instance.control.as_ref().map_or(0, |control| {
-        control.storage_bytes().unwrap() - crate::channel::PCM_BYTES
-    });
+    let control_paths = instance
+        .control
+        .as_ref()
+        .map_or(0, |control| control.storage_bytes().unwrap() - crate::channel::PCM_BYTES);
     assert_eq!(
         storage.data_bytes,
         pending_storage.data_bytes - provenance_bytes
