@@ -210,6 +210,15 @@ impl AdmissionPolicy {
     }
 }
 
+/// Origin of an installed package generation (`#2996`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PackageOrigin {
+    #[default]
+    User,
+    Factory,
+}
+
 /// Persisted immutable entry in the installed device package catalog.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -226,6 +235,10 @@ pub struct InstalledPackageRecord {
     pub generation_rel_dir: String,
     pub native_module_rel_path: String,
     pub quarantined: bool,
+    #[serde(default)]
+    pub origin: PackageOrigin,
+    #[serde(default)]
+    pub removal_pending: bool,
     pub manifest: PackageManifest,
 }
 
@@ -234,6 +247,8 @@ pub struct InstalledPackageRecord {
 struct CatalogFile {
     catalog_version: u32,
     packages: Vec<InstalledPackageRecord>,
+    #[serde(default)]
+    selected_defaults: BTreeMap<String, String>,
 }
 
 /// Result of an atomic package installation attempt.
@@ -855,11 +870,193 @@ impl DevicePackageCatalog {
         &self.root
     }
 
-    /// List all committed installed package generations from disk.
+    /// List all committed installed package generations from disk, including
+    /// pending-removal generations still pinned by live owners.
     pub fn list(&self) -> Result<Vec<InstalledPackageRecord>, PackageInstallError> {
         let _lock = self.lock_exclusive()?;
         let file = self.read_catalog_unlocked()?;
         Ok(file.packages)
+    }
+
+    /// List generations eligible for browser discovery and new insertions
+    /// (excludes `removal_pending` and `quarantined` generations) (`#2996`).
+    pub fn list_discoverable(&self) -> Result<Vec<InstalledPackageRecord>, PackageInstallError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|rec| !rec.removal_pending && !rec.quarantined)
+            .collect())
+    }
+
+    /// Select the active default generation for new device insertions of
+    /// `type_id` (`#2996`). Honors explicit user-pinned defaults (including
+    /// older/custom generations) and otherwise picks the highest discoverable
+    /// version without ever downgrading silently.
+    pub fn default_generation_for(
+        &self,
+        type_id: &str,
+    ) -> Result<Option<InstalledPackageRecord>, PackageInstallError> {
+        let _lock = self.lock_exclusive()?;
+        let catalog = self.read_catalog_unlocked()?;
+        if let Some(pinned_sha) = catalog.selected_defaults.get(type_id)
+            && let Some(rec) = catalog.packages.iter().find(|r| {
+                r.type_id == type_id
+                    && &r.package_sha256 == pinned_sha
+                    && !r.removal_pending
+                    && !r.quarantined
+            })
+        {
+            return Ok(Some(rec.clone()));
+        }
+        Ok(catalog
+            .packages
+            .into_iter()
+            .filter(|r| r.type_id == type_id && !r.removal_pending && !r.quarantined)
+            .max_by_key(|r| (r.package_major, r.package_minor, r.package_patch)))
+    }
+
+    /// Explicitly pin the default generation for new insertions of `type_id`.
+    /// Refuses unrequested downgrades unless `allow_downgrade` is `true`, and
+    /// refuses quarantined or pending-removal generations (`#2996`).
+    pub fn select_default_generation(
+        &self,
+        type_id: &str,
+        version: (u16, u16, u16),
+        allow_downgrade: bool,
+    ) -> Result<InstalledPackageRecord, PackageInstallError> {
+        let _lock = self.lock_exclusive()?;
+        let mut catalog = self.read_catalog_unlocked()?;
+        let current_ver = catalog
+            .selected_defaults
+            .get(type_id)
+            .and_then(|sha| catalog.packages.iter().find(|r| &r.package_sha256 == sha))
+            .map(|r| (r.package_major, r.package_minor, r.package_patch));
+        let Some(target) = catalog
+            .packages
+            .iter()
+            .find(|r| {
+                r.type_id == type_id
+                    && (r.package_major, r.package_minor, r.package_patch) == version
+            })
+            .cloned()
+        else {
+            return Err(PackageInstallError::InvalidManifest(
+                "selected default generation is not installed",
+            ));
+        };
+        if target.quarantined || target.removal_pending {
+            return Err(PackageInstallError::UntrustedProvenance(
+                "cannot select quarantined or pending-removal generation as default",
+            ));
+        }
+        if let Some(cur) = current_ver
+            && version < cur
+            && !allow_downgrade
+        {
+            return Err(PackageInstallError::InvalidManifest(
+                "unrequested default downgrade refused",
+            ));
+        }
+        catalog
+            .selected_defaults
+            .insert(type_id.to_owned(), target.package_sha256.clone());
+        self.write_catalog_atomic_unlocked(&catalog)?;
+        Ok(target)
+    }
+
+    /// Hide a generation from future discovery and mark it pending removal
+    /// without deleting its immutable directory while live instances, tails,
+    /// Undo history, or active exports still hold references (`#2996`).
+    pub fn request_uninstall(
+        &self,
+        type_id: &str,
+        version: (u16, u16, u16),
+    ) -> Result<bool, PackageInstallError> {
+        let _lock = self.lock_exclusive()?;
+        let mut catalog = self.read_catalog_unlocked()?;
+        let Some(entry) = catalog.packages.iter_mut().find(|r| {
+            r.type_id == type_id && (r.package_major, r.package_minor, r.package_patch) == version
+        }) else {
+            return Ok(false);
+        };
+        entry.removal_pending = true;
+        let sha = entry.package_sha256.clone();
+        if catalog.selected_defaults.get(type_id) == Some(&sha) {
+            catalog.selected_defaults.remove(type_id);
+        }
+        self.write_catalog_atomic_unlocked(&catalog)?;
+        Ok(true)
+    }
+
+    /// Reclaim pending-removal generations on control ONLY once every active
+    /// host owner (playback, prepared candidates, tails, Undo history, active
+    /// exports) reports quiescence (`is_generation_in_use(rec) == false`) (`#2996`).
+    pub fn reclaim_pending_removals(
+        &self,
+        is_generation_in_use: impl Fn(&InstalledPackageRecord) -> bool,
+    ) -> Result<usize, PackageInstallError> {
+        let _lock = self.lock_exclusive()?;
+        let mut catalog = self.read_catalog_unlocked()?;
+        let mut to_delete = Vec::new();
+        let mut kept = Vec::with_capacity(catalog.packages.len());
+        for rec in catalog.packages {
+            if rec.removal_pending && !is_generation_in_use(&rec) {
+                to_delete.push(rec);
+            } else {
+                kept.push(rec);
+            }
+        }
+        if to_delete.is_empty() {
+            return Ok(0);
+        }
+        catalog.packages = kept;
+        self.write_catalog_atomic_unlocked(&catalog)?;
+        for rec in &to_delete {
+            let dir = self.root.join(&rec.generation_rel_dir);
+            if dir.is_dir() {
+                let _ = fs::remove_dir_all(&dir);
+            }
+        }
+        Ok(to_delete.len())
+    }
+
+    /// Verify every on-disk file in an installed generation against its
+    /// declared manifest SHA-256 digests (`#2996`). If tampering or corruption
+    /// is detected, atomically quarantines the generation so persisted project
+    /// states enter state-preserving recovery instead of loading tampered code.
+    pub fn verify_generation_integrity(
+        &self,
+        type_id: &str,
+        version: (u16, u16, u16),
+    ) -> Result<(), PackageInstallError> {
+        let _lock = self.lock_exclusive()?;
+        let mut catalog = self.read_catalog_unlocked()?;
+        let Some(idx) = catalog.packages.iter().position(|r| {
+            r.type_id == type_id && (r.package_major, r.package_minor, r.package_patch) == version
+        }) else {
+            return Err(PackageInstallError::InvalidManifest(
+                "generation not installed",
+            ));
+        };
+        let gen_dir = self.root.join(&catalog.packages[idx].generation_rel_dir);
+        let mut tampered_path: Option<String> = None;
+        for (rel, expected_sha) in &catalog.packages[idx].manifest.content_digests {
+            let full = gen_dir.join(rel);
+            let Ok(bytes) = fs::read(&full) else {
+                tampered_path = Some(rel.clone());
+                break;
+            };
+            if &sha256_hex(&bytes) != expected_sha {
+                tampered_path = Some(rel.clone());
+                break;
+            }
+        }
+        if let Some(bad_path) = tampered_path {
+            catalog.packages[idx].quarantined = true;
+            self.write_catalog_atomic_unlocked(&catalog)?;
+            return Err(PackageInstallError::DigestMismatch(bad_path));
+        }
+        Ok(())
     }
 
     /// Look up an exact installed package generation by type ID and version.
@@ -1082,22 +1279,43 @@ impl DevicePackageCatalog {
             ));
         }
         let archive_bytes = fs::read(archive_path)?;
-        self.install_bytes_with_quarantine(&archive_bytes, quarantine.as_deref(), policy, cancel)
+        self.install_bytes_with_quarantine(
+            &archive_bytes,
+            PackageOrigin::User,
+            quarantine.as_deref(),
+            policy,
+            cancel,
+        )
     }
 
-    /// Atomically validate and install raw `.hexdevice` archive bytes.
+    /// Atomically validate and install raw `.hexdevice` archive bytes as a
+    /// user-installed generation.
     pub fn install_bytes(
         &self,
         archive_bytes: &[u8],
         policy: &AdmissionPolicy,
         cancel: Option<&AtomicBool>,
     ) -> Result<InstallOutcome, PackageInstallError> {
-        self.install_bytes_with_quarantine(archive_bytes, None, policy, cancel)
+        self.install_bytes_with_origin(archive_bytes, PackageOrigin::User, None, policy, cancel)
+    }
+
+    /// Atomically validate and install raw `.hexdevice` archive bytes with an
+    /// explicit [`PackageOrigin`] (`Factory` vs `User`) (`#2996`).
+    pub fn install_bytes_with_origin(
+        &self,
+        archive_bytes: &[u8],
+        origin: PackageOrigin,
+        quarantine_xattr: Option<&[u8]>,
+        policy: &AdmissionPolicy,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<InstallOutcome, PackageInstallError> {
+        self.install_bytes_with_quarantine(archive_bytes, origin, quarantine_xattr, policy, cancel)
     }
 
     fn install_bytes_with_quarantine(
         &self,
         archive_bytes: &[u8],
+        origin: PackageOrigin,
         quarantine_xattr: Option<&[u8]>,
         policy: &AdmissionPolicy,
         cancel: Option<&AtomicBool>,
@@ -1114,7 +1332,7 @@ impl DevicePackageCatalog {
         let mut catalog = self.read_catalog_unlocked()?;
 
         // Check publisher ownership and idempotency / hash conflict rules.
-        for existing in &catalog.packages {
+        for existing in &mut catalog.packages {
             if existing.type_id == parsed.manifest.type_id {
                 if existing.publisher_id != parsed.manifest.publisher_id {
                     return Err(PackageInstallError::PublisherTakeover {
@@ -1130,6 +1348,14 @@ impl DevicePackageCatalog {
                 ) == parsed.manifest.version_tuple()
                 {
                     if existing.package_sha256 == parsed.package_sha256 {
+                        // Reinstalling a previously removal-pending generation with the
+                        // exact same verified content restores discovery atomically.
+                        if existing.removal_pending {
+                            existing.removal_pending = false;
+                            let restored = existing.clone();
+                            self.write_catalog_atomic_unlocked(&catalog)?;
+                            return Ok(InstallOutcome::Installed(restored));
+                        }
                         return Ok(InstallOutcome::AlreadyInstalled(existing.clone()));
                     }
                     return Err(PackageInstallError::VersionHashConflict {
@@ -1221,6 +1447,8 @@ impl DevicePackageCatalog {
             generation_rel_dir: gen_rel,
             native_module_rel_path: parsed.manifest.native_module_path.clone(),
             quarantined: quarantine_xattr.is_some(),
+            origin,
+            removal_pending: false,
             manifest: parsed.manifest,
         };
         catalog.packages.push(record.clone());
@@ -1275,6 +1503,7 @@ impl DevicePackageCatalog {
             return Ok(CatalogFile {
                 catalog_version: 1,
                 packages: Vec::new(),
+                selected_defaults: BTreeMap::new(),
             });
         }
         let bytes = fs::read(&path)?;
@@ -1854,5 +2083,117 @@ mod tests {
         assert_eq!(editor.project().device(dev_a).unwrap().state(), &upgraded);
         // Second copied instance remained pinned to v1.0.0 throughout!
         assert_eq!(editor.project().device(dev_b).unwrap().state(), &state_v1);
+    }
+
+    #[test]
+    fn immutable_generation_update_uninstall_quiescence_and_tamper_quarantine() {
+        let tmp = TempLib::new("update_uninstall");
+        let (policy, auth) = test_policy();
+        let catalog = DevicePackageCatalog::open_and_recover(&tmp.0).unwrap();
+
+        let pkg_v1 = make_valid_archive("hex.factory", "hex.pkg.utility", (1, 0, 0), 1, &auth);
+        let pkg_v1_conflict =
+            make_valid_archive("hex.factory", "hex.pkg.utility", (1, 0, 0), 99, &auth);
+        let pkg_v2 = make_valid_archive("hex.factory", "hex.pkg.utility", (2, 0, 0), 2, &auth);
+
+        // Install v1 as User origin and pin it as default.
+        let rec_v1 = match catalog
+            .install_bytes_with_origin(&pkg_v1, PackageOrigin::User, None, &policy, None)
+            .unwrap()
+        {
+            InstallOutcome::Installed(r) => r,
+            other => panic!("expected Installed, got {other:?}"),
+        };
+        assert_eq!(rec_v1.origin, PackageOrigin::User);
+        catalog
+            .select_default_generation("hex.pkg.utility", (1, 0, 0), false)
+            .unwrap();
+
+        // Factory update with conflicting same version refuses and never overwrites user content.
+        assert!(matches!(
+            catalog.install_bytes_with_origin(
+                &pkg_v1_conflict,
+                PackageOrigin::Factory,
+                None,
+                &policy,
+                None
+            ),
+            Err(PackageInstallError::VersionHashConflict { .. })
+        ));
+
+        // Factory update v2 installs alongside v1; user-pinned default remains v1!
+        let rec_v2 = match catalog
+            .install_bytes_with_origin(&pkg_v2, PackageOrigin::Factory, None, &policy, None)
+            .unwrap()
+        {
+            InstallOutcome::Installed(r) => r,
+            other => panic!("expected Installed, got {other:?}"),
+        };
+        assert_eq!(rec_v2.origin, PackageOrigin::Factory);
+        assert_eq!(
+            catalog
+                .default_generation_for("hex.pkg.utility")
+                .unwrap()
+                .unwrap()
+                .package_major,
+            1
+        );
+
+        // Explicit upgrade of default to v2 succeeds; unrequested downgrade back to v1 refuses.
+        catalog
+            .select_default_generation("hex.pkg.utility", (2, 0, 0), false)
+            .unwrap();
+        assert!(matches!(
+            catalog.select_default_generation("hex.pkg.utility", (1, 0, 0), false),
+            Err(PackageInstallError::InvalidManifest(_))
+        ));
+        // Explicit revert with allow_downgrade=true succeeds.
+        catalog
+            .select_default_generation("hex.pkg.utility", (1, 0, 0), true)
+            .unwrap();
+
+        // Uninstall v1 while live playback/export still holds a reference to v1:
+        // hides from list_discoverable, keeps files on disk, and reclaim refuses until quiescent!
+        assert!(
+            catalog
+                .request_uninstall("hex.pkg.utility", (1, 0, 0))
+                .unwrap()
+        );
+        let discoverable = catalog.list_discoverable().unwrap();
+        assert_eq!(discoverable.len(), 1);
+        assert_eq!(discoverable[0].package_major, 2);
+        let v1_dir = tmp.0.join(&rec_v1.generation_rel_dir);
+        assert!(v1_dir.is_dir());
+
+        // Still in use -> 0 reclaimed, directory preserved on disk.
+        let reclaimed_busy = catalog
+            .reclaim_pending_removals(|r| r.package_sha256 == rec_v1.package_sha256)
+            .unwrap();
+        assert_eq!(reclaimed_busy, 0);
+        assert!(v1_dir.is_dir());
+
+        // Last owner releases -> reclaim deletes v1 cleanly on control.
+        let reclaimed_idle = catalog.reclaim_pending_removals(|_| false).unwrap();
+        assert_eq!(reclaimed_idle, 1);
+        assert!(!v1_dir.exists());
+
+        // Tampering with v2's on-disk dylib triggers automatic quarantine on integrity verification.
+        let v2_dylib = tmp
+            .0
+            .join(&rec_v2.generation_rel_dir)
+            .join(&rec_v2.native_module_rel_path);
+        fs::write(&v2_dylib, b"tampered-bytes").unwrap();
+        assert!(matches!(
+            catalog.verify_generation_integrity("hex.pkg.utility", (2, 0, 0)),
+            Err(PackageInstallError::DigestMismatch(_))
+        ));
+        assert!(catalog.list_discoverable().unwrap().is_empty());
+        assert!(
+            catalog
+                .find_exact("hex.pkg.utility", (2, 0, 0))
+                .unwrap()
+                .unwrap()
+                .quarantined
+        );
     }
 }
