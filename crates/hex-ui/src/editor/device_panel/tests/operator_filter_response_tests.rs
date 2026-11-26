@@ -195,3 +195,164 @@ fn filter_curve_keeps_released_parameter_preview_across_completed_repaints(
         });
     }
 }
+
+#[gpui::test]
+fn filter_handle_drag_updates_frequency_and_resonance_atomically_and_undoes(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(800.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+    select_filter(&mut visual, device);
+
+    // Every existing Vector filter parameter (20_001..=20_007) is mounted on the Filter page.
+    for parameter in 20_001..=20_007 {
+        assert!(
+            visual
+                .debug_bounds(selector(format!(
+                    "device-{}-parameter-{parameter}",
+                    device.value()
+                )))
+                .is_some(),
+            "missing vector filter parameter {parameter}"
+        );
+    }
+
+    let before_curve = editor.read_with(&visual, |view, _| displayed(view, device));
+    let graph = editor.read_with(&visual, |view, _| {
+        operator_panel::filter_response::graph_for_test(view, device).expect("filter graph")
+    });
+    let (plot, node_pos) = graph.read_with(&visual, |g, _| {
+        (
+            g.plot_bounds().expect("plot bounds"),
+            g.node_position(1).expect("frequency/resonance handle"),
+        )
+    });
+    let point_at = |p: [f32; 2]| {
+        point(
+            plot.left() + plot.size.width * p[0],
+            plot.bottom() - plot.size.height * p[1],
+        )
+    };
+    let start = point_at(node_pos);
+    let dest = point_at([0.35, 0.65]);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(dest, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.device_panel.gesture.snapshot().is_some(),
+            "filter handle drag must start paired gesture; plot={plot:?} node={node_pos:?} msg={:?}",
+            view.device_panel.message
+        );
+        assert_ne!(displayed(view, device), before_curve);
+    });
+    visual.simulate_mouse_up(dest, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_ne!(
+            operator_parameter_value(state, track, device, 20_005),
+            ParameterValue::Float(1_000.0),
+            "horizontal drag must change filter frequency"
+        );
+        assert_ne!(
+            operator_parameter_value(state, track, device, 20_006),
+            ParameterValue::Float(0.0),
+            "vertical drag must change filter resonance"
+        );
+        assert_ne!(displayed(view, device), before_curve);
+    });
+
+    // Single Undo restores both frequency and resonance atomically.
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && operator_parameter_value(view.state.as_ref().unwrap(), track, device, 20_005)
+                == ParameterValue::Float(1_000.0)
+            && operator_parameter_value(view.state.as_ref().unwrap(), track, device, 20_006)
+                == ParameterValue::Float(0.0)
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(displayed(view, device), before_curve);
+    });
+}
+
+#[gpui::test]
+fn filter_handle_drag_keeps_released_preview_across_completed_repaints(cx: &mut TestAppContext) {
+    let (_service, state, track, device) = fixture();
+    let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        (*state.project).clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1440.0), px(800.0)));
+    visual.run_until_parked();
+    select_filter(&mut visual, device);
+
+    let before_curve = editor.read_with(&visual, |view, _| displayed(view, device));
+    let graph = editor.read_with(&visual, |view, _| {
+        operator_panel::filter_response::graph_for_test(view, device).expect("filter graph")
+    });
+    let (plot, node_pos) = graph.read_with(&visual, |g, _| {
+        (
+            g.plot_bounds().expect("plot bounds"),
+            g.node_position(1).expect("frequency/resonance handle"),
+        )
+    });
+    let point_at = |p: [f32; 2]| {
+        point(
+            plot.left() + plot.size.width * p[0],
+            plot.bottom() - plot.size.height * p[1],
+        )
+    };
+    let start = point_at(node_pos);
+    let dest = point_at([0.32, 0.72]);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(dest, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let preview_curve = editor.read_with(&visual, |view, _| displayed(view, device));
+    let preview_node = graph.read_with(&visual, |g, _| g.node_position(1).expect("preview node"));
+    assert_ne!(preview_curve, before_curve);
+    assert_ne!(preview_node, node_pos);
+
+    visual.simulate_mouse_up(dest, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        let current_node = graph.read_with(&visual, |g, _| g.node_position(1).expect("node"));
+        assert_eq!(current_node, preview_node);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(displayed(view, device), preview_curve);
+            assert_eq!(
+                operator_parameter_value(view.state.as_ref().unwrap(), track, device, 20_005),
+                ParameterValue::Float(1_000.0)
+            );
+            assert_eq!(
+                operator_parameter_value(view.state.as_ref().unwrap(), track, device, 20_006),
+                ParameterValue::Float(0.0)
+            );
+            assert!(view.device_panel.gesture.has_pending_terminal());
+        });
+    }
+}
