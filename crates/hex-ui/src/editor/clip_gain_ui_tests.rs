@@ -268,7 +268,8 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
         editor.read_with(visual, |view, _| {
             let cache = view.timeline_caches.waveform_geometry_cache.borrow();
             let paint = cache.painted_waveforms().back().unwrap();
-            let center = f32::from(paint.bounds.top() + paint.bounds.size.height * 0.25);
+            let lane_height = paint.bounds.size.height / paint.lane_count as f32;
+            let center = f32::from(paint.bounds.top() + lane_height * 0.5);
             let (top, bottom) = paint.ordinates[0];
             (center - top).abs().max((center - bottom).abs())
         })
