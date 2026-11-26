@@ -30,6 +30,7 @@ const PLATFORM: u8 = b't';
 const MAGIC_V1: [u8; 8] = *b"hexsmp1\0";
 const MAGIC_V2: [u8; 8] = *b"hexsmp2\0";
 const MAGIC_V3: [u8; 8] = *b"hexsmp3\0";
+const MAGIC_V4: [u8; 8] = *b"hexsmp4\0";
 const NO_RECORD: u8 = 0;
 const RECORD_UNREADABLE: u8 = 1;
 const RECORD_FINGERPRINTED: u8 = 2;
@@ -68,7 +69,9 @@ impl SampleCatalog {
         let mut reader = bytes.as_slice();
         let mut found = [0; 8];
         reader.read_exact(&mut found)?;
-        let version = if found == magic(MAGIC_V3) {
+        let version = if found == magic(MAGIC_V4) {
+            4
+        } else if found == magic(MAGIC_V3) {
             3
         } else if found == magic(MAGIC_V2) {
             2
@@ -106,6 +109,7 @@ impl SampleCatalog {
             });
         }
         let mut tags: HashMap<PathBuf, BTreeSet<String>> = HashMap::new();
+        let mut tag_taxonomy: BTreeMap<String, Option<String>> = BTreeMap::new();
         let mut collections: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
         if version >= 3 {
             let tag_paths = read_u32(&mut reader)? as usize;
@@ -153,6 +157,27 @@ impl SampleCatalog {
                 collections.insert(name, members);
             }
         }
+        if version >= 4 {
+            let taxonomy_count = read_u32(&mut reader)? as usize;
+            if taxonomy_count > crate::boundary::MAX_TAXONOMY_TAGS {
+                return Err(invalid());
+            }
+            for _ in 0..taxonomy_count {
+                let name = read_label(&mut reader)?;
+                if tag_taxonomy.contains_key(&name) {
+                    return Err(invalid());
+                }
+                let mut has_parent = [0u8; 1];
+                reader.read_exact(&mut has_parent)?;
+                let parent = match has_parent[0] {
+                    0 => None,
+                    1 => Some(read_label(&mut reader)?),
+                    _ => return Err(invalid()),
+                };
+                tag_taxonomy.insert(name, parent);
+            }
+            validate_taxonomy_map(&tag_taxonomy).map_err(|_| invalid())?;
+        }
         if !reader.is_empty() {
             return Err(invalid());
         }
@@ -161,6 +186,7 @@ impl SampleCatalog {
             folded_paths: Vec::new(),
             records,
             tags,
+            tag_taxonomy,
             collections,
         };
         catalog.rebuild_search_index();
@@ -232,7 +258,13 @@ impl SampleCatalog {
         sorted_tags: &[(Vec<u8>, &Path, &BTreeSet<String>)],
         sink: &mut S,
     ) -> io::Result<()> {
-        sink.write_bytes(&magic(MAGIC_V3))?;
+        let has_taxonomy = !self.tag_taxonomy.is_empty();
+        if has_taxonomy {
+            validate_taxonomy_map(&self.tag_taxonomy).map_err(|_| invalid())?;
+            sink.write_bytes(&magic(MAGIC_V4))?;
+        } else {
+            sink.write_bytes(&magic(MAGIC_V3))?;
+        }
         sink.write_bytes(&(self.entries.len() as u32).to_le_bytes())?;
         for entry in &self.entries {
             write_path(sink, &entry.path)?;
@@ -266,8 +298,46 @@ impl SampleCatalog {
                 write_path(sink, member)?;
             }
         }
+        if has_taxonomy {
+            sink.write_bytes(&(self.tag_taxonomy.len() as u32).to_le_bytes())?;
+            for (name, parent) in &self.tag_taxonomy {
+                write_label(sink, name)?;
+                match parent {
+                    None => sink.write_bytes(&[0])?,
+                    Some(parent_name) => {
+                        sink.write_bytes(&[1])?;
+                        write_label(sink, parent_name)?;
+                    }
+                }
+            }
+        }
         Ok(())
     }
+}
+
+fn validate_taxonomy_map(map: &BTreeMap<String, Option<String>>) -> Result<(), &'static str> {
+    if map.len() > crate::boundary::MAX_TAXONOMY_TAGS {
+        return Err("taxonomy tag limit reached");
+    }
+    for (name, parent) in map {
+        let mut cursor = parent.as_deref();
+        let mut depth = 1_usize;
+        let mut seen = BTreeSet::from([name.as_str()]);
+        while let Some(node) = cursor {
+            if !map.contains_key(node) {
+                return Err("parent tag does not exist");
+            }
+            if !seen.insert(node) {
+                return Err("tag hierarchy cannot contain a cycle");
+            }
+            if depth > crate::boundary::MAX_TAXONOMY_DEPTH {
+                return Err("tag hierarchy depth limit reached");
+            }
+            cursor = map.get(node).and_then(|p| p.as_deref());
+            depth += 1;
+        }
+    }
+    Ok(())
 }
 
 fn normalized_parent(path: &Path) -> &Path {
