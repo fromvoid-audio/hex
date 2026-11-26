@@ -30,6 +30,8 @@ mod reverb_outputs;
 mod session_audio_fixture;
 #[path = "callback_allocations/transport_fade.rs"]
 mod transport_fade;
+#[path = "callback_allocations/wavetable_source.rs"]
+mod wavetable_source;
 use probe::{compare_output, measured_block, measured_shutdown};
 
 use allocation_counter::{AllocationInfo, measure};
