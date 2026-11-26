@@ -859,6 +859,54 @@ fn grouped_event_marker_move_changes_only_the_selected_retained_read() {
 }
 
 #[test]
+fn repeated_retained_sources_fit_the_work_limit_and_keep_independent_event_reads() {
+    let (mut editor, ids, media) = group_fixture();
+    let mut original = editor.project().snapshot();
+    let long = &mut original.tracks[0].audio_clips_mut().unwrap()[1];
+    long.duration = hex_project::MAX_AUDIO_DOMAIN_FRAMES / 32;
+    long.fade = hex_project::ClipFade::neutral(long.duration).unwrap();
+    let reference = Editor::new(Project::from_snapshot(original).unwrap(), 8).unwrap();
+    let long = reference.project().clip(ids[1]).unwrap().clone();
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original_audio = render(&prepare(&reference, &media, &context), 11_000, 4_000, 127);
+
+    let Created::Clip(group) = editor.execute(Command::GroupClips(ids)).unwrap() else {
+        panic!("group");
+    };
+    let mut snapshot = editor.project().snapshot();
+    let edit = snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+        .edit
+        .as_mut()
+        .unwrap();
+    let sequence = Arc::make_mut(Arc::make_mut(&mut edit.domain).events.as_mut().unwrap());
+    let mut source = sequence.sources.pop().unwrap();
+    source.clip = long;
+    let event = sequence.events.pop().unwrap();
+    for slice in 0..32 {
+        let id = event.source + slice;
+        sequence.sources.push(hex_project::RetainedAudioRoot {
+            id,
+            ..source.clone()
+        });
+        sequence.events.push(hex_project::AudioEvent {
+            id: event.id + slice,
+            source: id,
+            start: event.start + slice * 125,
+            end: event.start + (slice + 1) * 125,
+            source_start: event.source_start + slice * 125,
+            ..event
+        });
+    }
+    sequence.next_id = sequence.events.last().unwrap().id + 1;
+    let editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+    let accepted = prepare(&editor, &media, &context);
+    assert_eq!(render(&accepted, 11_000, 4_000, 311), original_audio);
+    let peaks = child_peaks(&accepted, group);
+    assert_eq!(peaks.sources().len(), 33);
+    assert!(Arc::ptr_eq(&peaks.sources()[1].1, &peaks.sources()[32].1));
+}
+
+#[test]
 fn grouped_aggregate_source_work_is_admitted_before_pcm_allocation() {
     let (mut editor, ids, media) = group_fixture();
     // Retain a finite looping source longer than the group reads. This requires

@@ -13,7 +13,9 @@
 //! refuses without changing project or media. Ordinary crops keep their path.
 //! Grouped frame events resolve every retained root before PCM work. Each source
 //! keeps its captured tempo, finite placement and fade/gain order. The container
-//! and summed child finite/full-root work share the 16777216-frame cap; source
+//! and distinct sibling programs share the 16777216-frame finite/full-root work
+//! cap. Identical retained edits, tempos and resident media share preparation
+//! and waveform peaks while each event keeps its own source ID. Source
 //! count is bounded by MAX_AUDIO_EVENTS and placement by 8192 occurrences. All
 //! child PCM/conversion identities participate in the group cache key. Streamed
 //! roots and outer pitch/warp/source processing refuse before history commit.
