@@ -53,7 +53,10 @@ fn compact_state_rejects_corruption_missing_slots_and_invalid_base_versions() {
     // One byte over the stored limit can have the same padded length as an
     // admissible payload. The decoded byte count still has to fit.
     let over = vec![0u8; hex_lattice_contract::MAX_STORED_VST3_DEVICE_STATE_BYTES + 1];
-    document["vst3_states"][0]["payload"] = STANDARD.encode(&over).into();
+    let row = &mut document["vst3_states"][0];
+    let device = row["device"].as_u64().unwrap();
+    row["sha256"] = serde_json::json!(checksum(device, false, 9, &over));
+    row["payload"] = STANDARD.encode(&over).into();
     let error = crate::decode(&serde_json::to_vec(&document).unwrap()).unwrap_err();
     assert!(matches!(
         error,
