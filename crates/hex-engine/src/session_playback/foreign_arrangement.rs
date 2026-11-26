@@ -33,6 +33,13 @@ const MAX_AUTHORED_EVENTS_AT_CUT: usize = 2 * MAX_FOREIGN_NOTES;
 const MAX_RENDER_EVENTS: usize =
     MAX_AUTHORED_EVENTS_AT_CUT + 2 * COMPUTER_KEY_COUNT + hardware::NOTE_BUDGET;
 
+/// Encode the signed ±48-semitone tuning range used for an identified note.
+/// Rounding preserves each integer cent through the SDK worker's inverse.
+fn note_pitch_bend(cents: i16) -> i16 {
+    let span = if cents < 0 { 8192.0 } else { 8191.0 };
+    (f64::from(cents) * span / 4800.0).round() as i16
+}
+
 fn next_note_id(next: &mut u64) -> Result<NonZeroU32, MutableInstrumentRuntimeError> {
     let id = next
         .checked_add(1)
@@ -891,15 +898,10 @@ impl ForeignArrangement {
                     if events.len() == authored_capacity {
                         return Err(MutableInstrumentRuntimeError::OccurrenceCapacity);
                     }
-                    // Identified sequenced pitch uses ±48 semitones. Rounding
-                    // preserves every authored integer cent through the worker.
-                    let cents = f64::from(expr.pitch_offset_cents);
-                    let span = if cents < 0.0 { 8192.0 } else { 8191.0 };
-                    let bend = (cents * span / 4800.0).round() as i16;
                     events.push(ForeignNote::pitch_bend(
                         frame,
                         channel,
-                        bend,
+                        note_pitch_bend(expr.pitch_offset_cents),
                         foreign_note.note_id,
                         false,
                     ));
