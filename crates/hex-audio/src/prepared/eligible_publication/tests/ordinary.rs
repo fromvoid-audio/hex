@@ -3061,7 +3061,15 @@ fn prepared_audio_domain_retires_while_later_page_is_held() {
 #[cfg(feature = "stream-test-support")]
 #[test]
 fn prepared_audio_seek_does_not_render_a_late_old_page() {
-    prepared_audio_domain_gate(GatedPageAction::Seek);
+    for settled in [false, true] {
+        prepared_audio_domain_gate_with_hold(GatedPageAction::Seek, settled);
+    }
+}
+
+#[cfg(feature = "stream-test-support")]
+fn assert_stream_seek_ramp_in(output: &[Frame; 256], source: f32) {
+    let expected = std::array::from_fn(|i| [source * (i + 1).min(128) as f32 / 128.0; 2]);
+    assert_eq!(*output, expected);
 }
 
 #[cfg(feature = "stream-test-support")]
@@ -3239,7 +3247,12 @@ fn seek_then_source_replacement_does_not_render_late_old_generation() {
         .command(PlaybackCommand::PlayFrom(destination))
         .unwrap();
     measured_render(&mut data, &mut output);
-    assert_eq!(output, [[0.25; 2]; 256]);
+    let expected = std::array::from_fn(|i| {
+        let gain = if i < 128 { 127 - i } else { i - 127 };
+        [0.25 * gain as f32 / 128.0; 2]
+    });
+    assert_eq!(output, expected);
+    assert_eq!(control.status.position.load(Acquire), destination + 128);
     let replacement = control
         .publish_with_admission_and_source_on_control(
             compile(&project, new.metadata, &store),
@@ -3262,12 +3275,19 @@ fn seek_then_source_replacement_does_not_render_late_old_generation() {
     assert_eq!(output, [[0.75; 2]; 256]);
     let replacement_destination = hex_engine::STREAM_PAGE_FRAMES as u64;
     let previous_position = control.status.position.load(Acquire);
-    control
-        .command(PlaybackCommand::PlayFrom(replacement_destination))
+    let seek = control
+        .command_with_ticket(PlaybackCommand::PlayFrom(replacement_destination))
         .unwrap();
     measured_render(&mut data, &mut output);
-    assert_eq!(control.status.position.load(Acquire), previous_position);
-    assert_eq!(output, [[0.0; 2]; 256]);
+    assert_eq!(
+        control.status.position.load(Acquire),
+        previous_position + 128
+    );
+    assert_eq!(
+        output,
+        std::array::from_fn(|i| [0.75 * 127usize.saturating_sub(i) as f32 / 128.0; 2])
+    );
+    assert!(control.status.stream_applied_command_prefix.load(Acquire) < seek);
     release.send(()).unwrap();
     loop {
         let mut ready = false;
@@ -3297,15 +3317,14 @@ fn seek_then_source_replacement_does_not_render_late_old_generation() {
     }
     loop {
         measured_render(&mut data, &mut output);
-        assert!(
-            output
-                .iter()
-                .all(|frame| *frame == [0.0; 2] || *frame == [0.75; 2]),
-            "old generation reached the callback"
-        );
-        if output == [[0.75; 2]; 256] {
+        if control.status.stream_applied_command_prefix.load(Acquire) == seek {
+            assert_stream_seek_ramp_in(&output, 0.75);
             break;
         }
+        assert_eq!(
+            output, [[0.0; 2]; 256],
+            "late old generation reached the callback"
+        );
         assert!(
             std::time::Instant::now() < deadline,
             "new destination not rendered"
@@ -4046,6 +4065,11 @@ fn streamed_scope_edit_can_install_after_pause_with_the_previous_page_held() {
 
 #[cfg(feature = "stream-test-support")]
 fn prepared_audio_domain_gate(action: GatedPageAction) {
+    prepared_audio_domain_gate_with_hold(action, true);
+}
+
+#[cfg(feature = "stream-test-support")]
+fn prepared_audio_domain_gate_with_hold(action: GatedPageAction, settled: bool) {
     let _serial = serial();
     let frames = (hex_engine::STREAM_PAGE_FRAMES * 3) as u64;
     let project = super::readiness::project_with_frames(frames);
@@ -4216,16 +4240,18 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
     assert!(output[0][0] > 0.0 && output[0][0] <= last[0]);
     let partial = output[7][0];
     assert!(partial > 0.0 && partial < output[0][0]);
-    measured_render(&mut data, &mut output);
-    assert!(output[0][0] > 0.0 && output[0][0] < partial);
-    assert!(output.windows(2).all(|pair| pair[1][0] <= pair[0][0]));
-    assert_eq!(output[255], [0.0; 2]);
-    assert_eq!(control.status.position.load(Acquire), held_position);
-    // The held page starved audible playback: the published count rises (#4074).
-    let starved = control.status.stream_starved_callbacks.load(Relaxed);
-    assert!(starved > 0, "mid-play page hold was not counted");
-    measured_render(&mut data, &mut output);
-    assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
+    if settled {
+        measured_render(&mut data, &mut output);
+        assert!(output[0][0] > 0.0 && output[0][0] < partial);
+        assert!(output.windows(2).all(|pair| pair[1][0] <= pair[0][0]));
+        assert_eq!(output[255], [0.0; 2]);
+        assert_eq!(control.status.position.load(Acquire), held_position);
+        // The held page starved audible playback: the published count rises (#4074).
+        let starved = control.status.stream_starved_callbacks.load(Relaxed);
+        assert!(starved > 0, "mid-play page hold was not counted");
+        measured_render(&mut data, &mut output);
+        assert!(control.status.stream_starved_callbacks.load(Relaxed) > starved);
+    }
     entered
         .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
         .expect("later page was requested");
@@ -4296,12 +4322,25 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
         GatedPageAction::Seek | GatedPageAction::SeekCold | GatedPageAction::SeekColdStop
     ) {
         let destination = 2 * hex_engine::STREAM_PAGE_FRAMES as u64;
-        control
-            .command(PlaybackCommand::PlayFrom(destination))
+        let seek = control
+            .command_with_ticket(PlaybackCommand::PlayFrom(destination))
             .unwrap();
+        if !settled {
+            // Eight of the 64 output-only hold frames have already played.
+            measured_render(&mut data, &mut output[..56]);
+            for (i, frame) in output[..56].iter().enumerate() {
+                assert_eq!(*frame, [0.25 * (55 - i) as f32 / 64.0; 2]);
+            }
+            assert_eq!(control.status.position.load(Acquire), held_position);
+            assert!(control.status.stream_applied_command_prefix.load(Acquire) < seek);
+        }
         measured_render(&mut data, &mut output);
         if action == GatedPageAction::Seek {
-            assert_eq!(output, [[0.75; 2]; 256]);
+            assert_stream_seek_ramp_in(&output, 0.75);
+            assert_eq!(
+                control.status.stream_applied_command_prefix.load(Acquire),
+                seek
+            );
             assert_eq!(control.status.position.load(Acquire), destination + 256);
         } else {
             assert_eq!(output, [[0.0; 2]; 256]);
@@ -4433,13 +4472,18 @@ fn prepared_audio_domain_gate(action: GatedPageAction) {
                 }
             }
             assert_eq!(
-                output, [[0.75; 2]; 256],
-                "old page must not play after the seek"
+                control.status.stream_applied_command_prefix.load(Acquire),
+                seek
             );
             if action == GatedPageAction::Seek {
+                assert_eq!(
+                    output, [[0.75; 2]; 256],
+                    "late old page must not reach the output"
+                );
                 assert_eq!(control.status.position.load(Acquire), destination + 512);
             } else {
-                assert!(control.status.position.load(Acquire) >= destination + 256);
+                assert_stream_seek_ramp_in(&output, 0.75);
+                assert_eq!(control.status.position.load(Acquire), destination + 256);
                 for _ in 0..3 {
                     measured_render(&mut data, &mut output);
                     assert_eq!(output, [[0.75; 2]; 256]);

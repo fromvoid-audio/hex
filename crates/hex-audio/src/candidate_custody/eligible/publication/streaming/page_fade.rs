@@ -13,6 +13,11 @@ pub(super) struct PageFade {
 }
 
 impl PageFade {
+    /// The transport is held for pages and its output-only ramp has reached silence.
+    pub(super) fn settled_hold(&self) -> bool {
+        self.holding && self.remaining == 0
+    }
+
     /// The caller supplies committed PCM when playing, or silence when held.
     /// Retain the last *emitted* sample so a reversal midway through either
     /// ramp is continuous, including across short callback slices.

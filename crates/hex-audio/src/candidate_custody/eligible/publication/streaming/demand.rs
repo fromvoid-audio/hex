@@ -1027,19 +1027,14 @@ impl ActiveView<'_> {
                         &mut output[committed..],
                         !pending_play && (source_changed || (!refused && !read_failed)),
                     );
-                    let capacity_conflict = self
-                        .state
-                        .streaming
-                        .as_ref()
-                        .is_some_and(|workspace| workspace.capacity_conflict);
-                    if refused
-                        && !capacity_conflict
-                        && self
-                            .state
-                            .streaming
-                            .as_ref()
-                            .is_some_and(|workspace| workspace.pending_seek_fade.is_some())
-                    {
+                    // A missing outgoing page need not hold a seek after its
+                    // output-only fade has reached silence. The destination
+                    // still needs its own source-bound demand and promotion.
+                    if self.state.streaming.as_ref().is_some_and(|workspace| {
+                        workspace.pending_seek_fade.is_some()
+                            && !workspace.capacity_conflict
+                            && (refused || workspace.page_fade.settled_hold())
+                    }) {
                         match self.complete_pending_seek_fade() {
                             Some(Ok(Some(ticket))) => action_applied = Some(ticket),
                             Some(Err((ticket, reason))) => {
