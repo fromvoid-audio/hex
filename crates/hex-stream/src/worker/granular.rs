@@ -186,6 +186,86 @@ impl GranularRouting {
             .binary_search_by_key(&key, StreamedSourceMetadata::key)
             .is_ok()
     }
+
+    /// Maximum forward page delta treated as sequential playback lookahead
+    /// rather than a scrub/playhead jump.
+    const SEQUENTIAL_LOOKAHEAD_PAGES: u64 = 4;
+
+    /// Returns true if `incoming` represents a scrub or playhead jump away from
+    /// an active in-flight loan for the same granular source.
+    fn supersedes_active_loan(&self, incoming: ResourcePageKey) -> bool {
+        let StreamResourceKey::Audio(audio_key) = incoming.source else {
+            return false;
+        };
+        self.loans.iter().any(|loan| {
+            loan.key.source == audio_key
+                && (incoming.page_index < loan.key.page_index
+                    || incoming.page_index
+                        > loan
+                            .key
+                            .page_index
+                            .saturating_add(Self::SEQUENTIAL_LOOKAHEAD_PAGES))
+        })
+    }
+
+    /// Enqueue an incoming granular request while the granular worker is busy.
+    /// When the incoming request jumps away from an active segmented replay for
+    /// the same source (scrub/seek), advance the granular demand epoch via
+    /// `GranularWorkerControl::supersede_on_control()`, cancel stale deferred
+    /// entries for that source, and prioritize the new target at the front of
+    /// `deferred` so it launches immediately once the cancelled loan unwinds.
+    pub(crate) fn defer_or_supersede(
+        &mut self,
+        incoming: ResourcePageKey,
+        held_failures: &mut Vec<StreamFailure>,
+        failure_queue: &mut Producer<StreamFailure>,
+    ) -> bool {
+        if self.supersedes_active_loan(incoming) {
+            let active_on_current_epoch = self
+                .loans
+                .iter()
+                .any(|loan| loan.key.epoch == self.control.epoch());
+            if active_on_current_epoch && self.control.supersede_on_control().is_err() {
+                self.fault = true;
+                return false;
+            }
+            // Cancel obsolete deferred pages for the jumped source so Endpoint's
+            // pending table stays balanced and fresh demand runs first.
+            let mut remaining = self.deferred.len();
+            while remaining > 0 {
+                remaining -= 1;
+                if let Some(entry) = self.deferred.pop_front() {
+                    if entry.source == incoming.source && entry != incoming {
+                        hold_failure(
+                            StreamFailure {
+                                key: entry.source,
+                                page_index: entry.page_index,
+                                kind: StreamFailureKind::Cancelled,
+                            },
+                            held_failures,
+                            failure_queue,
+                        );
+                    } else {
+                        self.deferred.push_back(entry);
+                    }
+                }
+            }
+            if self.deferred.contains(&incoming) {
+                return true;
+            }
+            if self.deferred.len() < self.deferred.capacity() {
+                self.deferred.push_front(incoming);
+                return true;
+            }
+            return false;
+        }
+        self.push_deferred(incoming)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn current_epoch(&self) -> u64 {
+        self.control.epoch()
+    }
     pub(crate) fn submit(
         &mut self,
         key: ResourcePageKey,

@@ -110,6 +110,40 @@ pub(crate) fn run_with_step_hook(
     run_inner(bank, queues, stop, demand_epoch, before_step)
 }
 
+/// Cap on simultaneously open file descriptors inside the dedicated granular
+/// worker so large warped banks stay well below macOS `RLIMIT_NOFILE = 256`.
+const MAX_OPEN_GRANULAR_READERS: usize = 16;
+
+fn enforce_open_reader_cap(
+    sources: &mut [VerifiedGranularSource],
+    last_used: &mut [u64],
+    active_index: usize,
+    tick: &mut u64,
+) {
+    *tick = tick.saturating_add(1);
+    if let Some(slot) = last_used.get_mut(active_index) {
+        *slot = *tick;
+    }
+    let mut open_count = sources.iter().filter(|s| s.is_reader_open()).count();
+    let reserve = usize::from(!sources[active_index].is_reader_open());
+    while open_count + reserve > MAX_OPEN_GRANULAR_READERS {
+        let victim = sources
+            .iter()
+            .enumerate()
+            .filter(|(idx, s)| *idx != active_index && s.is_reader_open())
+            .min_by_key(|(idx, _)| last_used.get(*idx).copied().unwrap_or(0))
+            .map(|(idx, _)| idx);
+        let Some(victim) = victim else {
+            break;
+        };
+        sources[victim].park_reader();
+        if let Some(slot) = last_used.get_mut(victim) {
+            *slot = 0;
+        }
+        open_count -= 1;
+    }
+}
+
 fn run_inner(
     bank: GranularWorkerBank,
     mut queues: GranularWorkerQueues,
@@ -118,6 +152,8 @@ fn run_inner(
     mut before_step: impl FnMut(),
 ) -> GranularWorkerExit {
     let mut sources = bank.into_sources();
+    let mut last_used = vec![0_u64; sources.len()];
+    let mut reader_tick = 0_u64;
     // The bank is never resized or reordered while a job holds its index.
     let mut active: Option<(usize, GranularWorkerKey)> = None;
     let mut held: Option<GranularWorkerOutcome> = None;
@@ -216,10 +252,9 @@ fn run_inner(
             });
             continue;
         }
-        let Some((index, source)) = sources
-            .iter_mut()
-            .enumerate()
-            .find(|(_, source)| source.metadata().key() == key.source)
+        let Some(index) = sources
+            .iter()
+            .position(|source| source.metadata().key() == key.source)
         else {
             held = Some(GranularWorkerOutcome {
                 key,
@@ -230,6 +265,8 @@ fn run_inner(
             });
             continue;
         };
+        enforce_open_reader_cap(&mut sources, &mut last_used, index, &mut reader_tick);
+        let source = &mut sources[index];
         let result = match key.seek {
             GranularWorkerSeek::Strict { max_preroll_frames } => {
                 source.begin_page(key.page_index, frames, max_preroll_frames, || {

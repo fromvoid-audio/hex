@@ -153,9 +153,13 @@ impl PendingStreamDomain {
             .checked_mul(hex_engine::STREAM_PAGE_FRAMES)
             .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
             .ok_or(StreamRuntimeError::AllocationFailed)?;
+        let max_open_readers = (config.max_reader_scratch_bytes
+            / hex_media::VERIFIED_WAV_PAGE_BYTES)
+            .clamp(1, crate::worker::MAX_OPEN_STREAM_READERS);
         if pcm > 32 * 1024 * 1024
             || definitions
                 .len()
+                .min(max_open_readers)
                 .checked_mul(hex_media::VERIFIED_WAV_PAGE_BYTES)
                 .is_none_or(|n| n > config.max_reader_scratch_bytes)
         {
