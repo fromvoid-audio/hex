@@ -86,11 +86,10 @@ pub(in crate::editor) fn window_with_gain(
     };
     service.submit(Request::Edit(track_command)).unwrap();
     let track_event = event(&service);
-    let revision = track_event.state.revision;
     let Created::Track(track) = track_event.created.unwrap() else {
         panic!("track")
     };
-    if with_gain {
+    let revision = if with_gain {
         service
             .submit(Request::Edit(Command::UpsertTrackGainPoint {
                 track,
@@ -102,8 +101,12 @@ pub(in crate::editor) fn window_with_gain(
                 },
             }))
             .unwrap();
-        assert!(event(&service).error.is_none());
-    }
+        let edited = event(&service);
+        assert!(edited.error.is_none(), "{:?}", edited.error);
+        edited.state.revision
+    } else {
+        track_event.state.revision
+    };
     if let Some(path) = sampler_path {
         service
             .submit(Request::LoadFirstSampler {
