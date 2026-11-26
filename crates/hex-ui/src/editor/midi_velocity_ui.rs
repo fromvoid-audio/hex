@@ -189,6 +189,8 @@ impl EditorView {
         let expression_controls = (self.midi_editor.velocity.open && !is_velocity)
             .then(|| self.expression_mode_controls(clip, cx));
         let header = div()
+            .h(px(18.0))
+            .flex_shrink_0()
             .flex()
             .items_center()
             .justify_between()
@@ -226,6 +228,7 @@ impl EditorView {
                         .items_center()
                         .gap_1()
                         .text_xs()
+                        .line_height(px(18.0))
                         .child(
                             div()
                                 .id("midi-velocity-randomize")
