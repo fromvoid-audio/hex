@@ -512,10 +512,142 @@ impl Drop for WorkerTimeConstraint {
     }
 }
 
+/// Real-time-safe Mach kernel semaphore for waking auxiliary audio workers.
+///
+/// Construct and drop on control. `signal` and `signal_all` issue a single
+/// non-blocking Mach trap with zero allocation and zero user-space locks,
+/// making them safe to invoke from CoreAudio callbacks when workers are parked.
+pub struct WorkerSemaphore {
+    sem: mach2::mach_types::semaphore_t,
+}
+
+// SAFETY: Mach semaphore port names are process-wide kernel objects safe to
+// signal and wait on concurrently from any thread in the owning task.
+unsafe impl Send for WorkerSemaphore {}
+unsafe impl Sync for WorkerSemaphore {}
+
+mod mach_semaphore_ffi {
+    use mach2::{
+        clock_types::mach_timespec_t,
+        kern_return::kern_return_t,
+        mach_types::{semaphore_t, task_t},
+        sync_policy::sync_policy_t,
+    };
+
+    // Match Apple's `<mach/semaphore.h>` and `<mach/task.h>` ABI directly:
+    // `mach2` 0.4/0.5 declares `semaphore_*` with `*mut semaphore_t` instead
+    // of by-value `semaphore_t`.
+    extern "C" {
+        pub(super) fn semaphore_create(
+            task: task_t,
+            semaphore: *mut semaphore_t,
+            policy: sync_policy_t,
+            value: std::ffi::c_int,
+        ) -> kern_return_t;
+        pub(super) fn semaphore_signal(semaphore: semaphore_t) -> kern_return_t;
+        pub(super) fn semaphore_signal_all(semaphore: semaphore_t) -> kern_return_t;
+        pub(super) fn semaphore_wait(semaphore: semaphore_t) -> kern_return_t;
+        pub(super) fn semaphore_timedwait(
+            semaphore: semaphore_t,
+            wait_time: mach_timespec_t,
+        ) -> kern_return_t;
+        pub(super) fn semaphore_destroy(task: task_t, semaphore: semaphore_t) -> kern_return_t;
+    }
+}
+
+impl WorkerSemaphore {
+    /// Allocate a new Mach FIFO semaphore initialized to zero count.
+    pub fn new() -> Result<Self, BackendSpecificError> {
+        use mach2::{
+            kern_return::KERN_SUCCESS, mach_types::semaphore_t, port::MACH_PORT_NULL,
+            sync_policy::SYNC_POLICY_FIFO, traps::mach_task_self,
+        };
+        let mut sem: semaphore_t = MACH_PORT_NULL;
+        // SAFETY: `mach_task_self()` identifies the current task and `sem` is valid out-storage.
+        let status = unsafe {
+            mach_semaphore_ffi::semaphore_create(mach_task_self(), &mut sem, SYNC_POLICY_FIFO, 0)
+        };
+        if status != KERN_SUCCESS || sem == MACH_PORT_NULL {
+            return Err(BackendSpecificError {
+                description: format!("mach semaphore_create failed (kern_return={status})"),
+            });
+        }
+        Ok(Self { sem })
+    }
+
+    /// Wake one waiting worker thread (RT-safe Mach trap).
+    #[inline]
+    pub fn signal(&self) {
+        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
+        let _ = unsafe { mach_semaphore_ffi::semaphore_signal(self.sem) };
+    }
+
+    /// Wake all currently parked worker threads (RT-safe Mach trap).
+    #[inline]
+    pub fn signal_all(&self) {
+        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
+        let _ = unsafe { mach_semaphore_ffi::semaphore_signal_all(self.sem) };
+    }
+
+    /// Block the calling worker thread until signaled.
+    #[inline]
+    pub fn wait(&self) {
+        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
+        let _ = unsafe { mach_semaphore_ffi::semaphore_wait(self.sem) };
+    }
+
+    /// Block the calling worker thread until signaled or `timeout` elapses.
+    /// Returns `true` if signaled (or interrupted), `false` if the timeout expired.
+    #[inline]
+    pub fn wait_timeout(&self, timeout: std::time::Duration) -> bool {
+        use mach2::{clock_types::mach_timespec_t, kern_return::KERN_OPERATION_TIMED_OUT};
+        let wait_time = mach_timespec_t {
+            tv_sec: u32::try_from(timeout.as_secs()).unwrap_or(u32::MAX),
+            tv_nsec: timeout.subsec_nanos() as i32,
+        };
+        // SAFETY: `self.sem` is a live kernel semaphore owned until `Drop`.
+        let status = unsafe { mach_semaphore_ffi::semaphore_timedwait(self.sem, wait_time) };
+        status != KERN_OPERATION_TIMED_OUT
+    }
+}
+
+impl Drop for WorkerSemaphore {
+    fn drop(&mut self) {
+        // SAFETY: destroy the owned Mach semaphore exactly once.
+        unsafe {
+            let _ = mach_semaphore_ffi::semaphore_destroy(mach2::traps::mach_task_self(), self.sem);
+        }
+    }
+}
+
 #[cfg(test)]
 mod worker_time_constraint_regression {
-    use super::WorkerTimeConstraint;
-    use std::time::Duration;
+    use super::{WorkerSemaphore, WorkerTimeConstraint};
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    #[test]
+    fn worker_semaphore_signals_and_times_out() {
+        let sem = Arc::new(WorkerSemaphore::new().unwrap());
+        assert!(!sem.wait_timeout(Duration::from_millis(2)));
+        sem.signal();
+        assert!(sem.wait_timeout(Duration::from_millis(50)));
+
+        let worker_sem = Arc::clone(&sem);
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            assert!(worker_sem.wait_timeout(Duration::from_secs(2)));
+            start.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(5));
+        let signal_at = Instant::now();
+        sem.signal_all();
+        let waited = handle.join().unwrap();
+        assert!(waited >= Duration::from_millis(4));
+        assert!(signal_at.elapsed() < Duration::from_millis(250));
+    }
 
     #[test]
     fn current_thread_repeatedly_enters_and_releases_time_constraint() {

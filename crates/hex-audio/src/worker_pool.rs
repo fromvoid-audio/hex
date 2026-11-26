@@ -1,14 +1,20 @@
 //! Bounded lock-free real-time worker pool implementing `hex_engine::WaveExecutor`.
 //!
 //! Spawns a bounded set of persistent worker threads on the control thread with
-//! preallocated SPSC `rtrb` channels, preallocated `WaveTaskSlot` buffers, and a
-//! single shared read-only `Arc<WaveClockWindow>` whose strong count returns to 1
-//! after every wave (zero callback allocations, zero callback drops, zero mutexes).
+//! preallocated lock-free `ArrayQueue` work-stealing queues, per-worker SPSC
+//! wave-framing channels, preallocated `WaveTaskSlot` buffers, and a single
+//! shared read-only `Arc<WaveClockWindow>` whose strong count returns to 1 after
+//! every wave (zero callback allocations, zero callback drops, zero mutexes).
 //!
-//! On macOS, active workers non-fatally borrow CoreAudio Mach time-constraint
-//! scheduling via `cpal::platform::CoreAudioWorkerTimeConstraint` and release it
-//! when idle or shutting down.
+//! Workers spin for at most `HOT_SPIN_WINDOW` (`<= 150 us`) after completing a
+//! wave and then park on an OS semaphore (`CoreAudioWorkerSemaphore` on macOS)
+//! so cold-idle wakeups complete in microseconds without violating Mach RT
+//! computation budgets. On macOS, active workers non-fatally borrow CoreAudio
+//! Mach time-constraint scheduling via `cpal::platform::CoreAudioWorkerTimeConstraint`,
+//! releasing it during sustained idle and re-entering off the synchronous
+//! `BeginWave` critical path after completing a wave.
 
+use crossbeam_queue::ArrayQueue;
 use hex_engine::{
     Frame, Invalid,
     wave_executor::{
@@ -24,7 +30,7 @@ use std::{
         Arc,
         atomic::{
             AtomicBool, AtomicU64,
-            Ordering::{Acquire, Relaxed, Release},
+            Ordering::{Acquire, Relaxed, Release, SeqCst},
         },
     },
     thread::{self, JoinHandle},
@@ -35,54 +41,132 @@ use std::{
 /// giving up to 8 concurrent DSP threads).
 pub const MAX_WORKERS: usize = 7;
 
-/// Duration workers remain in a low-latency atomic spin after completing a wave
-/// before entering exponentially backed-off idle sleeps.
-const HOT_SPIN_WINDOW: Duration = Duration::from_millis(25);
+/// Bounded micro-spin duration (`<= 150 us`) workers stay hot after completing a
+/// wave before parking on the OS semaphore, keeping CPU use well within the 2 ms
+/// Mach RT computation quantum.
+const HOT_SPIN_WINDOW: Duration = Duration::from_micros(100);
 
 /// Sustained idle duration before releasing Mach real-time time-constraint
 /// scheduling, avoiding per-wave `thread_policy_set` syscalls on hot wakeups.
 const DEADLINE_HOLD_WINDOW: Duration = Duration::from_millis(500);
 
-/// Initial idle sleep cadence after `HOT_SPIN_WINDOW` elapses; doubles up to
-/// `IDLE_POLL_MAX` while idle and resets immediately when a new wave arrives.
-const IDLE_POLL_INITIAL: Duration = Duration::from_micros(250);
-const IDLE_POLL_MAX: Duration = Duration::from_millis(8);
+/// Upper bound the audio callback will spin waiting on a dispatched worker before
+/// declaring the pool degraded and recovering without deadlocking the device thread.
+const DEFAULT_STALL_BUDGET: Duration = Duration::from_millis(50);
 
-/// Channel capacity per worker: enough for a full wave plus BeginWave/EndWave framing.
-const WORKER_QUEUE_CAPACITY: usize = MAX_WAVE_TASKS + 4;
+/// Per-worker SPSC wave-framing capacity (1 `BeginWave` / `WaveDone` per wave).
+const WORKER_CONTROL_CAPACITY: usize = 4;
 
 enum WorkerRequest {
     BeginWave(Arc<WaveClockWindow>),
-    Task {
-        slot_index: usize,
-        task: Box<WaveTaskSlot>,
-    },
-    EndWave,
 }
 
 enum WorkerReply {
-    Task {
-        slot_index: usize,
-        task: Box<WaveTaskSlot>,
-    },
     WaveDone(Arc<WaveClockWindow>),
+}
+
+#[cfg(target_os = "macos")]
+struct WorkerWakeup {
+    sem: cpal::platform::CoreAudioWorkerSemaphore,
+}
+
+#[cfg(target_os = "macos")]
+impl WorkerWakeup {
+    fn new() -> Result<Self, Invalid> {
+        let sem = cpal::platform::CoreAudioWorkerSemaphore::new()
+            .map_err(|_| Invalid("could not create CoreAudio worker semaphore"))?;
+        Ok(Self { sem })
+    }
+
+    #[inline]
+    fn signal(&self) {
+        self.sem.signal();
+    }
+
+    #[inline]
+    fn wait(&self) {
+        self.sem.wait();
+    }
+
+    #[inline]
+    fn wait_timeout(&self, timeout: Duration) -> bool {
+        self.sem.wait_timeout(timeout)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+struct WorkerWakeup {
+    state: std::sync::Mutex<u64>,
+    cvar: std::sync::Condvar,
+}
+
+#[cfg(not(target_os = "macos"))]
+impl WorkerWakeup {
+    fn new() -> Result<Self, Invalid> {
+        Ok(Self {
+            state: std::sync::Mutex::new(0),
+            cvar: std::sync::Condvar::new(),
+        })
+    }
+
+    #[inline]
+    fn signal(&self) {
+        if let Ok(mut tokens) = self.state.lock() {
+            *tokens = tokens.saturating_add(1);
+            self.cvar.notify_one();
+        }
+    }
+
+    fn wait(&self) {
+        if let Ok(mut tokens) = self.state.lock() {
+            while *tokens == 0 {
+                match self.cvar.wait(tokens) {
+                    Ok(guard) => tokens = guard,
+                    Err(_) => return,
+                }
+            }
+            *tokens -= 1;
+        }
+    }
+
+    fn wait_timeout(&self, timeout: Duration) -> bool {
+        if let Ok(mut tokens) = self.state.lock() {
+            if *tokens > 0 {
+                *tokens -= 1;
+                return true;
+            }
+            if let Ok((mut guard, _)) = self.cvar.wait_timeout(tokens, timeout) {
+                if *guard > 0 {
+                    *guard -= 1;
+                    return true;
+                }
+            }
+        }
+        false
+    }
 }
 
 struct WorkerEndpoint {
     tx: Producer<WorkerRequest>,
     rx: Consumer<WorkerReply>,
+    parked: Arc<AtomicBool>,
+    wakeup: Arc<WorkerWakeup>,
     exited: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 struct WorkerShared {
+    ready_queue: ArrayQueue<(usize, Box<WaveTaskSlot>)>,
+    done_queue: ArrayQueue<(usize, Box<WaveTaskSlot>)>,
     wave_epoch: AtomicU64,
     shutdown: AtomicBool,
     worker_exited: AtomicBool,
+    #[cfg(test)]
+    worker_tasks_executed: AtomicU64,
 }
 
 /// Guard ensuring both per-worker and pool-wide exit flags are raised if a worker
-/// thread ever terminates early so the callback spin-wait can never deadlock.
+/// thread ever terminates early so the callback wait loop can never deadlock.
 struct ExitFlagGuard<'a> {
     pool_flag: &'a AtomicBool,
     worker_flag: &'a AtomicBool,
@@ -128,6 +212,10 @@ impl WorkerDeadline {
         }
     }
 
+    fn is_active(&self) -> bool {
+        self.active
+    }
+
     fn enter(&mut self) {
         if !self.active
             && !self.refused
@@ -154,15 +242,24 @@ impl WorkerDeadline {
 }
 
 #[cfg(not(target_os = "macos"))]
-struct WorkerDeadline;
+struct WorkerDeadline {
+    active: bool,
+}
 
 #[cfg(not(target_os = "macos"))]
 impl WorkerDeadline {
     fn for_current_thread(_sample_rate: u32) -> Self {
-        Self
+        Self { active: false }
     }
-    fn enter(&mut self) {}
-    fn leave(&mut self) {}
+    fn is_active(&self) -> bool {
+        self.active
+    }
+    fn enter(&mut self) {
+        self.active = true;
+    }
+    fn leave(&mut self) {
+        self.active = false;
+    }
 }
 
 fn push_reply_until_shutdown(
@@ -182,6 +279,8 @@ fn push_reply_until_shutdown(
 
 fn worker_loop(
     shared: Arc<WorkerShared>,
+    parked: Arc<AtomicBool>,
+    wakeup: Arc<WorkerWakeup>,
     worker_exited: Arc<AtomicBool>,
     mut rx: Consumer<WorkerRequest>,
     mut tx: Producer<WorkerReply>,
@@ -195,51 +294,39 @@ fn worker_loop(
     let mut deadline = WorkerDeadline::for_current_thread(sample_rate);
     deadline.enter();
     let mut last_active = Instant::now();
-    let mut idle_sleep = IDLE_POLL_INITIAL;
     let mut observed_epoch = shared.wave_epoch.load(Acquire);
-    let mut active_clock: Option<Arc<WaveClockWindow>> = None;
 
     'outer: loop {
         let mut progressed = false;
-        while let Ok(msg) = rx.pop() {
+        while let Ok(WorkerRequest::BeginWave(clock)) = rx.pop() {
             progressed = true;
-            match msg {
-                WorkerRequest::BeginWave(clock) => {
-                    deadline.enter();
-                    active_clock = Some(clock);
-                }
-                WorkerRequest::Task {
-                    slot_index,
-                    mut task,
-                } => {
-                    if let Some(clock) = active_clock.as_deref() {
-                        task.run(clock);
-                    }
-                    if !push_reply_until_shutdown(
-                        &mut tx,
-                        &shared,
-                        WorkerReply::Task { slot_index, task },
-                    ) {
+            // Steal tasks lock-free until the wave's ready queue drains,
+            // without running `thread_policy_set` on the synchronous BeginWave path.
+            while let Some((slot_index, mut task)) = shared.ready_queue.pop() {
+                task.run(&clock);
+                #[cfg(test)]
+                shared.worker_tasks_executed.fetch_add(1, Relaxed);
+                let mut pending = (slot_index, task);
+                while let Err(returned) = shared.done_queue.push(pending) {
+                    if shared.shutdown.load(Acquire) {
                         break 'outer;
                     }
+                    pending = returned;
+                    std::hint::spin_loop();
                 }
-                WorkerRequest::EndWave => {
-                    if let Some(clock) = active_clock.take()
-                        && !push_reply_until_shutdown(
-                            &mut tx,
-                            &shared,
-                            WorkerReply::WaveDone(clock),
-                        )
-                    {
-                        break 'outer;
-                    }
-                    last_active = Instant::now();
-                }
+            }
+            if !push_reply_until_shutdown(&mut tx, &shared, WorkerReply::WaveDone(clock)) {
+                break 'outer;
+            }
+            last_active = Instant::now();
+            // Re-enter Mach RT scheduling off the callback critical path (after
+            // releasing the callback via `WaveDone`) so the next wave starts hot.
+            if !deadline.is_active() && !shared.shutdown.load(Acquire) {
+                deadline.enter();
             }
         }
 
         if progressed {
-            idle_sleep = IDLE_POLL_INITIAL;
             last_active = Instant::now();
             observed_epoch = shared.wave_epoch.load(Acquire);
             continue;
@@ -251,7 +338,6 @@ fn worker_loop(
 
         let current_epoch = shared.wave_epoch.load(Acquire);
         if current_epoch != observed_epoch {
-            idle_sleep = IDLE_POLL_INITIAL;
             observed_epoch = current_epoch;
             continue;
         }
@@ -259,15 +345,40 @@ fn worker_loop(
         let idle_for = last_active.elapsed();
         if idle_for < HOT_SPIN_WINDOW {
             std::hint::spin_loop();
-        } else {
-            if idle_for >= DEADLINE_HOLD_WINDOW {
+            continue;
+        }
+
+        // Publish parked state with SeqCst before re-checking epoch/shutdown so
+        // the callback's SeqCst epoch bump + parked check cannot miss a wakeup.
+        parked.store(true, SeqCst);
+        let recheck_epoch = shared.wave_epoch.load(SeqCst);
+        if recheck_epoch != observed_epoch || shared.shutdown.load(SeqCst) {
+            parked.store(false, Release);
+            observed_epoch = recheck_epoch;
+            continue;
+        }
+
+        if deadline.is_active() && idle_for < DEADLINE_HOLD_WINDOW {
+            let remaining = DEADLINE_HOLD_WINDOW.saturating_sub(idle_for);
+            let signaled = wakeup.wait_timeout(remaining);
+            parked.store(false, Release);
+            if !signaled
+                && last_active.elapsed() >= DEADLINE_HOLD_WINDOW
+                && shared.wave_epoch.load(Acquire) == observed_epoch
+                && !shared.shutdown.load(Acquire)
+            {
                 deadline.leave();
             }
-            thread::sleep(idle_sleep);
-            idle_sleep = idle_sleep.saturating_mul(2).min(IDLE_POLL_MAX);
+        } else {
+            if deadline.is_active() {
+                deadline.leave();
+            }
+            wakeup.wait();
+            parked.store(false, Release);
         }
     }
 
+    parked.store(false, Release);
     deadline.leave();
     exit_guard.clean = true;
 }
@@ -284,6 +395,7 @@ pub struct AudioWorkerPool {
     slot_owners: [usize; MAX_WAVE_TASKS],
     staged: usize,
     sample_rate: u32,
+    stall_budget: Duration,
     #[cfg(test)]
     waves_executed: usize,
 }
@@ -294,26 +406,52 @@ impl AudioWorkerPool {
     pub fn new(worker_count: usize, sample_rate: u32) -> Result<Self, Invalid> {
         let clamped_workers = worker_count.min(MAX_WORKERS);
         let shared = Arc::new(WorkerShared {
+            ready_queue: ArrayQueue::new(MAX_WAVE_TASKS),
+            done_queue: ArrayQueue::new(MAX_WAVE_TASKS),
             wave_epoch: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             worker_exited: AtomicBool::new(false),
+            #[cfg(test)]
+            worker_tasks_executed: AtomicU64::new(0),
         });
         let mut workers: Vec<WorkerEndpoint> = Vec::with_capacity(clamped_workers);
         for index in 0..clamped_workers {
-            let (req_tx, req_rx) = RingBuffer::new(WORKER_QUEUE_CAPACITY);
-            let (rep_tx, rep_rx) = RingBuffer::new(WORKER_QUEUE_CAPACITY);
+            let (req_tx, req_rx) = RingBuffer::new(WORKER_CONTROL_CAPACITY);
+            let (rep_tx, rep_rx) = RingBuffer::new(WORKER_CONTROL_CAPACITY);
             let worker_shared = Arc::clone(&shared);
+            let parked = Arc::new(AtomicBool::new(false));
+            let worker_parked = Arc::clone(&parked);
+            let wakeup = Arc::new(WorkerWakeup::new().inspect_err(|_| {
+                shared.shutdown.store(true, SeqCst);
+                shared.wave_epoch.fetch_add(1, SeqCst);
+                for mut spawned in workers.drain(..) {
+                    spawned.wakeup.signal();
+                    if let Some(handle) = spawned.handle.take() {
+                        let _ = handle.join();
+                    }
+                }
+            })?);
+            let worker_wakeup = Arc::clone(&wakeup);
             let exited = Arc::new(AtomicBool::new(false));
             let worker_exit_flag = Arc::clone(&exited);
             let builder = thread::Builder::new().name(format!("hex-dsp-wave-{index}"));
             let handle = builder
                 .spawn(move || {
-                    worker_loop(worker_shared, worker_exit_flag, req_rx, rep_tx, sample_rate)
+                    worker_loop(
+                        worker_shared,
+                        worker_parked,
+                        worker_wakeup,
+                        worker_exit_flag,
+                        req_rx,
+                        rep_tx,
+                        sample_rate,
+                    )
                 })
                 .map_err(|_| {
-                    shared.shutdown.store(true, Release);
-                    shared.wave_epoch.fetch_add(1, Release);
+                    shared.shutdown.store(true, SeqCst);
+                    shared.wave_epoch.fetch_add(1, SeqCst);
                     for mut spawned in workers.drain(..) {
+                        spawned.wakeup.signal();
                         if let Some(handle) = spawned.handle.take() {
                             let _ = handle.join();
                         }
@@ -323,6 +461,8 @@ impl AudioWorkerPool {
             workers.push(WorkerEndpoint {
                 tx: req_tx,
                 rx: rep_rx,
+                parked,
+                wakeup,
                 exited,
                 handle: Some(handle),
             });
@@ -339,6 +479,7 @@ impl AudioWorkerPool {
             slot_owners: [0; MAX_WAVE_TASKS],
             staged: 0,
             sample_rate,
+            stall_budget: DEFAULT_STALL_BUDGET,
             #[cfg(test)]
             waves_executed: 0,
         })
@@ -378,8 +519,11 @@ impl AudioWorkerPool {
 
 impl Drop for AudioWorkerPool {
     fn drop(&mut self) {
-        self.shared.shutdown.store(true, Release);
-        self.shared.wave_epoch.fetch_add(1, Release);
+        self.shared.shutdown.store(true, SeqCst);
+        self.shared.wave_epoch.fetch_add(1, SeqCst);
+        for worker in &self.workers {
+            worker.wakeup.signal();
+        }
         for worker in &mut self.workers {
             if let Some(handle) = worker.handle.take() {
                 let _ = handle.join();
@@ -455,95 +599,80 @@ impl WaveExecutor for AudioWorkerPool {
         {
             self.waves_executed = self.waves_executed.saturating_add(1);
         }
-        let active_threads = (self.workers.len() + 1).min(total);
-        let active_workers = active_threads - 1;
-        let base_chunk = total / active_threads;
-        let extra = total % active_threads;
-
-        // Caller thread executes chunk 0 locally while workers execute chunks 1..active_threads.
-        let caller_count = base_chunk + usize::from(extra > 0);
-        let mut cursor = caller_count;
+        let active_workers = self.workers.len().min(total.saturating_sub(1));
         let mut worker_dispatched = [false; MAX_WORKERS];
         let mut dispatched_workers = 0usize;
 
-        for (w, dispatched) in worker_dispatched
-            .iter_mut()
-            .enumerate()
-            .take(active_workers)
-        {
-            let chunk_len = base_chunk + usize::from(w + 1 < extra);
-            if chunk_len == 0 {
-                break;
-            }
-            let start = cursor;
-            let end = cursor + chunk_len;
-            cursor = end;
-
-            let available = self.slots[start..end]
-                .iter()
-                .filter(|slot| slot.is_some())
-                .count();
-            if available == 0 {
-                continue;
-            }
-
-            let worker = &mut self.workers[w];
-            if worker.exited.load(Acquire) || worker.tx.slots() < available + 2 {
-                // Unexpected queue saturation or exited worker: leave tasks in
-                // `self.slots[start..end]` so the caller executes them inline.
-                continue;
-            }
-            if worker
-                .tx
-                .push(WorkerRequest::BeginWave(Arc::clone(&self.clock)))
-                .is_err()
-            {
-                continue;
-            }
-            for slot_index in start..end {
-                if let Some(task) = self.slots[slot_index].take() {
-                    match worker.tx.push(WorkerRequest::Task { slot_index, task }) {
-                        Ok(()) => {}
-                        Err(rtrb::PushError::Full(WorkerRequest::Task { slot_index, task })) => {
-                            // Restore the unpushed task; the caller inline pass below
-                            // executes every slot still present in `self.slots[..total]`.
-                            self.slots[slot_index] = Some(task);
-                            break;
-                        }
-                        Err(_) => break,
+        // Publish every staged task into the lock-free work-stealing queue before
+        // signaling workers so woken workers immediately steal work on arrival.
+        let mut pushed_tasks = 0usize;
+        for slot_index in 0..total {
+            if let Some(task) = self.slots[slot_index].take() {
+                match self.shared.ready_queue.push((slot_index, task)) {
+                    Ok(()) => pushed_tasks += 1,
+                    Err((slot_index, task)) => {
+                        self.slots[slot_index] = Some(task);
                     }
                 }
             }
-            // `tx` is SPSC and had >= `available + 2` free slots before `BeginWave`,
-            // so `EndWave` fits immediately. Spin defensively if ever full while alive.
-            while worker.tx.push(WorkerRequest::EndWave).is_err() {
-                if worker.exited.load(Acquire) || self.shared.shutdown.load(Acquire) {
-                    break;
+        }
+
+        if pushed_tasks > 0 {
+            for (w, dispatched) in worker_dispatched
+                .iter_mut()
+                .enumerate()
+                .take(active_workers)
+            {
+                let worker = &mut self.workers[w];
+                if worker.exited.load(Acquire) || worker.tx.slots() == 0 {
+                    continue;
                 }
-                std::hint::spin_loop();
+                if worker
+                    .tx
+                    .push(WorkerRequest::BeginWave(Arc::clone(&self.clock)))
+                    .is_ok()
+                {
+                    *dispatched = true;
+                    dispatched_workers += 1;
+                }
             }
-            *dispatched = true;
-            dispatched_workers += 1;
         }
 
         if dispatched_workers > 0 {
-            self.shared.wave_epoch.fetch_add(1, Release);
-        }
-
-        // Caller executes its own slice plus any unpushed tasks still resident in
-        // `self.slots[..total]` (e.g., from queue saturation or mid-chunk `PushError::Full`).
-        {
-            let clock = &*self.clock;
-            for slot in self.slots[..total].iter_mut().flatten() {
-                slot.run(clock);
+            // SeqCst epoch bump + per-worker parked check pairs with worker's
+            // SeqCst parked store + epoch recheck for lost-wakeup-free signaling.
+            self.shared.wave_epoch.fetch_add(1, SeqCst);
+            for (w, &dispatched) in worker_dispatched.iter().enumerate().take(active_workers) {
+                if dispatched && self.workers[w].parked.load(SeqCst) {
+                    self.workers[w].wakeup.signal();
+                }
             }
         }
 
-        // Drain replies from all dispatched workers lock-free.
+        // Caller participates in the same lock-free work-stealing queue over 0..total
+        // and also executes any unpushed slot that remained resident locally.
+        let mut completed_tasks = 0usize;
+        for slot in self.slots[..total].iter_mut().flatten() {
+            slot.run(&self.clock);
+        }
+        while let Some((slot_index, mut task)) = self.shared.ready_queue.pop() {
+            task.run(&self.clock);
+            self.slots[slot_index] = Some(task);
+            completed_tasks += 1;
+        }
+
+        // Drain completed worker tasks and WaveDone framing under a bounded wait budget
+        // so a wedged or exited worker can never spin the audio callback unboundedly.
         let mut worker_done = [false; MAX_WORKERS];
         let mut remaining_workers = dispatched_workers;
-        while remaining_workers > 0 {
+        let wait_start = Instant::now();
+        while remaining_workers > 0 || completed_tasks < pushed_tasks {
             let mut any = false;
+            while let Some((slot_index, task)) = self.shared.done_queue.pop() {
+                self.slots[slot_index] = Some(task);
+                completed_tasks += 1;
+                any = true;
+            }
             for (w, (dispatched, done)) in worker_dispatched
                 .iter()
                 .zip(worker_done.iter_mut())
@@ -553,28 +682,44 @@ impl WaveExecutor for AudioWorkerPool {
                 if !*dispatched || *done {
                     continue;
                 }
-                while let Ok(reply) = self.workers[w].rx.pop() {
+                if let Ok(WorkerReply::WaveDone(clock_clone)) = self.workers[w].rx.pop() {
                     any = true;
-                    match reply {
-                        WorkerReply::Task { slot_index, task } => {
-                            self.slots[slot_index] = Some(task);
-                        }
-                        WorkerReply::WaveDone(clock_clone) => {
-                            // `self.clock` remains alive (strong count >= 1), so this drop
-                            // only decrements the atomic refcount with zero deallocation.
-                            drop(clock_clone);
-                            *done = true;
-                            remaining_workers -= 1;
-                            break;
-                        }
-                    }
+                    // `self.clock` remains alive (strong count >= 1), so this drop
+                    // only decrements the atomic refcount with zero deallocation.
+                    drop(clock_clone);
+                    *done = true;
+                    remaining_workers -= 1;
                 }
                 if !*done && self.workers[w].exited.load(Acquire) && self.workers[w].rx.is_empty() {
                     *done = true;
                     remaining_workers -= 1;
+                    any = true;
                 }
             }
-            if !any && remaining_workers > 0 {
+            if !any && (remaining_workers > 0 || completed_tasks < pushed_tasks) {
+                if wait_start.elapsed() >= self.stall_budget {
+                    // Mark degraded so subsequent waves execute inline without waiting.
+                    self.shared.worker_exited.store(true, Release);
+                    for (w, (&dispatched, &done)) in worker_dispatched
+                        .iter()
+                        .zip(worker_done.iter())
+                        .enumerate()
+                        .take(active_workers)
+                    {
+                        if dispatched && !done {
+                            self.workers[w].exited.store(true, Release);
+                        }
+                    }
+                    // Recover any remaining unstarted or finished tasks without blocking.
+                    while let Some((slot_index, mut task)) = self.shared.ready_queue.pop() {
+                        task.run(&self.clock);
+                        self.slots[slot_index] = Some(task);
+                    }
+                    while let Some((slot_index, task)) = self.shared.done_queue.pop() {
+                        self.slots[slot_index] = Some(task);
+                    }
+                    break;
+                }
                 std::hint::spin_loop();
             }
         }
@@ -862,10 +1007,14 @@ mod tests {
     fn saturated_queue_runs_tasks_inline_without_skipping_or_wedging_clock() {
         let mut pool = AudioWorkerPool::new(2, 48_000).unwrap();
         // Replace worker 0's channel with a saturated unconsumed ring buffer
-        // (capacity 1, full) so worker 0 cannot accept BeginWave + tasks + EndWave,
+        // (capacity 1, full) so worker 0 cannot accept BeginWave,
         // while worker 1 remains live and healthy.
         let (mut saturated_tx, _parked_rx) = RingBuffer::new(1);
-        saturated_tx.push(WorkerRequest::EndWave).unwrap();
+        saturated_tx
+            .push(WorkerRequest::BeginWave(Arc::new(
+                WaveClockWindow::default(),
+            )))
+            .unwrap();
         let (_unused_rep_tx, empty_rep_rx) = RingBuffer::new(4);
         let original_handle = pool.workers[0].handle.take();
         pool.workers[0].tx = saturated_tx;
@@ -964,45 +1113,263 @@ mod tests {
     #[test]
     fn worker_shutdown_breaks_out_of_full_reply_queue_cleanly() {
         let shared = Arc::new(WorkerShared {
+            ready_queue: ArrayQueue::new(MAX_WAVE_TASKS),
+            done_queue: ArrayQueue::new(MAX_WAVE_TASKS),
             wave_epoch: AtomicU64::new(0),
             shutdown: AtomicBool::new(false),
             worker_exited: AtomicBool::new(false),
+            worker_tasks_executed: AtomicU64::new(0),
         });
+        let parked = Arc::new(AtomicBool::new(false));
+        let wakeup = Arc::new(WorkerWakeup::new().unwrap());
         let exited = Arc::new(AtomicBool::new(false));
-        let (mut req_tx, req_rx) = RingBuffer::new(8);
-        // Capacity 1 reply queue, never drained: second reply blocks in spin-push.
-        let (rep_tx, _rep_rx) = RingBuffer::new(1);
+        let (mut req_tx, req_rx) = RingBuffer::new(4);
+        // Capacity 1 reply queue, pre-filled and never drained so WaveDone spins in push_reply_until_shutdown.
+        let (mut rep_tx, _rep_rx) = RingBuffer::new(1);
+        rep_tx
+            .push(WorkerReply::WaveDone(Arc::new(WaveClockWindow::default())))
+            .unwrap();
 
         let worker_shared = Arc::clone(&shared);
+        let worker_parked = Arc::clone(&parked);
+        let worker_wakeup = Arc::clone(&wakeup);
         let worker_exited = Arc::clone(&exited);
         let handle = thread::Builder::new()
             .name("hex-dsp-wave-shutdown-test".into())
-            .spawn(move || worker_loop(worker_shared, worker_exited, req_rx, rep_tx, 48_000))
+            .spawn(move || {
+                worker_loop(
+                    worker_shared,
+                    worker_parked,
+                    worker_wakeup,
+                    worker_exited,
+                    req_rx,
+                    rep_tx,
+                    48_000,
+                )
+            })
             .unwrap();
 
         let clock = Arc::new(WaveClockWindow::default());
+        shared
+            .ready_queue
+            .push((0, Box::new(WaveTaskSlot::new_idle())))
+            .ok()
+            .unwrap();
         req_tx.push(WorkerRequest::BeginWave(clock)).unwrap();
-        for slot_index in 0..3 {
-            req_tx
-                .push(WorkerRequest::Task {
-                    slot_index,
-                    task: Box::new(WaveTaskSlot::new_idle()),
-                })
-                .unwrap();
-        }
-        req_tx.push(WorkerRequest::EndWave).unwrap();
-        shared.wave_epoch.fetch_add(1, Release);
+        shared.wave_epoch.fetch_add(1, SeqCst);
+        wakeup.signal();
 
-        // Give worker a moment to fill the 1-slot reply queue and enter spin-push.
+        // Give worker a moment to finish the task and enter WaveDone spin-push.
         thread::sleep(Duration::from_millis(5));
-        shared.shutdown.store(true, Release);
-        shared.wave_epoch.fetch_add(1, Release);
+        shared.shutdown.store(true, SeqCst);
+        shared.wave_epoch.fetch_add(1, SeqCst);
+        wakeup.signal();
 
         handle
             .join()
             .expect("worker thread must exit cleanly on shutdown");
         assert!(!exited.load(Acquire));
         assert!(!shared.worker_exited.load(Acquire));
+    }
+
+    #[test]
+    fn cold_idle_wakeup_via_semaphore_completes_promptly_and_matches_serial() {
+        let revision = dense_revision(16, false);
+        let mut serial_runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut parallel_runtime = SessionPlayback::new(revision).unwrap();
+        serial_runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        parallel_runtime
+            .apply(SessionPlaybackCommand::Play)
+            .unwrap();
+
+        let mut serial_exec = SerialWaveExecutor::default();
+        let mut pool = AudioWorkerPool::new(3, 48_000).unwrap();
+
+        // Wait until all workers finish HOT_SPIN_WINDOW (<= 150 us) and park on their OS semaphore.
+        let park_deadline = Instant::now() + Duration::from_millis(200);
+        while !pool.workers.iter().all(|w| w.parked.load(Acquire)) {
+            assert!(
+                Instant::now() < park_deadline,
+                "workers must park on semaphore after bounded HOT_SPIN_WINDOW"
+            );
+            thread::sleep(Duration::from_micros(200));
+        }
+        assert!(HOT_SPIN_WINDOW <= Duration::from_micros(150));
+
+        let mut expected = [[0.0_f32; 2]; 256];
+        let mut actual = [[0.0_f32; 2]; 256];
+        serial_runtime
+            .render_with_wave_executor(&mut expected, &mut serial_exec)
+            .unwrap();
+        let wake_start = Instant::now();
+        parallel_runtime
+            .render_with_wave_executor(&mut actual, &mut pool)
+            .unwrap();
+        let cold_wave_elapsed = wake_start.elapsed();
+        assert!(
+            cold_wave_elapsed < Duration::from_millis(100),
+            "cold-idle semaphore wakeup wave took {cold_wave_elapsed:?}"
+        );
+        assert!(
+            pool.shared.worker_tasks_executed.load(Acquire) > 0,
+            "parked workers must wake and execute stolen tasks"
+        );
+        for (i, (e, a)) in expected.iter().zip(actual.iter()).enumerate() {
+            assert_eq!(
+                [e[0].to_bits(), e[1].to_bits()],
+                [a[0].to_bits(), a[1].to_bits()],
+                "cold-wakeup bit mismatch at frame {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn heterogeneous_load_work_stealing_distributes_tasks_and_matches_serial() {
+        let mut pool = AudioWorkerPool::new(3, 48_000).unwrap();
+        let mut serial = SerialWaveExecutor::default();
+        let input = [[0.35_f32, -0.25_f32]; 256];
+        let task_count = 16usize;
+
+        let build_chain = |idx: usize| -> NativeRuntimeChain {
+            use hex_lattice::{
+                DeviceMeter, NativeDeviceDefinition, PreparedProcessorInstance,
+                ProcessorChainOwner, StereoMatrix,
+            };
+            use hex_lattice_contract::DeviceTypeId;
+            if idx == 0 {
+                // One heavy straggler track with stacked 8x-oversampled Saturators.
+                let mut instances = Vec::new();
+                let ctx = hex_lattice::DevicePreparationContext {
+                    sample_rate: 48_000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                };
+                for stage in 0..8u64 {
+                    let state = hex_devices::saturator::SATURATOR_DEFINITION
+                        .default_state()
+                        .unwrap();
+                    let prepared = hex_devices::saturator::SATURATOR_DEFINITION
+                        .prepare_processor(&state, &ctx)
+                        .unwrap()
+                        .unwrap();
+                    instances.push(PreparedProcessorInstance {
+                        meter: Arc::new(DeviceMeter::default()),
+                        owner: ProcessorChainOwner::Track(1),
+                        device_id: 10 + stage,
+                        device_type: DeviceTypeId::from_static("hex.saturator"),
+                        matrix: StereoMatrix::identity(),
+                        bypassed: false,
+                        sample_rate: 48_000,
+                        configuration: Some(Arc::new(state)),
+                        definition: Some(Arc::from(prepared)),
+                    });
+                }
+                NativeRuntimeChain::new(instances).unwrap()
+            } else {
+                utility_chain(idx as u64 + 1, idx as u64 + 100, 0.5)
+            }
+        };
+
+        let clock_s = serial.prepare_clock().unwrap();
+        clock_s.history_len = 0;
+        clock_s.incoming_len = 0;
+        let clock_p = pool.prepare_clock().unwrap();
+        clock_p.history_len = 0;
+        clock_p.incoming_len = 0;
+
+        let mut serial_slots = Vec::new();
+        let mut pool_slots = Vec::new();
+        for idx in 0..task_count {
+            let chain_s = build_chain(idx);
+            let chain_p = build_chain(idx);
+            let stages = chain_s.len();
+            serial_slots.push(
+                serial
+                    .push_task(idx, chain_s, &input, 0, 0, stages, false, &[])
+                    .ok()
+                    .unwrap(),
+            );
+            pool_slots.push(
+                pool.push_task(idx, chain_p, &input, 0, 0, stages, false, &[])
+                    .ok()
+                    .unwrap(),
+            );
+        }
+
+        serial.execute_staged();
+        pool.execute_staged();
+
+        assert!(
+            pool.shared.worker_tasks_executed.load(Acquire) > 0,
+            "work-stealing workers must steal light tasks while heavy straggler runs"
+        );
+        for (s_slot, p_slot) in serial_slots.into_iter().zip(pool_slots) {
+            let mut out_s = [[0.0_f32; 2]; 256];
+            let mut out_p = [[0.0_f32; 2]; 256];
+            let (owner_s, _, err_s) = serial.reclaim_task(s_slot, &mut out_s);
+            let (owner_p, _, err_p) = pool.reclaim_task(p_slot, &mut out_p);
+            assert_eq!(owner_s, owner_p);
+            assert!(err_s.is_none() && err_p.is_none());
+            for (e, a) in out_s.iter().zip(out_p.iter()) {
+                assert_eq!(
+                    [e[0].to_bits(), e[1].to_bits()],
+                    [a[0].to_bits(), a[1].to_bits()]
+                );
+            }
+        }
+        serial.finish_wave();
+        pool.finish_wave();
+    }
+
+    #[test]
+    fn stalled_worker_recovers_within_bounded_budget_and_falls_back_inline() {
+        let mut pool = AudioWorkerPool::new(2, 48_000).unwrap();
+        pool.stall_budget = Duration::from_millis(5);
+        // Replace worker 0 with a live-looking but unconsumed request queue and
+        // never-populated reply queue so worker 0 accepts BeginWave and never replies.
+        let (stalled_tx, _stalled_rx) = RingBuffer::new(4);
+        let (_unused_rep_tx, empty_rep_rx) = RingBuffer::new(4);
+        let original_handle = pool.workers[0].handle.take();
+        pool.workers[0].tx = stalled_tx;
+        pool.workers[0].rx = empty_rep_rx;
+
+        let input = [[0.5_f32, -0.25_f32]; 16];
+        let clock = pool.prepare_clock().unwrap();
+        clock.history_len = 0;
+        clock.incoming_len = 0;
+        let mut slots = Vec::new();
+        for owner_index in 0..6 {
+            let chain = utility_chain(owner_index as u64 + 1, owner_index as u64 + 300, 0.5);
+            slots.push(
+                pool.push_task(owner_index, chain, &input, 0, 0, 1, false, &[])
+                    .ok()
+                    .unwrap(),
+            );
+        }
+
+        let start = Instant::now();
+        pool.execute_staged();
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(200),
+            "bounded stall recovery must exit promptly, took {elapsed:?}"
+        );
+        assert_eq!(
+            pool.worker_count(),
+            0,
+            "stalled worker must degrade pool to safe inline fallback"
+        );
+        for (expected_owner, slot) in slots.into_iter().enumerate() {
+            let mut out = [[0.0_f32; 2]; 16];
+            let (owner, _chain, err) = pool.reclaim_task(slot, &mut out);
+            assert_eq!(owner, expected_owner);
+            assert!(err.is_none());
+        }
+        pool.finish_wave();
+
+        // Restore handle before drop so the background thread joins cleanly.
+        pool.workers[0].handle = original_handle;
+        drop(pool);
     }
 
     struct TempStreamWav {
