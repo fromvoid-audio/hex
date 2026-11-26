@@ -585,9 +585,12 @@ public:
     }
     bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr,
                  const float* aux_left=nullptr,const float* aux_right=nullptr,
-                 uint64_t* sdk_thread_cpu_ns=nullptr) {
+                 uint64_t* sdk_thread_cpu_ns=nullptr,
+                 AuxiliaryOutputBlock* discrete_outputs=nullptr) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
+        // Refuse inadequate caller storage before clearing output or invoking DSP.
+        if (discrete_outputs && !discrete_outputs->fits(output_bus_count_,data.numSamples)) return false;
         auto sdk=data;
         clear_disjoint_outputs(configuration_,data);
         if (double_processing_) {
@@ -595,16 +598,20 @@ public:
             if (!process_checked(sdk,double_processing_->aux_input,double_processing_->instrument_outputs,
                                  aux_left,aux_right,sdk_process_ns,sdk_thread_cpu_ns)) return false;
             if (configuration_.output_enabled) {
-                double_processing_->instrument_outputs.mix_into_main(sdk.outputs[0],sdk.numSamples);
+                if (!discrete_outputs) double_processing_->instrument_outputs.mix_into_main(sdk.outputs[0],sdk.numSamples);
                 double_processing_->copy_outputs(data);
             }
         } else {
             if (!process_checked(sdk,aux_input_,instrument_outputs_,aux_left,aux_right,sdk_process_ns,sdk_thread_cpu_ns)) return false;
-            if (configuration_.output_enabled)
+            if (configuration_.output_enabled && !discrete_outputs)
                 instrument_outputs_.mix_into_main(sdk.outputs[0],sdk.numSamples);
         }
         if (data.numOutputs) data.outputs[0].silenceFlags=sdk.outputs[0].silenceFlags;
         if (!finite_outputs(configuration_,data)) { processing_fault.store(true); return false; }
+        if (discrete_outputs) {
+            if (double_processing_) double_processing_->instrument_outputs.copy_unmixed(*discrete_outputs,data.numSamples);
+            else instrument_outputs_.copy_unmixed(*discrete_outputs,data.numSamples);
+        }
         return true;
     }
 private:

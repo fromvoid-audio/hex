@@ -1,6 +1,7 @@
 // Original SDK processing evidence, never a product admission/physical test.
 #pragma once
 #include "macos_instance.hpp"
+#include "macos_input_notes.hpp"
 #include <array>
 #include <condition_variable>
 #include <mutex>
@@ -42,7 +43,8 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
     auto& e=processing_evidence;
     // Repeat the existing PCM oracles with a processor that refuses float32.
     constexpr std::array double_cases{10,5,3,8,9,19,26};
-    const bool double_only=e.scenario>=32;
+    const bool discrete=e.scenario>=39;
+    const bool double_only=e.scenario>=32 && !discrete;
     const int scenario=double_only?double_cases.at(e.scenario-32):e.scenario;
     const int mode=double_only?(scenario==3?4:3):(scenario==3?1:(scenario==11?2:0));
     const bool flush_scenario=scenario==10;
@@ -52,6 +54,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
         case 19:fault=4;break;case 20:fault=8;break;case 21:fault=9;break;case 22:fault=10;break;case 26:fault=13;break;case 30:fault=11;break;case 31:fault=12;break;
         default:break;
     }
+    if (discrete) fault=scenario==39?172:(scenario==40?173:128);
     if (!configure(mode,fault)) return false;
     PClassInfo info{};if (factory->getClassInfo(0,&info)!=kResultOk) return false;
     Instance instance;
@@ -63,7 +66,8 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
     if (scenario==24) setup.sample_rate=44100;
     if (scenario==25) setup.sample_rate=96000;
     if (scenario==27) setup.maximum_frames=8;
-    if (scenario==28) setup.maximum_frames=256;
+    if (scenario==28 || discrete) setup.maximum_frames=256;
+    if (discrete) { setup.input_channels=0;setup.input_enabled=false; }
     if (!instance.open(factory,info.cid)) { e.closed=instance.close();return false; }
     if (scenario==11) {
         auto unsupported=setup;unsupported.precision=kSample64;
@@ -99,6 +103,9 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
         ProcessData data{};data.processMode=kRealtime;data.symbolicSampleSize=kSample32;
         data.numInputs=setup.input_channels?1:0;data.inputs=setup.input_channels?&input:nullptr;
         data.numOutputs=1;data.outputs=&output;
+        InputNotes events;
+        std::array<InputNote,INPUT_NOTE_COUNT> notes{};
+        std::array<std::array<Sample32,2>,513> bus_rows{};
         ProcessingParameter quarter(0.25),half(0.5);
         ProcessData flush{};flush.processMode=kRealtime;
         if (scenario==30) {
@@ -141,6 +148,39 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
                 input.silenceFlags=1;e.descriptors=!instance.process(data) && e.descriptors;input.silenceFlags=0;
                 data.numSamples=8;out[0]=in[0]+1;e.descriptors=!instance.process(data) && e.descriptors;
                 out[0]=out_left.data();data.numSamples=1;
+            }
+            if (discrete) {
+                // Keep one held note on main while both auxiliaries emit their
+                // own signed markers. The last block exercises the legacy fold.
+                notes[0]={0,2,60,127,InputNoteKind::On};
+                e.pcm=events.begin(notes,block==0?1:0);
+                data.inputEvents=&events;
+                const size_t needed=2*static_cast<size_t>(data.numSamples);
+                const std::array<Sample32,2> untouched{7.0f,9.0f};
+                bus_rows.fill(untouched);
+                AuxiliaryOutputBlock destination{bus_rows.data(),needed-1};
+                e.descriptors=e.descriptors && !instance.process(data,nullptr,nullptr,nullptr,nullptr,&destination)
+                    && bus_rows[0]==untouched && out_left[0]==1234 && out_right[0]==1234;
+                destination.capacity=needed;
+                const bool folded=block==2;
+                e.pcm=e.pcm && instance.process(data,nullptr,nullptr,nullptr,nullptr,folded?nullptr:&destination);
+                e.pcm=events.end() && e.pcm;
+                const float main=0.5f+static_cast<float>(block)*0.125f;
+                for (int32 n=0;n<data.numSamples && e.pcm;++n) {
+                    const bool active=scenario!=41;
+                    const float mono=active && n>=1 && n<=3?0.125f:0.0f;
+                    const float left_marker=active && (n==1 || n==2)?0.25f:0.0f;
+                    const float right_marker=active && (n==1 || n==3)?-0.5f:0.0f;
+                    if (folded) {
+                        e.pcm=out_left[n]==main+mono+left_marker && out_right[n]==main+mono+right_marker;
+                    } else {
+                        e.pcm=out_left[n]==main && out_right[n]==main
+                            && bus_rows[n]==std::array<Sample32,2>{mono,0.0f}
+                            && bus_rows[data.numSamples+n]==std::array<Sample32,2>{left_marker,right_marker};
+                    }
+                }
+                e.descriptors=e.descriptors && bus_rows[needed]==untouched;
+                continue;
             }
             const bool processed=instance.process(data);
             if (double_only && scenario==9) e.descriptors=e.descriptors && out_left[0]==1234 && out_right[0]==1234;
