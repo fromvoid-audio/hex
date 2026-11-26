@@ -217,3 +217,132 @@ fn waveform_cycle_updates_from_real_partial_edits_and_undo(cx: &mut TestAppConte
     );
     assert!(visual.debug_bounds("operator-envelope-graph").is_some());
 }
+
+#[gpui::test]
+fn harmonic_paint_keeps_released_bars_and_cycle_during_delayed_ack(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (_service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let original = state.project.clone();
+    // Unticked editor window keeps the gesture Finish terminal in flight so
+    // completed repaints expose any release flicker back to canonical state.
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, (*original).clone(), Arc::default());
+    editor.update(cx, |view, cx| {
+        view.selected_track = Some(track);
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(2000.0), px(540.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let wave = bounds(
+        &mut visual,
+        format!("operator-page-{}-oscillator", device.value()),
+    );
+    visual.simulate_click(wave.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    let before_cycle = cycle_points(&editor, cx, device);
+    let painter = bounds(
+        &mut visual,
+        format!("operator-harmonics-{}-0", device.value()),
+    );
+    let start = point(
+        painter.left() + px(14.0),
+        painter.top() + painter.size.height * 0.2,
+    );
+    let end = point(
+        painter.left() + px(48.0),
+        painter.top() + painter.size.height * 0.35,
+    );
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let preview_cycle = cycle_points(&editor, cx, device);
+    assert_ne!(preview_cycle, before_cycle);
+
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    for _ in 0..3 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            cycle_points(&editor, cx, device),
+            preview_cycle,
+            "released harmonic paint must not flicker back to canonical before ACK"
+        );
+        editor.read_with(cx, |view, _| {
+            assert!(
+                view.device_panel.gesture.has_pending_terminal(),
+                "gesture terminal remains in flight during delayed ACK"
+            );
+            assert_eq!(view.state.as_ref().unwrap().project, original);
+        });
+    }
+}
+
+#[gpui::test]
+fn tuning_readout_tracks_canonical_ratio_and_fixed_edits_without_stale_frames(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(2000.0), px(540.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let wave = bounds(
+        &mut visual,
+        format!("operator-page-{}-oscillator", device.value()),
+    );
+    visual.simulate_click(wave.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    let panel = bounds(
+        &mut visual,
+        format!("operator-waveform-editor-{}", device.value()),
+    );
+    let readout = bounds(
+        &mut visual,
+        format!("operator-tuning-readout-{}-0", device.value()),
+    );
+    assert!(panel.contains(&readout.center()));
+    assert!(readout.right() <= panel.right());
+
+    // Edit ratio to 2.0 and confirm canonical update + undo.
+    let coarse = bounds(
+        &mut visual,
+        format!("device-{}-parameter-1-value", device.value()),
+    );
+    visual.simulate_click(coarse.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("2");
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 1) == ParameterValue::Float(2.0)
+            })
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("operator-tuning-readout-{}-0", device.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 1) == ParameterValue::Float(1.0)
+            })
+    });
+}

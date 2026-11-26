@@ -1,4 +1,11 @@
 //! Harmonic painting uses the same atomic snapshot/history path as scalar controls.
+//!
+//! Partial count (`16`, `32`, or `64` via parameters `349..=352`) and additive
+//! amplitude normalization match `hex_devices::operator_state::harmonics`
+//! (`PARTIALS = 64`) and `harmonic_runtime::spectrum` (`1 / sum(a_n).max(1.0)`).
+//! Painting any partial on a built-in waveform seeds the 64-partial user bank
+//! from that built-in waveform's spectrum in `hex-devices` before applying the
+//! painted column changes as one atomic undoable snapshot gesture.
 use super::super::*;
 use super::id;
 use hex_lattice_contract::DeviceParameterSnapshot;
