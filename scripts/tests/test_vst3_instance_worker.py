@@ -777,6 +777,18 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual((ons, offs, last_on, last_off),
                                  (1, int(release), 41, 41 if release else -1))
 
+    def test_active_aux_output_mix_preserves_independent_finite_channels(self):
+        for variant in (172, 173):  # Independently exercise the SDK float and double buffers.
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant, channels=(0, 2))
+                self.assertEqual(session.message()[0], b"HXVIRD06")
+                magic, reply = self.instrument_block(session, [(5, 0x92, 60, 127), (7, 0x82, 60, 0)])
+                self.assertEqual(magic, b"HXVB")
+                samples = tuple(struct.iter_unpack("<ff", reply[64:]))
+                self.assertEqual(samples, ((0., 0.), (.375, -.375), (.375, .125), (.125, -.375),
+                                           (0., 0.), (.5, .5), (.5, .5), (0., 0.)))
+                self.assertEqual(self.terminal(session, 0, message=session.stop())[5:7], (1, 8))
+
     def test_instrument_rejects_invalid_extra_output_layout_and_mutated_pointers(self):
         malformed = self.session(variant=130, channels=(0, 2))
         self.error(malformed, 22)
