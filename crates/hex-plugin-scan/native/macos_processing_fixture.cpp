@@ -211,6 +211,7 @@ constexpr int double_only_effect_variant=164;
 constexpr int midi_effect_variant=165, auxiliary_event_effect_variant=166;
 constexpr int output_notes_variant=167, full_output_notes_variant=168, excess_output_notes_variant=169,
     outside_output_slice_variant=170, unsupported_output_event_variant=171;
+constexpr int active_aux_outputs_variant=172, double_aux_outputs_variant=173;
 static bool has_note_output(int variant) {
     return variant>=output_notes_variant && variant<=unsupported_output_event_variant;
 }
@@ -702,7 +703,8 @@ public:
 };
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
-    const bool multiple_outputs=fault>=128 && fault<=130;
+    const bool active_aux_outputs=fault==active_aux_outputs_variant || fault==double_aux_outputs_variant;
+    const bool multiple_outputs=(fault>=128 && fault<=130) || active_aux_outputs;
     const bool multiple_aux_inputs=fault>=multiple_aux_inputs_variant && fault<=multiple_aux_mismatch_variant;
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
@@ -710,14 +712,14 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
         fault==stopped_bus_refusal_instrument;
     const bool requires_event_input=midi_instrument || fault==midi_effect_variant;
     const bool live_preset=fault==127 && std::getenv("HEX_ORIGINAL_INSTRUMENT_LIVE_PRESET");
-    const bool double_only=next_mode>=3 || fault==double_only_effect_variant;
+    const bool double_only=next_mode>=3 || fault==double_only_effect_variant || fault==double_aux_outputs_variant;
     const int mode=midi_instrument || next_mode==4?1:next_mode;
     bool initialized=false, arranged=false, setup=false, active=false;
     std::atomic<bool> processing{false};
     bool input=false,output=false,thread_bound=false;
     bool auxiliary_disabled=false;
     unsigned inactive_aux_inputs=0;
-    unsigned inactive_outputs=0;
+    unsigned configured_extra_outputs=0;
     bool event_active=false, output_event_active=false;
     float note_signal=0;
     struct Voice { int32 id=-1; float gain=0; int16 channel=-1; };
@@ -1018,8 +1020,8 @@ public:
         }
         if (control() && setup && !active && !processing && multiple_outputs &&
             media==kAudio && direction==kOutput && index>0 && index<3) {
-            if (enabled) return kResultFalse;
-            inactive_outputs|=1u<<index;
+            if (bool(enabled)!=active_aux_outputs) return kResultFalse;
+            configured_extra_outputs|=1u<<index;
             return kResultOk;
         }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
@@ -1034,7 +1036,7 @@ public:
         if (!control() || !setup || processing) return kResultFalse;
         if (enabled && fault==106 && !auxiliary_disabled) return kResultFalse;
         if (enabled && multiple_aux_inputs && inactive_aux_inputs!=6) return kResultFalse;
-        if (enabled && multiple_outputs && inactive_outputs!=6) return kResultFalse;
+        if (enabled && multiple_outputs && configured_extra_outputs!=6) return kResultFalse;
         if (enabled && requires_event_input && !event_active) return kResultFalse;
         if (enabled && fault==111) {
             if (activated_once) restored_latency=7;
@@ -1077,6 +1079,19 @@ public:
         if (enabled && fault==33) fault_hang(11);
         if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
         return fault==122?kNotImplemented:kResultOk;
+    }
+    // Bus one is mono. Bus two deliberately has independent stereo samples.
+    template<class Sample>
+    static bool emit_aux_markers(Sample** mono,Sample** stereo,int32 frames) {
+        if(!mono || !stereo || !mono[0] || !stereo[0] || !stereo[1]) return false;
+        for(int32 n=0;n<frames;++n) {
+            mono[0][n]=(n>=1 && n<=3)?Sample(0.125):Sample(0);
+            stereo[0][n]=n==3?std::numeric_limits<Sample>::quiet_NaN():
+                ((n==1 || n==2)?Sample(0.25):Sample(0));
+            stereo[1][n]=n==2?std::numeric_limits<Sample>::quiet_NaN():
+                ((n==1 || n==3)?Sample(-0.5):Sample(0));
+        }
+        return true;
     }
     bool apply_note_event(const Event& event) {
         if(event.type==Event::kNoteExpressionValueEvent) {
@@ -1229,11 +1244,17 @@ public:
         if (multiple_outputs) {
             const auto& mono=data.outputs[1];
             const auto& stereo=data.outputs[2];
-            if (mono.numChannels!=1 || stereo.numChannels!=2 ||
-                !mono.channelBuffers32 || !stereo.channelBuffers32 ||
-                mono.channelBuffers32[0] || stereo.channelBuffers32[0] || stereo.channelBuffers32[1])
-                return kInvalidArgument;
-            if (fault==129) stereo.channelBuffers32[1]=data.outputs[0].channelBuffers32[0];
+            if (mono.numChannels!=1 || stereo.numChannels!=2) return kInvalidArgument;
+            if (active_aux_outputs) {
+                const bool emitted=precision==kSample32
+                    ?emit_aux_markers(mono.channelBuffers32,stereo.channelBuffers32,data.numSamples)
+                    :emit_aux_markers(mono.channelBuffers64,stereo.channelBuffers64,data.numSamples);
+                if(!emitted) return kInvalidArgument;
+            } else {
+                if (!mono.channelBuffers32 || !stereo.channelBuffers32 || mono.channelBuffers32[0] ||
+                    stereo.channelBuffers32[0] || stereo.channelBuffers32[1]) return kInvalidArgument;
+                if (fault==129) stereo.channelBuffers32[1]=data.outputs[0].channelBuffers32[0];
+            }
         }
         if(fault==126) {
             const auto* context=data.processContext;
@@ -1510,7 +1531,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>unsupported_output_event_variant) return false;next_fault=value;
+        if (value>double_aux_outputs_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
