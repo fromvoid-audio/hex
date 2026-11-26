@@ -73,6 +73,34 @@ impl Session {
         self.audio_mode == DocumentAudioMode::Resident
             || project_uses_ordinary_verified_playback(self.project())
     }
+    /// True when executing `command` on this session requires the worker-owned
+    /// ordinary resource publisher (either already active, or `command`
+    /// introduces an instrument, retained native source, or MIDI clip on a
+    /// `VerifiedStreaming` document).
+    pub(crate) fn uses_ordinary_worker_publication_for_command(&self, command: &Command) -> bool {
+        if self.uses_ordinary_worker_publication() {
+            return true;
+        }
+        match command {
+            Command::InitializeDevice(initialization) => {
+                self.uses_ordinary_worker_publication_for_command(initialization.command())
+            }
+            Command::InsertInstrument { .. }
+            | Command::LoadInstrument { .. }
+            | Command::ReplaceTrackInstrument { .. }
+            | Command::CreateNativeSource { .. }
+            | Command::BindTrackSource { .. }
+            | Command::ImportDeviceAssetIntoNewInstrument { .. }
+            | Command::ImportDeviceAssetReplacingInstrument { .. }
+            | Command::PlaceMidiClip { .. }
+            | Command::PlaceMidiClipWithOverwrite { .. }
+            | Command::PlaceMidiClipWithNotes { .. }
+            | Command::PlaceMidiClipWithExpressiveNotes { .. }
+            | Command::CreateSessionMidiClip { .. }
+            | Command::ConvertAudioClipToMidi(_) => true,
+            _ => false,
+        }
+    }
     pub fn source_plan_reservation(&self) -> Option<SourcePlanReservation> {
         self.source_reservation
     }

@@ -881,12 +881,10 @@ pub(in crate::service) fn submit_browser_edit(
         Some(GraphEditOperation::InsertDevice | GraphEditOperation::MoveDevice)
     ) && let Some(sink) = events.resident_audio()
     {
-        match session.audio_mode() {
-            DocumentAudioMode::Resident
-                if sink.resident_publication_enabled()
-                    && sink.confirms_device_inserts()
-                    && sink.resident_publication_readiness()
-                        != ResidentPublicationReadiness::NoOutput =>
+        if session.uses_ordinary_worker_publication_for_command(&command) || resident.is_some() {
+            if sink.resident_publication_enabled()
+                && sink.confirms_device_inserts()
+                && sink.resident_publication_readiness() != ResidentPublicationReadiness::NoOutput
             {
                 return session
                     .stage_resident_device_insert(
@@ -901,20 +899,20 @@ pub(in crate::service) fn submit_browser_edit(
                     )
                     .map(BrowserEdit::from_pending);
             }
-            DocumentAudioMode::VerifiedStreaming if sink.confirms_verified_device_inserts() => {
-                return session
-                    .stage_verified_graph_edit(
-                        command,
-                        state,
-                        previous,
-                        sink,
-                        document_intent,
-                        None,
-                        proposal_control.cloned(),
-                    )
-                    .map(BrowserEdit::from_pending);
-            }
-            _ => {}
+        } else if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+            && sink.confirms_verified_device_inserts()
+        {
+            return session
+                .stage_verified_graph_edit(
+                    command,
+                    state,
+                    previous,
+                    sink,
+                    document_intent,
+                    None,
+                    proposal_control.cloned(),
+                )
+                .map(BrowserEdit::from_pending);
         }
     }
     // The synchronous fallback has no cancellable audio receipt. Its commit

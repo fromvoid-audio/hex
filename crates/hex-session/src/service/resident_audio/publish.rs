@@ -555,7 +555,7 @@ pub(in crate::service) fn execute_command_timed(
     phases: Option<&mut super::diagnostics::SectionPhases>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
     let ResidentWorkerContext { events, admission } = worker;
-    if (session.uses_ordinary_worker_publication() || resident.is_some())
+    if (session.uses_ordinary_worker_publication_for_command(&command) || resident.is_some())
         && let Some(sink) = events.resident_audio()
     {
         let (created, snapshot) = session
