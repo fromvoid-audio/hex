@@ -1,10 +1,15 @@
 //! Independent last-successful project folder; never a browser Place or media root.
-use super::{
-    DOCUMENT_VERSION, MAX_DOCUMENT_BYTES, PreferencesError, StoredPath, atomic_save, read_document,
-    validate_saved_path,
+use crate::storage::{
+    DOCUMENT_VERSION, PreferencesError, StoredPath, VersionedDocument, app_support_dir_from,
+    load_versioned, save_versioned, validate_saved_path,
 };
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+
+/// Stable location for the last successfully used project folder.
+pub fn project_directory_preferences_path(home: &Path) -> PathBuf {
+    app_support_dir_from(home).join("project-directory.json")
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -13,13 +18,14 @@ struct Document {
     directory: StoredPath,
 }
 
+impl VersionedDocument for Document {
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 fn validate_directory(directory: &Path) -> Result<(), PreferencesError> {
     validate_saved_path(directory)?;
-    if directory.as_os_str().as_encoded_bytes().contains(&0) {
-        return Err(PreferencesError::InvalidDocument(
-            "project directory contains a nul byte".into(),
-        ));
-    }
     if !directory.is_absolute() {
         return Err(PreferencesError::InvalidDocument(
             "project directory must be absolute".into(),
@@ -31,64 +37,40 @@ fn validate_directory(directory: &Path) -> Result<(), PreferencesError> {
 /// Load the exact native folder spelling. Missing preferences have no override.
 /// Existence/access checks belong to the picker worker, not this bounded codec.
 pub fn load_project_directory(path: &Path) -> Result<Option<PathBuf>, PreferencesError> {
-    let Some(bytes) = read_document(path)? else {
-        return Ok(None);
-    };
-    let document: Document = serde_json::from_slice(&bytes)
-        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if document.version != DOCUMENT_VERSION {
-        return Err(PreferencesError::InvalidDocument(format!(
-            "unsupported version {}",
-            document.version,
-        )));
-    }
-    let directory = document.directory.into_path()?;
-    validate_directory(&directory)?;
-    Ok(Some(directory))
+    load_versioned::<Document, _>(
+        path,
+        || None,
+        |document| {
+            let directory = document.directory.into_path()?;
+            validate_directory(&directory)?;
+            Ok(Some(directory))
+        },
+    )
 }
 
 /// Atomically remember a successfully used folder, preserving malformed existing
 /// preferences. This never creates, resolves or changes the remembered folder.
 pub fn save_project_directory(path: &Path, directory: &Path) -> Result<(), PreferencesError> {
-    let _ = load_project_directory(path)?;
     validate_directory(directory)?;
-    let bytes = serde_json::to_vec(&Document {
+    let document = Document {
         version: DOCUMENT_VERSION,
         directory: StoredPath::from_path(directory)?,
-    })
-    .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
-        return Err(PreferencesError::DocumentTooLarge {
-            maximum: MAX_DOCUMENT_BYTES,
-        });
-    }
-    atomic_save(path, &bytes)
+    };
+    save_versioned(
+        path,
+        |existing| load_project_directory(existing).map(|_| ()),
+        &document,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Directory(PathBuf);
-    impl Directory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "hex-project-directory-{}-{}",
-                std::process::id(),
-                super::super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            ));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::storage::{MAX_PATH_BYTES, TestDirectory};
 
     #[test]
     fn project_directory_missing_and_roundtrip_preserve_exact_case_without_creating_folder() {
-        let owned = Directory::new();
+        let owned = TestDirectory::new("hex-project-directory");
         let prefs = owned.0.join("project-directory.json");
         assert_eq!(load_project_directory(&prefs).unwrap(), None);
         let folder = owned.0.join("My Music").join("Uncreated");
@@ -103,7 +85,7 @@ mod tests {
 
     #[test]
     fn project_directory_invalid_replacement_preserves_last_successful_value() {
-        let owned = Directory::new();
+        let owned = TestDirectory::new("hex-project-directory");
         let prefs = owned.0.join("project-directory.json");
         let folder = owned.0.join("Keep Case");
         save_project_directory(&prefs, &folder).unwrap();
@@ -112,7 +94,7 @@ mod tests {
             PathBuf::new(),
             PathBuf::from("relative/music"),
             PathBuf::from("/invalid\0folder"),
-            owned.0.join("x".repeat(super::super::MAX_PATH_BYTES + 1)),
+            owned.0.join("x".repeat(MAX_PATH_BYTES + 1)),
         ] {
             assert!(save_project_directory(&prefs, &invalid).is_err());
             assert_eq!(std::fs::read(&prefs).unwrap(), before);
@@ -121,7 +103,7 @@ mod tests {
 
     #[test]
     fn project_directory_malformed_unknown_and_future_preferences_are_not_overwritten() {
-        let owned = Directory::new();
+        let owned = TestDirectory::new("hex-project-directory");
         let prefs = owned.0.join("project-directory.json");
         let folder = owned.0.join("Music");
         for bytes in [
@@ -138,7 +120,7 @@ mod tests {
 
     #[test]
     fn project_directory_independent_file_does_not_rewrite_other_preferences() {
-        let owned = Directory::new();
+        let owned = TestDirectory::new("hex-project-directory");
         let browser = owned.0.join("browser.json");
         let recent = owned.0.join("recent-projects.json");
         std::fs::write(&browser, b"foreign browser bytes").unwrap();
@@ -152,7 +134,7 @@ mod tests {
     #[test]
     fn project_directory_roundtrips_non_utf8_native_bytes() {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        let owned = Directory::new();
+        let owned = TestDirectory::new("hex-project-directory");
         let folder = owned
             .0
             .join(std::ffi::OsString::from_vec(b"Music-\xff".to_vec()));
