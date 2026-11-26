@@ -13,6 +13,8 @@ mod filter;
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
 mod gate;
+#[path = "callback_allocations/multisample_zones.rs"]
+mod multisample_zones;
 #[path = "callback_allocations/output_capture.rs"]
 mod output_capture;
 #[path = "callback_allocations/overdrive.rs"]

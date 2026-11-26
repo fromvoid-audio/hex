@@ -696,7 +696,7 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
         source
     });
 
-    let deadline = crate::test_wait::hang_deadline();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     // No callback can acknowledge the real section edit's requested stopped fence yet.
     while !editor.read_with(cx, |view, _| {
         view.audio_status().unwrap().stopped_edit_pending()
@@ -717,8 +717,34 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
         );
         assert_eq!(view.test_probes.last_transport_command, None);
     });
+    let gesture_error = editor.read_with(cx, |view, _| view.error.clone());
     finish_load(&editor, cx);
 
+    // Acknowledge the predecessor's stopped fence, then hold the callback
+    // until the worker has committed the section and submitted its graph.
+    fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    let successor_revision = predecessor.context.editor_revision + 1;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let committed = editor.update(cx, |view, cx| {
+            view.tick(cx);
+            assert!(
+                view.error.is_none() || view.error == gesture_error,
+                "section edit refused: {:?}",
+                view.error
+            );
+            let state = view.state.as_ref().unwrap();
+            state.revision == successor_revision && state.project.arrangement_sections().len() == 2
+        });
+        if committed {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "section edit did not commit"
+        );
+        std::thread::yield_now();
+    }
     loop {
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let settled = editor.update(cx, |view, cx| {
@@ -726,16 +752,19 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
             let status = view.audio_status().unwrap();
             assert!(!status.playing.load(Acquire));
             !status.stopped_edit_pending()
-                && status
-                    .recording_source()
-                    .is_some_and(|source| source != predecessor)
+                && status.recording_source().is_some_and(|source| {
+                    source.audio_revision != predecessor.audio_revision
+                        && source.context.project_generation
+                            == predecessor.context.project_generation
+                        && source.context.editor_revision == successor_revision
+                })
         });
         if settled {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "section successor did not settle"
+            "committed section graph did not install"
         );
         std::thread::yield_now();
     }
