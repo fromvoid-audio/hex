@@ -953,23 +953,74 @@ pub(super) struct EditorView {
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
 }
 
+/// Canonical foreground overlay/popover currently open over the editor workspace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ActiveOverlayKind {
+    ContextMenu,
+    TrackIoMenu,
+    SendMenu,
+    ControllerInput,
+    ThemeSettings,
+    TuningSettings,
+    Changelog,
+    MissingMedia,
+    DevicePicker,
+    SourceNaming,
+    DeviceAddMenu,
+    DeviceInsertConfirmation,
+    UpdatePreparing,
+}
+
 impl EditorView {
+    /// Single source of truth for any active modal or popover overlay covering
+    /// the workspace, including `self.track_io.menu`.
+    pub(super) fn active_overlay_kind(&self) -> Option<ActiveOverlayKind> {
+        if self.context_menu.is_some() {
+            Some(ActiveOverlayKind::ContextMenu)
+        } else if self.track_io.menu.is_some() {
+            Some(ActiveOverlayKind::TrackIoMenu)
+        } else if self.session_grid.send_menu_track.is_some() {
+            Some(ActiveOverlayKind::SendMenu)
+        } else if self.controller_input_is_open() {
+            Some(ActiveOverlayKind::ControllerInput)
+        } else if self.settings.theme.open {
+            Some(ActiveOverlayKind::ThemeSettings)
+        } else if self.settings.tuning.open {
+            Some(ActiveOverlayKind::TuningSettings)
+        } else if self.settings.changelog.is_open() {
+            Some(ActiveOverlayKind::Changelog)
+        } else if self.settings.missing_media.is_some() {
+            Some(ActiveOverlayKind::MissingMedia)
+        } else if device_panel::picker_is_open(self) {
+            Some(ActiveOverlayKind::DevicePicker)
+        } else if device_panel::source_naming(self) {
+            Some(ActiveOverlayKind::SourceNaming)
+        } else if self.audio_detail.clip_view_open
+            && self.device_panel.active
+            && self.device_panel.add_menu_is_open(self.state.as_deref())
+        {
+            Some(ActiveOverlayKind::DeviceAddMenu)
+        } else if self.device_panel.insert_confirmation.is_some() {
+            Some(ActiveOverlayKind::DeviceInsertConfirmation)
+        } else if self.update_preparing() {
+            Some(ActiveOverlayKind::UpdatePreparing)
+        } else {
+            None
+        }
+    }
+
+    pub(super) fn has_blocking_overlay(&self) -> bool {
+        self.active_overlay_kind().is_some()
+    }
+
     /// Modal operations retain project selections but must not delete them.
-    fn selection_delete_blocked(&self) -> bool {
+    pub(super) fn selection_delete_blocked(&self) -> bool {
         self.persistence.opening_project
             || self.persistence.close_prompt_open
-            || self.settings.changelog.is_open()
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
             || self.device_panel.preset_dialog_open
-            || self.settings.tuning.open
-            || self.settings.theme.open
-            || self.context_menu.is_some()
-            || self.controller_input_is_open()
-            || self.session_grid.send_menu_track.is_some()
-            || (self.audio_detail.clip_view_open
-                && self.device_panel.active
-                && self.device_panel.add_menu_is_open(self.state.as_deref()))
+            || self.has_blocking_overlay()
     }
 
     fn new_with_backend(

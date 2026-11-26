@@ -1010,4 +1010,71 @@ mod tests {
             .unwrap();
         assert!(evaluate_track_header_input_drop(editor.project(), audio_src, audio_bus).is_err());
     }
+
+    #[gpui::test]
+    fn track_io_menu_blocks_selection_delete_and_yields_playback_overlay(cx: &mut TestAppContext) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack {
+                name: "lead".into(),
+            })
+            .unwrap()
+        else {
+            panic!("lead");
+        };
+        let (handle, entity) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            editor.project().clone(),
+            Arc::default(),
+        );
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(1100.0), px(700.0)));
+        visual.run_until_parked();
+
+        // Select the track and confirm baseline overlay state is clear.
+        entity.update(&mut visual, |view, cx| {
+            view.selected_track = Some(track);
+            assert_eq!(view.active_overlay_kind(), None);
+            assert!(!view.has_blocking_overlay());
+            assert!(!view.has_foreground_overlay());
+            assert!(!view.selection_delete_blocked());
+            cx.notify();
+        });
+        visual.run_until_parked();
+
+        // Open the Track I/O output picker menu.
+        let out_bounds = visual
+            .debug_bounds(Box::leak(
+                format!("track-output-picker-{}", track.value()).into_boxed_str(),
+            ))
+            .expect("output picker bounds");
+        visual.simulate_mouse_down(out_bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(out_bounds.center(), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+
+        entity.update(&mut visual, |view, cx| {
+            assert_eq!(
+                view.active_overlay_kind(),
+                Some(super::super::ActiveOverlayKind::TrackIoMenu)
+            );
+            assert!(view.has_blocking_overlay());
+            assert!(view.has_foreground_overlay());
+            assert!(!view.uses_sibling_playback_overlay());
+            assert!(view.selection_delete_blocked());
+            assert!(!view.track_view_change_available(cx));
+        });
+
+        // Pressing Backspace/Delete while Track I/O menu is open must NOT delete the track.
+        visual.simulate_keystrokes("backspace");
+        visual.run_until_parked();
+        entity.read_with(&visual, |view, _| {
+            assert!(view.track_io.menu.is_some());
+            assert!(
+                view.test_probes.last_enqueued_edit.is_none(),
+                "backspace must not enqueue delete while track I/O menu is open: {:?}",
+                view.test_probes.last_enqueued_edit
+            );
+            assert_eq!(view.state.as_ref().unwrap().project.tracks().len(), 1);
+        });
+    }
 }

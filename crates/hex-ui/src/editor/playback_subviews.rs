@@ -1234,17 +1234,7 @@ impl EditorView {
     /// True while a modal, popover, or floating drag ghost paints above the
     /// workspace so live playback subviews yield to inline z-order underneath it.
     pub(super) fn has_foreground_overlay(&self) -> bool {
-        self.session_grid.send_menu_track.is_some()
-            || self.context_menu.is_some()
-            || self.controller_input_is_open()
-            || self.settings.theme.open
-            || self.settings.tuning.open
-            || self.settings.changelog.is_open()
-            || self.settings.missing_media.is_some()
-            || super::device_panel::picker_is_open(self)
-            || super::device_panel::source_naming(self)
-            || self.device_panel.insert_confirmation.is_some()
-            || self.update_preparing()
+        self.has_blocking_overlay()
             || self.browser.active_audio_drag.is_some()
             || self.displayed_clip_drag().is_some()
     }

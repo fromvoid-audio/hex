@@ -21,12 +21,9 @@ impl EditorView {
 
     fn loop_shortcut_clear(&self) -> bool {
         !self.sections.naming()
-            && !self.settings.changelog.is_open()
             && !self.track_name.is_editing()
             && self.clip_name_edit.is_none()
-            && self.context_menu.is_none()
-            && !self.settings.theme.open
-            && !self.settings.tuning.open
+            && !self.has_blocking_overlay()
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
     }
@@ -36,12 +33,7 @@ impl EditorView {
         if !self.loop_shortcut_clear()
             || self.persistence.opening_project
             || self.persistence.close_prompt_open
-            || self.controller_input_is_open()
             || self.device_panel.preset_dialog_open
-            || self.session_grid.send_menu_track.is_some()
-            || (self.audio_detail.clip_view_open
-                && self.device_panel.active
-                && self.device_panel.add_menu_is_open(self.state.as_deref()))
             || window
                 .context_stack()
                 .iter()

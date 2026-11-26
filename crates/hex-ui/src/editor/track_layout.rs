@@ -267,15 +267,7 @@ impl EditorView {
             || self.sections.naming()
             || self.sections.held()
             || self.section_install_pending()
-            || self.settings.tuning.open
-            || self.settings.theme.open
-            || self.settings.changelog.is_open()
-            || self.controller_input_is_open()
-            || self.context_menu.is_some()
-            || (self.audio_detail.clip_view_open
-                && self.device_panel.active
-                && self.device_panel.add_menu_is_open(self.state.as_deref()))
-            || self.session_grid.send_menu_track.is_some()
+            || self.has_blocking_overlay()
             || self.project_tempo_editing(cx)
             || self.gain_numeric_editing(cx)
             || self.device_panel.sampler_parameter.numeric_draft_active()
@@ -911,7 +903,7 @@ impl EditorView {
             || self.edit_pending()
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_numeric_editing(cx)
-            || self.context_menu.is_some()
+            || self.has_blocking_overlay()
             || self.interaction.arrangement_pan.is_some()
             || self.interaction.time_selection_gesture.is_some()
             || self.interaction.time_range_move_gesture.is_some()
