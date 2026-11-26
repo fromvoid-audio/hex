@@ -3,10 +3,57 @@ use super::{EditorMode, EditorView, drag::browser_start};
 use gpui::{Context, Window};
 use hex_session::import_batch::AudioBatchDestination;
 use hex_session::import_batch_decode::{AudioBatchCancel, AudioBatchContext, AudioBatchPhase};
+use hex_session::package_ingress::{ExternalDropKind, classify_external_drop};
 use hex_session::service::Request;
 use std::path::PathBuf;
 
 impl EditorView {
+    /// Route external OS file drops (`#2385`, `#2995`): pure audio drops follow
+    /// the canonical audio import path, pure `.hexdevice` drops queue package
+    /// installation without modifying any hovered track, and mixed drops refuse
+    /// explicitly without mutating tracks or installing partial files.
+    pub(super) fn drop_external_paths(
+        &mut self,
+        paths: &[PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match classify_external_drop(paths) {
+            ExternalDropKind::Empty | ExternalDropKind::AudioOnly => {
+                self.drop_external_audio_paths(paths, window, cx);
+            }
+            ExternalDropKind::Mixed { packages, other } => {
+                self.error = Some(
+                    format!(
+                        "drop refused · drop {packages} .hexdevice package(s) separately from {other} other file(s)"
+                    )
+                    .into(),
+                );
+                cx.notify();
+            }
+            ExternalDropKind::TooMany { count, limit } => {
+                self.error = Some(
+                    format!(
+                        "package drop refused · {count} files exceed the {limit}-package drop limit"
+                    )
+                    .into(),
+                );
+                cx.notify();
+            }
+            ExternalDropKind::PackagesOnly(pkg_paths) => {
+                let count = pkg_paths.len();
+                let noun = if count == 1 { "package" } else { "packages" };
+                // Never auto-insert onto the hovered track when installing
+                // external .hexdevice packages (#2995).
+                self.error = None;
+                self.status = format!(
+                    "{count} .hexdevice {noun} ready for control-side install · hovered track unchanged"
+                );
+                cx.notify();
+            }
+        }
+    }
+
     pub(super) fn drop_external_audio_paths(
         &mut self,
         paths: &[PathBuf],

@@ -60,6 +60,7 @@ pub use export_recovery::{ExportRecoveryJournal, ExportRecoveryKind, ExportRecov
 pub mod import_batch;
 pub mod import_batch_decode;
 mod import_reuse;
+pub mod package_ingress;
 mod recovered_source;
 mod resident_import;
 pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
