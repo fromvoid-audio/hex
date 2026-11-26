@@ -84,7 +84,7 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut ViewContext<Self>,
     ) -> bool {
-        if self.time_selection_key_held
+        if self.interaction.time_selection_key_held
             || !x.is_finite()
             || self.midi_ruler_context(context.bounds) != Some(context)
             || context
@@ -351,7 +351,7 @@ impl EditorView {
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
         let time_selection = self.midi_time_selection_bounds();
-        let start_marker_enabled = !self.time_selection_key_held;
+        let start_marker_enabled = !self.interaction.time_selection_key_held;
         let entity = cx.entity();
         let mut ruler = super::timeline_strip::ruler_surface()
             .id("midi-source-ruler")
@@ -484,7 +484,7 @@ impl EditorView {
                                     (f32::from(event.position.x - x)).abs() <= 7.0
                                 });
                         hover_entity.update(cx, |view, cx| {
-                            let hovered = hovered && !view.time_selection_key_held;
+                            let hovered = hovered && !view.interaction.time_selection_key_held;
                             if view.midi_editor.ruler.marker_hovered != hovered {
                                 view.midi_editor.ruler.marker_hovered = hovered;
                                 cx.notify();

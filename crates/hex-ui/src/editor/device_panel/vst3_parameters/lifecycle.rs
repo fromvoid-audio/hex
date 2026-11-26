@@ -209,7 +209,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         save_cache(panel, device, generation, cx);
         return;
     }
-    if view.stopped_playback_restore.is_some() || interactions_active(view, cx) {
+    if view.audio_pub.stopped_playback_restore.is_some() || interactions_active(view, cx) {
         return;
     }
     let source = refresh_source(view);

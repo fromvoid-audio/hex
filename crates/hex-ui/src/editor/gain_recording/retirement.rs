@@ -19,8 +19,8 @@ impl EditorView {
         self.poll_retired_gain_receipts();
         self.poll_retired_action_outcomes();
         if let Some(mut audio) = self.audio.take() {
-            let retain_client =
-                self.retired_action_outcomes.is_some() && audio.control.has_action_outcomes();
+            let retain_client = self.audio_pub.retired_action_outcomes.is_some()
+                && audio.control.has_action_outcomes();
             let identity = audio.control.output_identity();
             if !self.retire_native_automation_client(&mut audio.control)
                 && let Some(receipts) = audio.control.close_retaining_gain_receipts()
@@ -49,7 +49,7 @@ impl EditorView {
                 return false;
             }
             if let Some(reader) = audio.control.take_action_outcomes() {
-                self.retired_action_outcomes = Some(reader);
+                self.audio_pub.retired_action_outcomes = Some(reader);
             }
         }
         self.gain_recorder.audio_lost();
@@ -60,10 +60,10 @@ impl EditorView {
         // Keep one bounded batch until the editor tick has displayed it. A
         // second retiring output retains its reader and backpressure instead
         // of overwriting the first batch.
-        if self.retired_action_message.is_some() {
+        if self.audio_pub.retired_action_message.is_some() {
             return false;
         }
-        let Some(mut reader) = self.retired_action_outcomes.take() else {
+        let Some(mut reader) = self.audio_pub.retired_action_outcomes.take() else {
             return false;
         };
         // Only an acquire observed before the drain proves that a subsequent
@@ -92,12 +92,12 @@ impl EditorView {
             messages.push_str("previous audio outcomes unavailable · restart audio");
         }
         if !retired {
-            self.retired_action_outcomes = Some(reader);
+            self.audio_pub.retired_action_outcomes = Some(reader);
         }
         if messages.is_empty() {
             return false;
         }
-        self.retired_action_message = Some(messages.clone());
+        self.audio_pub.retired_action_message = Some(messages.clone());
         if self.error.as_deref() == Some(messages.as_str()) {
             return false;
         }

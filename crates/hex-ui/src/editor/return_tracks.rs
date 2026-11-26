@@ -52,7 +52,7 @@ impl EditorView {
             return None;
         };
         let row_index = self.arrangement_list_row(row_index);
-        let body = self.arrangement_bounds?;
+        let body = self.timeline_caches.arrangement_bounds?;
         let scroll_y = f32::from(self.track_scroll.offset().y);
         let expected_top = body.top
             + (0..row_index)
@@ -73,12 +73,18 @@ impl EditorView {
             cx.notify();
             return None;
         }
-        if self.arrangement_bounds_epoch != self.drag_layout_generation.wrapping_sub(1) {
+        if self.timeline_caches.arrangement_bounds_epoch
+            != self.timeline_caches.drag_layout_generation.wrapping_sub(1)
+        {
             return None;
         }
-        let lane = self.drag_lanes.get(&track_id).copied()?;
-        if self.drag_lane_epochs.get(&track_id).copied()
-            != Some(self.drag_layout_generation.wrapping_sub(1))
+        let lane = self.timeline_caches.drag_lanes.get(&track_id).copied()?;
+        if self
+            .timeline_caches
+            .drag_lane_epochs
+            .get(&track_id)
+            .copied()
+            != Some(self.timeline_caches.drag_layout_generation.wrapping_sub(1))
             || (lane.top - expected_top).abs() > 1.0
         {
             return None;
@@ -450,7 +456,7 @@ mod tests {
             hex_session::DocumentAudioMode::VerifiedStreaming,
         ] {
             editor.update(&mut visual, |view, cx| {
-                view.document_audio_mode = mode;
+                view.audio_pub.document_audio_mode = mode;
                 cx.notify();
             });
             visual.run_until_parked();

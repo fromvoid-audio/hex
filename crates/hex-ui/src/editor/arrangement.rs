@@ -51,26 +51,26 @@ impl EditorView {
             || self.settings.theme.open
             || self.settings.tuning.open
             || super::device_panel::picker_is_open(self)
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.track_resize_active()
-            || self.arrangement_bounds.is_none()
+            || self.timeline_caches.arrangement_bounds.is_none()
             || !x.is_finite()
             || !y.is_finite()
         {
             return false;
         }
-        let Some(bounds) = self.arrangement_bounds else {
+        let Some(bounds) = self.timeline_caches.arrangement_bounds else {
             return false;
         };
         let timeline_width = (bounds.width - self.track_header_width()).max(0.0);
         if timeline_width <= 0.0 {
             return false;
         }
-        self.arrangement_pan = Some(super::ArrangementPan {
+        self.interaction.arrangement_pan = Some(super::ArrangementPan {
             generation: self.project_generation,
             revision: state.revision,
             last_x: x,
@@ -81,35 +81,35 @@ impl EditorView {
     }
 
     pub(super) fn update_arrangement_pan(&mut self, x: f32, y: f32) -> bool {
-        let Some(mut pan) = self.arrangement_pan else {
+        let Some(mut pan) = self.interaction.arrangement_pan else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
-            self.arrangement_pan = None;
+            self.interaction.arrangement_pan = None;
             return false;
         };
         if self.mode != super::EditorMode::Arrangement
             || self.project_generation != pan.generation
             || state.revision != pan.revision
         {
-            self.arrangement_pan = None;
+            self.interaction.arrangement_pan = None;
             return false;
         }
         if !x.is_finite() || !y.is_finite() {
-            self.arrangement_pan = None;
+            self.interaction.arrangement_pan = None;
             return false;
         }
         let dx = x - pan.last_x;
         let dy = y - pan.last_y;
         pan.last_x = x;
         pan.last_y = y;
-        if let Some(bounds) = self.arrangement_bounds {
+        if let Some(bounds) = self.timeline_caches.arrangement_bounds {
             let width = (bounds.width - self.track_header_width()).max(0.0);
             if width > 0.0 {
                 pan.timeline_width = width;
             }
         }
-        self.arrangement_pan = Some(pan);
+        self.interaction.arrangement_pan = Some(pan);
 
         let current = self.visible_viewport(state.timeline_frames);
         let frame_delta = -f64::from(dx) * current.length as f64 / f64::from(pan.timeline_width);
@@ -133,7 +133,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_arrangement_pan(&mut self) -> bool {
-        if self.arrangement_pan.take().is_none() {
+        if self.interaction.arrangement_pan.take().is_none() {
             return false;
         }
         if let Some(state) = self.state.as_ref() {
@@ -418,6 +418,7 @@ impl EditorView {
 
     fn arrangement_body(&self, mut body: Div, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         if self
+            .interaction
             .time_range_move_gesture
             .as_ref()
             .is_some_and(|gesture| gesture.copy_modifier)
@@ -469,13 +470,14 @@ impl EditorView {
                         if view.clip_paint_held() && view.focus.is_focused(window) {
                             window.renew_pointer_capture(cx.entity_id(), gpui::CursorStyle::Arrow);
                         }
-                        view.arrangement_bounds = Some(super::drag::LaneBounds {
+                        view.timeline_caches.arrangement_bounds = Some(super::drag::LaneBounds {
                             left: f32::from(bounds.origin.x),
                             width: f32::from(bounds.size.width),
                             top: f32::from(bounds.origin.y),
                             height: f32::from(bounds.size.height),
                         });
-                        view.arrangement_bounds_epoch = view.drag_layout_generation;
+                        view.timeline_caches.arrangement_bounds_epoch =
+                            view.timeline_caches.drag_layout_generation;
                         view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
@@ -636,7 +638,7 @@ impl EditorView {
                             if view.pointer_hits_section_launch(x, y) {
                                 return false;
                             }
-                            if view.time_selection_key_held {
+                            if view.interaction.time_selection_key_held {
                                 let started = view.begin_main_time_selection_gesture(
                                     x,
                                     y,
@@ -743,7 +745,7 @@ impl EditorView {
                                 }
                                 return changed;
                             }
-                            if view.clip_paint_gesture.is_some() {
+                            if view.interaction.clip_paint_gesture.is_some() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_clip_paint(x, y, event.modifiers.platform)
                                 } else {
@@ -811,8 +813,9 @@ impl EditorView {
             .absolute()
             .inset_0(),
         );
-        if let Some(selection) = self.time_selection.filter(|selection| {
-            self.time_selection_project_scope && selection.anchor_frame != selection.end_frame
+        if let Some(selection) = self.interaction.time_selection.filter(|selection| {
+            self.interaction.time_selection_project_scope
+                && selection.anchor_frame != selection.end_frame
         }) {
             let owner = cx.entity();
             body = body.child(
@@ -862,7 +865,7 @@ impl EditorView {
         if let Some(drag) = self.browser.active_audio_drag.as_ref()
             && self.browser_sampler_drop_ready(drag, cx).is_ok()
             && let Some(line_y) = self.device_panel.sampler_load.header_insertion_line_y
-            && let Some(bounds) = self.arrangement_bounds
+            && let Some(bounds) = self.timeline_caches.arrangement_bounds
             && line_y >= bounds.top
             && line_y < bounds.top + bounds.height
         {
@@ -895,7 +898,7 @@ impl EditorView {
                 })
         };
         if let Some(line_y) = insertion_line_y
-            && let Some(bounds) = self.arrangement_bounds
+            && let Some(bounds) = self.timeline_caches.arrangement_bounds
         {
             let relative_y = line_y - bounds.top;
             if relative_y.is_finite() && relative_y >= 0.0 && relative_y < bounds.height {
@@ -940,6 +943,7 @@ impl EditorView {
                                 };
                                 let top = entity
                                     .read(cx)
+                                    .timeline_caches
                                     .arrangement_bounds
                                     .map_or(y, |bounds| bounds.top);
                                 let marker_top = (y - 12.0).max(top);
@@ -993,7 +997,9 @@ impl EditorView {
 
     /// Resolve the applied insertion in the current painted layout, never the pointer target.
     pub(super) fn new_track_audible_marker(&self) -> Option<(f32, f32)> {
-        if self.arrangement_bounds_epoch != self.drag_layout_generation {
+        if self.timeline_caches.arrangement_bounds_epoch
+            != self.timeline_caches.drag_layout_generation
+        {
             return None;
         }
         let (hex_session::service::ClipMovePreviewDestination::NewTrack { before_track }, frame) =
@@ -1002,7 +1008,7 @@ impl EditorView {
             return None;
         };
         let state = self.state.as_ref()?;
-        let bounds = self.arrangement_bounds?;
+        let bounds = self.timeline_caches.arrangement_bounds?;
         let y = self.painted_track_insertion_line(before_track)?;
         let fraction = self
             .visible_viewport(state.timeline_frames)
@@ -1224,13 +1230,15 @@ impl EditorView {
                     },
                     move |bounds, _, _, cx| {
                         lane_entity.update(cx, |view, _| {
-                            view.main_track_lane_bounds = Some(super::drag::LaneBounds {
-                                left: f32::from(bounds.origin.x),
-                                width: f32::from(bounds.size.width),
-                                top: f32::from(bounds.origin.y),
-                                height: f32::from(bounds.size.height),
-                            });
-                            view.main_track_lane_epoch = view.drag_layout_generation;
+                            view.timeline_caches.main_track_lane_bounds =
+                                Some(super::drag::LaneBounds {
+                                    left: f32::from(bounds.origin.x),
+                                    width: f32::from(bounds.size.width),
+                                    top: f32::from(bounds.origin.y),
+                                    height: f32::from(bounds.size.height),
+                                });
+                            view.timeline_caches.main_track_lane_epoch =
+                                view.timeline_caches.drag_layout_generation;
                         });
                     },
                 )

@@ -12,7 +12,7 @@ impl EditorView {
         scale: f32,
     ) -> Option<LaneHit> {
         let state = self.state.as_ref()?;
-        let &lane = self.drag_lanes.get(&track_id)?;
+        let &lane = self.timeline_caches.drag_lanes.get(&track_id)?;
         let viewport_end = viewport.end()?;
         if viewport.length == 0 || lane.width <= 0.0 || lane.height <= 0.0 {
             return None;
@@ -32,10 +32,10 @@ impl EditorView {
 
         // Ensure index is populated (uses interior mutability on RefCell).
         {
-            let mut idx = self.arrangement_clip_index.borrow_mut();
+            let mut idx = self.timeline_caches.arrangement_clip_index.borrow_mut();
             idx.ensure_current(self.project_generation, state);
         }
-        let index_ref = self.arrangement_clip_index.borrow();
+        let index_ref = self.timeline_caches.arrangement_clip_index.borrow();
         let track_index_data = index_ref.track(track_id)?;
 
         // Query a narrow frame window around pointer X (margin of 2 logical px)
@@ -99,13 +99,13 @@ impl EditorView {
                 && !narrow
                 && clip_width >= 28.0
                 && track_height > super::super::track_layout::HEADER_ONLY_HEIGHT
-                && !self.fade_key_held
-                && !self.time_selection_key_held
+                && !self.interaction.fade_key_held
+                && !self.interaction.time_selection_key_held
                 && local_y < 4.0
                 && rel_x >= 9.0
                 && rel_x <= clip_width - 9.0
             {
-                let cursor = if self.option_held {
+                let cursor = if self.interaction.option_held {
                     CursorStyle::ResizeUpDown
                 } else if self.drag_available() {
                     CursorStyle::OpenHand
@@ -163,7 +163,7 @@ impl EditorView {
                             .get(i)
                             .is_some_and(loop_handles::midi_repeat_available),
                     };
-                    let cursor = if self.option_held && repeat_available {
+                    let cursor = if self.interaction.option_held && repeat_available {
                         CursorStyle::Loop
                     } else {
                         drag::rectangle_part(Some(TrimEdge::Right)).cursor()
@@ -273,9 +273,12 @@ impl EditorView {
     ) -> Div {
         let generation = self.project_generation;
         let lane_cursor = self
+            .interaction
             .hovered_arrangement_clip
             .filter(|h| h.generation == generation && h.track == track_id)
-            .map_or(CursorStyle::Arrow, |h| h.resolved_cursor(self.option_held));
+            .map_or(CursorStyle::Arrow, |h| {
+                h.resolved_cursor(self.interaction.option_held)
+            });
 
         let inner = div()
             .id(("lane-canvas-surface", track_id.value()))
@@ -295,8 +298,8 @@ impl EditorView {
                     cursor: h.cursor,
                 });
                 let mut changed = false;
-                if view.hovered_arrangement_clip != next_hover {
-                    view.hovered_arrangement_clip = next_hover;
+                if view.interaction.hovered_arrangement_clip != next_hover {
+                    view.interaction.hovered_arrangement_clip = next_hover;
                     changed = true;
                 }
                 if let Some(h) = hit.filter(|h| !h.is_midi) {
@@ -308,7 +311,7 @@ impl EditorView {
                     ) {
                         changed = true;
                     }
-                } else if let Some((fade_gen, fade_clip)) = view.hovered_fade_clip
+                } else if let Some((fade_gen, fade_clip)) = view.interaction.hovered_fade_clip
                     && fade_gen == generation
                     && view.state.as_ref().is_some_and(|s| {
                         s.project
@@ -327,13 +330,14 @@ impl EditorView {
                 if !*hovered {
                     let mut changed = false;
                     if view
+                        .interaction
                         .hovered_arrangement_clip
                         .is_some_and(|h| h.track == track_id)
                     {
-                        view.hovered_arrangement_clip = None;
+                        view.interaction.hovered_arrangement_clip = None;
                         changed = true;
                     }
-                    if let Some((fade_gen, fade_clip)) = view.hovered_fade_clip
+                    if let Some((fade_gen, fade_clip)) = view.interaction.hovered_fade_clip
                         && fade_gen == generation
                         && view.state.as_ref().is_some_and(|s| {
                             s.project
@@ -453,7 +457,7 @@ impl EditorView {
             )
             .on_click(
                 cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    if cx.has_active_drag() || view.active_clip_drag.is_some() {
+                    if cx.has_active_drag() || view.interaction.active_clip_drag.is_some() {
                         return;
                     }
                     let Some(pos) = event.mouse_position() else {
@@ -652,7 +656,7 @@ impl EditorView {
                 hit.clip_start,
                 hit.clip_end,
             );
-            if let Some(press) = self.pointer_down.as_mut() {
+            if let Some(press) = self.interaction.pointer_down.as_mut() {
                 press.snap_edge = edge;
             }
         } else {

@@ -197,7 +197,7 @@ fn only_the_current_documents_degraded_vst3_devices_show_the_marker(cx: &mut Tes
     visual.run_until_parked();
     view.update(&mut visual, |view, _| {
         assert!(view.device_panel.reloading_plugins.contains(&faulted));
-        assert!(view.recovery.generation().is_none());
+        assert!(view.audio_pub.recovery.generation().is_none());
     });
     // An empty set clears the degraded marker and per-device reload state.
     deliver(

@@ -417,7 +417,10 @@ fn confirmation_modal_renders_centered_isolates_backdrop_and_answers_clicks(
     visual.simulate_mouse_down(grid, MouseButton::Middle, modifiers);
     visual.run_until_parked();
     assert!(
-        editor.read_with(&visual, |view, _| view.arrangement_pan.is_none()),
+        editor.read_with(&visual, |view, _| view
+            .interaction
+            .arrangement_pan
+            .is_none()),
         "the modal must block Arrangement capture before it starts a pan"
     );
     visual.simulate_mouse_up(grid, MouseButton::Middle, modifiers);
@@ -443,7 +446,10 @@ fn confirmation_modal_renders_centered_isolates_backdrop_and_answers_clicks(
     visual.simulate_mouse_down(grid, MouseButton::Middle, modifiers);
     visual.run_until_parked();
     assert!(
-        editor.read_with(&visual, |view, _| view.arrangement_pan.is_some()),
+        editor.read_with(&visual, |view, _| view
+            .interaction
+            .arrangement_pan
+            .is_some()),
         "the same point must start a pan once the modal closes"
     );
     visual.simulate_mouse_up(grid, MouseButton::Middle, modifiers);

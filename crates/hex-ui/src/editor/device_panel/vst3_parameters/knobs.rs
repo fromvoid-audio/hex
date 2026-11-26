@@ -266,7 +266,7 @@ pub(in crate::editor) fn create_knob(
                             .is_some_and(|active| active.key == *key)
                 });
             if !continuing_owned {
-                if view.stopped_playback_restore.is_some()
+                if view.audio_pub.stopped_playback_restore.is_some()
                     || view.device_panel.gesture.snapshot().is_some()
                     || current_context(view) != Some(origin.context)
                 {

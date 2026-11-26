@@ -8,13 +8,14 @@ use hex_session::service::{Event, Request};
 
 impl EditorView {
     pub(in crate::editor) fn pending_loop_region(&self) -> Option<LoopRegion> {
-        self.pending_loop
+        self.interaction
+            .pending_loop
             .filter(|pending| pending.generation == self.project_generation)
             .map(|pending| pending.region)
     }
 
     pub(in crate::editor) fn pending_loop_matches(&self, request: &Request) -> bool {
-        self.pending_loop.is_some_and(|pending| {
+        self.interaction.pending_loop.is_some_and(|pending| {
             pending.generation == self.project_generation
                 && pending.remaining.is_none()
                 && match (pending.toggle, request) {
@@ -40,7 +41,7 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn loop_request_submitted(&mut self) {
-        if let Some(pending) = self.pending_loop.as_mut() {
+        if let Some(pending) = self.interaction.pending_loop.as_mut() {
             pending.remaining = Some(self.worker_requests_pending);
         }
     }
@@ -48,11 +49,11 @@ impl EditorView {
     /// Earlier completions advance the count, never retire our displayed range.
     /// The caller clears a matching terminal only after installing its state.
     pub(in crate::editor) fn loop_request_complete(&mut self, event: &Event) -> bool {
-        let Some(pending) = self.pending_loop.as_mut() else {
+        let Some(pending) = self.interaction.pending_loop.as_mut() else {
             return false;
         };
         if event.project_replaced || pending.generation != self.project_generation {
-            self.pending_loop = None;
+            self.interaction.pending_loop = None;
             return false;
         }
         if event.request_complete
@@ -77,7 +78,7 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn toggle_loop(&mut self) {
-        if self.recovery.holds_loop_region() {
+        if self.audio_pub.recovery.holds_loop_region() {
             return;
         }
         let command = Command::ToggleLoopRegion;
@@ -99,10 +100,10 @@ impl EditorView {
         region: LoopRegion,
         command: Command,
     ) -> bool {
-        if self.recovery.holds_loop_region() {
+        if self.audio_pub.recovery.holds_loop_region() {
             return false;
         }
-        self.pending_loop = Some(PendingLoop {
+        self.interaction.pending_loop = Some(PendingLoop {
             generation,
             region,
             toggle: matches!(command, Command::ToggleLoopRegion),
@@ -112,7 +113,7 @@ impl EditorView {
             launch: None,
         });
         if !self.enqueue(Request::Edit(command)) {
-            self.pending_loop = None;
+            self.interaction.pending_loop = None;
             return false;
         }
         true
@@ -124,19 +125,20 @@ impl EditorView {
         region: LoopRegion,
     ) {
         if self.submit_loop_preview(self.project_generation, region)
-            && let Some(pending) = self.pending_loop.as_mut()
+            && let Some(pending) = self.interaction.pending_loop.as_mut()
         {
             pending.launch = Some(launch);
         }
     }
 
     pub(in crate::editor) fn pending_loop_launch(&self) -> bool {
-        self.pending_loop
+        self.interaction
+            .pending_loop
             .is_some_and(|pending| pending.launch.is_some())
     }
 
     pub(in crate::editor) fn cancel_pending_loop_launch(&mut self) {
-        if let Some(pending) = self.pending_loop.as_mut() {
+        if let Some(pending) = self.interaction.pending_loop.as_mut() {
             pending.launch = None;
         }
     }
@@ -146,9 +148,9 @@ impl EditorView {
         region: LoopRegion,
         section: bool,
     ) {
-        let intent = self.selection_intent_epoch;
+        let intent = self.interaction.selection_intent_epoch;
         if self.submit_loop_preview(self.project_generation, region)
-            && let Some(pending) = self.pending_loop.as_mut()
+            && let Some(pending) = self.interaction.pending_loop.as_mut()
         {
             pending.start_intent = intent;
             if section {
@@ -158,26 +160,28 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn pending_selection_loop_has_newer_intent(&self) -> bool {
-        self.pending_loop.is_some_and(|pending| {
-            pending.start_intent.is_some() && pending.start_intent != self.selection_intent_epoch
+        self.interaction.pending_loop.is_some_and(|pending| {
+            pending.start_intent.is_some()
+                && pending.start_intent != self.interaction.selection_intent_epoch
         })
     }
 
     pub(in crate::editor) fn cancel_pending_loop_focus(&mut self) {
-        if let Some(pending) = self.pending_loop.as_mut() {
+        if let Some(pending) = self.interaction.pending_loop.as_mut() {
             pending.focus_intent = None;
         }
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(in crate::editor) fn pending_loop_has_focus_intent(&self) -> bool {
-        self.pending_loop
+        self.interaction
+            .pending_loop
             .is_some_and(|pending| pending.focus_intent.is_some())
     }
 
     /// Called only after the exact terminal's canonical snapshot is installed.
     pub(in crate::editor) fn loop_state_installed(&mut self, succeeded: bool) {
-        let Some(pending) = self.pending_loop.take() else {
+        let Some(pending) = self.interaction.pending_loop.take() else {
             return;
         };
         if succeeded
@@ -189,7 +193,7 @@ impl EditorView {
         if succeeded
             && pending.generation == self.project_generation
             && pending.start_intent.is_some()
-            && pending.start_intent == self.selection_intent_epoch
+            && pending.start_intent == self.interaction.selection_intent_epoch
             && self
                 .state
                 .as_ref()
@@ -197,13 +201,13 @@ impl EditorView {
                 == Some(pending.region)
             && let Some(epoch) = pending.start_intent
         {
-            self.selection_loop_start = Some((epoch, pending.region));
+            self.interaction.selection_loop_start = Some((epoch, pending.region));
         }
         if !succeeded
             || self.mode != super::EditorMode::Arrangement
             || pending.generation != self.project_generation
             || pending.focus_intent.is_none()
-            || pending.focus_intent != self.selection_intent_epoch
+            || pending.focus_intent != self.interaction.selection_intent_epoch
             || self
                 .state
                 .as_ref()

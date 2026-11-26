@@ -289,7 +289,7 @@ impl EditorView {
             self.error = Some("finish the audio recording before changing its armed track".into());
             return;
         }
-        if self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+        if self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
             || self
                 .state
                 .as_ref()
@@ -500,11 +500,11 @@ impl EditorView {
             return;
         }
         if self.mode != EditorMode::Arrangement
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
             || self.edit_pending()
             || self.persistence.audio_batch.is_some()
-            || self.pending_playback.is_some()
-            || !self.playback_candidates.is_empty()
+            || self.audio_pub.pending_playback.is_some()
+            || !self.audio_pub.playback_candidates.is_empty()
             || self.device_panel.gesture.snapshot().is_some()
             || self.gain_recorder.blocks_edits()
             || self.midi_editor.recorder.blocks_edits()
@@ -1201,7 +1201,7 @@ mod tests {
             assert!(view.audio_recorder.armed_track.is_none());
             view.toggle_audio_arm(second, view.project_generation + 1);
             assert!(view.audio_recorder.armed_track.is_none());
-            view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+            view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
             view.toggle_audio_arm(second, view.project_generation);
             assert!(view.audio_recorder.armed_track.is_none());
             assert!(

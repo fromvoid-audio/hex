@@ -168,7 +168,7 @@ fn browser_non_text_clicks_leave_real_query_focus_and_do_not_accept_typing(
                     );
                     assert_eq!(view.browser.search.read(cx).text(), query);
                     assert!(view.pending_requests.is_empty());
-                    assert!(view.pending_audio_commands.is_empty());
+                    assert!(view.audio_pub.pending_audio_commands.is_empty());
                 })
             });
             let search = visual.debug_bounds("browser-search").unwrap();
@@ -360,7 +360,7 @@ fn browser_stale_unavailable_row_click_leaves_query_focus_without_action(cx: &mu
                     assert!(view.browser.results_focus.is_focused(window));
                     assert_eq!(view.browser_key_context(window,cx), "hex_browser");
                     assert_eq!((view.browser.playback_generation, view.browser.preview_preparations, view.browser.selected_index, view.browser.results_focused), before, "refused stale row must not select, audition, or prepare");
-                    assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                    assert!(view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty());
                 });
             });
             visual.simulate_mouse_up(row.center(), MouseButton::Left, Modifiers::default());
@@ -375,7 +375,8 @@ fn browser_stale_unavailable_row_click_leaves_query_focus_without_action(cx: &mu
                     assert_eq!(view.browser.search.read(cx).text(), "loop");
                     assert!(view.browser.results_focus.is_focused(window));
                     assert!(
-                        view.pending_requests.is_empty() && view.pending_audio_commands.is_empty()
+                        view.pending_requests.is_empty()
+                            && view.audio_pub.pending_audio_commands.is_empty()
                     );
                 })
             });

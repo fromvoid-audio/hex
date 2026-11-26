@@ -95,8 +95,8 @@ impl EditorView {
         }
         if self.edit_pending()
             || self.device_panel.gesture.snapshot().is_some()
-            || self.pending_playback.is_some()
-            || !self.playback_candidates.is_empty()
+            || self.audio_pub.pending_playback.is_some()
+            || !self.audio_pub.playback_candidates.is_empty()
         {
             self.error = Some("finish pending edits before arming gain recording".into());
             return;
@@ -108,7 +108,7 @@ impl EditorView {
             self.error = Some("gain recording requires native audio".into());
             return;
         }
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("gain recording is unavailable for verified streaming audio".into());
             return;
         }

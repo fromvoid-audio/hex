@@ -93,14 +93,14 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
                 editor.update(cx, |view, cx| {
                     view.state = Some(event.state);
                     view.selected_clip = Some(clip); // Time range must beat whole MIDI duplication.
-                    view.time_selection = Some(TimeSelection {
+                    view.interaction.time_selection = Some(TimeSelection {
                         anchor_track: Some(audio),
                         end_track: Some(if scope == 0 { audio } else { midi }),
                         anchor_frame: 12_000,
                         end_frame: 72_000,
                     });
-                    view.time_selection_project_scope = scope == 2;
-                    view.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
+                    view.interaction.time_selection_project_scope = scope == 2;
+                    view.interaction.edit_cursor = Some(crate::editor::edit_cursor::EditCursor {
                         track: Some(audio),
                         frame: 12_000,
                         generation: view.project_generation,
@@ -170,7 +170,7 @@ fn command_d_duplicates_bounded_audio_midi_gaps_and_advances_scope_atomically(
             }
             let range = view.normalized_time_selection().unwrap();
             assert_eq!((range.start(), range.end()), (72_000, 132_000));
-            assert_eq!(view.time_selection_project_scope, scope == 2);
+            assert_eq!(view.interaction.time_selection_project_scope, scope == 2);
             p.snapshot()
         });
         visual.simulate_keystrokes("cmd-z");
@@ -235,7 +235,7 @@ fn command_d_refuses_overflow_and_pending_time_edits(cx: &mut TestAppContext) {
     for pending in [false, true] {
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
-                view.time_selection = Some(TimeSelection {
+                view.interaction.time_selection = Some(TimeSelection {
                     anchor_track: Some(audio),
                     end_track: Some(audio),
                     anchor_frame: if pending { 12_000 } else { u64::MAX - 1 },
@@ -244,7 +244,7 @@ fn command_d_refuses_overflow_and_pending_time_edits(cx: &mut TestAppContext) {
                 view.worker_requests_pending = usize::from(pending);
                 assert!(view.duplicate_time_selection(window));
                 assert!(view.test_probes.last_enqueued_edit.is_none());
-                assert!(view.pending_time_range_move.is_none());
+                assert!(view.interaction.pending_time_range_move.is_none());
                 assert!(view.error.is_some());
                 view.worker_requests_pending = 0;
             })

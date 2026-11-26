@@ -22,12 +22,16 @@ impl EditorView {
     /// the retained point cursor until the whole-clip selection clears.
     pub(super) fn selected_arrangement_play_start(&self) -> Option<u64> {
         if self.project_point_cursor().is_some()
-            || self.clip_drop_cursor_epoch.is_some_and(|epoch| {
-                self.selection_intent_epoch == Some(epoch)
-                    && self
-                        .edit_cursor
-                        .is_some_and(|cursor| cursor.generation == self.project_generation)
-            })
+            || self
+                .interaction
+                .clip_drop_cursor_epoch
+                .is_some_and(|epoch| {
+                    self.interaction.selection_intent_epoch == Some(epoch)
+                        && self
+                            .interaction
+                            .edit_cursor
+                            .is_some_and(|cursor| cursor.generation == self.project_generation)
+                })
         {
             return None;
         }
@@ -52,11 +56,14 @@ impl EditorView {
                 .min();
         };
         // Any newly placed cursor restores the ordinary precedence below.
-        if self.loop_start_over_clip == Some(primary) && self.edit_cursor.is_none() {
+        if self.interaction.loop_start_over_clip == Some(primary)
+            && self.interaction.edit_cursor.is_none()
+        {
             return None;
         }
-        if self.edit_cursor_in_selected_clip == Some(primary)
+        if self.interaction.edit_cursor_in_selected_clip == Some(primary)
             && self
+                .interaction
                 .edit_cursor
                 .is_some_and(|cursor| cursor.generation == self.project_generation)
         {
@@ -70,7 +77,7 @@ impl EditorView {
             self.clip_selection.epoch,
             primary,
         );
-        if let Some(cached) = self.selected_clip_play_start.get()
+        if let Some(cached) = self.interaction.selected_clip_play_start.get()
             && cached.scope == scope
         {
             return cached.frame;
@@ -94,7 +101,8 @@ impl EditorView {
             })
             .flatten()
             .min();
-        self.selected_clip_play_start
+        self.interaction
+            .selected_clip_play_start
             .set(Some(SelectedClipPlayStart { scope, frame }));
         frame
     }
@@ -120,7 +128,7 @@ mod tests {
             view.selected_clip = None;
             view.reconcile_clip_selection();
             view.section_autoplay = false;
-            view.edit_cursor = Some(EditCursor {
+            view.interaction.edit_cursor = Some(EditCursor {
                 track: Some(track),
                 frame: 73_000,
                 generation: view.project_generation,
@@ -190,8 +198,8 @@ mod tests {
             );
         });
         editor.update(&mut visual, |view, _| {
-            let track = view.edit_cursor.unwrap().track.unwrap();
-            view.time_selection = Some(TimeSelection {
+            let track = view.interaction.edit_cursor.unwrap().track.unwrap();
+            view.interaction.time_selection = Some(TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 10_000,
@@ -202,14 +210,14 @@ mod tests {
                 5_000,
                 "time ranges keep clip precedence"
             );
-            view.locked_play_start = view.edit_cursor;
+            view.interaction.locked_play_start = view.interaction.edit_cursor;
             assert_eq!(
                 view.playback_start_frame(),
                 73_000,
                 "explicit lock keeps clip precedence"
             );
-            view.locked_play_start = None;
-            view.time_selection = None;
+            view.interaction.locked_play_start = None;
+            view.interaction.time_selection = None;
             view.selected_track = Some(track);
             assert_eq!(
                 view.selected_arrangement_play_start(),
@@ -229,7 +237,7 @@ mod tests {
                     track,
                     frame: 48_000,
                     generation: view.project_generation,
-                    epoch: view.selection_intent_epoch.unwrap(),
+                    epoch: view.interaction.selection_intent_epoch.unwrap(),
                 },
                 None,
             );

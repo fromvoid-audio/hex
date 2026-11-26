@@ -137,7 +137,7 @@ pub(in crate::editor) fn actor_fixture_in_mode(
                     .unwrap()
                     .context()
                     .project_generation;
-                view.document_audio_mode = mode;
+                view.audio_pub.document_audio_mode = mode;
                 view.state = state;
                 view.selected_track = Some(tracks[1]);
                 cx.notify();
@@ -271,7 +271,7 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
             });
             editor.update(cx, |view, cx| {
                 view.project_generation = generation;
-                view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+                view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
                 view.state = Some(state);
                 view.selected_track = Some(group);
                 view.audio = Some(crate::EditorAudio {
@@ -307,13 +307,13 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
     let (recovery, earlier) = editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
         assert!(view.device_panel.gesture.snapshot().is_none());
-        assert!(view.deferred_play.is_some());
+        assert!(view.audio_pub.deferred_play.is_some());
         assert_eq!(
             view.worker_requests_pending, 1,
             "only the audio restart was submitted"
         );
         (
-            view.recovery.generation().unwrap(),
+            view.audio_pub.recovery.generation().unwrap(),
             view.track_gain_controls
                 .displayed_track_gain(generation, group)
                 .unwrap(),
@@ -336,7 +336,7 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
     }
     visual.run_until_parked();
     editor.read_with(&visual, |view, cx| {
-        assert_eq!(view.recovery.holds_mixer_edit(), released);
+        assert_eq!(view.audio_pub.recovery.holds_mixer_edit(), released);
         assert_eq!(
             view.worker_requests_pending, 1,
             "release must not submit against the degraded output"
@@ -412,9 +412,9 @@ fn degraded_group_volume_recovery(cx: &mut TestAppContext, released: bool, faile
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.device_panel.degraded_plugins = Default::default();
-        view.applied_project_revision = Some(revision);
-        assert!(view.recovery.opened(recovery));
-        assert!(view.recovery.restored(recovery));
+        view.audio_pub.applied_project_revision = Some(revision);
+        assert!(view.audio_pub.recovery.opened(recovery));
+        assert!(view.audio_pub.recovery.restored(recovery));
         assert!(!view.finish_audio_recovery_tick());
     });
     callback.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -569,7 +569,7 @@ fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut Test
             });
             editor.update(cx, |view, cx| {
                 view.project_generation = generation;
-                view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+                view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
                 view.state = Some(state);
                 view.selected_track = Some(track);
                 view.audio = Some(crate::EditorAudio {
@@ -605,10 +605,10 @@ fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut Test
 
     let (recovery, target_pan) = editor.read_with(&visual, |view, _| {
         assert!(view.error.is_none(), "{:?}", view.error);
-        assert!(view.recovery.holds_mixer_edit());
+        assert!(view.audio_pub.recovery.holds_mixer_edit());
         assert_eq!(view.status, "restarting audio · pan will update when ready");
         (
-            view.recovery.generation().unwrap(),
+            view.audio_pub.recovery.generation().unwrap(),
             view.track_gain_controls
                 .displayed_mixer_value(generation, super::MixerKey::Balance(track))
                 .unwrap(),
@@ -642,9 +642,9 @@ fn degraded_plugin_track_pan_and_main_volume_recover_automatically(cx: &mut Test
             mode: hex_session::DocumentAudioMode::Resident,
         });
         view.device_panel.degraded_plugins = Default::default();
-        view.applied_project_revision = Some(revision);
-        assert!(view.recovery.opened(recovery));
-        assert!(view.recovery.restored(recovery));
+        view.audio_pub.applied_project_revision = Some(revision);
+        assert!(view.audio_pub.recovery.opened(recovery));
+        assert!(view.audio_pub.recovery.restored(recovery));
         assert!(!view.finish_audio_recovery_tick());
     });
     callback.render(&mut [[0.0; 2]; 64]).unwrap();
@@ -709,7 +709,7 @@ fn volume_drag_targets_its_track_without_selection_resize_or_clip_drag_and_cance
             "held gesture is not canonical history"
         );
         assert!(!view.track_resize_active());
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
     });
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump(&editor, cx, |view| {
@@ -843,7 +843,7 @@ fn verified_track_volume_drag_uses_actor_and_keeps_return_gain_explicit(cx: &mut
                 .is_empty()
     });
     editor.update(cx, |view, cx| {
-        view.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::VerifiedStreaming;
         cx.notify();
     });
     visual.run_until_parked();
@@ -1096,7 +1096,7 @@ fn volume_headers_fit_audio_midi_minimum_and_resized_rows_without_losing_control
             editor.read_with(&visual, |view, _| {
                 assert!(!view.track_resize_active());
                 assert!(view.device_panel.gesture.snapshot().is_none());
-                assert!(view.active_clip_drag.is_none());
+                assert!(view.interaction.active_clip_drag.is_none());
                 assert!(
                     view.test_probes.last_enqueued_edit.is_none(),
                     "resizing must not change canonical gain"
@@ -1367,7 +1367,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.track(other).unwrap().balance(), 0.0);
         assert!(!project.track(track).unwrap().soloed());
-        assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+        assert!(!view.track_resize_active() && view.interaction.active_clip_drag.is_none());
     });
     for prefix in ["track-mute", "track-solo"] {
         let hit = bounds(&mut visual, prefix, track).center();
@@ -1594,7 +1594,7 @@ fn header_pan_vertical_drag_direction_fine_bounds_and_atomic_history(cx: &mut Te
                 before.track(track).unwrap().gain()
             );
             assert_eq!(view.selected_track, Some(other));
-            assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+            assert!(!view.track_resize_active() && view.interaction.active_clip_drag.is_none());
             project.clone()
         });
         visual.run_until_parked();
@@ -1688,7 +1688,7 @@ fn unused_lower_header_space_selects_tracks_with_modifiers_in_both_audio_modes(
                 view.worker_requests_pending, 0,
                 "background selection is view state only"
             );
-            assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+            assert!(!view.track_resize_active() && view.interaction.active_clip_drag.is_none());
         });
         if mode == hex_session::DocumentAudioMode::Resident {
             let sends = bounds(&mut visual, "track-return-sends", first);
@@ -2868,7 +2868,7 @@ fn verified_main_slider_keeps_explicit_entry_and_finalization_without_held_previ
     editor.read_with(cx, |view, _| {
         assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(
-            view.audible_playback.is_none(),
+            view.audio_pub.audible_playback.is_none(),
             "no resident preview fallback"
         );
     });
@@ -2952,7 +2952,7 @@ fn verified_return_slider_keeps_atomic_history_and_reverts_refused_edits(cx: &mu
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.document_audio_mode,
+            view.audio_pub.document_audio_mode,
             DocumentAudioMode::VerifiedStreaming
         )
     });
@@ -2976,7 +2976,10 @@ fn verified_return_slider_keeps_atomic_history_and_reverts_refused_edits(cx: &mu
     });
     editor.read_with(cx, |view, _| {
         assert!(view.device_panel.gesture.snapshot().is_none());
-        assert!(view.audible_playback.is_none(), "no resident fallback");
+        assert!(
+            view.audio_pub.audible_playback.is_none(),
+            "no resident fallback"
+        );
         let project = &view.state.as_ref().unwrap().project;
         assert_eq!(project.master_gain(), 1.0);
         assert_eq!(project.track(tracks[0]).unwrap().gain(), 0.5);

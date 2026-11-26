@@ -122,18 +122,20 @@ impl EditorView {
                 };
                 lane_entity.update(cx, |view, view_cx| {
                     let changed = view
+                        .timeline_caches
                         .drag_lanes
                         .insert(track_id, lane)
                         .is_none_or(|old| old.left != lane.left || old.width != lane.width);
-                    view.track_drop_lanes.insert(
+                    view.timeline_caches.track_drop_lanes.insert(
                         track_id,
                         LaneBounds {
                             height: track_drop_height,
                             ..lane
                         },
                     );
-                    view.drag_lane_epochs
-                        .insert(track_id, view.drag_layout_generation);
+                    view.timeline_caches
+                        .drag_lane_epochs
+                        .insert(track_id, view.timeline_caches.drag_layout_generation);
                     if changed {
                         view_cx.notify();
                     }
@@ -237,9 +239,13 @@ impl EditorView {
                 if visible_start < visible_end {
                     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                    let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
-                        crate::editor::trim::rendered_clip_width(lane.width, width)
-                    });
+                    let pixel_width = self
+                        .timeline_caches
+                        .drag_lanes
+                        .get(&track_id)
+                        .map_or(0.0, |lane| {
+                            crate::editor::trim::rendered_clip_width(lane.width, width)
+                        });
                     let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
                     let active = clip.active();
                     let detail_opacity = theme::clip_detail_opacity(active);
@@ -380,9 +386,13 @@ impl EditorView {
                 if visible_start < visible_end {
                     let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                     let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                    let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
-                        crate::editor::trim::rendered_clip_width(lane.width, width)
-                    });
+                    let pixel_width = self
+                        .timeline_caches
+                        .drag_lanes
+                        .get(&track_id)
+                        .map_or(0.0, |lane| {
+                            crate::editor::trim::rendered_clip_width(lane.width, width)
+                        });
                     let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
                     let active = preview_clip.active();
                     let detail_opacity = theme::clip_detail_opacity(active);
@@ -447,7 +457,7 @@ impl EditorView {
                                 },
                                 visible_start,
                                 visible_end,
-                                std::rc::Rc::clone(&self.waveform_geometry_cache),
+                                std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                                 self.waveform_grid(track_id, viewport, scale_factor),
                             )
                     {
@@ -474,7 +484,7 @@ impl EditorView {
                             preview = preview.child(clip_fade_layer(
                                 preview_clip.id(),
                                 samples,
-                                self.fade_key_held,
+                                self.interaction.fade_key_held,
                                 active,
                             ));
                         }
@@ -581,6 +591,7 @@ impl EditorView {
                     let left = (start - viewport.start) as f32 / viewport.length as f32;
                     let width = (end - start) as f32 / viewport.length as f32;
                     let pixel_width = self
+                        .timeline_caches
                         .drag_lanes
                         .get(&track_id)
                         .map_or(0.0, |lane| lane.width * width);
@@ -677,7 +688,7 @@ impl EditorView {
                     };
                     clip_area = clip_area.child(framed_clip);
                 }
-                if self.active_clip_drag.is_some() && !overlap_events.is_empty() {
+                if self.interaction.active_clip_drag.is_some() && !overlap_events.is_empty() {
                     // Captured member IDs are sorted by the existing selection
                     // owner. Originals are protected in BOTH copy/move modes.
                     let occupied = track
@@ -743,9 +754,13 @@ impl EditorView {
             if visible_start < visible_end {
                 let left = (visible_start - viewport.start) as f64 / viewport.length as f64;
                 let width = (visible_end - visible_start) as f64 / viewport.length as f64;
-                let pixel_width = self.drag_lanes.get(&track_id).map_or(0.0, |lane| {
-                    crate::editor::trim::rendered_clip_width(lane.width, width)
-                });
+                let pixel_width = self
+                    .timeline_caches
+                    .drag_lanes
+                    .get(&track_id)
+                    .map_or(0.0, |lane| {
+                        crate::editor::trim::rendered_clip_width(lane.width, width)
+                    });
                 let has_border = hex_widgets::rectangle_border_width(pixel_width) > 0.0;
                 let active = self
                     .displayed_clip_drag()
@@ -854,7 +869,7 @@ impl EditorView {
                             preview.start_frame,
                             visible_start,
                             visible_end,
-                            std::rc::Rc::clone(&self.waveform_geometry_cache),
+                            std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                             crate::theme::color(crate::theme::PaletteRole::Waveform),
                         ),
                     )]);
@@ -909,7 +924,9 @@ impl EditorView {
                 for (index, (start, end)) in
                     drop_overlap_spans(state, track, (visible_start, visible_end), excluded_clip)
                         .into_iter()
-                        .filter(|_| clip_preview.is_none() || self.active_clip_drag.is_some())
+                        .filter(|_| {
+                            clip_preview.is_none() || self.interaction.active_clip_drag.is_some()
+                        })
                         .enumerate()
                 {
                     clip_area = clip_area.child(
@@ -955,7 +972,7 @@ impl EditorView {
                 );
             }
         }
-        if self.selected_track == Some(track_id) && self.time_selection.is_some() {
+        if self.selected_track == Some(track_id) && self.interaction.time_selection.is_some() {
             clip_area = clip_area.child(
                 div()
                     .debug_selector(|| format!("time-selection-focus-{}", track_id.value()))
@@ -1013,7 +1030,8 @@ impl EditorView {
                     continue;
                 };
                 if let Some(fragment_view) = passive_audio_fragment(
-                    self.drag_lanes
+                    self.timeline_caches
+                        .drag_lanes
                         .get(&track_id)
                         .map_or(0.0, |lane| lane.width),
                     scale_factor,
@@ -1028,7 +1046,7 @@ impl EditorView {
                     viewport,
                     viewport_end,
                     grid,
-                    std::rc::Rc::clone(&self.waveform_geometry_cache),
+                    std::rc::Rc::clone(&self.timeline_caches.waveform_geometry_cache),
                     format!(
                         "time-move-audio-fragment-{}-{}",
                         track_id.value(),
@@ -1061,7 +1079,8 @@ impl EditorView {
                     continue;
                 };
                 let fragment = passive_midi_fragment(
-                    self.drag_lanes
+                    self.timeline_caches
+                        .drag_lanes
                         .get(&track_id)
                         .map_or(0.0, |lane| lane.width),
                     scale_factor,
@@ -1325,7 +1344,8 @@ impl EditorView {
         let sample_source = crate::editor::sample_recorder::Arm::Output(
             hex_engine::OutputCaptureId::Track(track_id),
         );
-        let resident_layout = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
+        let resident_layout =
+            self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident;
         let (switch_revision, (muted, soloed)) = self
             .observed_track_switches(track_id)
             .unwrap_or((state.revision, (track.muted(), track.soloed())));

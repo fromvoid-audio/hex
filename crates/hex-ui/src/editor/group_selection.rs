@@ -22,10 +22,13 @@ impl EditorView {
             return;
         }
         if self
+            .interaction
             .time_selection
             .is_some_and(|range| range.anchor_frame != range.end_frame)
         {
-            if self.time_selection_project_scope && self.create_section_in_selected_gap() {
+            if self.interaction.time_selection_project_scope
+                && self.create_section_in_selected_gap()
+            {
                 return;
             }
             let Some(range) = self.normalized_time_selection() else {
@@ -40,7 +43,7 @@ impl EditorView {
                 project_generation: self.project_generation,
                 revision,
                 range,
-                create_if_empty: !self.time_selection_project_scope,
+                create_if_empty: !self.interaction.time_selection_project_scope,
             }) {
                 self.retire_group_selection();
             }
@@ -96,20 +99,20 @@ impl Selection {
             primary: view.selected_clip,
             clips: view.clip_selection.clone(),
             ids: view.selected_clip_ids(),
-            time: view.time_selection,
+            time: view.interaction.time_selection,
         }
     }
     fn matches(&self, view: &EditorView) -> bool {
         self.track == view.selected_track
             && self.primary == view.selected_clip
-            && self.time == view.time_selection
+            && self.time == view.interaction.time_selection
             && self.ids == view.selected_clip_ids()
     }
     fn install(self, view: &mut EditorView) {
         view.selected_track = self.track;
         view.selected_clip = self.primary;
         view.clip_selection = self.clips;
-        view.time_selection = self.time;
+        view.interaction.time_selection = self.time;
     }
 }
 impl EditorView {
@@ -192,7 +195,7 @@ impl EditorView {
                         && !present
                         && self.selected_clip == Some(*result)
                         && self.selected_clip_ids() == [*result]
-                        && self.time_selection == before.time
+                        && self.interaction.time_selection == before.time
                         && before.ids.iter().all(|id| has_clip(project, *id))
                     {
                         Some(before.clone())

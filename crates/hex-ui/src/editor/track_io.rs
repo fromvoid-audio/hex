@@ -485,7 +485,7 @@ impl EditorView {
             return None;
         };
         let track_id = track.id();
-        let lane = self.drag_lanes.get(&track_id).copied();
+        let lane = self.timeline_caches.drag_lanes.get(&track_id).copied();
         let window_bounds = window.bounds();
         let window_width = f32::from(window_bounds.size.width);
         let window_height = f32::from(window_bounds.size.height);

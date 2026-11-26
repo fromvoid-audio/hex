@@ -117,7 +117,7 @@ impl EditorView {
         self.browser.playback_phase = Phase::Unavailable;
         self.browser.playback_fraction = fraction as f32;
         self.status = "sample preview unavailable".into();
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("sample preview is unavailable in verified streaming mode".into());
             return;
         }

@@ -90,7 +90,7 @@ pub fn commit_owned_numeric_edit(
             GestureTarget::MainGain
                 | GestureTarget::ReturnGain { .. }
                 | GestureTarget::ReturnSend { .. }
-        ) && view.document_audio_mode != hex_session::DocumentAudioMode::Resident)
+        ) && view.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident)
     {
         let command = match target {
             GestureTarget::MainGain => Request::Edit(Command::MasterGain {

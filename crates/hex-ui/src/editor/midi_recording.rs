@@ -185,10 +185,10 @@ impl EditorView {
             || self.gain_recorder.blocks_edits()
             || self.audio_recorder.blocks_edits()
             || self.midi_editor.step.enabled
-            || self.pending_playback.is_some()
-            || !self.playback_candidates.is_empty()
+            || self.audio_pub.pending_playback.is_some()
+            || !self.audio_pub.playback_candidates.is_empty()
             || !matches!(self.mode, EditorMode::Arrangement | EditorMode::Session)
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
             || !self.worker_owns_keyboard_publication()
         {
             self.error =
@@ -238,7 +238,7 @@ impl EditorView {
                 self.error = Some("select an existing console midi clip before recording".into());
                 return;
             };
-            let audible = self.audible_playback.as_ref().map(|candidate| {
+            let audible = self.audio_pub.audible_playback.as_ref().map(|candidate| {
                 (
                     candidate.audio_revision,
                     candidate.state.revision,
@@ -893,7 +893,7 @@ mod lifecycle_tests {
             // This fixture authoring happened before it had an audio output.
             // Its offline candidate is redundant with the same canonical source
             // actually installed above; retire it on control, not as a fake ACK.
-            if let Some(pending) = view.pending_playback.take() {
+            if let Some(pending) = view.audio_pub.pending_playback.take() {
                 assert_eq!(pending.project_revision, revision);
                 assert_eq!(pending.project_generation, generation);
             }

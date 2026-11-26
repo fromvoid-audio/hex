@@ -248,12 +248,15 @@ impl EditorView {
     }
 
     pub(super) fn console_clip_drag_owned(&self, drag: &ClipDrag) -> bool {
-        self.active_clip_drag.as_ref().is_some_and(|active| {
-            active.project_generation == drag.project_generation
-                && active.revision == drag.revision
-                && active.clip == drag.clip
-                && std::rc::Rc::ptr_eq(&active.group, &drag.group)
-        })
+        self.interaction
+            .active_clip_drag
+            .as_ref()
+            .is_some_and(|active| {
+                active.project_generation == drag.project_generation
+                    && active.revision == drag.revision
+                    && active.clip == drag.clip
+                    && std::rc::Rc::ptr_eq(&active.group, &drag.group)
+            })
     }
 
     // A delayed receiver may carry the same source ID as a newer pointer drag.

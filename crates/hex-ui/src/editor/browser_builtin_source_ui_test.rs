@@ -233,7 +233,10 @@ fn browser_builtin_source_icons_persist_target_reset_and_compact_geometry(cx: &m
                         .focus_handle()
                         .is_focused(window)
                 );
-                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.pending_requests.is_empty()
+                        && view.audio_pub.pending_audio_commands.is_empty()
+                );
             })
         });
         let glyph = visual
@@ -343,7 +346,10 @@ fn browser_builtin_source_remove_restore_retains_files_catalog_and_identity(
                         .collect::<Vec<_>>(),
                     catalog
                 );
-                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.pending_requests.is_empty()
+                        && view.audio_pub.pending_audio_commands.is_empty()
+                );
             })
         });
         assert_eq!(std::fs::read(&wav).unwrap(), bytes);
@@ -433,7 +439,10 @@ fn browser_builtin_source_all_first_and_command_f_uses_existing_global_scope(
         visual.update(|window, cx| {
             editor.read_with(cx, |view, _| {
                 assert_eq!(view.browser.section, BrowserSection::All);
-                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.pending_requests.is_empty()
+                        && view.audio_pub.pending_audio_commands.is_empty()
+                );
             });
             let input = editor.read(cx).browser.search.clone();
             input.update(cx, |input, cx| {
@@ -537,7 +546,10 @@ fn browser_hidden_source_picker_restores_same_path_visibility_and_preferences(
                 view.browser_place_icon_path(&custom),
                 "icons/browser-place/waveform.svg"
             );
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(
+                view.pending_requests.is_empty()
+                    && view.audio_pub.pending_audio_commands.is_empty()
+            );
         });
         assert!(visual.debug_bounds(row).is_some());
         assert_eq!(std::fs::read(&wav).unwrap(), bytes);
@@ -648,7 +660,10 @@ fn browser_hidden_source_picker_cancel_and_refusal_keep_visible_selection(cx: &m
             assert_eq!(view.browser.section, BrowserSection::All, "{refusal}");
             assert_eq!(view.sample_roots(), roots);
             assert_eq!(view.worker_requests_pending, 0);
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(
+                view.pending_requests.is_empty()
+                    && view.audio_pub.pending_audio_commands.is_empty()
+            );
             let state = view.state.as_ref().unwrap();
             assert_eq!(state.project, before.project);
             assert_eq!(

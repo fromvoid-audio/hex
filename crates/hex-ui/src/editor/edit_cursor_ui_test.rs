@@ -63,13 +63,13 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
         let (handle, editor) = editor_window(cx, project.project().clone(), Arc::default());
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
-        let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&target]);
+        let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&target]);
         let cursor_at = point(px(lane.left + lane.width * 0.4), px(lane.top + 20.0));
         visual.simulate_click(cursor_at, Modifiers::default());
         visual.update(|window, cx| {
             editor.update(cx, |view, cx| {
                 if start_source == "range" {
-                    view.time_selection = Some(super::time_selection::TimeSelection {
+                    view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                         anchor_track: Some(target),
                         end_track: Some(target),
                         anchor_frame: 80_000,
@@ -87,13 +87,15 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
             match start_source {
                 "range" => assert_eq!(frame, 65_000),
                 "clip" => assert_eq!(frame, 60_000),
-                _ => assert_eq!(frame, view.edit_cursor.unwrap().frame),
+                _ => assert_eq!(frame, view.interaction.edit_cursor.unwrap().frame),
             }
             assert_ne!(frame, 0);
             (
                 frame,
-                view.edit_cursor.map(|cursor| (cursor.track, cursor.frame)),
-                view.time_selection,
+                view.interaction
+                    .edit_cursor
+                    .map(|cursor| (cursor.track, cursor.frame)),
+                view.interaction.time_selection,
                 view.selected_clip_ids(),
             )
         });
@@ -146,10 +148,12 @@ fn double_stop_starts_at_zero_and_preserves_each_arrangement_selection(cx: &mut 
                 "{start_source}"
             );
             assert_eq!(
-                view.edit_cursor.map(|cursor| (cursor.track, cursor.frame)),
+                view.interaction
+                    .edit_cursor
+                    .map(|cursor| (cursor.track, cursor.frame)),
                 cursor
             );
-            assert_eq!(view.time_selection, range);
+            assert_eq!(view.interaction.time_selection, range);
             assert_eq!(view.selected_clip_ids(), clips);
             assert!(
                 view.state
@@ -196,11 +200,13 @@ fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut 
     });
     let mut visual = VisualTestContext::from_window(fixture.handle, cx);
     visual.run_until_parked();
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&track]);
     let at = |fraction| point(px(lane.left + lane.width * fraction), px(lane.top + 20.0));
     visual.simulate_click(at(0.4), Modifiers::default());
     visual.run_until_parked();
-    let placed = editor.read_with(&visual, |view, _| view.edit_cursor.unwrap().frame);
+    let placed = editor.read_with(&visual, |view, _| {
+        view.interaction.edit_cursor.unwrap().frame
+    });
     let marker = visual.debug_bounds("time-marker-top-start").unwrap();
     visual.simulate_click(marker.center(), Modifiers::default());
     editor.read_with(&visual, |view, _| {
@@ -250,7 +256,7 @@ fn two_effective_escape_stops_reset_the_start_until_the_next_placement(cx: &mut 
     visual.simulate_click(at(0.7), Modifiers::default());
     visual.run_until_parked();
     let cursor = editor.read_with(&visual, |view, _| {
-        let cursor = view.edit_cursor.unwrap().frame;
+        let cursor = view.interaction.edit_cursor.unwrap().frame;
         assert!(cursor > placed);
         assert_eq!(view.playback_start_frame(), placed);
         cursor
@@ -288,9 +294,9 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
 
     let (lane, tail, main) = editor.read_with(&visual, |view, _| {
         (
-            view.drag_lanes[&source],
+            view.timeline_caches.drag_lanes[&source],
             view.painted_track_drop_lane(last).unwrap(),
-            view.main_track_lane_bounds.unwrap(),
+            view.timeline_caches.main_track_lane_bounds.unwrap(),
         )
     });
     let body = visual.debug_bounds("arrangement-content").unwrap();
@@ -311,14 +317,14 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
         visual.simulate_click(lane_click, modifiers);
         visual.run_until_parked();
         let lane_frame = editor.read_with(&visual, |view, _| {
-            let cursor = view.edit_cursor.unwrap();
+            let cursor = view.interaction.edit_cursor.unwrap();
             assert_eq!(cursor.track, Some(source));
             cursor.frame
         });
         editor.update(&mut visual, |view, cx| {
             // A pre-existing clip/range would ordinarily supply Play's start.
             view.selected_clip = Some(clip);
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(source),
                 end_track: Some(last),
                 anchor_frame: 32_000,
@@ -336,7 +342,7 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
             assert_eq!(view.selected_track, Some(source));
             assert_eq!(view.selected_track_ids(), selected_tracks);
             assert_eq!(view.selected_clip, Some(clip));
-            assert!(view.time_selection.is_none());
+            assert!(view.interaction.time_selection.is_none());
             assert_eq!(view.time_selection_paste_target(), None);
             assert_eq!(view.playback_start_frame(), lane_frame);
         });
@@ -395,13 +401,15 @@ fn empty_arrangement_space_matches_a_scrolled_zoomed_lane_and_keeps_selection(
     assert_still_placed(&visual);
     editor.update(&mut visual, |view, cx| {
         view.mode = super::EditorMode::Arrangement;
-        view.suppress_cursor_click = true;
+        view.interaction.suppress_cursor_click = true;
         cx.notify();
     });
     visual.run_until_parked();
     visual.simulate_click(other, Modifiers::default());
     assert_still_placed(&visual);
-    editor.read_with(&visual, |view, _| assert!(!view.suppress_cursor_click));
+    editor.read_with(&visual, |view, _| {
+        assert!(!view.interaction.suppress_cursor_click)
+    });
 
     visual.simulate_click(other, Modifiers::default());
     visual.run_until_parked();
@@ -427,7 +435,7 @@ fn dragging_below_the_last_track_selects_project_time(cx: &mut TestAppContext) {
 
     let (lane, last_row) = editor.read_with(&visual, |view, _| {
         (
-            view.drag_lanes[&first],
+            view.timeline_caches.drag_lanes[&first],
             view.painted_track_drop_lane(last).unwrap(),
         )
     });
@@ -455,7 +463,7 @@ fn dragging_below_the_last_track_selects_project_time(cx: &mut TestAppContext) {
             let range = view
                 .normalized_time_selection()
                 .expect("project range from empty space");
-            assert!(view.time_selection_project_scope);
+            assert!(view.interaction.time_selection_project_scope);
             assert_eq!(range.tracks(), &[first, last]);
             assert_eq!(
                 (range.start(), range.end()),
@@ -481,7 +489,7 @@ fn empty_project_click_places_a_visible_play_start_without_tracks(cx: &mut TestA
     let body = visual.debug_bounds("arrangement-content").unwrap();
     let frame = editor.read_with(&visual, |view, _| {
         let state = view.state.as_ref().unwrap();
-        let bounds = view.arrangement_bounds.unwrap();
+        let bounds = view.timeline_caches.arrangement_bounds.unwrap();
         let width = bounds.width - view.track_header_width();
         let x = bounds.left + width * 0.357;
         let viewport = view.visible_viewport(state.timeline_frames);
@@ -501,7 +509,7 @@ fn empty_project_click_places_a_visible_play_start_without_tracks(cx: &mut TestA
         assert_eq!(cursor.frame, frame.1);
         assert!(cursor.frame > 0);
         assert_eq!(view.selected_track, None);
-        assert!(view.time_selection.is_none());
+        assert!(view.interaction.time_selection.is_none());
         assert_eq!(view.playback_start_frame(), frame.1);
     });
     assert!(visual.debug_bounds("project-edit-cursor-line").is_some());
@@ -533,14 +541,14 @@ fn clicked_audio_cursor_is_visible_and_e_uses_it_offline(cx: &mut TestAppContext
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(
-            view.time_selection_gesture.is_some(),
+            view.interaction.time_selection_gesture.is_some(),
             "the clip body behaves as an empty lane for point selection"
         );
     });
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let frame = editor.read_with(cx, |view, _| {
-        let cursor = view.edit_cursor.expect("click places cursor");
+        let cursor = view.interaction.edit_cursor.expect("click places cursor");
         assert_eq!(cursor.track, Some(source));
         assert!(cursor.frame > 0 && cursor.frame < 96_000);
         assert!(view.normalized_time_selection().is_none());
@@ -633,8 +641,13 @@ fn command_click_is_free_and_e_routes_midi_split(cx: &mut TestAppContext) {
     visual.simulate_mouse_up(click, MouseButton::Left, modifiers);
     visual.run_until_parked();
     let beat = editor.read_with(cx, |view, _| {
-        let frame = view.edit_cursor.expect("free click cursor").frame;
+        let frame = view
+            .interaction
+            .edit_cursor
+            .expect("free click cursor")
+            .frame;
         let geometry = view
+            .timeline_caches
             .drag_lanes
             .get(&source)
             .expect("actual timeline geometry");
@@ -703,8 +716,8 @@ fn main_cursor_keeps_track_overlays_but_section_lane_gap_refuses_e(cx: &mut Test
     visual.simulate_mouse_up(click, MouseButton::Left, unsnapped);
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        let cursor = view.edit_cursor.expect("main cursor");
-        assert!(view.time_selection_project_scope);
+        let cursor = view.interaction.edit_cursor.expect("main cursor");
+        assert!(view.interaction.time_selection_project_scope);
         assert!(view.normalized_time_selection().is_none());
         assert!(cursor.frame > 0 && cursor.frame < 96_000);
         assert!(view.selected_track.is_none());
@@ -780,7 +793,10 @@ fn empty_position_and_missing_cursor_do_not_dispatch_a_split(cx: &mut TestAppCon
     visual.simulate_keystrokes("e");
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.edit_cursor.expect("cursor on empty track").track,
+            view.interaction
+                .edit_cursor
+                .expect("cursor on empty track")
+                .track,
             Some(target)
         );
         assert!(view.test_probes.last_enqueued_edit.is_none());
@@ -908,11 +924,11 @@ fn empty_lane_drag_selects_time_and_contiguous_tracks_in_either_direction(cx: &m
     visual.simulate_mouse_down(reselect_start, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(
-            view.time_range_move_gesture.is_none(),
+            view.interaction.time_range_move_gesture.is_none(),
             "below the handle must not move the old area"
         );
         assert!(
-            view.time_selection_gesture.is_some(),
+            view.interaction.time_selection_gesture.is_some(),
             "selection can restart inside itself"
         );
     });
@@ -1056,7 +1072,7 @@ fn selected_time_range_drag_shows_and_dispatches_a_contiguous_move(cx: &mut Test
             view.test_probes.last_enqueued_edit.is_none(),
             "stale generation must not submit a move"
         );
-        assert!(view.pending_time_range_move.is_none());
+        assert!(view.interaction.pending_time_range_move.is_none());
         view.project_generation = generation;
     });
     visual.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
@@ -1086,7 +1102,7 @@ fn option_drag_copies_time_range_and_keeps_source_preview_visible(cx: &mut TestA
     let (project, source, target_track, clip) = audio_project();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(source),
             end_track: Some(source),
             anchor_frame: 0,
@@ -1124,7 +1140,7 @@ fn option_drag_copies_time_range_and_keeps_source_preview_visible(cx: &mut TestA
     editor.read_with(cx, |view, _| {
         let display = view.time_range_move_display().expect("copy preview");
         assert!(display.copy_modifier);
-        assert!(view.time_range_move_gesture.is_some());
+        assert!(view.interaction.time_range_move_gesture.is_some());
     });
     visual
         .debug_bounds(Box::leak(
@@ -1188,7 +1204,7 @@ fn audio_time_move_preview_masks_overlaps_and_restores_when_cancelled(cx: &mut T
         end_frame: 48_000,
     };
     editor.update(cx, |view, cx| {
-        view.time_selection = Some(selection);
+        view.interaction.time_selection = Some(selection);
         view.selected_track = Some(source);
         cx.notify();
     });
@@ -1199,7 +1215,11 @@ fn audio_time_move_preview_masks_overlaps_and_restores_when_cancelled(cx: &mut T
     );
     let (target_x, destination_end) = editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("project state");
-        let geometry = view.drag_lanes.get(&source).expect("measured lane");
+        let geometry = view
+            .timeline_caches
+            .drag_lanes
+            .get(&source)
+            .expect("measured lane");
         let viewport = view.visible_viewport(state.timeline_frames);
         let pointer_frame = super::seek::pointer_to_frame(
             f32::from(down.x),
@@ -1291,10 +1311,10 @@ fn captured_time_selection_projects_outside_pointer_and_release_position(cx: &mu
     visual.simulate_mouse_move(outside_left_above, None, Modifiers::default());
     editor.read_with(cx, |view, _| {
         assert!(
-            view.time_selection_gesture.is_some(),
+            view.interaction.time_selection_gesture.is_some(),
             "capture persists without button state"
         );
-        let selection = view.time_selection.expect("live selection");
+        let selection = view.interaction.time_selection.expect("live selection");
         assert_eq!(
             selection.end_track,
             view.visible_lane_near_y(-300.0).map(|(track, _)| track),
@@ -1308,8 +1328,11 @@ fn captured_time_selection_projects_outside_pointer_and_release_position(cx: &mu
     let release = point(lane.origin.x + lane.size.width + px(250.0), px(1_000.0));
     visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.time_selection_gesture.is_none());
-        let selection = view.time_selection.expect("completed selection");
+        assert!(view.interaction.time_selection_gesture.is_none());
+        let selection = view
+            .interaction
+            .time_selection
+            .expect("completed selection");
         assert_eq!(
             selection.end_track,
             Some(target),
@@ -1341,7 +1364,11 @@ fn command_modifier_reprojects_captured_selection_without_pointer_motion(cx: &mu
     visual.run_until_parked();
     let (raw_frame, snapped_frame) = editor.read_with(cx, |view, _| {
         let state = view.state.as_ref().expect("project");
-        let geometry = view.drag_lanes.get(&target).expect("fresh lane");
+        let geometry = view
+            .timeline_caches
+            .drag_lanes
+            .get(&target)
+            .expect("fresh lane");
         let viewport = view.visible_viewport(state.timeline_frames);
         let raw = super::seek::pointer_to_frame(
             f32::from(moved.x),
@@ -1356,7 +1383,13 @@ fn command_modifier_reprojects_captured_selection_without_pointer_motion(cx: &mu
             .snap_frame(&state.project, raw, viewport, geometry.width)
             .expect("snapped frame");
         assert_ne!(raw, snapped, "fixture exercises the snapping difference");
-        assert_eq!(view.time_selection.expect("selection").end_frame, snapped);
+        assert_eq!(
+            view.interaction
+                .time_selection
+                .expect("selection")
+                .end_frame,
+            snapped
+        );
         (raw, snapped)
     });
     assert_ne!(raw_frame, snapped_frame);
@@ -1367,13 +1400,17 @@ fn command_modifier_reprojects_captured_selection_without_pointer_motion(cx: &mu
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.time_selection_gesture
+            view.interaction
+                .time_selection_gesture
                 .as_ref()
                 .expect("gesture")
                 .free_modifier
         );
         assert_eq!(
-            view.time_selection.expect("selection").end_frame,
+            view.interaction
+                .time_selection
+                .expect("selection")
+                .end_frame,
             raw_frame,
             "Command updates snapping at the stored pointer"
         );
@@ -1416,6 +1453,7 @@ fn captured_selection_edge_scrolls_while_pointer_is_stationary(cx: &mut TestAppC
     let base = Instant::now();
     editor.update(cx, |view, _| {
         let gesture = view
+            .interaction
             .time_selection_gesture
             .as_mut()
             .expect("captured selection");
@@ -1441,12 +1479,14 @@ fn captured_selection_edge_scrolls_while_pointer_is_stationary(cx: &mut TestAppC
             "interleaved pointer updates do not starve stationary right-edge panning"
         );
         assert_eq!(
-            view.time_selection
+            view.interaction
+                .time_selection
                 .expect("reprojected selection")
                 .end_frame,
             after.end().expect("viewport end")
         );
         let gesture = view
+            .interaction
             .time_selection_gesture
             .as_ref()
             .expect("gesture remains active");
@@ -1543,9 +1583,9 @@ fn completed_time_selection_survives_idle_ticks_and_remains_rendered(cx: &mut Te
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             visual.run_until_parked();
             let selection = editor.read_with(cx, |view, _| {
-                assert!(view.time_selection_gesture.is_none());
-                assert_eq!(view.time_selection_project_scope, project_scope);
-                view.time_selection.expect("completed range")
+                assert!(view.interaction.time_selection_gesture.is_none());
+                assert_eq!(view.interaction.time_selection_project_scope, project_scope);
+                view.interaction.time_selection.expect("completed range")
             });
             let viewport = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
             // The real controller pumps both ticks even after pointer capture ends.
@@ -1554,8 +1594,8 @@ fn completed_time_selection_survives_idle_ticks_and_remains_rendered(cx: &mut Te
                     let now = Instant::now() + Duration::from_millis(delay);
                     assert!(!view.tick_time_gesture_autoscroll(now));
                     view.tick_edit_cursor(now);
-                    assert_eq!(view.time_selection, Some(selection));
-                    assert_eq!(view.time_selection_project_scope, project_scope);
+                    assert_eq!(view.interaction.time_selection, Some(selection));
+                    assert_eq!(view.interaction.time_selection_project_scope, project_scope);
                     assert_eq!(view.visible_viewport(384_000), viewport);
                 }
                 assert!(
@@ -1621,13 +1661,17 @@ fn stale_or_canceled_time_gesture_cannot_autoscroll(cx: &mut TestAppContext) {
             f32::from(start.y),
             true
         ));
-        let gesture = view.time_selection_gesture.as_mut().expect("gesture");
+        let gesture = view
+            .interaction
+            .time_selection_gesture
+            .as_mut()
+            .expect("gesture");
         gesture.revision = gesture.revision.wrapping_add(1);
     });
     let before_stale_tick = editor.read_with(cx, |view, _| view.visible_viewport(384_000));
     editor.update(cx, |view, _| {
         assert!(!view.tick_time_gesture_autoscroll(Instant::now() + Duration::from_secs(1)));
-        assert!(view.time_selection_gesture.is_none());
+        assert!(view.interaction.time_selection_gesture.is_none());
         assert_eq!(view.visible_viewport(384_000), before_stale_tick);
     });
     editor.update(cx, |view, _| {
@@ -1671,7 +1715,7 @@ fn midi_time_move_preview_translates_cached_notes_to_the_destination(cx: &mut Te
         ))
         .expect("destination lane");
     editor.update(cx, |view, cx| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(source),
             end_track: Some(source),
             anchor_frame: 24_000,
@@ -1762,7 +1806,7 @@ fn multi_row_move_preview_maps_each_source_row_to_its_destination_offset(cx: &mu
         ))
         .expect("second selected source row");
     editor.update(cx, |view, cx| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(first_target),
             end_track: Some(second_source),
             anchor_frame: 0,
@@ -1863,7 +1907,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         ))
         .expect("destination lane");
     editor.update(cx, |view, cx| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(source),
             end_track: Some(source),
             anchor_frame: 0,
@@ -1888,7 +1932,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
             false
         ));
         assert!(view.finish_time_range_move_gesture());
-        assert!(view.pending_time_range_move.is_some());
+        assert!(view.interaction.pending_time_range_move.is_some());
         assert!(view.time_range_move_display().is_some());
     });
     let failed = editor.read_with(cx, |view, _| Event {
@@ -1940,7 +1984,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
     });
     editor.update(cx, |view, cx| {
         view.move_time_selection_complete(&failed);
-        assert!(view.pending_time_range_move.is_none());
+        assert!(view.interaction.pending_time_range_move.is_none());
         assert!(view.time_range_move_display().is_none());
         cx.notify();
     });
@@ -1966,7 +2010,7 @@ fn selection_handle_and_reselect_zones_own_gestures_over_selected_clips(cx: &mut
         visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.update(cx, |view, cx| {
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(source),
                 end_track: Some(source),
                 anchor_frame: 0,
@@ -1986,13 +2030,13 @@ fn selection_handle_and_reselect_zones_own_gestures_over_selected_clips(cx: &mut
         let end = point(lane.origin.x + lane.size.width * 0.2, start.y);
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
-            assert_eq!(view.time_range_move_gesture.is_some(), moving);
-            assert_eq!(view.time_selection_gesture.is_some(), !moving);
+            assert_eq!(view.interaction.time_range_move_gesture.is_some(), moving);
+            assert_eq!(view.interaction.time_selection_gesture.is_some(), !moving);
         });
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(
-                view.active_clip_drag.is_none(),
+                view.interaction.active_clip_drag.is_none(),
                 "selected zones must not drag a single clip"
             )
         });
@@ -2025,7 +2069,7 @@ fn ripple_shortcuts_route_to_insert_and_respect_editor_focus(cx: &mut TestAppCon
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
             window.focus(&view.focus);
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(target),
                 end_track: Some(source),
                 anchor_frame: 96_000,
@@ -2089,14 +2133,14 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
             window.focus(&view.focus);
-            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
                 track: Some(source),
                 frame: 73_000,
                 generation: view.project_generation,
                 pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
                 pulse_started: std::time::Instant::now(),
             });
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(target),
                 end_track: Some(source),
                 anchor_frame: 52_000,
@@ -2116,7 +2160,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
 
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(source),
                 end_track: Some(source),
                 anchor_frame: 41_000,
@@ -2137,8 +2181,8 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
 
     visual.update(|window, cx| {
         editor.update(cx, |view, _| {
-            view.edit_cursor = None;
-            view.time_selection = None;
+            view.interaction.edit_cursor = None;
+            view.interaction.time_selection = None;
             view.test_probes.last_transport_command = None;
             window.focus(&view.focus);
         })
@@ -2178,7 +2222,7 @@ fn assert_space_restart_policy(cx: &mut TestAppContext, enabled: bool) {
                 .reserve_token()
                 .expect("pause intent token");
             view.play_intent.admit(token, false);
-            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
                 track: Some(source),
                 frame: 73_000,
                 generation: view.project_generation,
@@ -2250,7 +2294,7 @@ fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext
             window.focus(&view.focus);
             // Native resident metadata deliberately carries no graph handle.
             // Its stateful flag formerly forced Space through the seek worker.
-            view.audible_playback = Some(super::PlaybackCandidate {
+            view.audio_pub.audible_playback = Some(super::PlaybackCandidate {
                 clip_preview_identity: None,
                 worker_requires_preroll: Some(true),
                 observation: None,
@@ -2262,8 +2306,8 @@ fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext
                 device_preview_identity: None,
                 tuning_preview_identity: None,
             });
-            view.time_selection = None;
-            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            view.interaction.time_selection = None;
+            view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
                 track: Some(source),
                 frame: 48_000_000,
                 generation: view.project_generation,
@@ -2278,8 +2322,8 @@ fn stateful_space_queues_play_from_without_a_seek_worker(cx: &mut TestAppContext
             view.test_probes.last_transport_command,
             Some(hex_engine::PlaybackCommand::PlayFrom(48_000_000))
         );
-        assert!(view.prepared_seek.is_none());
-        assert!(view.latched_seek_intent.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
     });
 }
 
@@ -2316,19 +2360,20 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
     for selection in [false, true] {
         visual.update(|window, cx| {
             editor.update(cx, |view, _| {
-                view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
                     track: Some(track),
                     frame: 73_000,
                     generation: view.project_generation,
                     pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
                     pulse_started: Instant::now(),
                 });
-                view.time_selection = selection.then_some(super::time_selection::TimeSelection {
-                    anchor_track: Some(track),
-                    end_track: Some(track),
-                    anchor_frame: 52_000,
-                    end_frame: 28_000,
-                });
+                view.interaction.time_selection =
+                    selection.then_some(super::time_selection::TimeSelection {
+                        anchor_track: Some(track),
+                        end_track: Some(track),
+                        anchor_frame: 52_000,
+                        end_frame: 28_000,
+                    });
                 view.test_probes.last_transport_command = None;
                 window.focus(&view.focus);
             })
@@ -2356,7 +2401,7 @@ fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestApp
             Some(hex_engine::playback::PlaybackCommand::Pause),
             "sampler uses ordinary pause without resetting the cursor"
         );
-        assert_eq!(view.edit_cursor.unwrap().frame, 73_000);
+        assert_eq!(view.interaction.edit_cursor.unwrap().frame, 73_000);
     });
 }
 
@@ -2549,10 +2594,10 @@ fn time_selection_markers_split_live_above_loop_and_follow_visible_endpoints(
         visual.run_until_parked();
         let (first, last, viewport) = editor.read_with(cx, |view, _| {
             assert!(
-                view.time_selection_gesture.is_some(),
+                view.interaction.time_selection_gesture.is_some(),
                 "paint updates before release"
             );
-            let selection = view.time_selection.unwrap();
+            let selection = view.interaction.time_selection.unwrap();
             (
                 selection.anchor_frame.min(selection.end_frame),
                 selection.anchor_frame.max(selection.end_frame),
@@ -2612,7 +2657,7 @@ fn time_selection_markers_split_live_above_loop_and_follow_visible_endpoints(
     assert_eq!(colors.len(), 2);
     assert_ne!(colors[0], colors[1]);
     editor.update(cx, |view, cx| {
-        let selection = view.time_selection.unwrap();
+        let selection = view.interaction.time_selection.unwrap();
         let first = selection.anchor_frame.min(selection.end_frame);
         let last = selection.anchor_frame.max(selection.end_frame);
         view.viewport = Some(super::viewport::Viewport {
@@ -2739,9 +2784,9 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
                 .expect("actual completed range");
             assert_eq!(range.tracks(), [audio_track, midi_track]);
             assert!(range.start() > 0 && range.end() < 48_000);
-            assert!(!v.time_selection_project_scope);
+            assert!(!v.interaction.time_selection_project_scope);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
-            (v.time_selection, range)
+            (v.interaction.time_selection, range)
         });
         visual.update(|window, cx| {
             editor.read_with(cx, |v, _| v.browser.search.read(cx).focus(window))
@@ -2845,7 +2890,7 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
                 .collect();
             assert_eq!(midi, expected);
             assert_eq!(p.tracks()[2], outside, "unselected track remains intact");
-            assert_eq!(v.time_selection, selection);
+            assert_eq!(v.interaction.time_selection, selection);
             p.snapshot()
         });
         assert!(
@@ -2865,13 +2910,13 @@ fn e_splits_both_time_selection_edges_in_scope_with_one_undo(cx: &mut TestAppCon
                 restored,
                 "one undo restores every cut"
             );
-            assert_eq!(v.time_selection, selection);
+            assert_eq!(v.interaction.time_selection, selection);
         });
         visual.simulate_keystrokes("cmd-shift-z");
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after);
-            assert_eq!(v.time_selection, selection);
+            assert_eq!(v.interaction.time_selection, selection);
         });
     }
 }
@@ -2926,7 +2971,7 @@ fn transport_split_vector_dispatches_the_edit_cursor_command(cx: &mut TestAppCon
         Modifiers::default(),
     );
     visual.run_until_parked();
-    let frame = editor.read_with(cx, |view, _| view.edit_cursor.unwrap().frame);
+    let frame = editor.read_with(cx, |view, _| view.interaction.edit_cursor.unwrap().frame);
     assert!(
         visual
             .debug_bounds("split selection edges or edit cursor · e")
@@ -3013,7 +3058,7 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
 
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
-            view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
                 track: Some(source),
                 frame: 73_000,
                 generation: view.project_generation,
@@ -3067,7 +3112,7 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
 
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(source),
                 end_track: Some(source),
                 anchor_frame: 90_000,
@@ -3083,8 +3128,8 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
 
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
-            view.time_selection = None;
-            view.edit_cursor_in_selected_clip = view.selected_clip;
+            view.interaction.time_selection = None;
+            view.interaction.edit_cursor_in_selected_clip = view.selected_clip;
         })
     });
     assert_eq!(
@@ -3096,7 +3141,7 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
 
     visual.update(|_, cx| {
         editor.update(cx, |view, _| {
-            view.edit_cursor_in_selected_clip = None;
+            view.interaction.edit_cursor_in_selected_clip = None;
             view.selected_clip = None;
             view.reconcile_clip_selection();
         })
@@ -3108,7 +3153,7 @@ fn selected_clips_move_both_triangles_to_the_earliest_play_start(cx: &mut TestAp
     );
     markers(&mut visual, 73_000, false);
 
-    editor.update(&mut visual, |view, _| view.edit_cursor = None);
+    editor.update(&mut visual, |view, _| view.interaction.edit_cursor = None);
     super::loop_selection_ui_test::click(&mut visual, midi, false);
     assert_eq!(play(&mut visual), Some(PlayFrom(midi_frame)));
     markers(&mut visual, midi_frame, false);
@@ -3193,7 +3238,7 @@ fn assert_cursor_keeps_clip_detail(cx: &mut TestAppContext, midi: bool) {
         assert!(view.selected_clip.is_none(), "no whole-clip selection");
         assert_eq!(view.detail_clip_id(), Some(clip), "midi={midi}");
         assert!(!view.device_panel.active, "the clip editor stays shown");
-        view.edit_cursor.expect("cursor").frame
+        view.interaction.edit_cursor.expect("cursor").frame
     });
     assert!(visual.debug_bounds("edit-cursor-layer").is_some());
 
@@ -3235,7 +3280,7 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
     let point = point(lane.left() + lane.size.width * 0.125, lane.center().y);
     visual.simulate_click(point, Modifiers::default());
     visual.run_until_parked();
-    let start = editor.read_with(&visual, |v, _| v.edit_cursor.unwrap().frame);
+    let start = editor.read_with(&visual, |v, _| v.interaction.edit_cursor.unwrap().frame);
     let top = visual.debug_bounds("time-marker-top-start").unwrap();
     editor.update(&mut visual, |v, _| v.persistence.close_prompt_open = true);
     visual.simulate_click(top.center(), Modifiers::default());
@@ -3262,12 +3307,14 @@ fn either_cursor_triangle_locks_play_start_across_selection_and_unlocks(cx: &mut
     let paint = |visual: &mut VisualTestContext, selector| {
         visual.rendered_path_triangles(selector)[0].color
     };
-    let start_pulse = editor.read_with(&visual, |v, _| v.locked_play_start.unwrap().pulse_started);
+    let start_pulse = editor.read_with(&visual, |v, _| {
+        v.interaction.locked_play_start.unwrap().pulse_started
+    });
     assert_eq!(paint(&mut visual, "locked-play-start-top"), rest);
     assert_eq!(paint(&mut visual, "locked-play-start-bottom"), rest);
     editor.update(&mut visual, |v, cx| {
         v.selected_clip = Some(clip);
-        v.time_selection = Some(TimeSelection {
+        v.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: start + 10_000,
@@ -3329,7 +3376,7 @@ fn locked_play_start_stays_pinned_across_cursor_click_range_and_loop(cx: &mut Te
     visual.simulate_mouse_down(bottom.center(), MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert!(v.valid_locked_play_start().is_some());
-        assert!(v.time_selection_gesture.is_none());
+        assert!(v.interaction.time_selection_gesture.is_none());
     });
     visual.simulate_mouse_up(bottom.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
@@ -3357,7 +3404,7 @@ fn locked_play_start_stays_pinned_across_cursor_click_range_and_loop(cx: &mut Te
     visual.simulate_click(at(0.75), Modifiers::default());
     visual.run_until_parked();
     let moved = editor.read_with(&visual, |v, _| {
-        let moved = v.edit_cursor.unwrap().frame;
+        let moved = v.interaction.edit_cursor.unwrap().frame;
         assert_ne!(moved, original);
         assert_eq!(
             v.valid_locked_play_start().unwrap().frame,
@@ -3391,7 +3438,7 @@ fn locked_play_start_stays_pinned_across_cursor_click_range_and_loop(cx: &mut Te
         v.project_generation += 1;
         assert!(v.valid_locked_play_start().is_none());
         v.tick_edit_cursor(Instant::now());
-        assert!(v.locked_play_start.is_none());
+        assert!(v.interaction.locked_play_start.is_none());
     });
 }
 
@@ -3418,7 +3465,7 @@ fn locked_play_start_drags_from_either_triangle_with_snap_free_and_escape_cancel
     });
     let mut visual = VisualTestContext::from_window(fixture.handle, cx);
     visual.run_until_parked();
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&track]);
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     let lane_at = |fraction| point(px(lane.left + lane.width * fraction), px(lane.top + 20.0));
 
@@ -3434,7 +3481,9 @@ fn locked_play_start_drags_from_either_triangle_with_snap_free_and_escape_cancel
 
     visual.simulate_click(lane_at(0.25), Modifiers::default());
     visual.run_until_parked();
-    let initial = editor.read_with(&visual, |view, _| view.edit_cursor.unwrap().frame);
+    let initial = editor.read_with(&visual, |view, _| {
+        view.interaction.edit_cursor.unwrap().frame
+    });
     let marker = visual.debug_bounds("time-marker-top-start").unwrap();
     visual.simulate_click(marker.center(), Modifiers::default());
     visual.run_until_parked();
@@ -3470,7 +3519,7 @@ fn locked_play_start_drags_from_either_triangle_with_snap_free_and_escape_cancel
             "default locked drag should snap to the grid"
         );
         assert_eq!(
-            view.edit_cursor.unwrap().frame,
+            view.interaction.edit_cursor.unwrap().frame,
             initial,
             "dragging locked play start leaves edit cursor untouched"
         );
@@ -3513,7 +3562,7 @@ fn locked_play_start_drags_from_either_triangle_with_snap_free_and_escape_cancel
         assert!(!view.locked_play_start_drag_active());
         assert_eq!(view.valid_locked_play_start().unwrap().frame, expected_free);
         assert_eq!(view.playback_start_frame(), expected_free);
-        assert_eq!(view.edit_cursor.unwrap().frame, initial);
+        assert_eq!(view.interaction.edit_cursor.unwrap().frame, initial);
     });
 
     // Space starts playback from the newly dragged locked frame.
@@ -3660,7 +3709,9 @@ fn locked_play_start_bottom_drag_beats_filled_tracks_and_clamps_to_viewport(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
 
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&first_track]);
+    let lane = editor.read_with(&visual, |view, _| {
+        view.timeline_caches.drag_lanes[&first_track]
+    });
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     visual.simulate_click(
         point(px(lane.left + lane.width * 0.3), px(lane.top + 16.0)),
@@ -3701,7 +3752,7 @@ fn locked_play_start_bottom_drag_beats_filled_tracks_and_clamps_to_viewport(
     editor.read_with(&visual, |view, _| {
         assert!(view.locked_play_start_drag_active());
         assert!(
-            view.time_selection_gesture.is_none(),
+            view.interaction.time_selection_gesture.is_none(),
             "bottom marker must win over the underlying track lane"
         );
     });
@@ -3744,7 +3795,7 @@ fn locked_play_start_bottom_drag_beats_filled_tracks_and_clamps_to_viewport(
     editor.read_with(&visual, |view, _| {
         assert!(view.valid_locked_play_start().is_none());
         assert_ne!(view.playback_start_frame(), moved);
-        assert!(view.time_selection_gesture.is_none());
+        assert!(view.interaction.time_selection_gesture.is_none());
     });
 }
 
@@ -3772,7 +3823,7 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
     let mut visual = VisualTestContext::from_window(fixture.handle, cx);
     visual.run_until_parked();
 
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&track]);
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     let ruler_at = |fraction| point(ruler.left() + ruler.size.width * fraction, ruler.center().y);
     let free_frame_at = |visual: &VisualTestContext, x: gpui::Pixels| {
@@ -3853,7 +3904,7 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
     editor.read_with(&visual, |view, _| {
         assert!(!view.locked_play_start_drag_active());
         assert!(view.valid_locked_play_start().is_none());
-        assert!(view.locked_play_start.is_none());
+        assert!(view.interaction.locked_play_start.is_none());
     });
     visual.simulate_mouse_up(cancel_point, MouseButton::Left, opt);
     visual.run_until_parked();
@@ -3893,7 +3944,7 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
         assert!(!view.locked_play_start_drag_active());
         assert_eq!(view.valid_locked_play_start().unwrap().frame, first_snapped);
         assert_eq!(view.playback_start_frame(), first_snapped);
-        assert!(view.edit_cursor.is_none());
+        assert!(view.interaction.edit_cursor.is_none());
         assert!(view.test_probes.last_transport_command.is_none());
     });
 
@@ -3904,7 +3955,9 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
         Modifiers::default(),
     );
     visual.run_until_parked();
-    let cursor_frame = editor.read_with(&visual, |view, _| view.edit_cursor.unwrap().frame);
+    let cursor_frame = editor.read_with(&visual, |view, _| {
+        view.interaction.edit_cursor.unwrap().frame
+    });
     visual.simulate_keystrokes("space");
     render(&mut fixture, &mut visual);
     let playing_pos = editor.read_with(&visual, |view, _| {
@@ -3969,7 +4022,7 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
     editor.read_with(&visual, |view, _| {
         assert!(!view.locked_play_start_drag_active());
         assert_eq!(view.valid_locked_play_start().unwrap().frame, expected_free);
-        assert_eq!(view.edit_cursor.unwrap().frame, cursor_frame);
+        assert_eq!(view.interaction.edit_cursor.unwrap().frame, cursor_frame);
         assert!(view.audio_status().unwrap().playing.load(Acquire));
     });
 
@@ -4008,7 +4061,7 @@ fn ruler_option_click_and_drag_places_locked_play_start_with_cmd_snap_and_escape
     visual.run_until_parked();
     let expected_over_reset = free_frame_at(&visual, over_reset.x);
     editor.read_with(&visual, |view, _| {
-        assert!(!view.play_start_at_beginning);
+        assert!(!view.interaction.play_start_at_beginning);
         assert_eq!(
             view.valid_locked_play_start().unwrap().frame,
             expected_over_reset
@@ -4105,7 +4158,7 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
         std::thread::sleep(Duration::from_millis(5));
     };
 
-    let lane = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let lane = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&track]);
     let ruler = visual.debug_bounds("timeline-ruler").unwrap();
     let ruler_at = |fraction| point(ruler.left() + ruler.size.width * fraction, ruler.center().y);
     let free_frame_at = |visual: &VisualTestContext, x: gpui::Pixels| {
@@ -4153,7 +4206,7 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             view.select_clip_header(track, clip, Modifiers::default(), window, cx);
-            view.time_selection = Some(expected_selection);
+            view.interaction.time_selection = Some(expected_selection);
             cx.notify();
         });
     });
@@ -4164,27 +4217,27 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(view.locked_play_start_drag_active());
-        assert_eq!(view.time_selection, Some(expected_selection));
+        assert_eq!(view.interaction.time_selection, Some(expected_selection));
         assert_eq!(view.selected_clip, Some(clip));
     });
     visual.simulate_mouse_move(drag_pt, MouseButton::Left, opt);
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.time_selection, Some(expected_selection));
+        assert_eq!(view.interaction.time_selection, Some(expected_selection));
         assert_eq!(view.selected_clip, Some(clip));
     });
     visual.simulate_mouse_up(drag_pt, MouseButton::Left, opt);
     visual.run_until_parked();
     let initial_locked = editor.read_with(&visual, |view, _| {
         assert!(!view.locked_play_start_drag_active());
-        assert_eq!(view.time_selection, Some(expected_selection));
+        assert_eq!(view.interaction.time_selection, Some(expected_selection));
         assert_eq!(view.selected_clip, Some(clip));
         view.valid_locked_play_start().unwrap().frame
     });
 
     // Clear time_selection and selected_clip for subsequent marker/cursor checks.
     editor.update(&mut visual, |view, cx| {
-        view.time_selection = None;
+        view.interaction.time_selection = None;
         view.selected_clip = None;
         cx.notify();
     });
@@ -4379,7 +4432,9 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     render(&mut fixture, &mut visual);
     visual.simulate_keystrokes("escape");
     render(&mut fixture, &mut visual);
-    editor.read_with(&visual, |view, _| assert!(view.play_start_at_beginning));
+    editor.read_with(&visual, |view, _| {
+        assert!(view.interaction.play_start_at_beginning)
+    });
     visual.simulate_mouse_down(ruler_at(0.45), MouseButton::Left, opt);
     visual.run_until_parked();
     assert!(visual.debug_bounds("locked-play-start-top").is_some());
@@ -4390,7 +4445,7 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(!view.locked_play_start_drag_active());
-        assert!(view.play_start_at_beginning);
+        assert!(view.interaction.play_start_at_beginning);
         assert_eq!(
             view.valid_locked_play_start().unwrap().frame,
             committed_after_opt_release
@@ -4413,7 +4468,7 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     visual.run_until_parked();
     let unlocked_frame = editor.read_with(&visual, |view, _| {
         assert!(view.valid_locked_play_start().is_none());
-        view.edit_cursor.unwrap().frame
+        view.interaction.edit_cursor.unwrap().frame
     });
     let unlocked_marker = visual.debug_bounds("time-marker-top-start").unwrap();
     let (vp_start, vp_end) = editor.read_with(&visual, |view, _| {
@@ -4453,7 +4508,7 @@ fn ruler_option_lock_edge_cases_focus_blur_deactivation_zoom_and_modals(cx: &mut
     let expected_off_ruler = free_frame_at(&visual, off_ruler_target.x);
     editor.read_with(&visual, |view, _| {
         assert!(!view.locked_play_start_drag_active());
-        assert!(view.time_selection_gesture.is_none());
+        assert!(view.interaction.time_selection_gesture.is_none());
         let locked = view.valid_locked_play_start().unwrap().frame;
         assert_eq!(locked, expected_off_ruler);
         assert_ne!(locked, unlocked_frame);

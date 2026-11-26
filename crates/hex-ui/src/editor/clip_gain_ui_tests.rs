@@ -112,8 +112,8 @@ fn plain_audio_top_edge_drag_moves_the_clip_without_changing_gain(cx: &mut TestA
     );
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        assert!(view.active_clip_drag.is_some());
-        assert!(!view.clip_gain.held());
+        assert!(view.interaction.active_clip_drag.is_some());
+        assert!(!view.interaction.clip_gain.held());
     });
     let lane = visual
         .debug_bounds(Box::leak(
@@ -161,16 +161,21 @@ fn audio_top_edge_gain_changes_only_gain_and_releases_one_command(cx: &mut TestA
     );
     visual.simulate_mouse_down(from, MouseButton::Left, option());
     editor.read_with(&visual, |v, _| {
-        assert!(v.clip_gain.held(), "gain pointer admitted")
+        assert!(v.interaction.clip_gain.held(), "gain pointer admitted")
     });
     visual.simulate_modifiers_change(Modifiers::default());
     let to = point(from.x, from.y + px(60.0));
     visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert!(v.clip_gain.held(), "gain pointer survives repaint");
+        assert!(
+            v.interaction.clip_gain.held(),
+            "gain pointer survives repaint"
+        );
         assert!(v.test_probes.last_enqueued_edit.is_none());
-        assert!(v.active_clip_drag.is_none() && v.active_trim_drag.is_none());
+        assert!(
+            v.interaction.active_clip_drag.is_none() && v.interaction.active_trim_drag.is_none()
+        );
     });
     visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
     let command = editor.read_with(&visual, |v, _| {
@@ -229,7 +234,7 @@ fn terminal(
     }
 }
 fn render(view: &EditorView, clip: ClipId) -> Vec<hex_engine::Frame> {
-    let pending = view.pending_playback.as_ref().unwrap();
+    let pending = view.audio_pub.pending_playback.as_ref().unwrap();
     let prepared = pending
         .prepared_revision
         .as_ref()
@@ -261,7 +266,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     visual.run_until_parked();
     let painted_height = |visual: &VisualTestContext| {
         editor.read_with(visual, |view, _| {
-            let cache = view.waveform_geometry_cache.borrow();
+            let cache = view.timeline_caches.waveform_geometry_cache.borrow();
             let paint = cache.painted_waveforms().back().unwrap();
             let center = f32::from(paint.bounds.top() + paint.bounds.size.height * 0.25);
             let (top, bottom) = paint.ordinates[0];
@@ -299,7 +304,7 @@ fn audio_gain_release_retains_value_until_real_ack_and_roundtrips_playback(
     visual.run_until_parked();
     assert!((painted_height(&visual) - original_height).abs() < 0.01);
     editor.read_with(&visual, |v, _| {
-        assert!(!v.clip_gain.held());
+        assert!(!v.interaction.clip_gain.held());
         assert!(v.displayed_clip_gain(clip).is_none());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         assert_eq!(v.worker_requests_pending, 0);
@@ -452,7 +457,7 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
         }
         if context == "selection" {
             editor.update(&mut visual, |v, cx| {
-                v.time_selection = Some(time_selection::TimeSelection {
+                v.interaction.time_selection = Some(time_selection::TimeSelection {
                     anchor_track: Some(track),
                     end_track: Some(track),
                     anchor_frame: 0,
@@ -480,7 +485,7 @@ fn audio_gain_cancellation_and_existing_tools_keep_their_input_priority(cx: &mut
         visual.run_until_parked();
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |v, _| {
-            assert!(!v.clip_gain.held(), "{context}");
+            assert!(!v.interaction.clip_gain.held(), "{context}");
             assert!(v.displayed_clip_gain(clip).is_none(), "{context}");
             assert!(
                 !matches!(
@@ -553,7 +558,10 @@ fn momentary_tools_preserve_a_gain_drag_already_in_custody(cx: &mut TestAppConte
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert!(v.clip_gain.held(), "{key} cannot revoke admitted input")
+            assert!(
+                v.interaction.clip_gain.held(),
+                "{key} cannot revoke admitted input"
+            )
         });
         assert!(visual.debug_bounds(selector).is_some());
         let up = point(up.x, up.y + px(10.0));
@@ -661,7 +669,7 @@ fn selected_audio_gain_preserves_offsets_and_owns_the_expanded_command_receipt(
     visual.simulate_mouse_down(down, MouseButton::Left, option());
     editor.read_with(&visual, |v, _| {
         assert!(
-            v.clip_gain.held(),
+            v.interaction.clip_gain.held(),
             "exact scoped receipt retired at canonical receive"
         )
     });

@@ -60,7 +60,7 @@ fn real_loader_keeps_latest_captured_start_and_never_admits_placeholder_on(
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
-        view.edit_cursor = Some(super::super::edit_cursor::EditCursor {
+        view.interaction.edit_cursor = Some(super::super::edit_cursor::EditCursor {
             track: None,
             frame: 123,
             generation: view.project_generation,
@@ -72,7 +72,7 @@ fn real_loader_keeps_latest_captured_start_and_never_admits_placeholder_on(
         view.queue_applied_source_play(456, source, false);
         assert!(view.settings.playback.pending.is_some());
         assert_eq!(view.test_probes.last_transport_command, None);
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
     finish_load(&editor, cx);
     editor.read_with(cx, |view, _| {
@@ -270,13 +270,17 @@ fn real_loader_captures_session_scene_launch_policy_before_queueing(cx: &mut Tes
             revision,
         );
         assert!(view.settings.playback.pending.is_some());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
     finish_load(&editor, cx);
     editor.update(cx, |view, cx| {
         assert!(view.settings.playback.pending.is_none());
         assert!(matches!(
-            view.pending_audio_commands.front().unwrap().action,
+            view.audio_pub
+                .pending_audio_commands
+                .front()
+                .unwrap()
+                .action,
             PlaybackAction::LaunchAndPlay(
                 hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase {
                     note_chase: NoteChase::Off,
@@ -306,7 +310,7 @@ fn plugin_space_uses_saved_off_after_real_load_and_callback(cx: &mut TestAppCont
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
-        view.edit_cursor = Some(super::super::edit_cursor::EditCursor {
+        view.interaction.edit_cursor = Some(super::super::edit_cursor::EditCursor {
             track: None,
             frame: 256,
             generation: view.project_generation,
@@ -360,7 +364,7 @@ fn unknown_or_temporarily_ineligible_gesture_never_adopts_a_later_source(cx: &mu
                     view.audio = output;
                 }
                 "queued" => {
-                    view.pending_audio_commands.push_back(
+                    view.audio_pub.pending_audio_commands.push_back(
                         super::super::session_grid::PendingPlaybackAction {
                             action: PlaybackAction::SetMetronome(false),
                             generation: view.project_generation,
@@ -369,13 +373,13 @@ fn unknown_or_temporarily_ineligible_gesture_never_adopts_a_later_source(cx: &mu
                         },
                     );
                     view.toggle_play();
-                    view.pending_audio_commands.clear();
+                    view.audio_pub.pending_audio_commands.clear();
                 }
                 _ => {
-                    view.stopped_playback_restore =
+                    view.audio_pub.stopped_playback_restore =
                         Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
                     view.toggle_play();
-                    view.stopped_playback_restore = None;
+                    view.audio_pub.stopped_playback_restore = None;
                 }
             }
             assert!(view.settings.playback.pending.is_none());
@@ -387,7 +391,7 @@ fn unknown_or_temporarily_ineligible_gesture_never_adopts_a_later_source(cx: &mu
         finish_load(&editor, cx);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.test_probes.last_transport_command, None);
-            assert!(view.pending_audio_commands.is_empty());
+            assert!(view.audio_pub.pending_audio_commands.is_empty());
         });
     }
     fixture.finish(cx);
@@ -399,20 +403,20 @@ fn waiting_start_cannot_attach_to_a_replacement_recovery_generation(cx: &mut Tes
     let editor = fixture.editor.clone();
     editor.update(cx, |view, cx| {
         reload_off(view, cx);
-        let old = view.recovery.begin(123).unwrap();
+        let old = view.audio_pub.recovery.begin(123).unwrap();
         view.toggle_play();
         assert!(matches!(view.settings.playback.pending.as_ref().unwrap().source, StartSource::Recovery(generation) if generation == old));
-        view.recovery.fail();
-        let new = view.recovery.begin(456).unwrap();
+        view.audio_pub.recovery.fail();
+        let new = view.audio_pub.recovery.begin(456).unwrap();
         assert_ne!(old, new);
     });
     finish_load(&editor, cx);
     editor.update(cx, |view, _| {
         assert!(view.settings.playback.pending.is_none());
         assert_eq!(view.test_probes.last_transport_command, None);
-        assert!(view.deferred_play.is_none());
+        assert!(view.audio_pub.deferred_play.is_none());
         assert!(view.error.as_ref().unwrap().contains("source changed"));
-        view.recovery.fail();
+        view.audio_pub.recovery.fail();
     });
     fixture.finish(cx);
 }
@@ -427,11 +431,11 @@ fn ordinary_fresh_playing_seek_captures_off_while_stopped_positioning_keeps_on(
         reload_off(view, cx);
         view.request_prepared_seek(256, true);
         assert!(view.settings.playback.pending.is_some());
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
     });
     finish_load(&editor, cx);
     editor.read_with(cx, |view, _| {
-        let pending = view.prepared_seek.as_ref().unwrap();
+        let pending = view.audio_pub.prepared_seek.as_ref().unwrap();
         assert_eq!(pending.note_chase, NoteChase::Off);
         assert_eq!(pending.destination_frame, 256);
         assert!(pending.start_playing);
@@ -443,7 +447,7 @@ fn ordinary_fresh_playing_seek_captures_off_while_stopped_positioning_keeps_on(
         reload_off(view, cx);
         view.request_prepared_seek(0, false);
         assert!(view.settings.playback.pending.is_none());
-        let positioning = view.prepared_seek.as_ref().unwrap();
+        let positioning = view.audio_pub.prepared_seek.as_ref().unwrap();
         assert_eq!(positioning.note_chase, NoteChase::On);
         assert!(!positioning.start_playing);
     });
@@ -509,20 +513,20 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
         reload_off(view, cx);
         let predecessor = view.audio_status().unwrap().recording_source().unwrap();
         assert_eq!(view.current_seek_requires_preroll(), Some(true));
-        let generation = view.recovery.begin(129).unwrap();
-        assert!(view.recovery.opened(generation));
-        assert!(view.recovery.restored(generation));
-        view.pending_recovery_generation = Some(generation);
+        let generation = view.audio_pub.recovery.begin(129).unwrap();
+        assert!(view.audio_pub.recovery.opened(generation));
+        assert!(view.audio_pub.recovery.restored(generation));
+        view.audio_pub.pending_recovery_generation = Some(generation);
         view.tick(cx);
-        let request = view.recovery.prepared_request().unwrap();
-        let positioning = view.prepared_seek.as_ref().unwrap();
+        let request = view.audio_pub.recovery.prepared_request().unwrap();
+        let positioning = view.audio_pub.prepared_seek.as_ref().unwrap();
         assert_eq!(positioning.request_id, request);
         assert_eq!(positioning.recovery_generation, Some(generation));
         assert_eq!(positioning.note_chase, NoteChase::On);
         assert!(!positioning.start_playing);
 
-        view.play_start_at_beginning = false;
-        view.edit_cursor = Some(super::super::edit_cursor::EditCursor {
+        view.interaction.play_start_at_beginning = false;
+        view.interaction.edit_cursor = Some(super::super::edit_cursor::EditCursor {
             track: None,
             frame: 512,
             generation: view.project_generation,
@@ -530,14 +534,17 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
             pulse_started: std::time::Instant::now(),
         });
         view.toggle_play();
-        assert_eq!(view.prepared_seek.as_ref().unwrap().request_id, request);
-        assert_eq!(view.recovery.prepared_request(), Some(request));
+        assert_eq!(
+            view.audio_pub.prepared_seek.as_ref().unwrap().request_id,
+            request
+        );
+        assert_eq!(view.audio_pub.recovery.prepared_request(), Some(request));
         assert!(matches!(
             view.settings.playback.pending.as_ref().unwrap().source,
             StartSource::Recovery(expected) if expected == generation
         ));
         assert!(
-            view.deferred_play.is_none(),
+            view.audio_pub.deferred_play.is_none(),
             "no raw Play may race the preferences load"
         );
         (generation, request, predecessor)
@@ -545,8 +552,8 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
 
     finish_load(&editor, cx);
     editor.read_with(cx, |view, _| {
-        assert_eq!(view.recovery.generation(), Some(generation));
-        assert_eq!(view.recovery.prepared_request(), Some(request));
+        assert_eq!(view.audio_pub.recovery.generation(), Some(generation));
+        assert_eq!(view.audio_pub.recovery.prepared_request(), Some(request));
         let pending = view.settings.playback.pending.as_ref().unwrap();
         assert_eq!(pending.note_chase, Some(NoteChase::Off));
         assert!(
@@ -566,11 +573,11 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let recovered = editor.update(cx, |view, cx| {
             view.tick(cx); // Drives the real finish_audio_recovery_tick and its terminal.
-            if view.recovery.generation().is_some() {
+            if view.audio_pub.recovery.generation().is_some() {
                 return None;
             }
             assert!(view.settings.playback.pending.is_none());
-            assert!(view.deferred_play.is_none());
+            assert!(view.audio_pub.deferred_play.is_none());
             let status = view.audio_status().unwrap();
             assert!(
                 !status.playing.load(Acquire),
@@ -583,7 +590,11 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
                 "recovery must install its actual fresh runtime"
             );
             assert_eq!(
-                view.audible_playback.as_ref().unwrap().seek_request_id,
+                view.audio_pub
+                    .audible_playback
+                    .as_ref()
+                    .unwrap()
+                    .seek_request_id,
                 Some(request)
             );
             Some(source)
@@ -632,7 +643,7 @@ fn saved_off_toggle_waits_for_exact_prepared_recovery_ack_before_silent_start(
     editor.update(cx, |view, cx| {
         view.tick(cx);
         assert!(view.settings.playback.preferences.note_chase);
-        view.play_start_at_beginning = false;
+        view.interaction.play_start_at_beginning = false;
         view.toggle_play();
     });
     let mut audible = false;
@@ -731,7 +742,7 @@ fn stopped_edit_pending_gesture_is_not_replayed_on_the_installed_successor(
     editor.read_with(cx, |view, _| {
         assert!(view.settings.playback.pending.is_none());
         assert_eq!(view.test_probes.last_transport_command, None);
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
     fixture.finish(cx);
 }
@@ -766,8 +777,8 @@ fn toggle_during_loading_cancels_the_future_seek_and_pauses_active_audio(cx: &mu
     }
     editor.read_with(cx, |view, _| {
         assert!(!view.audio_status().unwrap().playing.load(Acquire));
-        assert!(view.prepared_seek.is_none());
-        assert!(view.latched_seek_intent.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
+        assert!(view.audio_pub.latched_seek_intent.is_none());
     });
     fixture.finish(cx);
 }
@@ -803,7 +814,7 @@ fn section_gesture_keeps_its_loaded_policy_through_a_held_loop_receipt(cx: &mut 
     editor.read_with(cx, |view, _| {
         assert!(!view.settings.playback.preferences.note_chase);
         assert!(view.pending_loop_launch());
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
     });
 
     // Retain the actual worker terminal while allowing its graph handoff to ACK.
@@ -839,7 +850,7 @@ fn section_gesture_keeps_its_loaded_policy_through_a_held_loop_receipt(cx: &mut 
     editor.update(cx, |view, _| {
         assert!(view.settings.playback.preferences.note_chase);
         assert!(view.pending_loop_launch());
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
         view.receive(terminal);
         assert!(view.section_launch_waiting());
     });
@@ -848,7 +859,7 @@ fn section_gesture_keeps_its_loaded_policy_through_a_held_loop_receipt(cx: &mut 
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let submitted = editor.update(cx, |view, cx| {
             view.tick(cx);
-            let Some(pending) = view.prepared_seek.as_ref() else {
+            let Some(pending) = view.audio_pub.prepared_seek.as_ref() else {
                 return false;
             };
             assert_eq!(pending.note_chase, NoteChase::Off);
@@ -908,10 +919,10 @@ fn section_gesture_keeps_its_loaded_policy_through_a_held_loop_receipt(cx: &mut 
         heard_on |= block.iter().flatten().any(|sample| sample.abs() > 1.0e-6);
         let installed = editor.update(cx, |view, cx| {
             view.tick(cx);
-            if let Some(pending) = view.prepared_seek.as_ref() {
+            if let Some(pending) = view.audio_pub.prepared_seek.as_ref() {
                 assert_eq!(pending.note_chase, NoteChase::On);
             }
-            !view.section_launch_waiting() && view.prepared_seek.is_none()
+            !view.section_launch_waiting() && view.audio_pub.prepared_seek.is_none()
         });
         if installed && heard_on {
             break;
@@ -933,7 +944,7 @@ fn offline_toggle_records_play_from_diagnostic_only_when_settings_are_ready(
     editor.update(cx, |view, _| {
         assert!(view.audio.is_none());
         assert!(!view.settings.playback.loading);
-        view.edit_cursor = Some(super::super::edit_cursor::EditCursor {
+        view.interaction.edit_cursor = Some(super::super::edit_cursor::EditCursor {
             track: None,
             frame: 48_000,
             generation: view.project_generation,
@@ -946,7 +957,7 @@ fn offline_toggle_records_play_from_diagnostic_only_when_settings_are_ready(
         view.toggle_play();
         assert_eq!(view.test_probes.last_transport_command, None);
         assert!(view.settings.playback.pending.is_none());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
 
         view.settings.playback.loading = false;
         view.error = None;
@@ -956,7 +967,7 @@ fn offline_toggle_records_play_from_diagnostic_only_when_settings_are_ready(
             Some(PlaybackCommand::PlayFrom(48_000))
         );
         assert!(view.settings.playback.pending.is_none());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert!(
             view.error
                 .as_deref()

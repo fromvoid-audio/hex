@@ -195,8 +195,8 @@ fn open_worker(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
-        view.pending_playback = None;
+        view.audio_pub.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+        view.audio_pub.pending_playback = None;
         view.error = None;
         view.tick(cx);
     });
@@ -205,10 +205,13 @@ fn open_worker(
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let ready = fixture.editor.update(cx, |view, cx| {
             view.tick(cx);
-            view.state
+            view.state.as_ref().is_some_and(|state| {
+                view.audio_pub.applied_project_revision == Some(state.revision)
+            }) && view
+                .audio_pub
+                .audible_playback
                 .as_ref()
-                .is_some_and(|state| view.applied_project_revision == Some(state.revision))
-                && view.audible_playback.as_ref().is_some_and(|source| {
+                .is_some_and(|source| {
                     source.audio_revision
                         == view
                             .audio_status()
@@ -365,7 +368,7 @@ mod tests {
                 super::super::loop_rail::displayed_region(view, state),
                 Some(region)
             );
-            assert!(view.prepared_seek.is_none());
+            assert!(view.audio_pub.prepared_seek.is_none());
         });
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -387,7 +390,10 @@ mod tests {
             let published = fixture.editor.update(&mut visual, |view, cx| {
                 view.tick(cx);
                 matches!(
-                    view.prepared_seek.as_ref().map(|pending| pending.stage),
+                    view.audio_pub
+                        .prepared_seek
+                        .as_ref()
+                        .map(|pending| pending.stage),
                     Some(SeekStage::Published { .. })
                 )
             });
@@ -411,7 +417,7 @@ mod tests {
             });
             visual.run_until_parked();
             fixture.editor.read_with(&visual, |view, _| {
-                assert!(view.prepared_seek.is_some());
+                assert!(view.audio_pub.prepared_seek.is_some());
                 assert_eq!(view.audio_status().unwrap().position.load(Acquire), 0);
             });
         }
@@ -423,7 +429,7 @@ mod tests {
         visual.run_until_parked();
         assert_eq!(visual.debug_bounds("loop-rail-range"), Some(pending_bar));
         fixture.editor.read_with(&visual, |view, _| {
-            assert!(view.prepared_seek.is_none());
+            assert!(view.audio_pub.prepared_seek.is_none());
             let status = view.audio_status().unwrap();
             assert_eq!(status.position.load(Acquire), region.start() + 64);
             assert!(status.playing.load(Acquire));
@@ -440,7 +446,7 @@ mod tests {
                 Some(hex_engine::PlaybackCommand::Pause)
             );
             assert!(!view.audio_status().unwrap().playing.load(Acquire));
-            assert!(view.prepared_seek.is_none());
+            assert!(view.audio_pub.prepared_seek.is_none());
         });
         visual.simulate_keystrokes("space");
         for _ in 0..400 {
@@ -493,12 +499,17 @@ mod tests {
                 state.project.loop_region()
                     == Some(LoopRegion::new(region.start(), region.end(), false).unwrap())
                     && view.applied_project_revision() == Some(state.revision)
-                    && view.audio_admission.current().is_some_and(|admission| {
-                        admission.state == super::super::audio_admission::AdmissionState::Applied
-                    })
+                    && view
+                        .audio_pub
+                        .audio_admission
+                        .current()
+                        .is_some_and(|admission| {
+                            admission.state
+                                == super::super::audio_admission::AdmissionState::Applied
+                        })
                     && !view.section_launch_waiting()
-                    && view.prepared_seek.is_none()
-                    && view.latched_seek_intent.is_none()
+                    && view.audio_pub.prepared_seek.is_none()
+                    && view.audio_pub.latched_seek_intent.is_none()
             });
             if installed {
                 break;
@@ -601,7 +612,7 @@ mod tests {
                 let state = view.state.as_ref().unwrap();
                 if state.revision > before_revision
                     && matches!(
-                        view.audio_admission.current().map(|c| c.state),
+                        view.audio_pub.audio_admission.current().map(|c| c.state),
                         Some(super::super::audio_admission::AdmissionState::Rejected(_))
                     )
                 {
@@ -645,7 +656,7 @@ mod tests {
                 !status.playing.load(Acquire)
                     && view.applied_project_revision() == Some(edited_revision)
                     && matches!(
-                        view.audio_admission.current().map(|c| c.state),
+                        view.audio_pub.audio_admission.current().map(|c| c.state),
                         Some(super::super::audio_admission::AdmissionState::Applied)
                     )
             });
@@ -659,7 +670,7 @@ mod tests {
                     view.status.clone(),
                     view.error.as_ref().map(|e| e.to_string()),
                     view.applied_project_revision(),
-                    view.audio_admission.current()
+                    view.audio_pub.audio_admission.current()
                 ))
             );
             std::thread::yield_now();
@@ -783,7 +794,7 @@ mod tests {
                 "must defer play instead of failing: {:?}",
                 view.error
             );
-            assert!(view.deferred_play.is_some());
+            assert!(view.audio_pub.deferred_play.is_some());
         });
 
         loop {
@@ -809,7 +820,7 @@ mod tests {
         }
         editor.read_with(cx, |view, _| {
             assert!(view.error.is_none(), "{:?}", view.error);
-            assert!(view.deferred_play.is_none());
+            assert!(view.audio_pub.deferred_play.is_none());
         });
         fixture.finish(cx);
     }

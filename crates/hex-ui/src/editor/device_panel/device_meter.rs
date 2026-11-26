@@ -17,7 +17,8 @@ fn audible_meter<'a>(
     device: &hex_project::Device,
 ) -> Option<&'a hex_engine::DeviceMeter> {
     let id = device.id();
-    view.audible_playback
+    view.audio_pub
+        .audible_playback
         .as_ref()
         .filter(|candidate| candidate.project_generation == view.project_generation)
         .filter(|candidate| {

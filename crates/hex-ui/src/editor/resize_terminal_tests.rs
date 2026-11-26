@@ -104,7 +104,7 @@ fn install(v: &mut EditorView, clip: ClipId) -> Request {
     let revision = state.revision;
     let track = state.project.tracks()[0].id();
     v.viewport = Some(OWNED);
-    v.pending_trim = Some(PendingTrim {
+    v.interaction.pending_trim = Some(PendingTrim {
         replayed: false,
         generation: v.project_generation,
         revision,
@@ -128,7 +128,7 @@ fn growth(track: TrackId) -> Request {
     })
 }
 fn normalized(v: &EditorView) -> Viewport {
-    assert!(v.pending_trim.is_none());
+    assert!(v.interaction.pending_trim.is_none());
     let viewport = v.viewport.unwrap();
     assert_eq!(viewport.start, 0);
     assert_eq!(viewport.length, OWNED.length);
@@ -150,7 +150,7 @@ fn arrangement_resize_source_refusal_keeps_the_preview_for_exactly_one_retry(
             clip: f.clip,
             operation,
         });
-        view.pending_trim.as_mut().unwrap().command =
+        view.interaction.pending_trim.as_mut().unwrap().command =
             ResizeCommand::from_request(&request).unwrap();
         assert!(view.enqueue(request));
         let mut refused = ok(&view.service);
@@ -214,17 +214,28 @@ fn terminal_fifo_counts_real_ordinary_device_and_tuning_completions(cx: &mut Tes
             };
             assert!(v.enqueue(earlier));
             assert!(
-                v.pending_trim.as_ref().unwrap().remaining.is_none(),
+                v.interaction
+                    .pending_trim
+                    .as_ref()
+                    .unwrap()
+                    .remaining
+                    .is_none(),
                 "unrelated submission cannot stamp resize"
             );
             assert!(v.enqueue(resize));
-            assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(2));
+            assert_eq!(
+                v.interaction.pending_trim.as_ref().unwrap().remaining,
+                Some(2)
+            );
             let earlier = event(&v.service);
             assert!(earlier.request_complete);
             assert_eq!(earlier.gesture_request, kind == 1);
             assert_eq!(earlier.tuning_gesture_request, kind == 2);
             v.receive(earlier);
-            assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(1));
+            assert_eq!(
+                v.interaction.pending_trim.as_ref().unwrap().remaining,
+                Some(1)
+            );
             assert_eq!(
                 v.viewport,
                 Some(OWNED),
@@ -265,19 +276,34 @@ fn terminal_deferred_match_normalizes_before_later_growth_in_one_receive_batch(
         assert!(v.enqueue(resize));
         assert!(v.enqueue(growth(f.track)));
         assert_eq!(v.worker_requests_pending, 1);
-        assert!(v.pending_trim.as_ref().unwrap().remaining.is_none());
+        assert!(
+            v.interaction
+                .pending_trim
+                .as_ref()
+                .unwrap()
+                .remaining
+                .is_none()
+        );
         let old_ack = ok(&v.service);
         assert!(old_ack.request_complete);
         v.receive(old_ack);
         assert_eq!(v.worker_requests_pending, 0);
         assert!(
-            v.pending_trim.as_ref().unwrap().remaining.is_none(),
+            v.interaction
+                .pending_trim
+                .as_ref()
+                .unwrap()
+                .remaining
+                .is_none(),
             "an old ack cannot complete a request still in the UI queue"
         );
         assert_eq!(v.viewport, Some(OWNED));
         // Real controller drain stamps only the matching second request.
         v.tick(cx);
-        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(2));
+        assert_eq!(
+            v.interaction.pending_trim.as_ref().unwrap().remaining,
+            Some(2)
+        );
         assert_eq!(v.worker_requests_pending, 3);
         let events = [ok(&v.service), ok(&v.service), ok(&v.service)];
         assert!(events[1].state.timeline_frames < OWNED.end().unwrap());
@@ -318,7 +344,7 @@ fn terminal_preserves_explicit_fit_zoom_and_pan(cx: &mut TestAppContext) {
             let explicit = v.viewport;
             assert_ne!(explicit, Some(OWNED));
             v.receive(ok(&v.service));
-            assert!(v.pending_trim.is_none());
+            assert!(v.interaction.pending_trim.is_none());
             assert_eq!(
                 v.viewport, explicit,
                 "terminal cannot overwrite newer navigation"
@@ -337,7 +363,7 @@ fn terminal_local_retirement_does_not_clobber_a_new_actual_pointer_capture(
     visual.update(|window, _| window.activate_window());
     let retired = f.editor.update(&mut visual, |v, _| {
         let _ = install(v, f.clip);
-        v.pending_trim.take().unwrap().into_viewport()
+        v.interaction.pending_trim.take().unwrap().into_viewport()
     });
     visual.run_until_parked();
     let selector = Box::leak(format!("clip-trim-right-{}", f.clip.value()).into_boxed_str());
@@ -351,14 +377,14 @@ fn terminal_local_retirement_does_not_clobber_a_new_actual_pointer_capture(
     visual.run_until_parked();
     f.editor.update(&mut visual, |v, _| {
         assert!(
-            v.active_trim_drag.is_some(),
+            v.interaction.active_trim_drag.is_some(),
             "actual new capture, not a fabricated payload"
         );
         // Direct local-token guard control, not a claim that receive yields
         // between taking its token and installing state in ordinary runtime.
         v.normalize_completed_trim_viewport(Some(retired));
         assert_eq!(v.viewport, Some(OWNED));
-        assert!(v.pending_trim.is_none());
+        assert!(v.interaction.pending_trim.is_none());
     });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(down, MouseButton::Left, Modifiers::default());
@@ -381,7 +407,7 @@ fn terminal_project_replacement_and_generation_cannot_normalize_another_document
         let replacement = ok(&v.service);
         assert!(replacement.project_replaced && replacement.request_complete);
         v.receive(replacement);
-        assert!(v.pending_trim.is_none());
+        assert!(v.interaction.pending_trim.is_none());
         assert!(v.project_generation > generation);
         assert!(v.viewport.is_none(), "new document keeps its own fit state");
         assert!(v.state.as_ref().unwrap().project.clip(f.clip).is_none());
@@ -392,7 +418,8 @@ fn terminal_project_replacement_and_generation_cannot_normalize_another_document
         let _ = install(v, f.clip);
         // Explicit generation guard control; do not manufacture a replacement
         // Event or claim this is ordinary pointer input.
-        v.pending_trim.as_mut().unwrap().generation = v.project_generation.saturating_add(1);
+        v.interaction.pending_trim.as_mut().unwrap().generation =
+            v.project_generation.saturating_add(1);
         assert!(v.retire_pending_trim());
         assert_eq!(v.viewport, Some(OWNED));
     });
@@ -418,7 +445,14 @@ fn terminal_deferred_owner_survives_full_ui_queue_and_failure_retirement_is_idem
             !v.enqueue(growth(f.track)),
             "real bounded UI queue refuses unrelated excess"
         );
-        assert!(v.pending_trim.as_ref().unwrap().remaining.is_none());
+        assert!(
+            v.interaction
+                .pending_trim
+                .as_ref()
+                .unwrap()
+                .remaining
+                .is_none()
+        );
         assert_eq!(v.viewport, Some(OWNED));
         // Direct shared failure/disconnect retirement hook. No actual worker
         // crash/closed channel or impossible resize SubmitError::Busy is faked.
@@ -464,7 +498,7 @@ fn terminal_uses_current_loop_and_open_gain_lane_display_extent(cx: &mut TestApp
             let resize = install(v, f.clip);
             assert!(v.enqueue(resize));
             v.receive(ok(&v.service));
-            assert!(v.pending_trim.is_none());
+            assert!(v.interaction.pending_trim.is_none());
             assert_eq!(
                 v.visible_viewport(v.state.as_ref().unwrap().timeline_frames),
                 OWNED
@@ -493,15 +527,15 @@ fn restart_offline_completion_cannot_retire_a_later_resize_ordinal(cx: &mut Test
         let resize = install(v, f.clip);
         assert!(v.enqueue(resize));
         let submitted = v.worker_requests_pending;
-        let ordinal = v.pending_trim.as_ref().unwrap().remaining;
+        let ordinal = v.interaction.pending_trim.as_ref().unwrap().remaining;
         let restart = event(&v.service);
         assert!(restart.request_complete);
         assert_eq!(restart.error.as_deref(), Some("audio adapter unavailable"));
         v.receive(restart);
-        eprintln!("restart offline earlier completion: counted={submitted} resize_ordinal={ordinal:?} owner_retained={}", v.pending_trim.is_some());
-        assert!(v.pending_trim.is_some(), "actual earlier restart completion cannot be the resize terminal");
+        eprintln!("restart offline earlier completion: counted={submitted} resize_ordinal={ordinal:?} owner_retained={}", v.interaction.pending_trim.is_some());
+        assert!(v.interaction.pending_trim.is_some(), "actual earlier restart completion cannot be the resize terminal");
         assert_eq!(submitted, 2, "actual restart is counted exactly once alongside actual resize");
-        assert_eq!(v.pending_trim.as_ref().unwrap().remaining, Some(1));
+        assert_eq!(v.interaction.pending_trim.as_ref().unwrap().remaining, Some(1));
         assert_eq!(v.viewport, Some(OWNED));
         v.receive(ok(&v.service));
         normalized(v);
@@ -535,10 +569,10 @@ fn restart_offline_pending_work_blocks_actual_resize_capture_until_completion(
     visual.run_until_parked();
     f.editor.read_with(&visual, |v, _| {
         assert!(
-            v.active_trim_drag.is_none(),
+            v.interaction.active_trim_drag.is_none(),
             "unacknowledged real restart fences actual pointer admission"
         );
-        assert!(v.pending_trim.is_none());
+        assert!(v.interaction.pending_trim.is_none());
         assert_eq!(v.worker_requests_pending, 1);
     });
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
@@ -550,14 +584,15 @@ fn restart_offline_pending_work_blocks_actual_resize_capture_until_completion(
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    f.editor
-        .read_with(&visual, |v, _| assert!(v.active_trim_drag.is_some()));
+    f.editor.read_with(&visual, |v, _| {
+        assert!(v.interaction.active_trim_drag.is_some())
+    });
     visual.simulate_keystrokes("escape");
     visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     f.editor.update(&mut visual, |v, _| {
         assert_eq!(v.worker_requests_pending, 0);
-        v.restart_request_id = u64::MAX;
+        v.audio_pub.restart_request_id = u64::MAX;
         assert!(
             !v.restart_audio_for_current_document(),
             "real exhausted-id refusal submits nothing"

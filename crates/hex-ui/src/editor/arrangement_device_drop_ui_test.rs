@@ -189,7 +189,10 @@ fn arrangement_catalog_pointer_refuses_stale_busy_main_and_escape_without_edits(
             visual.simulate_keystrokes("escape");
         } else {
             editor.update(cx, |view, _| match refusal {
-                1 => view.drag_layout_generation = view.drag_layout_generation.wrapping_add(1),
+                1 => {
+                    view.timeline_caches.drag_layout_generation =
+                        view.timeline_caches.drag_layout_generation.wrapping_add(1)
+                }
                 2 => view.project_generation += 1,
                 3 => {
                     let state = view.state.as_ref().unwrap();

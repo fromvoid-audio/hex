@@ -142,7 +142,7 @@ impl EditorView {
             && self.project_generation == target.source().context.project_generation
             && recorder.input.as_ref().map(|(id, _)| id) == target.input.as_ref()
             && self.mode == EditorMode::Arrangement
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self.audio.as_ref().is_some_and(|audio| {
                 audio.sample_rate == target.rate
                     && audio.control.output_identity() == Some(target.output())
@@ -168,7 +168,7 @@ impl EditorView {
             || recorder.blocks_edits()
             || recorder.retiring_monitor_output.is_some()
             || self.mode != EditorMode::Arrangement
-            || self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+            || self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
             || self.edit_pending()
         {
             return None;

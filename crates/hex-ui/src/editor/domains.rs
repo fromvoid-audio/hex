@@ -270,3 +270,267 @@ pub(in crate::editor) struct EditorTestProbes {
     pub(in crate::editor) last_enqueued_import_to_new_track:
         Option<(PathBuf, Option<TrackId>, u64)>,
 }
+
+/// Audio publication, recovery, deferred transport and seek tracking state owned by [`super::EditorView`].
+pub(in crate::editor) struct AudioPublicationState {
+    pub(in crate::editor) retired_action_outcomes: Option<hex_audio::prepared::ActionOutcomeReader>,
+    pub(in crate::editor) retired_action_message: Option<String>,
+    pub(in crate::editor) source_reservation: Option<hex_session::SourcePlanReservation>,
+    pub(in crate::editor) restart_request_id: u64,
+    pub(in crate::editor) pending_restart_request: Option<(u64, u64)>,
+    pub(in crate::editor) pending_recovery_generation: Option<u64>,
+    /// Output whose default route changed and still awaits its recovery.
+    pub(in crate::editor) route_follow: Option<u64>,
+    pub(in crate::editor) pending_audio_result: Option<super::PendingEditorAudioResult>,
+    pub(in crate::editor) pending_publication_observation:
+        Option<super::PendingEditorPublicationObservation>,
+    pub(in crate::editor) document_audio_mode: hex_session::DocumentAudioMode,
+    pub(in crate::editor) recovery: super::RecoveryState,
+    pub(in crate::editor) stopped_playback_restore:
+        Option<super::audio_admission::StoppedPlaybackRestore>,
+    pub(in crate::editor) latency_rebuild: Option<super::audio_admission::LatencyRebuild>,
+    pub(in crate::editor) paused_republish: Option<super::audio_admission::PausedRepublish>,
+    // Play requested while the stopped restore renews effects (for example
+    // vst3); it starts once that restore settles (Pulse #3784).
+    pub(in crate::editor) deferred_play:
+        Option<(hex_engine::playback::PlaybackAction, Option<u64>, u64)>,
+    // Play requested during a brief sub-frame window where an in-flight edit
+    // or audio publication is completing; dispatches once the applied source
+    // is ready (Pulse #8948).
+    pub(in crate::editor) deferred_toggle_play: Option<super::DeferredTogglePlay>,
+    // Seek requested while an already-applied Resident audio revision is
+    // waiting for its worker_submitted preroll metadata (Pulse #8948).
+    pub(in crate::editor) deferred_metadata_seek: Option<(u64, u64)>,
+    pub(in crate::editor) offline_cursor: u64,
+    pub(in crate::editor) pending_playback: Option<super::PendingPlayback>,
+    pub(in crate::editor) pending_resident_publication: Option<super::PendingResidentPublication>,
+    pub(in crate::editor) pending_audio_commands:
+        std::collections::VecDeque<super::PendingPlaybackAction>,
+    pub(in crate::editor) pending_seek_ticket: Option<u64>,
+    pub(in crate::editor) pending_metronome_ticket: Option<u64>,
+    pub(in crate::editor) playback_candidates: std::collections::VecDeque<super::PlaybackCandidate>,
+    pub(in crate::editor) audible_playback: Option<super::PlaybackCandidate>,
+    pub(in crate::editor) resident_tuning_preview: Option<hex_session::service::TuningPreview>,
+    pub(in crate::editor) audio_admission: super::AudioAdmissionStatus,
+    pub(in crate::editor) prepared_seek: Option<super::arrangement_seek::PendingSeek>,
+    pub(in crate::editor) seek_request_serial: u64,
+    pub(in crate::editor) latched_seek_intent: Option<super::arrangement_seek::SeekIntent>,
+    pub(in crate::editor) retired_seek_result:
+        Option<hex_session::arrangement_seek::ArrangementSeekResult>,
+    pub(in crate::editor) applied_project_revision: Option<u64>,
+    pub(in crate::editor) observed_rejected_action: u64,
+    pub(in crate::editor) observed_rejected_revision: u64,
+}
+
+impl Default for AudioPublicationState {
+    fn default() -> Self {
+        Self {
+            retired_action_outcomes: None,
+            retired_action_message: None,
+            source_reservation: None,
+            restart_request_id: 0,
+            pending_restart_request: None,
+            pending_recovery_generation: None,
+            route_follow: None,
+            pending_audio_result: None,
+            pending_publication_observation: None,
+            document_audio_mode: hex_session::DocumentAudioMode::Resident,
+            recovery: super::RecoveryState::default(),
+            stopped_playback_restore: None,
+            latency_rebuild: None,
+            paused_republish: None,
+            deferred_play: None,
+            deferred_toggle_play: None,
+            deferred_metadata_seek: None,
+            offline_cursor: 0,
+            pending_playback: None,
+            pending_resident_publication: None,
+            pending_audio_commands: std::collections::VecDeque::new(),
+            pending_seek_ticket: None,
+            pending_metronome_ticket: None,
+            playback_candidates: std::collections::VecDeque::new(),
+            audible_playback: None,
+            resident_tuning_preview: None,
+            audio_admission: super::AudioAdmissionStatus::default(),
+            prepared_seek: None,
+            seek_request_serial: 0,
+            latched_seek_intent: None,
+            retired_seek_result: None,
+            applied_project_revision: None,
+            observed_rejected_action: 0,
+            observed_rejected_revision: 0,
+        }
+    }
+}
+
+/// Timeline paint, lane-bounds, arrangement-map and waveform geometry caches owned by [`super::EditorView`].
+pub(in crate::editor) struct TimelineCacheState {
+    pub(in crate::editor) clip_content_cache: super::clip_content_cache::TrackCache,
+    pub(in crate::editor) track_header_cache: super::track_header_cache::TrackHeaderCache,
+    pub(in crate::editor) waveform_overrange_epoch: u64,
+    pub(in crate::editor) drag_lanes: std::collections::HashMap<TrackId, super::drag::LaneBounds>,
+    pub(in crate::editor) track_drop_lanes:
+        std::collections::HashMap<TrackId, super::drag::LaneBounds>,
+    pub(in crate::editor) drag_lane_epochs: std::collections::HashMap<TrackId, u64>,
+    pub(in crate::editor) arrangement_bounds: Option<super::drag::LaneBounds>,
+    pub(in crate::editor) arrangement_bounds_epoch: u64,
+    pub(in crate::editor) main_track_lane_bounds: Option<super::drag::LaneBounds>,
+    pub(in crate::editor) main_track_lane_epoch: u64,
+    pub(in crate::editor) drag_layout_generation: u64,
+    pub(in crate::editor) arrangement_map_cache:
+        RefCell<Option<Rc<super::arrangement_map::MapCache>>>,
+    pub(in crate::editor) focused_arrangement_map_cache:
+        RefCell<Option<Rc<super::arrangement_map::MapCache>>>,
+    pub(in crate::editor) section_map_cache:
+        RefCell<Option<Rc<super::arrangement_map::SectionMapCache>>>,
+    pub(in crate::editor) arrangement_clip_index:
+        RefCell<super::arrangement_clip_index::ArrangementClipIndex>,
+    pub(in crate::editor) clip_title_cache: Rc<RefCell<super::clip_title_cache::ClipTitleCache>>,
+    pub(in crate::editor) group_overview_cache: RefCell<super::group_overview::Cache>,
+    pub(in crate::editor) overview_waveform_cache: Rc<RefCell<super::overview_waveform::Cache>>,
+    pub(in crate::editor) waveform_geometry_cache: Rc<waveform_geometry::WaveformViewCache>,
+}
+
+impl TimelineCacheState {
+    pub(in crate::editor) fn new(
+        waveform_geometry_cache: Rc<waveform_geometry::WaveformViewCache>,
+    ) -> Self {
+        Self {
+            clip_content_cache: super::clip_content_cache::TrackCache::default(),
+            track_header_cache: super::track_header_cache::TrackHeaderCache::default(),
+            waveform_overrange_epoch: 0,
+            drag_lanes: std::collections::HashMap::new(),
+            track_drop_lanes: std::collections::HashMap::new(),
+            drag_lane_epochs: std::collections::HashMap::new(),
+            arrangement_bounds: None,
+            arrangement_bounds_epoch: 0,
+            main_track_lane_bounds: None,
+            main_track_lane_epoch: 0,
+            drag_layout_generation: 0,
+            arrangement_map_cache: RefCell::new(None),
+            focused_arrangement_map_cache: RefCell::new(None),
+            section_map_cache: RefCell::new(None),
+            arrangement_clip_index: RefCell::new(Default::default()),
+            clip_title_cache: Rc::new(RefCell::new(Default::default())),
+            group_overview_cache: RefCell::default(),
+            overview_waveform_cache: Rc::new(RefCell::new(
+                super::overview_waveform::Cache::default(),
+            )),
+            waveform_geometry_cache,
+        }
+    }
+}
+
+/// Arrangement pointer gestures, loop rail, fades, clip drags, edit cursor and time selection state.
+pub(in crate::editor) struct ArrangementInteractionState {
+    pub(in crate::editor) loop_rail_gesture: Option<super::loop_rail::LoopRailGesture>,
+    pub(in crate::editor) pending_loop: Option<super::loop_rail::PendingLoop>,
+    pub(in crate::editor) section_launch_after_loop:
+        Option<super::section_launch::SectionLaunchAfterLoop>,
+    pub(in crate::editor) loop_rail_cursor: gpui::CursorStyle,
+    pub(in crate::editor) arrangement_pan: Option<super::ArrangementPan>,
+    pub(in crate::editor) scrub: super::scrub::ScrubState,
+    pub(in crate::editor) zoom_wheel_accum: f32,
+    pub(in crate::editor) hovered_arrangement_clip:
+        Option<super::track_lane_canvas::HoveredArrangementClip>,
+    pub(in crate::editor) active_clip_drag: Option<super::drag::ClipDrag>,
+    pub(in crate::editor) clip_move_audition: Option<super::drag::MoveAudition>,
+    pub(in crate::editor) clip_move_gesture: u64,
+    pub(in crate::editor) active_trim_drag: Option<trim::TrimDrag>,
+    pub(in crate::editor) pending_trim: Option<trim::PendingTrim>,
+    pub(in crate::editor) fade_key_held: bool,
+    /// Option held: the right clip header edge offers repeat-extend.
+    pub(in crate::editor) option_held: bool,
+    pub(in crate::editor) time_selection_key_held: bool,
+    pub(in crate::editor) active_fade_drag: Option<super::fade_handles::FadeDrag>,
+    pub(in crate::editor) pending_fade: Option<super::fade_handles::PendingFade>,
+    pub(in crate::editor) clip_gain: super::clip_gain::State,
+    pub(in crate::editor) pending_clip_activation: Option<super::activation::PendingClipActivation>,
+    pub(in crate::editor) hovered_fade_clip: Option<(u64, ClipId)>,
+    pub(in crate::editor) hovered_fade_handle: Option<super::fade_handles::Hover>,
+    pub(in crate::editor) pointer_down: Option<super::drag::PointerDown>,
+    pub(in crate::editor) edit_cursor: Option<super::edit_cursor::EditCursor>,
+    /// Transient Arrangement play-start lock; never seeks the active transport.
+    pub(in crate::editor) locked_play_start: Option<super::edit_cursor::EditCursor>,
+    pub(in crate::editor) locked_play_start_drag: Option<super::edit_cursor::LockedPlayStartDrag>,
+    pub(in crate::editor) bottom_play_start_marker_bounds:
+        std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>,
+    pub(in crate::editor) selected_clip_play_start:
+        std::cell::Cell<Option<super::selection_play_start::SelectedClipPlayStart>>,
+    pub(in crate::editor) play_start_at_beginning: bool,
+    pub(in crate::editor) escape_stop_armed: bool,
+    /// The selected clip a point cursor was deliberately placed inside; that
+    /// cursor then outranks the clip's play start (see `selected_arrangement_play_start`).
+    pub(in crate::editor) edit_cursor_in_selected_clip: Option<ClipId>,
+    /// An acknowledged drop places a point independently of the clip or Main
+    /// selection. A new selection intent ends that precedence.
+    pub(in crate::editor) clip_drop_cursor_epoch: Option<u64>,
+    /// The selected clip whose in-clip cursor a loop enable retired; the loop
+    /// start then keeps outranking that clip's play start until a new click.
+    pub(in crate::editor) loop_start_over_clip: Option<ClipId>,
+    /// Successful selection-loop start, fenced by the user's selection intent.
+    pub(in crate::editor) selection_loop_start: Option<(u64, hex_project::LoopRegion)>,
+    pub(in crate::editor) clip_paint_gesture: Option<super::clip_paint::ClipPaintGesture>,
+    pub(in crate::editor) time_selection: Option<super::time_selection::TimeSelection>,
+    pub(in crate::editor) time_selection_project_scope: bool,
+    pub(in crate::editor) selection_intent_epoch: Option<u64>,
+    pub(in crate::editor) time_selection_gesture:
+        Option<super::time_selection::TimeSelectionGesture>,
+    pub(in crate::editor) time_range_move_gesture:
+        Option<super::time_selection::TimeRangeMoveGesture>,
+    pub(in crate::editor) pending_time_range_move:
+        Option<super::time_selection::PendingTimeRangeMove>,
+    pub(in crate::editor) ahead_time_range_move:
+        Option<super::time_selection::PendingTimeRangeMove>,
+    pub(in crate::editor) suppress_cursor_click: bool,
+}
+
+impl Default for ArrangementInteractionState {
+    fn default() -> Self {
+        Self {
+            loop_rail_gesture: None,
+            pending_loop: None,
+            section_launch_after_loop: None,
+            loop_rail_cursor: gpui::CursorStyle::Crosshair,
+            arrangement_pan: None,
+            scrub: super::scrub::ScrubState::default(),
+            zoom_wheel_accum: 0.0,
+            hovered_arrangement_clip: None,
+            active_clip_drag: None,
+            clip_move_audition: None,
+            clip_move_gesture: 0,
+            active_trim_drag: None,
+            pending_trim: None,
+            fade_key_held: false,
+            option_held: false,
+            time_selection_key_held: false,
+            active_fade_drag: None,
+            pending_fade: None,
+            clip_gain: super::clip_gain::State::default(),
+            pending_clip_activation: None,
+            hovered_fade_clip: None,
+            hovered_fade_handle: None,
+            pointer_down: None,
+            edit_cursor: None,
+            locked_play_start: None,
+            locked_play_start_drag: None,
+            bottom_play_start_marker_bounds: Default::default(),
+            selected_clip_play_start: Default::default(),
+            play_start_at_beginning: false,
+            escape_stop_armed: false,
+            edit_cursor_in_selected_clip: None,
+            clip_drop_cursor_epoch: None,
+            loop_start_over_clip: None,
+            selection_loop_start: None,
+            clip_paint_gesture: None,
+            time_selection: None,
+            time_selection_project_scope: false,
+            selection_intent_epoch: Some(0),
+            time_selection_gesture: None,
+            time_range_move_gesture: None,
+            pending_time_range_move: None,
+            ahead_time_range_move: None,
+            suppress_cursor_click: false,
+        }
+    }
+}

@@ -125,7 +125,7 @@ impl EditorView {
         let track_clipboard_completion = self.take_track_clipboard_completion(&mut event);
         self.observe_empty_track(&event);
         if event.project_replaced {
-            self.time_selection_key_held = false;
+            self.interaction.time_selection_key_held = false;
             self.section_loop_key = Default::default();
             self.clear_device_confirmation_on_project_replace();
             self.device_panel.pending_plugin_effect.take();
@@ -141,43 +141,45 @@ impl EditorView {
                 self.retire_audio_preserving_gain_take();
             }
             if self
+                .audio_pub
                 .pending_audio_result
                 .as_ref()
                 .is_some_and(|pending| pending.project_generation() < next_generation)
-                && let Some(pending) = self.pending_audio_result.take()
+                && let Some(pending) = self.audio_pub.pending_audio_result.take()
             {
                 pending.close();
             }
             if self
+                .audio_pub
                 .pending_restart_request
                 .is_some_and(|(generation, _)| generation < next_generation)
             {
-                self.pending_restart_request = None;
+                self.audio_pub.pending_restart_request = None;
             }
-            self.pending_recovery_generation = None;
+            self.audio_pub.pending_recovery_generation = None;
             self.clear_recovery();
-            self.pending_playback = None;
-            self.pending_resident_publication = None;
-            self.prepared_seek = None;
-            self.latched_seek_intent = None;
-            self.pending_audio_commands.clear();
-            self.pending_seek_ticket = None;
-            self.pending_metronome_ticket = None;
+            self.audio_pub.pending_playback = None;
+            self.audio_pub.pending_resident_publication = None;
+            self.audio_pub.prepared_seek = None;
+            self.audio_pub.latched_seek_intent = None;
+            self.audio_pub.pending_audio_commands.clear();
+            self.audio_pub.pending_seek_ticket = None;
+            self.audio_pub.pending_metronome_ticket = None;
             self.session_grid.pending_session_ticket = None;
-            self.playback_candidates.clear();
-            self.audible_playback = None;
-            self.deferred_toggle_play = None;
-            self.deferred_metadata_seek = None;
-            self.audio_admission.reset_audio();
+            self.audio_pub.playback_candidates.clear();
+            self.audio_pub.audible_playback = None;
+            self.audio_pub.deferred_toggle_play = None;
+            self.audio_pub.deferred_metadata_seek = None;
+            self.audio_pub.audio_admission.reset_audio();
         }
         if event.stopped_playback_restore_complete
             && event.error.is_some()
             && event.playback.is_none()
         {
-            self.stopped_playback_restore = None;
+            self.audio_pub.stopped_playback_restore = None;
         }
         if event.project_replaced {
-            self.stopped_playback_restore = None;
+            self.audio_pub.stopped_playback_restore = None;
             self.browser.pending_insertions.clear();
         }
         if event.request_complete
@@ -268,7 +270,7 @@ impl EditorView {
         }
         if event
             .restore_complete
-            .is_some_and(|generation| self.recovery.generation() != Some(generation))
+            .is_some_and(|generation| self.audio_pub.recovery.generation() != Some(generation))
         {
             return None;
         }
@@ -334,10 +336,10 @@ impl EditorView {
                     let _ = self.try_trigger_midi_audition_now();
                 }
                 if let Some(playback) = event.playback {
-                    let previous_reset = self
-                        .pending_playback
-                        .as_ref()
-                        .map(|pending| (pending.project_generation, pending.install_fresh_runtime));
+                    let previous_reset =
+                        self.audio_pub.pending_playback.as_ref().map(|pending| {
+                            (pending.project_generation, pending.install_fresh_runtime)
+                        });
                     let mut pending = pending_playback_for_state(
                         Arc::clone(&event.state),
                         self.project_generation,
@@ -348,7 +350,7 @@ impl EditorView {
                         self.project_generation,
                         previous_reset,
                     );
-                    self.pending_playback = Some(pending);
+                    self.audio_pub.pending_playback = Some(pending);
                 }
             }
             return None;
@@ -361,7 +363,7 @@ impl EditorView {
             if let Some(error) = &event.error {
                 self.fail_audio_recovery(error.clone());
             } else {
-                self.recovery.restored(generation);
+                self.audio_pub.recovery.restored(generation);
             }
         }
         // Scene duplication is admitted only with no pending worker request, so
@@ -389,27 +391,27 @@ impl EditorView {
                 .is_some_and(|previous| previous.revision != revision)
         {
             self.device_panel.resident_preview = None;
-            self.resident_tuning_preview = None;
+            self.audio_pub.resident_tuning_preview = None;
             self.invalidate_prepared_seek();
             self.cancel_active_browser_audio_drag();
         }
         // Resize previews retain their own captured viewport through the exact
         // terminal below. Never adopt that private extent as canonical tail.
         let resize_owns_viewport = retired_trim.is_some()
-            || self.pending_trim.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.pending_trim.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some();
         self.reconcile_arranger_navigation(
             &event_state,
             event.project_replaced,
             resize_owns_viewport,
         );
-        let time_range_was_pending = self.pending_time_range_move.is_some();
-        let recovery_before_time_completion = self.recovery.generation();
+        let time_range_was_pending = self.interaction.pending_time_range_move.is_some();
+        let recovery_before_time_completion = self.audio_pub.recovery.generation();
         let time_duplicate_repeats = if event.project_replaced {
-            self.time_range_move_gesture = None;
-            self.pending_time_range_move = None;
-            self.ahead_time_range_move = None;
+            self.interaction.time_range_move_gesture = None;
+            self.interaction.pending_time_range_move = None;
+            self.interaction.ahead_time_range_move = None;
             0
         } else {
             self.complete_time_duplicate_pair(&event)
@@ -431,9 +433,14 @@ impl EditorView {
         });
         let recovering_refused_time_copy = event.resident_edit_source_unavailable.is_some()
             && recovery_before_time_completion.is_none()
-            && self.recovery.deferred_edit.as_ref().is_some_and(|edit| {
-                edit.kind == crate::editor::recovery_state::DeferredEditKind::TimeDuplicate
-            });
+            && self
+                .audio_pub
+                .recovery
+                .deferred_edit
+                .as_ref()
+                .is_some_and(|edit| {
+                    edit.kind == crate::editor::recovery_state::DeferredEditKind::TimeDuplicate
+                });
         if !event.project_replaced {
             crate::editor::loop_rail::cancel_stale(
                 self,
@@ -449,11 +456,14 @@ impl EditorView {
         {
             self.cancel_stale_midi_creation_gestures(revision);
         }
-        self.drag_lanes
+        self.timeline_caches
+            .drag_lanes
             .retain(|track, _| event.state.project.track(*track).is_some());
-        self.drag_lane_epochs
+        self.timeline_caches
+            .drag_lane_epochs
             .retain(|track, _| event.state.project.track(*track).is_some());
-        self.track_drop_lanes
+        self.timeline_caches
+            .track_drop_lanes
             .retain(|track, _| event.state.project.track(*track).is_some());
         self.gain_lane.reconcile(
             self.project_generation,
@@ -486,7 +496,7 @@ impl EditorView {
         }
         if event.project_replaced
             || (time_range_was_pending
-                && self.pending_time_range_move.is_none()
+                && self.interaction.pending_time_range_move.is_none()
                 && event.request_complete
                 && !event.plugin_parameter_observation)
         {
@@ -500,13 +510,17 @@ impl EditorView {
         if let Some(selection) = audio_placement_selection {
             self.install_audio_placement_selection(selection);
         }
-        if self.selection_loop_start.is_some_and(|(_, region)| {
-            self.state
-                .as_ref()
-                .and_then(|state| state.project.loop_region())
-                != Some(region)
-        }) {
-            self.selection_loop_start = None;
+        if self
+            .interaction
+            .selection_loop_start
+            .is_some_and(|(_, region)| {
+                self.state
+                    .as_ref()
+                    .and_then(|state| state.project.loop_region())
+                    != Some(region)
+            })
+        {
+            self.interaction.selection_loop_start = None;
         }
         if !event.project_replaced {
             self.retire_point_cursor_on_loop_enable(loop_was_enabled);
@@ -522,18 +536,22 @@ impl EditorView {
         }
         if event.project_replaced {
             self.settings.playback.pending = None;
-            self.loop_rail_gesture = None;
+            self.interaction.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
             self.midi_editor.hit_cycle = None;
             self.midi_editor.scene_cache.clear();
-            if let Ok(mut cache) = self.waveform_geometry_cache.try_borrow_mut() {
+            if let Ok(mut cache) = self
+                .timeline_caches
+                .waveform_geometry_cache
+                .try_borrow_mut()
+            {
                 cache.clear();
             }
             self.midi_editor.piano_beat_start = 0;
             self.midi_editor.piano_beat_span =
                 hex_project::BeatTime::from_raw(4 * hex_project::BeatTime::ONE.raw());
             self.project_generation = self.project_generation.saturating_add(1);
-            self.document_audio_mode = self
+            self.audio_pub.document_audio_mode = self
                 .persistence
                 .requested_audio_mode
                 .take()
@@ -545,10 +563,11 @@ impl EditorView {
                 })
                 .unwrap_or(hex_session::DocumentAudioMode::Resident);
             if self
+                .audio_pub
                 .pending_audio_result
                 .as_ref()
                 .is_some_and(|pending| pending.project_generation() <= self.project_generation)
-                && let Some(pending) = self.pending_audio_result.take()
+                && let Some(pending) = self.audio_pub.pending_audio_result.take()
             {
                 match pending {
                     PendingEditorAudioResult::Opened {
@@ -557,7 +576,7 @@ impl EditorView {
                         mut audio,
                     } if audio_event_disposition(
                         self.project_generation,
-                        self.pending_restart_request,
+                        self.audio_pub.pending_restart_request,
                         project_generation,
                         restart_request,
                     ) == AudioEventDisposition::Current =>
@@ -569,10 +588,10 @@ impl EditorView {
                             self.error =
                                 Some("waiting for previous audio outcomes · retry audio".into());
                         } else {
-                            self.document_audio_mode = audio.mode;
+                            self.audio_pub.document_audio_mode = audio.mode;
                             self.audio = Some(audio);
                         }
-                        self.pending_restart_request = None;
+                        self.audio_pub.pending_restart_request = None;
                     }
                     PendingEditorAudioResult::Unavailable {
                         project_generation,
@@ -580,7 +599,7 @@ impl EditorView {
                         error,
                     } if audio_event_disposition(
                         self.project_generation,
-                        self.pending_restart_request,
+                        self.audio_pub.pending_restart_request,
                         project_generation,
                         restart_request,
                     ) == AudioEventDisposition::Current =>
@@ -588,7 +607,7 @@ impl EditorView {
                         let message = crate::editor::audio_unavailable::unavailable_message(&error);
                         self.status = message.clone();
                         self.error = Some(message.into());
-                        self.pending_restart_request = None;
+                        self.audio_pub.pending_restart_request = None;
                     }
                     PendingEditorAudioResult::Rebound {
                         project_generation,
@@ -601,43 +620,44 @@ impl EditorView {
             }
             self.device_panel.gesture.reset();
             self.refuse_device_gesture_barriers("device load canceled · project replaced");
-            self.edit_cursor = None;
-            self.clip_drop_cursor_epoch = None;
-            self.locked_play_start = None;
-            self.locked_play_start_drag = None;
-            self.bottom_play_start_marker_bounds.set(None);
-            self.play_start_at_beginning = false;
-            self.escape_stop_armed = false;
-            self.loop_start_over_clip = None;
-            self.selection_loop_start = None;
-            self.clip_paint_gesture = None;
+            self.interaction.edit_cursor = None;
+            self.interaction.clip_drop_cursor_epoch = None;
+            self.interaction.locked_play_start = None;
+            self.interaction.locked_play_start_drag = None;
+            self.interaction.bottom_play_start_marker_bounds.set(None);
+            self.interaction.play_start_at_beginning = false;
+            self.interaction.escape_stop_armed = false;
+            self.interaction.loop_start_over_clip = None;
+            self.interaction.selection_loop_start = None;
+            self.interaction.clip_paint_gesture = None;
             self.cancel_section_pointer();
-            self.time_selection = None;
-            self.time_selection_project_scope = false;
-            self.time_selection_gesture = None;
-            self.time_range_move_gesture = None;
-            self.pending_time_range_move = None;
-            self.ahead_time_range_move = None;
-            self.suppress_cursor_click = false;
-            self.applied_project_revision = None;
-            self.playback_candidates
+            self.interaction.time_selection = None;
+            self.interaction.time_selection_project_scope = false;
+            self.interaction.time_selection_gesture = None;
+            self.interaction.time_range_move_gesture = None;
+            self.interaction.pending_time_range_move = None;
+            self.interaction.ahead_time_range_move = None;
+            self.interaction.suppress_cursor_click = false;
+            self.audio_pub.applied_project_revision = None;
+            self.audio_pub
+                .playback_candidates
                 .retain(|candidate| candidate.seek_request_id.is_some());
-            self.audible_playback = None;
-            self.pending_playback = None;
-            self.pending_resident_publication = None;
+            self.audio_pub.audible_playback = None;
+            self.audio_pub.pending_playback = None;
+            self.audio_pub.pending_resident_publication = None;
             self.clear_route_telemetry();
             self.device_panel.degraded_plugins = Default::default();
             self.device_panel.reloading_plugins.clear();
             self.device_panel.plugin_editor_windows.clear();
-            self.drag_lanes.clear();
-            self.track_drop_lanes.clear();
-            self.drag_lane_epochs.clear();
-            self.arrangement_bounds = None;
-            self.arrangement_bounds_epoch = 0;
-            self.main_track_lane_bounds = None;
-            self.main_track_lane_epoch = 0;
+            self.timeline_caches.drag_lanes.clear();
+            self.timeline_caches.track_drop_lanes.clear();
+            self.timeline_caches.drag_lane_epochs.clear();
+            self.timeline_caches.arrangement_bounds = None;
+            self.timeline_caches.arrangement_bounds_epoch = 0;
+            self.timeline_caches.main_track_lane_bounds = None;
+            self.timeline_caches.main_track_lane_epoch = 0;
             self.retire_active_clip_drag();
-            self.pointer_down = None;
+            self.interaction.pointer_down = None;
             // The document transaction owns transport and publication during
             // replacement. Reset the UI without revoking a staged effect endpoint.
             self.stop_transport(false);
@@ -675,10 +695,11 @@ impl EditorView {
                 // Worker updates must not replace an active range with a clip.
                 let range_owns_selection = self.selected_clip.is_none()
                     && self
+                        .interaction
                         .edit_cursor
                         .is_some_and(|cursor| cursor.generation == self.project_generation)
-                    && (self.time_selection_gesture.is_some()
-                        || self.time_range_move_gesture.is_some()
+                    && (self.interaction.time_selection_gesture.is_some()
+                        || self.interaction.time_range_move_gesture.is_some()
                         || self.normalized_time_selection().is_some());
                 let previous_primary = self.selected_clip;
                 (self.selected_track, self.selected_clip) =
@@ -780,11 +801,12 @@ impl EditorView {
                 self.midi_editor.group_gesture = None;
             }
         }
-        self.audio_admission
-            .canonical_revision(crate::editor::audio_admission::ProjectRevision {
+        self.audio_pub.audio_admission.canonical_revision(
+            crate::editor::audio_admission::ProjectRevision {
                 generation: self.project_generation,
                 revision,
-            });
+            },
+        );
         if let Some(completion) = track_clipboard_completion {
             self.complete_track_clipboard(completion);
         }
@@ -797,7 +819,7 @@ impl EditorView {
                     && self.mode == crate::editor::EditorMode::Session
                     && !self.persistence.opening_project
                     && !self.persistence.close_prompt_open
-                    && self.recovery.generation().is_none()
+                    && self.audio_pub.recovery.generation().is_none()
                     && self.session_grid.selected_scene == Some(intent.source_scene)
                     && self.session_grid.selected_cell.is_none()
                 {
@@ -819,7 +841,7 @@ impl EditorView {
             && clip_drop.as_ref().is_none_or(|(cursor, moved)| {
                 moved.is_none()
                     || cursor.track != track
-                    || self.selection_intent_epoch == Some(cursor.epoch)
+                    || self.interaction.selection_intent_epoch == Some(cursor.epoch)
             })
         {
             let moved_selection = self.selected_track == Some(track)
@@ -960,7 +982,7 @@ impl EditorView {
             }
         } else if let Some(ack) = event.gesture_ack.as_ref()
             && let Some(reason) = ack.reason.as_ref()
-            && !self.recovery.holds_stranded_gesture_for(ack.key)
+            && !self.audio_pub.recovery.holds_stranded_gesture_for(ack.key)
         {
             self.error = Some(reason.clone().into());
         }
@@ -1019,7 +1041,7 @@ impl EditorView {
             preview.identity.project_generation == self.project_generation
                 && preview.identity.canonical_revision == revision
         }) {
-            self.resident_tuning_preview = Some(hex_session::service::TuningPreview {
+            self.audio_pub.resident_tuning_preview = Some(hex_session::service::TuningPreview {
                 identity: preview.identity,
                 state: Arc::clone(&preview.state),
             });
@@ -1036,16 +1058,16 @@ impl EditorView {
                 });
         let mut stopped_restore_error = None;
         let event_playback = event.playback;
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming
             && event_playback.is_some()
         {
             self.error = Some("worker returned resident playback for verified streaming".into());
         }
-        if let Some(mut playback) = event_playback
-            .filter(|_| self.document_audio_mode == hex_session::DocumentAudioMode::Resident)
-        {
+        if let Some(mut playback) = event_playback.filter(|_| {
+            self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        }) {
             if event.stopped_playback_restore_complete {
-                self.stopped_playback_restore =
+                self.audio_pub.stopped_playback_restore =
                     Some(crate::editor::audio_admission::StoppedPlaybackRestore::Ready);
                 // Preserve the transient click toggle across the stopped reset.
                 // Voice/filter histories and the transport still start fresh.
@@ -1056,6 +1078,7 @@ impl EditorView {
                 }
             }
             let previous_reset = self
+                .audio_pub
                 .pending_playback
                 .as_ref()
                 .map(|pending| (pending.project_generation, pending.install_fresh_runtime));
@@ -1107,7 +1130,7 @@ impl EditorView {
                 self.project_generation,
                 previous_reset,
             );
-            self.pending_playback = Some(pending);
+            self.audio_pub.pending_playback = Some(pending);
         }
         if let Some(status) = event.status {
             self.status = status;

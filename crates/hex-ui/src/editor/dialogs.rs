@@ -86,7 +86,7 @@ impl EditorView {
             return;
         }
         if mode == hex_session::DocumentAudioMode::VerifiedStreaming
-            && self.source_reservation.is_none()
+            && self.audio_pub.source_reservation.is_none()
         {
             self.error = Some("verified streaming is unavailable".into());
             cx.notify();
@@ -203,7 +203,7 @@ impl EditorView {
         let (request, reservation) = match mode {
             hex_session::DocumentAudioMode::Resident => (Request::Open(path), None),
             hex_session::DocumentAudioMode::VerifiedStreaming => {
-                let Some(reservation) = self.source_reservation else {
+                let Some(reservation) = self.audio_pub.source_reservation else {
                     self.error = Some("verified streaming is unavailable".into());
                     return;
                 };
@@ -238,7 +238,7 @@ impl EditorView {
             return;
         }
         if mode == hex_session::DocumentAudioMode::VerifiedStreaming
-            && self.source_reservation.is_none()
+            && self.audio_pub.source_reservation.is_none()
         {
             self.error = Some("verified streaming is unavailable".into());
             return;
@@ -255,7 +255,7 @@ impl EditorView {
     }
 
     fn begin_new_project(&mut self, mode: hex_session::DocumentAudioMode) {
-        let Some(reservation) = self.source_reservation else {
+        let Some(reservation) = self.audio_pub.source_reservation else {
             if mode == hex_session::DocumentAudioMode::VerifiedStreaming {
                 self.error = Some("verified streaming is unavailable".into());
                 return;
@@ -291,8 +291,8 @@ impl EditorView {
         if self.enqueue(request) {
             self.persistence.requested_audio_mode = requested_mode;
             self.persistence.opening_project = true;
-            self.pending_audio_commands.clear();
-            self.pending_seek_ticket = None;
+            self.audio_pub.pending_audio_commands.clear();
+            self.audio_pub.pending_seek_ticket = None;
             self.session_grid.pending_session_ticket = None;
             self.play_intent.clear();
             self.status = "opening project · editing paused".into();

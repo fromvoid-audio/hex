@@ -432,7 +432,7 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
         assert_no_bodies(&mut f);
         f.editor.update(&mut f.visual, |view, cx| {
             if index == 0 {
-                let drag = view.active_trim_drag.as_ref().unwrap();
+                let drag = view.interaction.active_trim_drag.as_ref().unwrap();
                 assert_eq!(drag.clip.id(), clip);
                 assert!(drag.preview.borrow().as_ref().unwrap().clip.duration() < 96_000);
             } else {
@@ -512,7 +512,10 @@ fn compact_audio_and_midi_trim_edges_keep_title_and_exact_preview_until_cancel(
         });
         f.visual.run_until_parked();
         f.editor.read_with(&f.visual, |view, _| {
-            assert!(view.active_trim_drag.is_none() && view.midi_editor.active_trim_drag.is_none());
+            assert!(
+                view.interaction.active_trim_drag.is_none()
+                    && view.midi_editor.active_trim_drag.is_none()
+            );
             assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
             assert!(view.pending_requests.is_empty() && view.worker_requests_pending == 0);
         });
@@ -552,7 +555,11 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
         .simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
     f.visual.run_until_parked();
     let capture = f.editor.read_with(&f.visual, |view, _| {
-        let drag = view.active_clip_drag.as_ref().expect("mixed group drag");
+        let drag = view
+            .interaction
+            .active_clip_drag
+            .as_ref()
+            .expect("mixed group drag");
         assert_eq!(drag.group.borrow().ids, f.clips);
         assert_eq!(drag.group.borrow().previews().len(), 2);
         Rc::clone(&drag.group)
@@ -583,7 +590,7 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
     f.editor.read_with(&f.visual, |view, _| {
         assert!(Rc::ptr_eq(
             &capture,
-            &view.active_clip_drag.as_ref().unwrap().group
+            &view.interaction.active_clip_drag.as_ref().unwrap().group
         ))
     });
     f.visual.simulate_keystrokes("escape");
@@ -591,7 +598,7 @@ fn compact_mixed_group_drag_has_titles_without_bodies_and_preserves_capture(
         .simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     f.visual.run_until_parked();
     f.editor.read_with(&f.visual, |view, _| {
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
     });
 }
@@ -608,7 +615,7 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
     // Selection ownership is set directly; the move itself starts on its real
     // rendered handle and uses normal Option-copy routing.
     f.editor.update(&mut f.visual, |view, cx| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(f.tracks[0]),
             end_track: Some(f.tracks[1]),
             anchor_frame: 0,
@@ -636,7 +643,7 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
         assert!(display.copy_modifier);
         assert_eq!(display.source.tracks(), f.tracks);
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
-        assert!(view.active_clip_drag.is_none());
+        assert!(view.interaction.active_clip_drag.is_none());
     });
     for index in 0..2 {
         let name = if index == 0 {
@@ -681,7 +688,7 @@ fn compact_time_range_copy_projects_named_audio_and_midi_fragments_without_mutat
     f.visual.simulate_mouse_up(end, MouseButton::Left, option);
     f.visual.run_until_parked();
     f.editor.read_with(&f.visual, |view, _| {
-        assert!(view.time_range_move_gesture.is_none());
+        assert!(view.interaction.time_range_move_gesture.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
         assert!(view.pending_requests.is_empty() && view.worker_requests_pending == 0);
     });

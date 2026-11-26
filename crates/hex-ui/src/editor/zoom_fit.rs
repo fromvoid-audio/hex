@@ -408,7 +408,7 @@ impl EditorView {
             self.clear_retained_navigation();
             self.viewport = None;
         }
-        self.zoom_wheel_accum = 0.0;
+        self.interaction.zoom_wheel_accum = 0.0;
         true
     }
     pub(super) fn zoom_fit_button(

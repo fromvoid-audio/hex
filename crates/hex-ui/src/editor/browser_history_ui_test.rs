@@ -77,7 +77,7 @@ fn browser_history_toolbar_restores_source_without_preview_or_import(cx: &mut Te
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.section, BrowserSection::Instruments);
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
         assert!(view.browser.playback_path.is_none());
     });
 }
@@ -194,7 +194,7 @@ fn browser_history_restores_native_item_and_scroll_identity_without_focus_or_aud
         assert_eq!(view.browser.playback_generation,generation+1,"only cancellation, no replay");
         assert!(view.browser.playback_path.is_none());
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     }));
     // Restore again after deleting the exact selected item: deterministic clearing,
     // never a same-name or row-index substitute.
@@ -381,7 +381,7 @@ fn browser_history_same_name_rows_collection_and_queued_query_observer_keep_late
         assert_eq!(view.browser.section, BrowserSection::Projects);
         assert!(!view.browser.results_focused);
         assert!(view.pending_requests.is_empty());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
 }
 
@@ -418,7 +418,7 @@ fn browser_history_transition_clears_observed_preview_presentation(cx: &mut Test
         assert_eq!(view.status.as_str(), "sample preview stopped");
         assert!(view.browser.playback_pending.is_none());
         assert!(view.browser.playback_output.is_none());
-        assert!(view.pending_audio_commands.is_empty());
+        assert!(view.audio_pub.pending_audio_commands.is_empty());
     });
 }
 
@@ -566,7 +566,10 @@ fn browser_history_hidden_custom_home_music_never_restore_through_back_or_forwar
                 assert!(!view.browser_place_visible(&target));
                 assert!(view.browser.history.can_forward());
                 assert!(view.browser.playback_path.is_none());
-                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.pending_requests.is_empty()
+                        && view.audio_pub.pending_audio_commands.is_empty()
+                );
                 let state = view.state.as_ref().unwrap();
                 assert_eq!(state.project, before.project);
                 assert_eq!(
@@ -703,7 +706,9 @@ fn review_history_disabled_forward_preserves_the_live_query_transaction(cx: &mut
         "disabled click must not split typing into two history edits"
     );
     editor.read_with(visual, |view, _| {
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty())
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        )
     });
 }
 
@@ -733,7 +738,9 @@ fn review_history_type_delete_collapses_adjacent_location_before_next_edit(
     editor.read_with(visual, |view, _| {
         assert!(!view.browser.history.can_back());
         assert!(view.browser.history.can_forward());
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
     });
 }
 
@@ -768,7 +775,9 @@ fn review_history_enabled_arrow_leaves_search_before_following_typing(cx: &mut T
     );
     editor.read_with(visual, |view, _| {
         assert!(view.browser.playback_path.is_none());
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
     });
 }
 
@@ -866,7 +875,7 @@ fn review_history_waits_for_the_used_catalog_not_an_unrelated_scan(cx: &mut Test
         visual.run_until_parked();
         editor.read_with(visual, |view, cx| {
             assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == selected));
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty());
             assert!(view.browser.playback_path.is_none());
         });
     }
@@ -956,7 +965,7 @@ fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut
             let state = view.state.as_ref().unwrap();
             assert_eq!(state.project, before.project);
             assert_eq!((state.revision,state.can_undo,state.can_redo), (before.revision,before.can_undo,before.can_redo));
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty());
             assert!(view.browser.playback_path.is_none());
         });
         assert!(
@@ -1012,7 +1021,7 @@ fn review_readiness_obsolete_tree_worker_does_not_hold_saved_root(cx: &mut TestA
         assert!(view.browser.tree.test_worker_busy(), "physical ownership is retained");
         assert_eq!(view.browser.tree.requests_started, started, "no second worker");
         assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == saved), "obsolete worker blocked the already available saved root");
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty());
         assert!(view.browser.playback_path.is_none());
     });
     assert_eq!(visual.debug_bounds("browser-entry-0").unwrap().top(), top);
@@ -1099,7 +1108,7 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         let restored = editor.read_with(visual, |view, cx| {
             assert!(!view.browser.tree.test_worker_busy());
             assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == anchor));
-            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty());
             assert!(view.browser.playback_path.is_none());
             let entries = view.browser_visible_entries(cx);
             entries.iter().position(|entry| entry.path == anchor).unwrap()

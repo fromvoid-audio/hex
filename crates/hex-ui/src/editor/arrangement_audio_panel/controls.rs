@@ -1343,7 +1343,7 @@ mod ui_tests {
             // Verify VerifiedStreaming mode also sends held play-start auditions cleanly.
             if looping && accepted {
                 editor.update(&mut visual, |v, cx| {
-                    v.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
+                    v.audio_pub.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
                     v.audio.as_mut().unwrap().mode = DocumentAudioMode::VerifiedStreaming;
                     cx.notify();
                 });

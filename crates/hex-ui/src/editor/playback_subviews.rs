@@ -1219,16 +1219,16 @@ impl EditorView {
     /// so `EditorWindowRoot` renders `EditorView` uncached and GPUI keeps nested
     /// scene caches active without `window.refreshing`.
     pub(super) fn has_active_nested_cache_gesture(&self) -> bool {
-        self.active_clip_drag.is_some()
+        self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.arrangement_pan.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.arrangement_pan.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.time_selection_gesture.is_some()
-            || self.clip_paint_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.clip_paint_gesture.is_some()
     }
 
     /// True while a modal, popover, or floating drag ghost paints above the
@@ -1411,6 +1411,7 @@ impl EditorView {
     /// pins `PollCadence` awake at 60 Hz.
     pub(super) fn sync_edit_cursor_subview(&self, cx: &mut Context<Self>, notify: bool) -> bool {
         let cursor_color = self
+            .interaction
             .edit_cursor
             .map_or_else(|| theme::color(theme::PaletteRole::Text), |c| c.color());
         let locked_color = self.valid_locked_play_start().map_or_else(

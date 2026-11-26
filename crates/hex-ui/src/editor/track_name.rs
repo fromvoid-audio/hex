@@ -158,10 +158,10 @@ impl EditorView {
             || self.clip_name_edit.is_some()
             || self.track_resize_active()
             || self.track_reorder_active()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
         {
             self.error = Some("finish the current edit before removing tracks".into());
             return true;
@@ -308,10 +308,10 @@ impl EditorView {
             || self.edit_pending()
             || self.track_name.edit.is_some()
             || self.clip_name_edit.is_some()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
         {
             return;
         }

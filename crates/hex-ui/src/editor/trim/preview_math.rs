@@ -63,7 +63,7 @@ pub(in crate::editor) fn resize_pan_prefix<T: PartialEq>(
 }
 
 pub(in crate::editor) fn drag_admitted(view: &EditorView) -> bool {
-    view.pending_trim.is_none()
+    view.interaction.pending_trim.is_none()
         && trim_drag_admitted(
             view.persistence.opening_project,
             view.persistence.close_prompt_open,

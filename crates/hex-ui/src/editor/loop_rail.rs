@@ -87,15 +87,15 @@ impl EditorView {
             || self.persistence.close_prompt_open
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.arrangement_pan.is_some()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
+            || self.interaction.arrangement_pan.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
             || self.locked_play_start_drag_active()
             || modifiers.alt
             || modifiers.control
@@ -114,7 +114,7 @@ impl EditorView {
         if let Some(region) = region
             && let Some(mode) = region_edit_mode(region, viewport, bounds, x)
         {
-            self.loop_rail_gesture = Some(LoopRailGesture {
+            self.interaction.loop_rail_gesture = Some(LoopRailGesture {
                 generation: self.project_generation,
                 revision: state.revision,
                 loop_region: Some(region),
@@ -144,7 +144,7 @@ impl EditorView {
         ) else {
             return false;
         };
-        self.loop_rail_gesture = Some(LoopRailGesture {
+        self.interaction.loop_rail_gesture = Some(LoopRailGesture {
             generation: self.project_generation,
             revision: state.revision,
             loop_region: region,
@@ -170,7 +170,7 @@ impl EditorView {
         modifiers: Modifiers,
     ) -> bool {
         let x = f32::from(position.x);
-        let Some(mut gesture) = self.loop_rail_gesture.take() else {
+        let Some(mut gesture) = self.interaction.loop_rail_gesture.take() else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
@@ -198,7 +198,7 @@ impl EditorView {
             gesture.timeline_width,
             gesture.viewport,
         ) else {
-            self.loop_rail_gesture = Some(gesture);
+            self.interaction.loop_rail_gesture = Some(gesture);
             return false;
         };
         gesture.last_pointer = position;
@@ -214,14 +214,14 @@ impl EditorView {
             moved: gesture.moved,
         };
         if gesture.last_projection == Some(input) {
-            self.loop_rail_gesture = Some(gesture);
+            self.interaction.loop_rail_gesture = Some(gesture);
             return false;
         }
         gesture.last_projection = Some(input);
         let previous = gesture.preview;
         if let EditMode::Move { original, anchor } = gesture.mode {
             if !gesture.moved {
-                self.loop_rail_gesture = Some(gesture);
+                self.interaction.loop_rail_gesture = Some(gesture);
                 return false;
             }
             let delta = i128::from(frame) - i128::from(anchor);
@@ -251,7 +251,7 @@ impl EditorView {
                 .ok()
             });
             let changed = gesture.preview != previous;
-            self.loop_rail_gesture = Some(gesture);
+            self.interaction.loop_rail_gesture = Some(gesture);
             return changed;
         }
         let Some(frame) = snap_frame(
@@ -262,7 +262,7 @@ impl EditorView {
             gesture.timeline_width,
             modifiers.platform,
         ) else {
-            self.loop_rail_gesture = Some(gesture);
+            self.interaction.loop_rail_gesture = Some(gesture);
             return false;
         };
         gesture.preview = match gesture.mode {
@@ -285,7 +285,7 @@ impl EditorView {
             }
         };
         let changed = gesture.preview != previous;
-        self.loop_rail_gesture = Some(gesture);
+        self.interaction.loop_rail_gesture = Some(gesture);
         changed
     }
 
@@ -294,11 +294,11 @@ impl EditorView {
         position: gpui::Point<gpui::Pixels>,
         modifiers: Modifiers,
     ) -> bool {
-        if self.loop_rail_gesture.is_none() {
+        if self.interaction.loop_rail_gesture.is_none() {
             return false;
         }
         self.update_loop_rail_gesture(position, modifiers);
-        let Some(gesture) = self.loop_rail_gesture.take() else {
+        let Some(gesture) = self.interaction.loop_rail_gesture.take() else {
             return true;
         };
         let Some(state) = self.state.as_ref() else {
@@ -341,7 +341,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_loop_rail_gesture(&mut self) -> bool {
-        self.loop_rail_gesture.take().is_some()
+        self.interaction.loop_rail_gesture.take().is_some()
     }
 
     pub(super) fn refresh_loop_rail_modifiers(
@@ -352,7 +352,8 @@ impl EditorView {
         if !self.focus.is_focused(window) {
             return self.cancel_loop_rail_gesture();
         }
-        self.loop_rail_gesture
+        self.interaction
+            .loop_rail_gesture
             .is_some_and(|gesture| self.update_loop_rail_gesture(gesture.last_pointer, modifiers))
     }
 
@@ -374,7 +375,7 @@ impl EditorView {
 
 pub(super) fn displayed_region(view: &EditorView, state: &ViewState) -> Option<LoopRegion> {
     let current_region = state.project.loop_region();
-    let gesture = view.loop_rail_gesture.filter(|gesture| {
+    let gesture = view.interaction.loop_rail_gesture.filter(|gesture| {
         gesture.generation == view.project_generation
             && gesture.revision == state.revision
             && gesture.loop_region == state.project.loop_region()
@@ -406,7 +407,7 @@ pub(super) fn view(
                 .h_full()
                 .flex_1()
                 .min_w_0()
-                .cursor(view.loop_rail_cursor)
+                .cursor(view.interaction.loop_rail_cursor)
                 .tooltip(|_, cx| {
                     cx.new(|_| super::transport::MiniTooltip { kind: crate::tooltips::Kind::control("scope bar"),
                         description: "drag empty rail to set scope · drag scope bar to move · shift-click selects scope · shift-drag steps scope length · cmd-click toggles · cmd-drag is free".into(),
@@ -481,10 +482,10 @@ pub(super) fn view(
                                             } else {
                                                 CursorStyle::Crosshair
                                             };
-                                            if view.loop_rail_cursor == hover {
+                                            if view.interaction.loop_rail_cursor == hover {
                                                 return cancelled;
                                             }
-                                            view.loop_rail_cursor = hover;
+                                            view.interaction.loop_rail_cursor = hover;
                                             true
                                         });
                                         if hover {
@@ -493,7 +494,7 @@ pub(super) fn view(
                                         return;
                                     }
                                     let (owned, changed) = move_entity.update(cx, |view, _| {
-                                        let owned = view.loop_rail_gesture.is_some();
+                                        let owned = view.interaction.loop_rail_gesture.is_some();
                                         let changed = if view.focus.is_focused(window) {
                                             view.update_loop_rail_gesture(event.position, event.modifiers)
                                         } else {
@@ -635,7 +636,7 @@ pub(super) fn cancel_stale(
     revision: u64,
     loop_region: Option<LoopRegion>,
 ) -> bool {
-    if view.loop_rail_gesture.is_some_and(|gesture| {
+    if view.interaction.loop_rail_gesture.is_some_and(|gesture| {
         gesture.generation != generation
             || gesture.revision != revision
             || gesture.loop_region != loop_region

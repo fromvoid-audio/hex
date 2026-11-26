@@ -1002,7 +1002,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.prepared_seek = Some(pending);
+        view.audio_pub.prepared_seek = Some(pending);
         view.enqueue(Request::CompareDevice {
             owner: target,
             expected: DeviceVariant::A,
@@ -1028,7 +1028,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
         ))
     );
     editor.update(cx, |view, _| {
-        assert!(view.prepared_seek.as_ref().unwrap().cancelled);
+        assert!(view.audio_pub.prepared_seek.as_ref().unwrap().cancelled);
         view.audio = None;
     });
     backend.close();
@@ -1364,18 +1364,21 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         view.computer_keyboard.target = Some((0, state.revision, track));
         view.computer_keyboard.request_id = 1;
         assert!(view.computer_keyboard.key_down("a", false));
-        view.audio_admission.canonical_revision(ProjectRevision {
-            generation: 0,
-            revision: state.revision,
-        });
-        view.audio_admission.published(
+        view.audio_pub
+            .audio_admission
+            .canonical_revision(ProjectRevision {
+                generation: 0,
+                revision: state.revision,
+            });
+        view.audio_pub.audio_admission.published(
             ProjectRevision {
                 generation: 0,
                 revision: state.revision,
             },
             audio_revision,
         );
-        view.playback_candidates
+        view.audio_pub
+            .playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
                 clip_preview_identity: None,
                 worker_requires_preroll: None,
@@ -1408,9 +1411,12 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             assert_eq!(refused.state.revision, state.revision);
             assert!(refused.playback.is_none());
             view.receive(refused);
-            assert_eq!(view.playback_candidates[0].state.revision, state.revision);
             assert_eq!(
-                view.audio_admission.current().unwrap().state,
+                view.audio_pub.playback_candidates[0].state.revision,
+                state.revision
+            );
+            assert_eq!(
+                view.audio_pub.audio_admission.current().unwrap().state,
                 AdmissionState::Pending
             );
             assert_eq!(view.applied_project_revision(), None);
@@ -1508,7 +1514,10 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             view.receive(invalid);
             view.project_generation = 0;
             assert_eq!(view.state.as_ref().unwrap().revision, state.revision);
-            assert_eq!(view.playback_candidates[0].state.revision, state.revision);
+            assert_eq!(
+                view.audio_pub.playback_candidates[0].state.revision,
+                state.revision
+            );
             assert_eq!(
                 view.computer_keyboard.target,
                 Some((0, state.revision, track))
@@ -1538,16 +1547,22 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             &source
         ));
         assert!(Arc::ptr_eq(
-            view.playback_candidates[0]
+            view.audio_pub.playback_candidates[0]
                 .prepared_revision
                 .as_ref()
                 .unwrap(),
             &prepared
         ));
-        assert_eq!(view.playback_candidates[0].audio_revision, audio_revision);
-        assert_eq!(view.playback_candidates[0].state.revision, next.revision);
         assert_eq!(
-            view.audio_admission.current().unwrap().state,
+            view.audio_pub.playback_candidates[0].audio_revision,
+            audio_revision
+        );
+        assert_eq!(
+            view.audio_pub.playback_candidates[0].state.revision,
+            next.revision
+        );
+        assert_eq!(
+            view.audio_pub.audio_admission.current().unwrap().state,
             AdmissionState::Pending
         );
         assert_eq!(
@@ -1585,7 +1600,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         let current = view.state.as_ref().unwrap().clone();
         assert_eq!(view.applied_project_revision(), Some(current.revision));
         assert_eq!(
-            view.audio_admission.current().unwrap().state,
+            view.audio_pub.audio_admission.current().unwrap().state,
             AdmissionState::Applied
         );
         let pending = view.worker_requests_pending;
@@ -1618,17 +1633,17 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         }
         assert_eq!(view.applied_project_revision(), Some(next.revision));
         assert_eq!(
-            view.audio_admission.current().unwrap().state,
+            view.audio_pub.audio_admission.current().unwrap().state,
             AdmissionState::Applied
         );
         assert_eq!(
-            view.audio_admission.current().unwrap().audio_revision,
+            view.audio_pub.audio_admission.current().unwrap().audio_revision,
             Some(audio_revision)
         );
-        assert!(view.pending_playback.is_none());
+        assert!(view.audio_pub.pending_playback.is_none());
         assert_eq!(view.worker_requests_pending, pending);
         assert!(Arc::ptr_eq(
-            view.audible_playback
+            view.audio_pub.audible_playback
                 .as_ref()
                 .unwrap()
                 .prepared_revision
@@ -1646,7 +1661,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             assert!(Arc::ptr_eq(saved.state.canonical_audio_source.as_ref().unwrap(), &source));
             view.receive(saved);
             assert_eq!(view.applied_project_revision(), Some(next.revision));
-            assert_eq!(view.audio_admission.current().unwrap().audio_revision, Some(audio_revision));
+            assert_eq!(view.audio_pub.audio_admission.current().unwrap().audio_revision, Some(audio_revision));
             assert!(!keyboard.is_cancelled());
             assert!(view.computer_keyboard.held()[0].is_some());
         }
@@ -1660,7 +1675,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             },
             next.revision,
         );
-        assert!(view.pending_audio_commands.iter().any(|pending| matches!(pending.action,
+        assert!(view.audio_pub.pending_audio_commands.iter().any(|pending| matches!(pending.action,
             hex_engine::playback::PlaybackAction::LaunchAndPlay(hex_engine::SessionPlaybackCommand::LaunchSceneWithNoteChase { scene: target, note_chase: hex_engine::NoteChase::On, .. }) if target == scene)),
             "launch must queue exactly its actual scene: error={:?}", view.error);
         view.tick(cx); // The normal pump assigns the real command ticket.
@@ -1669,7 +1684,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         assert_eq!(view.worker_requests_pending, pending);
         view.stop();
         assert!(
-            view.stopped_playback_restore.is_none(),
+            view.audio_pub.stopped_playback_restore.is_none(),
             "Stop must not recompile equivalent canonical audio"
         );
         assert_eq!(view.worker_requests_pending, pending);
@@ -1708,7 +1723,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         let metadata_state = metadata_event.state.clone();
         view.receive(metadata_event); // Deliberately out of order: cannot skip its actual audio source.
         assert_eq!(view.state.as_ref().unwrap().revision, next.revision);
-        assert!(view.pending_playback.is_none());
+        assert!(view.audio_pub.pending_playback.is_none());
         view.receive(audio_event);
         assert_eq!(view.state.as_ref().unwrap().revision, audio_state.revision);
         view.service
@@ -1721,11 +1736,11 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             metadata_state.revision
         );
         assert_eq!(
-            view.pending_playback.as_ref().unwrap().project_revision,
+            view.audio_pub.pending_playback.as_ref().unwrap().project_revision,
             metadata_state.revision
         );
         assert!(Arc::ptr_eq(
-            view.pending_playback
+            view.audio_pub.pending_playback
                 .as_ref()
                 .unwrap()
                 .prepared_revision
@@ -1734,7 +1749,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
             &actual_prepared
         ));
         assert_eq!(
-            view.audio_admission.current().unwrap().state,
+            view.audio_pub.audio_admission.current().unwrap().state,
             AdmissionState::Pending
         );
         assert_eq!(
@@ -1757,7 +1772,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         assert_eq!(view.state.as_ref().unwrap().revision, later_state.revision);
         assert!(view.state.as_ref().unwrap().comparison_audio.is_none());
         assert_eq!(
-            view.pending_playback.as_ref().unwrap().project_revision,
+            view.audio_pub.pending_playback.as_ref().unwrap().project_revision,
             later_state.revision
         );
         view.audio = None;

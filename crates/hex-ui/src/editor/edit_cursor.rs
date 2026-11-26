@@ -121,11 +121,12 @@ impl EditCursor {
 
 impl EditorView {
     pub(super) fn valid_locked_play_start(&self) -> Option<EditCursor> {
-        if let Some(drag) = self.locked_play_start_drag
+        if let Some(drag) = self.interaction.locked_play_start_drag
             && matches!(drag.kind, LockedPlayStartDragKind::RulerPlace { .. })
             && self.locked_play_start_drag_valid(drag)
         {
             let mut cursor = self
+                .interaction
                 .locked_play_start
                 .filter(|cursor| self.cursor_is_current(*cursor))
                 .unwrap_or_else(|| EditCursor {
@@ -139,10 +140,11 @@ impl EditorView {
             cursor.frame = drag.preview_frame;
             return Some(cursor);
         }
-        self.locked_play_start
+        self.interaction
+            .locked_play_start
             .filter(|cursor| self.cursor_is_current(*cursor))
             .map(|mut cursor| {
-                if let Some(drag) = self.locked_play_start_drag
+                if let Some(drag) = self.interaction.locked_play_start_drag
                     && drag.moved
                     && matches!(drag.kind, LockedPlayStartDragKind::Marker { .. })
                     && self.locked_play_start_drag_valid(drag)
@@ -154,29 +156,29 @@ impl EditorView {
     }
 
     pub(super) fn locked_play_start_drag_active(&self) -> bool {
-        self.locked_play_start_drag.is_some()
+        self.interaction.locked_play_start_drag.is_some()
     }
 
     fn ruler_locked_play_start_drag_active(&self) -> bool {
-        self.locked_play_start_drag.is_some_and(|drag| {
+        self.interaction.locked_play_start_drag.is_some_and(|drag| {
             matches!(drag.kind, LockedPlayStartDragKind::RulerPlace { .. })
                 && self.locked_play_start_drag_valid(drag)
         })
     }
 
     pub(super) fn cancel_locked_play_start_drag(&mut self) -> bool {
-        self.locked_play_start_drag.take().is_some()
+        self.interaction.locked_play_start_drag.take().is_some()
     }
 
     pub(super) fn cancel_locked_play_start_drag_on_ruler_change(
         &mut self,
         bounds: Bounds<Pixels>,
     ) -> bool {
-        if self.locked_play_start_drag.is_some_and(|drag| {
+        if self.interaction.locked_play_start_drag.is_some_and(|drag| {
             drag.timeline_left != f32::from(bounds.origin.x)
                 || drag.timeline_width != f32::from(bounds.size.width)
         }) {
-            self.locked_play_start_drag = None;
+            self.interaction.locked_play_start_drag = None;
             return true;
         }
         false
@@ -223,23 +225,23 @@ impl EditorView {
             && !self.controller_input_is_open()
             && self.settings.missing_media.is_none()
             && !self.update_preparing()
-            && self.pointer_down.is_none()
+            && self.interaction.pointer_down.is_none()
             && !self.gain_lane.pointer_is_active()
             && !self.automation_view.devices.pointer_active()
             && !self.device_panel.project_spectrum.resize_is_active()
             && !self.audio_detail.detail_resize.is_active()
             && !self.device_panel.navigation.is_active()
-            && self.time_selection_gesture.is_none()
-            && self.time_range_move_gesture.is_none()
-            && self.arrangement_pan.is_none()
-            && self.active_clip_drag.is_none()
+            && self.interaction.time_selection_gesture.is_none()
+            && self.interaction.time_range_move_gesture.is_none()
+            && self.interaction.arrangement_pan.is_none()
+            && self.interaction.active_clip_drag.is_none()
             && self.browser.active_audio_drag.is_none()
             && self.device_panel.active_native_drag.is_none()
-            && self.active_trim_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
-            && self.active_fade_drag.is_none()
-            && self.clip_paint_gesture.is_none()
-            && self.loop_rail_gesture.is_none()
+            && self.interaction.active_fade_drag.is_none()
+            && self.interaction.clip_paint_gesture.is_none()
+            && self.interaction.loop_rail_gesture.is_none()
             && !self.locked_play_start_drag_active()
             && !self.scrub_active()
             && !self.track_resize_active()
@@ -248,20 +250,21 @@ impl EditorView {
     }
 
     fn play_start_marker_available(&self, cx: &Context<Self>) -> bool {
-        !self.play_start_at_beginning && self.play_start_interaction_available(cx)
+        !self.interaction.play_start_at_beginning && self.play_start_interaction_available(cx)
     }
 
     fn locked_play_start_drag_valid(&self, drag: LockedPlayStartDrag) -> bool {
         let kind_valid = match drag.kind {
             LockedPlayStartDragKind::Marker { .. } => {
-                !self.play_start_at_beginning
+                !self.interaction.play_start_at_beginning
                     && self
+                        .interaction
                         .locked_play_start
                         .is_some_and(|cursor| self.cursor_is_current(cursor))
             }
             LockedPlayStartDragKind::RulerPlace {
                 started_at_beginning,
-            } => self.play_start_at_beginning == started_at_beginning,
+            } => self.interaction.play_start_at_beginning == started_at_beginning,
         };
         kind_valid
             && self.mode == EditorMode::Arrangement
@@ -352,7 +355,7 @@ impl EditorView {
         ) else {
             return false;
         };
-        self.locked_play_start_drag = Some(LockedPlayStartDrag {
+        self.interaction.locked_play_start_drag = Some(LockedPlayStartDrag {
             generation: self.project_generation,
             viewport,
             timeline_left,
@@ -364,7 +367,7 @@ impl EditorView {
             moved: true,
             click_disqualified: true,
             kind: LockedPlayStartDragKind::RulerPlace {
-                started_at_beginning: self.play_start_at_beginning,
+                started_at_beginning: self.interaction.play_start_at_beginning,
             },
         });
         true
@@ -384,6 +387,7 @@ impl EditorView {
             return false;
         }
         let Some(locked) = self
+            .interaction
             .locked_play_start
             .filter(|cursor| self.cursor_is_current(*cursor))
         else {
@@ -401,7 +405,7 @@ impl EditorView {
             return false;
         }
         let viewport = self.visible_viewport(state.timeline_frames);
-        self.locked_play_start_drag = Some(LockedPlayStartDrag {
+        self.interaction.locked_play_start_drag = Some(LockedPlayStartDrag {
             generation: self.project_generation,
             viewport,
             timeline_left,
@@ -424,14 +428,14 @@ impl EditorView {
         position: Point<Pixels>,
         free: bool,
     ) -> bool {
-        let Some(mut drag) = self.locked_play_start_drag else {
+        let Some(mut drag) = self.interaction.locked_play_start_drag else {
             return false;
         };
         if !self.locked_play_start_drag_valid(drag)
             || !f32::from(position.x).is_finite()
             || !f32::from(position.y).is_finite()
         {
-            self.locked_play_start_drag = None;
+            self.interaction.locked_play_start_drag = None;
             return true;
         }
         let delta_x = f32::from(position.x - drag.pointer_down.x);
@@ -452,7 +456,7 @@ impl EditorView {
         {
             drag.preview_frame = frame;
         }
-        self.locked_play_start_drag = Some(drag);
+        self.interaction.locked_play_start_drag = Some(drag);
         drag.moved != was_moved || drag.preview_frame != previous_preview
     }
 
@@ -460,7 +464,7 @@ impl EditorView {
         &mut self,
         modifiers: Modifiers,
     ) -> bool {
-        let Some(drag) = self.locked_play_start_drag else {
+        let Some(drag) = self.interaction.locked_play_start_drag else {
             return false;
         };
         if !drag.moved {
@@ -474,11 +478,11 @@ impl EditorView {
         position: Point<Pixels>,
         modifiers: Modifiers,
     ) -> bool {
-        if self.locked_play_start_drag.is_none() {
+        if self.interaction.locked_play_start_drag.is_none() {
             return false;
         }
         let _ = self.update_locked_play_start_drag(position, modifiers.platform);
-        let Some(drag) = self.locked_play_start_drag.take() else {
+        let Some(drag) = self.interaction.locked_play_start_drag.take() else {
             return true;
         };
         if !self.locked_play_start_drag_valid(drag) {
@@ -486,19 +490,20 @@ impl EditorView {
         }
         match drag.kind {
             LockedPlayStartDragKind::RulerPlace { .. } => {
-                self.play_start_at_beginning = false;
-                self.escape_stop_armed = false;
+                self.interaction.play_start_at_beginning = false;
+                self.interaction.escape_stop_armed = false;
                 if let Some(locked) = self
+                    .interaction
                     .locked_play_start
                     .filter(|cursor| self.cursor_is_current(*cursor))
                 {
-                    self.locked_play_start = Some(EditCursor {
+                    self.interaction.locked_play_start = Some(EditCursor {
                         track: None,
                         frame: drag.preview_frame,
                         ..locked
                     });
                 } else {
-                    self.locked_play_start = Some(EditCursor {
+                    self.interaction.locked_play_start = Some(EditCursor {
                         track: None,
                         frame: drag.preview_frame,
                         generation: self.project_generation,
@@ -512,10 +517,10 @@ impl EditorView {
                 allow_unlock_on_click,
             } => {
                 if drag.moved {
-                    if let Some(locked) = self.locked_play_start.as_mut() {
+                    if let Some(locked) = self.interaction.locked_play_start.as_mut() {
                         locked.track = None;
                         locked.frame = drag.preview_frame;
-                        self.escape_stop_armed = false;
+                        self.interaction.escape_stop_armed = false;
                         return true;
                     }
                     return false;
@@ -524,7 +529,7 @@ impl EditorView {
                     && allow_unlock_on_click
                     && modifiers == Modifiers::default()
                 {
-                    self.locked_play_start = None;
+                    self.interaction.locked_play_start = None;
                     return true;
                 }
                 false
@@ -537,7 +542,7 @@ impl EditorView {
         position: Point<Pixels>,
         modifiers: Modifiers,
     ) -> bool {
-        if self.mode != EditorMode::Arrangement || self.play_start_at_beginning {
+        if self.mode != EditorMode::Arrangement || self.interaction.play_start_at_beginning {
             return false;
         }
         let modifiers_ok = if self.valid_locked_play_start().is_some() {
@@ -547,6 +552,7 @@ impl EditorView {
         };
         modifiers_ok
             && self
+                .interaction
                 .bottom_play_start_marker_bounds
                 .get()
                 .is_some_and(|bounds| bounds.contains(&position))
@@ -559,7 +565,8 @@ impl EditorView {
     }
 
     pub(super) fn project_point_cursor(&self) -> Option<EditCursor> {
-        self.edit_cursor
+        self.interaction
+            .edit_cursor
             .filter(|cursor| cursor.track.is_none() && self.cursor_is_current(*cursor))
     }
 
@@ -577,10 +584,11 @@ impl EditorView {
             let point = clip_start
                 .map(|frame| EditCursor::new(None, frame, self.project_generation))
                 .or_else(|| {
-                    self.edit_cursor
+                    self.interaction
+                        .edit_cursor
                         .filter(|cursor| self.cursor_is_current(*cursor))
                 });
-            self.locked_play_start = point.map(|point| EditCursor {
+            self.interaction.locked_play_start = point.map(|point| EditCursor {
                 pulse_color: theme::locked_time_position_marker_color(0.0),
                 pulse_started: Instant::now(),
                 ..point
@@ -601,7 +609,7 @@ impl EditorView {
         if !self.cursor_click_available() {
             return;
         }
-        let Some(lane) = self.drag_lanes.get(&track).copied() else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&track).copied() else {
             return;
         };
         if self
@@ -616,18 +624,18 @@ impl EditorView {
         };
         self.clear_automation_range();
         self.set_point_cursor(Some(track), frame);
-        self.time_selection = Some(TimeSelection {
+        self.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: frame,
             end_frame: frame,
         });
-        self.time_selection_project_scope = false;
+        self.interaction.time_selection_project_scope = false;
         let under_pointer = self.arrangement_clip_at(track, frame, self.selected_clip);
         let selected_clip_under_pointer =
             under_pointer.is_some() && under_pointer == self.selected_clip;
         self.select_lane_track(track);
-        self.edit_cursor_in_selected_clip =
+        self.interaction.edit_cursor_in_selected_clip =
             self.selected_clip.filter(|_| selected_clip_under_pointer);
         if under_pointer.is_none() {
             self.focus_track_details(window);
@@ -641,7 +649,7 @@ impl EditorView {
     }
 
     fn cursor_click_available(&mut self) -> bool {
-        if std::mem::take(&mut self.suppress_cursor_click) {
+        if std::mem::take(&mut self.interaction.suppress_cursor_click) {
             return false;
         }
         self.context_menu.is_none()
@@ -669,16 +677,16 @@ impl EditorView {
 
     fn set_point_cursor(&mut self, track: Option<TrackId>, frame: u64) {
         self.advance_selection_intent();
-        self.edit_cursor = Some(EditCursor::new(track, frame, self.project_generation));
-        self.loop_start_over_clip = None;
+        self.interaction.edit_cursor = Some(EditCursor::new(track, frame, self.project_generation));
+        self.interaction.loop_start_over_clip = None;
     }
 
     /// Make a locator the next stopped play start using ordinary point-cursor precedence.
     pub(super) fn place_locator_play_start(&mut self, frame: u64) {
         self.set_point_cursor(None, frame);
-        self.edit_cursor_in_selected_clip = None;
-        self.time_selection = None;
-        self.time_selection_project_scope = false;
+        self.interaction.edit_cursor_in_selected_clip = None;
+        self.interaction.time_selection = None;
+        self.interaction.time_selection_project_scope = false;
     }
 
     /// A held or released drag only paints a point. Commit its placement in
@@ -689,7 +697,7 @@ impl EditorView {
             || self.persistence.opening_project
             || self.persistence.close_prompt_open
             || self.project_generation != cursor.generation
-            || self.selection_intent_epoch != Some(cursor.epoch)
+            || self.interaction.selection_intent_epoch != Some(cursor.epoch)
             || self
                 .state
                 .as_ref()
@@ -703,22 +711,22 @@ impl EditorView {
         {
             self.select_arrangement_clip(cursor.track, clip);
         }
-        self.edit_cursor = Some(EditCursor::new(
+        self.interaction.edit_cursor = Some(EditCursor::new(
             Some(cursor.track),
             cursor.frame,
             cursor.generation,
         ));
-        self.time_selection = Some(TimeSelection {
+        self.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(cursor.track),
             end_track: Some(cursor.track),
             anchor_frame: cursor.frame,
             end_frame: cursor.frame,
         });
-        self.time_selection_project_scope = false;
+        self.interaction.time_selection_project_scope = false;
         // The grabbed clip's point also supersedes whole-rectangle selection.
-        self.edit_cursor_in_selected_clip = self.selected_clip;
-        self.clip_drop_cursor_epoch = self.selection_intent_epoch;
-        self.loop_start_over_clip = None;
+        self.interaction.edit_cursor_in_selected_clip = self.selected_clip;
+        self.interaction.clip_drop_cursor_epoch = self.interaction.selection_intent_epoch;
+        self.interaction.loop_start_over_clip = None;
     }
 
     pub(super) fn place_empty_arrangement_cursor(
@@ -744,23 +752,23 @@ impl EditorView {
                 .painted_arrangement_tail(f32::from(start.x), f32::from(start.y))
                 .is_none()
             || !self.cursor_click_available()
-            || self.time_selection_key_held
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.arrangement_pan.is_some()
+            || self.interaction.time_selection_key_held
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.arrangement_pan.is_some()
             || self.sections.held()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.scrub_active()
             || self.track_resize_active()
             || self.track_reorder_active()
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.clip_paint_gesture.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.clip_paint_gesture.is_some()
             || cx.has_active_drag()
             || super::device_panel::picker_is_open(self)
         {
@@ -772,9 +780,9 @@ impl EditorView {
         };
         self.clear_automation_range();
         self.set_point_cursor(None, frame);
-        self.edit_cursor_in_selected_clip = None;
-        self.time_selection = None;
-        self.time_selection_project_scope = false;
+        self.interaction.edit_cursor_in_selected_clip = None;
+        self.interaction.time_selection = None;
+        self.interaction.time_selection_project_scope = false;
         self.focus.focus(window);
         cx.notify();
     }
@@ -791,18 +799,19 @@ impl EditorView {
         if loop_was_enabled
             || !loop_enabled
             || self.pending_selection_loop_has_newer_intent()
-            || self.edit_cursor.is_none()
+            || self.interaction.edit_cursor.is_none()
             || self.normalized_time_selection().is_some()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
         {
             return;
         }
-        self.loop_start_over_clip = self.edit_cursor_in_selected_clip.take();
-        self.edit_cursor = None;
-        self.time_selection = None;
-        self.time_selection_project_scope = false;
-        self.suppress_cursor_click = false;
+        self.interaction.loop_start_over_clip =
+            self.interaction.edit_cursor_in_selected_clip.take();
+        self.interaction.edit_cursor = None;
+        self.interaction.time_selection = None;
+        self.interaction.time_selection_project_scope = false;
+        self.interaction.suppress_cursor_click = false;
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
@@ -814,13 +823,15 @@ impl EditorView {
     pub(super) fn tick_edit_cursor_detailed(&mut self, now: Instant) -> EditCursorTick {
         let mut structural_changed = false;
         if self
+            .interaction
             .locked_play_start
             .is_some_and(|cursor| !self.cursor_is_current(cursor))
         {
-            self.locked_play_start = None;
+            self.interaction.locked_play_start = None;
             structural_changed |= self.cancel_locked_play_start_drag();
         }
         if self
+            .interaction
             .locked_play_start_drag
             .is_some_and(|drag| !self.locked_play_start_drag_valid(drag))
         {
@@ -829,8 +840,8 @@ impl EditorView {
         if self.context_menu.is_some()
             || self.persistence.close_prompt_open
             || (self.mode != EditorMode::Arrangement
-                && (self.time_selection_gesture.is_some()
-                    || self.time_range_move_gesture.is_some()))
+                && (self.interaction.time_selection_gesture.is_some()
+                    || self.interaction.time_range_move_gesture.is_some()))
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
         {
@@ -842,25 +853,26 @@ impl EditorView {
         // The locked triangles can outlive the point cursor or coexist with
         // range endpoints. Update them together from one elapsed-time phase.
         let lock_pulse_changed = self.mode == EditorMode::Arrangement
-            && !self.play_start_at_beginning
+            && !self.interaction.play_start_at_beginning
             && self
+                .interaction
                 .locked_play_start
                 .as_mut()
                 .is_some_and(|locked| locked.pulse_locked_marker(now));
-        if self.time_selection_project_scope
+        if self.interaction.time_selection_project_scope
             && let Some(state) = &self.state
         {
             let tracks = state.project.tracks();
             let first = tracks.first().map(|track| track.id());
-            if let Some(cursor) = self.edit_cursor.as_mut() {
+            if let Some(cursor) = self.interaction.edit_cursor.as_mut() {
                 cursor.track = first;
             }
-            if let Some(selection) = self.time_selection.as_mut() {
+            if let Some(selection) = self.interaction.time_selection.as_mut() {
                 selection.anchor_track = first;
                 selection.end_track = tracks.last().map(|track| track.id());
             }
         }
-        let Some(cursor) = &mut self.edit_cursor else {
+        let Some(cursor) = &mut self.interaction.edit_cursor else {
             return EditCursorTick {
                 structural_changed: self.cancel_time_selection_gesture() || structural_changed,
                 pulse_changed: lock_pulse_changed,
@@ -871,18 +883,18 @@ impl EditorView {
             .as_ref()
             .is_none_or(|state| !cursor.is_current(self.project_generation, &state.project))
         {
-            self.edit_cursor = None;
-            self.time_selection = None;
-            self.time_selection_project_scope = false;
-            self.time_selection_gesture = None;
-            self.suppress_cursor_click = false;
+            self.interaction.edit_cursor = None;
+            self.interaction.time_selection = None;
+            self.interaction.time_selection_project_scope = false;
+            self.interaction.time_selection_gesture = None;
+            self.interaction.suppress_cursor_click = false;
             return EditCursorTick {
                 structural_changed: true,
                 pulse_changed: lock_pulse_changed,
             };
         }
-        if !self.time_selection_project_scope
-            && self.time_selection.is_some_and(|selection| {
+        if !self.interaction.time_selection_project_scope
+            && self.interaction.time_selection.is_some_and(|selection| {
                 self.state.as_ref().is_none_or(|state| {
                     [selection.anchor_track, selection.end_track]
                         .into_iter()
@@ -890,16 +902,17 @@ impl EditorView {
                 })
             })
         {
-            self.time_selection = None;
-            self.time_selection_project_scope = false;
-            self.time_selection_gesture = None;
-            self.suppress_cursor_click = false;
+            self.interaction.time_selection = None;
+            self.interaction.time_selection_project_scope = false;
+            self.interaction.time_selection_gesture = None;
+            self.interaction.suppress_cursor_click = false;
             return EditCursorTick {
                 structural_changed: true,
                 pulse_changed: lock_pulse_changed,
             };
         }
         if self
+            .interaction
             .time_selection
             .is_some_and(|selection| selection.anchor_frame != selection.end_frame)
         {
@@ -912,9 +925,10 @@ impl EditorView {
         // Its stale-source checks above still run; hidden point cursors need no pulse.
         // A point cursor hidden behind a rectangle play start needs no pulse either.
         let point_pulse_changed = self.mode == EditorMode::Arrangement
-            && !self.play_start_at_beginning
+            && !self.interaction.play_start_at_beginning
             && self.selected_arrangement_play_start().is_none()
             && self
+                .interaction
                 .edit_cursor
                 .as_mut()
                 .is_some_and(|cursor| cursor.pulse(now));
@@ -937,10 +951,11 @@ impl EditorView {
         use hex_widgets::{TimeMarkerEndpoint as Endpoint, time_position_marker};
         let locked = self.valid_locked_play_start();
         let cursor = self
+            .interaction
             .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation);
         let cursor = cursor.or(locked);
-        let reset = self.play_start_at_beginning
+        let reset = self.interaction.play_start_at_beginning
             && guide.is_none()
             && !self.ruler_locked_play_start_drag_active();
         let clip_editor_start =
@@ -958,14 +973,15 @@ impl EditorView {
             .or(guide)
             .or(reset.then_some(0))
             .or(clip_start)?;
-        let (start, end) = self
-            .time_selection
-            .map_or((cursor_frame, cursor_frame), |selection| {
-                (
-                    selection.anchor_frame.min(selection.end_frame),
-                    selection.anchor_frame.max(selection.end_frame),
-                )
-            });
+        let (start, end) =
+            self.interaction
+                .time_selection
+                .map_or((cursor_frame, cursor_frame), |selection| {
+                    (
+                        selection.anchor_frame.min(selection.end_frame),
+                        selection.anchor_frame.max(selection.end_frame),
+                    )
+                });
         let edge_name = match edge {
             hex_widgets::TimeMarkerEdge::Top => "top",
             hex_widgets::TimeMarkerEdge::Bottom => "bottom",
@@ -1068,6 +1084,7 @@ impl EditorView {
                                         if let Some(entity) = &bottom_entity {
                                             entity
                                                 .read(cx)
+                                                .interaction
                                                 .bottom_play_start_marker_bounds
                                                 .set(Some(bounds));
                                         }
@@ -1107,6 +1124,7 @@ impl EditorView {
                         move |bounds, _, _, cx| {
                             bounds_entity
                                 .read(cx)
+                                .interaction
                                 .bottom_play_start_marker_bounds
                                 .set(Some(bounds));
                         },
@@ -1137,10 +1155,15 @@ impl EditorView {
                                     (f32::from(event.position.x), f32::from(event.position.y));
                                 // Arrangement capture saw this press before the marker.
                                 // Discard its pending tail drag so the marker can claim it.
-                                if view.time_selection_gesture.as_ref().is_some_and(|gesture| {
-                                    !gesture.moved && gesture.tail_press == Some(point)
-                                }) {
-                                    view.time_selection_gesture = None;
+                                if view
+                                    .interaction
+                                    .time_selection_gesture
+                                    .as_ref()
+                                    .is_some_and(|gesture| {
+                                        !gesture.moved && gesture.tail_press == Some(point)
+                                    })
+                                {
+                                    view.interaction.time_selection_gesture = None;
                                 }
                                 if is_locked {
                                     if view.begin_locked_play_start_drag(
@@ -1206,7 +1229,7 @@ impl EditorView {
         clip_editor_start: Option<u64>,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        self.bottom_play_start_marker_bounds.set(None);
+        self.interaction.bottom_play_start_marker_bounds.set(None);
         let markers = self.edit_cursor_markers(
             viewport,
             hex_widgets::TimeMarkerEdge::Bottom,
@@ -1216,7 +1239,9 @@ impl EditorView {
         );
         let line = if guide.is_some() {
             None
-        } else if self.play_start_at_beginning && !self.ruler_locked_play_start_drag_active() {
+        } else if self.interaction.play_start_at_beginning
+            && !self.ruler_locked_play_start_drag_active()
+        {
             Some((
                 0,
                 theme::time_position_marker_color(),
@@ -1307,6 +1332,7 @@ impl EditorView {
         }
         if arranger_focused
             && self
+                .interaction
                 .time_selection
                 .is_some_and(|s| s.anchor_frame != s.end_frame)
         {
@@ -1319,6 +1345,7 @@ impl EditorView {
             return;
         }
         let Some(cursor) = self
+            .interaction
             .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation)
         else {
@@ -1328,7 +1355,7 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        if self.time_selection_project_scope {
+        if self.interaction.time_selection_project_scope {
             let tracks: Vec<_> = state
                 .project
                 .tracks()

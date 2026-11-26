@@ -264,7 +264,7 @@ impl EditorView {
             || !self.device_panel.gesture_barriers.is_empty()
             || self.device_panel.has_pending_draft(cx)
             || !self.pending_requests.is_empty()
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
             || self.audio_recorder.pending_commit_path.is_some()
@@ -311,7 +311,7 @@ impl EditorView {
             .snap_frame(state.project.tempo_map(), self.cursor_position())
             .map_err(|_| "sample insertion refused · cannot resolve input grid")?;
         let audition_timing = status.zip(transport_epoch).and_then(|(status, epoch)| {
-            (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            (self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
                 && status.playing.load(Acquire)
                 && status.transport_epoch.load(Acquire) == epoch)
                 .then_some(BrowserAuditionTiming {
@@ -343,7 +343,7 @@ impl EditorView {
     ) -> Option<BrowserAuditionTiming> {
         let timing = captured?;
         let status = self.audio_status()?;
-        (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        (self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && status.playing.load(Acquire)
             && status.transport_epoch.load(Acquire) == timing.transport_epoch)
             .then_some(timing)

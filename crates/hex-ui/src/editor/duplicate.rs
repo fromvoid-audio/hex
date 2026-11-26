@@ -104,9 +104,9 @@ impl EditorView {
     fn duplicate_selection_current(&self, pending: &Pending) -> bool {
         pending.active
             && pending.generation == self.project_generation
-            && self.selection_intent_epoch == Some(pending.selection_epoch)
+            && self.interaction.selection_intent_epoch == Some(pending.selection_epoch)
             && !self.persistence.opening_project
-            && self.recovery.generation().is_none()
+            && self.audio_pub.recovery.generation().is_none()
             && match (&pending.target, self.duplicate_target()) {
                 (
                     Target::Arrangement { clips, primary },
@@ -176,7 +176,7 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        let Some(selection_epoch) = self.selection_intent_epoch else {
+        let Some(selection_epoch) = self.interaction.selection_intent_epoch else {
             self.error = Some(
                 "selection intent exhausted · reopen the editor before duplicating clips".into(),
             );

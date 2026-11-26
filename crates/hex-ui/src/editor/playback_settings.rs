@@ -84,8 +84,8 @@ impl EditorView {
 
     pub(super) fn queue_normal_start(&mut self, start: Start) {
         self.settings.playback.pending = None;
-        self.deferred_toggle_play = None;
-        self.deferred_metadata_seek = None;
+        self.audio_pub.deferred_toggle_play = None;
+        self.audio_pub.deferred_metadata_seek = None;
         let source = match &start {
             Start::Source { source, .. } => self
                 .start_source_is_current(&start, *source)
@@ -100,9 +100,11 @@ impl EditorView {
             } => self
                 .committed_locator_seek_source_is_current(*source)
                 .then_some(StartSource::Applied(*source)),
-            Start::Play { .. } if self.recovery.generation().is_some() => {
-                self.recovery.generation().map(StartSource::Recovery)
-            }
+            Start::Play { .. } if self.audio_pub.recovery.generation().is_some() => self
+                .audio_pub
+                .recovery
+                .generation()
+                .map(StartSource::Recovery),
             _ => self.normal_start_source().map(StartSource::Applied),
         };
         let source = source.or_else(|| {
@@ -111,7 +113,10 @@ impl EditorView {
             {
                 // Open stopped recovery only. Raw auto-Play must not race the settings load.
                 self.recover_audio_at(*frame);
-                self.recovery.generation().map(StartSource::Recovery)
+                self.audio_pub
+                    .recovery
+                    .generation()
+                    .map(StartSource::Recovery)
             } else {
                 None
             }
@@ -124,7 +129,7 @@ impl EditorView {
             }
             if !self.settings.playback.loading && self.paused_republish_blocks_play() {
                 let note_chase = self.settings.playback.policy();
-                self.deferred_play = Some((
+                self.audio_pub.deferred_play = Some((
                     hex_engine::PlaybackAction::Transport(
                         hex_engine::PlaybackCommand::PlayFromWithNoteChase {
                             frame: *frame,
@@ -160,7 +165,7 @@ impl EditorView {
             note_chase: (!self.settings.playback.loading).then(|| self.settings.playback.policy()),
             start,
         };
-        self.deferred_play = None;
+        self.audio_pub.deferred_play = None;
         if self.settings.playback.loading {
             if matches!(pending.source, StartSource::Applied(_)) {
                 self.cancel_section_launch_wait();
@@ -175,9 +180,9 @@ impl EditorView {
     }
 
     pub(super) fn normal_start_source(&self) -> Option<AppliedAudioSource> {
-        if self.recovery.generation().is_some()
-            || self.stopped_playback_restore.is_some()
-            || !self.pending_audio_commands.is_empty()
+        if self.audio_pub.recovery.generation().is_some()
+            || self.audio_pub.stopped_playback_restore.is_some()
+            || !self.audio_pub.pending_audio_commands.is_empty()
         {
             return None;
         }
@@ -215,9 +220,9 @@ impl EditorView {
                 source: expected, ..
             } => {
                 *expected == source
-                    && self.pending_audio_commands.is_empty()
-                    && self.stopped_playback_restore.is_none()
-                    && self.recovery.generation().is_none()
+                    && self.audio_pub.pending_audio_commands.is_empty()
+                    && self.audio_pub.stopped_playback_restore.is_none()
+                    && self.audio_pub.recovery.generation().is_none()
                     && (self.normal_start_source() == Some(source)
                         || self.section_copy_play_source() == Some(source)
                         || self.locator_play_source() == Some(source))
@@ -254,7 +259,9 @@ impl EditorView {
             {
                 source
             }
-            StartSource::Recovery(generation) if self.recovery.generation() == Some(generation) => {
+            StartSource::Recovery(generation)
+                if self.audio_pub.recovery.generation() == Some(generation) =>
+            {
                 self.settings.playback.pending = Some(pending);
                 self.status = "restarting audio output · playback starts when ready".into();
                 return;

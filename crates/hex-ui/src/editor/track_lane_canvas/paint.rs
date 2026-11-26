@@ -37,7 +37,8 @@ impl TrackLaneCanvas {
         if !snapshot_matches {
             return;
         }
-        view.arrangement_clip_index
+        view.timeline_caches
+            .arrangement_clip_index
             .borrow_mut()
             .ensure_current(view.project_generation, &self.snapshot);
         let Some(track) = self
@@ -50,7 +51,7 @@ impl TrackLaneCanvas {
             return;
         };
 
-        let index_ref = view.arrangement_clip_index.borrow();
+        let index_ref = view.timeline_caches.arrangement_clip_index.borrow();
         let Some(track_index_data) = index_ref.track(self.track_id) else {
             return;
         };
@@ -58,6 +59,7 @@ impl TrackLaneCanvas {
         let track_height = view.track_height(self.track_id);
         let track_body_height = view.track_body_height(self.track_id);
         let hovered_clip = view
+            .interaction
             .hovered_arrangement_clip
             .filter(|h| h.generation == view.project_generation && h.track == self.track_id)
             .map(|h| h.clip);
@@ -70,9 +72,9 @@ impl TrackLaneCanvas {
         #[cfg(feature = "ui-test-support")]
         let edge_trim_h = trim::edge_trim_height(lane_height);
         #[cfg(feature = "ui-test-support")]
-        let fade_key_held = view.fade_key_held;
+        let fade_key_held = view.interaction.fade_key_held;
         #[cfg(feature = "ui-test-support")]
-        let time_selection_key_held = view.time_selection_key_held;
+        let time_selection_key_held = view.interaction.time_selection_key_held;
         let rem_size = f32::from(window.rem_size());
         let font_size = px(rem_size * 0.75);
         let line_height = px(super::super::clip_name::CLIP_NAME_HEIGHT);
@@ -527,7 +529,7 @@ impl TrackLaneCanvas {
             });
         }
 
-        let title_cache_rc = Rc::clone(&view.clip_title_cache);
+        let title_cache_rc = Rc::clone(&view.timeline_caches.clip_title_cache);
         let mut missing_labels: Vec<(&'static str, Bounds<Pixels>)> = Vec::new();
         let mut alias_flags: Vec<bool> = Vec::with_capacity(wide_clips.len());
         for clip in &wide_clips {
@@ -569,7 +571,7 @@ impl TrackLaneCanvas {
                             &mapping,
                             clip.visible_start,
                             clip.visible_end,
-                            &view.waveform_geometry_cache,
+                            &view.timeline_caches.waveform_geometry_cache,
                             waveform_grid,
                             clip.waveform_ink,
                             clip.active,

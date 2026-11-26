@@ -78,7 +78,8 @@ impl EditorView {
             .iter()
             .chain(self.device_panel.gesture_barriers.iter())
             .chain(
-                self.recovery
+                self.audio_pub
+                    .recovery
                     .deferred_edit
                     .as_ref()
                     .map(|edit| edit.request.as_ref()),

@@ -180,7 +180,7 @@ fn assert_verified_effect_replacement(cx: &mut TestAppContext, owner: VerifiedEf
     });
     wait_for_plugin_scan(&mut visual, &editor);
     editor.update(&mut visual, |view, cx| {
-        view.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
+        view.audio_pub.document_audio_mode = DocumentAudioMode::VerifiedStreaming;
         match destination {
             PluginEffectDestination::ReplaceMainEffect { .. } => {
                 view.device_panel.main_selected = Some(view.project_generation);
@@ -347,7 +347,7 @@ fn browser_result_rows_use_compact_native_text_and_keep_selected_hover(cx: &mut 
             );
         }
         editor.read_with(&visual, |view, _| {
-            assert!(view.pending_audio_commands.is_empty())
+            assert!(view.audio_pub.pending_audio_commands.is_empty())
         });
     }
 }
@@ -696,7 +696,9 @@ fn browser_vst3_restores_searchable_typed_rows_and_enter_refuses_unavailable_inv
     });
     visual.simulate_keystrokes("enter");
     editor.read_with(&visual, |view, _| {
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
         assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(
             view.error.is_some(),
@@ -1214,7 +1216,9 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
     editor.read_with(&visual, |view, cx| {
         assert_eq!(view.browser.section, BrowserSection::Plugins);
         assert!(view.browser_visible_plugins(cx).is_empty());
-        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(
+            view.pending_requests.is_empty() && view.audio_pub.pending_audio_commands.is_empty()
+        );
         assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(
             !view.browser.plugins.busy,

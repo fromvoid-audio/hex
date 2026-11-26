@@ -365,7 +365,9 @@ fn narrow_audio_and_midi_clips_paint_as_joined_color_bars(cx: &mut TestAppContex
             .any(|(_, fill)| { *fill == gpui::rgb(selected).into() })
     );
 
-    let lane_width = editor.read_with(&visual, |view, _| view.drag_lanes[&track].width);
+    let lane_width = editor.read_with(&visual, |view, _| {
+        view.timeline_caches.drag_lanes[&track].width
+    });
     let notes = Box::leak(format!("clip-notes-{}", midi.value()).into_boxed_str());
     for (width, shows_detail) in [(8.0, false), (14.0, true), (8.0, false), (36.0, true)] {
         let length = (200.0 * lane_width / width).round() as u64;
@@ -487,7 +489,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     );
     // The outer row reserves its right divider; frame projection uses the
     // independently captured inner timeline width.
-    let timeline = editor.read_with(&visual, |view, _| view.drag_lanes[&track]);
+    let timeline = editor.read_with(&visual, |view, _| view.timeline_caches.drag_lanes[&track]);
     assert!(
         (f32::from(bounds[4].right()) - (timeline.left + timeline.width)).abs() < 0.1,
         "right clipped clip ends at viewport"
@@ -652,7 +654,7 @@ fn selected_audio_midi_borders_cover_visible_bounds_and_restore_each_member(
     assert!(visual.debug_bounds("trim-live-preview").is_none());
     assert_eq!(visual.debug_bounds(selectors[2]), Some(bounds[2]));
     editor.read_with(&visual, |view, _| {
-        assert!(view.active_trim_drag.is_none());
+        assert!(view.interaction.active_trim_drag.is_none());
         assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
         assert!(view.test_probes.last_enqueued_edit.is_none());
     });
@@ -966,7 +968,7 @@ fn all_four_clip_edges_paint_above_actual_row_separator_without_geometry_changes
                 lane.left(),
                 "left clipped selection edge visible"
             );
-            let timeline = editor.read_with(&visual, |v, _| v.drag_lanes[&track]);
+            let timeline = editor.read_with(&visual, |v, _| v.timeline_caches.drag_lanes[&track]);
             assert!(
                 (f32::from(bounds[4].right()) - (timeline.left + timeline.width)).abs() < 0.1,
                 "right clipped selection edge visible"

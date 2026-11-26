@@ -210,7 +210,9 @@ fn arrangement_waveform_scale_toggle_is_view_local_and_checked(cx: &mut TestAppC
             let position = gpui::point(px(400.0), px(100.0));
             let generation = view.project_generation;
             assert_eq!(
-                view.waveform_geometry_cache.amplitude_scale(),
+                view.timeline_caches
+                    .waveform_geometry_cache
+                    .amplitude_scale(),
                 WaveformAmplitudeScale::Linear
             );
             view.open_arranger_grid_context_menu(position, window, cx);
@@ -232,7 +234,9 @@ fn arrangement_waveform_scale_toggle_is_view_local_and_checked(cx: &mut TestAppC
                 cx,
             );
             assert_eq!(
-                view.waveform_geometry_cache.amplitude_scale(),
+                view.timeline_caches
+                    .waveform_geometry_cache
+                    .amplitude_scale(),
                 WaveformAmplitudeScale::Decibel
             );
             assert_eq!(
@@ -258,7 +262,9 @@ fn arrangement_waveform_scale_toggle_is_view_local_and_checked(cx: &mut TestAppC
                 cx,
             );
             assert_eq!(
-                view.waveform_geometry_cache.amplitude_scale(),
+                view.timeline_caches
+                    .waveform_geometry_cache
+                    .amplitude_scale(),
                 WaveformAmplitudeScale::Linear
             );
         });

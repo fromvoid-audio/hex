@@ -46,7 +46,12 @@ impl EditorView {
             return false;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
-        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+        let Some(lane) = self
+            .timeline_caches
+            .drag_lanes
+            .get(&drag.source_track)
+            .copied()
+        else {
             return false;
         };
         if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
@@ -103,7 +108,10 @@ impl EditorView {
             self.project_generation,
             state,
             self.visible_viewport(state.timeline_frames),
-            self.drag_lanes.get(&drag.source_track).copied(),
+            self.timeline_caches
+                .drag_lanes
+                .get(&drag.source_track)
+                .copied(),
         )
     }
 
@@ -121,7 +129,7 @@ impl EditorView {
             return;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
-        let Some(lane) = self.drag_lanes.get(&target_track).copied() else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&target_track).copied() else {
             return;
         };
         if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
@@ -173,7 +181,7 @@ impl EditorView {
         let Some(command) = ResizeCommand::from_request(&request) else {
             return;
         };
-        self.pending_trim = Some(PendingTrim {
+        self.interaction.pending_trim = Some(PendingTrim {
             replayed: false,
             generation: drag.project_generation,
             revision: drag.revision,
@@ -188,7 +196,7 @@ impl EditorView {
         });
         let accepted = self.enqueue(request);
         if !accepted {
-            self.pending_trim = None;
+            self.interaction.pending_trim = None;
         }
         self.retire_trim_gesture(!accepted, cx);
         cx.notify();
@@ -205,7 +213,8 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> bool {
         if event.button != MouseButton::Left
-            || (self.active_trim_drag.is_none() && self.midi_editor.active_trim_drag.is_none())
+            || (self.interaction.active_trim_drag.is_none()
+                && self.midi_editor.active_trim_drag.is_none())
         {
             return false;
         }
@@ -218,7 +227,7 @@ impl EditorView {
             self.cancel_trim_gesture(cx);
             return true;
         }
-        if let Some(drag) = self.active_trim_drag.clone() {
+        if let Some(drag) = self.interaction.active_trim_drag.clone() {
             drag.snap_modifier.set(event.modifiers.platform);
             drag.stretch_modifier.set(event.modifiers.shift);
             let pointer = retained_timeline_pointer(
@@ -264,7 +273,11 @@ impl EditorView {
         next: Viewport,
     ) -> Option<Viewport> {
         let state = self.state.as_ref()?;
-        let lane = self.drag_lanes.get(&drag.source_track).copied()?;
+        let lane = self
+            .timeline_caches
+            .drag_lanes
+            .get(&drag.source_track)
+            .copied()?;
         let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
             let pointer_frame = frame_at_x(x, lane, viewport)?;
@@ -294,7 +307,11 @@ impl EditorView {
         next: Viewport,
     ) -> Option<Viewport> {
         let state = self.state.as_ref()?;
-        let lane = self.drag_lanes.get(&drag.source_track).copied()?;
+        let lane = self
+            .timeline_caches
+            .drag_lanes
+            .get(&drag.source_track)
+            .copied()?;
         let delta = (*drag.grab_delta.borrow())?;
         let candidate = |viewport| {
             let beat = midi_pointer_beat(&state.project, x, lane, viewport)?;
@@ -330,7 +347,7 @@ impl EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        if let Some(drag) = &self.active_trim_drag {
+        if let Some(drag) = &self.interaction.active_trim_drag {
             let viewport = drag.scroll.get().viewport?;
             if self.viewport == Some(viewport)
                 && payload_is_current(
@@ -338,7 +355,10 @@ impl EditorView {
                     self.project_generation,
                     state,
                     viewport,
-                    self.drag_lanes.get(&drag.source_track).copied(),
+                    self.timeline_caches
+                        .drag_lanes
+                        .get(&drag.source_track)
+                        .copied(),
                 )
             {
                 return viewport.end();
@@ -352,7 +372,10 @@ impl EditorView {
                     self.project_generation,
                     state,
                     viewport,
-                    self.drag_lanes.get(&drag.source_track).copied(),
+                    self.timeline_caches
+                        .drag_lanes
+                        .get(&drag.source_track)
+                        .copied(),
                 )
             {
                 return viewport.end();
@@ -373,7 +396,10 @@ impl EditorView {
             self.project_generation,
             state,
             self.visible_viewport(state.timeline_frames),
-            self.drag_lanes.get(&drag.source_track).copied(),
+            self.timeline_caches
+                .drag_lanes
+                .get(&drag.source_track)
+                .copied(),
         )
     }
 
@@ -397,7 +423,7 @@ impl EditorView {
             return;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
-        let Some(lane) = self.drag_lanes.get(&target_track).copied() else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&target_track).copied() else {
             return;
         };
         if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
@@ -458,7 +484,7 @@ impl EditorView {
         let Some(command) = ResizeCommand::from_request(&request) else {
             return;
         };
-        self.pending_trim = Some(PendingTrim {
+        self.interaction.pending_trim = Some(PendingTrim {
             replayed: false,
             generation: drag.project_generation,
             revision: drag.revision,
@@ -475,7 +501,7 @@ impl EditorView {
         self.service.finish_arrangement_stretch_audition();
         let accepted = self.enqueue(request);
         if !accepted {
-            self.pending_trim = None;
+            self.interaction.pending_trim = None;
         }
         self.retire_trim_gesture(!accepted, cx);
         cx.notify();

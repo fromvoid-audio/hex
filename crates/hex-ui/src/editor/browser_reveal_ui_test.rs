@@ -51,7 +51,7 @@ fn browser_reveal_scrolls_both_directions_and_preserves_sample_and_audition(
                 view.browser.preview_preparations,
                 view.browser.search.read(cx).text().to_owned(),
                 view.pending_requests.len(),
-                view.pending_audio_commands.len(),
+                view.audio_pub.pending_audio_commands.len(),
             )
         });
         click_reveal(visual);
@@ -74,7 +74,7 @@ fn browser_reveal_scrolls_both_directions_and_preserves_sample_and_audition(
                             view.browser.preview_preparations,
                             view.browser.search.read(cx).text().to_owned(),
                             view.pending_requests.len(),
-                            view.pending_audio_commands.len()
+                            view.audio_pub.pending_audio_commands.len()
                         ),
                         before
                     );

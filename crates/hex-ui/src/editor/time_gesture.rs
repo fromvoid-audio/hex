@@ -7,21 +7,29 @@ use std::time::Instant;
 impl EditorView {
     pub(super) fn refresh_time_gesture_modifiers(&mut self, free: bool, copy: bool) -> bool {
         let mut changed = false;
-        let selection_pointer = self.time_selection_gesture.as_mut().map(|gesture| {
-            if gesture.free_modifier != free {
-                gesture.free_modifier = free;
-                changed = true;
-            }
-            (gesture.pointer_x, gesture.pointer_y, gesture.free_modifier)
-        });
-        let range_pointer = self.time_range_move_gesture.as_mut().map(|gesture| {
-            if gesture.free_modifier != free || gesture.copy_modifier != copy {
-                gesture.free_modifier = free;
-                gesture.copy_modifier = copy;
-                changed = true;
-            }
-            (gesture.pointer_x, gesture.pointer_y, gesture.free_modifier)
-        });
+        let selection_pointer = self
+            .interaction
+            .time_selection_gesture
+            .as_mut()
+            .map(|gesture| {
+                if gesture.free_modifier != free {
+                    gesture.free_modifier = free;
+                    changed = true;
+                }
+                (gesture.pointer_x, gesture.pointer_y, gesture.free_modifier)
+            });
+        let range_pointer = self
+            .interaction
+            .time_range_move_gesture
+            .as_mut()
+            .map(|gesture| {
+                if gesture.free_modifier != free || gesture.copy_modifier != copy {
+                    gesture.free_modifier = free;
+                    gesture.copy_modifier = copy;
+                    changed = true;
+                }
+                (gesture.pointer_x, gesture.pointer_y, gesture.free_modifier)
+            });
         if let Some((x, y, free)) = selection_pointer {
             changed |= self.update_time_selection_gesture(x, y, free);
         }
@@ -33,10 +41,13 @@ impl EditorView {
 
     pub(super) fn tick_time_gesture_autoscroll(&mut self, now: Instant) -> bool {
         // Idle maintenance must not cancel a completed, persistent time range.
-        if self.time_selection_gesture.is_none() && self.time_range_move_gesture.is_none() {
+        if self.interaction.time_selection_gesture.is_none()
+            && self.interaction.time_range_move_gesture.is_none()
+        {
             return false;
         }
         let pending_tail = self
+            .interaction
             .time_selection_gesture
             .is_some_and(|gesture| gesture.tail_press.is_some() && !gesture.moved);
         let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames) else {
@@ -44,7 +55,7 @@ impl EditorView {
         };
         if !self.time_gesture_is_current() {
             if pending_tail {
-                self.time_selection_gesture = None;
+                self.interaction.time_selection_gesture = None;
             } else {
                 self.cancel_time_selection_gesture();
             }
@@ -54,11 +65,13 @@ impl EditorView {
             return false;
         }
         let Some((x, y, last_tick)) = self
+            .interaction
             .time_range_move_gesture
             .as_ref()
             .map(|gesture| (gesture.pointer_x, gesture.pointer_y, gesture.last_tick))
             .or_else(|| {
-                self.time_selection_gesture
+                self.interaction
+                    .time_selection_gesture
                     .as_ref()
                     .map(|gesture| (gesture.pointer_x, gesture.pointer_y, gesture.last_tick))
             })
@@ -67,8 +80,8 @@ impl EditorView {
         };
         let Some((_, lane)) = self.time_gesture_lane_near_y(y) else {
             update_last_tick(
-                &mut self.time_selection_gesture,
-                &mut self.time_range_move_gesture,
+                &mut self.interaction.time_selection_gesture,
+                &mut self.interaction.time_range_move_gesture,
                 now,
             );
             return false;
@@ -81,8 +94,8 @@ impl EditorView {
             .as_secs_f64()
             .min(0.05);
         update_last_tick(
-            &mut self.time_selection_gesture,
-            &mut self.time_range_move_gesture,
+            &mut self.interaction.time_selection_gesture,
+            &mut self.interaction.time_range_move_gesture,
             now,
         );
         if edge == 0 || elapsed == 0.0 || viewport.length == 0 {
@@ -97,12 +110,14 @@ impl EditorView {
         }
         self.viewport = (next != Viewport::fit(horizon)).then_some(next);
         if let Some((x, y, free)) = self
+            .interaction
             .time_range_move_gesture
             .as_ref()
             .map(|gesture| (gesture.pointer_x, gesture.pointer_y, gesture.free_modifier))
         {
             self.update_time_range_move_gesture(x, y, free);
         } else if let Some((x, y, free)) = self
+            .interaction
             .time_selection_gesture
             .as_ref()
             .map(|gesture| (gesture.pointer_x, gesture.pointer_y, gesture.free_modifier))
@@ -116,6 +131,7 @@ impl EditorView {
     /// even when the pointer leaves it or regular lanes have different widths.
     pub(super) fn time_gesture_lane_near_y(&self, y: f32) -> Option<(Option<TrackId>, LaneBounds)> {
         if let Some(gesture) = self
+            .interaction
             .time_selection_gesture
             .filter(|g| g.tail_press.is_some())
         {
@@ -124,12 +140,15 @@ impl EditorView {
                 self.painted_arrangement_timeline()?,
             ));
         }
-        if !self.time_selection_project_scope {
+        if !self.interaction.time_selection_project_scope {
             return self
                 .visible_lane_near_y(y)
                 .map(|(track, lane)| (Some(track), lane));
         }
-        if !y.is_finite() || self.main_track_lane_epoch != self.drag_layout_generation {
+        if !y.is_finite()
+            || self.timeline_caches.main_track_lane_epoch
+                != self.timeline_caches.drag_layout_generation
+        {
             return None;
         }
         let track = self
@@ -139,7 +158,7 @@ impl EditorView {
             .tracks()
             .last()
             .map(|track| track.id());
-        let lane = self.main_track_lane_bounds.filter(|lane| {
+        let lane = self.timeline_caches.main_track_lane_bounds.filter(|lane| {
             lane.left.is_finite()
                 && lane.width.is_finite()
                 && lane.width > 0.0
@@ -155,10 +174,12 @@ impl EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        self.drag_lanes
+        self.timeline_caches
+            .drag_lanes
             .iter()
             .filter(|(track, lane)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                self.timeline_caches.drag_lane_epochs.get(track)
+                    == Some(&self.timeline_caches.drag_layout_generation)
                     && state.project.track(**track).is_some()
                     && lane.top.is_finite()
                     && lane.height.is_finite()
@@ -181,14 +202,23 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let has_gesture =
-            self.time_selection_gesture.is_some() || self.time_range_move_gesture.is_some();
-        let selection_current = self.time_selection_gesture.as_ref().is_none_or(|gesture| {
-            gesture.generation == self.project_generation && gesture.revision == state.revision
-        });
-        let range_current = self.time_range_move_gesture.as_ref().is_none_or(|gesture| {
-            gesture.generation == self.project_generation && gesture.revision == state.revision
-        });
+        let has_gesture = self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some();
+        let selection_current =
+            self.interaction
+                .time_selection_gesture
+                .as_ref()
+                .is_none_or(|gesture| {
+                    gesture.generation == self.project_generation
+                        && gesture.revision == state.revision
+                });
+        let range_current = self
+            .interaction
+            .time_range_move_gesture
+            .as_ref()
+            .is_none_or(|gesture| {
+                gesture.generation == self.project_generation && gesture.revision == state.revision
+            });
         let current = has_gesture && selection_current && range_current;
         current
             && self.mode == super::EditorMode::Arrangement
@@ -197,11 +227,11 @@ impl EditorView {
             && !self.persistence.close_prompt_open
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
-            && self.active_clip_drag.is_none()
+            && self.interaction.active_clip_drag.is_none()
             && self.browser.active_audio_drag.is_none()
             && self.device_panel.active_native_drag.is_none()
-            && self.active_trim_drag.is_none()
-            && self.active_fade_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
+            && self.interaction.active_fade_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
     }
 }

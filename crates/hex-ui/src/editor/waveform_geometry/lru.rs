@@ -431,7 +431,8 @@ pub(in crate::editor) fn painted_clip_waveform_outline(
         Box::leak(format!("clip-visual-{}", clip.value()).into_boxed_str());
     let clip_bounds = visual.debug_bounds(selector).expect("painted clip");
     editor.read_with(visual, |view, _| {
-        view.waveform_geometry_cache
+        view.timeline_caches
+            .waveform_geometry_cache
             .borrow()
             .painted_waveforms()
             .iter()

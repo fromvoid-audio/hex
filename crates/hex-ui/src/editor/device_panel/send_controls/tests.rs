@@ -86,11 +86,11 @@ fn verified_send_entry_and_owner_finalization_keep_single_edit_history(cx: &mut 
         assert_eq!(view.state.as_ref().unwrap().revision, initial_revision + 2);
         assert!(view.device_panel.gesture.snapshot().is_none());
         assert!(
-            view.audible_playback.is_none(),
+            view.audio_pub.audible_playback.is_none(),
             "no resident preview fallback"
         );
         assert_eq!(
-            view.document_audio_mode,
+            view.audio_pub.document_audio_mode,
             DocumentAudioMode::VerifiedStreaming
         );
         let project = &view.state.as_ref().unwrap().project;
@@ -149,7 +149,7 @@ fn verified_send_refuses_held_preview_and_busy_entry_restoring_canonical(cx: &mu
                 .is_some_and(|s| s.contains("resident"))
         );
         assert!(view.device_panel.gesture.snapshot().is_none());
-        assert!(view.audible_playback.is_none());
+        assert!(view.audio_pub.audible_playback.is_none());
         assert_eq!(gain(view, track, return_track), 0.0);
     });
     let field_id = Box::leak(

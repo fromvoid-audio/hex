@@ -200,7 +200,7 @@ fn toggles_display_the_requested_state_while_the_real_response_is_held(cx: &mut 
                 v.state.as_ref().unwrap().project.loop_region(),
                 Some(expected)
             );
-            assert!(v.pending_loop.is_none());
+            assert!(v.interaction.pending_loop.is_none());
         });
     }
 
@@ -267,7 +267,7 @@ fn stale_toolbar_toggle_refusal_preserves_clear_history_and_repaints(cx: &mut Te
     install(&editor, &mut visual, refused);
     assert_loop_paint(&mut visual, None, "failed toggle installed repaint");
     editor.read_with(&visual, |v, _| {
-        assert!(v.pending_loop.is_none());
+        assert!(v.interaction.pending_loop.is_none());
         assert_eq!(v.worker_requests_pending, 0);
         assert_eq!(v.state.as_ref().unwrap().project.loop_region(), None);
         assert_eq!(v.state.as_ref().unwrap().can_undo, cleared.state.can_undo);
@@ -337,7 +337,7 @@ fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut Test
     assert!((f32::from(held_guides[1].left() - held.right())).abs() < 1.0);
     assert_ne!(held, old_paint);
     let expected = editor.read_with(&visual, |v, _| {
-        v.loop_rail_gesture.unwrap().preview.unwrap()
+        v.interaction.loop_rail_gesture.unwrap().preview.unwrap()
     });
     assert_eq!(expected, LoopRegion::new(96_000, 192_000, false).unwrap());
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
@@ -371,7 +371,7 @@ fn replacement_loop_stays_painted_until_its_real_response_installs(cx: &mut Test
             v.state.as_ref().unwrap().project.loop_region(),
             Some(expected)
         );
-        assert!(v.loop_rail_gesture.is_none());
+        assert!(v.interaction.loop_rail_gesture.is_none());
         assert_eq!(v.worker_requests_pending, 0);
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
@@ -407,7 +407,9 @@ fn begin_paint(
     visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(visual, |v, _| assert!(v.loop_rail_gesture.is_some()));
+    editor.read_with(visual, |v, _| {
+        assert!(v.interaction.loop_rail_gesture.is_some())
+    });
     painted_range(visual)
 }
 #[gpui::test]
@@ -432,11 +434,13 @@ fn earlier_success_and_refusal_ack_do_not_retire_loop_replacement(cx: &mut TestA
         install(&editor, &mut visual, earlier);
         assert_eq!(painted_range(&mut visual), held);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.pending_loop.unwrap().remaining, Some(1))
+            assert_eq!(v.interaction.pending_loop.unwrap().remaining, Some(1))
         });
         install(&editor, &mut visual, own);
         assert_eq!(painted_range(&mut visual), held);
-        editor.read_with(&visual, |v, _| assert!(v.pending_loop.is_none()));
+        editor.read_with(&visual, |v, _| {
+            assert!(v.interaction.pending_loop.is_none())
+        });
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -460,7 +464,7 @@ fn deferred_loop_is_stamped_only_when_the_real_request_is_submitted(cx: &mut Tes
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.pending_requests.len(), 2);
         assert_eq!(v.worker_requests_pending, 0);
-        assert!(v.pending_loop.unwrap().remaining.is_none());
+        assert!(v.interaction.pending_loop.unwrap().remaining.is_none());
     });
     assert_eq!(painted_range(&mut visual), held);
     editor.update(&mut visual, |v, cx| {
@@ -468,7 +472,7 @@ fn deferred_loop_is_stamped_only_when_the_real_request_is_submitted(cx: &mut Tes
         cx.notify();
     });
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.pending_loop.unwrap().remaining, Some(2))
+        assert_eq!(v.interaction.pending_loop.unwrap().remaining, Some(2))
     });
     let earlier = hold_real_response(&editor, &mut visual);
     let own = hold_real_response(&editor, &mut visual);
@@ -477,7 +481,9 @@ fn deferred_loop_is_stamped_only_when_the_real_request_is_submitted(cx: &mut Tes
     assert_eq!(painted_range(&mut visual), held);
     install(&editor, &mut visual, own);
     assert_eq!(painted_range(&mut visual), held);
-    editor.read_with(&visual, |v, _| assert!(v.pending_loop.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.interaction.pending_loop.is_none())
+    });
 }
 #[gpui::test]
 fn queue_refusal_restores_real_old_paint_without_inserting_loop_history(cx: &mut TestAppContext) {
@@ -503,7 +509,7 @@ fn queue_refusal_restores_real_old_paint_without_inserting_loop_history(cx: &mut
                 .to_string()
                 .contains("request queue full")
         );
-        assert!(v.pending_loop.is_none() && v.loop_rail_gesture.is_none());
+        assert!(v.interaction.pending_loop.is_none() && v.interaction.loop_rail_gesture.is_none());
         assert_eq!(v.pending_requests.len(), crate::editor::UI_REQUEST_CAPACITY);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
@@ -547,10 +553,10 @@ fn escape_button_loss_and_focus_loss_cancel_held_loop_without_a_request(cx: &mut
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
             assert!(
-                v.loop_rail_gesture.is_none(),
+                v.interaction.loop_rail_gesture.is_none(),
                 "actual cancellation mode {cancel}"
             );
-            assert!(v.pending_loop.is_none() && v.pending_requests.is_empty());
+            assert!(v.interaction.pending_loop.is_none() && v.pending_requests.is_empty());
             assert_eq!(v.worker_requests_pending, 0);
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         });
@@ -583,7 +589,9 @@ fn active_loop_retires_on_real_revision_or_document_replacement(cx: &mut TestApp
         });
         pump(&editor, &mut visual);
         let expected = editor.read_with(&visual, |v, _| {
-            assert!(v.loop_rail_gesture.is_none() && v.pending_loop.is_none());
+            assert!(
+                v.interaction.loop_rail_gesture.is_none() && v.interaction.pending_loop.is_none()
+            );
             v.state.as_ref().unwrap().project.snapshot()
         });
         let end = rail_point(&mut visual, 0.5);
@@ -625,7 +633,8 @@ fn reverse_free_final_release_and_repeated_replacement_keep_exact_worker_geometr
             // No final MouseMove: the MouseUp resolver must use its real final x/modifier.
             visual.simulate_mouse_up(final_point, MouseButton::Left, modifiers);
             visual.run_until_parked();
-            let expected = editor.read_with(&visual, |v, _| v.pending_loop.unwrap().region);
+            let expected =
+                editor.read_with(&visual, |v, _| v.interaction.pending_loop.unwrap().region);
             let submitted_paint = painted_range(&mut visual);
             let response = hold_real_response(&editor, &mut visual);
             assert!(response.error.is_none(), "{:?}", response.error);
@@ -666,7 +675,7 @@ fn reverse_free_final_release_and_repeated_replacement_keep_exact_worker_geometr
                     v.state.as_ref().unwrap().project.loop_region(),
                     Some(expected)
                 );
-                assert!(v.pending_loop.is_none());
+                assert!(v.interaction.pending_loop.is_none());
             });
         }
     }
@@ -689,7 +698,7 @@ fn another_paint_while_deferred_keeps_the_original_pending_intent(cx: &mut TestA
     visual.simulate_mouse_move(other, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(other, MouseButton::Left, Modifiers::default());
     editor.read_with(&visual, |v, _| {
-        assert!(v.loop_rail_gesture.is_none());
+        assert!(v.interaction.loop_rail_gesture.is_none());
         assert_eq!(v.pending_requests.len(), 2);
     });
     assert_eq!(painted_range(&mut visual), held);
@@ -701,9 +710,13 @@ fn another_paint_while_deferred_keeps_the_original_pending_intent(cx: &mut TestA
     let own = hold_real_response(&editor, &mut visual);
     assert!(before.error.is_none() && own.error.is_none());
     install(&editor, &mut visual, before);
-    editor.read_with(&visual, |v, _| assert!(v.pending_loop.is_some()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.interaction.pending_loop.is_some())
+    });
     assert_eq!(painted_range(&mut visual), held);
     install(&editor, &mut visual, own);
-    editor.read_with(&visual, |v, _| assert!(v.pending_loop.is_none()));
+    editor.read_with(&visual, |v, _| {
+        assert!(v.interaction.pending_loop.is_none())
+    });
     assert_eq!(painted_range(&mut visual), held);
 }

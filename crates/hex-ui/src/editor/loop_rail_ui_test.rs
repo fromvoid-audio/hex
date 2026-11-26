@@ -140,7 +140,7 @@ fn wait_for_loop(
             state.map(|state| state.revision),
             view.error.clone(),
             view.status.clone(),
-            view.loop_rail_gesture.is_some(),
+            view.interaction.loop_rail_gesture.is_some(),
         )
     });
     panic!("loop command did not publish expected project revision: {observed:?}");
@@ -172,7 +172,10 @@ fn loop_rail_paint_previews_then_commits_adaptive_grid_range_disabled(cx: &mut T
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(view.state.as_ref().unwrap().project.loop_region().is_none());
-        assert!(view.loop_rail_gesture.is_some(), "drag owns the rail");
+        assert!(
+            view.interaction.loop_rail_gesture.is_some(),
+            "drag owns the rail"
+        );
     });
     assert!(visual.debug_bounds("loop-rail-range").is_some());
 
@@ -218,7 +221,10 @@ fn command_drag_uses_free_frames_and_zoomed_panned_coordinates(cx: &mut TestAppC
         ..Modifiers::default()
     };
     let expected = editor.read_with(cx, |view, _| {
-        let lane = view.arrangement_bounds.expect("arrangement bounds");
+        let lane = view
+            .timeline_caches
+            .arrangement_bounds
+            .expect("arrangement bounds");
         let left = lane.left;
         let width = lane.width - view.track_header_width();
         let state = view.state.as_ref().unwrap();
@@ -257,11 +263,11 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.loop_rail_gesture.is_some(),
+            view.interaction.loop_rail_gesture.is_some(),
             "captured loop gesture continues"
         );
         assert!(
-            view.time_selection_gesture.is_none(),
+            view.interaction.time_selection_gesture.is_none(),
             "lane selection stays idle"
         );
     });
@@ -272,8 +278,8 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
     visual.run_until_parked();
     assert_eq!(visual.debug_bounds("loop-rail-range"), Some(prior_range));
     editor.read_with(&visual, |view, _| {
-        assert!(view.loop_rail_gesture.is_some());
-        assert!(view.time_selection_gesture.is_none());
+        assert!(view.interaction.loop_rail_gesture.is_some());
+        assert!(view.interaction.time_selection_gesture.is_none());
         assert_eq!(view.track_row_builds, prior_builds);
     });
     visual.simulate_mouse_up(vertical, MouseButton::Left, Modifiers::default());
@@ -412,7 +418,10 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.loop_rail_gesture.is_none(), "stale preview is retired");
+        assert!(
+            view.interaction.loop_rail_gesture.is_none(),
+            "stale preview is retired"
+        );
         assert_eq!(
             view.state.as_ref().unwrap().project.loop_region(),
             Some(LoopRegion::new(144_000, 240_000, true).unwrap()),
@@ -450,7 +459,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.loop_rail_gesture.is_none(),
+            view.interaction.loop_rail_gesture.is_none(),
             "revision change retires preview"
         );
         assert_eq!(
@@ -473,13 +482,13 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
                 length: 120_000,
             });
             let first = view.state.as_ref().unwrap().project.tracks()[0].id();
-            view.time_selection = Some(super::time_selection::TimeSelection {
+            view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                 anchor_track: Some(first),
                 end_track: Some(first),
                 anchor_frame: 111,
                 end_frame: 222,
             });
-            view.time_selection_project_scope = false;
+            view.interaction.time_selection_project_scope = false;
             view.test_probes.last_enqueued_edit = None;
             cx.notify();
         });
@@ -517,7 +526,7 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
                     .map(|track| track.id())
                     .collect::<Vec<_>>()
             );
-            assert!(view.time_selection_project_scope);
+            assert!(view.interaction.time_selection_project_scope);
             assert_eq!(view.state.as_ref().unwrap().project, before.project);
             assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
             assert_eq!(
@@ -529,12 +538,12 @@ fn shift_click_extent_loop_bar_uses_exact_unquantized_bounds_without_transport_o
             );
             assert!(view.test_probes.last_enqueued_edit.is_none());
             assert!(
-                view.pending_audio_commands.is_empty()
-                    && view.prepared_seek.is_none()
-                    && view.latched_seek_intent.is_none()
+                view.audio_pub.pending_audio_commands.is_empty()
+                    && view.audio_pub.prepared_seek.is_none()
+                    && view.audio_pub.latched_seek_intent.is_none()
             );
             assert_eq!(view.worker_requests_pending, 0);
-            assert!(view.loop_rail_gesture.is_none());
+            assert!(view.interaction.loop_rail_gesture.is_none());
         });
     }
 }
@@ -566,13 +575,15 @@ fn shift_click_extent_keeps_shift_drag_steps_and_one_loop_history_edge(cx: &mut 
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert!(
-            view.time_selection.is_none(),
+            view.interaction.time_selection.is_none(),
             "drag must not turn into a click selection"
         )
     });
     visual.simulate_mouse_up(to, MouseButton::Left, shift);
     wait_for_loop(cx, handle, &editor, Some((192_000, 240_000, true)));
-    editor.read_with(cx, |view, _| assert!(view.time_selection.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.interaction.time_selection.is_none())
+    });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     wait_for_loop(cx, handle, &editor, Some((96_000, 144_000, true)));
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
@@ -605,7 +616,7 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
             assert!(view.normalized_time_selection().is_none());
             assert_eq!(view.state.as_ref().unwrap().project, before.project);
             assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
-            assert!(view.pending_audio_commands.is_empty());
+            assert!(view.audio_pub.pending_audio_commands.is_empty());
             assert_eq!(view.worker_requests_pending, 0);
         });
     }
@@ -614,16 +625,16 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
     editor.update(cx, |view, _| {
         let state = view.state.as_ref().unwrap().clone();
         let first = state.project.tracks()[0].id();
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(first),
             end_track: Some(first),
             anchor_frame: 111,
             end_frame: 222,
         });
         let before = (
-            view.time_selection,
-            view.time_selection_project_scope,
-            view.selection_intent_epoch,
+            view.interaction.time_selection,
+            view.interaction.time_selection_project_scope,
+            view.interaction.selection_intent_epoch,
         );
         let generation = view.project_generation;
         for (start, end, captured_generation, captured_revision) in [
@@ -640,9 +651,9 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
             ));
             assert_eq!(
                 (
-                    view.time_selection,
-                    view.time_selection_project_scope,
-                    view.selection_intent_epoch
+                    view.interaction.time_selection,
+                    view.interaction.time_selection_project_scope,
+                    view.interaction.selection_intent_epoch
                 ),
                 before
             );
@@ -652,9 +663,9 @@ fn shift_click_extent_refuses_empty_missing_stale_and_owned_context_without_side
         view.persistence.save_dialog_open = false;
         assert_eq!(
             (
-                view.time_selection,
-                view.time_selection_project_scope,
-                view.selection_intent_epoch
+                view.interaction.time_selection,
+                view.interaction.time_selection_project_scope,
+                view.interaction.selection_intent_epoch
             ),
             before
         );
@@ -677,7 +688,9 @@ fn shift_click_extent_command_chord_preserves_the_existing_loop_toggle(cx: &mut 
     visual.simulate_mouse_down(at, MouseButton::Left, chord);
     visual.simulate_mouse_up(at, MouseButton::Left, chord);
     wait_for_loop(cx, handle, &editor, Some((96_000, 144_000, true)));
-    editor.read_with(cx, |view, _| assert!(view.time_selection.is_none()));
+    editor.read_with(cx, |view, _| {
+        assert!(view.interaction.time_selection.is_none())
+    });
     editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
     wait_for_loop(cx, handle, &editor, Some((96_000, 144_000, false)));
 }

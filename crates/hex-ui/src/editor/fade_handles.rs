@@ -130,7 +130,7 @@ impl EditorView {
                             ) {
                                 cx.stop_propagation();
                             }
-                            if view.active_fade_drag.is_some() {
+                            if view.interaction.active_fade_drag.is_some() {
                                 view.update_fade_gesture(
                                     event.position,
                                     event.modifiers.platform,
@@ -178,7 +178,7 @@ impl EditorView {
         if self.audio_detail.focus.is_focused(window) {
             return self.event_fade_key_down(event, window, cx);
         }
-        if event.keystroke.key == "escape" && self.active_fade_drag.take().is_some() {
+        if event.keystroke.key == "escape" && self.interaction.active_fade_drag.take().is_some() {
             cx.stop_propagation();
             cx.notify();
             return true;
@@ -199,17 +199,17 @@ impl EditorView {
         {
             return false;
         }
-        if !event.is_held && !self.fade_key_held {
-            self.fade_key_held = true;
+        if !event.is_held && !self.interaction.fade_key_held {
+            self.interaction.fade_key_held = true;
             cx.notify();
         }
         cx.stop_propagation();
         true
     }
     pub(super) fn cancel_fade_gesture(&mut self, cx: &mut Context<Self>) {
-        let removed = self.active_fade_drag.take().is_some();
-        let changed = self.fade_key_held || removed;
-        self.fade_key_held = false;
+        let removed = self.interaction.active_fade_drag.take().is_some();
+        let changed = self.interaction.fade_key_held || removed;
+        self.interaction.fade_key_held = false;
         if changed {
             cx.notify();
         }
@@ -217,9 +217,9 @@ impl EditorView {
     fn fade_drag_current(&self, drag: &FadeDrag) -> bool {
         self.mode == super::EditorMode::Arrangement
             && self.drag_available()
-            && self.clip_paint_gesture.is_none()
-            && self.active_clip_drag.is_none()
-            && self.active_trim_drag.is_none()
+            && self.interaction.clip_paint_gesture.is_none()
+            && self.interaction.active_clip_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
@@ -229,7 +229,7 @@ impl EditorView {
             && self.state.as_ref().is_some_and(|state| {
                 self.project_generation == drag.generation
                     && state.revision == drag.revision
-                    && self.drag_lanes.contains_key(&drag.track)
+                    && self.timeline_caches.drag_lanes.contains_key(&drag.track)
                     && state.project.clip(drag.clip.id()) == Some(drag.clip.as_ref())
             })
     }
@@ -247,9 +247,10 @@ impl EditorView {
         }
         let target = (generation, clip);
         let over_body = self.track_height(track) > super::track_layout::HEADER_ONLY_HEIGHT
-            && self.drag_lane_epochs.get(&track) == Some(&self.drag_layout_generation)
+            && self.timeline_caches.drag_lane_epochs.get(&track)
+                == Some(&self.timeline_caches.drag_layout_generation)
             && pointer_y
-                .zip(self.drag_lanes.get(&track))
+                .zip(self.timeline_caches.drag_lanes.get(&track))
                 .is_some_and(|(y, lane)| {
                     let body_top = lane.top + super::clip_name::CLIP_NAME_HEIGHT;
                     let bottom = lane.top + lane.height;
@@ -262,20 +263,20 @@ impl EditorView {
                 });
         let next = if over_body {
             Some(target)
-        } else if self.hovered_fade_clip == Some(target) {
+        } else if self.interaction.hovered_fade_clip == Some(target) {
             None
         } else {
-            self.hovered_fade_clip
+            self.interaction.hovered_fade_clip
         };
-        if self.hovered_fade_clip == next {
+        if self.interaction.hovered_fade_clip == next {
             return false;
         }
-        self.hovered_fade_clip = next;
+        self.interaction.hovered_fade_clip = next;
         true
     }
 
     pub(super) fn reconcile_fade_gesture(&mut self) {
-        if self.hovered_fade_handle.is_some_and(|hover| {
+        if self.interaction.hovered_fade_handle.is_some_and(|hover| {
             hover.generation != self.project_generation
                 || self.mode != super::EditorMode::Arrangement
                 || self
@@ -283,24 +284,29 @@ impl EditorView {
                     .as_ref()
                     .is_none_or(|s| s.project.clip(hover.clip).is_none())
         }) {
-            self.hovered_fade_handle = None;
-        }
-        if self.hovered_fade_clip.is_some_and(|(generation, clip)| {
-            generation != self.project_generation
-                || self.mode != super::EditorMode::Arrangement
-                || self
-                    .state
-                    .as_ref()
-                    .is_none_or(|state| state.project.clip(clip).is_none())
-        }) {
-            self.hovered_fade_clip = None;
+            self.interaction.hovered_fade_handle = None;
         }
         if self
+            .interaction
+            .hovered_fade_clip
+            .is_some_and(|(generation, clip)| {
+                generation != self.project_generation
+                    || self.mode != super::EditorMode::Arrangement
+                    || self
+                        .state
+                        .as_ref()
+                        .is_none_or(|state| state.project.clip(clip).is_none())
+            })
+        {
+            self.interaction.hovered_fade_clip = None;
+        }
+        if self
+            .interaction
             .active_fade_drag
             .as_ref()
             .is_some_and(|drag| !self.fade_drag_current(drag))
         {
-            self.active_fade_drag = None;
+            self.interaction.active_fade_drag = None;
         }
     }
     pub(super) fn update_fade_gesture(
@@ -309,11 +315,11 @@ impl EditorView {
         snap_modifier: bool,
         cx: &mut Context<Self>,
     ) {
-        let Some(drag) = self.active_fade_drag.as_ref() else {
+        let Some(drag) = self.interaction.active_fade_drag.as_ref() else {
             return;
         };
         if !self.fade_drag_current(drag) {
-            self.active_fade_drag = None;
+            self.interaction.active_fade_drag = None;
             cx.notify();
             return;
         }
@@ -405,7 +411,7 @@ impl EditorView {
             };
             (next, None, None)
         };
-        if let Some(drag) = self.active_fade_drag.as_mut() {
+        if let Some(drag) = self.interaction.active_fade_drag.as_mut() {
             drag.moved |= dx.abs() >= 1.0 || dy.abs() >= 1.0;
             drag.trim_frame = trim_frame;
             if drag.preview != next || drag.preview_clip != preview_clip {
@@ -416,7 +422,7 @@ impl EditorView {
         }
     }
     pub(super) fn finish_fade_gesture(&mut self, window: &Window, cx: &mut Context<Self>) {
-        let Some(drag) = self.active_fade_drag.take() else {
+        let Some(drag) = self.interaction.active_fade_drag.take() else {
             return;
         };
         if self.focus.is_focused(window)
@@ -443,7 +449,7 @@ impl EditorView {
                     fade: drag.preview,
                 },
             };
-            self.pending_fade = Some(PendingFade {
+            self.interaction.pending_fade = Some(PendingFade {
                 receipt: super::pending_edit::Receipt::new(self.project_generation),
                 command: command.clone(),
                 drag,
@@ -455,11 +461,13 @@ impl EditorView {
         cx.notify();
     }
     fn displayed_fade_drag(&self) -> Option<&FadeDrag> {
-        self.active_fade_drag
+        self.interaction
+            .active_fade_drag
             .as_ref()
             .filter(|d| self.fade_drag_current(d))
             .or_else(|| {
-                self.pending_fade
+                self.interaction
+                    .pending_fade
                     .as_ref()
                     .filter(|p| p.source_current(self))
                     .map(|p| &p.drag)
@@ -501,14 +509,14 @@ impl EditorView {
         }
         // Held `f` reveals every clip; otherwise only the hovered clip (or the
         // one whose gesture is still displayed) shows its controls.
-        if !self.fade_key_held
+        if !self.interaction.fade_key_held
             && !active
-            && self.hovered_fade_clip != Some((self.project_generation, clip.id()))
+            && self.interaction.hovered_fade_clip != Some((self.project_generation, clip.id()))
         {
             return None;
         }
         let fade = preview.unwrap_or(clip.retained_fade());
-        let lane = self.drag_lanes.get(&track).copied()?;
+        let lane = self.timeline_caches.drag_lanes.get(&track).copied()?;
         if !lane.width.is_finite()
             || lane.width <= 0.0
             || !lane.height.is_finite()
@@ -674,7 +682,7 @@ impl EditorView {
             let paint_state =
                 if display.is_some_and(|drag| drag.clip.id() == clip_id && drag.handle == handle) {
                     theme::FadeHandleState::Active
-                } else if display.is_none() && self.hovered_fade_handle == Some(hover) {
+                } else if display.is_none() && self.interaction.hovered_fade_handle == Some(hover) {
                     theme::FadeHandleState::Hover
                 } else {
                     theme::FadeHandleState::Idle
@@ -719,10 +727,12 @@ impl EditorView {
                         let next = if *hovered {
                             Some(hover)
                         } else {
-                            view.hovered_fade_handle.filter(|current| *current != hover)
+                            view.interaction
+                                .hovered_fade_handle
+                                .filter(|current| *current != hover)
                         };
-                        if next != view.hovered_fade_handle {
-                            view.hovered_fade_handle = next;
+                        if next != view.interaction.hovered_fade_handle {
+                            view.interaction.hovered_fade_handle = next;
                             cx.notify();
                         }
                     }))
@@ -753,7 +763,7 @@ impl EditorView {
                         MouseButton::Left,
                         cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
                             if view.fade_drag_current(&drag)
-                                && view.active_fade_drag.is_none()
+                                && view.interaction.active_fade_drag.is_none()
                                 && view.set_selected_clip(track, clip_id, window, cx)
                             {
                                 let straighten = handle.curve_side().filter(|&out| {
@@ -761,7 +771,7 @@ impl EditorView {
                                         && drag.original.curve_laws()[usize::from(out)]
                                             == ClipFade::DEFAULT_S_CURVE
                                 });
-                                view.active_fade_drag = Some(FadeDrag {
+                                view.interaction.active_fade_drag = Some(FadeDrag {
                                     pointer: event.position,
                                     preview: straighten.map_or(drag.original, |out| {
                                         drag.original.straighten_ramp(out)
@@ -823,17 +833,18 @@ impl PendingFade {
 }
 impl EditorView {
     pub(super) fn pending_fade_matches(&self, request: &Request) -> bool {
-        self.pending_fade
+        self.interaction
+            .pending_fade
             .as_ref()
             .is_some_and(|p| p.matches(request))
     }
     pub(super) fn fade_submitted(&mut self) {
-        if let Some(p) = &mut self.pending_fade {
+        if let Some(p) = &mut self.interaction.pending_fade {
             p.receipt.submitted(self.worker_requests_pending);
         }
     }
     pub(super) fn fade_request_complete(&mut self, event: &hex_session::service::Event) {
-        if let Some(p) = &mut self.pending_fade
+        if let Some(p) = &mut self.interaction.pending_fade
             && p.receipt.observe(
                 self.project_generation,
                 event.project_replaced,
@@ -844,10 +855,10 @@ impl EditorView {
         }
     }
     pub(super) fn retire_pending_fade(&mut self) -> bool {
-        self.pending_fade.take().is_some()
+        self.interaction.pending_fade.take().is_some()
     }
     pub(super) fn retire_abandoned_fade(&mut self) -> bool {
-        let abandoned = self.pending_fade.as_ref().is_some_and(|p| {
+        let abandoned = self.interaction.pending_fade.as_ref().is_some_and(|p| {
             !p.source_current(self)
                 || (p.receipt.is_queued() && !self.queued_requests().any(|r| p.matches(r)))
         });

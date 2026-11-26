@@ -224,9 +224,9 @@ impl Profile {
                     Self::pending(self.editor.read(cx)),
                     self.editor.read(cx).persistence.opening_project,
                     self.editor.read(cx).state.is_some(),
-                    self.editor.read(cx).main_track_lane_bounds,
-                    self.editor.read(cx).main_track_lane_epoch,
-                    self.editor.read(cx).drag_layout_generation,
+                    self.editor.read(cx).timeline_caches.main_track_lane_bounds,
+                    self.editor.read(cx).timeline_caches.main_track_lane_epoch,
+                    self.editor.read(cx).timeline_caches.drag_layout_generation,
                     self.paint_sequence,
                     self.setup_paint,
                     self.probe.as_ref().map(|probe| (
@@ -285,8 +285,9 @@ impl Profile {
             }
             2 if self.paint_sequence > self.setup_paint => {
                 let view = self.editor.read(cx);
-                if view.main_track_lane_bounds.is_some()
-                    && view.main_track_lane_epoch == view.drag_layout_generation
+                if view.timeline_caches.main_track_lane_bounds.is_some()
+                    && view.timeline_caches.main_track_lane_epoch
+                        == view.timeline_caches.drag_layout_generation
                 {
                     self.delay_until =
                         Instant::now() + Duration::from_millis(7 + (self.index as u64 * 7) % 11);
@@ -323,7 +324,7 @@ impl Profile {
                 let Some(state) = &view.state else {
                     return self.finish(Some("project disappeared".into()), cx);
                 };
-                if !view.time_selection_project_scope
+                if !view.interaction.time_selection_project_scope
                     || range.tracks().iter().copied().ne(state
                         .project
                         .tracks()
@@ -367,11 +368,11 @@ impl Profile {
                     );
                 }
                 let view = self.editor.read(cx);
-                let valid_cursor = view.edit_cursor.is_some_and(|cursor| {
+                let valid_cursor = view.interaction.edit_cursor.is_some_and(|cursor| {
                     cursor.generation == view.project_generation
                         && cursor.frame > self.sample.selection_end
-                        && view.time_selection_project_scope
-                        && view.time_selection.is_some_and(|range| {
+                        && view.interaction.time_selection_project_scope
+                        && view.interaction.time_selection.is_some_and(|range| {
                             range.anchor_frame == cursor.frame && range.end_frame == cursor.frame
                         })
                 });
@@ -450,6 +451,7 @@ impl Profile {
         let lane = self
             .editor
             .read(cx)
+            .timeline_caches
             .main_track_lane_bounds
             .ok_or("main lane has not been painted")?;
         let y = lane.top + lane.height * 0.8;
@@ -559,8 +561,9 @@ impl Profile {
                     .as_ref()
                     .is_some_and(|state| state.revision == probe.revision)
         } else {
-            view.time_selection_project_scope
+            view.interaction.time_selection_project_scope
                 && view
+                    .interaction
                     .time_selection
                     .is_some_and(|range| range.anchor_frame != range.end_frame)
         };
@@ -651,7 +654,7 @@ mod tests {
         visual.simulate_mouse_up(position(0.619), MouseButton::Left, free);
         visual.run_until_parked();
         let copied_end = editor.read_with(cx, |view, _| {
-            assert!(view.time_selection_project_scope);
+            assert!(view.interaction.time_selection_project_scope);
             view.normalized_time_selection()
                 .expect("source range")
                 .end()
@@ -661,11 +664,14 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert!(view.normalized_time_selection().is_none());
-            assert!(view.time_selection_project_scope);
-            let cursor = view.edit_cursor.expect("new cursor");
+            assert!(view.interaction.time_selection_project_scope);
+            let cursor = view.interaction.edit_cursor.expect("new cursor");
             assert!(cursor.frame > copied_end);
             assert_eq!(cursor.generation, view.project_generation);
-            let range = view.time_selection.expect("zero-width cursor range");
+            let range = view
+                .interaction
+                .time_selection
+                .expect("zero-width cursor range");
             assert_eq!(range.anchor_frame, cursor.frame);
             assert_eq!(range.end_frame, cursor.frame);
         });

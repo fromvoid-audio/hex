@@ -534,7 +534,7 @@ pub(in crate::editor) fn view(
                     ))),
             );
         }
-        if !view.audio_detail.event.fade_key_held && !view.time_selection_key_held {
+        if !view.audio_detail.event.fade_key_held && !view.interaction.time_selection_key_held {
             let gain = display_gain.millidb();
             element = element.child(
                 div()
@@ -545,7 +545,7 @@ pub(in crate::editor) fn view(
                     .left(px(7.0))
                     .right(px(7.0))
                     .h(px(4.0))
-                    .when(view.option_held, |style| {
+                    .when(view.interaction.option_held, |style| {
                         style
                             .cursor(gpui::CursorStyle::ResizeUpDown)
                             .hover(|style| {
@@ -998,7 +998,7 @@ pub(in crate::editor) fn view(
             };
             let local_y = f32::from(event.position.y - bounds.origin.y);
             if event.click_count == 2
-                && !view.time_selection_key_held
+                && !view.interaction.time_selection_key_held
                 && !view.audio_detail.event.fade_key_held
                 && (EVENT_TOP..EVENT_TOP + 9.0).contains(&local_y)
                 && markers::direct_event(&root, clip).is_some()
@@ -1040,7 +1040,7 @@ pub(in crate::editor) fn view(
                 .event
                 .range
                 .filter(|(a, b)| raw.is_some_and(|raw| *a <= raw && raw < *b));
-            let kind = if view.time_selection_key_held {
+            let kind = if view.interaction.time_selection_key_held {
                 Kind::Select
             } else if target == RangeSelectionTarget::Move && range_hit.is_some() {
                 if let Some((start, end)) = range_hit {

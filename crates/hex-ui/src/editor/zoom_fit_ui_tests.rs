@@ -218,7 +218,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
     let before = editor.update(&mut visual, |v, cx| {
         v.viewport = prior;
         let track = v.selected_track.unwrap();
-        v.time_selection = Some(TimeSelection {
+        v.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: 96_000,
@@ -229,7 +229,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
             v.state.as_ref().unwrap().project.snapshot(),
             v.state.as_ref().unwrap().can_undo,
             v.state.as_ref().unwrap().can_redo,
-            v.offline_cursor,
+            v.audio_pub.offline_cursor,
         )
     });
     visual.update(|window, cx| {
@@ -251,7 +251,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
     click(&mut visual, "arrange-zoom-back");
     editor.read_with(&visual, |v, _| assert_eq!(v.viewport, prior));
     editor.update(&mut visual, |v, cx| {
-        v.time_selection = None;
+        v.interaction.time_selection = None;
         cx.notify();
     });
     visual.run_until_parked();
@@ -287,7 +287,7 @@ fn arrange_keys_and_buttons_fit_reversed_range_clip_content_and_restore_exact_pr
                 s.project.snapshot(),
                 s.can_undo,
                 s.can_redo,
-                v.offline_cursor
+                v.audio_pub.offline_cursor
             ),
             before
         );
@@ -994,7 +994,7 @@ fn arrange_vertical_back_prunes_removed_rows_and_clamps_scroll_after_resize(
         view.selected_clip = None;
         view.selected_track = Some(tracks[2]);
         view.track_selection.replace(&tracks[..3]);
-        view.time_selection = Some(TimeSelection {
+        view.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(tracks[0]),
             end_track: Some(tracks[2]),
             anchor_frame: 0,
@@ -1027,6 +1027,7 @@ fn arrange_vertical_back_prunes_removed_rows_and_clamps_scroll_after_resize(
         assert_eq!(state.project.snapshot(), project);
         assert!(view.track_scroll.list.logical_scroll_top().item_ix < state.project.tracks().len());
         let maximum = view
+            .timeline_caches
             .arrangement_bounds
             .unwrap()
             .height

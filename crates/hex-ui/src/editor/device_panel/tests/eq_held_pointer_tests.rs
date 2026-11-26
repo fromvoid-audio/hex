@@ -322,10 +322,10 @@ pub(in crate::editor) fn attach_actual_output(
         pump_output(editor, cx, &mut output, &mut backend);
         visual.run_until_parked();
         if editor.read_with(cx, |view, _| {
-            view.audible_playback.is_some()
+            view.audio_pub.audible_playback.is_some()
                 && view.applied_project_revision() == Some(view.state.as_ref().unwrap().revision)
-                && view.pending_playback.is_none()
-                && view.pending_resident_publication.is_none()
+                && view.audio_pub.pending_playback.is_none()
+                && view.audio_pub.pending_resident_publication.is_none()
         }) {
             break;
         }
@@ -415,33 +415,37 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         visual.run_until_parked();
         while editor.read_with(cx, |view, _| {
             let current_preview_applied = !moving
-                || view.audible_playback.as_ref().is_some_and(|audible| {
-                    audible.device_preview_identity.is_some_and(|identity| {
-                        view.device_panel
-                            .gesture
-                            .snapshot()
-                            .is_some_and(|snapshot| {
-                                identity.key == snapshot.key
-                                    && identity.sequence == snapshot.sequence
-                            })
-                            && audible.audio_revision
-                                == view
-                                    .audio
-                                    .as_ref()
-                                    .unwrap()
-                                    .control
-                                    .status()
-                                    .unwrap()
-                                    .applied_revision
-                                    .load(Acquire)
-                    })
-                });
+                || view
+                    .audio_pub
+                    .audible_playback
+                    .as_ref()
+                    .is_some_and(|audible| {
+                        audible.device_preview_identity.is_some_and(|identity| {
+                            view.device_panel
+                                .gesture
+                                .snapshot()
+                                .is_some_and(|snapshot| {
+                                    identity.key == snapshot.key
+                                        && identity.sequence == snapshot.sequence
+                                })
+                                && audible.audio_revision
+                                    == view
+                                        .audio
+                                        .as_ref()
+                                        .unwrap()
+                                        .control
+                                        .status()
+                                        .unwrap()
+                                        .applied_revision
+                                        .load(Acquire)
+                        })
+                    });
             !current_preview_applied
                 || view.worker_requests_pending != 0
                 || !view.pending_requests.is_empty()
-                || view.pending_playback.is_some()
-                || view.pending_resident_publication.is_some()
-                || !view.playback_candidates.is_empty()
+                || view.audio_pub.pending_playback.is_some()
+                || view.audio_pub.pending_resident_publication.is_some()
+                || !view.audio_pub.playback_candidates.is_empty()
         }) {
             pump_device_playback(&mut fixture, cx);
             visual.run_until_parked();
@@ -452,7 +456,8 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         }
         let expected_source = editor.read_with(cx, |view, _| {
             EqState::decode(
-                view.audible_playback
+                view.audio_pub
+                    .audible_playback
                     .as_ref()
                     .unwrap()
                     .state
@@ -472,7 +477,8 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
         visual.simulate_keystrokes("space");
         editor.read_with(cx, |view, _| {
             assert!(
-                view.prepared_seek.is_none() && view.latched_seek_intent.is_none(),
+                view.audio_pub.prepared_seek.is_none()
+                    && view.audio_pub.latched_seek_intent.is_none(),
                 "Space must start the applied preview without a prepared seek worker"
             );
         });
@@ -485,8 +491,8 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
                     format!(
                         "error={:?} prepared={} latched={} key={:?}",
                         view.error,
-                        view.prepared_seek.is_some(),
-                        view.latched_seek_intent.is_some(),
+                        view.audio_pub.prepared_seek.is_some(),
+                        view.audio_pub.latched_seek_intent.is_some(),
                         view.device_panel
                             .gesture
                             .snapshot()
@@ -506,7 +512,7 @@ fn eq_held_node_space_starts_applied_preview_without_seek_worker_or_release(
             )
         });
         editor.read_with(cx, |view, _| {
-            let audible = view.audible_playback.as_ref().unwrap();
+            let audible = view.audio_pub.audible_playback.as_ref().unwrap();
             assert_eq!(
                 EqState::decode(audible.state.project.device(device).unwrap().state()).unwrap(),
                 expected_source,
@@ -549,23 +555,27 @@ fn preview_is_applied(view: &EditorView) -> bool {
     };
     view.worker_requests_pending == 0
         && view.pending_requests.is_empty()
-        && view.pending_playback.is_none()
-        && view.pending_resident_publication.is_none()
-        && view.playback_candidates.is_empty()
-        && view.audible_playback.as_ref().is_some_and(|audible| {
-            audible.device_preview_identity.is_some_and(|identity| {
-                identity.key == snapshot.key && identity.sequence == snapshot.sequence
-            }) && view
-                .audio
-                .as_ref()
-                .unwrap()
-                .control
-                .status()
-                .unwrap()
-                .applied_revision
-                .load(Acquire)
-                == audible.audio_revision
-        })
+        && view.audio_pub.pending_playback.is_none()
+        && view.audio_pub.pending_resident_publication.is_none()
+        && view.audio_pub.playback_candidates.is_empty()
+        && view
+            .audio_pub
+            .audible_playback
+            .as_ref()
+            .is_some_and(|audible| {
+                audible.device_preview_identity.is_some_and(|identity| {
+                    identity.key == snapshot.key && identity.sequence == snapshot.sequence
+                }) && view
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .status()
+                    .unwrap()
+                    .applied_revision
+                    .load(Acquire)
+                    == audible.audio_revision
+            })
 }
 
 fn pump_actual_until(
@@ -586,7 +596,7 @@ fn pump_actual_until(
         assert!(
             std::time::Instant::now() < deadline,
             "actual output/worker did not settle: {}",
-            editor.read_with(cx, |view, _| format!("error={:?} generation={} requests={} deferred={} gesture={:?} seek={:?} latched={} pending_playback={} publication={} candidates={} audio={} tracks={}", view.error, view.project_generation, view.worker_requests_pending, view.pending_requests.len(), view.device_panel.gesture.snapshot().map(|s|s.key), view.prepared_seek.as_ref().map(|s|(s.stage,s.cancelled)), view.latched_seek_intent.is_some(), view.pending_playback.is_some(), view.pending_resident_publication.is_some(), view.playback_candidates.len(), view.audio.is_some(), view.state.as_ref().map_or(0,|s|s.project.tracks().len())))
+            editor.read_with(cx, |view, _| format!("error={:?} generation={} requests={} deferred={} gesture={:?} seek={:?} latched={} pending_playback={} publication={} candidates={} audio={} tracks={}", view.error, view.project_generation, view.worker_requests_pending, view.pending_requests.len(), view.device_panel.gesture.snapshot().map(|s|s.key), view.audio_pub.prepared_seek.as_ref().map(|s|(s.stage,s.cancelled)), view.audio_pub.latched_seek_intent.is_some(), view.audio_pub.pending_playback.is_some(), view.audio_pub.pending_resident_publication.is_some(), view.audio_pub.playback_candidates.len(), view.audio.is_some(), view.state.as_ref().map_or(0,|s|s.project.tracks().len())))
         );
     }
 }
@@ -622,7 +632,11 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
             );
             request_worker_seek(&editor, cx);
             let (request_id, identity) = editor.read_with(cx, |view, _| {
-                let pending = view.prepared_seek.as_ref().expect("actual seek admitted");
+                let pending = view
+                    .audio_pub
+                    .prepared_seek
+                    .as_ref()
+                    .expect("actual seek admitted");
                 assert_eq!(pending.stage, SeekStage::Preparing);
                 (
                     pending.request_id,
@@ -643,7 +657,8 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                     control.reclaim();
                     control.poll_resident_publication();
                     if editor.read_with(cx, |view, _| {
-                        view.prepared_seek
+                        view.audio_pub
+                            .prepared_seek
                             .as_ref()
                             .is_some_and(|seek| matches!(seek.stage, SeekStage::Published { .. }))
                     }) {
@@ -657,6 +672,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 }
                 editor.read_with(cx, |view, _| {
                     let candidate = view
+                        .audio_pub
                         .playback_candidates
                         .iter()
                         .find(|candidate| candidate.seek_request_id == Some(request_id))
@@ -712,12 +728,12 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                             .unwrap()
                             .playing
                             .load(Acquire)
-                            && view.prepared_seek.is_none()
-                            && view.latched_seek_intent.is_none()
+                            && view.audio_pub.prepared_seek.is_none()
+                            && view.audio_pub.latched_seek_intent.is_none()
                     },
                 );
                 editor.read_with(cx, |view, _| {
-                    let audible = view.audible_playback.as_ref().unwrap();
+                    let audible = view.audio_pub.audible_playback.as_ref().unwrap();
                     let current = audible
                         .device_preview_identity
                         .expect("seek remains a preview");
@@ -759,14 +775,14 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                 |view| {
                     (settled(view) || (action == "pause"
                         && view.worker_requests_pending == 0 && view.pending_requests.is_empty()))
-                        && view.prepared_seek.is_none()
-                        && view.latched_seek_intent.is_none()
+                        && view.audio_pub.prepared_seek.is_none()
+                        && view.audio_pub.latched_seek_intent.is_none()
                         // Replacement deliberately closes the old output. The
                         // new canonical graph may wait for a NEW output; it is
                         // not an old seek and must not be discarded by this test.
-                        && (action == "project" || view.pending_playback.is_none())
-                        && view.pending_resident_publication.is_none()
-                        && view.playback_candidates.is_empty()
+                        && (action == "project" || view.audio_pub.pending_playback.is_none())
+                        && view.audio_pub.pending_resident_publication.is_none()
+                        && view.audio_pub.playback_candidates.is_empty()
                         && (action != "project" || view.project_generation > generation)
                 },
             );
@@ -777,12 +793,14 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
             editor.read_with(cx, |view, _| {
                 assert!(
                     !view
+                        .audio_pub
                         .playback_candidates
                         .iter()
                         .any(|candidate| candidate.seek_request_id == Some(request_id))
                 );
                 assert!(
-                    view.audible_playback
+                    view.audio_pub
+                        .audible_playback
                         .as_ref()
                         .is_none_or(|audible| audible.seek_request_id != Some(request_id)),
                     "old seek must not become current"
@@ -799,7 +817,7 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
                         held_output
                     );
                     assert!(view.state.as_ref().unwrap().project.tracks().is_empty());
-                    if let Some(pending) = view.pending_playback.as_ref() {
+                    if let Some(pending) = view.audio_pub.pending_playback.as_ref() {
                         assert_eq!(pending.project_generation, view.project_generation);
                         assert!(pending.seek_request_id.is_none());
                         assert!(pending.device_preview_identity.is_none());
@@ -873,7 +891,8 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
     loop {
         if editor.update(cx, |view, _| {
             view.tick_prepared_arrangement_seek();
-            view.prepared_seek
+            view.audio_pub
+                .prepared_seek
                 .as_ref()
                 .is_some_and(|seek| seek.stage == SeekStage::CandidateReady)
         }) {
@@ -886,8 +905,8 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         std::thread::yield_now();
     }
     let (id, root, previous_identity, blocker) = editor.update(cx, |view, cx| {
-        let pending = view.pending_playback.as_ref().unwrap();
-        let seek = view.prepared_seek.as_ref().unwrap();
+        let pending = view.audio_pub.pending_playback.as_ref().unwrap();
+        let seek = view.audio_pub.prepared_seek.as_ref().unwrap();
         let id = seek.request_id;
         let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         let identity = seek.device_preview_identity.unwrap();
@@ -910,14 +929,18 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
             .unwrap();
         view.tick(cx);
         assert_eq!(
-            view.prepared_seek.as_ref().unwrap().stage,
+            view.audio_pub.prepared_seek.as_ref().unwrap().stage,
             SeekStage::CandidateReady
         );
         assert_eq!(
-            view.pending_playback.as_ref().unwrap().seek_request_id,
+            view.audio_pub
+                .pending_playback
+                .as_ref()
+                .unwrap()
+                .seek_request_id,
             Some(id)
         );
-        assert!(view.pending_resident_publication.is_none());
+        assert!(view.audio_pub.pending_resident_publication.is_none());
         (id, root, identity, token)
     });
     LAST_SEEK_RETIREMENT.set(None);
@@ -956,13 +979,13 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         "exact CandidateReady must cross actual seek-worker retirement BEFORE preview replacement"
     );
     editor.read_with(cx, |view, _| {
-        assert!(view.prepared_seek.is_none());
-        let pending = view.pending_playback.as_ref().unwrap();
+        assert!(view.audio_pub.prepared_seek.is_none());
+        let pending = view.audio_pub.pending_playback.as_ref().unwrap();
         assert!(pending.seek_request_id.is_none());
         let current = pending.device_preview_identity.unwrap();
         assert_eq!(current.key, previous_identity.key);
         assert!(current.sequence > previous_identity.sequence);
-        assert!(view.latched_seek_intent.is_some());
+        assert!(view.audio_pub.latched_seek_intent.is_some());
     });
     // Finish the deliberately occupied real publication before pumping normal
     // input/callback reconciliation; no fabricated ACK/status or owner drop.
@@ -989,8 +1012,8 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         &mut output,
         &mut backend,
         |view| {
-            view.prepared_seek.is_none()
-                && view.latched_seek_intent.is_none()
+            view.audio_pub.prepared_seek.is_none()
+                && view.audio_pub.latched_seek_intent.is_none()
                 && view
                     .audio
                     .as_ref()
@@ -1010,7 +1033,11 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         &mut visual,
         &mut output,
         &mut backend,
-        |view| settled(view) && view.prepared_seek.is_none() && view.latched_seek_intent.is_none(),
+        |view| {
+            settled(view)
+                && view.audio_pub.prepared_seek.is_none()
+                && view.audio_pub.latched_seek_intent.is_none()
+        },
     );
     editor.update(cx, |view, _| {
         view.audio.take();
@@ -1044,7 +1071,8 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
     let deadline = crate::test_wait::hang_deadline();
     while !editor.update(cx, |view, _| {
         view.tick_prepared_arrangement_seek();
-        view.prepared_seek
+        view.audio_pub
+            .prepared_seek
             .as_ref()
             .is_some_and(|seek| seek.stage == SeekStage::CandidateReady)
     }) {
@@ -1058,35 +1086,40 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
     // a component test of fallback ownership/admission, not fabricated worker
     // contention. Actual worker-full/shutdown/drop-thread tests live in Session.
     let (id, root) = editor.update(cx, |view, _| {
-        let seek = view.prepared_seek.take().unwrap();
-        let playback = view.pending_playback.take().unwrap();
+        let seek = view.audio_pub.prepared_seek.take().unwrap();
+        let playback = view.audio_pub.pending_playback.take().unwrap();
         assert_eq!(playback.seek_request_id, Some(seek.request_id));
         let id = seek.request_id;
         let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
-        view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
-            note_chase: seek.note_chase,
-            request_id: id,
-            mode: seek.kind.mode(),
-            generation: seek.project_generation,
-            revision: seek.project_revision,
-            prepared_revision: seek.prepared_revision.unwrap(),
-            destination_frame: seek.destination_frame,
-            work_budget_frames: seek.work_budget_frames,
-            start_playing: seek.start_playing,
-            result: Ok(playback.playback),
-        });
+        view.audio_pub.retired_seek_result =
+            Some(hex_session::arrangement_seek::ArrangementSeekResult {
+                note_chase: seek.note_chase,
+                request_id: id,
+                mode: seek.kind.mode(),
+                generation: seek.project_generation,
+                revision: seek.project_revision,
+                prepared_revision: seek.prepared_revision.unwrap(),
+                destination_frame: seek.destination_frame,
+                work_budget_frames: seek.work_budget_frames,
+                start_playing: seek.start_playing,
+                result: Ok(playback.playback),
+            });
         for destination in [16, 32, 64] {
             view.request_prepared_seek(destination, false);
             assert!(
-                view.prepared_seek.is_none(),
+                view.audio_pub.prepared_seek.is_none(),
                 "fallback must block a second runtime owner"
             );
-            let retained = view.retired_seek_result.as_ref().unwrap();
+            let retained = view.audio_pub.retired_seek_result.as_ref().unwrap();
             assert_eq!(retained.request_id, id);
             assert_eq!(Arc::as_ptr(&retained.prepared_revision) as usize, root);
             assert!(retained.result.is_ok());
             assert_eq!(
-                view.latched_seek_intent.as_ref().unwrap().destination_frame,
+                view.audio_pub
+                    .latched_seek_intent
+                    .as_ref()
+                    .unwrap()
+                    .destination_frame,
                 destination
             );
         }
@@ -1110,9 +1143,9 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         &mut backend,
         |view| {
             settled(view)
-                && view.prepared_seek.is_none()
-                && view.latched_seek_intent.is_none()
-                && view.retired_seek_result.is_none()
+                && view.audio_pub.prepared_seek.is_none()
+                && view.audio_pub.latched_seek_intent.is_none()
+                && view.audio_pub.retired_seek_result.is_none()
         },
     );
     editor.update(cx, |view, _| {
@@ -1130,7 +1163,7 @@ fn request_worker_seek(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContex
     editor.update(cx, |view, _| {
         let (prepared_revision, audio_revision, project_revision) =
             view.current_preroll_source().expect("applied stateful EQ");
-        let audible = view.audible_playback.as_ref().unwrap();
+        let audible = view.audio_pub.audible_playback.as_ref().unwrap();
         let preview = audible.device_preview_identity.expect("applied EQ preview");
         let gesture = view
             .device_panel
@@ -1163,7 +1196,7 @@ fn request_worker_seek(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContex
             audio_revision,
         );
         assert!(
-            view.prepared_seek.is_some(),
+            view.audio_pub.prepared_seek.is_some(),
             "worker seek admission: {:?}",
             view.error
         );
@@ -1178,7 +1211,8 @@ fn review_wait_seek_candidate(editor: &gpui::Entity<EditorView>, cx: &mut TestAp
     loop {
         if editor.update(cx, |view, _| {
             view.tick_prepared_arrangement_seek();
-            view.prepared_seek
+            view.audio_pub
+                .prepared_seek
                 .as_ref()
                 .is_some_and(|s| s.stage == SeekStage::CandidateReady)
         }) {
@@ -1254,9 +1288,10 @@ fn eq_review_overtaken_preview_preserves_held_seek_intent(cx: &mut TestAppContex
     });
     review_receive_preview(&editor, cx, submitted);
     editor.read_with(cx, |view, _| {
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
         assert!(
-            view.latched_seek_intent
+            view.audio_pub
+                .latched_seek_intent
                 .as_ref()
                 .is_some_and(|i| i.start_playing),
             "intermediate same-owner preview must not erase the held seek"
@@ -1269,8 +1304,8 @@ fn eq_review_overtaken_preview_preserves_held_seek_intent(cx: &mut TestAppContex
         &mut output,
         &mut backend,
         |view| {
-            view.prepared_seek.is_none()
-                && view.latched_seek_intent.is_none()
+            view.audio_pub.prepared_seek.is_none()
+                && view.audio_pub.latched_seek_intent.is_none()
                 && view
                     .audio
                     .as_ref()
@@ -1315,9 +1350,9 @@ fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut Te
     review_wait_seek_candidate(&editor, cx);
     editor.update(cx, |view, cx| {
         view.tick(cx);
-        assert!(view.pending_resident_publication.is_some());
+        assert!(view.audio_pub.pending_resident_publication.is_some());
         assert_eq!(
-            view.prepared_seek.as_ref().unwrap().stage,
+            view.audio_pub.prepared_seek.as_ref().unwrap().stage,
             SeekStage::CandidateReady
         );
     });
@@ -1325,8 +1360,8 @@ fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut Te
     visual.simulate_mouse_move(next, Some(MouseButton::Left), Modifiers::default());
     editor.update(cx, |view, _| {
         view.tick_prepared_arrangement_seek();
-        assert!(view.prepared_seek.as_ref().unwrap().cancelled);
-        assert!(view.latched_seek_intent.is_some());
+        assert!(view.audio_pub.prepared_seek.as_ref().unwrap().cancelled);
+        assert!(view.audio_pub.latched_seek_intent.is_some());
     });
     let control = output.publication.control().unwrap();
     control.poll_resident_publication();
@@ -1335,7 +1370,7 @@ fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut Te
         if editor.update(cx, |view, cx| {
             view.tick(cx);
             matches!(
-                view.prepared_seek.as_ref().map(|s| s.stage),
+                view.audio_pub.prepared_seek.as_ref().map(|s| s.stage),
                 Some(SeekStage::Published { .. })
             )
         }) {
@@ -1350,7 +1385,8 @@ fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut Te
     }
     editor.read_with(cx, |view, _| {
         assert!(
-            view.latched_seek_intent
+            view.audio_pub
+                .latched_seek_intent
                 .as_ref()
                 .is_some_and(|i| i.start_playing),
             "publication response must preserve the newer held intent during cancellation"
@@ -1363,8 +1399,8 @@ fn eq_review_publication_retirement_preserves_newer_held_seek_intent(cx: &mut Te
         &mut output,
         &mut backend,
         |view| {
-            view.prepared_seek.is_none()
-                && view.latched_seek_intent.is_none()
+            view.audio_pub.prepared_seek.is_none()
+                && view.audio_pub.latched_seek_intent.is_none()
                 && view
                     .audio
                     .as_ref()
@@ -1419,7 +1455,7 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
             .unwrap()
             .poll_resident_publication();
         if let Some(revision) = editor.read_with(cx, |view, _| {
-            match view.prepared_seek.as_ref().unwrap().stage {
+            match view.audio_pub.prepared_seek.as_ref().unwrap().stage {
                 SeekStage::Published { audio_revision } => Some(audio_revision),
                 _ => None,
             }
@@ -1455,11 +1491,15 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
     });
     editor.read_with(cx, |view, _| {
         assert_eq!(
-            view.audible_playback.as_ref().unwrap().audio_revision,
+            view.audio_pub
+                .audible_playback
+                .as_ref()
+                .unwrap()
+                .audio_revision,
             revision,
             "late cancellation cannot discard the installed seek metadata"
         );
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
     });
     pump_actual_until(
         &editor,
@@ -1495,7 +1535,7 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
         &mut output,
         &mut backend,
         |view| {
-            view.prepared_seek.is_none()
+            view.audio_pub.prepared_seek.is_none()
                 && view
                     .audio
                     .as_ref()

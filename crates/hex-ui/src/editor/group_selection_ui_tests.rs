@@ -370,7 +370,7 @@ fn g_time_selection_cuts_boundary_clips_and_overrides_retained_clip_selection(
     click(&mut visual, clips[2], false);
     let before = editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        v.time_selection = Some(super::super::time_selection::TimeSelection {
+        v.interaction.time_selection = Some(super::super::time_selection::TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: 60_000,
@@ -406,7 +406,7 @@ fn g_time_selection_keeps_empty_margins_and_original_event_timing(cx: &mut TestA
     click(&mut visual, clips[2], false);
     editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        v.time_selection = Some(super::super::time_selection::TimeSelection {
+        v.interaction.time_selection = Some(super::super::time_selection::TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: 36_000,

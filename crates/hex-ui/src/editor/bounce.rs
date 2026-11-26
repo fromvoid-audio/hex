@@ -32,7 +32,7 @@ impl EditorView {
     /// `b` during a held Arrangement clip drag arms a bounce drop instead of
     /// bouncing the selection. Returns false outside a drag.
     pub(super) fn arm_drag_bounce(&mut self) -> bool {
-        if self.active_clip_drag.is_none() {
+        if self.interaction.active_clip_drag.is_none() {
             return false;
         }
         if !self.persistence.drag_bounce_held {
@@ -103,7 +103,7 @@ impl EditorView {
         }
         self.cancel_held_clip_move_audition();
         // Input capture ends here; the bounce gate refuses while a drag is held.
-        let Some(active) = self.active_clip_drag.take() else {
+        let Some(active) = self.interaction.active_clip_drag.take() else {
             return;
         };
         active.copy_modifier.set(true);
@@ -114,7 +114,7 @@ impl EditorView {
                 self.persistence.pending_bounce_drop = Some(PendingBounceDrop {
                     drag: active,
                     control,
-                    cursor_epoch: self.selection_intent_epoch,
+                    cursor_epoch: self.interaction.selection_intent_epoch,
                 });
             }
             None => active.retire(),
@@ -143,6 +143,7 @@ impl EditorView {
             return;
         }
         let target = if self
+            .interaction
             .time_selection
             .is_some_and(|s| s.anchor_frame != s.end_frame)
         {
@@ -194,17 +195,17 @@ impl EditorView {
         adoption: BounceAdoption,
     ) {
         if self.edit_pending()
-            || self.arrangement_pan.is_some()
-            || self.time_range_move_gesture.is_some()
+            || self.interaction.arrangement_pan.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.track_resize_active()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.device_panel.gesture.snapshot().is_some()
-            || self.time_selection_gesture.is_some()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
             || self.sections.held()
             || self.section_install_pending()
@@ -601,7 +602,13 @@ mod tests {
                 v.persistence.bounce_control.is_none(),
                 "b never bounces the selection mid-drag"
             );
-            let preview = v.active_clip_drag.as_ref().unwrap().preview.get();
+            let preview = v
+                .interaction
+                .active_clip_drag
+                .as_ref()
+                .unwrap()
+                .preview
+                .get();
             preview.expect("lane preview").start_frame
         });
         let x = visual.debug_bounds("clip-drop-preview").unwrap().left();
@@ -612,7 +619,7 @@ mod tests {
         // at the destination and the source remains where it was.
         editor.read_with(&visual, |v, _| {
             assert!(v.pending_bounce_drag().is_some());
-            assert!(v.active_clip_drag.is_none() && !v.persistence.drag_bounce_held);
+            assert!(v.interaction.active_clip_drag.is_none() && !v.persistence.drag_bounce_held);
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.snapshot().tracks, original.tracks);
         });
@@ -638,7 +645,10 @@ mod tests {
                 v.persistence.pending_bounce_drop.is_none()
                     && v.persistence.bounce_control.is_none()
             );
-            let cursor = v.edit_cursor.expect("cursor at the adopted bounce");
+            let cursor = v
+                .interaction
+                .edit_cursor
+                .expect("cursor at the adopted bounce");
             assert_eq!((cursor.track, cursor.frame), (Some(target_track), start));
             let p = &v.state.as_ref().unwrap().project;
             assert_eq!(p.tracks().len(), original.tracks.len());
@@ -751,7 +761,7 @@ mod tests {
         editor.update(&mut visual, |v, _| {
             v.computer_keyboard.enabled = false;
             let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-            v.time_selection = Some(crate::editor::time_selection::TimeSelection {
+            v.interaction.time_selection = Some(crate::editor::time_selection::TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 36_007,
@@ -788,7 +798,7 @@ mod tests {
             assert_eq!(p.tracks()[0].clips().len(), 1);
             assert!(p.tracks()[0].clips()[0].active());
             let track = p.tracks()[0].id();
-            v.time_selection = Some(crate::editor::time_selection::TimeSelection {
+            v.interaction.time_selection = Some(crate::editor::time_selection::TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 12_013,
@@ -869,7 +879,7 @@ mod tests {
             let track = p.tracks()[0].id();
             assert_eq!(p.track(track).unwrap().clips().len(), 2);
             let original = p.snapshot();
-            v.time_selection = Some(crate::editor::time_selection::TimeSelection {
+            v.interaction.time_selection = Some(crate::editor::time_selection::TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 12000,
@@ -915,7 +925,7 @@ mod tests {
         editor.update(&mut visual, |v, _| {
             // Header selection may clear a range. Keep a smaller range active
             // at dispatch to verify that the typed track intent never reads it.
-            v.time_selection = Some(crate::editor::time_selection::TimeSelection {
+            v.interaction.time_selection = Some(crate::editor::time_selection::TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: 12000,

@@ -3,7 +3,7 @@ use super::*;
 
 impl EditorView {
     pub(super) fn pending_trim_current(&self) -> Option<&PendingTrim> {
-        let pending = self.pending_trim.as_ref()?;
+        let pending = self.interaction.pending_trim.as_ref()?;
         let state = self.state.as_ref()?;
         if pending.generation != self.project_generation || pending.revision > state.revision {
             return None;
@@ -34,7 +34,7 @@ impl EditorView {
         track: TrackId,
         only: Option<hex_project::ClipId>,
     ) -> Option<(Clip, Clip)> {
-        if let Some(drag) = self.active_trim_drag.as_ref()
+        if let Some(drag) = self.interaction.active_trim_drag.as_ref()
             && drag.source_track == track
             && only.is_none_or(|id| id == drag.clip.id())
             && self.trim_drag_current(drag)
@@ -42,7 +42,7 @@ impl EditorView {
         {
             return Some((drag.clip.clone(), preview.clip.clone()));
         }
-        let pending = self.pending_trim.as_ref()?;
+        let pending = self.interaction.pending_trim.as_ref()?;
         if pending.track != track {
             return None;
         }
@@ -74,7 +74,7 @@ impl EditorView {
         {
             return Some((Rc::clone(&drag.clip), preview));
         }
-        let pending = self.pending_trim.as_ref()?;
+        let pending = self.interaction.pending_trim.as_ref()?;
         if pending.track != track {
             return None;
         }
@@ -93,14 +93,17 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn pending_trim_matches(&self, request: &Request) -> bool {
-        self.pending_trim.as_ref().is_some_and(|pending| {
-            pending.generation == self.project_generation
-                && pending.remaining.is_none()
-                && ResizeCommand::from_request(request) == Some(pending.command)
-        })
+        self.interaction
+            .pending_trim
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.generation == self.project_generation
+                    && pending.remaining.is_none()
+                    && ResizeCommand::from_request(request) == Some(pending.command)
+            })
     }
     pub(in crate::editor) fn trim_request_submitted(&mut self) {
-        if let Some(pending) = self.pending_trim.as_mut() {
+        if let Some(pending) = self.interaction.pending_trim.as_mut() {
             pending.remaining = Some(self.worker_requests_pending);
             if let Some(state) = &self.state {
                 pending.revision = state.revision;
@@ -115,9 +118,9 @@ impl EditorView {
         event: &hex_session::service::Event,
         retry: &mut Option<Request>,
     ) -> Option<RetiredTrimViewport> {
-        let pending = self.pending_trim.as_mut()?;
+        let pending = self.interaction.pending_trim.as_mut()?;
         if event.project_replaced || pending.generation != self.project_generation {
-            self.pending_trim = None;
+            self.interaction.pending_trim = None;
             self.service.audition_arrangement_stretch(None);
             return None;
         }
@@ -143,7 +146,11 @@ impl EditorView {
                     return None;
                 }
                 self.service.audition_arrangement_stretch(None);
-                return self.pending_trim.take().map(PendingTrim::into_viewport);
+                return self
+                    .interaction
+                    .pending_trim
+                    .take()
+                    .map(PendingTrim::into_viewport);
             }
         }
         None
@@ -158,14 +165,18 @@ impl EditorView {
     }
     pub(in crate::editor) fn mark_replayed_trim(&mut self, request: &Request) {
         if self.pending_trim_matches(request)
-            && let Some(pending) = &mut self.pending_trim
+            && let Some(pending) = &mut self.interaction.pending_trim
         {
             pending.replayed = true;
         }
     }
 
     pub(in crate::editor) fn retire_pending_trim(&mut self) -> bool {
-        let terminal = self.pending_trim.take().map(PendingTrim::into_viewport);
+        let terminal = self
+            .interaction
+            .pending_trim
+            .take()
+            .map(PendingTrim::into_viewport);
         let retired = terminal.is_some();
         if retired {
             self.service.audition_arrangement_stretch(None);
@@ -239,7 +250,7 @@ impl EditorView {
         viewport: Viewport,
     ) -> Option<AudioTrimSource> {
         let state = self.state.as_ref()?;
-        let lane = *self.drag_lanes.get(&track)?;
+        let lane = *self.timeline_caches.drag_lanes.get(&track)?;
         let clip = state
             .project
             .track(track)?
@@ -274,7 +285,7 @@ impl EditorView {
         viewport: Viewport,
     ) -> Option<MidiTrimDrag> {
         let state = self.state.as_ref()?;
-        let lane = *self.drag_lanes.get(&track)?;
+        let lane = *self.timeline_caches.drag_lanes.get(&track)?;
         let clip = state
             .project
             .track(track)?
@@ -451,7 +462,7 @@ impl EditorView {
         if !drag_admitted(self) || handle_width(clip_width) <= 0.0 {
             return Vec::new();
         }
-        let Some(lane) = self.drag_lanes.get(&track).copied() else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&track).copied() else {
             return Vec::new();
         };
         let Some(asset) = state.project.asset(clip.asset()) else {
@@ -511,7 +522,7 @@ impl EditorView {
         if !drag_admitted(self) || handle_width(clip_width) <= 0.0 {
             return Vec::new();
         }
-        let Some(lane) = self.drag_lanes.get(&track).copied() else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&track).copied() else {
             return Vec::new();
         };
         let drag = MidiTrimDrag {
@@ -621,7 +632,7 @@ impl EditorView {
         let repeat_hover = control.is_none()
             && edge == TrimEdge::Right
             && payload.repeat_available
-            && self.option_held;
+            && self.interaction.option_held;
         let repeat_available = payload.repeat_available;
         loop_handles::base(edge, clip_width, lane.height, control, repeat_hover, scale)
             .id((element_prefix, clip_id.value()))
@@ -724,7 +735,7 @@ impl EditorView {
         let repeat_hover = control.is_none()
             && edge == TrimEdge::Right
             && source.repeat_available
-            && self.option_held;
+            && self.interaction.option_held;
         let repeat_available = source.repeat_available;
         loop_handles::base(edge, clip_width, lane.height, control, repeat_hover, scale)
             .id((element_prefix, clip_id.value()))
@@ -849,7 +860,7 @@ impl EditorView {
         if generation == self.project_generation
             && owned.is_some()
             && self.viewport == owned
-            && self.active_trim_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
             && let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames)
         {
@@ -865,11 +876,11 @@ impl EditorView {
         canceled_view: bool,
         cx: &mut Context<Self>,
     ) -> bool {
-        let audio = self.active_trim_drag.take();
+        let audio = self.interaction.active_trim_drag.take();
         let midi = self.midi_editor.active_trim_drag.take();
         let canceled = audio.is_some() || midi.is_some();
         if canceled {
-            self.hovered_arrangement_clip = None;
+            self.interaction.hovered_arrangement_clip = None;
         }
         if let Some(drag) = audio {
             if canceled_view {
@@ -902,7 +913,7 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn begin_trim_drag(&mut self, drag: &TrimDrag) {
-        self.active_trim_drag = Some(drag.clone());
+        self.interaction.active_trim_drag = Some(drag.clone());
     }
 
     pub(in crate::editor) fn clear_trim_drag(
@@ -911,9 +922,14 @@ impl EditorView {
         clip: hex_project::ClipId,
         cx: &mut Context<Self>,
     ) {
-        if self.active_trim_drag.as_ref().is_some_and(|active| {
-            active.project_generation == generation && active.clip.id() == clip
-        }) {
+        if self
+            .interaction
+            .active_trim_drag
+            .as_ref()
+            .is_some_and(|active| {
+                active.project_generation == generation && active.clip.id() == clip
+            })
+        {
             self.cancel_trim_gesture(cx);
         }
     }
@@ -932,7 +948,12 @@ impl EditorView {
             return false;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
-        let Some(lane) = self.drag_lanes.get(&drag.source_track).copied() else {
+        let Some(lane) = self
+            .timeline_caches
+            .drag_lanes
+            .get(&drag.source_track)
+            .copied()
+        else {
             return false;
         };
         if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
@@ -959,13 +980,13 @@ impl EditorView {
             };
             if held {
                 // Hold the last valid extent rather than dropping the gesture.
-                self.active_trim_drag = Some(drag.clone());
+                self.interaction.active_trim_drag = Some(drag.clone());
                 cx.notify();
                 return false;
             }
         }
         let changed = replace_audio_trim_preview(&drag.preview, next);
-        self.active_trim_drag = Some(drag.clone());
+        self.interaction.active_trim_drag = Some(drag.clone());
         self.sync_held_stretch_audition();
         if changed {
             cx.notify();
@@ -974,7 +995,7 @@ impl EditorView {
     }
 
     pub(in crate::editor) fn sync_held_stretch_audition(&self) {
-        let Some(drag) = self.active_trim_drag.as_ref() else {
+        let Some(drag) = self.interaction.active_trim_drag.as_ref() else {
             return;
         };
         let playing = self
@@ -986,7 +1007,8 @@ impl EditorView {
             .filter(|preview| {
                 playing
                     && self.mode == super::super::EditorMode::Arrangement
-                    && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                    && self.audio_pub.document_audio_mode
+                        == hex_session::DocumentAudioMode::Resident
                     && drag.stretch_modifier.get()
                     && effective_loop_kind(drag).is_none()
                     && preview.stretch
@@ -1011,7 +1033,7 @@ impl EditorView {
         stretch: bool,
         cx: &mut Context<Self>,
     ) {
-        if let Some(drag) = self.active_trim_drag.clone()
+        if let Some(drag) = self.interaction.active_trim_drag.clone()
             && {
                 let snap_changed = drag.snap_modifier.replace(held) != held;
                 let stretch_changed = drag.stretch_modifier.replace(stretch) != stretch;

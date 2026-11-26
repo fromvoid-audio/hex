@@ -231,7 +231,7 @@ pub(super) fn marker_handle(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(move |view, down: &gpui::MouseDownEvent, window, cx| {
-                if view.time_selection_key_held
+                if view.interaction.time_selection_key_held
                     || view.audio_detail.event.fade_key_held
                     || !view.audio_navigation_idle()
                 {

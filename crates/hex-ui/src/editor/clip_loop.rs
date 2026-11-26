@@ -70,7 +70,7 @@ impl EditorView {
         let target = (self.mode == super::EditorMode::Arrangement
             && self.audio_detail.clip_view_open
             && !self.device_panel.active
-            && self.recovery.generation().is_none()
+            && self.audio_pub.recovery.generation().is_none()
             && !self.edit_pending()
             && self
                 .audio_status()
@@ -81,7 +81,7 @@ impl EditorView {
                 .or_else(|| self.held_midi_play_start_audition())
         })
         .flatten();
-        if self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && let Some(target) = &target
             && let hex_session::service::PlayStartEdit::Audio { clip, .. } = target.edit
             && self.has_output_fault_requiring_recovery()
@@ -89,10 +89,14 @@ impl EditorView {
             if self.audio_detail.clip_loop.play_start_audition_held {
                 self.set_held_play_start_audition(None);
             }
-            if self.pending_restart_request.is_none() && self.claim_audio_play_start_recovery() {
+            if self.audio_pub.pending_restart_request.is_none()
+                && self.claim_audio_play_start_recovery()
+            {
                 self.recover_audio();
-                if self.recovery.generation().is_some() {
-                    self.recovery.bind_clip_play_start(target.context, clip);
+                if self.audio_pub.recovery.generation().is_some() {
+                    self.audio_pub
+                        .recovery
+                        .bind_clip_play_start(target.context, clip);
                     self.defer_play_until_audio_recovers();
                 }
             }
@@ -395,7 +399,7 @@ impl EditorView {
             AudioEdit::Resize(AudioViewResizeOperation::PlayStart { .. })
         );
         let recovering = play_start && self.recovering_clip_play_start(clip);
-        if (play_start && self.recovery.generation().is_some() && !recovering)
+        if (play_start && self.audio_pub.recovery.generation().is_some() && !recovering)
             || (self.edit_pending() && !recovering)
             || self.audio_detail.clip_loop.pending.is_some()
         {

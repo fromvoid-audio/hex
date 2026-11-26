@@ -289,21 +289,21 @@ impl EditorView {
             || self.persistence.export_dialog_open
             || self.persistence.save_dialog_open
             || self.device_panel.preset_dialog_open
-            || self.arrangement_pan.is_some()
-            || self.pointer_down.is_some()
+            || self.interaction.arrangement_pan.is_some()
+            || self.interaction.pointer_down.is_some()
             || self.device_panel.project_spectrum.resize_is_active()
             || self.audio_detail.detail_resize.is_active()
             || self.device_panel.navigation.is_active()
-            || self.clip_paint_gesture.is_some()
-            || self.active_clip_drag.is_some()
+            || self.interaction.clip_paint_gesture.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.scrub_active()
             || cx.has_active_drag()
@@ -322,6 +322,7 @@ impl EditorView {
         self.sync_track_layout(state.project.tracks());
         if self.track_layout.generation != self.project_generation
             || !self
+                .timeline_caches
                 .arrangement_bounds
                 .is_some_and(|area| area.height.is_finite() && area.height > 0.0)
         {
@@ -349,6 +350,7 @@ impl EditorView {
             return false;
         }
         let Some(area) = self
+            .timeline_caches
             .arrangement_bounds
             .filter(|area| area.height.is_finite() && area.height > 0.0)
         else {
@@ -411,6 +413,7 @@ impl EditorView {
         };
         self.sync_track_layout(state.project.tracks());
         let maximum = self
+            .timeline_caches
             .arrangement_bounds
             .filter(|area| area.height.is_finite())
             .map(|area| area.height.max(TRACK_ROW_HEIGHT));
@@ -603,9 +606,11 @@ impl EditorView {
         let original = if row == Row::Main {
             // Flex may reduce Main after window resizing; its painted lane
             // excludes the one-pixel top border, just as edge resizing does.
-            self.main_track_lane_bounds
+            self.timeline_caches
+                .main_track_lane_bounds
                 .filter(|lane| {
-                    self.main_track_lane_epoch == self.drag_layout_generation
+                    self.timeline_caches.main_track_lane_epoch
+                        == self.timeline_caches.drag_layout_generation
                         && lane.height.is_finite()
                         && lane.height > 0.
                 })
@@ -614,6 +619,7 @@ impl EditorView {
             self.row_body_height(row)
         };
         let available = self
+            .timeline_caches
             .arrangement_bounds
             .filter(|body| body.height.is_finite())
             .map_or(TRACK_ROW_HEIGHT, |body| body.height.max(TRACK_ROW_HEIGHT));
@@ -906,16 +912,16 @@ impl EditorView {
             || self.track_gain_controls.has_pending_draft(cx)
             || self.gain_numeric_editing(cx)
             || self.context_menu.is_some()
-            || self.arrangement_pan.is_some()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.arrangement_pan.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.browser.active_audio_drag.is_some()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
         {
             return;

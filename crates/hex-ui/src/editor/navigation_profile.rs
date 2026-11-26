@@ -258,7 +258,7 @@ fn fixture(
         editor.update(cx, |view, cx| {
             view.audio_detail.clip_view_open = false;
             view.device_panel.active = false;
-            view.edit_cursor = None;
+            view.interaction.edit_cursor = None;
             view.focus.focus(window);
             cx.notify();
         });
@@ -283,6 +283,7 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
     editor.read_with(visual, |view, app| {
         let mut result = Observation {
             builds: view
+                .timeline_caches
                 .clip_content_cache
                 .entries
                 .values()
@@ -293,12 +294,14 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
         let state = view.state.as_ref().unwrap();
         let viewport = view.visible_viewport(state.timeline_frames);
         let end = viewport.end().unwrap();
-        let body = view.arrangement_bounds.unwrap();
+        let body = view.timeline_caches.arrangement_bounds.unwrap();
         for track in state.project.tracks() {
-            if view.drag_lane_epochs.get(&track.id()) != Some(&view.drag_layout_generation) {
+            if view.timeline_caches.drag_lane_epochs.get(&track.id())
+                != Some(&view.timeline_caches.drag_layout_generation)
+            {
                 continue;
             }
-            let Some(lane) = view.drag_lanes.get(&track.id()) else {
+            let Some(lane) = view.timeline_caches.drag_lanes.get(&track.id()) else {
                 continue;
             };
             if lane.top >= body.top + body.height || lane.top + lane.height <= body.top {
@@ -323,7 +326,7 @@ fn observe(editor: &Entity<EditorView>, visual: &VisualTestContext) -> Observati
                 })
                 .count();
         }
-        let cache = view.waveform_geometry_cache.borrow();
+        let cache = view.timeline_caches.waveform_geometry_cache.borrow();
         result.waveform_paints = cache.painted_waveforms().len();
         result.geometry_entries = cache.entry_count();
         result.envelope_points = cache
@@ -500,14 +503,14 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         // Rows are laid out separately and each rounded to
                         // device pixels. Reserve a pixel per row so rounded
                         // heights cannot put the final row outside the view.
-                        let measured = view.arrangement_bounds;
+                        let measured = view.timeline_caches.arrangement_bounds;
                         let margin = tracks as f32 / window.scale_factor().max(1.0);
-                        view.arrangement_bounds = measured.map(|mut area| {
+                        view.timeline_caches.arrangement_bounds = measured.map(|mut area| {
                             area.height -= margin;
                             area
                         });
                         view.fit_tracks_vertically(&ids);
-                        view.arrangement_bounds = measured;
+                        view.timeline_caches.arrangement_bounds = measured;
                         cx.notify();
                     });
                     window.draw(cx).clear();
@@ -523,7 +526,7 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                 let (track, body) = editor.read_with(cx, |view, _| {
                     (
                         view.state.as_ref().unwrap().project.tracks()[0].id(),
-                        view.arrangement_bounds.unwrap(),
+                        view.timeline_caches.arrangement_bounds.unwrap(),
                     )
                 });
                 let selector =
@@ -547,8 +550,11 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         if reference { "reference" } else { "current" },
                     );
                     editor.update(cx, |view, cx| {
-                        view.waveform_geometry_cache.borrow_mut().clear();
-                        view.clip_content_cache.entries.clear();
+                        view.timeline_caches
+                            .waveform_geometry_cache
+                            .borrow_mut()
+                            .clear();
+                        view.timeline_caches.clip_content_cache.entries.clear();
                         cx.notify();
                     });
                 }
@@ -571,7 +577,9 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         window.draw(cx).clear();
                         window.draw(cx).clear();
                     });
-                    let body = editor.read_with(cx, |view, _| view.arrangement_bounds.unwrap());
+                    let body = editor.read_with(cx, |view, _| {
+                        view.timeline_caches.arrangement_bounds.unwrap()
+                    });
                     if fit_rows {
                         let first = observe(&editor, &visual);
                         let audio = initial_project
@@ -615,11 +623,17 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                             )
                         });
                         editor.read_with(cx, |view, _| {
-                            assert!(view.arrangement_pan.is_some(), "actual middle capture")
+                            assert!(
+                                view.interaction.arrangement_pan.is_some(),
+                                "actual middle capture"
+                            )
                         });
                     }
                     editor.update(cx, |view, _| {
-                        view.waveform_geometry_cache.borrow_mut().clear()
+                        view.timeline_caches
+                            .waveform_geometry_cache
+                            .borrow_mut()
+                            .clear()
                     });
                     let mut rows = Vec::with_capacity(rounds);
                     for iteration in 0..rounds {
@@ -627,7 +641,8 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                             await_navigation_interleave(action, iteration);
                         }
                         let before = editor.read_with(cx, |view, _| {
-                            view.waveform_geometry_cache
+                            view.timeline_caches
+                                .waveform_geometry_cache
                                 .borrow_mut()
                                 .clear_paint_samples();
                             view.visible_viewport(view.state.as_ref().unwrap().timeline_frames)
@@ -761,7 +776,10 @@ fn headless_navigation_framework_profile(cx: &mut TestAppContext) {
                         });
                         if pan_sweep {
                             editor.read_with(cx, |view, _| {
-                                assert!(view.arrangement_pan.is_none(), "held pan must retire");
+                                assert!(
+                                    view.interaction.arrangement_pan.is_none(),
+                                    "held pan must retire"
+                                );
                             });
                         }
                     }

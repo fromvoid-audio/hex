@@ -12,9 +12,13 @@ impl EditorView {
             InputQuantization::Off => Ok(ResolvedInputGrid::off()),
             InputQuantization::Adaptive => {
                 let lane = self
+                    .timeline_caches
                     .main_track_lane_bounds
                     .filter(|lane| lane.width.is_finite() && lane.width > 0.0)
-                    .filter(|_| self.main_track_lane_epoch == self.drag_layout_generation)
+                    .filter(|_| {
+                        self.timeline_caches.main_track_lane_epoch
+                            == self.timeline_caches.drag_layout_generation
+                    })
                     .ok_or("input grid layout is not ready")?;
                 self.snap_grid
                     .freeze_input_grid(

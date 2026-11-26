@@ -48,8 +48,8 @@ fn clip_paint_double_click_hold_previews_then_commits_once(cx: &mut TestAppConte
         );
         assert!((f32::from(preview.size.width) - f32::from(lane.size.width) * 0.25).abs() < 1.0);
         editor.read_with(cx, |view, _| {
-            assert!(view.clip_paint_gesture.is_some());
-            assert!(view.time_selection_gesture.is_none());
+            assert!(view.interaction.clip_paint_gesture.is_some());
+            assert!(view.interaction.time_selection_gesture.is_none());
             assert!(
                 view.test_probes.last_enqueued_edit.is_none(),
                 "preview must not edit history"
@@ -89,8 +89,8 @@ fn clip_paint_cancels_and_rejects_explicit_handles_and_stale_state(cx: &mut Test
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
     let (start, end, occupied) = editor.read_with(cx, |view, _| {
-        let lane = view.drag_lanes[&target];
-        let source = view.drag_lanes[&source];
+        let lane = view.timeline_caches.drag_lanes[&target];
+        let source = view.timeline_caches.drag_lanes[&source];
         (
             (lane.left + lane.width * 0.25, lane.top + 22.0),
             (lane.left + lane.width * 0.5, lane.top + 22.0),
@@ -103,7 +103,7 @@ fn clip_paint_cancels_and_rejects_explicit_handles_and_stale_state(cx: &mut Test
     });
     visual.simulate_keystrokes("escape");
     editor.update(cx, |view, _| {
-        assert!(view.clip_paint_gesture.is_none());
+        assert!(view.interaction.clip_paint_gesture.is_none());
         assert!(!view.finish_clip_paint(end.0, end.1, false));
         assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(view.begin_clip_paint(start.0, start.1, false));
@@ -124,7 +124,7 @@ fn clip_paint_minimum_length(cx: &mut TestAppContext) {
     visual.run_until_parked();
     editor.update(cx, |view, _| {
         view.snap_grid = super::musical_time::SnapGrid::Quarter;
-        let lane = view.drag_lanes[&target];
+        let lane = view.timeline_caches.drag_lanes[&target];
         let x = lane.left + lane.width * 0.25;
         let y = lane.top + 22.0;
         assert!(view.begin_clip_paint(x, y, false));
@@ -142,7 +142,7 @@ fn clip_paint_free_drag_uses_pointer_beats(cx: &mut TestAppContext) {
         visual.run_until_parked();
         editor.update(cx, |view, _| {
             view.snap_grid = super::musical_time::SnapGrid::Off;
-            let lane = view.drag_lanes[&target];
+            let lane = view.timeline_caches.drag_lanes[&target];
             let x = lane.left + lane.width * if left { 0.437 } else { 0.173 };
             let end_x = lane.left + lane.width * if left { 0.173 } else { 0.437 };
             let y = lane.top + 22.0;
@@ -196,8 +196,8 @@ fn clip_headers_grab_and_double_clicking_audio_or_midi_selects(cx: &mut TestAppC
         );
         visual.simulate_mouse_down(grab, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
-            assert!(view.pointer_down.is_some());
-            assert!(view.time_selection_gesture.is_none());
+            assert!(view.interaction.pointer_down.is_some());
+            assert!(view.interaction.time_selection_gesture.is_none());
         });
         visual.simulate_mouse_up(grab, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| assert_eq!(view.selected_clip(), Some(clip)));
@@ -211,12 +211,14 @@ fn clip_headers_grab_and_double_clicking_audio_or_midi_selects(cx: &mut TestAppC
             Some(gpui::CursorStyle::Arrow)
         );
         visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
-        editor.read_with(cx, |view, _| assert!(view.time_selection_gesture.is_some()));
+        editor.read_with(cx, |view, _| {
+            assert!(view.interaction.time_selection_gesture.is_some())
+        });
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(view.normalized_time_selection().is_some());
-            assert!(view.active_clip_drag.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
             assert!(view.selected_clip().is_none());
             assert!(view.test_probes.last_enqueued_edit.is_none());
         });
@@ -234,8 +236,8 @@ fn clip_headers_grab_and_double_clicking_audio_or_midi_selects(cx: &mut TestAppC
         assert!(visual.debug_bounds("clip-paint-preview").is_none());
         editor.read_with(cx, |view, _| {
             assert_eq!(view.selected_clip(), Some(clip));
-            assert!(view.clip_paint_gesture.is_none());
-            assert!(view.active_clip_drag.is_none());
+            assert!(view.interaction.clip_paint_gesture.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
             assert!(view.test_probes.last_enqueued_edit.is_none());
             assert_eq!(view.state.as_ref().unwrap().project.as_ref(), &original);
         });
@@ -291,7 +293,7 @@ fn clip_review_header_selects_while_pending_and_when_leaving_rename(cx: &mut Tes
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             assert_eq!(view.selected_clip(), Some(other), "one click selects even without a drag surface");
-            assert!(view.active_clip_drag.is_none());
+            assert!(view.interaction.active_clip_drag.is_none());
             if renaming {
                 assert!(view.clip_name_edit.is_none());
                 assert!(matches!(view.test_probes.last_enqueued_edit, Some(Command::RenameClip { clip: id, .. }) if id == clip));
@@ -362,7 +364,7 @@ fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
         visual.simulate_mouse_down(body, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {
             assert!(
-                view.time_selection_gesture.is_some(),
+                view.interaction.time_selection_gesture.is_some(),
                 "visible body accepts selection across hidden trim edge"
             )
         });
@@ -381,7 +383,7 @@ fn clip_review_visible_body_wins_over_occluded_edges(cx: &mut TestAppContext) {
                 Some(visible),
                 "the topmost painted clip is selected"
             );
-            assert!(view.clip_paint_gesture.is_none());
+            assert!(view.interaction.clip_paint_gesture.is_none());
             assert!(view.test_probes.last_enqueued_edit.is_none());
         });
     }

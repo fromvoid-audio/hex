@@ -280,8 +280,8 @@ fn committed_paste_paints_before_ack_and_preserves_a_later_selection(cx: &mut Te
 
     editor.update(&mut visual, |view, _| {
         let state = view.state.as_ref().unwrap();
-        view.time_selection = None;
-        view.edit_cursor = Some(EditCursor {
+        view.interaction.time_selection = None;
+        view.interaction.edit_cursor = Some(EditCursor {
             track: Some(state.project.tracks()[0].id()),
             frame: 72_000,
             generation: view.project_generation,
@@ -338,7 +338,7 @@ fn committed_paste_paints_before_ack_and_preserves_a_later_selection(cx: &mut Te
     assert_eq!(visual.debug_bounds(selector), Some(before_ack));
 
     editor.update(&mut visual, |view, _| {
-        view.edit_cursor.as_mut().unwrap().frame = 120_000;
+        view.interaction.edit_cursor.as_mut().unwrap().frame = 120_000;
     });
     visual.simulate_keystrokes("cmd-v");
     pump(&editor, &mut visual);

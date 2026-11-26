@@ -173,7 +173,7 @@ fn focusing_a_return_keeps_regular_selection_and_project_scope(cx: &mut TestAppC
     let mut visual = VisualTestContext::from_window(handle, cx);
     view.update(cx, |view, cx| {
         view.selected_track = Some(track);
-        view.time_selection_project_scope = true;
+        view.interaction.time_selection_project_scope = true;
         cx.notify();
     });
     visual.run_until_parked();
@@ -187,7 +187,7 @@ fn focusing_a_return_keeps_regular_selection_and_project_scope(cx: &mut TestAppC
     view.read_with(cx, |view, _| {
         assert_eq!(view.selected_track, Some(track));
         assert_eq!(view.session_grid.focused_return, Some(return_track));
-        assert!(view.time_selection_project_scope);
+        assert!(view.interaction.time_selection_project_scope);
         assert!(view.device_panel.active);
         assert!(view.audio_detail.clip_view_open);
     });
@@ -278,9 +278,9 @@ fn main_gain_slider_composes_with_lane_selection_in_both_views(cx: &mut TestAppC
     visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.time_selection.is_some());
-        assert!(view.edit_cursor.is_some());
-        assert!(view.time_selection_project_scope);
+        assert!(view.interaction.time_selection.is_some());
+        assert!(view.interaction.edit_cursor.is_some());
+        assert!(view.interaction.time_selection_project_scope);
         assert!(view.selected_track.is_none());
     });
     editor.update(cx, |view, cx| {
@@ -328,7 +328,7 @@ fn main_lane_drag_selects_all_tracks_and_copy_uses_project_scope(cx: &mut TestAp
                 .map(|track| track.id())
                 .collect::<Vec<_>>()
         );
-        assert!(view.time_selection_project_scope);
+        assert!(view.interaction.time_selection_project_scope);
         assert!(view.selected_track.is_none());
         range.tracks().to_vec()
     });
@@ -367,9 +367,10 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
                 top: 400.0,
                 height: 30.0,
             };
-            view.main_track_lane_bounds = Some(lane);
-            view.main_track_lane_epoch = view.drag_layout_generation;
-            for regular in view.drag_lanes.values_mut() {
+            view.timeline_caches.main_track_lane_bounds = Some(lane);
+            view.timeline_caches.main_track_lane_epoch =
+                view.timeline_caches.drag_layout_generation;
+            for regular in view.timeline_caches.drag_lanes.values_mut() {
                 regular.left = left;
                 regular.width = width - 1.0;
             }
@@ -383,7 +384,10 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
                 view.normalized_time_selection().is_none(),
                 "stationary click became a range"
             );
-            assert_eq!(view.edit_cursor.expect("cursor").frame, expected);
+            assert_eq!(
+                view.interaction.edit_cursor.expect("cursor").frame,
+                expected
+            );
 
             assert!(view.begin_main_time_selection_gesture(x, y, true, false));
             assert!(view.update_time_selection_gesture(left + width * 0.6, y, true));
@@ -394,7 +398,7 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
                 (expected, viewport.start + viewport.length * 3 / 5)
             );
             assert_eq!(range.tracks().len(), 3);
-            assert!(view.time_selection_project_scope);
+            assert!(view.interaction.time_selection_project_scope);
             assert!(view.selected_track.is_none());
 
             // Grabbing the selected rectangle without moving must not shift its contents.
@@ -411,14 +415,16 @@ fn unsnapped_main_gestures_keep_main_geometry_after_resize_and_pan(cx: &mut Test
             let now = std::time::Instant::now() + std::time::Duration::from_millis(50);
             assert!(!view.tick_time_gesture_autoscroll(now));
             assert_eq!(view.visible_viewport(384_000), viewport);
-            let selection = view.time_selection;
-            view.main_track_lane_epoch = view.drag_layout_generation.wrapping_add(1);
+            let selection = view.interaction.time_selection;
+            view.timeline_caches.main_track_lane_epoch =
+                view.timeline_caches.drag_layout_generation.wrapping_add(1);
             assert!(!view.update_time_selection_gesture(x, y, true));
             assert_eq!(
-                view.time_selection, selection,
+                view.interaction.time_selection, selection,
                 "stale Main geometry must not use a regular row"
             );
-            view.main_track_lane_epoch = view.drag_layout_generation;
+            view.timeline_caches.main_track_lane_epoch =
+                view.timeline_caches.drag_layout_generation;
             assert!(view.finish_time_selection_gesture());
         }
     });
@@ -436,20 +442,20 @@ fn empty_project_main_lane_does_not_create_an_invalid_selection(cx: &mut TestApp
     visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
     editor.read_with(cx, |view, _| {
-        assert!(view.time_selection.is_none());
-        assert!(view.edit_cursor.is_none());
-        assert!(!view.time_selection_project_scope);
+        assert!(view.interaction.time_selection.is_none());
+        assert!(view.interaction.edit_cursor.is_none());
+        assert!(!view.interaction.time_selection_project_scope);
         assert!(view.selected_track.is_none());
     });
     let stale_track = project_with_tracks(1).tracks()[0].id();
     editor.update(cx, |view, _| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(stale_track),
             end_track: Some(stale_track),
             anchor_frame: 0,
             end_frame: 48_000,
         });
-        view.time_selection_project_scope = true;
+        view.interaction.time_selection_project_scope = true;
         assert_eq!(view.time_selection_track_indices(), None);
     });
 }
@@ -464,33 +470,37 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
     editor.update(cx, |view, _| {
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(track_ids[0]),
             end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
-        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+        view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
             track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
             pulse_started: std::time::Instant::now(),
         });
-        view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
-            source: range.clone(),
-            range,
-            project_scope: false,
-            destination_first_index: 0,
-            destination_last_index: track_ids.len() - 1,
-            source_revision: state.revision,
-            selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
-            copy_modifier: false,
-            keyboard: None,
-        });
+        view.interaction.pending_time_range_move =
+            Some(super::time_selection::PendingTimeRangeMove {
+                source: range.clone(),
+                range,
+                project_scope: false,
+                destination_first_index: 0,
+                destination_last_index: track_ids.len() - 1,
+                source_revision: state.revision,
+                selection_intent_epoch: view
+                    .interaction
+                    .selection_intent_epoch
+                    .expect("selection epoch"),
+                copy_modifier: false,
+                keyboard: None,
+            });
         let event = completed_event(state);
         view.move_time_selection_complete(&event);
-        assert!(!view.time_selection_project_scope);
+        assert!(!view.interaction.time_selection_project_scope);
         assert_eq!(view.selected_track, track_ids.last().copied());
     });
 }
@@ -503,36 +513,41 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
     editor.update(cx, |view, _| {
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(track_ids[0]),
             end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
-        view.time_selection_project_scope = true;
-        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+        view.interaction.time_selection_project_scope = true;
+        view.interaction.edit_cursor = Some(super::edit_cursor::EditCursor {
             track: Some(track_ids[0]),
             frame: range.start(),
             generation: view.project_generation,
             pulse_color: 0,
             pulse_started: std::time::Instant::now(),
         });
-        view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
-            source: range.clone(),
-            range,
-            project_scope: true,
-            destination_first_index: 0,
-            destination_last_index: track_ids.len() - 1,
-            source_revision: state.revision,
-            selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
-            copy_modifier: false,
-            keyboard: None,
-        });
+        view.interaction.pending_time_range_move =
+            Some(super::time_selection::PendingTimeRangeMove {
+                source: range.clone(),
+                range,
+                project_scope: true,
+                destination_first_index: 0,
+                destination_last_index: track_ids.len() - 1,
+                source_revision: state.revision,
+                selection_intent_epoch: view
+                    .interaction
+                    .selection_intent_epoch
+                    .expect("selection epoch"),
+                copy_modifier: false,
+                keyboard: None,
+            });
         let event = completed_event(state);
         view.move_time_selection_complete(&event);
-        assert!(view.time_selection_project_scope);
+        assert!(view.interaction.time_selection_project_scope);
         assert_eq!(
-            view.time_selection
+            view.interaction
+                .time_selection
                 .map(|selection| (selection.anchor_track, selection.end_track)),
             Some((Some(track_ids[0]), track_ids.last().copied()))
         );
@@ -546,13 +561,13 @@ fn main_selection_handle_option_drag_copies_the_project_rectangle(cx: &mut TestA
     let track_ids: Vec<_> = project.tracks().iter().map(|track| track.id()).collect();
     let (handle, editor) = editor_window(cx, project, Arc::default());
     editor.update(cx, |view, cx| {
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(track_ids[0]),
             end_track: Some(*track_ids.last().expect("tracks")),
             anchor_frame: 48_000,
             end_frame: 144_000,
         });
-        view.time_selection_project_scope = true;
+        view.interaction.time_selection_project_scope = true;
         cx.notify();
     });
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -610,7 +625,7 @@ fn return_headers_share_track_geometry_without_redundant_section_chrome(cx: &mut
             };
             let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
             editor.update(cx, |view, cx| {
-                view.document_audio_mode = mode;
+                view.audio_pub.document_audio_mode = mode;
                 cx.notify();
             });
             let mut visual = VisualTestContext::from_window(handle, cx);
@@ -1070,11 +1085,14 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
                     visual.run_until_parked();
                     editor.read_with(&visual, |v, _| {
                         assert_eq!(
-                            v.active_clip_drag.as_ref().map(|drag| drag.clip),
+                            v.interaction
+                                .active_clip_drag
+                                .as_ref()
+                                .map(|drag| drag.clip),
                             Some(clip)
                         );
                         assert!(
-                            v.active_trim_drag.is_none()
+                            v.interaction.active_trim_drag.is_none()
                                 && v.midi_editor.active_trim_drag.is_none()
                         );
                     });
@@ -1090,7 +1108,7 @@ fn clips_and_main_sections_share_grid_endpoints_through_fractional_pan_and_resiz
             }
             editor.read_with(&visual, |v, _| {
                 for track in v.state.as_ref().unwrap().project.tracks() {
-                    let measured = v.drag_lanes.get(&track.id()).unwrap();
+                    let measured = v.timeline_caches.drag_lanes.get(&track.id()).unwrap();
                     assert_eq!(measured.left, f32::from(lane.left()));
                     assert_eq!(measured.width, f32::from(lane.size.width));
                 }

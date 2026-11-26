@@ -719,7 +719,7 @@ mod tests {
         assert!(preview.tuning_preview.is_some());
         editor.update(cx, |view, _| {
             view.receive(preview);
-            assert!(view.pending_playback.is_some());
+            assert!(view.audio_pub.pending_playback.is_some());
             assert_eq!(
                 view.settings.tuning.broadcast.accepted,
                 Some(original),

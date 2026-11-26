@@ -16,7 +16,7 @@ struct Frame {
 impl Frame {
     fn capture(view: &EditorView) -> Option<Self> {
         let status = view.audio_status()?;
-        let source = view.audible_playback.as_ref()?;
+        let source = view.audio_pub.audible_playback.as_ref()?;
         let applied = status.applied_revision.load(Acquire);
         // The callback can apply a preview before the matching project arrives
         // in GPUI. Continue sampling the last acknowledged project meanwhile.

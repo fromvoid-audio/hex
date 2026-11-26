@@ -115,12 +115,12 @@ impl EditorView {
             || self.track_reorder_active()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.time_selection_gesture.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
             || self.gain_lane.draft.is_some()
             || self.sections.naming()
             || self.settings.tuning.open
@@ -276,7 +276,7 @@ impl EditorView {
         if g.mode != EditorMode::Arrangement {
             return false;
         }
-        let Some(bounds) = self.arrangement_bounds else {
+        let Some(bounds) = self.timeline_caches.arrangement_bounds else {
             return false;
         };
         let x = f32::from(event.position.x);
@@ -311,7 +311,8 @@ impl EditorView {
         let pointer = g.pointer;
         self.track_scroll
             .set_offset(gpui::point(offset.x, px(next)));
-        self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
+        self.timeline_caches.drag_layout_generation =
+            self.timeline_caches.drag_layout_generation.wrapping_add(1);
         self.update_track_reorder(gpui::point(px(pointer.0), px(pointer.1)));
         true
     }
@@ -372,7 +373,7 @@ impl EditorView {
         pointer: (f32, f32),
         source: &subtree::SourceRows,
     ) -> Option<Destination> {
-        let bounds = self.arrangement_bounds?;
+        let bounds = self.timeline_caches.arrangement_bounds?;
         let (x, y) = pointer;
         if !x.is_finite()
             || !y.is_finite()
@@ -819,7 +820,7 @@ impl EditorView {
         if g.mode == EditorMode::Session {
             return self.tick_console_reorder(now);
         }
-        let Some(b) = self.arrangement_bounds else {
+        let Some(b) = self.timeline_caches.arrangement_bounds else {
             return false;
         };
         let (x, y) = g.pointer;
@@ -851,7 +852,8 @@ impl EditorView {
         }
         self.track_scroll
             .set_offset(gpui::point(offset.x, px(next_y)));
-        self.drag_layout_generation = self.drag_layout_generation.wrapping_add(1);
+        self.timeline_caches.drag_layout_generation =
+            self.timeline_caches.drag_layout_generation.wrapping_add(1);
         if let Some(g) = self.track_reorder.gesture.as_mut() {
             g.last_scroll = now;
         }
@@ -926,7 +928,7 @@ impl EditorView {
                     .filter(|g| g.mode == EditorMode::Arrangement)?
                     .destination
             })?;
-        let bounds = self.arrangement_bounds?;
+        let bounds = self.timeline_caches.arrangement_bounds?;
         let state = self.state.as_ref()?;
         let tracks = self.arrangement_track_indices();
         let (target, after) = match destination {

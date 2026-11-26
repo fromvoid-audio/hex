@@ -48,9 +48,9 @@ pub(super) fn view(
         let focus = view.arrangement_focus_ranges();
         let revealed = view.arrangement_revealed_track();
         let cache = if focus.is_empty() && revealed.is_none() {
-            &view.arrangement_map_cache
+            &view.timeline_caches.arrangement_map_cache
         } else {
-            &view.focused_arrangement_map_cache
+            &view.timeline_caches.focused_arrangement_map_cache
         };
         Rows::Main(cached(
             cache,
@@ -74,7 +74,7 @@ pub(super) fn section(
     chamfer: f32,
 ) -> Div {
     let rows = cached_section_rows(
-        &view.section_map_cache,
+        &view.timeline_caches.section_map_cache,
         view.project_generation,
         state.revision,
         &state.project,

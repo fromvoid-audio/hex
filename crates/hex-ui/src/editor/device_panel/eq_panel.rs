@@ -905,6 +905,7 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
         return;
     };
     let Some(floor) = view
+        .audio_pub
         .audio_admission
         .published_audio_revision(view.project_generation, state.revision)
     else {

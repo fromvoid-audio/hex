@@ -82,7 +82,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
                 v.state.as_ref().unwrap().project.snapshot(),
                 v.state.as_ref().unwrap().revision,
                 v.midi_editor.marker,
-                v.offline_cursor,
+                v.audio_pub.offline_cursor,
             )
         });
         let down = at(&mut visual, from);
@@ -128,7 +128,7 @@ fn loop_endpoints_and_body_preview_then_ack_once_with_undo_redo_and_saved_repeat
             assert_eq!(c.notes().len(), 1);
             assert_eq!(c.notes()[0].velocity(), 93);
             assert_eq!(
-                (v.midi_editor.marker, v.offline_cursor),
+                (v.midi_editor.marker, v.audio_pub.offline_cursor),
                 (before.2, before.3)
             );
             s.project.snapshot()

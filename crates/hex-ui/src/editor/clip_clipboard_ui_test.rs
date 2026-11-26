@@ -66,7 +66,10 @@ fn destination(
             "destination no longer needs source selection"
         );
         assert!(view.normalized_time_selection().is_none());
-        let cursor = view.edit_cursor.expect("actual clicked edit cursor");
+        let cursor = view
+            .interaction
+            .edit_cursor
+            .expect("actual clicked edit cursor");
         assert_eq!(cursor.track, Some(track));
         cursor.frame
     })
@@ -120,7 +123,7 @@ fn copied_whole_clips_survive_destination_click_repeated_paste_undo_and_text_foc
                 view.state = Some(state);
                 view.snap_grid = SnapGrid::Off;
                 // An old unrelated range must not turn a header copy into a crop.
-                view.time_selection = Some(super::time_selection::TimeSelection {
+                view.interaction.time_selection = Some(super::time_selection::TimeSelection {
                     anchor_track: Some(source),
                     end_track: Some(source),
                     anchor_frame: 12_000,

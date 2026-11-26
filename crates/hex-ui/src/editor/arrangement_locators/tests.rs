@@ -148,28 +148,36 @@ fn applied_locator_actions_survive_held_recovery(cx: &mut TestAppContext) {
     assert_eq!(bounds(&mut visual, "locator-play", id).center(), marker);
     editor.update(&mut visual, |view, _| {
         assert!(view.locator_applied_source().is_some());
-        view.pending_publication_observation
+        view.audio_pub
+            .pending_publication_observation
             .as_mut()
             .unwrap()
             .output_identity += 1;
         assert!(view.locator_applied_source().is_none(), "wrong output");
-        view.pending_publication_observation
+        view.audio_pub
+            .pending_publication_observation
             .as_mut()
             .unwrap()
             .output_identity -= 1;
-        view.pending_publication_observation
+        view.audio_pub
+            .pending_publication_observation
             .as_mut()
             .unwrap()
             .context
             .editor_revision += 1;
         assert!(view.locator_applied_source().is_none(), "wrong revision");
-        view.pending_publication_observation
+        view.audio_pub
+            .pending_publication_observation
             .as_mut()
             .unwrap()
             .context
             .editor_revision -= 1;
-        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
-            &mut view.pending_publication_observation.as_mut().unwrap().state
+        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } = &mut view
+            .audio_pub
+            .pending_publication_observation
+            .as_mut()
+            .unwrap()
+            .state
         else {
             panic!("resident metadata");
         };
@@ -190,8 +198,12 @@ fn applied_locator_actions_survive_held_recovery(cx: &mut TestAppContext) {
             .unwrap()
             .playing
             .store(false, std::sync::atomic::Ordering::Release);
-        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
-            &mut view.pending_publication_observation.as_mut().unwrap().state
+        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } = &mut view
+            .audio_pub
+            .pending_publication_observation
+            .as_mut()
+            .unwrap()
+            .state
         else {
             panic!("resident metadata");
         };
@@ -206,8 +218,12 @@ fn applied_locator_actions_survive_held_recovery(cx: &mut TestAppContext) {
             canonical_revision: revision,
         });
         assert!(view.locator_applied_source().is_none(), "preview source");
-        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
-            &mut view.pending_publication_observation.as_mut().unwrap().state
+        let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } = &mut view
+            .audio_pub
+            .pending_publication_observation
+            .as_mut()
+            .unwrap()
+            .state
         else {
             panic!("resident metadata");
         };
@@ -224,7 +240,8 @@ fn applied_locator_actions_survive_held_recovery(cx: &mut TestAppContext) {
         view.pending_requests.push_back(Request::Undo);
         assert!(view.locator_applied_source().is_none(), "unrelated edit");
         view.pending_requests.pop_back();
-        view.pending_audio_commands
+        view.audio_pub
+            .pending_audio_commands
             .push_back(super::super::PendingPlaybackAction {
                 action: hex_engine::PlaybackAction::SetMetronome(true),
                 generation: view.project_generation,
@@ -235,7 +252,7 @@ fn applied_locator_actions_survive_held_recovery(cx: &mut TestAppContext) {
             view.locator_applied_source().is_none(),
             "queued audio command"
         );
-        view.pending_audio_commands.pop_back();
+        view.audio_pub.pending_audio_commands.pop_back();
     });
     visual.simulate_mouse_down(marker, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
@@ -373,7 +390,7 @@ fn stateful_locator_actions_survive_held_checkpoint(cx: &mut TestAppContext) {
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let ready = editor.update(&mut visual, |view, cx| {
             view.tick(cx);
-            let Some(observation) = view.pending_publication_observation.as_ref() else {
+            let Some(observation) = view.audio_pub.pending_publication_observation.as_ref() else {
                 return false;
             };
             let crate::EditorPublicationState::ResidentSubmitted { metadata, .. } =
@@ -491,7 +508,7 @@ fn stateful_locator_actions_survive_held_checkpoint(cx: &mut TestAppContext) {
     visual.simulate_keystrokes("cmd-alt-left");
     editor.read_with(&visual, |view, _| {
         assert!(
-            view.prepared_seek.is_some(),
+            view.audio_pub.prepared_seek.is_some(),
             "running stateful locator seek must be admitted while the checkpoint is held"
         );
     });
@@ -517,7 +534,7 @@ fn stateful_locator_actions_survive_held_checkpoint(cx: &mut TestAppContext) {
         std::thread::yield_now();
     }
     editor.update(&mut visual, |view, cx| {
-        let pending = view.prepared_seek.as_ref().unwrap();
+        let pending = view.audio_pub.prepared_seek.as_ref().unwrap();
         assert!(matches!(
             pending.stage,
             super::super::arrangement_seek::SeekStage::Preparing
@@ -527,21 +544,24 @@ fn stateful_locator_actions_survive_held_checkpoint(cx: &mut TestAppContext) {
             "the applied callback must not invalidate its pending worker result"
         );
         view.pending_requests.push_back(Request::Undo);
-        assert!(!view.pending_seek_source_is_current(view.prepared_seek.as_ref().unwrap()));
+        assert!(
+            !view.pending_seek_source_is_current(view.audio_pub.prepared_seek.as_ref().unwrap())
+        );
         let applied = view.audio_status().unwrap().applied_revision.load(Acquire);
-        view.prepared_seek.as_mut().unwrap().stage =
+        view.audio_pub.prepared_seek.as_mut().unwrap().stage =
             super::super::arrangement_seek::SeekStage::Published {
                 audio_revision: applied,
             };
         assert!(
-            view.native_seek_applied_source(view.prepared_seek.as_ref().unwrap())
+            view.native_seek_applied_source(view.audio_pub.prepared_seek.as_ref().unwrap())
                 .is_some(),
             "an unrelated queued edit must not hide an already applied seek acknowledgement"
         );
-        assert!(
-            view.seek_publication_is_current(view.prepared_seek.as_ref().unwrap().request_id, None)
-        );
-        view.prepared_seek.as_mut().unwrap().stage =
+        assert!(view.seek_publication_is_current(
+            view.audio_pub.prepared_seek.as_ref().unwrap().request_id,
+            None
+        ));
+        view.audio_pub.prepared_seek.as_mut().unwrap().stage =
             super::super::arrangement_seek::SeekStage::Preparing;
         view.pending_requests.pop_back();
         view.tick(cx);
@@ -562,7 +582,7 @@ fn stateful_locator_actions_survive_held_checkpoint(cx: &mut TestAppContext) {
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         if editor.update(&mut visual, |view, cx| {
             view.tick(cx);
-            view.prepared_seek.is_none()
+            view.audio_pub.prepared_seek.is_none()
                 && view
                     .state
                     .as_ref()
@@ -655,16 +675,17 @@ fn quantized_committed_locator_applies_at_captured_boundary_while_checkpoint_hel
         fixture.backend.render(&mut [[0.0; 2]; 64]).unwrap();
         let ready = editor.update(&mut visual, |view, cx| {
             view.tick(cx);
-            let stateful =
-                view.pending_publication_observation
-                    .as_ref()
-                    .is_some_and(|observation| {
-                        matches!(
-                            &observation.state,
-                            crate::EditorPublicationState::ResidentSubmitted { metadata, .. }
-                                if metadata.requires_preroll
-                        )
-                    });
+            let stateful = view
+                .audio_pub
+                .pending_publication_observation
+                .as_ref()
+                .is_some_and(|observation| {
+                    matches!(
+                        &observation.state,
+                        crate::EditorPublicationState::ResidentSubmitted { metadata, .. }
+                            if metadata.requires_preroll
+                    )
+                });
             stateful
                 && view
                     .audio_status()
@@ -695,6 +716,7 @@ fn quantized_committed_locator_applies_at_captured_boundary_while_checkpoint_hel
     visual.simulate_mouse_up(marker, MouseButton::Left, Modifiers::default());
     editor.update(&mut visual, |view, _| {
         let seek = view
+            .audio_pub
             .prepared_seek
             .as_ref()
             .expect("quantized committed locator must be admitted");
@@ -708,7 +730,7 @@ fn quantized_committed_locator_applies_at_captured_boundary_while_checkpoint_hel
         let revision = editor.update(&mut visual, |view, cx| {
             view.tick(cx);
             assert!(view.error.is_none(), "{:?}", view.error);
-            match view.prepared_seek.as_ref().map(|seek| seek.stage) {
+            match view.audio_pub.prepared_seek.as_ref().map(|seek| seek.stage) {
                 Some(super::super::arrangement_seek::SeekStage::Published { audio_revision }) => {
                     Some(audio_revision)
                 }
@@ -815,7 +837,7 @@ fn stopped_navigation_uses_only_complete_committed_locator_views(cx: &mut TestAp
     visual.simulate_keystrokes("cmd-alt-right");
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.playback_start_frame(), 0);
-        assert!(view.pending_seek_ticket.is_none());
+        assert!(view.audio_pub.pending_seek_ticket.is_none());
     });
     editor.update(&mut visual, |view, _| view.play_intent = Default::default());
     visual.simulate_keystrokes("cmd-alt-right");
@@ -1325,14 +1347,18 @@ fn locator_click_uses_the_captured_grid_only_while_playing(cx: &mut TestAppConte
                 note_chase: hex_engine::NoteChase::Off
             })
         );
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
         assert!(view.audio_status().unwrap().playing.load(Acquire));
         assert_eq!(view.audio_status().unwrap().position.load(Acquire), 23_976);
     });
 
     click_locator(&mut visual, second);
     fixture.editor.update(&mut visual, |view, _| {
-        let seek = view.prepared_seek.as_ref().expect("queued locator seek");
+        let seek = view
+            .audio_pub
+            .prepared_seek
+            .as_ref()
+            .expect("queued locator seek");
         assert_eq!(seek.note_chase, hex_engine::NoteChase::Off);
         assert!(matches!(
             seek.kind,
@@ -1346,7 +1372,7 @@ fn locator_click_uses_the_captured_grid_only_while_playing(cx: &mut TestAppConte
         let revision = fixture.editor.update(&mut visual, |view, cx| {
             view.tick(cx);
             assert!(view.error.is_none(), "{:?}", view.error);
-            match view.prepared_seek.as_ref().map(|seek| seek.stage) {
+            match view.audio_pub.prepared_seek.as_ref().map(|seek| seek.stage) {
                 Some(SeekStage::Published { audio_revision }) => Some(audio_revision),
                 _ => None,
             }
@@ -1376,12 +1402,15 @@ fn locator_click_uses_the_captured_grid_only_while_playing(cx: &mut TestAppConte
             view.state.as_ref().unwrap().project.loop_region(),
             Some(region)
         );
-        assert!(view.prepared_seek.is_none());
+        assert!(view.audio_pub.prepared_seek.is_none());
     });
 
     click_locator(&mut visual, first);
     fixture.editor.read_with(&visual, |view, _| {
-        assert!(view.prepared_seek.is_none(), "none uses ordinary playback");
+        assert!(
+            view.audio_pub.prepared_seek.is_none(),
+            "none uses ordinary playback"
+        );
         assert_eq!(
             view.test_probes.last_transport_command,
             Some(PlaybackCommand::PlayFromWithNoteChase {
@@ -1481,10 +1510,11 @@ fn locator_shortcuts_navigate_stopped_and_running_without_stealing_text_focus(
     });
     let old_ticket = fixture
         .editor
-        .read_with(&visual, |view, _| view.pending_seek_ticket);
+        .read_with(&visual, |view, _| view.audio_pub.pending_seek_ticket);
     visual.simulate_keystrokes("cmd-alt-right");
     let ticket = fixture.editor.read_with(&visual, |view, _| {
         let ticket = view
+            .audio_pub
             .pending_seek_ticket
             .expect("running navigation admitted a seek");
         assert_ne!(
@@ -1522,7 +1552,10 @@ fn locator_shortcuts_navigate_stopped_and_running_without_stealing_text_focus(
     fixture.editor.update(&mut visual, |view, cx| view.tick(cx));
     visual.simulate_keystrokes("cmd-alt-left");
     let previous_ticket = fixture.editor.read_with(&visual, |view, _| {
-        let previous = view.pending_seek_ticket.expect("previous locator admitted");
+        let previous = view
+            .audio_pub
+            .pending_seek_ticket
+            .expect("previous locator admitted");
         assert_ne!(previous, ticket);
         previous
     });
@@ -1601,7 +1634,7 @@ fn rendered_locator_add_play_move_rename_delete_and_cull(cx: &mut TestAppContext
     visual.simulate_mouse_down(cursor, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(cursor, MouseButton::Left, Modifiers::default());
     let cursor_frame = editor.read_with(&visual, |view, _| {
-        view.edit_cursor.expect("placed cursor").frame
+        view.interaction.edit_cursor.expect("placed cursor").frame
     });
     visual.simulate_keystrokes("i");
     pump_move(&editor, &mut visual);

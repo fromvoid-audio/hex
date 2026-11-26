@@ -118,10 +118,12 @@ impl EditorView {
         if !self.section_autoplay
             && (self.section_launch_waiting()
                 || self
+                    .audio_pub
                     .prepared_seek
                     .as_ref()
                     .is_some_and(|seek| seek.kind.section().is_some())
                 || self
+                    .audio_pub
                     .latched_seek_intent
                     .as_ref()
                     .is_some_and(|seek| seek.kind.section().is_some()))
@@ -172,11 +174,11 @@ impl EditorView {
     }
 
     fn prepare_section_launch(&mut self, section: SectionLaunch) {
-        if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+        if self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
             self.error = Some("section playback is unavailable in verified streaming mode".into());
             return;
         }
-        if self.audible_playback.is_none() || self.audio_status().is_none() {
+        if self.audio_pub.audible_playback.is_none() || self.audio_status().is_none() {
             self.error = Some("section playback source is unavailable".into());
             return;
         }
@@ -223,7 +225,7 @@ impl EditorView {
         if !launch.section.matches_loop(expected_loop) {
             return;
         }
-        self.section_launch_after_loop = Some(SectionLaunchAfterLoop {
+        self.interaction.section_launch_after_loop = Some(SectionLaunchAfterLoop {
             project: ProjectRevision {
                 generation: self.project_generation,
                 revision: state.revision,
@@ -237,8 +239,8 @@ impl EditorView {
     pub(super) fn section_can_replace_refused_loop(&self, section: SectionLaunch) -> bool {
         let (Some(state), Some(audible), Some(admission)) = (
             self.state.as_ref(),
-            self.audible_playback.as_ref(),
-            self.audio_admission.current(),
+            self.audio_pub.audible_playback.as_ref(),
+            self.audio_pub.audio_admission.current(),
         ) else {
             return false;
         };
@@ -261,7 +263,7 @@ impl EditorView {
     }
 
     pub(super) fn tick_section_launch(&mut self) -> bool {
-        let Some(pending) = self.section_launch_after_loop.as_ref() else {
+        let Some(pending) = self.interaction.section_launch_after_loop.as_ref() else {
             return false;
         };
         if self.mode != super::EditorMode::Arrangement
@@ -277,35 +279,35 @@ impl EditorView {
                     || state.project.loop_region() != pending.expected_loop
             })
         {
-            self.section_launch_after_loop = None;
+            self.interaction.section_launch_after_loop = None;
             return true;
         }
         if self.applied_project_revision() != Some(pending.project.revision)
             && !self.section_can_replace_refused_loop(pending.launch.section)
         {
-            if let Some(admission) = self.audio_admission.current()
+            if let Some(admission) = self.audio_pub.audio_admission.current()
                 && admission.project == pending.project
                 && let AdmissionState::Rejected(reason) = admission.state
             {
-                self.section_launch_after_loop = None;
+                self.interaction.section_launch_after_loop = None;
                 self.error = Some(reason.into());
                 return true;
             }
             return false;
         }
         let launch = pending.launch;
-        self.section_launch_after_loop = None;
+        self.interaction.section_launch_after_loop = None;
         self.request_section_launch_with_note_chase(launch.section, launch.note_chase);
         true
     }
 
     pub(super) fn section_launch_waiting(&self) -> bool {
-        self.section_launch_after_loop.is_some() || self.pending_loop_launch()
+        self.interaction.section_launch_after_loop.is_some() || self.pending_loop_launch()
     }
 
     pub(super) fn cancel_section_launch_wait(&mut self) {
         self.settings.playback.pending = None;
-        self.section_launch_after_loop = None;
+        self.interaction.section_launch_after_loop = None;
         self.cancel_pending_loop_launch();
     }
 }

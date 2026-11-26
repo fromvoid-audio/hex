@@ -47,7 +47,7 @@ impl EditorView {
             return;
         };
         let revision = state.revision;
-        let audible = self.audible_playback.as_ref().map(|candidate| {
+        let audible = self.audio_pub.audible_playback.as_ref().map(|candidate| {
             (
                 candidate.audio_revision,
                 candidate.state.revision,
@@ -105,7 +105,7 @@ impl EditorView {
         use std::sync::atomic::Ordering::Acquire;
         let state = self.state.as_ref()?;
         let clip = self.detail_clip_id()?;
-        let audible = self.audible_playback.as_ref()?;
+        let audible = self.audio_pub.audible_playback.as_ref()?;
         if audible.project_generation != self.project_generation
             || audible.state.revision != state.revision
         {

@@ -78,7 +78,10 @@ impl EditorView {
             ("opening_project", self.persistence.opening_project),
             ("close_prompt", self.persistence.close_prompt_open),
             ("device_gesture_pending", self.device_gesture_pending()),
-            ("arrangement_pan", self.arrangement_pan.is_some()),
+            (
+                "arrangement_pan",
+                self.interaction.arrangement_pan.is_some(),
+            ),
             ("scrub", self.scrub_active()),
             ("gain_lane_pointer", self.gain_lane.pointer_is_active()),
             (
@@ -89,7 +92,7 @@ impl EditorView {
                 "device_gesture",
                 self.device_panel.gesture.snapshot().is_some(),
             ),
-            ("clip_paint", self.clip_paint_gesture.is_some()),
+            ("clip_paint", self.interaction.clip_paint_gesture.is_some()),
             (
                 "clip_detail_resize",
                 self.audio_detail.detail_resize.is_active(),
@@ -102,9 +105,15 @@ impl EditorView {
                 "device_navigation",
                 self.device_panel.navigation.is_active(),
             ),
-            ("time_selection", self.time_selection_gesture.is_some()),
-            ("time_range_move", self.time_range_move_gesture.is_some()),
-            ("clip_drag", self.active_clip_drag.is_some()),
+            (
+                "time_selection",
+                self.interaction.time_selection_gesture.is_some(),
+            ),
+            (
+                "time_range_move",
+                self.interaction.time_range_move_gesture.is_some(),
+            ),
+            ("clip_drag", self.interaction.active_clip_drag.is_some()),
             (
                 "browser_audio_drag",
                 self.browser.active_audio_drag.is_some(),
@@ -113,14 +122,17 @@ impl EditorView {
                 "native_device_drag",
                 self.device_panel.active_native_drag.is_some(),
             ),
-            ("trim_drag", self.active_trim_drag.is_some()),
+            ("trim_drag", self.interaction.active_trim_drag.is_some()),
             (
                 "midi_trim_drag",
                 self.midi_editor.active_trim_drag.is_some(),
             ),
-            ("fade_drag", self.active_fade_drag.is_some()),
+            ("fade_drag", self.interaction.active_fade_drag.is_some()),
             ("track_resize", self.track_resize_active()),
-            ("loop_rail_gesture", self.loop_rail_gesture.is_some()),
+            (
+                "loop_rail_gesture",
+                self.interaction.loop_rail_gesture.is_some(),
+            ),
             (
                 "locked_play_start_drag",
                 self.locked_play_start_drag_active(),
@@ -191,6 +203,7 @@ impl EditorView {
         // Match range-copy precedence. A stale non-empty rectangle must refuse,
         // rather than silently looping a different whole-clip selection.
         if self
+            .interaction
             .time_selection
             .is_some_and(|s| s.anchor_frame != s.end_frame)
         {

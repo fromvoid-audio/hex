@@ -118,7 +118,7 @@ fn project_tempo_cursor_movement_cannot_retarget_an_active_draft(cx: &mut TestAp
     begin(&mut visual);
     visual.simulate_input("91.234567");
     editor.update(cx, |view, cx| {
-        view.offline_cursor = 96_000;
+        view.audio_pub.offline_cursor = 96_000;
         cx.notify();
     });
     visual.run_until_parked();
@@ -473,7 +473,7 @@ fn transport_creation_vectors_preserve_track_and_clip_commands(cx: &mut TestAppC
     use crate::editor::midi_canvas::creation_tests::{fixture, pump};
     let (mut visual, editor, _environment, _) = fixture(cx);
     editor.update(cx, |view, cx| {
-        view.offline_cursor = 96_000;
+        view.audio_pub.offline_cursor = 96_000;
         cx.notify();
     });
     visual.run_until_parked();

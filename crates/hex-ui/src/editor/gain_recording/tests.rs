@@ -195,8 +195,8 @@ fn delivered_fixture(cx: &mut TestAppContext, release: bool) -> DeliveredFixture
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.pending_playback = None;
-        view.playback_candidates.clear();
+        view.audio_pub.pending_playback = None;
+        view.audio_pub.playback_candidates.clear();
         view.gain_recorder.mode = Mode::Touching;
         view.gain_recorder.track = Some(track);
         view.gain_recorder.generation = 0;
@@ -332,7 +332,7 @@ fn draft_window(
         view.state = Some(canonical);
         view.worker_requests_pending = 0;
         view.pending_requests.clear();
-        view.pending_playback = None;
+        view.audio_pub.pending_playback = None;
         view.project_generation = 0;
         view.gain_recorder.track = Some(track);
         view.gain_recorder.generation = 0;

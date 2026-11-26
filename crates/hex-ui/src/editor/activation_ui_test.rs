@@ -78,7 +78,7 @@ fn activation_time_span_splits_only_inside_and_header_focus_targets_track(cx: &m
     click(&mut visual, audio, false);
     let track = editor.update(&mut visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        v.time_selection = Some(TimeSelection {
+        v.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(track),
             end_track: Some(track),
             anchor_frame: 12_000,

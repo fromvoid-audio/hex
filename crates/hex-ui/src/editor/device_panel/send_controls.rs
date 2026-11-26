@@ -104,7 +104,8 @@ pub fn return_send_numeric_control(
                 if event.phase == NumericEventPhase::Begin {
                     atomic_admitted.set(false);
                 }
-                let verified = view.document_audio_mode != hex_session::DocumentAudioMode::Resident;
+                let verified =
+                    view.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident;
                 if verified {
                     let explicit = event.gesture.is_none();
                     let rejected = match event.phase {
@@ -195,7 +196,7 @@ pub fn return_send_numeric_control(
         let _ = numeric.set_external_style(control_style(), cx);
         // The worker owns an admitted explicit edit until acknowledgement. Avoid
         // flashing the old canonical value during that handoff.
-        if view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        if view.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             || !view.edit_pending()
         {
             let _ = numeric.set_external_value(active.unwrap_or(f64::from(gain)), cx);

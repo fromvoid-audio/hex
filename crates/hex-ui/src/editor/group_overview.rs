@@ -13,7 +13,7 @@ mod model;
 pub(super) use model::Cache;
 
 pub(super) fn view(view: &EditorView, state: &ViewState, track: &Track, viewport: Viewport) -> Div {
-    let data = view.group_overview_cache.borrow_mut().read(
+    let data = view.timeline_caches.group_overview_cache.borrow_mut().read(
         view.project_generation,
         state.revision,
         &state.project,

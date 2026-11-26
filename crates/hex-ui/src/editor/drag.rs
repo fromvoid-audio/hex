@@ -201,7 +201,7 @@ impl super::EditorView {
         edge: Option<TrimEdge>,
         x: f32,
     ) {
-        self.pointer_down = PointerDown::begin(
+        self.interaction.pointer_down = PointerDown::begin(
             ClipPointerKey { generation, clip },
             rectangle_part(edge),
             x,
@@ -216,7 +216,7 @@ impl super::EditorView {
         edge: Option<TrimEdge>,
     ) -> Option<PointerDown> {
         PointerDown::take_matching(
-            &mut self.pointer_down,
+            &mut self.interaction.pointer_down,
             ClipPointerKey { generation, clip },
             rectangle_part(edge),
         )
@@ -229,7 +229,7 @@ impl super::EditorView {
         edge: Option<TrimEdge>,
     ) {
         PointerDown::take_matching(
-            &mut self.pointer_down,
+            &mut self.interaction.pointer_down,
             ClipPointerKey { generation, clip },
             rectangle_part(edge),
         );
@@ -405,18 +405,19 @@ impl super::EditorView {
     /// Both bounds publish together under the current painted body's epoch.
     pub(super) fn painted_track_drop_lane(&self, track: TrackId) -> Option<LaneBounds> {
         if !self.arrangement_track_visible(track)
-            || self.drag_lane_epochs.get(&track) != Some(&self.drag_layout_generation)
+            || self.timeline_caches.drag_lane_epochs.get(&track)
+                != Some(&self.timeline_caches.drag_layout_generation)
         {
             return None;
         }
-        self.track_drop_lanes.get(&track).copied()
+        self.timeline_caches.track_drop_lanes.get(&track).copied()
     }
     pub(super) fn hovered_track_drop_target(
         &self,
         x: f32,
         y: f32,
     ) -> Option<(TrackId, LaneBounds)> {
-        self.drag_lanes.keys().find_map(|track| {
+        self.timeline_caches.drag_lanes.keys().find_map(|track| {
             let lane = self.painted_track_drop_lane(*track)?;
             lane_or_leading_buffer_contains_pointer(x, y, lane).then_some((*track, lane))
         })
@@ -427,11 +428,13 @@ impl super::EditorView {
         pointer_x: f32,
         pointer_y: f32,
     ) -> Option<(TrackId, LaneBounds)> {
-        self.drag_lanes
+        self.timeline_caches
+            .drag_lanes
             .iter()
             .filter(|(track, _)| {
                 self.arrangement_track_visible(**track)
-                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                    && self.timeline_caches.drag_lane_epochs.get(track)
+                        == Some(&self.timeline_caches.drag_layout_generation)
             })
             .find_map(|(track, lane)| {
                 lane_or_leading_buffer_contains_pointer(pointer_x, pointer_y, *lane)
@@ -442,7 +445,7 @@ impl super::EditorView {
     pub(super) fn retire_active_clip_drag(&mut self) -> bool {
         self.cancel_held_clip_move_audition();
         self.persistence.drag_bounce_held = false;
-        let Some(drag) = self.active_clip_drag.take() else {
+        let Some(drag) = self.interaction.active_clip_drag.take() else {
             return false;
         };
         drag.retire();
@@ -451,6 +454,7 @@ impl super::EditorView {
 
     pub(super) fn clear_clip_drag(&mut self, generation: u64, clip: ClipId) {
         if self
+            .interaction
             .active_clip_drag
             .as_ref()
             .is_some_and(|drag| drag.project_generation == generation && drag.clip == clip)
@@ -469,6 +473,7 @@ impl super::EditorView {
             drag.group.borrow_mut().selection_epoch = Some(self.clip_selection.epoch);
         }
         if self
+            .interaction
             .active_clip_drag
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
@@ -487,9 +492,9 @@ impl super::EditorView {
             });
             drag.group.borrow_mut().capture = capture;
         }
-        if let Some(gesture) = self.clip_move_gesture.checked_add(1) {
-            self.clip_move_gesture = gesture;
-            self.clip_move_audition = Some(MoveAudition {
+        if let Some(gesture) = self.interaction.clip_move_gesture.checked_add(1) {
+            self.interaction.clip_move_gesture = gesture;
+            self.interaction.clip_move_audition = Some(MoveAudition {
                 clips: drag.group.borrow().ids.clone().into(),
                 gesture,
                 sequence: 0,
@@ -502,18 +507,18 @@ impl super::EditorView {
             .state
             .as_ref()
             .map(|s| std::sync::Arc::clone(&s.project));
-        self.active_clip_drag = Some(drag.clone());
+        self.interaction.active_clip_drag = Some(drag.clone());
         self.browser.active_audio_drag = None;
     }
 
     /// Submit only changed, valid targets. The worker owns preparation and
     /// publication; this control state never treats submission as application.
     pub(super) fn sync_held_clip_move_audition(&mut self) -> bool {
-        let Some(drag) = self.active_clip_drag.as_ref() else {
+        let Some(drag) = self.interaction.active_clip_drag.as_ref() else {
             return false;
         };
         let eligible = self.mode == super::EditorMode::Arrangement
-            && self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !self.persistence.drag_bounce_held
             && self
                 .audio_status()
@@ -546,7 +551,7 @@ impl super::EditorView {
                     }),
                     _,
                 ) if drag.group.borrow().ids.len() == 1 => {
-                    if let Some(audition) = self.clip_move_audition.as_mut() {
+                    if let Some(audition) = self.interaction.clip_move_audition.as_mut() {
                         if audition.new_track_defaults.is_none()
                             && let (Ok(gain), Some(state)) = (
                                 self.settings.track_defaults.captured_gain(),
@@ -586,7 +591,7 @@ impl super::EditorView {
         } else {
             None
         };
-        let Some(audition) = self.clip_move_audition.as_mut() else {
+        let Some(audition) = self.interaction.clip_move_audition.as_mut() else {
             return false;
         };
         if target
@@ -634,7 +639,7 @@ impl super::EditorView {
     }
 
     pub(super) fn cancel_held_clip_move_audition(&mut self) {
-        if self.clip_move_audition.take().is_some() {
+        if self.interaction.clip_move_audition.take().is_some() {
             self.service.audition_arrangement_move(None);
         }
         self.expected_clip_preview = None;
@@ -643,6 +648,7 @@ impl super::EditorView {
 
     fn finish_held_clip_move_audition(&mut self) {
         if self
+            .interaction
             .clip_move_audition
             .take()
             .is_some_and(|state| state.target.is_some())
@@ -680,11 +686,15 @@ impl super::EditorView {
         }
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
-        let owns_gesture = self.active_clip_drag.as_ref().is_some_and(|active| {
-            active.project_generation == drag.project_generation
-                && active.clip == drag.clip
-                && Rc::ptr_eq(&active.destination, &drag.destination)
-        });
+        let owns_gesture = self
+            .interaction
+            .active_clip_drag
+            .as_ref()
+            .is_some_and(|active| {
+                active.project_generation == drag.project_generation
+                    && active.clip == drag.clip
+                    && Rc::ptr_eq(&active.destination, &drag.destination)
+            });
         if !owns_gesture {
             return;
         }
@@ -717,6 +727,7 @@ impl super::EditorView {
         }
         self.sync_held_clip_move_audition();
         let defaults = self
+            .interaction
             .clip_move_audition
             .as_ref()
             .and_then(|audition| audition.new_track_defaults.clone());
@@ -763,12 +774,12 @@ impl super::EditorView {
         let defer = self.clip_move_must_defer();
         self.finish_held_clip_move_audition();
         if defer {
-            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            self.pending_clip_move = self.interaction.active_clip_drag.take().map(|drag| {
                 super::pending_clip_move::Pending::new_deferred(
                     drag,
                     command.clone(),
                     source,
-                    self.selection_intent_epoch,
+                    self.interaction.selection_intent_epoch,
                     copy_intent,
                 )
             });
@@ -776,12 +787,12 @@ impl super::EditorView {
             return;
         }
         let revision = drag.effective_revision();
-        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+        self.pending_clip_move = self.interaction.active_clip_drag.take().map(|drag| {
             super::pending_clip_move::Pending::new(
                 drag,
                 command.clone(),
                 source,
-                self.selection_intent_epoch,
+                self.interaction.selection_intent_epoch,
             )
         });
         let before_pending = self.worker_requests_pending;
@@ -971,9 +982,10 @@ impl super::EditorView {
     }
 
     pub(super) fn painted_arrangement_timeline(&self) -> Option<LaneBounds> {
-        let body = self
-            .arrangement_bounds
-            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let body = self.timeline_caches.arrangement_bounds.filter(|_| {
+            self.timeline_caches.arrangement_bounds_epoch
+                == self.timeline_caches.drag_layout_generation
+        })?;
         let timeline = LaneBounds {
             left: body.left,
             width: body.width - self.track_header_width(),
@@ -996,9 +1008,10 @@ impl super::EditorView {
     }
 
     pub(super) fn painted_arrangement_header_column(&self) -> Option<LaneBounds> {
-        let body = self
-            .arrangement_bounds
-            .filter(|_| self.arrangement_bounds_epoch == self.drag_layout_generation)?;
+        let body = self.timeline_caches.arrangement_bounds.filter(|_| {
+            self.timeline_caches.arrangement_bounds_epoch
+                == self.timeline_caches.drag_layout_generation
+        })?;
         let width = self.track_header_width().min(body.width);
         (width > 0.0 && body.height > 0.0).then_some(LaneBounds {
             left: body.left + body.width - width,
@@ -1053,20 +1066,23 @@ impl super::EditorView {
         {
             return None;
         }
-        self.drag_lanes.iter().find_map(|(&track, body_lane)| {
-            let full_lane = self.painted_track_drop_lane(track)?;
-            let body_bottom = body_lane.top + body_lane.height;
-            let full_bottom = full_lane.top + full_lane.height;
-            (pointer_y >= body_bottom && pointer_y < full_bottom).then_some((
-                track,
-                LaneBounds {
-                    left: headers.left,
-                    width: headers.width,
-                    top: full_lane.top,
-                    height: full_lane.height,
-                },
-            ))
-        })
+        self.timeline_caches
+            .drag_lanes
+            .iter()
+            .find_map(|(&track, body_lane)| {
+                let full_lane = self.painted_track_drop_lane(track)?;
+                let body_bottom = body_lane.top + body_lane.height;
+                let full_bottom = full_lane.top + full_lane.height;
+                (pointer_y >= body_bottom && pointer_y < full_bottom).then_some((
+                    track,
+                    LaneBounds {
+                        left: headers.left,
+                        width: headers.width,
+                        top: full_lane.top,
+                        height: full_lane.height,
+                    },
+                ))
+            })
     }
 
     // Use the last painted full row, including attached automation lanes.
@@ -1136,7 +1152,9 @@ impl super::EditorView {
         }
 
         let first = state.project.tracks().get(*tracks.first()?)?;
-        if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
+        if self.timeline_caches.drag_lane_epochs.get(&first.id())
+            == Some(&self.timeline_caches.drag_layout_generation)
+        {
             let first_lane = self.painted_track_drop_lane(first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
             // without adding empty layout space above the tracks.
@@ -1148,8 +1166,10 @@ impl super::EditorView {
         for index in 1..tracks.len() {
             let previous = state.project.tracks().get(*tracks.get(index - 1)?)?;
             let next = state.project.tracks().get(*tracks.get(index)?)?;
-            if self.drag_lane_epochs.get(&previous.id()) != Some(&self.drag_layout_generation)
-                || self.drag_lane_epochs.get(&next.id()) != Some(&self.drag_layout_generation)
+            if self.timeline_caches.drag_lane_epochs.get(&previous.id())
+                != Some(&self.timeline_caches.drag_layout_generation)
+                || self.timeline_caches.drag_lane_epochs.get(&next.id())
+                    != Some(&self.timeline_caches.drag_layout_generation)
             {
                 continue;
             }
@@ -1443,7 +1463,7 @@ impl super::EditorView {
         };
         if self.enqueue_sample_drop(request, drag, destination) {
             self.stop_browser_preview_for_drop();
-            if self.recovery.deferred_edit.is_none() {
+            if self.audio_pub.recovery.deferred_edit.is_none() {
                 self.status = "importing sample to arrangement".into();
             }
         }
@@ -1461,6 +1481,7 @@ impl super::EditorView {
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
         if !self
+            .interaction
             .active_clip_drag
             .as_ref()
             .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
@@ -1493,8 +1514,10 @@ impl super::EditorView {
             self.drop_clip_to_new_track(drag, window, cx);
             return;
         }
-        if self.arrangement_bounds_epoch != self.drag_layout_generation
-            || self.drag_lane_epochs.get(&target_track) != Some(&self.drag_layout_generation)
+        if self.timeline_caches.arrangement_bounds_epoch
+            != self.timeline_caches.drag_layout_generation
+            || self.timeline_caches.drag_lane_epochs.get(&target_track)
+                != Some(&self.timeline_caches.drag_layout_generation)
         {
             clear(self);
             cx.notify();
@@ -1511,7 +1534,7 @@ impl super::EditorView {
             cx.notify();
             return;
         }
-        let Some(lane) = self.drag_lanes.get(&target_track).copied() else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&target_track).copied() else {
             self.error = Some("clip move canceled · target track unavailable".into());
             clear(self);
             cx.notify();
@@ -1588,12 +1611,12 @@ impl super::EditorView {
         let defer = self.clip_move_must_defer();
         self.finish_held_clip_move_audition();
         if defer {
-            self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            self.pending_clip_move = self.interaction.active_clip_drag.take().map(|drag| {
                 super::pending_clip_move::Pending::new_deferred(
                     drag,
                     command.clone(),
                     source,
-                    self.selection_intent_epoch,
+                    self.interaction.selection_intent_epoch,
                     copy_intent,
                 )
             });
@@ -1601,12 +1624,12 @@ impl super::EditorView {
             return;
         }
         let revision = drag.effective_revision();
-        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+        self.pending_clip_move = self.interaction.active_clip_drag.take().map(|drag| {
             super::pending_clip_move::Pending::new(
                 drag,
                 command.clone(),
                 source,
-                self.selection_intent_epoch,
+                self.interaction.selection_intent_epoch,
             )
         });
         let before_pending = self.worker_requests_pending;
@@ -1637,7 +1660,7 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(drag) = self.active_clip_drag.clone() {
+        if let Some(drag) = self.interaction.active_clip_drag.clone() {
             let snap_changed = drag.snap_modifier.replace(held) != held;
             let copy_changed = drag.copy_modifier.replace(copy) != copy;
             cx.set_active_drag_cursor_style(copy_cursor(copy), window);

@@ -75,7 +75,7 @@ impl EditorView {
                 edit: ClipEdit::Active { active },
             } = &command
             {
-                self.pending_clip_activation = Some(PendingClipActivation {
+                self.interaction.pending_clip_activation = Some(PendingClipActivation {
                     clips: clips.iter().copied().collect(),
                     active: *active,
                     receipt: Receipt::new(self.project_generation),
@@ -94,7 +94,8 @@ impl EditorView {
     /// Arrangement paint follows the admitted keypress until the same edit's
     /// terminal installs canonical state or restores it on refusal.
     pub(super) fn displayed_clip_active(&self, clip: ClipId, canonical: bool) -> bool {
-        self.pending_clip_activation
+        self.interaction
+            .pending_clip_activation
             .as_ref()
             .filter(|pending| pending.clips.contains(&clip))
             .map_or(canonical, |pending| pending.active)
@@ -108,7 +109,8 @@ impl EditorView {
         else {
             return false;
         };
-        self.pending_clip_activation
+        self.interaction
+            .pending_clip_activation
             .as_ref()
             .is_some_and(|pending| {
                 pending.receipt.is_queued()
@@ -119,13 +121,14 @@ impl EditorView {
     }
 
     pub(super) fn clip_activation_submitted(&mut self) {
-        if let Some(pending) = self.pending_clip_activation.as_mut() {
+        if let Some(pending) = self.interaction.pending_clip_activation.as_mut() {
             pending.receipt.submitted(self.worker_requests_pending);
         }
     }
 
     pub(super) fn clip_activation_complete(&mut self, event: &Event) {
         if self
+            .interaction
             .pending_clip_activation
             .as_mut()
             .is_some_and(|pending| {
@@ -141,11 +144,12 @@ impl EditorView {
     }
 
     pub(super) fn retire_clip_activation(&mut self) -> bool {
-        self.pending_clip_activation.take().is_some()
+        self.interaction.pending_clip_activation.take().is_some()
     }
 
     pub(super) fn retire_abandoned_clip_activation(&mut self) -> bool {
-        self.pending_clip_activation
+        self.interaction
+            .pending_clip_activation
             .as_ref()
             .is_some_and(|pending| pending.receipt.is_queued())
             && !self
@@ -156,18 +160,18 @@ impl EditorView {
 
     pub(super) fn activation_gesture_blocked(&self) -> bool {
         self.edit_pending()
-            || self.arrangement_pan.is_some()
+            || self.interaction.arrangement_pan.is_some()
             || self.scrub_active()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.active_clip_drag.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.track_resize_active()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
             || self.sections.held()
             || self.section_install_pending()
@@ -247,6 +251,7 @@ impl EditorView {
         match self.mode {
             EditorMode::Arrangement => {
                 if self
+                    .interaction
                     .time_selection
                     .is_some_and(|range| range.anchor_frame != range.end_frame)
                 {

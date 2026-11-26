@@ -37,12 +37,12 @@ impl EditorView {
             return false;
         }
         if self.edit_pending()
-            || self.active_clip_drag.is_some()
-            || self.active_trim_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
-            || self.time_range_move_gesture.is_some()
-            || self.time_selection_gesture.is_some()
+            || self.interaction.active_fade_drag.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
             || self.sections.held()
             || self.section_install_pending()
         {
@@ -159,13 +159,16 @@ mod tests {
         );
         visual.run_until_parked();
         editor.update(&mut visual, |v, cx| {
-            v.waveform_geometry_cache.borrow_mut().clear();
+            v.timeline_caches
+                .waveform_geometry_cache
+                .borrow_mut()
+                .clear();
             cx.notify();
         });
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| {
-            assert!(v.active_trim_drag.is_some());
-            let cache = v.waveform_geometry_cache.borrow();
+            assert!(v.interaction.active_trim_drag.is_some());
+            let cache = v.timeline_caches.waveform_geometry_cache.borrow();
             let rendered = cache.rendered_waveforms();
             assert!(
                 rendered

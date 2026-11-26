@@ -1447,7 +1447,7 @@ mod tests {
         );
         visual.simulate_mouse_up(overlap, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        assert!(editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()));
+        assert!(editor.read_with(cx, |view, _| view.interaction.loop_rail_gesture.is_none()));
     }
 
     #[gpui::test]
@@ -1529,7 +1529,7 @@ mod tests {
             "modal clicks must not start an underlying seek"
         );
         assert!(
-            editor.read_with(cx, |view, _| view.loop_rail_gesture.is_none()),
+            editor.read_with(cx, |view, _| view.interaction.loop_rail_gesture.is_none()),
             "modal clicks must not capture the underlying loop rail"
         );
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());

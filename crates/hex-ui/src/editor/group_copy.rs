@@ -203,7 +203,7 @@ impl Pending {
             && view.mode == EditorMode::Arrangement
             && !view.persistence.opening_project
             && !view.persistence.close_prompt_open
-            && view.recovery.generation().is_none()
+            && view.audio_pub.recovery.generation().is_none()
     }
 }
 impl EditorView {
@@ -250,6 +250,7 @@ impl EditorView {
     pub(super) fn retire_abandoned_group_copy(&mut self) -> bool {
         let abandoned = self.pending_group_copy.as_ref().is_some_and(|p| {
             let deferred_for_self = self
+                .audio_pub
                 .recovery
                 .deferred_edit
                 .as_ref()
@@ -260,7 +261,7 @@ impl EditorView {
                 || self.persistence.opening_project
                 || self.persistence.close_prompt_open
                 || self.mode != EditorMode::Arrangement
-                || (self.recovery.generation().is_some() && !deferred_for_self)
+                || (self.audio_pub.recovery.generation().is_some() && !deferred_for_self)
                 || (p.remaining.is_none() && !self.queued_requests().any(|r| p.matches(r)))
         });
         if abandoned {

@@ -120,14 +120,14 @@ impl EditorView {
         let (first, last) = self.time_selection_track_indices().unwrap();
         let mut receipt = Receipt::new(self.project_generation);
         assert!(receipt.submitted(1));
-        self.pending_time_range_move = Some(PendingTimeRangeMove {
+        self.interaction.pending_time_range_move = Some(PendingTimeRangeMove {
             source,
             range,
-            project_scope: self.time_selection_project_scope,
+            project_scope: self.interaction.time_selection_project_scope,
             destination_first_index: first,
             destination_last_index: last,
             source_revision: self.state.as_ref().unwrap().revision,
-            selection_intent_epoch: self.selection_intent_epoch.unwrap(),
+            selection_intent_epoch: self.interaction.selection_intent_epoch.unwrap(),
             copy_modifier: true,
             keyboard: Some(KeyboardTimeCopy {
                 receipt,
@@ -141,26 +141,28 @@ impl EditorView {
     /// the user returns to identical coordinates. Exhaustion stays invalid for
     /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
     pub(super) fn advance_selection_intent(&mut self) {
-        self.play_start_at_beginning = false;
-        self.escape_stop_armed = false;
+        self.interaction.play_start_at_beginning = false;
+        self.interaction.escape_stop_armed = false;
         if self
+            .interaction
             .edit_cursor
             .is_some_and(|cursor| cursor.track.is_none())
         {
-            self.edit_cursor = None;
+            self.interaction.edit_cursor = None;
         }
-        self.selection_intent_epoch = self
+        self.interaction.selection_intent_epoch = self
+            .interaction
             .selection_intent_epoch
             .and_then(|epoch| epoch.checked_add(1));
     }
 
     pub(super) fn normalized_time_selection(&self) -> Option<hex_project::TimeRange> {
-        let selection = self.time_selection?;
+        let selection = self.interaction.time_selection?;
         if selection.anchor_frame == selection.end_frame {
             return None;
         }
         let state = self.state.as_ref()?;
-        let tracks = if self.time_selection_project_scope {
+        let tracks = if self.interaction.time_selection_project_scope {
             state
                 .project
                 .tracks()
@@ -187,7 +189,7 @@ impl EditorView {
         if !extend {
             return None;
         }
-        self.edit_cursor.filter(|cursor| {
+        self.interaction.edit_cursor.filter(|cursor| {
             cursor.generation == self.project_generation
                 && self.state.as_ref().is_some_and(|state| {
                     cursor
@@ -199,7 +201,7 @@ impl EditorView {
 
     fn range_input_available(&self) -> bool {
         self.mode == EditorMode::Arrangement
-            && (!self.automation_view.enabled || self.time_selection_key_held)
+            && (!self.automation_view.enabled || self.interaction.time_selection_key_held)
             && self.clip_name_edit.is_none()
             && !self.sections.naming()
             && !self.track_name.is_editing()
@@ -208,11 +210,11 @@ impl EditorView {
             && !self.persistence.close_prompt_open
             && !self.persistence.save_dialog_open
             && !self.persistence.export_dialog_open
-            && self.active_clip_drag.is_none()
+            && self.interaction.active_clip_drag.is_none()
             && self.browser.active_audio_drag.is_none()
             && self.device_panel.active_native_drag.is_none()
-            && self.active_trim_drag.is_none()
-            && self.active_fade_drag.is_none()
+            && self.interaction.active_trim_drag.is_none()
+            && self.interaction.active_fade_drag.is_none()
             && self.midi_editor.active_trim_drag.is_none()
     }
 
@@ -229,12 +231,12 @@ impl EditorView {
         if start >= end
             || generation != self.project_generation
             || !self.range_input_available()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
             || self.sections.held()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
-            || self.arrangement_pan.is_some()
+            || self.interaction.arrangement_pan.is_some()
         {
             return false;
         }
@@ -259,9 +261,9 @@ impl EditorView {
         };
         self.advance_selection_intent();
         self.retire_section_pointer_context_for_range();
-        self.time_selection_project_scope = true;
-        self.time_selection = Some(selection);
-        self.edit_cursor = Some(EditCursor {
+        self.interaction.time_selection_project_scope = true;
+        self.interaction.time_selection = Some(selection);
+        self.interaction.edit_cursor = Some(EditCursor {
             track: selection.anchor_track,
             frame: start,
             generation,
@@ -269,7 +271,7 @@ impl EditorView {
             pulse_started: Instant::now(),
         });
         self.selected_clip = None;
-        self.suppress_cursor_click = true;
+        self.interaction.suppress_cursor_click = true;
         true
     }
 
@@ -280,7 +282,7 @@ impl EditorView {
         free: bool,
         extend: bool,
     ) -> bool {
-        self.suppress_cursor_click = false;
+        self.interaction.suppress_cursor_click = false;
         if !self.range_input_available() {
             return false;
         }
@@ -289,8 +291,10 @@ impl EditorView {
         };
         let first_track = state.project.tracks().first().map(|track| track.id());
         let last_track = state.project.tracks().last().map(|track| track.id());
-        let Some(lane) = self.main_track_lane_bounds.filter(|lane| {
-            self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
+        let Some(lane) = self.timeline_caches.main_track_lane_bounds.filter(|lane| {
+            self.timeline_caches.main_track_lane_epoch
+                == self.timeline_caches.drag_layout_generation
+                && lane_contains(x, y, *lane)
         }) else {
             return false;
         };
@@ -307,14 +311,14 @@ impl EditorView {
             return false;
         };
         let anchor = self.time_selection_cursor_anchor(extend).or_else(|| {
-            self.edit_cursor.filter(|cursor| {
+            self.interaction.edit_cursor.filter(|cursor| {
                 extend
-                    && self.time_selection_project_scope
+                    && self.interaction.time_selection_project_scope
                     && cursor.track.is_none()
                     && cursor.generation == self.project_generation
             })
         });
-        let main_lane_click_beat = (!extend && !self.time_selection_key_held)
+        let main_lane_click_beat = (!extend && !self.interaction.time_selection_key_held)
             .then(|| self.section_pointer(x, y, free))
             .flatten();
         let generation = self.project_generation;
@@ -327,16 +331,16 @@ impl EditorView {
             end_frame: frame,
         };
         self.advance_selection_intent();
-        self.time_selection_project_scope = true;
-        self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
+        self.interaction.time_selection_project_scope = true;
+        self.interaction.edit_cursor = Some(anchor.unwrap_or(EditCursor {
             track: first_track,
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         }));
-        self.time_selection = Some(selection);
-        self.time_selection_gesture = Some(TimeSelectionGesture {
+        self.interaction.time_selection = Some(selection);
+        self.interaction.time_selection_gesture = Some(TimeSelectionGesture {
             selection,
             generation,
             revision,
@@ -360,16 +364,16 @@ impl EditorView {
         free: bool,
     ) -> bool {
         if !self.range_input_available()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
             || self.sections.held()
-            || self.loop_rail_gesture.is_some()
+            || self.interaction.loop_rail_gesture.is_some()
             || self.locked_play_start_drag_active()
-            || self.arrangement_pan.is_some()
+            || self.interaction.arrangement_pan.is_some()
             || self.scrub_active()
             || self.track_resize_active()
             || self.track_reorder_active()
-            || self.clip_paint_gesture.is_some()
+            || self.interaction.clip_paint_gesture.is_some()
         {
             return false;
         }
@@ -385,7 +389,7 @@ impl EditorView {
         let Some(frame) = self.cursor_frame_at(x, lane, free) else {
             return false;
         };
-        self.time_selection_gesture = Some(TimeSelectionGesture {
+        self.interaction.time_selection_gesture = Some(TimeSelectionGesture {
             selection: TimeSelection {
                 anchor_track: Some(first.id()),
                 end_track: Some(last.id()),
@@ -412,13 +416,15 @@ impl EditorView {
         x: f32,
         y: f32,
     ) -> Option<(hex_project::TimeRange, u64)> {
-        if !self.time_selection_project_scope {
+        if !self.interaction.time_selection_project_scope {
             return None;
         }
         let range = self.normalized_time_selection()?;
         let state = self.state.as_ref()?;
-        let lane = self.main_track_lane_bounds.filter(|lane| {
-            self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
+        let lane = self.timeline_caches.main_track_lane_bounds.filter(|lane| {
+            self.timeline_caches.main_track_lane_epoch
+                == self.timeline_caches.drag_layout_generation
+                && lane_contains(x, y, *lane)
         })?;
         if RangeSelectionZones::new(lane.height, super::clip_name::CLIP_NAME_HEIGHT)?.target(
             y - lane.top,
@@ -442,8 +448,8 @@ impl EditorView {
     }
 
     pub(super) fn begin_main_time_range_move_gesture(&mut self, x: f32, y: f32) -> bool {
-        self.suppress_cursor_click = false;
-        if !self.time_selection_project_scope
+        self.interaction.suppress_cursor_click = false;
+        if !self.interaction.time_selection_project_scope
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
@@ -454,11 +460,11 @@ impl EditorView {
             || self.persistence.close_prompt_open
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
             || self.locked_play_start_drag_active()
         {
@@ -470,7 +476,7 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        self.time_range_move_gesture = Some(TimeRangeMoveGesture {
+        self.interaction.time_range_move_gesture = Some(TimeRangeMoveGesture {
             range,
             generation: self.project_generation,
             revision: state.revision,
@@ -493,7 +499,7 @@ impl EditorView {
         free: bool,
         extend: bool,
     ) -> bool {
-        self.suppress_cursor_click = false;
+        self.interaction.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
             || self.sections.naming()
@@ -503,11 +509,11 @@ impl EditorView {
             || self.persistence.close_prompt_open
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
             || self.locked_play_start_drag_active()
         {
@@ -535,8 +541,8 @@ impl EditorView {
             return false;
         };
         let (ordinary_handle, priority_control, _, _) =
-            self.clip_pointer_handles(track, x, y, viewport, self.option_held, true);
-        if !self.time_selection_key_held
+            self.clip_pointer_handles(track, x, y, viewport, self.interaction.option_held, true);
+        if !self.interaction.time_selection_key_held
             && (priority_control || ((extend || !inside_selection) && ordinary_handle))
         {
             return false;
@@ -553,16 +559,16 @@ impl EditorView {
             end_frame: frame,
         };
         self.advance_selection_intent();
-        self.edit_cursor = Some(anchor.unwrap_or(EditCursor {
+        self.interaction.edit_cursor = Some(anchor.unwrap_or(EditCursor {
             track: Some(track),
             frame,
             generation,
             pulse_color: theme::color(theme::PaletteRole::Text),
             pulse_started: Instant::now(),
         }));
-        self.time_selection = Some(selection);
-        self.time_selection_project_scope = false;
-        self.time_selection_gesture = Some(TimeSelectionGesture {
+        self.interaction.time_selection = Some(selection);
+        self.interaction.time_selection_project_scope = false;
+        self.interaction.time_selection_gesture = Some(TimeSelectionGesture {
             selection,
             generation,
             revision,
@@ -596,11 +602,11 @@ impl EditorView {
             || self.persistence.close_prompt_open
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
-            || self.active_trim_drag.is_some()
-            || self.active_fade_drag.is_some()
+            || self.interaction.active_trim_drag.is_some()
+            || self.interaction.active_fade_drag.is_some()
             || self.midi_editor.active_trim_drag.is_some()
             || self.locked_play_start_drag_active()
         {
@@ -635,7 +641,7 @@ impl EditorView {
         let Some(grab_frame_offset) = frame.checked_sub(range.start()) else {
             return false;
         };
-        self.time_range_move_gesture = Some(TimeRangeMoveGesture {
+        self.interaction.time_range_move_gesture = Some(TimeRangeMoveGesture {
             range,
             generation: self.project_generation,
             revision: state.revision,
@@ -648,16 +654,16 @@ impl EditorView {
             last_tick: Instant::now(),
             preview: None,
         });
-        self.suppress_cursor_click = false;
+        self.interaction.suppress_cursor_click = false;
         true
     }
 
     pub(super) fn update_time_range_move_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
-        let Some(mut gesture) = self.time_range_move_gesture.take() else {
+        let Some(mut gesture) = self.interaction.time_range_move_gesture.take() else {
             return false;
         };
         // A dragged range must not also become a fresh lane click on release.
-        self.suppress_cursor_click = true;
+        self.interaction.suppress_cursor_click = true;
         let Some(state) = self.state.as_ref() else {
             return false;
         };
@@ -679,7 +685,7 @@ impl EditorView {
         gesture.pointer_y = y;
         gesture.free_modifier = free;
         let Some((Some(pointer_track), lane)) = self.time_gesture_lane_near_y(y) else {
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         let Some(pointer_index) = state
@@ -697,17 +703,17 @@ impl EditorView {
             .min(max_first);
         let Some(last_index) = first_index.checked_add(gesture.range.tracks().len() - 1) else {
             gesture.preview = None;
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         let Some(rows) = state.project.tracks().get(first_index..=last_index) else {
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
         let Some(pointer_frame) = super::seek::pointer_to_frame(x, lane.left, lane.width, viewport)
         else {
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         let candidate_frame = pointer_frame.saturating_sub(gesture.grab_frame_offset);
@@ -717,15 +723,15 @@ impl EditorView {
             viewport,
             lane.width,
         ) else {
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         let Some(end_frame) = candidate_frame.checked_add(gesture.range.duration()) else {
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         let (Some(first_track), Some(last_track)) = (rows.first(), rows.last()) else {
-            self.time_range_move_gesture = Some(gesture);
+            self.interaction.time_range_move_gesture = Some(gesture);
             return true;
         };
         gesture.preview = Some(TimeRangeMovePreview {
@@ -736,12 +742,12 @@ impl EditorView {
             start_frame: candidate_frame,
             end_frame,
         });
-        self.time_range_move_gesture = Some(gesture);
+        self.interaction.time_range_move_gesture = Some(gesture);
         true
     }
 
     pub(super) fn finish_time_range_move_gesture(&mut self) -> bool {
-        let Some(gesture) = self.time_range_move_gesture.take() else {
+        let Some(gesture) = self.interaction.time_range_move_gesture.take() else {
             return false;
         };
         if self.mode != EditorMode::Arrangement
@@ -805,7 +811,7 @@ impl EditorView {
         let target = preview.first_track;
         let source_revision = gesture.revision;
         let source = gesture.range.clone();
-        let project_scope = self.time_selection_project_scope;
+        let project_scope = self.interaction.time_selection_project_scope;
         let command = if gesture.copy_modifier {
             Command::CopyTimeRangeTo {
                 range: gesture.range,
@@ -819,7 +825,7 @@ impl EditorView {
                 frame: destination.start(),
             }
         };
-        let Some(selection_intent_epoch) = self.selection_intent_epoch else {
+        let Some(selection_intent_epoch) = self.interaction.selection_intent_epoch else {
             self.error = Some(
                 "selection intent exhausted · reopen the editor before moving or copying time"
                     .into(),
@@ -827,7 +833,7 @@ impl EditorView {
             return true;
         };
         if self.enqueue(Request::Edit(command)) {
-            self.pending_time_range_move = Some(PendingTimeRangeMove {
+            self.interaction.pending_time_range_move = Some(PendingTimeRangeMove {
                 selection_intent_epoch,
                 source,
                 range: destination,
@@ -843,9 +849,9 @@ impl EditorView {
     }
 
     pub(super) fn time_selection_track_indices(&self) -> Option<(usize, usize)> {
-        let selection = self.time_selection?;
+        let selection = self.interaction.time_selection?;
         let tracks = self.state.as_ref()?.project.tracks();
-        if self.time_selection_project_scope {
+        if self.interaction.time_selection_project_scope {
             return Some((0, tracks.len().checked_sub(1)?));
         }
         let anchor_track = selection.anchor_track?;
@@ -870,6 +876,7 @@ impl EditorView {
             return false;
         }
         if self
+            .interaction
             .time_selection
             .is_none_or(|selection| selection.anchor_frame == selection.end_frame)
         {
@@ -884,18 +891,19 @@ impl EditorView {
             return true;
         }
         let revision = self.state.as_ref().map_or(0, |state| state.revision);
-        if let Some(pending) = &mut self.pending_time_range_move
+        if let Some(pending) = &mut self.interaction.pending_time_range_move
             && let Some(keyboard) = &mut pending.keyboard
         {
             if pending.source != range
                 || pending.source_revision != revision
-                || self.selection_intent_epoch != Some(pending.selection_intent_epoch)
-                || self.time_selection_project_scope != pending.project_scope
+                || self.interaction.selection_intent_epoch != Some(pending.selection_intent_epoch)
+                || self.interaction.time_selection_project_scope != pending.project_scope
             {
                 self.error = Some("time duplicate is still completing".into());
                 return true;
             }
             let keyboard = self
+                .interaction
                 .ahead_time_range_move
                 .as_mut()
                 .and_then(|ahead| ahead.keyboard.as_mut())
@@ -922,8 +930,8 @@ impl EditorView {
         self.persistence.opening_project
             || self.persistence.close_prompt_open
             || self.persistence.automation_close_preflight.frozen()
-            || self.time_selection_gesture.is_some()
-            || self.time_range_move_gesture.is_some()
+            || self.interaction.time_selection_gesture.is_some()
+            || self.interaction.time_range_move_gesture.is_some()
             || self.clip_name_edit.is_some()
             || self.sections.naming()
             || self.track_name.is_editing()
@@ -951,18 +959,18 @@ impl EditorView {
             track: range.tracks()[0],
             frame: range.end(),
         };
-        let Some(selection_intent_epoch) = self.selection_intent_epoch else {
+        let Some(selection_intent_epoch) = self.interaction.selection_intent_epoch else {
             self.error = Some(
                 "selection intent exhausted · reopen the editor before moving or copying time"
                     .into(),
             );
             return;
         };
-        self.pending_time_range_move = Some(PendingTimeRangeMove {
+        self.interaction.pending_time_range_move = Some(PendingTimeRangeMove {
             selection_intent_epoch,
             source: range,
             range: destination,
-            project_scope: self.time_selection_project_scope,
+            project_scope: self.interaction.time_selection_project_scope,
             destination_first_index: first,
             destination_last_index: last,
             source_revision: revision,
@@ -974,7 +982,7 @@ impl EditorView {
             }),
         });
         if !self.enqueue(Request::Edit(command)) {
-            self.pending_time_range_move = None;
+            self.interaction.pending_time_range_move = None;
         }
     }
 
@@ -991,6 +999,7 @@ impl EditorView {
 
     pub(super) fn cancel_time_duplicate_repeats(&mut self) {
         if let Some(keyboard) = self
+            .interaction
             .ahead_time_range_move
             .as_mut()
             .and_then(|pending| pending.keyboard.as_mut())
@@ -998,6 +1007,7 @@ impl EditorView {
             keyboard.repeats = None;
         }
         if let Some(keyboard) = self
+            .interaction
             .pending_time_range_move
             .as_mut()
             .and_then(|pending| pending.keyboard.as_mut())
@@ -1007,9 +1017,10 @@ impl EditorView {
     }
 
     pub(super) fn pending_time_duplicate_matches(&self, request: &Request) -> bool {
-        self.pending_time_range_move
+        self.interaction
+            .pending_time_range_move
             .iter()
-            .chain(self.ahead_time_range_move.iter())
+            .chain(self.interaction.ahead_time_range_move.iter())
             .any(|pending| {
                 pending
                     .keyboard
@@ -1026,18 +1037,21 @@ impl EditorView {
     }
 
     pub(super) fn pending_time_duplicate_intent_current(&self) -> bool {
-        self.pending_time_range_move
+        self.interaction
+            .pending_time_range_move
             .as_ref()
             .is_some_and(|pending| {
                 self.mode == EditorMode::Arrangement
-                    && self.selection_intent_epoch == Some(pending.selection_intent_epoch)
-                    && self.time_selection_project_scope == pending.project_scope
+                    && self.interaction.selection_intent_epoch
+                        == Some(pending.selection_intent_epoch)
+                    && self.interaction.time_selection_project_scope == pending.project_scope
                     && self.normalized_time_selection().as_ref() == Some(&pending.source)
             })
     }
 
     pub(super) fn mark_time_duplicate_recovery_started(&mut self) {
         if let Some(keyboard) = self
+            .interaction
             .pending_time_range_move
             .as_mut()
             .and_then(|pending| pending.keyboard.as_mut())
@@ -1048,9 +1062,10 @@ impl EditorView {
 
     pub(super) fn time_duplicate_submitted(&mut self) {
         for pending in self
+            .interaction
             .pending_time_range_move
             .iter_mut()
-            .chain(self.ahead_time_range_move.iter_mut())
+            .chain(self.interaction.ahead_time_range_move.iter_mut())
         {
             if let Some(keyboard) = &mut pending.keyboard
                 && keyboard.receipt.is_queued()
@@ -1148,7 +1163,8 @@ impl EditorView {
                     .map(|track| (track, range.start()))
             })
             .or_else(|| {
-                self.edit_cursor
+                self.interaction
+                    .edit_cursor
                     .and_then(|cursor| Some((cursor.track?, cursor.frame)))
             })
     }
@@ -1177,7 +1193,7 @@ impl EditorView {
         observation: hex_session::service::ArrangementEditViewObservation,
     ) -> bool {
         use hex_session::service::ArrangementEditViewKind;
-        let Some(pending) = self.pending_time_range_move.as_ref() else {
+        let Some(pending) = self.interaction.pending_time_range_move.as_ref() else {
             return false;
         };
         if self.mode != EditorMode::Arrangement
@@ -1190,7 +1206,7 @@ impl EditorView {
             return false;
         }
         let matching = std::iter::once(pending)
-            .chain(self.ahead_time_range_move.iter())
+            .chain(self.interaction.ahead_time_range_move.iter())
             .find(|candidate| {
                 candidate.copy_modifier
                     && candidate
@@ -1235,7 +1251,7 @@ impl EditorView {
 
     /// Admit at most one successor after the source copy has committed.
     pub(super) fn start_ahead_time_duplicate(&mut self) {
-        if self.ahead_time_range_move.is_some()
+        if self.interaction.ahead_time_range_move.is_some()
             || self.time_duplicate_input_blocked()
             || self.worker_requests_pending != 1
             || !self.pending_requests.is_empty()
@@ -1243,7 +1259,7 @@ impl EditorView {
         {
             return;
         }
-        let Some(pending) = self.pending_time_range_move.as_ref() else {
+        let Some(pending) = self.interaction.pending_time_range_move.as_ref() else {
             return;
         };
         let Some(keyboard) = pending.keyboard.as_ref() else {
@@ -1256,8 +1272,8 @@ impl EditorView {
             return;
         };
         if pending.source_revision.checked_add(1) != Some(view.revision)
-            || self.selection_intent_epoch != Some(pending.selection_intent_epoch)
-            || self.time_selection_project_scope != pending.project_scope
+            || self.interaction.selection_intent_epoch != Some(pending.selection_intent_epoch)
+            || self.interaction.time_selection_project_scope != pending.project_scope
             || self.normalized_time_selection().as_ref() != Some(&pending.source)
             || self.mode != EditorMode::Arrangement
         {
@@ -1277,7 +1293,7 @@ impl EditorView {
             track: source.tracks()[0],
             frame: source.end(),
         };
-        self.ahead_time_range_move = Some(PendingTimeRangeMove {
+        self.interaction.ahead_time_range_move = Some(PendingTimeRangeMove {
             source,
             range,
             project_scope: pending.project_scope,
@@ -1293,6 +1309,7 @@ impl EditorView {
             }),
         });
         if let Some(keyboard) = self
+            .interaction
             .pending_time_range_move
             .as_mut()
             .and_then(|pending| pending.keyboard.as_mut())
@@ -1300,14 +1317,14 @@ impl EditorView {
             keyboard.repeats = None;
         }
         if !self.enqueue(Request::Edit(command)) {
-            self.ahead_time_range_move = None;
+            self.interaction.ahead_time_range_move = None;
         }
     }
 
     pub(super) fn time_range_copy_view(
         &self,
     ) -> Option<&std::sync::Arc<hex_session::service::ViewState>> {
-        let pending = self.pending_time_range_move.as_ref()?;
+        let pending = self.interaction.pending_time_range_move.as_ref()?;
         let state = self.state.as_ref()?;
         if self.mode != EditorMode::Arrangement
             || self.persistence.opening_project
@@ -1318,15 +1335,20 @@ impl EditorView {
         }
         self.committed_time_range_copy_view.as_ref().filter(|view| {
             pending.source_revision.checked_add(1) == Some(view.revision)
-                || self.ahead_time_range_move.as_ref().is_some_and(|ahead| {
-                    pending.source_revision.checked_add(1) == Some(ahead.source_revision)
-                        && ahead.source_revision.checked_add(1) == Some(view.revision)
-                })
+                || self
+                    .interaction
+                    .ahead_time_range_move
+                    .as_ref()
+                    .is_some_and(|ahead| {
+                        pending.source_revision.checked_add(1) == Some(ahead.source_revision)
+                            && ahead.source_revision.checked_add(1) == Some(view.revision)
+                    })
         })
     }
 
     pub(super) fn complete_time_duplicate_pair(&mut self, event: &Event) -> u8 {
         if let Some(keyboard) = self
+            .interaction
             .ahead_time_range_move
             .as_mut()
             .and_then(|pending| pending.keyboard.as_mut())
@@ -1337,39 +1359,41 @@ impl EditorView {
                 event.request_complete && !event.plugin_parameter_observation,
             );
             if disposition == Disposition::Invalidated {
-                self.ahead_time_range_move = None;
+                self.interaction.ahead_time_range_move = None;
             }
         }
         let repeats = self.move_time_selection_complete(event);
-        if self.pending_time_range_move.is_none()
-            && let Some(mut ahead) = self.ahead_time_range_move.take()
+        if self.interaction.pending_time_range_move.is_none()
+            && let Some(mut ahead) = self.interaction.ahead_time_range_move.take()
         {
             if (event.error.is_some()
-                || self.selection_intent_epoch != Some(ahead.selection_intent_epoch))
+                || self.interaction.selection_intent_epoch != Some(ahead.selection_intent_epoch))
                 && let Some(keyboard) = &mut ahead.keyboard
             {
                 keyboard.repeats = None;
             }
-            self.pending_time_range_move = Some(ahead);
+            self.interaction.pending_time_range_move = Some(ahead);
         }
         repeats
     }
 
     pub(super) fn refuse_time_duplicate(&mut self, request: &Request) -> bool {
-        let matches_ahead = self.ahead_time_range_move.as_ref().is_some_and(|pending| {
-            matches!(request, Request::Edit(Command::CopyTimeRangeTo { range, track, frame })
+        let matches_ahead = self.interaction.ahead_time_range_move.as_ref().is_some_and(
+            |pending| {
+                matches!(request, Request::Edit(Command::CopyTimeRangeTo { range, track, frame })
                 if *range == pending.source && pending.range.tracks().first() == Some(track)
                     && pending.range.start() == *frame)
-        });
+            },
+        );
         if matches_ahead {
-            self.ahead_time_range_move.take().is_some()
+            self.interaction.ahead_time_range_move.take().is_some()
         } else {
-            self.pending_time_range_move.take().is_some()
+            self.interaction.pending_time_range_move.take().is_some()
         }
     }
 
     pub(super) fn move_time_selection_complete(&mut self, event: &Event) -> u8 {
-        let Some(mut pending) = self.pending_time_range_move.take() else {
+        let Some(mut pending) = self.interaction.pending_time_range_move.take() else {
             return 0;
         };
         let mut repeats = 0;
@@ -1380,7 +1404,7 @@ impl EditorView {
                 event.request_complete && !event.plugin_parameter_observation,
             ) {
                 Disposition::Waiting => {
-                    self.pending_time_range_move = Some(pending);
+                    self.interaction.pending_time_range_move = Some(pending);
                     return 0;
                 }
                 Disposition::Invalidated => return 0,
@@ -1398,11 +1422,11 @@ impl EditorView {
                     .state
                     .as_ref()
                     .is_some_and(|state| state.revision == pending.source_revision)
-                && self.ahead_time_range_move.is_none()
+                && self.interaction.ahead_time_range_move.is_none()
                 && !self.edit_pending()
                 && self.audio.is_some()
-                && self.selection_intent_epoch == Some(pending.selection_intent_epoch)
-                && self.time_selection_project_scope == pending.project_scope
+                && self.interaction.selection_intent_epoch == Some(pending.selection_intent_epoch)
+                && self.interaction.time_selection_project_scope == pending.project_scope
                 && self.normalized_time_selection().as_ref() == Some(&pending.source)
             {
                 keyboard.recovery_attempted = true;
@@ -1412,12 +1436,12 @@ impl EditorView {
                     frame: pending.range.start(),
                     range: pending.source.clone(),
                 });
-                self.pending_time_range_move = Some(pending);
+                self.interaction.pending_time_range_move = Some(pending);
                 if !self.recover_before_graph_edit(
                     super::recovery_state::DeferredEditKind::TimeDuplicate,
                     request,
                 ) {
-                    self.pending_time_range_move = None;
+                    self.interaction.pending_time_range_move = None;
                 }
                 return 0;
             }
@@ -1428,7 +1452,7 @@ impl EditorView {
                 repeats = keyboard.repeats.unwrap_or(0);
             }
         } else if !event.request_complete || event.gesture_request || event.tuning_gesture_request {
-            self.pending_time_range_move = Some(pending);
+            self.interaction.pending_time_range_move = Some(pending);
             return 0;
         }
         // The copy/move is admitted with no other pending edit. Its advanced
@@ -1440,26 +1464,27 @@ impl EditorView {
         }
         // The accepted copy still commits, but its selection intent does not
         // own a later pointer choice or a range the user has cancelled.
-        if self.selection_intent_epoch != Some(pending.selection_intent_epoch)
+        if self.interaction.selection_intent_epoch != Some(pending.selection_intent_epoch)
             || self
+                .interaction
                 .edit_cursor
                 .is_none_or(|cursor| cursor.generation != self.project_generation)
-            || self.time_selection_project_scope != pending.project_scope
+            || self.interaction.time_selection_project_scope != pending.project_scope
             || self.normalized_time_selection().as_ref() != Some(&pending.source)
         {
             return 0;
         }
         let (first_track, last_track) = if pending.project_scope {
             let Some(first) = event.state.project.tracks().first().map(|track| track.id()) else {
-                self.time_selection = None;
-                self.time_selection_project_scope = false;
-                self.edit_cursor = None;
+                self.interaction.time_selection = None;
+                self.interaction.time_selection_project_scope = false;
+                self.interaction.edit_cursor = None;
                 return 0;
             };
             let Some(last) = event.state.project.tracks().last().map(|track| track.id()) else {
-                self.time_selection = None;
-                self.time_selection_project_scope = false;
-                self.edit_cursor = None;
+                self.interaction.time_selection = None;
+                self.interaction.time_selection_project_scope = false;
+                self.interaction.edit_cursor = None;
                 return 0;
             };
             (first, last)
@@ -1470,18 +1495,18 @@ impl EditorView {
             (first, rest.last().copied().unwrap_or(first))
         };
         let start_frame = pending.range.start();
-        self.time_selection = Some(TimeSelection {
+        self.interaction.time_selection = Some(TimeSelection {
             anchor_track: Some(first_track),
             end_track: Some(last_track),
             anchor_frame: start_frame,
             end_frame: pending.range.end(),
         });
-        if let Some(cursor) = &mut self.edit_cursor {
+        if let Some(cursor) = &mut self.interaction.edit_cursor {
             cursor.track = Some(last_track);
             cursor.frame = start_frame;
         }
-        self.time_selection_project_scope = pending.project_scope;
-        if !self.time_selection_project_scope {
+        self.interaction.time_selection_project_scope = pending.project_scope;
+        if !self.interaction.time_selection_project_scope {
             self.selected_track = Some(last_track);
         }
         self.selected_clip = None;
@@ -1489,11 +1514,11 @@ impl EditorView {
     }
 
     pub(super) fn update_time_selection_gesture(&mut self, x: f32, y: f32, free: bool) -> bool {
-        let Some(mut gesture) = self.time_selection_gesture else {
+        let Some(mut gesture) = self.interaction.time_selection_gesture else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
-            self.time_selection_gesture = None;
+            self.interaction.time_selection_gesture = None;
             return false;
         };
         if self.mode != EditorMode::Arrangement
@@ -1508,7 +1533,7 @@ impl EditorView {
             || self.persistence.save_dialog_open
             || self.persistence.export_dialog_open
         {
-            self.time_selection_gesture = None;
+            self.interaction.time_selection_gesture = None;
             return false;
         }
         gesture.pointer_x = x;
@@ -1519,11 +1544,11 @@ impl EditorView {
             && (!y.is_finite()
                 || f64::from(x - start_x).hypot(f64::from(y - start_y)) <= POINT_CLICK_SLOP_PX)
         {
-            self.time_selection_gesture = Some(gesture);
+            self.interaction.time_selection_gesture = Some(gesture);
             return false;
         }
         let Some((track, lane)) = self.time_gesture_lane_near_y(y) else {
-            self.time_selection_gesture = Some(gesture);
+            self.interaction.time_selection_gesture = Some(gesture);
             return false;
         };
         let viewport = self.visible_viewport(state.timeline_frames);
@@ -1544,22 +1569,22 @@ impl EditorView {
             ..gesture.selection
         };
         if next == gesture.selection {
-            self.time_selection_gesture = Some(gesture);
+            self.interaction.time_selection_gesture = Some(gesture);
             return false;
         }
         if pending_tail.is_some() {
             self.advance_selection_intent();
             self.retire_section_pointer_context_for_range();
             self.clear_automation_range();
-            self.time_selection_project_scope = true;
-            self.edit_cursor = Some(EditCursor {
+            self.interaction.time_selection_project_scope = true;
+            self.interaction.edit_cursor = Some(EditCursor {
                 track: next.anchor_track,
                 frame: next.anchor_frame,
                 generation: gesture.generation,
                 pulse_color: theme::color(theme::PaletteRole::Text),
                 pulse_started: Instant::now(),
             });
-            self.edit_cursor_in_selected_clip = None;
+            self.interaction.edit_cursor_in_selected_clip = None;
         }
         gesture.selection = next;
         gesture.moved = true;
@@ -1567,9 +1592,9 @@ impl EditorView {
         if next.anchor_frame != next.end_frame {
             self.retire_section_pointer_context_for_range();
         }
-        self.time_selection = Some(next);
-        self.time_selection_gesture = Some(gesture);
-        if !self.time_selection_project_scope
+        self.interaction.time_selection = Some(next);
+        self.interaction.time_selection_gesture = Some(gesture);
+        if !self.interaction.time_selection_project_scope
             && let (Some(anchor), Some(track)) = (next.anchor_track, track)
         {
             self.select_lane_span(anchor, track);
@@ -1579,19 +1604,19 @@ impl EditorView {
     }
 
     pub(super) fn finish_time_selection_gesture(&mut self) -> bool {
-        let Some(gesture) = self.time_selection_gesture.take() else {
+        let Some(gesture) = self.interaction.time_selection_gesture.take() else {
             return false;
         };
         if gesture.tail_press.is_some() && !gesture.moved {
             return false; // Keep the ordinary tail click.
         }
-        self.suppress_cursor_click = gesture.moved;
+        self.interaction.suppress_cursor_click = gesture.moved;
         if gesture.selection.anchor_track.is_none()
             && gesture.selection.anchor_frame == gesture.selection.end_frame
         {
-            self.time_selection = None;
-            self.time_selection_project_scope = false;
-            self.edit_cursor = None;
+            self.interaction.time_selection = None;
+            self.interaction.time_selection_project_scope = false;
+            self.interaction.edit_cursor = None;
             if !gesture.moved
                 && let Some(beat) = gesture.main_lane_click_beat
             {
@@ -1612,11 +1637,11 @@ impl EditorView {
     }
 
     pub(super) fn cancel_time_range_move_gesture(&mut self) -> bool {
-        self.time_range_move_gesture.take().is_some()
+        self.interaction.time_range_move_gesture.take().is_some()
     }
 
     pub(super) fn update_time_range_copy_modifier(&mut self, held: bool) -> bool {
-        let Some(gesture) = self.time_range_move_gesture.as_mut() else {
+        let Some(gesture) = self.interaction.time_range_move_gesture.as_mut() else {
             return false;
         };
         if gesture.copy_modifier == held {
@@ -1628,13 +1653,13 @@ impl EditorView {
 
     pub(super) fn cancel_time_selection_gesture(&mut self) -> bool {
         let had_move = self.cancel_time_range_move_gesture();
-        let had_gesture = self.time_selection_gesture.take().is_some();
+        let had_gesture = self.interaction.time_selection_gesture.take().is_some();
         if had_move {
             self.advance_selection_intent();
-            self.suppress_cursor_click = false;
+            self.interaction.suppress_cursor_click = false;
             return true;
         }
-        let previous = self.time_selection.take();
+        let previous = self.interaction.time_selection.take();
         let had_range = previous.is_some_and(|selection| {
             selection.anchor_frame != selection.end_frame
                 || selection.anchor_track != selection.end_track
@@ -1642,19 +1667,19 @@ impl EditorView {
         if had_gesture || had_range {
             self.advance_selection_intent();
         }
-        if let Some(cursor) = self.edit_cursor
+        if let Some(cursor) = self.interaction.edit_cursor
             && let Some(track) = cursor.track
         {
-            self.time_selection = Some(TimeSelection {
+            self.interaction.time_selection = Some(TimeSelection {
                 anchor_track: Some(track),
                 end_track: Some(track),
                 anchor_frame: cursor.frame,
                 end_frame: cursor.frame,
             });
         } else {
-            self.time_selection_project_scope = false;
+            self.interaction.time_selection_project_scope = false;
         }
-        self.suppress_cursor_click = false;
+        self.interaction.suppress_cursor_click = false;
         had_move || had_gesture || had_range
     }
 
@@ -1665,11 +1690,13 @@ impl EditorView {
     ) -> Option<(TrackId, super::drag::LaneBounds)> {
         let state = self.state.as_ref()?;
         let (track, lane) = self
+            .timeline_caches
             .drag_lanes
             .iter()
             .filter(|(track, _)| {
                 self.arrangement_track_visible(**track)
-                    && self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                    && self.timeline_caches.drag_lane_epochs.get(track)
+                        == Some(&self.timeline_caches.drag_layout_generation)
             })
             .find(|(_, lane)| lane_contains(x, y, **lane))?;
         state.project.track(*track)?;
@@ -1685,8 +1712,14 @@ impl EditorView {
         viewport: super::viewport::Viewport,
         painting: bool,
     ) -> bool {
-        let (ordinary, priority, _, _) =
-            self.clip_pointer_handles(track, x, y, viewport, self.option_held, !painting);
+        let (ordinary, priority, _, _) = self.clip_pointer_handles(
+            track,
+            x,
+            y,
+            viewport,
+            self.interaction.option_held,
+            !painting,
+        );
         ordinary || priority
     }
     /// Hit the topmost painted clip body using the same bounds as its controls.
@@ -1715,7 +1748,7 @@ impl EditorView {
         .1
     }
     fn pointer_hits_option_repeat_edge(&self, x: f32, y: f32) -> bool {
-        if self.time_selection_key_held {
+        if self.interaction.time_selection_key_held {
             return false;
         }
         let Some((track, _)) = self.visible_lane_at(x, y) else {
@@ -1752,7 +1785,7 @@ impl EditorView {
         let Some(track) = state.project.track(track) else {
             return (true, false, false, None);
         };
-        let Some(lane) = self.drag_lanes.get(&track.id()) else {
+        let Some(lane) = self.timeline_caches.drag_lanes.get(&track.id()) else {
             return (true, false, false, None);
         };
         let Some(viewport_end) = viewport.end().filter(|_| viewport.length > 0) else {
@@ -1890,7 +1923,7 @@ impl EditorView {
         scale_factor: f32,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
-        let raw_selection = self.time_selection?;
+        let raw_selection = self.interaction.time_selection?;
         let tracks = self.state.as_ref()?.project.tracks();
         // A pending structural preview may display a projected row index.
         // Time-selection anchors still belong to the canonical track order.
@@ -1908,7 +1941,7 @@ impl EditorView {
         let viewport_end = viewport.end()?;
         let stroke = 1.0 / scale_factor.max(1.0);
         if raw_selection.anchor_frame == raw_selection.end_frame {
-            if self.play_start_at_beginning
+            if self.interaction.play_start_at_beginning
                 || self.displayed_clip_move_guide_frame(viewport).is_some()
             {
                 return None;
@@ -1950,6 +1983,7 @@ impl EditorView {
                 );
             }
             let color = self
+                .interaction
                 .edit_cursor
                 .map_or(theme::color(theme::PaletteRole::Text), |cursor| {
                     cursor.color()
@@ -2006,10 +2040,10 @@ impl EditorView {
                                 .top_0()
                                 .w_full()
                                 .h(px(header_hit_height(self.track_height(track))))
-                                .when(!self.option_held, |handle| {
+                                .when(!self.interaction.option_held, |handle| {
                                     handle.cursor(CursorStyle::OpenHand)
                                 })
-                                .children(self.option_held.then(|| {
+                                .children(self.interaction.option_held.then(|| {
                                     let cursor_owner = cx.entity();
                                     canvas(
                                         |bounds, window, _| {
@@ -2045,7 +2079,8 @@ impl EditorView {
                         ),
                 )
                 .children(
-                    if track_index == first_index && !self.time_selection_project_scope {
+                    if track_index == first_index && !self.interaction.time_selection_project_scope
+                    {
                         self.time_selection_binary_marker(raw_selection, viewport)
                     } else {
                         None
@@ -2058,13 +2093,13 @@ impl EditorView {
         &self,
         viewport: super::viewport::Viewport,
     ) -> Option<Stateful<Div>> {
-        if !self.time_selection_project_scope {
+        if !self.interaction.time_selection_project_scope {
             return None;
         }
-        let selection = self.time_selection?;
+        let selection = self.interaction.time_selection?;
         let viewport_end = viewport.end()?;
         if selection.anchor_frame == selection.end_frame {
-            if self.play_start_at_beginning
+            if self.interaction.play_start_at_beginning
                 || self.displayed_clip_move_guide_frame(viewport).is_some()
             {
                 return None;
@@ -2105,6 +2140,7 @@ impl EditorView {
                 );
             }
             let color = self
+                .interaction
                 .edit_cursor
                 .map_or(theme::color(theme::PaletteRole::Text), |cursor| {
                     cursor.color()
@@ -2214,7 +2250,7 @@ impl EditorView {
     pub(super) fn time_range_move_display(&self) -> Option<TimeRangeMoveDisplay<'_>> {
         let state = self.state.as_ref()?;
         let (source, destination_first_index, destination_last_index, start, end, copy_modifier) =
-            if let Some(pending) = &self.pending_time_range_move {
+            if let Some(pending) = &self.interaction.pending_time_range_move {
                 (
                     &pending.source,
                     pending.destination_first_index,
@@ -2224,7 +2260,7 @@ impl EditorView {
                     pending.copy_modifier,
                 )
             } else {
-                let gesture = self.time_range_move_gesture.as_ref()?;
+                let gesture = self.interaction.time_range_move_gesture.as_ref()?;
                 if gesture.generation != self.project_generation
                     || gesture.revision != state.revision
                 {

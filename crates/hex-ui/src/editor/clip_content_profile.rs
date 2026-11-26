@@ -157,7 +157,9 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
         window.draw(cx).clear();
     });
     let lane = editor.read_with(cx, |view, _| {
-        view.main_track_lane_bounds.expect("painted main lane")
+        view.timeline_caches
+            .main_track_lane_bounds
+            .expect("painted main lane")
     });
     let at = |fraction| {
         point(
@@ -184,7 +186,8 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
     });
     let builds = |cx: &TestAppContext| {
         editor.read_with(cx, |view, app| {
-            view.clip_content_cache
+            view.timeline_caches
+                .clip_content_cache
                 .entries
                 .values()
                 .map(|child| child.read(app).builds)
@@ -225,7 +228,10 @@ fn headless_time_selection_framework_profile(cx: &mut TestAppContext) {
         }
         previous_width = Some(overlay.size.width);
         editor.read_with(cx, |view, _| {
-            assert!(view.time_selection_project_scope && view.time_selection_gesture.is_some());
+            assert!(
+                view.interaction.time_selection_project_scope
+                    && view.interaction.time_selection_gesture.is_some()
+            );
             assert_eq!(
                 view.normalized_time_selection()
                     .expect("range")

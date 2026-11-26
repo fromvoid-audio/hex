@@ -475,7 +475,7 @@ fn gain_recovery_blocker(view: &mut EditorView) -> Option<&'static str> {
         }
         return Some("previous volume edit is canceling · drag again when it finishes");
     }
-    if view.recovery.generation().is_some() {
+    if view.audio_pub.recovery.generation().is_some() {
         return Some("audio recovery pending · wait before editing");
     }
     None
@@ -497,13 +497,13 @@ fn begin_degraded_recovery(
         .audio_status()
         .is_some_and(|status| status.playing.load(Acquire));
     view.recover_audio();
-    if view.recovery.generation().is_none() {
+    if view.audio_pub.recovery.generation().is_none() {
         return Err("audio recovery could not start");
     }
     if playing {
         view.defer_play_until_audio_recovers();
     }
-    view.recovery.bind_mixer_edit(context);
+    view.audio_pub.recovery.bind_mixer_edit(context);
     let touched_track = match &target {
         RecoveryTarget::TrackGain(track) => Some(*track),
         RecoveryTarget::TrackGains(group) => Some(group.anchor()),
@@ -651,7 +651,8 @@ impl EditorView {
             .iter()
             .chain(self.device_panel.gesture_barriers.iter())
             .chain(
-                self.recovery
+                self.audio_pub
+                    .recovery
                     .deferred_edit
                     .as_ref()
                     .map(|edit| edit.request.as_ref()),
@@ -749,7 +750,7 @@ impl EditorView {
                         } else if let Some(reason) = gain_recovery_blocker(view) {
                             Some(reason)
                         } else if view.track_gain_edit_blocked()
-                            || view.pending_restart_request.is_some()
+                            || view.audio_pub.pending_restart_request.is_some()
                             || view.track_gain_controls.pending_recovery.is_some()
                         {
                             Some("wait for the current project edit before changing volume")
@@ -976,7 +977,8 @@ impl EditorView {
                     }
                     let explicit_gain = key.supports_atomic_gain() && event.gesture.is_none();
                     if event.phase == NumericEventPhase::Begin
-                        && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && view.audio_pub.document_audio_mode
+                            == hex_session::DocumentAudioMode::Resident
                         && !view.gain_recorder.blocks_edits()
                         && !view.midi_editor.recorder.blocks_edits()
                         && let Some(reason) = gain_recovery_blocker(view)
@@ -987,12 +989,13 @@ impl EditorView {
                         return;
                     }
                     if event.phase == NumericEventPhase::Begin
-                        && ((view.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                        && ((view.audio_pub.document_audio_mode
+                            != hex_session::DocumentAudioMode::Resident
                             && !explicit_gain)
                             || view.gain_recorder.blocks_edits()
                             || view.midi_editor.recorder.blocks_edits()
                             || view.mixer_edit_blocked()
-                            || view.pending_restart_request.is_some()
+                            || view.audio_pub.pending_restart_request.is_some()
                             || view.track_gain_controls.pending_recovery.is_some())
                     {
                         view.error = Some(if explicit_gain {
@@ -1001,7 +1004,7 @@ impl EditorView {
                             "finish the current edit · held mixer controls require resident audio"
                         }.into());
                         let rejected_gain = (key.supports_atomic_gain()
-                            && view.document_audio_mode
+                            && view.audio_pub.document_audio_mode
                                 != hex_session::DocumentAudioMode::Resident)
                             .then(|| key.canonical_value(view).unwrap_or(canonical));
                         control.update(cx, |control, cx| {
@@ -1014,7 +1017,8 @@ impl EditorView {
                         return;
                     }
                     if event.phase == NumericEventPhase::Begin
-                        && view.document_audio_mode == hex_session::DocumentAudioMode::Resident
+                        && view.audio_pub.document_audio_mode
+                            == hex_session::DocumentAudioMode::Resident
                         && view.has_output_fault_requiring_recovery()
                     {
                         let recovery_target = match key {
@@ -1036,7 +1040,8 @@ impl EditorView {
                     // Verified sources retain explicit atomic output-gain edits. Held
                     // preview stays resident-only; the actor owns the sole edit.
                     if key.supports_atomic_gain()
-                        && view.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                        && view.audio_pub.document_audio_mode
+                            != hex_session::DocumentAudioMode::Resident
                     {
                         match event.phase {
                             NumericEventPhase::Begin => atomic_admitted.set(true),
@@ -1104,7 +1109,8 @@ impl EditorView {
                         _ => None,
                     })
             });
-        let enabled = (self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+        let enabled = (self.audio_pub.document_audio_mode
+            == hex_session::DocumentAudioMode::Resident
             || key.supports_atomic_gain())
             && !self.gain_recorder.blocks_edits()
             && !self.midi_editor.recorder.blocks_edits()
@@ -1117,7 +1123,7 @@ impl EditorView {
             // The existing worker queue retains an explicit output-gain edit until its
             // acknowledgement; do not flash the old value during that handoff.
             if !(key.supports_atomic_gain()
-                && self.document_audio_mode != hex_session::DocumentAudioMode::Resident
+                && self.audio_pub.document_audio_mode != hex_session::DocumentAudioMode::Resident
                 && self.edit_pending())
             {
                 let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);

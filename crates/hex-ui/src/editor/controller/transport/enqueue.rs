@@ -245,8 +245,8 @@ impl EditorView {
         // An already-started recovery must finish while a picker/confirmation
         // pauses user edits. Only the currently owned recovery token qualifies.
         let recovery_restore = matches!(&request, Request::RestorePlayback { generation }
-            if self.pending_recovery_generation == Some(*generation)
-                && self.recovery.generation() == Some(*generation));
+            if self.audio_pub.pending_recovery_generation == Some(*generation)
+                && self.audio_pub.recovery.generation() == Some(*generation));
         if (self.persistence.project_open.busy() || self.persistence.pending_open_path.is_some())
             && !open_save
             && !recovery_restore

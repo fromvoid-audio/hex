@@ -30,7 +30,7 @@ impl EditorView {
             || self.device_panel.has_pending_draft(cx)
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
-            || self.active_clip_drag.is_some()
+            || self.interaction.active_clip_drag.is_some()
             || self.browser.active_audio_drag.is_some()
             || self.device_panel.active_native_drag.is_some()
         {

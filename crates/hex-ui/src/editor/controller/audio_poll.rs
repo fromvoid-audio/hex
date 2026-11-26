@@ -77,17 +77,22 @@ impl EditorView {
                 && candidate.tuning_preview_identity.is_none()
                 && candidate.clip_preview_identity.is_none()
         };
-        let resident_applied = self.document_audio_mode == hex_session::DocumentAudioMode::Resident
-            && self.audible_playback.as_ref().is_some_and(|candidate| {
-                canonical(candidate)
-                    && matches(&candidate.state, candidate.project_generation)
-                    && self.audio.as_ref().is_some_and(|audio| {
-                        audio.control.status().is_some_and(|status| {
-                            status.applied_revision.load(Acquire) == candidate.audio_revision
+        let resident_applied = self.audio_pub.document_audio_mode
+            == hex_session::DocumentAudioMode::Resident
+            && self
+                .audio_pub
+                .audible_playback
+                .as_ref()
+                .is_some_and(|candidate| {
+                    canonical(candidate)
+                        && matches(&candidate.state, candidate.project_generation)
+                        && self.audio.as_ref().is_some_and(|audio| {
+                            audio.control.status().is_some_and(|status| {
+                                status.applied_revision.load(Acquire) == candidate.audio_revision
+                            })
                         })
-                    })
-            });
-        let verified_applied = self.document_audio_mode
+                });
+        let verified_applied = self.audio_pub.document_audio_mode
             == hex_session::DocumentAudioMode::VerifiedStreaming
             && self.audio.as_ref().is_some_and(|audio| {
                 audio
@@ -117,7 +122,7 @@ impl EditorView {
             *revision = next.revision;
         }
 
-        if let Some(pending) = self.pending_playback.as_mut()
+        if let Some(pending) = self.audio_pub.pending_playback.as_mut()
             && pending.seek_request_id.is_none()
             && pending.device_preview_identity.is_none()
             && pending.tuning_preview_identity.is_none()
@@ -126,7 +131,7 @@ impl EditorView {
             pending.state = Arc::clone(next);
             pending.project_revision = next.revision;
         }
-        if let Some(pending) = self.pending_resident_publication.as_mut()
+        if let Some(pending) = self.audio_pub.pending_resident_publication.as_mut()
             && pending.seek_request_id.is_none()
             && pending.device_preview_identity.is_none()
             && pending.tuning_preview_identity.is_none()
@@ -135,18 +140,18 @@ impl EditorView {
             pending.state = Arc::clone(next);
             pending.project_revision = next.revision;
         }
-        for candidate in &mut self.playback_candidates {
+        for candidate in &mut self.audio_pub.playback_candidates {
             if canonical(candidate) && matches(&candidate.state, candidate.project_generation) {
                 candidate.state = Arc::clone(next);
             }
         }
-        if let Some(candidate) = self.audible_playback.as_mut()
+        if let Some(candidate) = self.audio_pub.audible_playback.as_mut()
             && canonical(candidate)
             && matches(&candidate.state, candidate.project_generation)
         {
             candidate.state = Arc::clone(next);
         }
-        self.audio_admission.comparison_revision(
+        self.audio_pub.audio_admission.comparison_revision(
             crate::editor::audio_admission::ProjectRevision {
                 generation: self.project_generation,
                 revision: previous_revision,
@@ -157,17 +162,18 @@ impl EditorView {
             },
             applied_is_current,
         );
-        if applied_is_current && self.applied_project_revision == Some(previous_revision) {
-            self.applied_project_revision = Some(next.revision);
+        if applied_is_current && self.audio_pub.applied_project_revision == Some(previous_revision)
+        {
+            self.audio_pub.applied_project_revision = Some(next.revision);
         }
     }
 
     pub(in crate::editor) fn restart_audio_for_current_document(&mut self) -> bool {
-        let Some(request_id) = self.restart_request_id.checked_add(1) else {
+        let Some(request_id) = self.audio_pub.restart_request_id.checked_add(1) else {
             self.error = Some("audio restart request id exhausted".into());
             return false;
         };
-        self.restart_request_id = request_id;
+        self.audio_pub.restart_request_id = request_id;
         let project_generation = self.project_generation;
         let request = Request::RestartAudio {
             project_generation,
@@ -176,12 +182,12 @@ impl EditorView {
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_submitted();
-                self.pending_restart_request = Some((project_generation, request_id));
+                self.audio_pub.pending_restart_request = Some((project_generation, request_id));
                 self.status = "preparing audio output".into();
                 true
             }
             Err(error) => {
-                self.pending_restart_request = None;
+                self.audio_pub.pending_restart_request = None;
                 self.error = Some(
                     format!(
                         "could not restart audio · {}",
@@ -198,21 +204,21 @@ impl EditorView {
     pub(in crate::editor) fn retire_audio_for_future_generation(&mut self) {
         self.invalidate_prepared_seek();
         self.retire_audio_preserving_gain_take();
-        self.prepared_seek = None;
-        self.latched_seek_intent = None;
-        self.pending_recovery_generation = None;
+        self.audio_pub.prepared_seek = None;
+        self.audio_pub.latched_seek_intent = None;
+        self.audio_pub.pending_recovery_generation = None;
         self.clear_recovery();
-        self.pending_playback = None;
-        self.pending_resident_publication = None;
-        self.pending_audio_commands.clear();
-        self.pending_seek_ticket = None;
-        self.pending_metronome_ticket = None;
+        self.audio_pub.pending_playback = None;
+        self.audio_pub.pending_resident_publication = None;
+        self.audio_pub.pending_audio_commands.clear();
+        self.audio_pub.pending_seek_ticket = None;
+        self.audio_pub.pending_metronome_ticket = None;
         self.session_grid.pending_session_ticket = None;
-        self.playback_candidates.clear();
-        self.audible_playback = None;
-        self.deferred_toggle_play = None;
-        self.deferred_metadata_seek = None;
-        self.audio_admission.reset_audio();
+        self.audio_pub.playback_candidates.clear();
+        self.audio_pub.audible_playback = None;
+        self.audio_pub.deferred_toggle_play = None;
+        self.audio_pub.deferred_metadata_seek = None;
+        self.audio_pub.audio_admission.reset_audio();
     }
 
     /// Whether the current endpoint may stay open across a project replacement
@@ -224,10 +230,14 @@ impl EditorView {
                 && audio.control.output_identity().is_some()
                 && audio.control.status().is_some()
         }) && !self.gain_recorder.busy()
-            && self.pending_audio_result.as_ref().is_none_or(|pending| {
-                matches!(pending, PendingEditorAudioResult::Rebound { .. })
-                    || pending.project_generation() < next_generation
-            })
+            && self
+                .audio_pub
+                .pending_audio_result
+                .as_ref()
+                .is_none_or(|pending| {
+                    matches!(pending, PendingEditorAudioResult::Rebound { .. })
+                        || pending.project_generation() < next_generation
+                })
     }
 
     /// Keep the held endpoint for the current generation when the worker kept
@@ -257,6 +267,7 @@ impl EditorView {
 
     pub(super) fn retain_future_audio_result(&mut self, result: PendingEditorAudioResult) {
         let slot_generation = self
+            .audio_pub
             .pending_audio_result
             .as_ref()
             .map(PendingEditorAudioResult::project_generation);
@@ -264,10 +275,10 @@ impl EditorView {
             result.close();
             return;
         }
-        if let Some(previous) = self.pending_audio_result.take() {
+        if let Some(previous) = self.audio_pub.pending_audio_result.take() {
             previous.close();
         }
-        self.pending_audio_result = Some(result);
+        self.audio_pub.pending_audio_result = Some(result);
     }
 
     pub(super) fn retain_publication_observation(
@@ -289,22 +300,24 @@ impl EditorView {
             return;
         }
         let existing_context = self
+            .audio_pub
             .pending_publication_observation
             .as_ref()
             .map(|pending| pending.context);
         if !publication_observation_replaces(existing_context, context) {
             return;
         }
-        self.pending_publication_observation = Some(PendingEditorPublicationObservation {
-            context,
-            output_identity,
-            state,
-        });
+        self.audio_pub.pending_publication_observation =
+            Some(PendingEditorPublicationObservation {
+                context,
+                output_identity,
+                state,
+            });
         self.reconcile_publication_observation();
     }
 
     pub(super) fn reconcile_publication_observation(&mut self) -> bool {
-        let Some(pending) = self.pending_publication_observation.as_ref() else {
+        let Some(pending) = self.audio_pub.pending_publication_observation.as_ref() else {
             return false;
         };
         let disposition = publication_observation_for_view(
@@ -319,7 +332,7 @@ impl EditorView {
         match disposition {
             PublicationObservationDisposition::Wait => false,
             PublicationObservationDisposition::Stale => {
-                self.pending_publication_observation = None;
+                self.audio_pub.pending_publication_observation = None;
                 true
             }
             PublicationObservationDisposition::Apply => {
@@ -340,7 +353,7 @@ impl EditorView {
                     // transient graph with the canonical view when its matching view is delayed.
                     return false;
                 }
-                if let Some(pending) = self.pending_publication_observation.take() {
+                if let Some(pending) = self.audio_pub.pending_publication_observation.take() {
                     self.apply_publication_observation(pending.context, pending.state);
                 }
                 true
@@ -384,6 +397,7 @@ impl EditorView {
         match (metadata.device_preview, metadata.tuning_preview) {
             (Some(identity), None) => self.device_publication_view(metadata.context, identity),
             (None, Some(identity)) => self
+                .audio_pub
                 .resident_tuning_preview
                 .as_ref()
                 .filter(|preview| {
@@ -409,24 +423,25 @@ impl EditorView {
         self.clip_preview_may_apply = false;
         self.device_panel.spectrum_results.clear();
         self.invalidate_prepared_seek();
-        self.prepared_seek = None;
-        self.playback_candidates.clear();
-        self.audible_playback = None;
-        self.applied_project_revision = None;
-        self.observed_rejected_revision = 0;
-        self.paused_republish = None;
-        self.audio_admission.reset_audio();
+        self.audio_pub.prepared_seek = None;
+        self.audio_pub.playback_candidates.clear();
+        self.audio_pub.audible_playback = None;
+        self.audio_pub.applied_project_revision = None;
+        self.audio_pub.observed_rejected_revision = 0;
+        self.audio_pub.paused_republish = None;
+        self.audio_pub.audio_admission.reset_audio();
         self.device_panel.gesture.invalidate_accepted_preview();
         // A new output prepares fresh endpoints; it reports its own set.
         self.device_panel.degraded_plugins = Default::default();
         self.device_panel.reloading_plugins.clear();
         self.device_panel.plugin_editor_windows.clear();
         if self
+            .audio_pub
             .pending_publication_observation
             .as_ref()
             .is_some_and(|pending| Some(pending.output_identity) != output_identity)
         {
-            self.pending_publication_observation = None;
+            self.audio_pub.pending_publication_observation = None;
         }
     }
 
@@ -448,24 +463,27 @@ impl EditorView {
                 identity,
             } => {
                 if let Some(state) = self.device_publication_view(context, identity)
-                    && !self.playback_candidates.iter().any(|candidate| {
+                    && !self.audio_pub.playback_candidates.iter().any(|candidate| {
                         candidate.audio_revision == audio_revision
                             && candidate.project_generation == context.project_generation
                     })
-                    && self.playback_candidates.len() < crate::editor::PLAYBACK_CANDIDATE_CAPACITY
+                    && self.audio_pub.playback_candidates.len()
+                        < crate::editor::PLAYBACK_CANDIDATE_CAPACITY
                 {
-                    self.playback_candidates.push_back(PlaybackCandidate {
-                        clip_preview_identity: None,
-                        worker_requires_preroll: None,
-                        observation: None,
-                        audio_revision,
-                        project_generation: context.project_generation,
-                        state,
-                        prepared_revision: None,
-                        seek_request_id: None,
-                        device_preview_identity: Some(identity),
-                        tuning_preview_identity: None,
-                    });
+                    self.audio_pub
+                        .playback_candidates
+                        .push_back(PlaybackCandidate {
+                            clip_preview_identity: None,
+                            worker_requires_preroll: None,
+                            observation: None,
+                            audio_revision,
+                            project_generation: context.project_generation,
+                            state,
+                            prepared_revision: None,
+                            seek_request_id: None,
+                            device_preview_identity: Some(identity),
+                            tuning_preview_identity: None,
+                        });
                 }
                 self.status = "publishing gain preview".into();
             }
@@ -540,10 +558,11 @@ impl EditorView {
                     // `worker_submitted` arrived, backfill the fallback entry
                     // immediately so preroll/observation queries never stay stranded.
                     if candidate.clip_preview_identity.is_none()
-                        && let Some(audible) = self.audible_playback.as_mut().filter(|audible| {
-                            audible.audio_revision == audio_revision
-                                && audible.project_generation == context.project_generation
-                        })
+                        && let Some(audible) =
+                            self.audio_pub.audible_playback.as_mut().filter(|audible| {
+                                audible.audio_revision == audio_revision
+                                    && audible.project_generation == context.project_generation
+                            })
                     {
                         if audible.worker_requires_preroll.is_none() {
                             audible.worker_requires_preroll = candidate.worker_requires_preroll;
@@ -561,13 +580,13 @@ impl EditorView {
                             audible.seek_request_id = candidate.seek_request_id;
                         }
                     }
-                    if !self.playback_candidates.iter().any(|existing| {
+                    if !self.audio_pub.playback_candidates.iter().any(|existing| {
                         existing.audio_revision == audio_revision
                             && existing.project_generation == context.project_generation
-                    }) && self.playback_candidates.len()
+                    }) && self.audio_pub.playback_candidates.len()
                         < crate::editor::PLAYBACK_CANDIDATE_CAPACITY
                     {
-                        self.playback_candidates.push_back(candidate);
+                        self.audio_pub.playback_candidates.push_back(candidate);
                     }
                 }
                 // A section seek repairing a refused loop leaves the current
@@ -577,9 +596,9 @@ impl EditorView {
                         && metadata.tuning_preview.is_none()
                         && metadata.clip_preview.is_none()
                         && (metadata.seek_request.is_none()
-                            || self.applied_project_revision == Some(authoring_revision))
+                            || self.audio_pub.applied_project_revision == Some(authoring_revision))
                 }) {
-                    self.audio_admission.published(
+                    self.audio_pub.audio_admission.published(
                         crate::editor::audio_admission::ProjectRevision {
                             generation: context.project_generation,
                             revision: authoring_revision,
@@ -598,7 +617,7 @@ impl EditorView {
                 }
                 if metadata.is_some_and(|metadata| metadata.stopped_restore)
                     && self
-                        .stopped_playback_restore
+                        .audio_pub.stopped_playback_restore
                         .is_some_and(|restore| match restore {
                             crate::editor::audio_admission::StoppedPlaybackRestore::Preparing
                             | crate::editor::audio_admission::StoppedPlaybackRestore::Ready => true,
@@ -610,15 +629,17 @@ impl EditorView {
                             }
                         })
                 {
-                    self.stopped_playback_restore = Some(
+                    self.audio_pub.stopped_playback_restore = Some(
                         crate::editor::audio_admission::StoppedPlaybackRestore::Published(audio_revision),
                     );
                 }
                 if let Some(request_id) = metadata.and_then(|metadata| metadata.seek_request) {
-                    self.recovery.prepared_published(request_id, audio_revision);
+                    self.audio_pub
+                        .recovery
+                        .prepared_published(request_id, audio_revision);
                 }
                 if let Some(request_id) = metadata.and_then(|metadata| metadata.seek_request)
-                    && let Some(pending) = self.prepared_seek.as_mut().filter(|pending| {
+                    && let Some(pending) = self.audio_pub.prepared_seek.as_mut().filter(|pending| {
                         pending.prepared_revision.is_none()
                             && pending.request_id == request_id
                             && pending.project_generation == context.project_generation
@@ -629,10 +650,11 @@ impl EditorView {
                         crate::editor::arrangement_seek::SeekStage::Published { audio_revision };
                     pending.cancellation_retry |= pending.cancelled;
                 }
-                if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming
-                    && let Some(generation) = self.pending_recovery_generation
+                if self.audio_pub.document_audio_mode
+                    == hex_session::DocumentAudioMode::VerifiedStreaming
+                    && let Some(generation) = self.audio_pub.pending_recovery_generation
                 {
-                    self.recovery.restored(generation);
+                    self.audio_pub.recovery.restored(generation);
                 }
                 let applied_revision = self
                     .audio_status()
@@ -640,7 +662,7 @@ impl EditorView {
                 record_submitted_audio_status(&mut self.status, audio_revision, applied_revision);
             }
             crate::EditorPublicationState::Refused(reason) => {
-                self.audio_admission.unpublished_refusal(
+                self.audio_pub.audio_admission.unpublished_refusal(
                     crate::editor::audio_admission::ProjectRevision {
                         generation: context.project_generation,
                         revision: authoring_revision,
@@ -648,13 +670,13 @@ impl EditorView {
                     "audio publication refused",
                 );
                 self.status = format!("audio publication refused · {}", reason.to_lowercase());
-                if self.pending_recovery_generation.is_some() {
+                if self.audio_pub.pending_recovery_generation.is_some() {
                     self.fail_audio_recovery(reason);
                 }
             }
             crate::EditorPublicationState::Fault(reason) => {
                 self.status = format!("audio fault · {}", reason.to_lowercase());
-                if self.pending_recovery_generation.is_some() {
+                if self.audio_pub.pending_recovery_generation.is_some() {
                     self.fail_audio_recovery(reason);
                 }
             }
@@ -749,7 +771,7 @@ impl EditorView {
                 } => {
                     match audio_event_disposition(
                         self.project_generation,
-                        self.pending_restart_request,
+                        self.audio_pub.pending_restart_request,
                         project_generation,
                         restart_request,
                     ) {
@@ -760,10 +782,11 @@ impl EditorView {
                         AudioEventDisposition::Future => {
                             self.retire_audio_for_future_generation();
                             if self
+                                .audio_pub
                                 .pending_restart_request
                                 .is_some_and(|(generation, _)| generation < project_generation)
                             {
-                                self.pending_restart_request = None;
+                                self.audio_pub.pending_restart_request = None;
                             }
                             self.retain_future_audio_result(PendingEditorAudioResult::Opened {
                                 project_generation,
@@ -776,10 +799,11 @@ impl EditorView {
                         AudioEventDisposition::Current => {}
                     }
                     if self
+                        .audio_pub
                         .pending_audio_result
                         .as_ref()
                         .is_some_and(|pending| pending.project_generation() <= project_generation)
-                        && let Some(previous) = self.pending_audio_result.take()
+                        && let Some(previous) = self.audio_pub.pending_audio_result.take()
                     {
                         previous.close();
                     }
@@ -793,7 +817,7 @@ impl EditorView {
                         // observation already correlated to this newly opened endpoint.
                         self.reset_output_publication_tracking(new_identity);
                     }
-                    let preserve_outcome_error = self.retired_action_outcomes.is_some()
+                    let preserve_outcome_error = self.audio_pub.retired_action_outcomes.is_some()
                         || self
                             .audio
                             .as_ref()
@@ -803,14 +827,14 @@ impl EditorView {
                         changed = true;
                         continue;
                     }
-                    self.document_audio_mode = audio.mode;
+                    self.audio_pub.document_audio_mode = audio.mode;
                     self.audio = Some(audio);
                     let mut recovery_status = None;
                     if restart_request.is_some()
-                        && let Some(generation) = self.pending_recovery_generation
+                        && let Some(generation) = self.audio_pub.pending_recovery_generation
                     {
-                        self.recovery.opened(generation);
-                        match self.document_audio_mode {
+                        self.audio_pub.recovery.opened(generation);
+                        match self.audio_pub.document_audio_mode {
                             hex_session::DocumentAudioMode::Resident => {
                                 if self.enqueue(Request::RestorePlayback { generation }) {
                                     recovery_status = Some("restoring audio graph");
@@ -825,7 +849,7 @@ impl EditorView {
                             }
                         }
                     }
-                    self.pending_restart_request = None;
+                    self.audio_pub.pending_restart_request = None;
                     self.status = recovery_status.unwrap_or("audio ready").into();
                     if !preserve_outcome_error {
                         self.error = None;
@@ -839,7 +863,7 @@ impl EditorView {
                 } => {
                     match audio_event_disposition(
                         self.project_generation,
-                        self.pending_restart_request,
+                        self.audio_pub.pending_restart_request,
                         project_generation,
                         None,
                     ) {
@@ -879,7 +903,7 @@ impl EditorView {
                 } => {
                     match audio_event_disposition(
                         self.project_generation,
-                        self.pending_restart_request,
+                        self.audio_pub.pending_restart_request,
                         project_generation,
                         restart_request,
                     ) {
@@ -887,10 +911,11 @@ impl EditorView {
                         AudioEventDisposition::Future => {
                             self.retire_audio_for_future_generation();
                             if self
+                                .audio_pub
                                 .pending_restart_request
                                 .is_some_and(|(generation, _)| generation < project_generation)
                             {
-                                self.pending_restart_request = None;
+                                self.audio_pub.pending_restart_request = None;
                             }
                             self.retain_future_audio_result(
                                 PendingEditorAudioResult::Unavailable {
@@ -905,30 +930,32 @@ impl EditorView {
                         AudioEventDisposition::Current => {}
                     }
                     if self
+                        .audio_pub
                         .pending_audio_result
                         .as_ref()
                         .is_some_and(|pending| pending.project_generation() <= project_generation)
-                        && let Some(previous) = self.pending_audio_result.take()
+                        && let Some(previous) = self.audio_pub.pending_audio_result.take()
                     {
                         previous.close();
                     }
                     self.retire_audio_preserving_gain_take();
                     if self
+                        .audio_pub
                         .pending_publication_observation
                         .as_ref()
                         .is_some_and(|pending| {
                             pending.context.project_generation <= project_generation
                         })
                     {
-                        self.pending_publication_observation = None;
+                        self.audio_pub.pending_publication_observation = None;
                     }
-                    if self.pending_recovery_generation.is_some() {
+                    if self.audio_pub.pending_recovery_generation.is_some() {
                         self.fail_audio_recovery(error);
                         changed = true;
                         continue;
                     }
-                    self.pending_restart_request = None;
-                    self.pending_recovery_generation = None;
+                    self.audio_pub.pending_restart_request = None;
+                    self.audio_pub.pending_recovery_generation = None;
                     let message = crate::editor::audio_unavailable::unavailable_message(&error);
                     self.status = message.clone();
                     self.error = Some(message.into());
@@ -949,13 +976,13 @@ impl EditorView {
                         .and_then(|audio| audio.control.output_identity())
                         == Some(output_identity)
                     {
-                        self.route_follow = Some(output_identity);
+                        self.audio_pub.route_follow = Some(output_identity);
                         changed = true;
                     }
                 }
                 crate::EditorAudioEvent::NativeLatencyRestart { source } => {
-                    if self.latency_rebuild.is_none()
-                        && self.stopped_playback_restore.is_none()
+                    if self.audio_pub.latency_rebuild.is_none()
+                        && self.audio_pub.stopped_playback_restore.is_none()
                         && self.project_generation == source.context.project_generation
                         && self
                             .audio
@@ -966,7 +993,7 @@ impl EditorView {
                         && let Some(state) = self.state.as_ref()
                         && state.audio_authoring_revision(source.context) == Some(state.revision)
                     {
-                        self.latency_rebuild =
+                        self.audio_pub.latency_rebuild =
                             Some(crate::editor::audio_admission::LatencyRebuild::Waiting {
                                 project: crate::editor::audio_admission::ProjectRevision {
                                     generation: self.project_generation,
@@ -1030,22 +1057,22 @@ impl EditorView {
         let Some(response) = response else {
             return false;
         };
-        let Some(pending) = self.pending_resident_publication.take() else {
+        let Some(pending) = self.audio_pub.pending_resident_publication.take() else {
             self.error = Some("audio returned an untracked resident publication".into());
             return true;
         };
         if response.token != pending.token {
-            self.pending_resident_publication = Some(pending);
+            self.audio_pub.pending_resident_publication = Some(pending);
             self.error = Some("audio returned a stale resident publication".into());
             return true;
         }
         match response.result {
             Ok(audio_revision) => {
                 if pending.install_fresh_runtime
-                    && self.stopped_playback_restore
+                    && self.audio_pub.stopped_playback_restore
                         == Some(crate::editor::audio_admission::StoppedPlaybackRestore::Ready)
                 {
-                    self.stopped_playback_restore = Some(
+                    self.audio_pub.stopped_playback_restore = Some(
                         crate::editor::audio_admission::StoppedPlaybackRestore::Published(
                             audio_revision,
                         ),
@@ -1066,28 +1093,32 @@ impl EditorView {
                     && pending.tuning_preview_identity.is_none()
                     && pending.seek_request_id.is_none()
                 {
-                    self.audio_admission
+                    self.audio_pub
+                        .audio_admission
                         .published(project_revision, audio_revision);
                 }
-                self.playback_candidates.push_back(PlaybackCandidate {
-                    clip_preview_identity: None,
-                    worker_requires_preroll: None,
-                    observation: None,
-                    audio_revision,
-                    project_generation: pending.project_generation,
-                    state: pending.state,
-                    prepared_revision: pending.prepared_revision,
-                    seek_request_id: pending.seek_request_id,
-                    device_preview_identity: pending.device_preview_identity,
-                    tuning_preview_identity: pending.tuning_preview_identity,
-                });
-                if let Some(seek) = self.prepared_seek.as_mut()
+                self.audio_pub
+                    .playback_candidates
+                    .push_back(PlaybackCandidate {
+                        clip_preview_identity: None,
+                        worker_requires_preroll: None,
+                        observation: None,
+                        audio_revision,
+                        project_generation: pending.project_generation,
+                        state: pending.state,
+                        prepared_revision: pending.prepared_revision,
+                        seek_request_id: pending.seek_request_id,
+                        device_preview_identity: pending.device_preview_identity,
+                        tuning_preview_identity: pending.tuning_preview_identity,
+                    });
+                if let Some(seek) = self.audio_pub.prepared_seek.as_mut()
                     && pending.seek_request_id == Some(seek.request_id)
                 {
                     seek.stage =
                         crate::editor::arrangement_seek::SeekStage::Published { audio_revision };
                 }
                 if self
+                    .audio_pub
                     .prepared_seek
                     .as_ref()
                     .is_some_and(|seek| seek.cancelled)
@@ -1095,9 +1126,9 @@ impl EditorView {
                     // The seek was invalidated while this worker owned its
                     // runtime. Completing cancellation must not erase a newer
                     // intent already retained for the same held gesture.
-                    let latest = self.latched_seek_intent.take();
+                    let latest = self.audio_pub.latched_seek_intent.take();
                     self.invalidate_prepared_seek();
-                    self.latched_seek_intent = latest;
+                    self.audio_pub.latched_seek_intent = latest;
                 }
                 let applied_revision = self
                     .audio_status()
@@ -1105,7 +1136,7 @@ impl EditorView {
                 record_submitted_audio_status(&mut self.status, audio_revision, applied_revision);
             }
             Err(rejected) => {
-                self.pending_playback = Some(PendingPlayback {
+                self.audio_pub.pending_playback = Some(PendingPlayback {
                     project_revision: pending.project_revision,
                     project_generation: pending.project_generation,
                     state: pending.state,
@@ -1119,6 +1150,7 @@ impl EditorView {
                 });
                 self.error = Some(rejected.reason.to_lowercase().into());
                 if self
+                    .audio_pub
                     .prepared_seek
                     .as_ref()
                     .is_some_and(|seek| seek.cancelled)
@@ -1126,9 +1158,9 @@ impl EditorView {
                     // The seek was invalidated while this worker owned its
                     // runtime. Completing cancellation must not erase a newer
                     // intent already retained for the same held gesture.
-                    let latest = self.latched_seek_intent.take();
+                    let latest = self.audio_pub.latched_seek_intent.take();
                     self.invalidate_prepared_seek();
-                    self.latched_seek_intent = latest;
+                    self.audio_pub.latched_seek_intent = latest;
                 }
             }
         }

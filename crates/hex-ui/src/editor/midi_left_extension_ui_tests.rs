@@ -187,12 +187,12 @@ fn fresh_midi_left_extension_preserves_right_edge_notes_and_real_worker_history(
     assert_eq!(visual.debug_bounds("midi-trim-live-preview"), Some(held));
     editor.read_with(&visual, |v, _| {
         assert!(v.midi_editor.active_trim_drag.is_none());
-        assert!(v.pending_trim.is_some());
+        assert!(v.interaction.pending_trim.is_some());
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     pump(&editor, &mut visual);
     let after = editor.read_with(&visual, |v, _| {
-        assert!(v.pending_trim.is_none());
+        assert!(v.interaction.pending_trim.is_none());
         assert!(v.error.is_none(), "{:?}", v.error);
         let project = &v.state.as_ref().unwrap().project;
         assert_eq!(
@@ -396,7 +396,7 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
         editor.read_with(&visual, |v, _| {
             assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
             assert!(v.midi_editor.active_trim_drag.is_none());
-            assert!(v.pending_trim.is_none());
+            assert!(v.interaction.pending_trim.is_none());
             assert!(
                 v.test_probes.last_enqueued_edit.is_none(),
                 "stale/cancelled capture cannot author its prefix"
@@ -425,7 +425,7 @@ fn fresh_midi_left_extension_edge_pan_stops_interior_and_releases_exact_geometry
             "fixture must start inside canonical viewport bounds, not merely normalize on tick"
         );
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        (track, v.drag_lanes[&track])
+        (track, v.timeline_caches.drag_lanes[&track])
     });
     let down = capture_left(&mut visual, clip, -12.0);
     let edge = point(px(lane.left + 1.0), down.y);
@@ -489,7 +489,7 @@ fn fresh_midi_left_extension_empty_creation_reaches_zero_without_negative_source
     visual.run_until_parked();
     let lane = editor.read_with(&visual, |v, _| {
         let track = v.state.as_ref().unwrap().project.tracks()[0].id();
-        v.drag_lanes[&track]
+        v.timeline_caches.drag_lanes[&track]
     });
     let down = capture_left(&mut visual, clip, -12.0);
     let target = point(px(lane.left + 0.5), down.y);

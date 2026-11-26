@@ -574,7 +574,7 @@ impl EditorView {
                                 {
                                     return;
                                 }
-                                if view.time_selection_key_held {
+                                if view.interaction.time_selection_key_held {
                                     view.cancel_all_midi_marquees();
                                     view.midi_editor.focus.focus(window);
                                     if view.begin_midi_velocity_time_selection(

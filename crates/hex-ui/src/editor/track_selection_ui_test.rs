@@ -307,8 +307,8 @@ fn track_headers_toggle_range_and_render_explicit_members_including_empty_tracks
     });
     visual.simulate_click(first, Modifiers::default());
     editor.update(cx, |view, _| {
-        view.time_selection_project_scope = true;
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection_project_scope = true;
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(source),
             end_track: Some(empty),
             anchor_frame: 0,
@@ -382,8 +382,8 @@ fn export_sources_use_explicit_ids_and_names_not_time_scope_or_focused_track(
                 .select(model.project(), empty, false, true)
         );
         view.selected_track = Some(third);
-        view.time_selection_project_scope = true;
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection_project_scope = true;
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(source),
             end_track: Some(third),
             anchor_frame: 0,
@@ -686,7 +686,7 @@ fn empty_lane_click_moves_header_and_lane_highlight_with_active_track(cx: &mut T
                 );
                 assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
                 if !modifiers.shift {
-                    assert_eq!(view.edit_cursor.unwrap().track, Some(target));
+                    assert_eq!(view.interaction.edit_cursor.unwrap().track, Some(target));
                 }
             });
             for id in [source, empty] {

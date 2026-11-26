@@ -109,7 +109,7 @@ impl EditorView {
             preview,
             placement,
             receipt: Receipt::new(self.project_generation),
-            intent: self.selection_intent_epoch,
+            intent: self.interaction.selection_intent_epoch,
             before,
             clipboard: None,
             waveform: None,
@@ -146,7 +146,7 @@ impl EditorView {
         }
         if self.audio_detail.event.owner == Some(p.owner)
             && p.intent.is_some()
-            && p.intent == self.selection_intent_epoch
+            && p.intent == self.interaction.selection_intent_epoch
         {
             self.audio_detail.event.cursor = p.before.cursor;
             self.audio_detail.event.selected = p.before.selected;
@@ -179,7 +179,7 @@ impl EditorView {
                 if self.audio_detail.event.owner == Some(p.owner)
                     && self.detail_clip_id() == Some(p.owner.0)
                     && p.intent.is_some()
-                    && p.intent == self.selection_intent_epoch
+                    && p.intent == self.interaction.selection_intent_epoch
                 {
                     if let AudioEventEdit::Duplicate { event, start } = p.operation {
                         // A negative destination becomes the new retained origin.

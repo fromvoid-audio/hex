@@ -221,7 +221,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
             v.state.as_ref().unwrap().project.snapshot(),
             v.state.as_ref().unwrap().revision,
             v.midi_editor.marker,
-            v.offline_cursor,
+            v.audio_pub.offline_cursor,
         )
     });
     let down = marker_at(&mut visual, 0.0);
@@ -263,7 +263,7 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
             vec![(60, 2, 37), (64, 2, 93)]
         );
         assert_eq!(
-            (v.midi_editor.marker, v.offline_cursor),
+            (v.midi_editor.marker, v.audio_pub.offline_cursor),
             (before.2, before.3)
         );
         assert!(v.test_probes.last_transport_command.is_none());

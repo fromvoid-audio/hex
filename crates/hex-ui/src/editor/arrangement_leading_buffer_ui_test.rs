@@ -88,7 +88,7 @@ fn arrangement_leading_buffer_aligns_all_rows_and_clamps_pointer_interactions(
 
     // 2. Clicking inside the leading buffer at ruler height targets frame 0 (no underflow).
     editor.update(&mut visual, |view, cx| {
-        view.pending_seek_ticket = Some(1);
+        view.audio_pub.pending_seek_ticket = Some(1);
         cx.notify();
     });
     visual.run_until_parked();
@@ -100,7 +100,7 @@ fn arrangement_leading_buffer_aligns_all_rows_and_clamps_pointer_interactions(
             view.scrub_active(),
             "clicking inside leading buffer at ruler height must begin ruler scrub"
         );
-        view.pending_seek_ticket = None;
+        view.audio_pub.pending_seek_ticket = None;
         let _ = view.cancel_scrub();
     });
     visual.run_until_parked();
@@ -113,7 +113,7 @@ fn arrangement_leading_buffer_aligns_all_rows_and_clamps_pointer_interactions(
     visual.simulate_mouse_up(drag_end, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     let selection = editor
-        .read_with(&visual, |view, _| view.time_selection)
+        .read_with(&visual, |view, _| view.interaction.time_selection)
         .expect("marquee drag starting inside leading buffer must create a time selection");
     assert_eq!(
         selection.anchor_frame.min(selection.end_frame),
@@ -126,7 +126,7 @@ fn arrangement_leading_buffer_aligns_all_rows_and_clamps_pointer_interactions(
     visual.simulate_click(drag_start, Modifiers::default());
     visual.run_until_parked();
     let cursor = editor
-        .read_with(&visual, |view, _| view.edit_cursor)
+        .read_with(&visual, |view, _| view.interaction.edit_cursor)
         .expect("clicking leading buffer at track height must place edit cursor");
     assert_eq!(cursor.track, Some(track));
     assert_eq!(cursor.frame, 0);
@@ -135,7 +135,10 @@ fn arrangement_leading_buffer_aligns_all_rows_and_clamps_pointer_interactions(
     let loop_buffer_pt = point(buffer.right() - px(3.0), loop_rail.center().y);
     visual.simulate_mouse_down(loop_buffer_pt, MouseButton::Left, Modifiers::default());
     assert!(
-        editor.read_with(&visual, |view, _| view.loop_rail_gesture.is_some()),
+        editor.read_with(&visual, |view, _| view
+            .interaction
+            .loop_rail_gesture
+            .is_some()),
         "grabbing loop start handle from inside leading buffer must begin loop gesture"
     );
     visual.simulate_mouse_up(loop_buffer_pt, MouseButton::Left, Modifiers::default());
@@ -163,7 +166,7 @@ fn arrangement_leading_buffer_aligns_all_rows_and_clamps_pointer_interactions(
     );
     visual.run_until_parked();
     let panned_cursor = editor
-        .read_with(&visual, |view, _| view.edit_cursor)
+        .read_with(&visual, |view, _| view.interaction.edit_cursor)
         .expect("clicking leading buffer while panned must place edit cursor");
     assert_eq!(
         panned_cursor.frame, 48_000,

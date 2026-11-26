@@ -176,7 +176,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
     editor.update(cx, |v, _| v.request_seek(126_000));
     pump_until(&editor, &mut visual, cx, &mut output, &mut backend, |v| {
         v.audio_status().unwrap().position.load(Acquire) == 126_000
-            && v.pending_seek_ticket.is_none()
+            && v.audio_pub.pending_seek_ticket.is_none()
     });
     let before = editor.read_with(cx, |v, _| {
         (
@@ -273,7 +273,11 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
                     v.project_generation += 1;
                 }
                 _ => {
-                    v.audible_playback.as_mut().unwrap().audio_revision += 1;
+                    v.audio_pub
+                        .audible_playback
+                        .as_mut()
+                        .unwrap()
+                        .audio_revision += 1;
                 }
             }
             cx.notify();
@@ -301,7 +305,11 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
                     v.project_generation -= 1;
                 }
                 _ => {
-                    v.audible_playback.as_mut().unwrap().audio_revision -= 1;
+                    v.audio_pub
+                        .audible_playback
+                        .as_mut()
+                        .unwrap()
+                        .audio_revision -= 1;
                 }
             }
             cx.notify();
@@ -318,7 +326,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
         editor.update(cx, |v, _| v.request_seek(frame));
         pump_until(&editor, &mut visual, cx, &mut output, &mut backend, |v| {
             v.audio_status().unwrap().position.load(Acquire) == frame
-                && v.pending_seek_ticket.is_none()
+                && v.audio_pub.pending_seek_ticket.is_none()
         });
         marker(
             &mut visual,
@@ -330,7 +338,7 @@ fn audio_playhead_case(cx: &mut TestAppContext, warped: bool) {
     editor.update(cx, |v, _| v.request_seek(126_000));
     pump_until(&editor, &mut visual, cx, &mut output, &mut backend, |v| {
         v.audio_status().unwrap().position.load(Acquire) == 126_000
-            && v.pending_seek_ticket.is_none()
+            && v.audio_pub.pending_seek_ticket.is_none()
     });
     marker(
         &mut visual,

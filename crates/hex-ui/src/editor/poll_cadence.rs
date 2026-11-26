@@ -205,11 +205,15 @@ impl EditorView {
         self.poll_cadence.signal.take();
         super::device_panel::vst3_parameters::tick(self, cx);
         let overrange_changed = self
+            .timeline_caches
             .waveform_geometry_cache
             .try_borrow_mut()
             .is_ok_and(|mut cache| cache.poll_overrange());
         if overrange_changed {
-            self.waveform_overrange_epoch = self.waveform_overrange_epoch.wrapping_add(1);
+            self.timeline_caches.waveform_overrange_epoch = self
+                .timeline_caches
+                .waveform_overrange_epoch
+                .wrapping_add(1);
         }
         let changed = self.tick(cx) | overrange_changed;
         if changed {
@@ -232,6 +236,7 @@ impl EditorView {
         });
         actual_playing
             || self
+                .timeline_caches
                 .waveform_geometry_cache
                 .try_borrow()
                 .is_ok_and(|cache| cache.overrange_busy())
@@ -242,7 +247,7 @@ impl EditorView {
             || self.persistence.automation_close_preflight.waiting()
             || self.automation_take_recovery.polling()
             || matches!(
-                self.paused_republish,
+                self.audio_pub.paused_republish,
                 Some(
                     super::audio_admission::PausedRepublish::Unresolved { .. }
                         | super::audio_admission::PausedRepublish::WaitingForPause { .. }
@@ -255,13 +260,13 @@ impl EditorView {
 
     /// Queued or unacknowledged transport commands, so their ACKs keep 16 ms.
     fn transport_pending(&self) -> bool {
-        !self.pending_audio_commands.is_empty()
-            || self.pending_seek_ticket.is_some()
-            || self.pending_metronome_ticket.is_some()
+        !self.audio_pub.pending_audio_commands.is_empty()
+            || self.audio_pub.pending_seek_ticket.is_some()
+            || self.audio_pub.pending_metronome_ticket.is_some()
             || self.session_grid.pending_session_ticket.is_some()
-            || self.deferred_play.is_some()
-            || self.deferred_toggle_play.is_some()
-            || self.deferred_metadata_seek.is_some()
+            || self.audio_pub.deferred_play.is_some()
+            || self.audio_pub.deferred_toggle_play.is_some()
+            || self.audio_pub.deferred_metadata_seek.is_some()
             || self.seek_pending()
     }
 }

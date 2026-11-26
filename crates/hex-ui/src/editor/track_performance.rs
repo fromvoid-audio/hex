@@ -105,6 +105,7 @@ impl EditorView {
         self.track_performance.identity = None;
         if !self.track_performance.enabled {
             if let Some(observation) = self
+                .audio_pub
                 .audible_playback
                 .as_ref()
                 .and_then(|p| p.observation.as_ref())
@@ -143,7 +144,7 @@ impl EditorView {
         }) else {
             return state.unavailable(Availability::Pending);
         };
-        let Some(audible) = self.audible_playback.as_ref().filter(|audible| {
+        let Some(audible) = self.audio_pub.audible_playback.as_ref().filter(|audible| {
             audible.project_generation == self.project_generation
                 && source.audio_revision == audible.audio_revision
         }) else {

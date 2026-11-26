@@ -160,20 +160,23 @@ fn header_width_edges_align_every_timeline_layer_and_preserve_frame_coordinates(
             view.visible_viewport(view.state.as_ref().unwrap().timeline_frames),
             viewport
         );
-        assert!((view.drag_lanes[&track].width - f32::from(lane.size.width)).abs() <= 1.0);
+        assert!(
+            (view.timeline_caches.drag_lanes[&track].width - f32::from(lane.size.width)).abs()
+                <= 1.0
+        );
         assert!(view.test_probes.last_enqueued_edit.is_none());
         assert!(!view.state.as_ref().unwrap().unsaved);
         assert!(!view.track_resize_active());
     });
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            let painted = view.drag_lanes[&track];
+            let painted = view.timeline_caches.drag_lanes[&track];
             view.place_edit_cursor(track, painted.left + painted.width / 2.0, true, window, cx)
         })
     });
     editor.read_with(&visual, |view, _| {
         assert_eq!(
-            view.edit_cursor.unwrap().frame,
+            view.interaction.edit_cursor.unwrap().frame,
             viewport.start + viewport.length / 2
         )
     });
@@ -464,7 +467,7 @@ fn variable_rows_keep_scroll_anchor_and_reset_measurements_for_reused_project_id
     assert_eq!(resized_window.origin.y - viewport.origin.y, anchor_offset);
     editor.read_with(&visual, |view, _| {
         let total = tracks.iter().map(|id| view.track_height(*id)).sum::<f32>();
-        let height = view.arrangement_bounds.unwrap().height;
+        let height = view.timeline_caches.arrangement_bounds.unwrap().height;
         assert!(
             (f32::from(view.track_scroll.max_offset().height)
                 - (total + height * 0.2 - height).max(0.0))
@@ -1157,7 +1160,7 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
     let before = editor.update(&mut visual, |view, cx| {
         view.selected_track = Some(tracks[7]);
         view.track_selection.replace(&tracks[6..8]);
-        view.time_selection = Some(super::time_selection::TimeSelection {
+        view.interaction.time_selection = Some(super::time_selection::TimeSelection {
             anchor_track: Some(tracks[6]),
             end_track: Some(tracks[7]),
             anchor_frame: 48_000,
@@ -1188,7 +1191,7 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
     visual.simulate_keystrokes("z");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
-        let available = view.arrangement_bounds.unwrap().height;
+        let available = view.timeline_caches.arrangement_bounds.unwrap().height;
         let fitted = view.track_height(tracks[6]) + view.track_height(tracks[7]);
         assert!(
             (fitted - available).abs() <= 2.0,
@@ -1206,7 +1209,9 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
     });
     let first = bounds(&mut visual, "arrangement-track-header", tracks[6]);
     let last = bounds(&mut visual, "arrangement-track-header", tracks[7]);
-    let area = editor.read_with(&visual, |view, _| view.arrangement_bounds.unwrap());
+    let area = editor.read_with(&visual, |view, _| {
+        view.timeline_caches.arrangement_bounds.unwrap()
+    });
     assert!((f32::from(first.top()) - area.top).abs() <= 2.0);
     assert!(f32::from(last.bottom()) <= area.top + area.height + 2.0);
     visual.simulate_keystrokes("z");
@@ -1241,7 +1246,7 @@ fn arrangement_z_fits_selected_track_span_and_v_restores_both_axes(cx: &mut Test
     editor.read_with(&visual, |view, _| {
         assert!(
             (view.track_height(tracks[6]) + view.track_height(tracks[7])
-                - view.arrangement_bounds.unwrap().height)
+                - view.timeline_caches.arrangement_bounds.unwrap().height)
                 .abs()
                 <= 2.0
         );
@@ -1341,7 +1346,7 @@ fn playback_meter_ticks_update_bars_with_zero_track_header_rebuilds(cx: &mut Tes
             spectrum_error: None,
             mode: hex_session::DocumentAudioMode::Resident,
         });
-        view.audible_playback = Some(super::PlaybackCandidate {
+        view.audio_pub.audible_playback = Some(super::PlaybackCandidate {
             clip_preview_identity: None,
             worker_requires_preroll: None,
             observation: Some(Arc::clone(&observation)),

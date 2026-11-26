@@ -432,7 +432,7 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                     );
                     assert!(expected > 128, "paint uses detailed device-pixel columns");
                     assert_eq!(
-                        view.overview_waveform_cache.borrow().prepared_columns(&source, canvas_bounds, scale),
+                        view.timeline_caches.overview_waveform_cache.borrow().prepared_columns(&source, canvas_bounds, scale),
                         Some(expected),
                         "actual sampler canvas must prepare geometry at its rendered bounds after resize",
                     );

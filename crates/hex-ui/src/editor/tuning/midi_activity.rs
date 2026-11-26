@@ -74,7 +74,7 @@ impl EditorView {
             {
                 return None;
             }
-            let audible = self.audible_playback.as_ref()?;
+            let audible = self.audio_pub.audible_playback.as_ref()?;
             if audible.project_generation != self.project_generation
                 || status.applied_revision.load(Acquire) != audible.audio_revision
             {
