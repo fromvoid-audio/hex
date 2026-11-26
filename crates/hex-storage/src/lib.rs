@@ -14,6 +14,7 @@
 //! Interrupted-save temporaries remain for deliberate inspection: their names and ages do not
 //! establish ownership or authorize deletion.
 pub mod automation_draft;
+pub mod device_packages;
 mod files;
 mod journal;
 pub mod preset;
