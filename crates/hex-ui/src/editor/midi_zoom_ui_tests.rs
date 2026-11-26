@@ -162,9 +162,15 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         )
     });
     double_down(&mut visual, at(0.25), Modifiers::default());
-    // Held cmd snaps the new note's end; it is free by default.
-    visual.simulate_mouse_move(at(0.5), Some(MouseButton::Left), Modifiers::command());
-    visual.simulate_mouse_up(at(0.5), MouseButton::Left, Modifiers::command());
+    let expected_start = BeatTime::from_raw(BeatTime::ONE.raw() * 5 / 4);
+    let target_end = i128::from(expected_start.raw() + BeatTime::ONE.raw());
+    let fraction = ((target_end - viewport.0) as f64 / viewport.1.raw() as f64) as f32;
+    let end = point(
+        roll.left() + px(1.0) + (roll.size.width - px(2.0)) * fraction,
+        at(0.25).y,
+    );
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     let (note_center, after) = editor.read_with(&visual, |v, _| {
         assert_eq!(
@@ -177,10 +183,7 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         let state = v.state.as_ref().unwrap();
         let notes = state.project.midi_source(clip).unwrap().notes();
         assert_eq!(notes.len(), 1);
-        assert_eq!(
-            notes[0].start(),
-            BeatTime::from_raw(BeatTime::ONE.raw() * 5 / 4)
-        );
+        assert_eq!(notes[0].start(), expected_start);
         assert_eq!(notes[0].duration(), BeatTime::ONE);
         let middle = notes[0].start().raw() + notes[0].duration().raw() / 2;
         (
