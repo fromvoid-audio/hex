@@ -53,10 +53,16 @@ impl Factory {
         expression: [f32; 3],
     ) -> Result<super::super::modulation::Effective, Error> {
         let (pitch, velocity) = note.midi_origin();
-        self.settings
+        let mut effective = self
+            .settings
             .modulation
             .evaluate(pitch, velocity, expression)
-            .map_err(|_| Error::InvalidEventBatch)
+            .map_err(|_| Error::InvalidEventBatch)?;
+        let direct_oct = self.settings.filter_env.modifier_octaves(pitch, velocity);
+        if direct_oct != 0.0 {
+            effective.cutoff_octaves = (effective.cutoff_octaves + direct_oct).clamp(-16.0, 16.0);
+        }
+        Ok(effective)
     }
 }
 impl Voice {
