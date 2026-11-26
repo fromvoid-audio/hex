@@ -45,7 +45,7 @@ pub(super) use clip_paint::{
     aligned_clip_grid_layer, clip_grid_layer, midi_note_canvas, midi_trim_note_shapes,
 };
 pub(super) use drag_ghost::{ClipDragGhost, alias_drag_badge, clip_waveform_body};
-use drag_ghost::{ClipDragSource, clip_drag_span, drop_overlap_spans};
+use drag_ghost::{ClipDragSource, drop_overlap_spans, observe_clip_drag_span};
 
 pub(super) const TRACK_ROW_HEIGHT: f32 = 2.0 * super::track_layout::HEADER_ONLY_HEIGHT;
 /// Reserve a readable label beside the compact mixer and meter, even at the
