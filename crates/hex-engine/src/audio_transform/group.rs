@@ -2,7 +2,9 @@
 //! with its captured tempo and rendered through the existing finite clip law.
 //! All metadata/work admission precedes PCM allocation; no callback work or files.
 use super::*;
+mod source_programs;
 use hex_project::{AudioDomainClock, AudioViewProjection, MAX_AUDIO_DOMAIN_FRAMES};
+use source_programs::source_programs;
 
 pub(crate) struct GroupSource<'a> {
     pub root: &'a hex_project::RetainedAudioRoot,
@@ -196,40 +198,8 @@ impl AudioTransformPreparation {
         let root_length = packing.map_or(root_window.end - root_window.start, |map| {
             map.packed_len() as u64
         });
-        let mut work = root_length;
-        for source in sources {
-            let root = &source.root.clip;
-            let root_work = if let Some(inner) = root.audio_edit() {
-                inner.validate(root, &source.root.tempo, source.asset.playback_frames())?;
-                if inner.placement.is_some() || inner.content_view.is_some() {
-                    let view = AudioViewProjection::new(root, &source.root.tempo)?;
-                    if view.occurrence_count() > 8_192 {
-                        return Err(Invalid("grouped source exceeds bounded placement work"));
-                    }
-                    let mut frames = root.duration();
-                    for index in 0..view.occurrence_count() {
-                        if index == 0 || matches!(inner.domain.clock, AudioDomainClock::Beats(_)) {
-                            frames = frames
-                                .checked_add(view.occurrence(index)?.root_frame_length)
-                                .ok_or(Invalid("grouped source preparation work overflow"))?;
-                        }
-                    }
-                    frames
-                } else {
-                    root.duration()
-                        .checked_add(inner.projected_domain(&source.root.tempo)?.1)
-                        .ok_or(Invalid("grouped source preparation work overflow"))?
-                }
-            } else {
-                root.duration()
-            };
-            work = work
-                .checked_add(root_work)
-                .filter(|work| *work <= MAX_AUDIO_DOMAIN_FRAMES)
-                .ok_or(Invalid(
-                    "grouped audio exceeds bounded aggregate source preparation work",
-                ))?;
-        }
+        let programs = source_programs(&events.sources, sources)?;
+        let work = source_programs::admit_work(&programs, root_length)?;
         for index in 0..projection.occurrence_count() {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
@@ -280,11 +250,10 @@ impl AudioTransformPreparation {
         let peak_budget = preview_peaks::event_source_budget();
         let mut event_sources = if self.entry_limit > 0
             && prepared_bytes <= self.cache_limit
-            && events
-                .sources
+            && programs
                 .iter()
-                .try_fold(work, |used, child| {
-                    used.checked_add(child.clip.duration())
+                .try_fold(work, |used, program| {
+                    used.checked_add(program.source.root.clip.duration())
                         .filter(|total| *total <= MAX_AUDIO_DOMAIN_FRAMES)
                 })
                 .is_some()
@@ -304,27 +273,14 @@ impl AudioTransformPreparation {
             .try_reserve_exact(root_bytes / std::mem::size_of::<crate::Frame>())
             .map_err(|_| Invalid("grouped audio allocation failed"))?;
         root_pcm.resize(root_bytes / std::mem::size_of::<crate::Frame>(), [0.0; 2]);
-        // Dependencies are collected in depth-first order. Advance once across
-        // sibling subtrees instead of repeatedly scanning from the beginning.
-        let mut source_index = 0usize;
-        for root in &events.sources {
+        for program in programs {
             if self.cancelled() {
                 return Err(Invalid("audio preparation cancelled"));
             }
-            let offset = sources[source_index..]
-                .iter()
-                .position(|source| std::ptr::eq(source.root, root))
-                .ok_or(Invalid("grouped audio dependency missing"))?;
-            source_index += offset;
-            let source = &sources[source_index];
-            let child_start = source_index + 1;
-            let child_end = child_start
-                .checked_add(root.clip.retained_audio_roots().count())
-                .filter(|end| *end <= sources.len())
-                .ok_or(Invalid("grouped audio dependency tree is incomplete"))?;
-            source_index = child_end;
+            let source = program.source;
+            let root = source.root;
             let compiled = if root.clip.has_retained_audio_roots() {
-                Some(self.compile_group(&root.clip, &sources[child_start..child_end])?)
+                Some(self.compile_group(&root.clip, program.descendants)?)
             } else {
                 self.compile_clip_at_tempo(
                     &root.tempo,
@@ -350,7 +306,9 @@ impl AudioTransformPreparation {
                         )
                     });
                 if let Some(peaks) = peaks {
-                    table.push(root.id, peaks);
+                    for &id in &program.ids {
+                        table.push(id, Arc::clone(&peaks));
+                    }
                 } else {
                     event_sources = None;
                 }
@@ -358,7 +316,7 @@ impl AudioTransformPreparation {
             for event in events
                 .events
                 .iter()
-                .filter(|event| event.active && event.source == source.root.id)
+                .filter(|event| event.active && program.ids.binary_search(&event.source).is_ok())
             {
                 let start = event.start.max(root_window.start);
                 let end = event.end.min(root_window.end);
