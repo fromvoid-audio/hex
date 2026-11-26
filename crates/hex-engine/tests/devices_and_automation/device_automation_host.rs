@@ -555,7 +555,9 @@ fn limiter_routing_retains_maximum_pdc_across_owners_reading_and_seek() {
 }
 #[test]
 fn limiter_mode_retains_maximum_pdc_across_owners_reading_and_seek() {
-    limiter_structural_values(hex_devices::limiter::parameter::MODE, 3, 43);
+    // At 8 kHz the 1.5 ms lookahead, 32-tap reconstruction and output guard
+    // contribute 12, 31 and 11 frames respectively in true-peak mode.
+    limiter_structural_values(hex_devices::limiter::parameter::MODE, 3, 12 + 31 + 11);
 }
 fn limiter_structural_values(
     parameter: hex_lattice_contract::ParameterId,
