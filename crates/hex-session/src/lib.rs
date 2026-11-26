@@ -675,8 +675,8 @@ impl Session {
             let audio = prepared.audio;
             let waveform = prepared.waveform;
             let bins = waveform.cached_bin_count();
-            let bytes = bins
-                .checked_mul(mem::size_of::<[waveform::Peak; 2]>())
+            let bytes = waveform
+                .summary_bytes()
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
             resident_waveform_bins = resident_waveform_bins
                 .checked_add(bins)
@@ -824,8 +824,8 @@ impl Session {
         waveform: &Waveform,
     ) -> Result<(usize, usize), SessionError> {
         let bins = waveform.cached_bin_count();
-        let bytes = bins
-            .checked_mul(mem::size_of::<[waveform::Peak; 2]>())
+        let bytes = waveform
+            .summary_bytes()
             .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
         let total_bins = self
             .resident_waveform_bins
@@ -1365,8 +1365,9 @@ impl Session {
             return Err(SessionError::Allocation);
         }
         let bins = prepared.waveform.cached_bin_count();
-        let waveform_bytes = bins
-            .checked_mul(mem::size_of::<[waveform::Peak; 2]>())
+        let waveform_bytes = prepared
+            .waveform
+            .summary_bytes()
             .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
         let new_resident_bins = self
             .resident_waveform_bins

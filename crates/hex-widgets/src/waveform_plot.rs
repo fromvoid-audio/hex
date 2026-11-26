@@ -42,6 +42,7 @@ pub struct WaveformEnvelope<'a> {
 /// painter cannot receive malformed point arrays or an unbounded iterator.
 pub struct WaveformChannel {
     envelope: Path<Pixels>,
+    rms: Option<Path<Pixels>>,
     centerline: Option<[Point<Pixels>; 2]>,
     zero_ranges: Option<Path<Pixels>>,
     overrange: Option<Path<Pixels>>,
@@ -115,6 +116,7 @@ impl WaveformChannel {
         }
         Some(Self {
             envelope: path,
+            rms: None,
             centerline,
             zero_ranges: if spans > 0 {
                 Some(flat.build().ok()?)
@@ -124,6 +126,37 @@ impl WaveformChannel {
             overrange: None,
             filled_envelope,
         })
+    }
+
+    /// Attach an optional inner RMS band inside the peak envelope. Empty input
+    /// keeps the original peak-only path with zero extra paint cost.
+    pub fn with_rms_band(
+        mut self,
+        upper: &[Point<Pixels>],
+        lower: &[Point<Pixels>],
+    ) -> Option<Self> {
+        if upper.is_empty() && lower.is_empty() {
+            return Some(self);
+        }
+        if upper.len() != lower.len()
+            || upper.len() > MAX_WAVEFORM_ENVELOPE_POINTS
+            || upper.iter().zip(lower).any(|(top, bottom)| {
+                !valid_point(*top) || !valid_point(*bottom) || top.x != bottom.x || top.y > bottom.y
+            })
+            || upper.windows(2).any(|pair| pair[0].x > pair[1].x)
+            || !valid_vertical_extent(upper, lower)
+        {
+            return None;
+        }
+        let (path, filled) = filled_band(upper, lower);
+        if filled {
+            self.rms = Some(path);
+        }
+        Some(self)
+    }
+
+    pub fn has_rms_band(&self) -> bool {
+        self.rms.is_some()
     }
 
     /// Add bounded horizontal markers supplied by the host's signal projection.
@@ -341,6 +374,19 @@ fn regions(emphasis: WaveformEmphasis, colors: WaveformColors) -> [(f64, f64, u3
         }
     }
 }
+fn rms_inner_color(waveform_rgb: u32) -> u32 {
+    let r = ((waveform_rgb >> 16) & 0xff) as f32;
+    let g = ((waveform_rgb >> 8) & 0xff) as f32;
+    let b = (waveform_rgb & 0xff) as f32;
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    let target = if luma > 128.0 { 0.0_f32 } else { 255.0_f32 };
+    let blend = 0.28_f32;
+    let nr = (r + (target - r) * blend).round().clamp(0.0, 255.0) as u32;
+    let ng = (g + (target - g) * blend).round().clamp(0.0, 255.0) as u32;
+    let nb = (b + (target - b) * blend).round().clamp(0.0, 255.0) as u32;
+    (nr << 16) | (ng << 8) | nb
+}
+
 fn paint_channels_with_offset(
     geometry: &WaveformGeometry,
     offset: Point<Pixels>,
@@ -349,6 +395,7 @@ fn paint_channels_with_offset(
     overrange: u32,
     window: &mut Window,
 ) {
+    let rms_color = rms_inner_color(color);
     if let Channels::Stereo(channels) = &geometry.channels {
         let [upper, lower] = channels;
         if [upper, lower]
@@ -366,6 +413,9 @@ fn paint_channels_with_offset(
                 rgb(color),
             );
             for channel in channels {
+                if let Some(path) = &channel.rms {
+                    window.paint_path_with_offset(path, offset, rgb(rms_color));
+                }
                 if let Some(path) = &channel.overrange {
                     window.paint_path_with_offset(path, offset, rgb(overrange));
                 }
@@ -374,7 +424,9 @@ fn paint_channels_with_offset(
         }
     }
     for channel in geometry.channels() {
-        paint_channel_with_offset(channel, offset, color, centerline, overrange, window);
+        paint_channel_with_offset(
+            channel, offset, color, rms_color, centerline, overrange, window,
+        );
     }
 }
 
@@ -382,6 +434,7 @@ fn paint_channel_with_offset(
     channel: &WaveformChannel,
     offset: Point<Pixels>,
     color: u32,
+    rms_color: u32,
     centerline: u32,
     overrange: u32,
     window: &mut Window,
@@ -390,6 +443,9 @@ fn paint_channel_with_offset(
         paint_zero_guide_quad(span, offset, rgb(centerline), window);
     }
     window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
+    if let Some(path) = &channel.rms {
+        window.paint_path_with_offset(path, offset, rgb(rms_color));
+    }
     if let Some(path) = &channel.zero_ranges {
         window.paint_path_with_offset(path, offset, rgb(color));
     }
@@ -433,6 +489,7 @@ fn paint_channels_with_opacity(
     opacity: f32,
     window: &mut Window,
 ) {
+    let rms_color = gpui::Hsla::from(rgb(rms_inner_color(color))).opacity(opacity);
     let color = gpui::Hsla::from(rgb(color)).opacity(opacity);
     let centerline = gpui::Hsla::from(rgb(centerline)).opacity(opacity);
     let overrange = gpui::Hsla::from(rgb(overrange)).opacity(opacity);
@@ -453,6 +510,9 @@ fn paint_channels_with_opacity(
                 color,
             );
             for channel in channels {
+                if let Some(path) = &channel.rms {
+                    window.paint_path_with_offset(path, offset, rms_color);
+                }
                 if let Some(path) = &channel.overrange {
                     window.paint_path_with_offset(path, offset, overrange);
                 }
@@ -465,6 +525,9 @@ fn paint_channels_with_opacity(
             paint_zero_guide_quad(span, offset, centerline, window);
         }
         window.paint_path_with_offset(&channel.envelope, offset, color);
+        if let Some(path) = &channel.rms {
+            window.paint_path_with_offset(path, offset, rms_color);
+        }
         if let Some(path) = &channel.zero_ranges {
             window.paint_path_with_offset(path, offset, color);
         }

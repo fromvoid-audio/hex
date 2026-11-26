@@ -1,7 +1,7 @@
 //! Atomic control-side prepared audio imports. No filesystem or callback work.
 use crate::{PreparedImport, ResidentAsset, Session, SessionError};
 use hex_project::{Command, Created, ExistingAudioPlacement, MAX_ASSETS, Project, TrackId};
-use std::{mem, sync::Arc};
+use std::sync::Arc;
 pub(crate) mod console;
 pub use console::ConsoleDestination;
 pub(crate) use console::{ResolvedCell, normalize as normalize_imports};
@@ -402,7 +402,9 @@ impl Session {
                 .ok_or(SessionError::Invalid("waveform bin count overflow"))?;
             total_bytes = total_bytes
                 .checked_add(
-                    bins.checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+                    member
+                        .waveform
+                        .summary_bytes()
                         .ok_or(SessionError::Invalid("waveform memory count overflow"))?,
                 )
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;

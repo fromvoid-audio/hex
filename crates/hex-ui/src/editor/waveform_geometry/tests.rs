@@ -2476,7 +2476,11 @@ fn zero_line_quad_is_present_in_binned_and_fine_modes_and_compact_rows_sum_stere
     let stereo = Arc::new(hex_media::waveform::summarize(&audio, 4).unwrap());
     assert!(!stereo.has_identical_channels());
 
-    let mono_audio = hex_engine::Audio::new(48_000, vec![[0.6, 0.6]; 4]).unwrap();
+    let mono_audio = hex_engine::Audio::new(
+        48_000,
+        vec![[0.6, 0.6], [-0.6, -0.6], [0.6, 0.6], [-0.6, -0.6]],
+    )
+    .unwrap();
     let mono = Arc::new(hex_media::waveform::summarize(&mono_audio, 4).unwrap());
     assert!(mono.has_identical_channels());
 
@@ -2541,11 +2545,24 @@ fn zero_line_quad_is_present_in_binned_and_fine_modes_and_compact_rows_sum_stere
     assert!((f32::from(compact.channels[0].outline[4].y) - expected_bottom).abs() < 1e-3);
 
     // 3. Identical-channel mono draws 1 lane even at tall height; reference_stereo forces 2 lanes.
-    let mono_tall = prepare_waveform_geometry(&mono, &mapping, 0, 4, tall, 4, None).unwrap();
+    let mono_tall = prepare_waveform_geometry(&mono, &mapping, 0, 4, tall, 2, None).unwrap();
     assert_eq!(mono_tall.display.channels().len(), 1);
+    assert!(
+        mono_tall.display.channels()[0].has_rms_band(),
+        "summarized audio with filled peak area must attach inner RMS band"
+    );
+    let peak_only = Arc::new(CachedWaveform::from_peaks(4, mono.bins().to_vec()).unwrap());
+    let peak_only_geom =
+        prepare_waveform_geometry(&peak_only, &mapping, 0, 4, tall, 2, None).unwrap();
+    assert!(
+        !peak_only_geom.display.channels()[0].has_rms_band(),
+        "peak-only fixtures without RMS must not invent an RMS band"
+    );
     {
         let _ref = use_reference_stereo(true);
-        let forced = prepare_waveform_geometry(&mono, &mapping, 0, 4, tall, 4, None).unwrap();
+        let forced = prepare_waveform_geometry(&mono, &mapping, 0, 4, tall, 2, None).unwrap();
         assert_eq!(forced.display.channels().len(), 2);
+        assert!(forced.display.channels()[0].has_rms_band());
+        assert!(forced.display.channels()[1].has_rms_band());
     }
 }
