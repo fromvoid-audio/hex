@@ -501,6 +501,12 @@ pub(in crate::editor) fn render_track(
             view.device_panel.message = None;
         }
         view.device_panel.views.retain(|id, _| alive.contains(id));
+        view.device_panel
+            .package_schemas
+            .retain(|id, _| alive.contains(id));
+        view.device_panel
+            .package_snapshots
+            .retain(|id, _| alive.contains(id));
         retire_transfer_previews(&mut view.device_panel, |device| {
             identities
                 .get(&device)
@@ -1310,6 +1316,22 @@ pub(in crate::editor) fn render_effect(
                     device_view,
                     sample_rate,
                 )
+            } else if let Some(schema) = view.device_panel.package_schemas.get(&device_id).cloned()
+            {
+                let snapshot = view.device_panel.package_snapshots.get(&device_id).cloned();
+                package_panel::render_body(
+                    view,
+                    window,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                    schema.as_ref().map_err(String::as_str),
+                    snapshot.as_ref(),
+                )
             } else {
                 parameter_rows::body(
                     view,
@@ -1654,17 +1676,36 @@ pub(in crate::editor) fn render_instrument(
                         modulation,
                     )
                 } else {
-                    let body = parameter_rows::body(
-                        view,
-                        window,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Instrument,
-                            type_id: device_view.type_id,
-                        },
-                        device_view,
-                    );
+                    let body = if let Some(schema) =
+                        view.device_panel.package_schemas.get(&device_id).cloned()
+                    {
+                        let snapshot = view.device_panel.package_snapshots.get(&device_id).cloned();
+                        package_panel::render_body(
+                            view,
+                            window,
+                            cx,
+                            device_id,
+                            DeviceControlIdentity {
+                                class: NativeDeviceClass::Instrument,
+                                type_id: device_view.type_id,
+                            },
+                            device_view,
+                            schema.as_ref().map_err(String::as_str),
+                            snapshot.as_ref(),
+                        )
+                    } else {
+                        parameter_rows::body(
+                            view,
+                            window,
+                            cx,
+                            device_id,
+                            DeviceControlIdentity {
+                                class: NativeDeviceClass::Instrument,
+                                type_id: device_view.type_id,
+                            },
+                            device_view,
+                        )
+                    };
                     let fm4_source = device_view.type_id.as_str() == Ok("hex.instrument.fm4")
                         && view
                             .state
@@ -1792,6 +1833,7 @@ pub(in crate::editor) fn render_automation_trim(
         bindings::BindingPresentation {
             kind: ControlPresentation::InlineValue,
             text: ControlText::default(),
+            label_override: None,
             policy: binding_policy,
             compact_toggle_width: 0.0,
         },

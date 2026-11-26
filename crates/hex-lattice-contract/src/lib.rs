@@ -22,6 +22,7 @@ pub use modulation_source_id::{ModulationOutputId, ModulationSourceId};
 mod foreign_binding;
 mod foreign_parameter;
 pub mod package_abi;
+pub mod package_ui;
 mod vst3_state_approval;
 pub use device_assets::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, MAX_DEVICE_ASSET_REFERENCES,
