@@ -305,55 +305,24 @@ fn large_project_state_reopens_complete_without_rewriting_the_predecessor() {
         .unwrap();
 
     let project = editor.project();
-    assert_eq!(
-        hex_storage::schema_version_for(project),
-        hex_storage::LARGE_VST3_STATE_SCHEMA_VERSION
-    );
     assert!(token.requires_save_confirmation(project).unwrap());
     let upgraded = dir.0.join("upgraded.hex");
     hex_storage::save_new(&upgraded, project).unwrap();
+    let written = fs::read(&upgraded).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&written).unwrap();
+    assert_eq!(
+        document["version"],
+        hex_storage::CAPABILITY_MANIFEST_SCHEMA_VERSION
+    );
+    assert!(
+        document["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("large_vst3_state"))
+    );
     let (reopened, current) = hex_storage::load_with_token(&upgraded).unwrap();
     assert_eq!(reopened.snapshot(), project.snapshot());
-    assert!(fs::metadata(&upgraded).unwrap().len() < 25 * 1024 * 1024);
+    assert!(written.len() < 25 * 1024 * 1024);
     assert!(!current.requires_save_confirmation(&reopened).unwrap());
     assert_eq!(fs::read(path).unwrap(), before);
-}
-
-#[test]
-fn compact_state_rejects_corruption_missing_slots_and_invalid_base_versions() {
-    let (mut editor, track) = editor();
-    let state = NativeDeviceState::new(TYPE_ID, 9, vec![7; 524_289]).unwrap();
-    insert(&mut editor, track, state);
-    let bytes = hex_storage::encode(editor.project()).unwrap();
-    let mut document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    let refuses = |value: &serde_json::Value| {
-        assert!(hex_storage::decode(&serde_json::to_vec(value).unwrap()).is_err())
-    };
-    let rows = document["vst3_states"].take();
-    document["vst3_states"] = serde_json::json!([]);
-    refuses(&document);
-    document["vst3_states"] = serde_json::json!([rows[0], rows[0]]);
-    refuses(&document);
-    document["vst3_states"] = rows;
-    document["vst3_states"][0]["inactive"] = true.into();
-    refuses(&document);
-    document["vst3_states"][0]["inactive"] = false.into();
-    document["base"]["version"] = hex_storage::LARGE_VST3_STATE_SCHEMA_VERSION.into();
-    refuses(&document);
-    document = serde_json::from_slice(&bytes).unwrap();
-    document["vst3_states"][0]["sha256"][0] =
-        (document["vst3_states"][0]["sha256"][0].as_u64().unwrap() ^ 1).into();
-    refuses(&document);
-    document["vst3_states"][0]["payload"] = "!".into();
-    refuses(&document);
-    // One byte over the stored limit can have the same padded length as an
-    // admissible payload. The decoded byte count still has to fit.
-    use base64::{Engine, engine::general_purpose::STANDARD};
-    let over = vec![0u8; hex_lattice_contract::MAX_STORED_VST3_DEVICE_STATE_BYTES + 1];
-    document["vst3_states"][0]["payload"] = STANDARD.encode(&over).into();
-    let error = hex_storage::decode(&serde_json::to_vec(&document).unwrap()).unwrap_err();
-    assert!(matches!(
-        error,
-        hex_storage::StorageError::Invalid("invalid vst3 project state payload")
-    ));
 }

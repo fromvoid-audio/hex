@@ -180,3 +180,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     }
     Ok(project)
 }
+
+#[cfg(test)]
+mod tests;
