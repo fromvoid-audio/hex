@@ -798,12 +798,22 @@ pub(super) fn card(
                 cx.propagate();
             }
         }))
-        // A character binding in the ancestor key context would swallow c/0 in
-        // nested text editors. Handle only the card's own exact focus instead.
-        .on_key_down(
+        // Slash auditions bypass from the selected card's parameter controls, even
+        // during numeric entry. Free-text controls and other cards keep their input.
+        .capture_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
-                if !super::super::activation::is_activation_key(event)
-                    || !toggle_focus.is_focused(window)
+                if !super::super::activation::is_activation_key(event) {
+                    return;
+                }
+                if !toggle_focus.is_focused(window)
+                    && (event.keystroke.key != "/"
+                        || view.device_panel.selected_device != Some(device)
+                        || !toggle_focus.contains_focused(window, cx)
+                        || window.context_stack().iter().any(|context| {
+                            context.contains("hex_text_input")
+                                || (context.contains("hex_text_editing")
+                                    && !context.contains("hex_numeric_control"))
+                        }))
                 {
                     return;
                 }

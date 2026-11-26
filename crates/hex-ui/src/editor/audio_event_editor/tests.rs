@@ -136,7 +136,7 @@ fn retained_source_selector_dispatches_and_acknowledges_event_activation(cx: &mu
     );
     visual.simulate_mouse_down(button, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         let events = view
@@ -358,7 +358,7 @@ fn nested_source_controls_reactivate_the_selected_inner_event(cx: &mut TestAppCo
         visual.simulate_mouse_up(button, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
     }
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
         let outer = view
@@ -399,7 +399,7 @@ fn nested_source_controls_reactivate_the_selected_inner_event(cx: &mut TestAppCo
 }
 
 #[gpui::test]
-fn zero_toggles_the_focused_selected_audio_event_and_paints_it_inactive(cx: &mut TestAppContext) {
+fn slash_toggles_the_focused_selected_audio_event_and_paints_it_inactive(cx: &mut TestAppContext) {
     cx.update(super::super::bind_editor_keys);
     let (handle, editor, _, clip) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -412,7 +412,7 @@ fn zero_toggles_the_focused_selected_audio_event_and_paints_it_inactive(cx: &mut
     visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     visual.run_until_parked();
     editor.read_with(&visual, |view, _| {
         assert!(matches!(&view.test_probes.last_enqueued_edit, Some(Command::EditAudioEvents { clip: id, operation: AudioEventEdit::SetActive { events, active: false } }) if *id == clip && events == &[1]));

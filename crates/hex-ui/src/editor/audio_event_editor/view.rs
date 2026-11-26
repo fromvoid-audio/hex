@@ -1205,7 +1205,7 @@ pub(in crate::editor) fn view(
             .child(
                 waveform::button(
                     "src",
-                    "select retained source events · 0 toggles activation",
+                    "select retained source events · / toggles activation",
                     ("audio-retained-source", 0),
                 )
                 .debug_selector(|| "audio-retained-source".into())

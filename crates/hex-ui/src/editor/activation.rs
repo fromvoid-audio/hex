@@ -19,7 +19,7 @@ pub(super) struct PendingClipActivation {
 }
 
 pub(super) fn is_activation_key(event: &KeyDownEvent) -> bool {
-    matches!(event.keystroke.key.as_str(), "c" | "0")
+    matches!(event.keystroke.key.as_str(), "c" | "/")
         && event.keystroke.modifiers == Modifiers::default()
         && !event.is_held
 }
