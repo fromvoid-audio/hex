@@ -410,21 +410,40 @@ pub(in crate::editor) fn build_waveform_geometry(
     let overrange = exact_overrange.map_or(overrange, |columns| {
         WaveformOverrange::Ready(Arc::new(columns))
     });
-    let mut channels = Vec::with_capacity(2);
+    #[cfg(test)]
+    let force_stereo = reference_stereo();
+    #[cfg(not(test))]
+    let force_stereo = false;
+    let single_lane = !force_stereo
+        && (height < crate::theme::WAVEFORM_STEREO_MIN_HEIGHT || waveform.has_identical_channels());
+    let lane_count = if single_lane { 1 } else { 2 };
+    let mut channels = Vec::with_capacity(lane_count);
     #[cfg(test)]
     let mut outlines = std::array::from_fn(|_| WaveformChannelGeometry {
         outline: Vec::new(),
     });
-    for channel in 0..2 {
-        let band_top = height * channel as f32 * 0.5;
-        let band_height = height * 0.5;
+    let (guide_left, guide_right) = if let Some(pitch) = local_pitch {
+        (px(0.0), px((last - first) as f32 * pitch))
+    } else {
+        (bounds.origin.x, bounds.origin.x + bounds.size.width)
+    };
+    for lane in 0..lane_count {
+        let band_height = if single_lane { height } else { height * 0.5 };
+        let band_top = band_height * lane as f32;
         let center = band_top + band_height * 0.5;
         let amplitude = (band_height * 0.44).max(0.5);
         let mut maxima = Vec::with_capacity(point_count);
         let mut minima = Vec::with_capacity(point_count);
         for (column, peaks) in stereo_peaks.iter().enumerate() {
-            let (top, bottom) =
-                peak_vertical_bounds(peaks[channel], center, amplitude, amplitude_scale);
+            let peak = if single_lane {
+                CachedPeak {
+                    min: peaks[0].min.min(peaks[1].min),
+                    max: peaks[0].max.max(peaks[1].max),
+                }
+            } else {
+                peaks[lane]
+            };
+            let (top, bottom) = peak_vertical_bounds(peak, center, amplitude, amplitude_scale);
             if grid.binned {
                 for edge in [column, column + 1] {
                     let x = if let Some(pitch) = local_pitch {
@@ -447,6 +466,7 @@ pub(in crate::editor) fn build_waveform_geometry(
             .iter()
             .zip(&minima)
             .any(|(maximum, minimum)| (f32::from(maximum.y - minimum.y)).abs() >= 0.5);
+        let guide_y = y + px(center);
         let display = WaveformChannel::new(
             WaveformEnvelope {
                 upper: &maxima,
@@ -457,18 +477,11 @@ pub(in crate::editor) fn build_waveform_geometry(
                     WaveformEnvelopeMode::Trace
                 },
                 trace_width: px(1.0),
-                // Coarse overview bins already show the signed envelope (or
-                // the DC/silence trace). Avoid another path per channel just
-                // for its zero-line guide; fine/detail views keep that guide.
-                centerline: (!grid.binned).then_some(WaveformStroke {
-                    points: [
-                        point(bounds.origin.x, bounds.origin.y + px(center)),
-                        point(
-                            bounds.origin.x + bounds.size.width,
-                            bounds.origin.y + px(center),
-                        ),
-                    ],
-                    width: px(0.5),
+                // Painted as a cheap 1-device-pixel quad in hex-widgets while
+                // keeping the paired stereo envelope fast path intact.
+                centerline: (guide_right > guide_left).then_some(WaveformStroke {
+                    points: [point(guide_left, guide_y), point(guide_right, guide_y)],
+                    width: px(1.0),
                 }),
             },
             std::iter::empty(),
@@ -493,18 +506,25 @@ pub(in crate::editor) fn build_waveform_geometry(
                 let start = left + column as f32 * step;
                 let end = start + step;
                 result.iter().flat_map(move |result| {
-                    [
-                        (result.positive[channel], top),
-                        (result.negative[channel], bottom),
-                    ]
-                    .into_iter()
-                    .filter(move |(marked, _)| *marked && end > start)
-                    .map(move |(_, ordinate)| {
-                        [
-                            point(px(start), y + px(ordinate)),
-                            point(px(end), y + px(ordinate)),
-                        ]
-                    })
+                    let positive = if single_lane {
+                        result.positive[0] || result.positive[1]
+                    } else {
+                        result.positive[lane]
+                    };
+                    let negative = if single_lane {
+                        result.negative[0] || result.negative[1]
+                    } else {
+                        result.negative[lane]
+                    };
+                    [(positive, top), (negative, bottom)]
+                        .into_iter()
+                        .filter(move |(marked, _)| *marked && end > start)
+                        .map(move |(_, ordinate)| {
+                            [
+                                point(px(start), y + px(ordinate)),
+                                point(px(end), y + px(ordinate)),
+                            ]
+                        })
                 })
             });
             display.with_overrange_markers(spans, px(1.0))?
@@ -514,7 +534,7 @@ pub(in crate::editor) fn build_waveform_geometry(
         channels.push(display);
         #[cfg(test)]
         {
-            outlines[channel] = WaveformChannelGeometry {
+            outlines[lane] = WaveformChannelGeometry {
                 outline: maxima.into_iter().chain(minima).collect(),
             };
         }
@@ -523,8 +543,13 @@ pub(in crate::editor) fn build_waveform_geometry(
         WaveformOverrange::Ready(columns) => columns.len(),
         _ => 0,
     };
+    let display = if single_lane {
+        hex_widgets::WaveformGeometry::mono(channels.into_iter().next()?)
+    } else {
+        hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?)
+    };
     Some(WaveformGeometry {
-        display: hex_widgets::WaveformGeometry::stereo(channels.try_into().ok()?),
+        display,
         #[cfg(test)]
         overrange,
         overrange_input,

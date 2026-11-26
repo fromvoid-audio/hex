@@ -120,7 +120,7 @@ impl WaveformGeometryCache {
         if self.painted.len() == MAX_CACHED_WAVEFORM_ENTRIES {
             self.painted.pop_front();
         }
-        let observations: [(f32, f32, u64); 2] = std::array::from_fn(|channel| {
+        let mut observations: [(f32, f32, u64); 2] = std::array::from_fn(|channel| {
             geometry.channels[channel].outline.iter().fold(
                 (f32::INFINITY, f32::NEG_INFINITY, 0xcbf29ce484222325_u64),
                 |(lo, hi, hash), point| {
@@ -133,6 +133,9 @@ impl WaveformGeometryCache {
                 },
             )
         });
+        if geometry.channels[1].outline.is_empty() && !geometry.channels[0].outline.is_empty() {
+            observations[1] = observations[0];
+        }
         self.painted.push_back(WaveformPaintSample {
             colors,
             bounds,
