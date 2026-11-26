@@ -1,9 +1,16 @@
-//! Original stereo cutoff filter. Version 1 stores thirteen 32-bit little-endian
-//! words in descriptor order. The TPT kernel is shared with Operator. The
-//! per-channel cutoff is modulated by a free-running oscillator and a linked
-//! peak envelope. Core continuous parameters admit shared host automation and
-//! sample-rate modulation through the closed inline parameter binding table;
-//! all authored values are checked before runtime construction.
+//! Original stereo Auto Filter (`hex.filter`).
+//!
+//! # Saved-State Compatibility
+//! - **Version 2 (current)**: 22 32-bit little-endian words (88 bytes) in
+//!   descriptor order, adding DJ / Notch+LP / Comb / Resampling / Vowel modes,
+//!   circuit saturation variants + drive, beat-synced LFO with stereo spin and
+//!   deterministic S&H, envelope peak-hold, and envelope key routing (`#8951`).
+//! - **Version 1 (supported historical format)**: 13 32-bit little-endian words
+//!   (52 bytes). Migrated losslessly on control in [`Settings::decode`] by
+//!   filling words `13..22` with transparent clean defaults so migrated v1
+//!   projects render bit-for-bit identically to v1.
+//! - Newer (`> 2`), zero, or malformed payloads are refused explicitly without
+//!   mutating or discarding project data.
 
 mod runtime;
 
@@ -20,9 +27,29 @@ use hex_lattice_contract::{
 pub use runtime::{FilterRuntime, PreparedFilter};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.filter");
-const VERSION: u32 = 1;
-const COUNT: usize = 13;
+const V1_VERSION: u32 = 1;
+const V1_COUNT: usize = 13;
+const VERSION: u32 = 2;
+const COUNT: usize = 22;
 const WORD_BYTES: usize = size_of::<u32>();
+
+pub const MODES: &[&str] = &[
+    "low-pass",
+    "high-pass",
+    "band-pass",
+    "notch",
+    "morph",
+    "dj",
+    "notch + lp",
+    "comb",
+    "resampling",
+    "vowel",
+];
+pub const LFO_SHAPES: &[&str] = &["sine", "triangle", "saw up", "saw down", "square", "s&h"];
+pub const LFO_SYNC_RATES: &[&str] = &[
+    "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/4t", "1/8t", "1/4d", "1/8d",
+];
+pub const ENV_KEY_ROUTINGS: &[&str] = &["stereo", "left", "right", "mid", "side"];
 
 pub mod parameter {
     use hex_lattice_contract::ParameterId;
@@ -40,6 +67,15 @@ pub mod parameter {
     pub const ENV_AMOUNT: ParameterId = ParameterId::from_static(11);
     pub const ENV_RELEASE: ParameterId = ParameterId::from_static(12);
     pub const ENV_ATTACK: ParameterId = ParameterId::from_static(13);
+    pub const CIRCUIT: ParameterId = ParameterId::from_static(14);
+    pub const DRIVE: ParameterId = ParameterId::from_static(15);
+    pub const LFO_SYNC: ParameterId = ParameterId::from_static(16);
+    pub const LFO_SYNC_RATE: ParameterId = ParameterId::from_static(17);
+    pub const LFO_STEREO_MODE: ParameterId = ParameterId::from_static(18);
+    pub const LFO_SPIN: ParameterId = ParameterId::from_static(19);
+    pub const ENV_HOLD: ParameterId = ParameterId::from_static(20);
+    pub const ENV_KEY_ROUTING: ParameterId = ParameterId::from_static(21);
+    pub const LFO_OFFSET: ParameterId = ParameterId::from_static(22);
 }
 
 const TYPE: usize = 0;
@@ -55,17 +91,35 @@ const LFO_PHASE: usize = 9;
 const ENV_AMOUNT: usize = 10;
 const ENV_RELEASE: usize = 11;
 const ENV_ATTACK: usize = 12;
+const CIRCUIT: usize = 13;
+const DRIVE: usize = 14;
+const LFO_SYNC: usize = 15;
+const LFO_SYNC_RATE: usize = 16;
+const LFO_STEREO_MODE: usize = 17;
+const LFO_SPIN: usize = 18;
+const ENV_HOLD: usize = 19;
+const ENV_KEY_ROUTING: usize = 20;
+const LFO_OFFSET: usize = 21;
 
 const fn choice(
     index: usize,
     label: &'static str,
     labels: &'static [&'static str],
 ) -> ParameterDescriptor {
+    choice_with_default(index, label, labels, 0)
+}
+
+const fn choice_with_default(
+    index: usize,
+    label: &'static str,
+    labels: &'static [&'static str],
+    default: u32,
+) -> ParameterDescriptor {
     ParameterDescriptor {
         id: ParameterId::from_static(index as u32 + 1),
         label,
         kind: ParameterKind::Choice { labels },
-        default: ParameterValue::Choice(0),
+        default: ParameterValue::Choice(default),
         presentation: ParameterPresentation::Linear,
     }
 }
@@ -95,7 +149,7 @@ const fn value(
 use ParameterPresentation::{Linear, Logarithmic};
 
 const DESCRIPTORS: [ParameterDescriptor; COUNT] = [
-    choice(TYPE, "type", crate::operator_filter::MODES),
+    choice(TYPE, "type", MODES),
     choice(SLOPE, "slope", &["12 db", "24 db"]),
     value(CUTOFF, "cutoff", "hz", 20.0, 20_000.0, 1000.0, Logarithmic),
     value(RESONANCE, "resonance", "%", 0.0, 100.0, 0.0, Linear),
@@ -103,11 +157,7 @@ const DESCRIPTORS: [ParameterDescriptor; COUNT] = [
     value(MIX, "dry/wet", "%", 0.0, 100.0, 100.0, Linear),
     value(LFO_AMOUNT, "lfo amount", "oct", 0.0, 4.0, 0.0, Linear),
     value(LFO_RATE, "lfo rate", "hz", 0.02, 30.0, 0.5, Logarithmic),
-    choice(
-        LFO_SHAPE,
-        "lfo shape",
-        &["sine", "triangle", "saw up", "saw down", "square"],
-    ),
+    choice(LFO_SHAPE, "lfo shape", LFO_SHAPES),
     value(LFO_PHASE, "lfo stereo phase", "°", 0.0, 360.0, 0.0, Linear),
     value(ENV_AMOUNT, "envelope amount", "oct", -4.0, 4.0, 0.0, Linear),
     value(
@@ -128,6 +178,15 @@ const DESCRIPTORS: [ParameterDescriptor; COUNT] = [
         5.0,
         Logarithmic,
     ),
+    choice(CIRCUIT, "circuit", crate::operator_filter::CIRCUITS),
+    value(DRIVE, "drive", "db", 0.0, 24.0, 0.0, Linear),
+    choice(LFO_SYNC, "lfo sync", &["free", "sync"]),
+    choice_with_default(LFO_SYNC_RATE, "lfo sync rate", LFO_SYNC_RATES, 2),
+    choice(LFO_STEREO_MODE, "lfo stereo mode", &["phase", "spin"]),
+    value(LFO_SPIN, "lfo spin", "%", 0.0, 50.0, 0.0, Linear),
+    value(ENV_HOLD, "envelope hold", "ms", 0.0, 500.0, 0.0, Linear),
+    choice(ENV_KEY_ROUTING, "envelope key", ENV_KEY_ROUTINGS),
+    value(LFO_OFFSET, "lfo offset", "°", 0.0, 360.0, 0.0, Linear),
 ];
 
 const STATIC_CHOICE: ParameterSemantics = ParameterSemantics {
@@ -253,6 +312,75 @@ const BINDINGS: [crate::parameter_binding::Binding<Settings>; COUNT] = [
         |s| s.f32_at(ENV_ATTACK),
         |s, v| s.set_f32(ENV_ATTACK, v),
     ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[CIRCUIT],
+        STATIC_CHOICE,
+        |s| s.0[CIRCUIT],
+        |s, v| {
+            s.0[CIRCUIT] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[DRIVE],
+        MODULATED_LINEAR,
+        |s| s.f32_at(DRIVE),
+        |s, v| s.set_f32(DRIVE, v),
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[LFO_SYNC],
+        STATIC_CHOICE,
+        |s| s.0[LFO_SYNC],
+        |s, v| {
+            s.0[LFO_SYNC] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[LFO_SYNC_RATE],
+        STATIC_CHOICE,
+        |s| s.0[LFO_SYNC_RATE],
+        |s, v| {
+            s.0[LFO_SYNC_RATE] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[LFO_STEREO_MODE],
+        STATIC_CHOICE,
+        |s| s.0[LFO_STEREO_MODE],
+        |s, v| {
+            s.0[LFO_STEREO_MODE] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[LFO_SPIN],
+        MODULATED_LINEAR,
+        |s| s.f32_at(LFO_SPIN),
+        |s, v| s.set_f32(LFO_SPIN, v),
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[ENV_HOLD],
+        MODULATED_LINEAR,
+        |s| s.f32_at(ENV_HOLD),
+        |s, v| s.set_f32(ENV_HOLD, v),
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[ENV_KEY_ROUTING],
+        STATIC_CHOICE,
+        |s| s.0[ENV_KEY_ROUTING],
+        |s, v| {
+            s.0[ENV_KEY_ROUTING] = v;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[LFO_OFFSET],
+        MODULATED_LINEAR,
+        |s| s.f32_at(LFO_OFFSET),
+        |s, v| s.set_f32(LFO_OFFSET, v),
+    ),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -271,15 +399,16 @@ impl Settings {
         if state.type_id() != TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
         }
-        if state.state_version() != VERSION {
-            return Err(DeviceContractError::UnsupportedStateVersion);
-        }
-        if state.payload().len() != COUNT * WORD_BYTES {
+        let word_count = match state.state_version() {
+            V1_VERSION => V1_COUNT,
+            VERSION => COUNT,
+            _ => return Err(DeviceContractError::UnsupportedStateVersion),
+        };
+        if state.payload().len() != word_count * WORD_BYTES {
             return Err(DeviceContractError::MalformedState);
         }
-        let mut settings = Self([0; COUNT]);
-        for (word, bytes) in settings
-            .0
+        let mut settings = Self::default_values()?;
+        for (word, bytes) in settings.0[..word_count]
             .iter_mut()
             .zip(state.payload().chunks_exact(WORD_BYTES))
         {
@@ -288,6 +417,12 @@ impl Settings {
                     .try_into()
                     .map_err(|_| DeviceContractError::MalformedState)?,
             );
+        }
+        if state.state_version() == V1_VERSION {
+            // Historical v1 only permitted TYPE 0..=4 and LFO_SHAPE 0..=4.
+            if settings.0[TYPE] >= 5 || settings.0[LFO_SHAPE] >= 5 {
+                return Err(DeviceContractError::MalformedState);
+            }
         }
         for (index, descriptor) in DESCRIPTORS.iter().enumerate() {
             descriptor.validate(settings.read(index))?;
@@ -495,15 +630,26 @@ pub fn response(
     state: &NativeDeviceState,
     rate: u32,
 ) -> Result<[[f32; 2]; 129], DeviceContractError> {
+    modulated_response(state, rate, 0.0)
+}
+
+/// Live modulated wet response at `cutoff_octave_offset` octaves across all 10
+/// Auto Filter modes (`#8951`). Coordinates match [`response`].
+pub fn modulated_response(
+    state: &NativeDeviceState,
+    rate: u32,
+    cutoff_octave_offset: f64,
+) -> Result<[[f32; 2]; 129], DeviceContractError> {
+    if !cutoff_octave_offset.is_finite() {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
     let prepared = FilterDefinition::prepare_owned(state, rate, &[])?;
     let upper = 20_000.0_f64.min(f64::from(rate) * 0.45);
-    let frame = prepared.frame.with_full_wet();
-    let compact = crate::operator_filter::Prepared { frame, rate };
     Ok(std::array::from_fn(|index| {
         let x = index as f64 / 128.0;
         let frequency = 20.0 * (upper / 20.0).powf(x);
-        let magnitude = compact.magnitude_at_hz(frequency as f32);
-        let y = ((20.0 * magnitude.log10() + 48.0) / 96.0).clamp(0.0, 1.0);
+        let magnitude = runtime::mode_magnitude_at_hz(&prepared, cutoff_octave_offset, frequency);
+        let y = ((20.0 * magnitude.max(1e-6).log10() + 48.0) / 96.0).clamp(0.0, 1.0) as f32;
         [x as f32, y]
     }))
 }
@@ -920,5 +1066,192 @@ mod tests {
             offset += chunk.len();
         }
         assert_eq!(whole, partitioned);
+    }
+
+    #[test]
+    fn historical_v1_state_migrates_losslessly_and_renders_identically() {
+        // Construct an exact historical 13-word (52-byte) v1 payload (low-pass, 12 dB, 1400 Hz, 35% res).
+        let v1_words: [u32; V1_COUNT] = [
+            0,                   // TYPE: low-pass
+            0,                   // SLOPE: 12 db
+            1400.0f32.to_bits(), // CUTOFF
+            35.0f32.to_bits(),   // RESONANCE
+            50.0f32.to_bits(),   // MORPH
+            100.0f32.to_bits(),  // MIX
+            0.0f32.to_bits(),    // LFO_AMOUNT
+            0.5f32.to_bits(),    // LFO_RATE
+            0,                   // LFO_SHAPE
+            0.0f32.to_bits(),    // LFO_PHASE
+            0.0f32.to_bits(),    // ENV_AMOUNT
+            120.0f32.to_bits(),  // ENV_RELEASE
+            5.0f32.to_bits(),    // ENV_ATTACK
+        ];
+        let v1_state = NativeDeviceState::new(
+            TYPE_ID,
+            V1_VERSION,
+            v1_words.into_iter().flat_map(u32::to_le_bytes).collect(),
+        )
+        .unwrap();
+        let migrated = DEFINITION.migrate_state(&v1_state).unwrap();
+        assert_eq!(migrated.state_version(), VERSION);
+        assert_eq!(migrated.payload().len(), COUNT * WORD_BYTES);
+        assert_eq!(
+            DEFINITION.read_parameter(&migrated, parameter::CUTOFF),
+            Ok(ParameterValue::Float(1400.0))
+        );
+        assert_eq!(
+            DEFINITION.read_parameter(&migrated, parameter::CIRCUIT),
+            Ok(ParameterValue::Choice(0))
+        );
+        assert_eq!(
+            DEFINITION.read_parameter(&migrated, parameter::DRIVE),
+            Ok(ParameterValue::Float(0.0))
+        );
+
+        let mut direct_v1 = signal(2500.0);
+        let mut migrated_v2 = direct_v1.clone();
+        render(&v1_state, &mut direct_v1, 128);
+        render(&migrated, &mut migrated_v2, 128);
+        assert_eq!(direct_v1, migrated_v2);
+
+        // Historical v1 payload with out-of-range v2-only mode must be rejected.
+        let mut bad_v1 = v1_words;
+        bad_v1[TYPE] = 7;
+        let bad_v1_state = NativeDeviceState::new(
+            TYPE_ID,
+            V1_VERSION,
+            bad_v1.into_iter().flat_map(u32::to_le_bytes).collect(),
+        )
+        .unwrap();
+        assert_eq!(
+            DEFINITION.migrate_state(&bad_v1_state),
+            Err(DeviceContractError::MalformedState)
+        );
+    }
+
+    #[test]
+    fn extended_auto_filter_modes_circuits_and_modulated_response_behave_deterministically() {
+        let base = DEFINITION.default_state().unwrap();
+        // Verify all 5 new filter modes (dj, notch+lp, comb, resampling, vowel) render finite,
+        // distinct, block-partition-invariant audio and valid response curves.
+        for mode_idx in 5..=9u32 {
+            let mut st = patch(&base, TYPE, ParameterValue::Choice(mode_idx));
+            st = patch(&st, CUTOFF, ParameterValue::Float(1200.0));
+            st = patch(&st, RESONANCE, ParameterValue::Float(55.0));
+            st = patch(&st, MORPH, ParameterValue::Float(25.0));
+
+            let input = signal(1500.0);
+            let mut whole = input.clone();
+            let mut split = input.clone();
+            render(&st, &mut whole, 8192);
+            render(&st, &mut split, 97);
+            assert_eq!(
+                whole, split,
+                "mode {mode_idx} must be block-partition invariant"
+            );
+            assert!(whole.iter().flatten().all(|s| s.is_finite()));
+
+            let resp = response(&st, 48_000).unwrap();
+            let mod_resp = modulated_response(&st, 48_000, 1.5).unwrap();
+            assert!(resp.iter().flatten().all(|v| v.is_finite()));
+            assert!(mod_resp.iter().flatten().all(|v| v.is_finite()));
+            assert_ne!(
+                resp, mod_resp,
+                "mode {mode_idx} modulated response must track offset"
+            );
+        }
+
+        // Circuit variants + drive produce distinct harmonic coloration vs clean.
+        let clean = patch(&base, DRIVE, ParameterValue::Float(0.0));
+        let mut clean_out = signal(400.0);
+        render(&clean, &mut clean_out, 128);
+        for circuit in 1..=4u32 {
+            let mut driven = patch(&base, CIRCUIT, ParameterValue::Choice(circuit));
+            driven = patch(&driven, DRIVE, ParameterValue::Float(18.0));
+            let mut out = signal(400.0);
+            render(&driven, &mut out, 128);
+            assert!(out.iter().flatten().all(|s| s.is_finite()));
+            assert_ne!(out, clean_out, "circuit {circuit} + drive must color audio");
+        }
+    }
+
+    #[test]
+    fn beat_synced_lfo_stereo_spin_sample_and_hold_and_keyed_envelope_hold_work() {
+        struct FixedTempoClock(u32);
+        impl hex_lattice::NativeInstrumentClock for FixedTempoClock {
+            fn beat_at_offset(&self, _offset: usize) -> Option<u64> {
+                None
+            }
+            fn tempo_micro_bpm_at_offset(&self, _offset: usize) -> Option<u32> {
+                Some(self.0)
+            }
+        }
+
+        let base = DEFINITION.default_state().unwrap();
+        // 1. Beat-synced LFO responds to host clock tempo changes (60 BPM vs 180 BPM).
+        let mut synced = patch(&base, LFO_AMOUNT, ParameterValue::Float(2.5));
+        synced = patch(&synced, LFO_SYNC, ParameterValue::Choice(1));
+        synced = patch(&synced, LFO_SYNC_RATE, ParameterValue::Choice(2)); // 1/4 note
+        let prep_sync = FilterDefinition::prepare_owned(&synced, 48_000, &[]).unwrap();
+        let mut slow_out = signal(1800.0);
+        let mut fast_out = slow_out.clone();
+        let mut rt_slow = prep_sync.create_runtime();
+        let mut rt_fast = prep_sync.create_runtime();
+        let slow_clk = FixedTempoClock(60_000_000);
+        let fast_clk = FixedTempoClock(180_000_000);
+        rt_slow.process_block_with_clock(&mut slow_out, Some(&slow_clk), &EMPTY_DEVICE_RESOURCES);
+        rt_fast.process_block_with_clock(&mut fast_out, Some(&fast_clk), &EMPTY_DEVICE_RESOURCES);
+        assert_ne!(slow_out, fast_out, "beat-synced LFO must follow host tempo");
+
+        // 2. Stereo spin produces L/R divergence even when LFO_PHASE == 0.
+        let mut spin = patch(&base, LFO_AMOUNT, ParameterValue::Float(2.0));
+        spin = patch(&spin, LFO_RATE, ParameterValue::Float(6.0));
+        spin = patch(&spin, LFO_STEREO_MODE, ParameterValue::Choice(1));
+        spin = patch(&spin, LFO_SPIN, ParameterValue::Float(35.0));
+        let mut spin_out = signal(1800.0);
+        render(&spin, &mut spin_out, 128);
+        assert!(
+            spin_out.iter().any(|f| (f[0] - f[1]).abs() > 0.05),
+            "stereo spin must diverge L/R LFO modulation"
+        );
+
+        // 3. Sample-and-hold (shape 5) is deterministic across arbitrary block partitions.
+        let mut sh = patch(&base, LFO_AMOUNT, ParameterValue::Float(2.0));
+        sh = patch(&sh, LFO_RATE, ParameterValue::Float(12.0));
+        sh = patch(&sh, LFO_SHAPE, ParameterValue::Choice(5));
+        let mut sh_whole = signal(1800.0);
+        let mut sh_part = sh_whole.clone();
+        render(&sh, &mut sh_whole, 8192);
+        render(&sh, &mut sh_part, 79);
+        assert_eq!(sh_whole, sh_part);
+
+        // 4. Envelope key routing (left vs right) and peak-hold window.
+        let mut key_left = patch(&base, CUTOFF, ParameterValue::Float(200.0));
+        key_left = patch(&key_left, ENV_AMOUNT, ParameterValue::Float(3.5));
+        key_left = patch(&key_left, ENV_HOLD, ParameterValue::Float(60.0));
+        key_left = patch(&key_left, ENV_KEY_ROUTING, ParameterValue::Choice(1)); // left only
+        let key_right = patch(&key_left, ENV_KEY_ROUTING, ParameterValue::Choice(2)); // right only
+
+        // Feed loud tone on Left only, quiet high-freq probe on Right!
+        let stereo_probe: Vec<[f32; 2]> = (0..4096)
+            .map(|i| {
+                let s = (std::f64::consts::TAU * 2500.0 * i as f64 / 48_000.0).sin() as f32;
+                if i < 512 {
+                    [s, s * 0.02]
+                } else {
+                    [0.0, s * 0.02]
+                }
+            })
+            .collect();
+        let mut out_lkey = stereo_probe.clone();
+        let mut out_rkey = stereo_probe;
+        render(&key_left, &mut out_lkey, 128);
+        render(&key_right, &mut out_rkey, 128);
+        let probe_lkey: f32 = out_lkey[600..2400].iter().map(|f| f[1] * f[1]).sum();
+        let probe_rkey: f32 = out_rkey[600..2400].iter().map(|f| f[1] * f[1]).sum();
+        assert!(
+            probe_lkey > probe_rkey * 5.0,
+            "left-keyed envelope with 60ms hold must keep right probe open longer ({probe_lkey} vs {probe_rkey})"
+        );
     }
 }
