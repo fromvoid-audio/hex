@@ -9,10 +9,19 @@
 //! # Does not own
 //! Does not own canonical edits, device I/O, host source leases or foreign-code containment. A
 //! resource view or declaration never grants host publication or lifetime authority.
+mod audio_rack;
 mod aux_input;
 mod bypass_ramp;
 #[cfg(any(test, feature = "conformance"))]
 pub mod conformance;
+pub use audio_rack::{
+    AUDIO_RACK_BRANCH_COUNT, AUDIO_RACK_MAX_BLOCK_FRAMES, AUDIO_RACK_MAX_BRANCH_GAIN,
+    AUDIO_RACK_MAX_COMPENSATION_DELAY_FRAMES, AUDIO_RACK_MAX_DEPTH,
+    AUDIO_RACK_MAX_DEVICES_PER_BRANCH, AUDIO_RACK_MAX_PAIR_BYTES,
+    AUDIO_RACK_MAX_WORK_UNITS_PER_BLOCK, AUDIO_RACK_TYPE_ID, AudioRackBranchSpec,
+    AudioRackDeviceSpec, AudioRackEdit, AudioRackError, AudioRackHistory, AudioRackLimits,
+    AudioRackRuntime, AudioRackSpec,
+};
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_modulation;
 mod foreign_processor;
