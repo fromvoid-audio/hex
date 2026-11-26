@@ -64,7 +64,7 @@ fn default_codec_and_descriptors_round_trip_through_the_generic_registry() {
     let state = registry
         .default_state(SATURATOR_TYPE_ID)
         .expect("default state");
-    assert_eq!(state.state_version(), 1);
+    assert_eq!(state.state_version(), SATURATOR_STATE_VERSION);
     assert_eq!(state.payload().len(), STATE_BYTES);
     assert_eq!(registry.migrate_state(&state).expect("migration"), state);
     assert_eq!(
@@ -134,13 +134,13 @@ fn malformed_states_and_parameter_values_are_rejected() {
     );
     assert!(
         registry
-            .patch_parameter(&state, parameter::CURVE, ParameterValue::Choice(2))
+            .patch_parameter(&state, parameter::CURVE, ParameterValue::Choice(8))
             .is_err()
     );
 
     let wrong_type = NativeDeviceState::new(
         DeviceTypeId::from_static("hex.utility"),
-        1,
+        SATURATOR_STATE_VERSION,
         vec![0; STATE_BYTES],
     )
     .expect("bounded state");
@@ -148,24 +148,62 @@ fn malformed_states_and_parameter_values_are_rejected() {
         registry.migrate_state(&wrong_type),
         Err(DeviceContractError::WrongDeviceType)
     );
-    let future = NativeDeviceState::new(SATURATOR_TYPE_ID, 2, state.payload().to_vec())
-        .expect("future state wrapper");
+    let future = NativeDeviceState::new(
+        SATURATOR_TYPE_ID,
+        SATURATOR_STATE_VERSION + 1,
+        state.payload().to_vec(),
+    )
+    .expect("future state wrapper");
     assert_eq!(
         registry.migrate_state(&future),
         Err(DeviceContractError::UnsupportedStateVersion)
     );
+    assert_eq!(
+        NativeDeviceState::new(SATURATOR_TYPE_ID, 0, state.payload().to_vec()),
+        Err(DeviceContractError::InvalidStateVersion)
+    );
     for length in [0, STATE_BYTES - 1, STATE_BYTES + 1] {
-        let malformed = NativeDeviceState::new(SATURATOR_TYPE_ID, 1, vec![0; length])
-            .expect("bounded malformed payload");
+        let malformed =
+            NativeDeviceState::new(SATURATOR_TYPE_ID, SATURATOR_STATE_VERSION, vec![0; length])
+                .expect("bounded malformed payload");
         assert_eq!(
             registry.migrate_state(&malformed),
             Err(DeviceContractError::MalformedState)
         );
     }
     let mut invalid_choice = state.payload().to_vec();
-    invalid_choice[12] = 2;
-    let malformed = NativeDeviceState::new(SATURATOR_TYPE_ID, 1, invalid_choice)
-        .expect("bounded malformed choice");
+    invalid_choice[52] = 8;
+    let malformed =
+        NativeDeviceState::new(SATURATOR_TYPE_ID, SATURATOR_STATE_VERSION, invalid_choice)
+            .expect("bounded malformed choice");
+    assert_eq!(
+        registry.migrate_state(&malformed),
+        Err(DeviceContractError::MalformedState)
+    );
+    for bool_offset in [53, 54, 55] {
+        let mut invalid_bool = state.payload().to_vec();
+        invalid_bool[bool_offset] = 2;
+        let malformed =
+            NativeDeviceState::new(SATURATOR_TYPE_ID, SATURATOR_STATE_VERSION, invalid_bool)
+                .expect("bounded malformed bool");
+        assert_eq!(
+            registry.migrate_state(&malformed),
+            Err(DeviceContractError::MalformedState)
+        );
+    }
+    // Malformed v1 payloads are also rejected explicitly.
+    for length in [0, STATE_BYTES_V1 - 1, STATE_BYTES_V1 + 1] {
+        let malformed = NativeDeviceState::new(SATURATOR_TYPE_ID, 1, vec![0; length])
+            .expect("bounded malformed v1 payload");
+        assert_eq!(
+            registry.migrate_state(&malformed),
+            Err(DeviceContractError::MalformedState)
+        );
+    }
+    let mut invalid_v1_choice = vec![0u8; STATE_BYTES_V1];
+    invalid_v1_choice[12] = 2;
+    let malformed = NativeDeviceState::new(SATURATOR_TYPE_ID, 1, invalid_v1_choice)
+        .expect("bounded malformed v1 choice");
     assert_eq!(
         registry.migrate_state(&malformed),
         Err(DeviceContractError::MalformedState)
@@ -995,4 +1033,388 @@ fn shared_lfo_matches_independent_saturator_control_frames() {
         assert_near(a, b);
     }
     assert_eq!(SATURATOR_DEFINITION.default_state().unwrap(), state);
+}
+
+#[test]
+fn v1_state_migrates_losslessly_to_v2_and_renders_bit_identically() {
+    let mut v1_payload = Vec::with_capacity(STATE_BYTES_V1);
+    v1_payload.extend_from_slice(&14.5_f32.to_le_bytes());
+    v1_payload.extend_from_slice(&(-3.25_f32).to_le_bytes());
+    v1_payload.extend_from_slice(&0.75_f32.to_le_bytes());
+    v1_payload.push(1); // DigitalClip
+    let v1_state =
+        NativeDeviceState::new(SATURATOR_TYPE_ID, 1, v1_payload).expect("valid v1 state");
+    let migrated = SATURATOR_DEFINITION
+        .migrate_state(&v1_state)
+        .expect("lossless v1 -> v2 migration");
+    assert_eq!(migrated.state_version(), SATURATOR_STATE_VERSION);
+    assert_eq!(migrated.payload().len(), STATE_BYTES);
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::DRIVE),
+        Ok(ParameterValue::Float(14.5))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::OUTPUT),
+        Ok(ParameterValue::Float(-3.25))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::DRY_WET),
+        Ok(ParameterValue::Float(0.75))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::CURVE),
+        Ok(ParameterValue::Choice(1))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::BASE),
+        Ok(ParameterValue::Float(0.0))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::COLOR),
+        Ok(ParameterValue::Bool(false))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::SOFT_CLIP_OUT),
+        Ok(ParameterValue::Bool(false))
+    );
+    assert_eq!(
+        SATURATOR_DEFINITION.read_parameter(&migrated, parameter::DC_FILTER),
+        Ok(ParameterValue::Bool(false))
+    );
+
+    let input: Vec<StereoFrame> = (0..128)
+        .map(|i| {
+            let phase = std::f64::consts::TAU * 440.0 * i as f64 / 48_000.0;
+            [(phase.sin() * 0.6) as f32, (phase.cos() * 0.4) as f32]
+        })
+        .collect();
+    let mut from_v1 = input.clone();
+    let mut from_v2 = input;
+    render(&v1_state, &mut from_v1);
+    render(&migrated, &mut from_v2);
+    assert_eq!(from_v1, from_v2);
+}
+
+#[test]
+fn all_eight_curves_are_distinct_finite_and_antiderivatives_match_derivatives() {
+    let default = SATURATOR_DEFINITION.default_state().unwrap();
+    // Verify analytical antiderivatives numerically for every curve including Waveshaper.
+    let eps = 1.0e-6;
+    let xs = [-2.5, -1.0, -0.75, -0.5, -0.2, 0.0, 0.2, 0.5, 0.75, 1.0, 2.5];
+    let check_shaper = |shaper: &dyn Shaper, name: &str| {
+        assert_eq!(shaper.value(0.0), 0.0, "{name}: f(0) must be 0");
+        assert!(
+            shaper.antiderivative(0.0).abs() < 1.0e-12,
+            "{name}: F(0) must be 0"
+        );
+        for &x in &xs {
+            let numeric =
+                (shaper.antiderivative(x + eps) - shaper.antiderivative(x - eps)) / (2.0 * eps);
+            let exact = shaper.value(x);
+            assert!(
+                (numeric - exact).abs() < 1.0e-3,
+                "{name} at x={x}: numeric={numeric} vs exact={exact}"
+            );
+        }
+    };
+    check_shaper(&AnalogClip, "analog clip");
+    check_shaper(&DigitalClip, "digital clip");
+    check_shaper(&SoftSine, "soft sine");
+    check_shaper(&MediumCurve, "medium curve");
+    check_shaper(&HardCurve, "hard curve");
+    check_shaper(&SinoidFold, "sinoid fold");
+    check_shaper(&BassShaper, "bass shaper");
+    let custom_ws = Waveshaper::from_settings(
+        SaturatorSettings {
+            ws_drive: 0.75,
+            ws_curve: 0.6,
+            ws_depth: 0.5,
+            ws_lin: 0.3,
+            ws_damp: 0.4,
+            ws_period: 0.7,
+            ..SaturatorSettings::default()
+        },
+        WS_TAG_A,
+    );
+    check_shaper(&custom_ws, "waveshaper");
+
+    // Verify all 8 curves produce distinct transfer curves at +12 dB drive and stay finite.
+    let driven = patch(&default, parameter::DRIVE, ParameterValue::Float(12.0));
+    let curves: Vec<SaturatorTransferCurve> = (0..8)
+        .map(|index| {
+            let state = patch(&driven, parameter::CURVE, ParameterValue::Choice(index));
+            let curve = transfer_curve(&state).expect("transfer curve");
+            assert!(
+                curve
+                    .points
+                    .iter()
+                    .all(|p| p[0].is_finite() && p[1].is_finite())
+            );
+            curve
+        })
+        .collect();
+    for i in 0..curves.len() {
+        for j in (i + 1)..curves.len() {
+            assert_ne!(curves[i], curves[j], "curves {i} and {j} must be distinct");
+        }
+    }
+
+    // Sinoid Fold folds back down past |driven| > 1.
+    let fold_state = patch(&default, parameter::CURVE, ParameterValue::Choice(5));
+    let fold_at_1 = settle(&fold_state, [1.0, 1.0])[0];
+    let fold_at_2 = settle(&fold_state, [2.0, 2.0])[0];
+    assert!(fold_at_1 > 0.95, "sinoid fold peaks near 1: {fold_at_1}");
+    assert!(
+        fold_at_2.abs() < 0.05,
+        "sinoid fold folds back to 0 at x=2: {fold_at_2}"
+    );
+
+    // Bass Shaper is asymmetric (positive vs negative half-waves differ) and generates 2nd harmonic.
+    let bass_state = patch(
+        &patch(&default, parameter::CURVE, ParameterValue::Choice(6)),
+        parameter::DRIVE,
+        ParameterValue::Float(6.0),
+    );
+    let pos = settle(&bass_state, [0.8, 0.8])[0];
+    let neg = settle(&bass_state, [-0.8, -0.8])[0];
+    assert!(
+        (pos + neg).abs() > 0.05,
+        "bass shaper must be asymmetric: pos={pos}, neg={neg}"
+    );
+}
+
+#[test]
+fn all_six_waveshaper_parameters_visibly_shape_curve_and_audio() {
+    let base = patch(
+        &patch(
+            &SATURATOR_DEFINITION.default_state().unwrap(),
+            parameter::CURVE,
+            ParameterValue::Choice(7),
+        ),
+        parameter::WS_DEPTH,
+        ParameterValue::Float(0.4),
+    );
+    let base_curve = transfer_curve(&base).unwrap();
+    for (param, value) in [
+        (parameter::WS_DRIVE, 0.9),
+        (parameter::WS_CURVE, 0.8),
+        (parameter::WS_DEPTH, 0.9),
+        (parameter::WS_LIN, 0.1),
+        (parameter::WS_DAMP, 0.9),
+        (parameter::WS_PERIOD, 0.8),
+    ] {
+        let modified = patch(&base, param, ParameterValue::Float(value));
+        assert_ne!(
+            transfer_curve(&modified).unwrap(),
+            base_curve,
+            "waveshaper parameter {param:?} must affect transfer curve"
+        );
+    }
+}
+
+#[test]
+fn extended_curves_maintain_low_aliasing_under_oversampling() {
+    use crate::oversampling::spectrum::inharmonic_energy_db;
+    let rate = 48_000_u32;
+    let count = (1 << 16) + 2048;
+    let default = SATURATOR_DEFINITION.default_state().unwrap();
+    // Monotonic saturating curves stay below -60 dB inharmonic energy at +36 dB drive.
+    for curve in [2u32, 3, 4, 6, 7] {
+        let state = patch(
+            &patch(&default, parameter::DRIVE, ParameterValue::Float(36.0)),
+            parameter::CURVE,
+            ParameterValue::Choice(curve),
+        );
+        let mut frames: Vec<StereoFrame> = (0..count)
+            .map(|frame| {
+                let value =
+                    (std::f64::consts::TAU * 7_000.0 * frame as f64 / f64::from(rate)).sin() as f32;
+                [value, value]
+            })
+            .collect();
+        render(&state, &mut frames);
+        let energy = inharmonic_energy_db(&frames, 7_000.0, rate);
+        assert!(
+            energy < -60.0,
+            "curve {curve}: inharmonic energy {energy:.1} db"
+        );
+    }
+    // Sinoid Fold stays below -60 dB inharmonic energy at +12 dB drive (before wavefold harmonics exceed 192 kHz).
+    let fold_state = patch(
+        &patch(&default, parameter::DRIVE, ParameterValue::Float(12.0)),
+        parameter::CURVE,
+        ParameterValue::Choice(5),
+    );
+    let mut frames: Vec<StereoFrame> = (0..count)
+        .map(|frame| {
+            let value =
+                (std::f64::consts::TAU * 7_000.0 * frame as f64 / f64::from(rate)).sin() as f32;
+            [value, value]
+        })
+        .collect();
+    render(&fold_state, &mut frames);
+    let energy = inharmonic_energy_db(&frames, 7_000.0, rate);
+    assert!(
+        energy < -60.0,
+        "sinoid fold (+12 dB): inharmonic energy {energy:.1} db"
+    );
+}
+
+#[test]
+fn color_and_base_pre_post_filters_are_flat_at_low_level_and_selective_at_high_drive() {
+    let default = SATURATOR_DEFINITION.default_state().unwrap();
+    let colored = patch(
+        &patch(
+            &patch(
+                &patch(
+                    &patch(&default, parameter::BASE, ParameterValue::Float(12.0)),
+                    parameter::COLOR,
+                    ParameterValue::Bool(true),
+                ),
+                parameter::COLOR_FREQ,
+                ParameterValue::Float(2_000.0),
+            ),
+            parameter::COLOR_WIDTH,
+            ParameterValue::Float(0.6),
+        ),
+        parameter::COLOR_DEPTH,
+        ParameterValue::Float(12.0),
+    );
+    // Low-level signal stays inside AnalogClip's linear region, so pre+post inverse EQ cancels cleanly.
+    let render_rms = |state: &NativeDeviceState, hz: f64, amp: f64| -> f64 {
+        let mut frames: Vec<StereoFrame> = (0..4_096)
+            .map(|i| {
+                let s = (std::f64::consts::TAU * hz * i as f64 / 48_000.0).sin() * amp;
+                [s as f32, s as f32]
+            })
+            .collect();
+        render(state, &mut frames);
+        let tail = &frames[2_048..];
+        (tail.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>() / tail.len() as f64).sqrt()
+    };
+    for hz in [80.0, 1_000.0, 2_000.0, 8_000.0] {
+        let clean = render_rms(&default, hz, 0.02);
+        let with_color = render_rms(&colored, hz, 0.02);
+        let diff_db = 20.0 * (with_color / clean).log10();
+        assert!(
+            diff_db.abs() < 0.25,
+            "low-level {hz} Hz should stay flat across inverse pre/post EQ: diff={diff_db:.3} dB"
+        );
+    }
+    // At high level, +12 dB Color boost at 2 kHz pushes 2 kHz deeper into compression,
+    // so post-shaper inverse cut lowers 2 kHz output relative to uncolored saturation.
+    let high_clean = render_rms(&default, 2_000.0, 0.6);
+    let high_color = render_rms(&colored, 2_000.0, 0.6);
+    assert!(
+        high_color < high_clean * 0.8,
+        "pre-emphasis color should drive 2 kHz harder into saturation: clean={high_clean}, color={high_color}"
+    );
+}
+
+#[test]
+fn soft_clip_output_ceiling_and_dc_filter_behave_and_drain_to_quiescence() {
+    let default = SATURATOR_DEFINITION.default_state().unwrap();
+    // +6 dB output normally exceeds 1.0; Soft Clip caps it strictly <= 1.0.
+    let hot = patch(
+        &patch(&default, parameter::DRIVE, ParameterValue::Float(18.0)),
+        parameter::OUTPUT,
+        ParameterValue::Float(6.0),
+    );
+    let clipped = patch(&hot, parameter::SOFT_CLIP_OUT, ParameterValue::Bool(true));
+    assert!(settle(&hot, [1.0, 1.0])[0] > 1.5);
+    let out = settle(&clipped, [1.0, 1.0])[0];
+    assert!(
+        out <= 1.0 && out > 0.8,
+        "post-output soft clip must softly cap at 1.0, got {out}"
+    );
+    assert_eq!(transfer_curve(&clipped).unwrap().output_peak, 1.0);
+
+    // DC filter removes DC offset introduced by asymmetric Bass Shaper or input DC.
+    let dc_state = patch(
+        &patch(
+            &patch(&default, parameter::CURVE, ParameterValue::Choice(6)),
+            parameter::DRIVE,
+            ParameterValue::Float(12.0),
+        ),
+        parameter::DC_FILTER,
+        ParameterValue::Bool(true),
+    );
+    let mut frames = [[0.5_f32, 0.5_f32]; 8_192];
+    render(&dc_state, &mut frames);
+    assert!(
+        frames[8_191][0].abs() < 1.0e-3,
+        "DC filter must block steady DC, got {}",
+        frames[8_191][0]
+    );
+
+    // Active IIR/DC stages declare a finite tail and drain cleanly to is_quiescent() within it.
+    let full = patch(
+        &patch(
+            &patch(&dc_state, parameter::BASE, ParameterValue::Float(9.0)),
+            parameter::COLOR,
+            ParameterValue::Bool(true),
+        ),
+        parameter::COLOR_DEPTH,
+        ParameterValue::Float(12.0),
+    );
+    let prepared = SaturatorDefinition::prepare_owned(&full, 48_000, &[]).unwrap();
+    let OutputTail::Finite { max_tail_frames } = prepared.output_tail() else {
+        panic!("expected finite tail");
+    };
+    let mut rt = prepared.create_runtime();
+    let resources = &hex_lattice::EMPTY_DEVICE_RESOURCES;
+    rt.process_block(&mut [[0.7, -0.6]; 256], resources);
+    assert!(!rt.is_quiescent());
+    let mut drain = vec![[0.0_f32, 0.0_f32]; max_tail_frames as usize];
+    rt.process_block(&mut drain, resources);
+    assert!(rt.is_quiescent(), "must be quiescent after max_tail_frames");
+}
+
+#[test]
+fn filtered_and_waveshaper_modes_are_block_partition_invariant() {
+    let state = patch(
+        &patch(
+            &patch(
+                &patch(
+                    &patch(
+                        &patch(
+                            &SATURATOR_DEFINITION.default_state().unwrap(),
+                            parameter::CURVE,
+                            ParameterValue::Choice(7),
+                        ),
+                        parameter::WS_DEPTH,
+                        ParameterValue::Float(0.6),
+                    ),
+                    parameter::BASE,
+                    ParameterValue::Float(6.0),
+                ),
+                parameter::COLOR,
+                ParameterValue::Bool(true),
+            ),
+            parameter::COLOR_DEPTH,
+            ParameterValue::Float(8.0),
+        ),
+        parameter::DC_FILTER,
+        ParameterValue::Bool(true),
+    );
+    let input: Vec<StereoFrame> = (0..300)
+        .map(|i| {
+            let t = i as f64 / 48_000.0;
+            [
+                ((std::f64::consts::TAU * 330.0 * t).sin() * 0.7) as f32,
+                ((std::f64::consts::TAU * 770.0 * t).cos() * 0.5) as f32,
+            ]
+        })
+        .collect();
+    let mut whole = input.clone();
+    render(&state, &mut whole);
+    let mut chunked = input;
+    let mut rt = runtime(&state);
+    let mut pos = 0;
+    for step in [1, 3, 7, 13, 31, 64, 181] {
+        let end = (pos + step).min(chunked.len());
+        rt.process_block(&mut chunked[pos..end], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+        pos = end;
+    }
+    assert_eq!(whole, chunked);
 }

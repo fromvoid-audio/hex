@@ -76,7 +76,7 @@ fn saturator_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut TestA
             .top_left,
         px(hex_widgets::DEVICE_SECTION_RADIUS).scale(scale)
     );
-    for parameter in 1..=4 {
+    for parameter in 1..=17 {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),
