@@ -37,6 +37,8 @@ REVIEWED_MODULES = frozenset({
     # sources/build inputs, not ordinary app Rust. Those inputs fall back below.
     "test_vst3_macos_bootstrap",
     "test_vst3_instance_worker",
+    # The timing extractor reads saved logs and its fixtures use synthetic records.
+    "test_vst3_insertion_timings",
 })
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",

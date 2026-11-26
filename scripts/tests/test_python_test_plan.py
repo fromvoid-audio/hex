@@ -309,6 +309,8 @@ class SelectionTests(unittest.TestCase):
             ("scripts/tests/test_hex_update_entry.py", "test_hex_update_entry"),
             ("scripts/tests/test_pending_update_exit.py", "test_pending_update_exit"),
             ("scripts/tests/test_vst3_macos_bootstrap.py", "test_vst3_macos_bootstrap"),
+            ("scripts/vst3_insertion_timings.py", "test_vst3_insertion_timings"),
+            ("scripts/tests/test_vst3_insertion_timings.py", "test_vst3_insertion_timings"),
         ):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)
