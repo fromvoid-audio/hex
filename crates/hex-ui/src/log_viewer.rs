@@ -690,6 +690,16 @@ impl Render for Viewer {
                     .child(div().flex_1().overflow_hidden().child(session))
                     .child(
                         control("refresh").on_click(cx.listener(|view, _, _, cx| view.reload(cx))),
+                    )
+                    .child(
+                        control("report...")
+                            .debug_selector(|| "log-report".into())
+                            .on_click(cx.listener(|view, _, _, cx| {
+                                if !crate::editor::issue_report::open_from_app(cx) {
+                                    view.status = "open an editor window to submit a report".into();
+                                    cx.notify();
+                                }
+                            })),
                     ),
             )
             .child(

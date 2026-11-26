@@ -21,6 +21,8 @@ ALLOWED = {
     # Ordinary control/worker client; never callback, process-global signals or graph authority.
     'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract'},
     'hex-diagnostics': set(),
+    # Redacted issue/bug report envelopes, atomic offline outbox and intake transport.
+    'hex-report': {'hex-diagnostics'},
     # Verbatim span markup and lowercase normalization shared by storage and UI theme.
     'hex-text': set(),
     'hex-lattice-contract': set(),
@@ -46,10 +48,10 @@ ALLOWED = {
     'hex-sandbox': {'hex-devices', 'hex-preferences', 'hex-project', 'hex-ui-model', 'hex-ui-kit', 'hex-widgets'},
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host', 'hex-plugin-state', 'hex-plugin-scan', 'hex-lattice', 'hex-lattice-contract'},
-    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-ui-model', 'hex-ui-kit', 'hex-widgets'},
+    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-report', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-ui-model', 'hex-ui-kit', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
-    'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media', 'hex-export', 'hex-plugin-catalog', 'hex-preferences'},
+    'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-report', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media', 'hex-export', 'hex-plugin-catalog', 'hex-preferences'},
     'hex-cli': {'hex-engine', 'hex-project', 'hex-media', 'hex-storage', 'hex-export'},
 }
 # These narrow test-only edges exercise canonical publication and prepared

@@ -707,6 +707,8 @@ impl Render for EditorView {
             "hex_device_picker_root"
         } else if self.settings.changelog.is_open() {
             "hex_changelog"
+        } else if self.settings.issue_report.is_open() {
+            "hex_issue_report"
         } else if self.track_name.is_editing() {
             "hex_track_name hex_text_editing"
         } else if self.clip_name_edit.is_some() || self.sections.naming() || self.locators.naming()
@@ -1187,6 +1189,21 @@ impl Render for EditorView {
             .on_action(
                 cx.trace(|view, _: &super::changelog::CloseChangelog, window, cx| {
                     view.close_changelog(window, cx);
+                }),
+            )
+            .on_action(cx.trace(
+                |view, _: &super::issue_report::OpenIssueReport, window, cx| {
+                    view.open_issue_report(window, cx);
+                },
+            ))
+            .on_action(cx.trace(
+                |view, _: &super::issue_report::CloseIssueReport, window, cx| {
+                    view.close_issue_report(window, cx);
+                },
+            ))
+            .on_action(
+                cx.trace(|view, _: &super::issue_report::SubmitIssueReport, _, cx| {
+                    view.submit_issue_report(cx);
                 }),
             )
             .on_action(cx.trace(|view, _: &super::OpenTuning, window, cx| {
@@ -2015,6 +2032,7 @@ impl Render for EditorView {
             .children(super::theme_settings::overlay(self, cx))
             .children(self.tuning_overlay(cx))
             .children(self.changelog_overlay(cx))
+            .children(self.issue_report_overlay(cx))
             .children(self.missing_media_overlay(cx))
             .children(super::device_panel::picker_overlay(self, window, cx))
             .children(super::device_panel::source_name_overlay(self, cx))

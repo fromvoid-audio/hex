@@ -721,6 +721,13 @@ pub(crate) fn log_path(cx: &App) -> Option<std::path::PathBuf> {
         .map(DiagnosticsHandle::path)
 }
 
+/// Cumulative logger overflow count (lock-free atomic read).
+pub(crate) fn logger_overflow_count(cx: &App) -> u64 {
+    cx.try_global::<SessionDiagnostics>()
+        .and_then(|d| d.handle.as_ref().ok())
+        .map_or(0, DiagnosticsHandle::overflow_count)
+}
+
 pub(crate) fn record_state(cx: &mut App, status: &str, error: Option<&str>) -> Option<String> {
     cx.try_global::<SessionDiagnostics>()?;
     cx.update_global::<SessionDiagnostics, _>(|diagnostics, _| {

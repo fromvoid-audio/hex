@@ -166,6 +166,9 @@ impl DegradedDevices {
             .ok()
             .map(|index| self.0[index].1.as_str())
     }
+    pub(crate) fn entries(&self) -> &[(u64, String)] {
+        &self.0
+    }
     #[cfg(all(test, not(feature = "ui-test-support")))]
     fn device_ids(&self) -> Vec<u64> {
         self.0.iter().map(|(id, _)| *id).collect()

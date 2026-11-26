@@ -3,7 +3,7 @@
 //!
 //! # Dependencies
 //! Uses hex-ui/GPUI, hex-session, hex-audio, hex-engine, hex-stream, hex-media, hex-diagnostics,
-//! hex-midi and hex-mts at their existing boundaries. Injects hex-export
+//! hex-report, hex-midi and hex-mts at their existing boundaries. Injects hex-export
 //! with independently verified control-worker stream pages for offline output.
 //! Reads hex-plugin-catalog's copied source metadata at hex-preferences' existing
 //! application-support location; neither grants native source admission.
@@ -26,6 +26,7 @@ mod audio_policy;
 mod granular_sources;
 mod native_audio;
 mod native_sources;
+mod report_worker;
 mod startup_failure;
 mod streamed_export;
 #[cfg(feature = "profiling-tools")]
@@ -82,6 +83,34 @@ fn main() -> ExitCode {
         }
     };
 
+    let skip_pending_update = skip_pending_update_flag(std::env::args_os().skip(1));
+    let demo = std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == "--demo");
+    if !demo
+        && let Some(lease) = &update_lease
+        && let Some(target) = current_bundle_target()
+    {
+        match update_supervisor::try_startup_pending_handoff(
+            &target,
+            lease.is_sole_instance(),
+            skip_pending_update,
+        ) {
+            update_supervisor::StartupHandoffOutcome::HandedOff => {
+                // Release shared publication custody before exiting cleanly so
+                // the verified update helper can publish and reopen the new build.
+                drop(update_lease);
+                return ExitCode::SUCCESS;
+            }
+            update_supervisor::StartupHandoffOutcome::Failed(error) => {
+                eprintln!("startup pending update handoff skipped: {error}");
+            }
+            update_supervisor::StartupHandoffOutcome::SkippedByFlag
+            | update_supervisor::StartupHandoffOutcome::OtherInstanceRunning
+            | update_supervisor::StartupHandoffOutcome::NoPendingUpdate => {}
+        }
+    }
+
     let exit = StartupExit::new(start_session_log(&format!(
         "audio={audio_diagnostics:?} actions={action_diagnostics}"
     )));
@@ -137,8 +166,22 @@ fn main() -> ExitCode {
     } else {
         (None, None)
     };
+    let (report_client, report_worker_handle) = {
+        let (client, worker) = hex_ui::report_channel();
+        match report_worker::start(worker) {
+            Ok(handle) => (Some(client), Some(handle)),
+            Err(error) => {
+                record_startup_warning(
+                    log_handle.as_ref().ok(),
+                    &format!("issue report worker unavailable: {error}"),
+                );
+                (None, None)
+            }
+        }
+    };
     exit.attach_runtime(DesktopRuntime {
         update_supervisor,
+        report_worker: report_worker_handle,
         mts_worker,
         midi_worker,
         update_lease,
@@ -149,6 +192,9 @@ fn main() -> ExitCode {
         run_exit.install_quit_teardown(cx);
         if let Some(client) = &update_client {
             hex_ui::install_update_client(cx, client.clone());
+        }
+        if let Some(client) = &report_client {
+            hex_ui::install_report_client(cx, client.clone());
         }
         if let Some(handle) = &midi_handle {
             hex_ui::install_controller_input(cx, handle.clone());
@@ -260,6 +306,7 @@ fn install_panic_hook(log: Arc<Mutex<Result<hex_diagnostics::SessionLog, String>
 #[derive(Default)]
 struct DesktopRuntime {
     update_supervisor: Option<update_supervisor::UpdateSupervisorHandle>,
+    report_worker: Option<report_worker::ReportWorkerHandle>,
     mts_worker: Option<hex_mts::Worker>,
     midi_worker: Option<hex_midi::Worker>,
     update_lease: Option<update_lease::UpdateLease>,
@@ -336,6 +383,11 @@ impl StartupExit {
                 drop(supervisor);
                 observe("update_supervisor");
             }
+            if let Some(mut report) = runtime.report_worker.take() {
+                let _ = report.shutdown();
+                drop(report);
+                observe("report_worker");
+            }
             if let Some(mut mts) = runtime.mts_worker.take() {
                 mts.shutdown();
                 drop(mts);
@@ -411,6 +463,17 @@ fn report_before_editor(failure: StartupFailure) {
             hex_ui::open_or_report(cx, |_| Err(report));
         });
     exit.shutdown_log();
+}
+
+fn current_bundle_target() -> Option<std::path::PathBuf> {
+    let executable = std::fs::canonicalize(std::env::current_exe().ok()?).ok()?;
+    Some(executable.ancestors().nth(3)?.to_path_buf())
+}
+
+fn skip_pending_update_flag(arguments: impl Iterator<Item = std::ffi::OsString>) -> bool {
+    arguments
+        .into_iter()
+        .any(|argument| argument == "--skip-pending-update")
 }
 
 /// Current development default: recommended failure/action tracing, including
@@ -520,6 +583,7 @@ mod startup_exit_tests {
         exit.opened.set(true);
         exit.attach_runtime(DesktopRuntime {
             update_supervisor: Some(supervisor),
+            report_worker: None,
             mts_worker: None,
             midi_worker: None,
             update_lease: Some(lease),
@@ -570,6 +634,7 @@ mod startup_exit_tests {
         // Editor never opened -> failed startup exit code 1.
         exit.attach_runtime(DesktopRuntime {
             update_supervisor: Some(supervisor),
+            report_worker: None,
             mts_worker: mts,
             midi_worker: midi,
             update_lease: Some(lease),
@@ -626,6 +691,7 @@ mod startup_exit_tests {
         exit.opened.set(true);
         exit.attach_runtime(DesktopRuntime {
             update_supervisor: Some(supervisor),
+            report_worker: None,
             mts_worker: hex_mts::Worker::start().ok(),
             midi_worker: hex_midi::Worker::start().ok(),
             update_lease: Some(lease),
@@ -719,5 +785,21 @@ mod diagnostics_flag_tests {
             Ok(("publication,transport,readiness".parse().unwrap(), true))
         );
         assert!(diagnostic_options(["--diagnostics=wat".into()].into_iter()).is_err());
+    }
+
+    #[test]
+    fn skip_pending_update_flag_is_recognized_cleanly() {
+        assert!(!skip_pending_update_flag(std::iter::empty()));
+        assert!(!skip_pending_update_flag(
+            ["--demo", "--diagnostics"].into_iter().map(Into::into)
+        ));
+        assert!(skip_pending_update_flag(
+            ["--skip-pending-update"].into_iter().map(Into::into)
+        ));
+        assert!(skip_pending_update_flag(
+            ["--diagnostics", "--skip-pending-update"]
+                .into_iter()
+                .map(Into::into)
+        ));
     }
 }

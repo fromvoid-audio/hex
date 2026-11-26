@@ -65,6 +65,7 @@ hex-mts = { path = "../hex-mts" }
 hex-tuning = { path = "../hex-tuning" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
+hex-report = { path = "../hex-report" }
 hex-session = { path = "../hex-session" }
 hex-project = { path = "../hex-project" }
 hex-engine = { path = "../hex-engine" }

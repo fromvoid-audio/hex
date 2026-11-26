@@ -20,6 +20,10 @@ fn application_menus(recent_projects: &[PathBuf]) -> Vec<Menu> {
             name: theme::text("hex"),
             items: vec![
                 MenuItem::action(theme::text("settings…"), OpenSettings),
+                MenuItem::action(
+                    theme::text("report issue / request..."),
+                    super::issue_report::OpenIssueReport,
+                ),
                 MenuItem::action(theme::text("install update on quit"), InstallUpdateOnQuit),
                 MenuItem::action(
                     theme::text("save and restart for update"),
@@ -205,6 +209,10 @@ mod tests {
                 _ => false,
             })
         };
+        assert!(has_action("hex", &|a| {
+            a.as_any()
+                .is::<super::super::issue_report::OpenIssueReport>()
+        }));
         assert!(has_action("file", &|a| a.as_any().is::<ImportAudio>()));
         assert!(has_action("file", &|a| a.as_any().is::<ExportProject>()));
         assert!(has_action("edit", &|a| a.as_any().is::<Undo>()));
