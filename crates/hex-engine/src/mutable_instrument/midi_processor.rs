@@ -54,6 +54,14 @@ impl MidiProcessorStage {
         })
     }
 
+    pub(crate) fn storage_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<Self>().checked_add(self.pair.fixed_storage_pair_bytes()?)
+    }
+
+    pub(crate) fn declared_pair_bytes(&self) -> usize {
+        self.pair.declared_pair_bytes()
+    }
+
     pub(crate) fn begin_block(&mut self) {
         self.pair.begin_block();
     }
