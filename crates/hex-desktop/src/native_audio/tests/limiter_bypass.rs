@@ -85,8 +85,9 @@ fn check(lookahead: u32, mode: u32, routing: u32, owner: u8) {
     let control = &mut h.audio.as_mut().unwrap().control;
     let output = control.output_identity();
     // At 48 kHz the three lookaheads are 1.5, 3 and 6 ms. True peak
-    // adds a 31-frame reconstruction delay; mid/side cascades two stages.
-    let stage_delay = [72_usize, 144, 288][lookahead as usize] + if mode == 2 { 31 } else { 0 };
+    // adds 31 reconstruction frames and an 11-frame output guard per stage.
+    let stage_delay =
+        [72_usize, 144, 288][lookahead as usize] + if mode == 2 { 31 + 11 } else { 0 };
     let latency = stage_delay * if routing == 1 { 2 } else { 1 };
     const FADE: usize = 24;
     let reference_blocks = (latency + FADE).div_ceil(64) + 1;
