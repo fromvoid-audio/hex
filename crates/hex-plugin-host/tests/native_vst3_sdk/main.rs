@@ -1036,6 +1036,7 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
         Facts {
             algorithmic_latency_frames: 0,
             tail_frames: 0,
+            note_expression: Default::default(),
             presentation_available: true,
             restored: false
         }

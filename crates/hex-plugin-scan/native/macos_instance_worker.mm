@@ -354,13 +354,15 @@ wire::Bytes state_payload(const wire::Config& config,const hex_instance::Capture
     wire::number(out,state.component_bytes,4);wire::number(out,state.controller_bytes,4);
     out.insert(out.end(),state.bytes.begin(),state.bytes.begin()+state.component_bytes+state.controller_bytes);return out;
 }
-wire::Bytes facts_body(const wire::Config& config,uint32 latency,uint32 tail,bool presentation_available,const wire::Startup& startup) {
+wire::Bytes facts_body(const wire::Config& config,uint32 latency,uint32 tail,bool presentation_available,hex_instance::NoteExpressionCapabilities expression,const wire::Startup& startup) {
     wire::Bytes out;config.stamp(out);out.insert(out.end(),config.cid.begin(),config.cid.end());
     out.insert(out.end(),config.executable_hash.begin(),config.executable_hash.end());
     out.insert(out.end(),config.info_hash.begin(),config.info_hash.end());
     uint64_t rate=0;std::memcpy(&rate,&config.rate,8);wire::number(out,rate,8);
     wire::number(out,config.maximum,2);wire::number(out,config.inputs,1);wire::number(out,config.outputs,1);
-    wire::number(out,latency,4);wire::number(out,tail,4);wire::number(out,presentation_available?1:0,1);startup.acknowledge(out);return out;
+    wire::number(out,latency,4);wire::number(out,tail,4);wire::number(out,presentation_available?1:0,1);
+    wire::number(out,expression.tuning,2);wire::number(out,expression.brightness,2);wire::number(out,expression.unreadable,2);
+    startup.acknowledge(out);return out;
 }
 // The SDK defines zero as its sentinel for unknown latency. Only encode it at
 // the SDK boundary: the host receipt never reports it as measured frames.
@@ -483,9 +485,10 @@ int main(int argc,char** argv) {
             auto latency=instance.reported_latency_on_control();
             auto tail=instance.reported_tail_on_control();
             auto available=instance.presentation_latency_available_on_control();
-            if(!latency || !tail || !available) throw Refusal{};
+            auto expression=instance.note_expression_capabilities_on_control();
+            if(!latency || !tail || !available || !expression) throw Refusal{};
             failure=ProtocolFailure;
-            if(!wire::send(channel,"HXVIFA04",facts_body(*config,*latency,*tail,*available,restoration))) throw Refusal{};
+            if(!wire::send(channel,"HXVIFA05",facts_body(*config,*latency,*tail,*available,*expression,restoration))) throw Refusal{};
             wire::PresentationPlan supplied;
             if(!wire::presentation(channel,*config,supplied)) throw Refusal{};
             failure=Presentation;
@@ -1755,10 +1758,11 @@ int main(int argc,char** argv) {
                         latency=instance.reported_latency_on_control();
                         tail=instance.reported_tail_on_control();
                         available=instance.presentation_latency_available_on_control();
-                        if(!latency || !tail || !available) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
-                        auto body=facts_body(*config,*latency,*tail,*available,restoration);
+                        expression=instance.note_expression_capabilities_on_control();
+                        if(!latency || !tail || !available || !expression) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                        auto body=facts_body(*config,*latency,*tail,*available,*expression,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
-                        if(!wire::send(channel,"HXVIQF03",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVIQF04",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=FactsSent;startup_changed.notify_all();
                     } else if(stage==ReactivateRequested) {
@@ -1768,13 +1772,14 @@ int main(int argc,char** argv) {
                             latency=instance.reported_latency_on_control();
                             tail=instance.reported_tail_on_control();
                             available=instance.presentation_latency_available_on_control();
-                            if(!latency || !tail || !available || instance.host_refusals()) {
+                            expression=instance.note_expression_capabilities_on_control();
+                            if(!latency || !tail || !available || !expression || instance.host_refusals()) {
                                 error(channel,&*config,Quiescence);std::_Exit(Quiescence);
                             }
                             instance.cover_latency_restart(covered);
-                            auto body=facts_body(*config,*latency,*tail,*available,restoration);
+                            auto body=facts_body(*config,*latency,*tail,*available,*expression,restoration);
                             wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,reactivate_operation,8);
-                            if(!wire::send(channel,"HXVIAR02",body)) std::_Exit(Cancelled);
+                            if(!wire::send(channel,"HXVIAR03",body)) std::_Exit(Cancelled);
                         } catch(...) {
                             // Foreign activation/facts have unknown side effects.
                             // Never retry teardown/release/unload beneath them.
@@ -1870,10 +1875,10 @@ int main(int argc,char** argv) {
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeConfigured;startup_changed.notify_all();
                     } else if(stage==Restarted) {
-                        auto body=facts_body(*config,*latency,*tail,*available,restoration);
+                        auto body=facts_body(*config,*latency,*tail,*available,*expression,restoration);
                         wire::number(body,blocks,8);wire::number(body,frames,8);
                         presentation_receipt(body,*presentation,supplied);
-                        if(!wire::send(channel,"HXVIRR03",body)) std::_Exit(Cancelled);
+                        if(!wire::send(channel,"HXVIRR04",body)) std::_Exit(Cancelled);
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ResumeSent;startup_changed.notify_all();
                     }
