@@ -1950,3 +1950,5 @@ mod device_and_drop_tests;
 mod preview_and_import_tests;
 #[path = "browser_ui_test/search_and_navigation_tests.rs"]
 mod search_and_navigation_tests;
+#[path = "browser_ui_test/tag_filter_tests.rs"]
+mod tag_filter_tests;
