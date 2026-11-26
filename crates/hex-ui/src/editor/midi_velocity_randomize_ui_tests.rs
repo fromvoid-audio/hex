@@ -321,12 +321,22 @@ fn randomizer_bounds_determinism_and_stale_or_empty_selection_refuse(cx: &mut Te
     let lane = visual.debug_bounds("midi-velocity-lane").unwrap();
     assert_eq!(lane.size.height, px(40.0));
     for selector in [
+        "midi-velocity-toggle",
+        "midi-lane-vel",
+        "midi-lane-mpe",
         "midi-velocity-randomize",
         "midi-velocity-random-less",
         "midi-velocity-random-more",
     ] {
         let button = visual.debug_bounds(selector).unwrap();
-        assert!(button.origin.y >= lane.origin.y && button.bottom() <= lane.bottom());
+        assert!(
+            button.top() >= lane.top() && button.bottom() <= lane.bottom(),
+            "{selector} must fit within the minimum lane height: {button:?}, lane {lane:?}"
+        );
+        assert!(
+            button.right() <= lane.left(),
+            "{selector} overlaps the note canvas"
+        );
     }
     // Actual bounded controls never enqueue a musical edit.
     for (selector, amount) in [
