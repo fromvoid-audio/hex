@@ -63,6 +63,7 @@ mod resident_import;
 pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
 pub mod service;
 pub mod tuning_gesture;
+mod vst3_presets;
 pub use hex_media::waveform::{
     Overrange as CachedOverrange, Peak as CachedPeak, Waveform as CachedWaveform,
 };
