@@ -50,20 +50,69 @@ impl ParameterAutomationBlock<'_> {
             .or_else(|| self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?))?
             .host_gain()
     }
+    fn external_normalized(&self, target: DeviceAutomationTarget, offset: usize) -> Option<f32> {
+        let external = self.external?;
+        external.targets().binary_search(&target).ok()?;
+        Some(external.value_at(target, offset)?.get())
+    }
+    fn normalized_at_beat(&self, index: usize, beat: u64) -> Option<f32> {
+        let lane = self.program.lanes.get(index)?;
+        if !lane.touch.is_empty() {
+            let spans = self.program.touch.get(lane.touch.clone())?;
+            let next = spans.partition_point(|span| span.start_beat <= beat);
+            if let Some(span) = next.checked_sub(1).and_then(|index| spans.get(index))
+                && beat < span.end_beat
+            {
+                let steps = self.program.points.get(span.points.clone())?;
+                let point = steps.partition_point(|point| point.point.beat_raw <= beat);
+                return steps
+                    .get(point.checked_sub(1)?)
+                    .map(|point| point.point.normalized);
+            }
+        }
+        let PreparedLaneSource::Curve { points, constant } = &lane.source else {
+            return None;
+        };
+        let points = self.program.points.get(points.clone())?;
+        if constant.is_some() {
+            return points.first().map(|point| point.point.normalized);
+        }
+        let next = points.partition_point(|point| point.point.beat_raw <= beat);
+        if next == 0 {
+            return points.first().map(|point| point.point.normalized);
+        }
+        let left = points.get(next - 1)?;
+        match points.get(next) {
+            Some(right)
+                if !left.point.step && !lane.mapping.discrete() && beat != left.point.beat_raw =>
+            {
+                let span = right.point.beat_raw.checked_sub(left.point.beat_raw)?;
+                let elapsed = beat.checked_sub(left.point.beat_raw)?;
+                let shaped = curve_shape(
+                    elapsed as f64 / span as f64,
+                    left.point.curve_tension_millis,
+                );
+                Some(
+                    (f64::from(left.point.normalized)
+                        + (f64::from(right.point.normalized) - f64::from(left.point.normalized))
+                            * shaped) as f32,
+                )
+            }
+            _ => Some(left.point.normalized),
+        }
+    }
     fn external_value(
         &self,
         index: usize,
         target: DeviceAutomationTarget,
         offset: usize,
     ) -> Option<CanonicalValue> {
-        let external = self.external?;
-        external.targets().binary_search(&target).ok()?;
-        let normalized = external.value_at(target, offset)?;
+        let normalized = self.external_normalized(target, offset)?;
         self.program
             .lanes
             .get(index)?
             .mapping
-            .value(normalized.get())
+            .value(normalized)
             .ok()
     }
     fn value_at_beat(&self, index: usize, beat: u64) -> Option<CanonicalValue> {
@@ -157,6 +206,194 @@ impl NativeParameterAutomation for ParameterAutomationBlock<'_> {
         self.external_value(index, DeviceAutomationTarget::Parameter(parameter), offset)
             .or_else(|| self.value_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?))?
             .provider()
+    }
+    fn normalized_value_at(&self, parameter: ParameterId, offset: usize) -> Option<f32> {
+        if offset >= self.frames {
+            return None;
+        }
+        let target = DeviceAutomationTarget::Parameter(parameter);
+        if self.program.input_target == Some(target) && self.input.is_some() {
+            return None;
+        }
+        let index = self.program.ids.binary_search(&parameter).ok()?;
+        self.external_normalized(target, offset).or_else(|| {
+            self.normalized_at_beat(index, self.clock?.arrangement_beat_at_offset(offset)?)
+        })
+    }
+    fn fill_normalized_slice(&self, parameter: ParameterId, output: &mut [Option<f32>]) -> bool {
+        let target = DeviceAutomationTarget::Parameter(parameter);
+        if self.program.input_target == Some(target) && self.input.is_some() {
+            return false;
+        }
+        let Ok(index) = self.program.ids.binary_search(&parameter) else {
+            output.fill(None);
+            return true;
+        };
+        let Some(lane) = self.program.lanes.get(index) else {
+            output.fill(None);
+            return true;
+        };
+        let valid_len = output.len().min(self.frames);
+        if valid_len < output.len() {
+            output[valid_len..].fill(None);
+        }
+        let has_external = self
+            .external
+            .is_some_and(|ext| ext.targets().binary_search(&target).is_ok());
+        let has_touch = !lane.touch.is_empty();
+        let curve_points = match &lane.source {
+            PreparedLaneSource::Curve { points, constant } => {
+                let slice = self.program.points.get(points.clone());
+                Some((slice, constant.is_some()))
+            }
+            PreparedLaneSource::BaseFallback => None,
+        };
+        // Fast cursor-tracked beat walk avoids O(log P) binary search per sample.
+        let mut cursor = 0usize;
+        let mut last_beat: Option<u64> = None;
+        let discrete = lane.mapping.discrete();
+        for (offset, slot) in output[..valid_len].iter_mut().enumerate() {
+            if has_external
+                && let Some(ext) = self.external
+                && let Some(val) = ext.value_at(target, offset)
+            {
+                *slot = Some(val.get());
+                continue;
+            }
+            let Some(beat) = self
+                .clock
+                .and_then(|c| c.arrangement_beat_at_offset(offset))
+            else {
+                *slot = None;
+                continue;
+            };
+            if has_touch {
+                *slot = self.normalized_at_beat(index, beat);
+                continue;
+            }
+            let Some((Some(points), is_constant)) = curve_points else {
+                *slot = None;
+                continue;
+            };
+            if is_constant {
+                *slot = points.first().map(|p| p.point.normalized);
+                continue;
+            }
+            let next = if last_beat.is_some_and(|prev| beat >= prev) {
+                while cursor < points.len() && points[cursor].point.beat_raw <= beat {
+                    cursor += 1;
+                }
+                cursor
+            } else {
+                cursor = points.partition_point(|p| p.point.beat_raw <= beat);
+                cursor
+            };
+            last_beat = Some(beat);
+            if next == 0 {
+                *slot = points.first().map(|p| p.point.normalized);
+                continue;
+            }
+            let left = &points[next - 1];
+            *slot = match points.get(next) {
+                Some(right) if !left.point.step && !discrete && beat != left.point.beat_raw => {
+                    let span = right.point.beat_raw.saturating_sub(left.point.beat_raw);
+                    if span == 0 {
+                        Some(left.point.normalized)
+                    } else {
+                        let elapsed = beat.saturating_sub(left.point.beat_raw);
+                        let shaped = curve_shape(
+                            elapsed as f64 / span as f64,
+                            left.point.curve_tension_millis,
+                        );
+                        Some(
+                            (f64::from(left.point.normalized)
+                                + (f64::from(right.point.normalized)
+                                    - f64::from(left.point.normalized))
+                                    * shaped) as f32,
+                        )
+                    }
+                }
+                _ => Some(left.point.normalized),
+            };
+        }
+        true
+    }
+    fn fill_values(
+        &self,
+        parameter: ParameterId,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), Error> {
+        let valid_len = output.len().min(self.frames);
+        if valid_len < output.len() {
+            output[valid_len..].fill(None);
+        }
+        let target = DeviceAutomationTarget::Parameter(parameter);
+        if self.program.input_target == Some(target)
+            && let Some(input) = self.input
+        {
+            output[..valid_len].fill(input.provider());
+            return Ok(());
+        }
+        let Ok(index) = self.program.ids.binary_search(&parameter) else {
+            output[..valid_len].fill(None);
+            return Ok(());
+        };
+        let Some(lane) = self.program.lanes.get(index) else {
+            output[..valid_len].fill(None);
+            return Ok(());
+        };
+        // Fast path: constant curve without external/touch maps zero times per block.
+        let has_external = self
+            .external
+            .is_some_and(|ext| ext.targets().binary_search(&target).is_ok());
+        if !has_external
+            && lane.touch.is_empty()
+            && let PreparedLaneSource::Curve {
+                constant: Some(constant),
+                ..
+            } = lane.source
+        {
+            let value = constant.provider();
+            for (offset, slot) in output[..valid_len].iter_mut().enumerate() {
+                *slot = if self
+                    .clock
+                    .and_then(|c| c.arrangement_beat_at_offset(offset))
+                    .is_some()
+                {
+                    value
+                } else {
+                    None
+                };
+            }
+            return Ok(());
+        }
+        let mut normalized = [None; 64];
+        let mut start = 0;
+        while start < valid_len {
+            let chunk_len = (valid_len - start).min(normalized.len());
+            if start == 0 && valid_len <= normalized.len() {
+                self.fill_normalized_slice(parameter, &mut normalized[..chunk_len]);
+                for (offset, slot) in output[..chunk_len].iter_mut().enumerate() {
+                    *slot = normalized[offset]
+                        .and_then(|n| lane.mapping.value(n).ok())
+                        .and_then(CanonicalValue::provider);
+                }
+            } else {
+                for (offset, slot) in output.iter_mut().enumerate().skip(start).take(chunk_len) {
+                    *slot = self
+                        .external_value(index, target, offset)
+                        .or_else(|| {
+                            self.value_at_beat(
+                                index,
+                                self.clock?.arrangement_beat_at_offset(offset)?,
+                            )
+                        })
+                        .and_then(CanonicalValue::provider);
+                }
+            }
+            start += chunk_len;
+        }
+        Ok(())
     }
     fn values_at(&self, offset: usize, output: &mut [Option<ParameterValue>]) -> Result<(), Error> {
         if output.len() != self.program.ids.len() || offset >= self.frames {

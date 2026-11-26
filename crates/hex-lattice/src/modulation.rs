@@ -641,6 +641,32 @@ impl ModulationBlock<'_> {
         })
     }
 
+    /// Reads an upstream automation lane directly in normalized `0.0..=1.0`
+    /// space when supported, eliminating the canonical-to-normalized
+    /// `powf`/`ln` round-trip on every modulated sample.
+    fn selected_normalized(&self, target: &Target, offset: usize) -> Result<Option<f32>, Error> {
+        let Some(input) = self.upstream else {
+            return Ok(None);
+        };
+        let id = target.authored.descriptor.id;
+        if input.parameter_ids().binary_search(&id).is_err() {
+            return Ok(None);
+        }
+        if let Some(normalized) = input.normalized_value_at(id, offset) {
+            return Ok(Some(normalized));
+        }
+        match input.value_at(id, offset) {
+            Some(selected) => Ok(Some(
+                target
+                    .authored
+                    .semantics
+                    .normalization
+                    .normalize_validated(target.authored.descriptor, selected)?,
+            )),
+            None => Ok(None),
+        }
+    }
+
     fn sample(&self, index: usize, offset: usize) -> Result<ParameterValue, Error> {
         if offset >= self.frames {
             return Err(Error::InvalidParameterValue);
@@ -651,27 +677,115 @@ impl ModulationBlock<'_> {
             .get(index)
             .ok_or(Error::UnknownParameter)?;
         let authored = target.authored;
-        let selected = self.selected_value(target, offset);
-        let base = selected.unwrap_or(authored.base);
         let sum = self.sum_routes(target.route_start..target.route_end, offset)?;
         if sum == 0.0 {
+            let base = self.selected_value(target, offset).unwrap_or(authored.base);
             authored.descriptor.validate(base)?;
             return Ok(base);
         }
-        let normalized = if selected.is_some() {
-            authored
-                .semantics
-                .normalization
-                .normalize_validated(authored.descriptor, base)?
-        } else {
-            target.normalized_base
-        };
+        let normalized = self
+            .selected_normalized(target, offset)?
+            .unwrap_or(target.normalized_base);
         let final_value = (f64::from(normalized) + sum).clamp(0.0, 1.0) as f32;
         target
             .mapping
             .value(final_value)?
             .provider()
             .ok_or(Error::InvalidDescriptor)
+    }
+
+    /// Evaluate one modulated parameter across `0..output.len()` in normalized
+    /// chunks once per block, amortizing upstream lane lookup, route slice
+    /// dispatch, and skipping canonical-to-normalized `powf`/`ln` round-trips.
+    pub fn fill_target_values(
+        &self,
+        id: ParameterId,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), Error> {
+        let Ok(index) = self.program.ids.binary_search(&id) else {
+            output.fill(None);
+            return Ok(());
+        };
+        let target = self
+            .program
+            .targets
+            .get(index)
+            .ok_or(Error::UnknownParameter)?;
+        let valid_len = output.len().min(self.frames);
+        if valid_len < output.len() {
+            output[valid_len..].fill(None);
+        }
+        let routes = self
+            .program
+            .routes
+            .get(target.route_start..target.route_end)
+            .ok_or(Error::InvalidDescriptor)?;
+        let has_upstream = self
+            .upstream
+            .is_some_and(|input| input.parameter_ids().binary_search(&id).is_ok());
+
+        // Pre-evaluate upstream normalized values over the entire block once
+        // when the upstream provider supports direct normalized chunk reads.
+        let mut upstream_norm = [None; MAX_MODULATION_BLOCK_FRAMES];
+        let filled_norm = if has_upstream
+            && let Some(input) = self.upstream
+            && valid_len <= upstream_norm.len()
+        {
+            input.fill_normalized_slice(id, &mut upstream_norm[..valid_len])
+        } else {
+            false
+        };
+
+        let mut sums = [0.0_f64; MAX_MODULATION_BLOCK_FRAMES];
+        for route in routes {
+            let source = self
+                .sources
+                .get(route.source)
+                .ok_or(Error::InvalidParameterValue)?;
+            let slice = source
+                .get(..valid_len)
+                .ok_or(Error::InvalidParameterValue)?;
+            for (acc, &sample) in sums[..valid_len].iter_mut().zip(slice) {
+                *acc += route.contribution.sample(sample);
+            }
+        }
+
+        let authored = target.authored;
+        for (offset, slot) in output[..valid_len].iter_mut().enumerate() {
+            let sum = sums[offset];
+            if sum == 0.0 {
+                let base = if filled_norm {
+                    match upstream_norm[offset] {
+                        Some(n) => target
+                            .mapping
+                            .value(n)?
+                            .provider()
+                            .ok_or(Error::InvalidDescriptor)?,
+                        None => authored.base,
+                    }
+                } else {
+                    self.selected_value(target, offset).unwrap_or(authored.base)
+                };
+                authored.descriptor.validate(base)?;
+                *slot = Some(base);
+            } else {
+                let normalized = if filled_norm {
+                    upstream_norm[offset].unwrap_or(target.normalized_base)
+                } else {
+                    self.selected_normalized(target, offset)?
+                        .unwrap_or(target.normalized_base)
+                };
+                let final_value = (f64::from(normalized) + sum).clamp(0.0, 1.0) as f32;
+                *slot = Some(
+                    target
+                        .mapping
+                        .value(final_value)?
+                        .provider()
+                        .ok_or(Error::InvalidDescriptor)?,
+                );
+            }
+        }
+        Ok(())
     }
 }
 impl NativeParameterAutomation for ModulationBlock<'_> {
@@ -685,18 +799,35 @@ impl NativeParameterAutomation for ModulationBlock<'_> {
         if routes.is_empty() {
             return None;
         }
-        let base = self.selected_value(target, offset).map_or(
-            Some(target.normalized_base),
-            |selected| {
-                target
-                    .authored
-                    .semantics
-                    .normalization
-                    .normalize_validated(target.authored.descriptor, selected)
-                    .ok()
-            },
-        )?;
+        let base = self
+            .selected_normalized(target, offset)
+            .ok()?
+            .unwrap_or(target.normalized_base);
         Some(f64::from(base) + self.sum_routes(routes, offset).ok()?)
+    }
+
+    fn normalized_value_at(&self, id: ParameterId, offset: usize) -> Option<f32> {
+        if offset >= self.frames {
+            return None;
+        }
+        let index = self.program.ids.binary_search(&id).ok()?;
+        let target = self.program.targets.get(index)?;
+        let base = self
+            .selected_normalized(target, offset)
+            .ok()?
+            .unwrap_or(target.normalized_base);
+        let sum = self
+            .sum_routes(target.route_start..target.route_end, offset)
+            .ok()?;
+        Some((f64::from(base) + sum).clamp(0.0, 1.0) as f32)
+    }
+
+    fn fill_values(
+        &self,
+        parameter: ParameterId,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), Error> {
+        self.fill_target_values(parameter, output)
     }
 
     fn parameter_ids(&self) -> &[ParameterId] {
@@ -1077,5 +1208,77 @@ mod tests {
             block.value_at(toggle.descriptor.id, 1),
             Some(ParameterValue::Bool(false))
         );
+    }
+
+    #[test]
+    fn fill_values_matches_scalar_sample_on_logarithmic_modulated_lanes() {
+        let mut freq = target(10, 100.0);
+        freq.descriptor.kind = ParameterKind::Float {
+            min: 20.0,
+            max: 20_000.0,
+            unit: Some("hz"),
+        };
+        freq.descriptor.default = ParameterValue::Float(100.0);
+        freq.semantics.normalization = ParameterNormalization::PositiveLogarithmic;
+        freq.semantics.automation = ParameterAutomation::DeviceArrangementEnvelope;
+        let id = freq.descriptor.id;
+
+        let auto_program = crate::PreparedParameterAutomation::new(
+            vec![crate::ParameterAutomationLane {
+                descriptor: freq.descriptor,
+                semantics: freq.semantics,
+                points: 0..2,
+            }],
+            vec![
+                crate::ParameterAutomationPoint {
+                    beat_raw: 0,
+                    normalized: 0.2,
+                    step: false,
+                    curve_tension_millis: 0,
+                },
+                crate::ParameterAutomationPoint {
+                    beat_raw: 1_000,
+                    normalized: 0.8,
+                    step: false,
+                    curve_tension_millis: 250,
+                },
+            ],
+        )
+        .unwrap();
+
+        struct RampClock;
+        impl crate::NativeInstrumentClock for RampClock {
+            fn beat_at_offset(&self, offset: usize) -> Option<u64> {
+                Some((offset as u64) * 16)
+            }
+            fn arrangement_beat_at_offset(&self, offset: usize) -> Option<u64> {
+                Some((offset as u64) * 16)
+            }
+            fn performance_frame_at_offset(&self, offset: usize) -> Option<u64> {
+                Some(offset as u64)
+            }
+        }
+
+        let frames = 64;
+        let auto_block = auto_program.block(Some(&RampClock), frames);
+        let routes = [ModulationRoute {
+            source: 0,
+            target: id,
+            amount: 0.15,
+            range: [-1.0, 1.0],
+        }];
+        let mod_program = PreparedModulation::new(&[freq], &routes, 1).unwrap();
+        let lfo: Vec<f32> = (0..frames).map(|i| ((i as f32) * 0.2).sin()).collect();
+        let sources = [lfo.as_slice()];
+        let mod_block = mod_program
+            .block(Some(&auto_block), &sources, frames)
+            .unwrap();
+
+        let mut chunk_out = vec![None; frames];
+        mod_block.fill_values(id, &mut chunk_out).unwrap();
+        for (offset, chunk_val) in chunk_out.iter().enumerate() {
+            let scalar = mod_block.value_at(id, offset);
+            assert_eq!(*chunk_val, scalar, "mismatch at offset {offset}");
+        }
     }
 }

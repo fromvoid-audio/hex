@@ -306,6 +306,70 @@ impl PreparedSamplerRuntime {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MidiState {
+    pub(super) channel_pitch_bend: i16,
+    pub(super) cc_volume: u8,
+    pub(super) cc_expression: u8,
+    pub(super) cc_mod_wheel: u8,
+    pub(super) cc_timbre: u8,
+    pub(super) channel_aftertouch: u8,
+    pub(super) sustain_pedal: bool,
+}
+
+impl Default for MidiState {
+    fn default() -> Self {
+        Self {
+            channel_pitch_bend: 0,
+            cc_volume: 127,
+            cc_expression: 127,
+            cc_mod_wheel: 0,
+            cc_timbre: 0,
+            channel_aftertouch: 0,
+            sustain_pedal: false,
+        }
+    }
+}
+
+impl MidiState {
+    #[inline]
+    pub(super) fn effective_step(&self, base_step: u64, voice_pitch_offset_cents: i16) -> u64 {
+        if voice_pitch_offset_cents == 0 && self.channel_pitch_bend == 0 {
+            return base_step;
+        }
+        let channel_cents = if self.channel_pitch_bend == 0 {
+            0.0
+        } else {
+            f64::from(self.channel_pitch_bend)
+                / if self.channel_pitch_bend < 0 {
+                    8192.0
+                } else {
+                    8191.0
+                }
+                * 200.0
+        };
+        let ratio = 2.0_f64.powf((f64::from(voice_pitch_offset_cents) + channel_cents) / 1200.0);
+        ((base_step as f64) * ratio).round().max(1.0) as u64
+    }
+
+    #[inline]
+    pub(super) fn gain_multiplier(&self, voice_timbre: u8) -> f64 {
+        let timbre = voice_timbre.max(self.cc_timbre);
+        if self.cc_volume == 127
+            && self.cc_expression == 127
+            && timbre == 0
+            && self.channel_aftertouch == 0
+        {
+            return 1.0;
+        }
+        let vol = f64::from(self.cc_volume) / 127.0;
+        let expr = f64::from(self.cc_expression) / 127.0;
+        let timbre_scale = 1.0 + 0.25 * (f64::from(timbre) / 127.0);
+        let at_scale = 1.0 + 0.25 * (f64::from(self.channel_aftertouch) / 127.0);
+        vol * expr * timbre_scale * at_scale
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ActiveVoice {
     occurrence: u64,
@@ -316,6 +380,9 @@ struct ActiveVoice {
     // changes future increments without reinterpreting the rendered prefix.
     position: u128,
     gate: Option<u64>,
+    pitch_offset_cents: i16,
+    timbre: u8,
+    pedal_held: bool,
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
 
@@ -367,6 +434,7 @@ pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
     fading: Fading,
+    midi: MidiState,
     last_targets: [f32; PARAMETER_COUNT],
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
@@ -417,6 +485,7 @@ impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
             prepared: self.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            midi: MidiState::default(),
             last_targets: self.base_targets(),
         })
     }

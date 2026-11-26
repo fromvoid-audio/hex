@@ -6,6 +6,7 @@ impl SamplerRuntime {
     pub(super) fn sounding_frames(
         &self,
         voice: &ActiveVoice,
+        midi: &MidiState,
         limit: usize,
         fade_start: Option<u64>,
     ) -> Result<usize, Error> {
@@ -16,7 +17,7 @@ impl SamplerRuntime {
         if note.loop_offsets.is_none() {
             let end = (note.region.end - note.region.start) as u128 * ONE;
             let remaining = end.saturating_sub(voice.position);
-            let step = u128::from(note.step);
+            let step = u128::from(midi.effective_step(note.step, voice.pitch_offset_cents));
             let whole = remaining
                 .checked_div(step)
                 .ok_or(Error::InvalidEventBatch)?;
@@ -53,6 +54,7 @@ impl SamplerRuntime {
     pub(super) fn advance_voice(
         &self,
         voice: &mut ActiveVoice,
+        midi: &MidiState,
         frames: u64,
     ) -> Result<bool, Error> {
         let Some(note) = self.prepared.notes[usize::from(voice.pitch)] else {
@@ -62,7 +64,8 @@ impl SamplerRuntime {
             .age
             .checked_add(frames)
             .ok_or(Error::InvalidEventBatch)?;
-        let distance = u128::from(note.step)
+        let effective_step = midi.effective_step(note.step, voice.pitch_offset_cents);
+        let distance = u128::from(effective_step)
             .checked_mul(u128::from(frames))
             .ok_or(Error::InvalidEventBatch)?;
         voice.position = voice
@@ -93,11 +96,12 @@ impl SamplerRuntime {
         &self,
         active: &mut Active,
         fading: &mut Fading,
+        midi: &MidiState,
         frames: u64,
     ) -> Result<(), Error> {
         for entry in active.iter_mut() {
             if let Some(voice) = entry
-                && !self.advance_voice(voice, frames)?
+                && !self.advance_voice(voice, midi, frames)?
             {
                 *entry = None;
             }
@@ -105,7 +109,7 @@ impl SamplerRuntime {
         let fade = self.prepared.steal_fade_frames();
         for entry in fading.iter_mut() {
             if let Some(fading) = entry
-                && (!self.advance_voice(&mut fading.voice, frames)?
+                && (!self.advance_voice(&mut fading.voice, midi, frames)?
                     || fading.voice.age.saturating_sub(fading.start) >= fade)
             {
                 *entry = None;
@@ -146,13 +150,126 @@ impl SamplerRuntime {
         });
         Steal::Stolen
     }
+    pub(super) fn apply_midi_control(
+        active: &mut Active,
+        midi: &mut MidiState,
+        event: NativeInstrumentEvent,
+    ) -> Result<bool, Error> {
+        match event {
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                if cc > 127 || value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                match cc {
+                    1 => midi.cc_mod_wheel = value,
+                    7 => midi.cc_volume = value,
+                    11 => midi.cc_expression = value,
+                    64 => {
+                        let down = value >= 64;
+                        if midi.sustain_pedal && !down {
+                            for voice in active.iter_mut().flatten() {
+                                if voice.pedal_held {
+                                    voice.pedal_held = false;
+                                    if voice.gate.is_none() {
+                                        voice.gate = Some(voice.age);
+                                    }
+                                }
+                            }
+                        }
+                        midi.sustain_pedal = down;
+                    }
+                    74 => midi.cc_timbre = value,
+                    121 => {
+                        let was_pedal = midi.sustain_pedal;
+                        *midi = MidiState::default();
+                        if was_pedal {
+                            for voice in active.iter_mut().flatten() {
+                                if voice.pedal_held {
+                                    voice.pedal_held = false;
+                                    if voice.gate.is_none() {
+                                        voice.gate = Some(voice.age);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(true)
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                if !(-8192..=8191).contains(&value) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                midi.channel_pitch_bend = value;
+                Ok(true)
+            }
+            NativeInstrumentEvent::NotePitchBend {
+                occurrence_id,
+                cents,
+                ..
+            } => {
+                if !(-4_800..=4_800).contains(&cents) {
+                    return Err(Error::InvalidEventBatch);
+                }
+                for voice in active
+                    .iter_mut()
+                    .flatten()
+                    .filter(|v| v.occurrence == occurrence_id.get())
+                {
+                    voice.pitch_offset_cents = cents;
+                }
+                Ok(true)
+            }
+            NativeInstrumentEvent::NoteTimbre {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                if value > 127 {
+                    return Err(Error::InvalidEventBatch);
+                }
+                for voice in active
+                    .iter_mut()
+                    .flatten()
+                    .filter(|v| v.occurrence == occurrence_id.get())
+                {
+                    voice.timbre = value;
+                }
+                Ok(true)
+            }
+            NativeInstrumentEvent::Expression { expression, .. } => {
+                if !expression.is_valid() {
+                    return Err(Error::InvalidEventBatch);
+                }
+                match expression {
+                    hex_lattice::NativeInstrumentExpression::PitchBend(value) => {
+                        midi.channel_pitch_bend = value;
+                    }
+                    hex_lattice::NativeInstrumentExpression::ModWheel(value) => {
+                        midi.cc_mod_wheel = value;
+                    }
+                    hex_lattice::NativeInstrumentExpression::ChannelPressure(value) => {
+                        midi.channel_aftertouch = value;
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     pub(super) fn event(
         &self,
         active: &mut Active,
         fading: &mut Fading,
+        midi: &mut MidiState,
         event: NativeInstrumentEvent,
         gain_at: &dyn Fn(u64) -> f64,
     ) -> Result<(), Error> {
+        if Self::apply_midi_control(active, midi, event)? {
+            return self.advance(active, fading, midi, 0);
+        }
         match event {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
@@ -160,19 +277,19 @@ impl SamplerRuntime {
             NativeInstrumentEvent::ControlChange { .. }
             | NativeInstrumentEvent::PitchBend { .. }
             | NativeInstrumentEvent::NotePitchBend { .. }
-            | NativeInstrumentEvent::NoteTimbre { .. } => {}
-            NativeInstrumentEvent::Expression { expression, .. } => {
-                if !expression.is_valid() {
-                    return Err(Error::InvalidEventBatch);
-                }
-            }
+            | NativeInstrumentEvent::NoteTimbre { .. }
+            | NativeInstrumentEvent::Expression { .. } => {}
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
                 for voice in active
                     .iter_mut()
                     .flatten()
                     .filter(|voice| voice.occurrence == occurrence_id)
                 {
-                    if voice.gate.is_none() {
+                    if midi.sustain_pedal {
+                        if voice.gate.is_none() {
+                            voice.pedal_held = true;
+                        }
+                    } else if voice.gate.is_none() {
                         voice.gate = Some(voice.age);
                     }
                 }
@@ -199,7 +316,7 @@ impl SamplerRuntime {
                 if !active[..self.prepared.voices].iter().any(Option::is_none) {
                     match self.steal(active, fading, gain_at) {
                         Steal::Stolen => {}
-                        Steal::FadePoolFull => return self.advance(active, fading, 0),
+                        Steal::FadePoolFull => return self.advance(active, fading, midi, 0),
                         Steal::AllHeld => return Err(Error::EventCapacityExceeded),
                     }
                 }
@@ -215,10 +332,13 @@ impl SamplerRuntime {
                     age: 0,
                     position: 0,
                     gate: None,
+                    pitch_offset_cents: 0,
+                    timbre: 0,
+                    pedal_held: false,
                 });
             }
         }
-        self.advance(active, fading, 0)
+        self.advance(active, fading, midi, 0)
     }
 }
 impl MutableInstrumentRuntime for SamplerRuntime {
@@ -311,6 +431,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         }
         let mut active = self.active;
         let mut fading = self.fading;
+        let mut midi = self.midi;
         let mut cursor = 0;
         // Gain values never affect admission; only processing freezes them.
         let unity = |_| 1.0;
@@ -319,11 +440,11 @@ impl MutableInstrumentRuntime for SamplerRuntime {
             if offset < cursor || offset >= frames {
                 return Err(Error::InvalidEventBatch);
             }
-            self.advance(&mut active, &mut fading, (offset - cursor) as u64)?;
-            self.event(&mut active, &mut fading, event, &unity)?;
+            self.advance(&mut active, &mut fading, &midi, (offset - cursor) as u64)?;
+            self.event(&mut active, &mut fading, &mut midi, event, &unity)?;
             cursor = offset;
         }
-        self.advance(&mut active, &mut fading, (frames - cursor) as u64)
+        self.advance(&mut active, &mut fading, &midi, (frames - cursor) as u64)
     }
     fn process_block(
         &mut self,
@@ -336,6 +457,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
     fn reset(&mut self) {
         self.active.fill(None);
         self.fading.fill(None);
+        self.midi = MidiState::default();
         self.last_targets = self.prepared.base_targets();
     }
     fn is_quiescent(&self) -> bool {
@@ -355,6 +477,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             self.active = previous.active;
             self.fading = previous.fading;
+            self.midi = previous.midi;
             self.last_targets = previous.last_targets;
         }
     }
@@ -390,6 +513,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         {
             self.active = previous.active;
             self.fading = previous.fading;
+            self.midi = previous.midi;
             self.last_targets = previous.last_targets;
         }
     }
@@ -438,6 +562,7 @@ impl InstrumentParameterRuntime for SamplerRuntime {
         }
         let mut active = self.active;
         let mut fading = self.fading;
+        let mut midi = self.midi;
         let fade = self.prepared.steal_fade_frames();
         let unity = |_| 1.0;
         let mut next = 0;
@@ -450,13 +575,14 @@ impl InstrumentParameterRuntime for SamplerRuntime {
                 self.event_with_modulation(
                     &mut active,
                     &mut fading,
+                    &mut midi,
                     events[next],
                     &unity,
                     Some(&fm),
                 )?;
                 next += 1;
             }
-            self.advance_dynamic_frame(&mut active, &mut fading, &fm, fade);
+            self.advance_dynamic_frame(&mut active, &mut fading, &midi, &fm, fade);
         }
         Ok(())
     }

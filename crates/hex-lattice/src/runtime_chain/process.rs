@@ -517,7 +517,10 @@ impl NativeRuntimeChain {
             entry.committed_matrix_ramp = entry.scratch_matrix_ramp;
             let was_powered_off = entry.powered_off(entry.committed_bypass_ramp);
             entry.committed_bypass_ramp = entry.scratch_bypass_ramp;
-            bypass_ramp::copy_dry(&mut entry.committed_aligned_dry, &entry.scratch_aligned_dry);
+            std::mem::swap(
+                &mut entry.committed_aligned_dry,
+                &mut entry.scratch_aligned_dry,
+            );
             if !was_powered_off {
                 entry.runtime.commit();
                 if entry.powered_off(entry.committed_bypass_ramp) {

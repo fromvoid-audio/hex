@@ -107,6 +107,34 @@ impl NativeParameterAutomation for OffsetParameterValues<'_> {
     ) -> Option<hex_lattice_contract::ParameterValue> {
         self.values.value_at(id, self.offset.checked_add(offset)?)
     }
+    fn normalized_value_at(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        offset: usize,
+    ) -> Option<f32> {
+        self.values
+            .normalized_value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn fill_normalized_slice(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        output: &mut [Option<f32>],
+    ) -> bool {
+        if self.offset == 0 {
+            return self.values.fill_normalized_slice(id, output);
+        }
+        let Some(end) = self.offset.checked_add(output.len()) else {
+            return false;
+        };
+        if end <= 64 {
+            let mut full = [None; 64];
+            if self.values.fill_normalized_slice(id, &mut full[..end]) {
+                output.copy_from_slice(&full[self.offset..end]);
+                return true;
+            }
+        }
+        false
+    }
     fn values_at(
         &self,
         offset: usize,
@@ -260,6 +288,34 @@ impl NativeParameterAutomation for OffsetAutomation<'_> {
         offset: usize,
     ) -> Option<hex_lattice_contract::ParameterValue> {
         self.values.value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn normalized_value_at(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        offset: usize,
+    ) -> Option<f32> {
+        self.values
+            .normalized_value_at(id, self.offset.checked_add(offset)?)
+    }
+    fn fill_normalized_slice(
+        &self,
+        id: hex_lattice_contract::ParameterId,
+        output: &mut [Option<f32>],
+    ) -> bool {
+        if self.offset == 0 {
+            return self.values.fill_normalized_slice(id, output);
+        }
+        let Some(end) = self.offset.checked_add(output.len()) else {
+            return false;
+        };
+        if end <= 64 {
+            let mut full = [None; 64];
+            if self.values.fill_normalized_slice(id, &mut full[..end]) {
+                output.copy_from_slice(&full[self.offset..end]);
+                return true;
+            }
+        }
+        false
     }
     fn values_at(
         &self,

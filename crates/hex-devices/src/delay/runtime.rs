@@ -20,10 +20,81 @@
 use super::*;
 use super::{filter::BandPass, lfo::Lfo};
 pub(super) const MAX_SECONDS: usize = 16;
+
+/// Minimum assumed host tempo (BPM) when sizing static sync delay ring tiers.
+const MIN_SYNC_TIER_BPM: f64 = 20.0;
+
 pub struct Factory {
     pub(super) settings: Settings,
     pub(super) rate: u32,
     pub(super) admitted: [bool; automation::COUNT],
+}
+
+impl Factory {
+    /// Bounded tiered ring duration in seconds (`1`, `2`, `4`, `8`, or `16`).
+    /// Avoids unconditionally allocating 12.3 MB (48 kHz) / 49.2 MB (192 kHz)
+    /// twin rings for short delays while preserving full 16 s sync/automated
+    /// headroom whenever timing/sync/LFO-delay is automated or configured long.
+    pub(super) fn ring_seconds(&self) -> usize {
+        let dynamic_timing = [
+            TIME,
+            RIGHT_TIME,
+            LEFT_SYNC,
+            RIGHT_SYNC,
+            LEFT_DIVISION,
+            RIGHT_DIVISION,
+            LEFT_OFFSET,
+            RIGHT_OFFSET,
+            LINK,
+            LFO_DELAY,
+        ]
+        .into_iter()
+        .any(|id| automation::slot(id).is_some_and(|i| self.admitted[i]));
+        if dynamic_timing || self.settings.flag(FREEZE) {
+            return MAX_SECONDS;
+        }
+        let timing = automation::TimingControls::new(self.settings);
+        let lfo_scale = 1.0 + f64::from(self.settings.value(LFO_DELAY)).abs();
+        let divisions = [1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 16.0];
+        let mut needed = 0.0_f64;
+        for lane in 0..2 {
+            let sync = if timing.link {
+                timing.sync[0]
+            } else {
+                timing.sync[lane]
+            };
+            let base = if sync {
+                let div_idx = if timing.link {
+                    timing.division[0]
+                } else {
+                    timing.division[lane]
+                } as usize;
+                let offset = f64::from(timing.offset[lane]);
+                (60.0 / MIN_SYNC_TIER_BPM)
+                    * (divisions[div_idx.min(divisions.len() - 1)] / 4.0)
+                    * (1.0 + offset.max(0.0) / 100.0)
+            } else {
+                let time_ms = if timing.link {
+                    timing.time[0]
+                } else {
+                    timing.time[lane]
+                };
+                f64::from(time_ms) / 1000.0
+            };
+            needed = needed.max(base * lfo_scale);
+        }
+        match needed {
+            s if s <= 1.0 => 1,
+            s if s <= 2.0 => 2,
+            s if s <= 4.0 => 4,
+            s if s <= 8.0 => 8,
+            _ => MAX_SECONDS,
+        }
+    }
+
+    pub(super) fn ring_len(&self) -> usize {
+        self.rate as usize * self.ring_seconds() + 4
+    }
 }
 impl PreparedOwnedProcessorRuntime for Factory {
     fn supports_parameter_automation(&self, id: hex_lattice_contract::ParameterId) -> bool {
@@ -60,11 +131,10 @@ impl PreparedOwnedProcessorRuntime for Factory {
         2
     }
     fn declared_pair_bytes(&self) -> usize {
-        std::mem::size_of::<Runtime>()
-            + (self.rate as usize * MAX_SECONDS + 4) * 2 * std::mem::size_of::<StereoFrame>()
+        std::mem::size_of::<Runtime>() + self.ring_len() * 2 * std::mem::size_of::<StereoFrame>()
     }
     fn create_runtime(&self) -> Result<Box<dyn OwnedProcessorRuntime>, DeviceContractError> {
-        let length = self.rate as usize * MAX_SECONDS + 4;
+        let length = self.ring_len();
         let ring = || {
             let mut v = Vec::new();
             v.try_reserve_exact(length)
@@ -72,7 +142,8 @@ impl PreparedOwnedProcessorRuntime for Factory {
             v.resize(length, [0.0; 2]);
             Ok(v)
         };
-        let scalar = Scalar::new(self.settings, self.rate, self.admitted);
+        let max_delay_frames = length.saturating_sub(4) as f64;
+        let scalar = Scalar::new(self.settings, self.rate, self.admitted, max_delay_frames);
         let runtime = Runtime {
             settings: self.settings,
             rate: self.rate,
@@ -125,9 +196,14 @@ struct Scalar {
     lfo: Lfo,
 }
 impl Scalar {
-    fn new(s: Settings, rate: u32, admitted: [bool; automation::COUNT]) -> Self {
+    fn new(
+        s: Settings,
+        rate: u32,
+        admitted: [bool; automation::COUNT],
+        max_delay_frames: f64,
+    ) -> Self {
         let timing = automation::TimingControls::new(s);
-        let times = timing_times(timing, rate, 120_000_000);
+        let times = timing_times(timing, rate, 120_000_000, max_delay_frames);
         let mix = f64::from(s.value(DRY_WET));
         let (dry_gain, wet_gain) = mix_gains(mix, s.flag(EQUAL_LOUDNESS));
         let frequency = f64::from(s.value(FREQUENCY));
@@ -218,7 +294,12 @@ fn mix_gains(mix: f64, equal_loudness: bool) -> (f64, f64) {
         (1.0 - mix, mix)
     }
 }
-fn timing_times(s: automation::TimingControls, rate: u32, tempo: u32) -> [f64; 2] {
+fn timing_times(
+    s: automation::TimingControls,
+    rate: u32,
+    tempo: u32,
+    max_delay_frames: f64,
+) -> [f64; 2] {
     let divisions = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 8.0, 16.0];
     std::array::from_fn(|i| {
         let seconds = if s.sync[i] {
@@ -227,10 +308,7 @@ fn timing_times(s: automation::TimingControls, rate: u32, tempo: u32) -> [f64; 2
         } else {
             f64::from(s.time[i]) / 1000.0
         };
-        (seconds * f64::from(rate)).clamp(
-            f64::from(rate) / 1000.0,
-            f64::from(rate) * MAX_SECONDS as f64,
-        )
+        (seconds * f64::from(rate)).clamp(f64::from(rate) / 1000.0, max_delay_frames)
     })
 }
 fn lfo_increment(s: automation::LfoControls, rate: u32, tempo: u32) -> f64 {
@@ -395,11 +473,16 @@ impl Runtime {
                 self.speculative.tempo = tempo;
             }
             let rate = self.rate;
+            let max_time = self.max_delay_frames();
             let targets = *self.speculative.controls.effective_ref();
             let lfo_inc = lfo_increment(targets.lfo, rate, self.speculative.tempo);
-            let base_times = timing_times(self.speculative.timing, rate, self.speculative.tempo);
+            let base_times = timing_times(
+                self.speculative.timing,
+                rate,
+                self.speculative.tempo,
+                max_time,
+            );
             let min_time = f64::from(rate) / 1000.0;
-            let max_time = f64::from(rate) * MAX_SECONDS as f64;
             let clamped_times = [
                 base_times[0].clamp(min_time, max_time),
                 base_times[1].clamp(min_time, max_time),
@@ -545,9 +628,15 @@ impl Runtime {
             self.speculative.tempo = tempo;
         }
         let rate = self.rate;
+        let max_time = self.max_delay_frames();
         let targets = self.speculative.controls.effective_ref();
         let lfo_inc = lfo_increment(targets.lfo, rate, self.speculative.tempo);
-        let base_times = timing_times(self.speculative.timing, rate, self.speculative.tempo);
+        let base_times = timing_times(
+            self.speculative.timing,
+            rate,
+            self.speculative.tempo,
+            max_time,
+        );
         self.process_frame_cached(frame, bypassed, block, lfo_inc, base_times);
     }
 
@@ -561,6 +650,7 @@ impl Runtime {
         base_times: [f64; 2],
     ) {
         let rate = self.rate;
+        let max_time = self.max_delay_frames();
         let BlockSettings {
             freeze,
             hq,
@@ -583,7 +673,6 @@ impl Runtime {
                 .process(targets.lfo.wave, f64::from(targets.lfo.morph), lfo_inc)
         };
         let min_time = f64::from(rate) / 1000.0;
-        let max_time = f64::from(rate) * MAX_SECONDS as f64;
         let lfo_scale = 1.0 + oscillator * f64::from(targets.lfo.delay);
         let requested = [
             (base_times[0] * lfo_scale).clamp(min_time, max_time),
@@ -793,6 +882,11 @@ struct BlockSettings {
     fade_frames: u32,
 }
 impl Runtime {
+    #[inline(always)]
+    fn max_delay_frames(&self) -> f64 {
+        self.committed.len().saturating_sub(4) as f64
+    }
+
     /// Actual exclusive box and both independently reserved ring capacities.
     /// This read-only accounting view exposes no ring contents or custody.
     pub fn control_storage(&self) -> Option<(usize, [usize; 2])> {
@@ -880,7 +974,7 @@ impl OwnedProcessorRuntime for Runtime {
         self.pristine = false;
         self.releasing = false;
         let admitted = std::array::from_fn(|i| self.primary.controls.admitted(i));
-        let mut s = Scalar::new(self.settings, self.rate, admitted);
+        let mut s = Scalar::new(self.settings, self.rate, admitted, self.max_delay_frames());
         s.stale_slots = true;
         self.primary = s;
         self.speculative = s;
@@ -906,22 +1000,65 @@ impl OwnedProcessorRuntime for Runtime {
             return;
         }
         if let Some(old) = old.as_any().downcast_ref::<Self>() {
-            let start =
-                (old.primary.next + old.committed.len() - old.primary.valid) % old.committed.len();
-            Self::copy_interval(
-                &old.committed,
-                &mut self.committed,
-                start,
-                old.primary.valid,
-            );
-            Self::copy_interval(&old.committed, &mut self.scratch, start, old.primary.valid);
-            self.inherit_scalars(old.primary, old.settings);
+            if self.committed.len() == old.committed.len() {
+                let start = (old.primary.next + old.committed.len() - old.primary.valid)
+                    % old.committed.len();
+                Self::copy_interval(
+                    &old.committed,
+                    &mut self.committed,
+                    start,
+                    old.primary.valid,
+                );
+                Self::copy_interval(&old.committed, &mut self.scratch, start, old.primary.valid);
+                self.inherit_scalars(old.primary, old.settings);
+            } else {
+                // Cross-tier inheritance: copy the most recent chronological frames
+                // that fit the new ring and re-index cursor/valid/nonzero cleanly.
+                let new_len = self.committed.len();
+                let old_len = old.committed.len();
+                let copy_len = old.primary.valid.min(new_len);
+                let start = (old.primary.next + old_len - copy_len) % old_len;
+                let first = copy_len.min(old_len - start);
+                self.committed[..first].copy_from_slice(&old.committed[start..start + first]);
+                self.committed[first..copy_len].copy_from_slice(&old.committed[..copy_len - first]);
+                self.scratch[..copy_len].copy_from_slice(&self.committed[..copy_len]);
+                let mut inherited = old.primary;
+                inherited.next = copy_len % new_len;
+                inherited.valid = copy_len;
+                if copy_len < old.primary.valid {
+                    inherited.nonzero = self.committed[..copy_len]
+                        .iter()
+                        .filter(|f| **f != [0.0; 2])
+                        .count();
+                }
+                let max_time = self.max_delay_frames();
+                inherited.times = [
+                    inherited.times[0].min(max_time),
+                    inherited.times[1].min(max_time),
+                ];
+                inherited.old_times = [
+                    inherited.old_times[0].min(max_time),
+                    inherited.old_times[1].min(max_time),
+                ];
+                self.inherit_scalars(inherited, old.settings);
+            }
             self.primary.stale_slots = true;
             self.speculative.stale_slots = true;
         }
     }
     fn transfer_history_from(&mut self, old: &mut dyn OwnedProcessorRuntime) {
         if !self.can_inherit_from(old) {
+            return;
+        }
+        let same_len = old
+            .as_any()
+            .downcast_ref::<Self>()
+            .is_some_and(|o| self.committed.len() == o.committed.len());
+        if !same_len {
+            self.inherit_from(old);
+            if let Some(old) = old.as_any_mut().and_then(|v| v.downcast_mut::<Self>()) {
+                old.reset();
+            }
             return;
         }
         if let Some(old) = old.as_any_mut().and_then(|v| v.downcast_mut::<Self>()) {
