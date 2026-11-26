@@ -288,7 +288,8 @@ fn limiter_publication_case(case: LimiterPublication) -> Result<(), Box<dyn Erro
     let mode = matches!(case, LimiterPublication::Mode);
     let structural = lookahead || routing || mode;
     let latency = if mode {
-        103
+        // At 48 kHz: 1.5 ms lookahead, reconstruction FIR, then output guard.
+        72 + 31 + 11
     } else if routing {
         144
     } else {
