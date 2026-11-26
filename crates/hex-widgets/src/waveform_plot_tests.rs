@@ -437,3 +437,19 @@ fn disjoint_stereo_pair_matches_individual_paths_with_offset_inside_live_clip(
             .any(|vertex| vertex.x < mask.origin.x || vertex.x > mask.right())
     );
 }
+
+#[test]
+fn zero_guide_quad_snaps_to_one_device_pixel_at_1x_and_2x_scales() {
+    let span = [point(px(10.0), px(25.3)), point(px(110.0), px(25.3))];
+    let at_1x = zero_guide_device_quad(span, point(px(4.0), px(2.0)), 1.0).unwrap();
+    assert_eq!(at_1x.origin.x, px(14.0));
+    assert_eq!(at_1x.size.width, px(100.0));
+    assert_eq!(at_1x.origin.y, px(27.0));
+    assert_eq!(at_1x.size.height, px(1.0));
+
+    let at_2x = zero_guide_device_quad(span, point(px(0.0), px(0.0)), 2.0).unwrap();
+    assert_eq!(at_2x.origin.y, px(25.5));
+    assert_eq!(at_2x.size.height, px(0.5));
+    assert!(zero_guide_device_quad(span, Point::default(), 0.0).is_none());
+    assert!(zero_guide_device_quad([span[1], span[0]], Point::default(), 2.0).is_none());
+}

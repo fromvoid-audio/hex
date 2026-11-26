@@ -42,7 +42,7 @@ pub struct WaveformEnvelope<'a> {
 /// painter cannot receive malformed point arrays or an unbounded iterator.
 pub struct WaveformChannel {
     envelope: Path<Pixels>,
-    centerline: Option<Path<Pixels>>,
+    centerline: Option<[Point<Pixels>; 2]>,
     zero_ranges: Option<Path<Pixels>>,
     overrange: Option<Path<Pixels>>,
     filled_envelope: bool,
@@ -84,10 +84,7 @@ impl WaveformChannel {
             if !valid_width(line.width) || !valid_span(line.points) {
                 return None;
             }
-            let mut path = PathBuilder::stroke(line.width);
-            path.move_to(line.points[0]);
-            path.line_to(line.points[1]);
-            Some((path.build().ok()?, line.points[0]))
+            Some(line.points)
         } else {
             None
         };
@@ -104,7 +101,7 @@ impl WaveformChannel {
             if mode != WaveformEnvelopeMode::Trace {
                 return None;
             }
-            (Path::new(centerline.as_ref()?.1), false)
+            (Path::new(centerline?[0]), false)
         };
         let mut flat = PathBuilder::stroke(trace_width);
         let mut spans = 0;
@@ -118,7 +115,7 @@ impl WaveformChannel {
         }
         Some(Self {
             envelope: path,
-            centerline: centerline.map(|(path, _)| path),
+            centerline,
             zero_ranges: if spans > 0 {
                 Some(flat.build().ok()?)
             } else {
@@ -165,6 +162,47 @@ impl WaveformChannel {
 
     pub fn has_overrange_markers(&self) -> bool {
         self.overrange.is_some()
+    }
+
+    pub fn zero_guide(&self) -> Option<[Point<Pixels>; 2]> {
+        self.centerline
+    }
+}
+
+/// Compute the 1-device-pixel horizontal quad bounds for a zero-line guide,
+/// snapped to device pixels at `scale`.
+pub fn zero_guide_device_quad(
+    span: [Point<Pixels>; 2],
+    offset: Point<Pixels>,
+    scale: f32,
+) -> Option<Bounds<Pixels>> {
+    if !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let left = span[0].x + offset.x;
+    let width = span[1].x - span[0].x;
+    if !f32::from(left).is_finite() || !f32::from(width).is_finite() || f32::from(width) <= 0.0 {
+        return None;
+    }
+    let pixel = 1.0 / scale;
+    let aligned_y = (f32::from(span[0].y + offset.y) * scale).round() * pixel;
+    if !aligned_y.is_finite() {
+        return None;
+    }
+    Some(Bounds::new(
+        gpui::point(left, px(aligned_y)),
+        gpui::size(width, px(pixel)),
+    ))
+}
+
+fn paint_zero_guide_quad(
+    span: [Point<Pixels>; 2],
+    offset: Point<Pixels>,
+    color: impl Into<gpui::Background>,
+    window: &mut Window,
+) {
+    if let Some(bounds) = zero_guide_device_quad(span, offset, window.scale_factor()) {
+        window.paint_quad(gpui::fill(bounds, color));
     }
 }
 
@@ -313,9 +351,15 @@ fn paint_channels_with_offset(
 ) {
     if let Channels::Stereo(channels) = &geometry.channels {
         let [upper, lower] = channels;
-        if [upper, lower].iter().all(|channel| {
-            channel.filled_envelope && channel.centerline.is_none() && channel.zero_ranges.is_none()
-        }) {
+        if [upper, lower]
+            .iter()
+            .all(|channel| channel.filled_envelope && channel.zero_ranges.is_none())
+        {
+            for channel in channels {
+                if let Some(span) = channel.centerline {
+                    paint_zero_guide_quad(span, offset, rgb(centerline), window);
+                }
+            }
             window.paint_disjoint_path_pair_with_offset(
                 [&upper.envelope, &lower.envelope],
                 offset,
@@ -342,8 +386,8 @@ fn paint_channel_with_offset(
     overrange: u32,
     window: &mut Window,
 ) {
-    if let Some(path) = &channel.centerline {
-        window.paint_path_with_offset(path, offset, rgb(centerline));
+    if let Some(span) = channel.centerline {
+        paint_zero_guide_quad(span, offset, rgb(centerline), window);
     }
     window.paint_path_with_offset(&channel.envelope, offset, rgb(color));
     if let Some(path) = &channel.zero_ranges {
@@ -394,9 +438,15 @@ fn paint_channels_with_opacity(
     let overrange = gpui::Hsla::from(rgb(overrange)).opacity(opacity);
     if let Channels::Stereo(channels) = &geometry.channels {
         let [upper, lower] = channels;
-        if [upper, lower].iter().all(|channel| {
-            channel.filled_envelope && channel.centerline.is_none() && channel.zero_ranges.is_none()
-        }) {
+        if [upper, lower]
+            .iter()
+            .all(|channel| channel.filled_envelope && channel.zero_ranges.is_none())
+        {
+            for channel in channels {
+                if let Some(span) = channel.centerline {
+                    paint_zero_guide_quad(span, offset, centerline, window);
+                }
+            }
             window.paint_disjoint_path_pair_with_offset(
                 [&upper.envelope, &lower.envelope],
                 offset,
@@ -411,8 +461,8 @@ fn paint_channels_with_opacity(
         }
     }
     for channel in geometry.channels() {
-        if let Some(path) = &channel.centerline {
-            window.paint_path_with_offset(path, offset, centerline);
+        if let Some(span) = channel.centerline {
+            paint_zero_guide_quad(span, offset, centerline, window);
         }
         window.paint_path_with_offset(&channel.envelope, offset, color);
         if let Some(path) = &channel.zero_ranges {

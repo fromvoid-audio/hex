@@ -23,6 +23,10 @@ pub fn control_style() -> hex_widgets::ControlStyle {
     device_style(DeviceStyleRole::Control)
 }
 
+/// Minimum waveform body height (logical pixels) to draw separate stereo L/R
+/// lanes. Below this threshold, stereo channels sum into one clearer lane.
+pub const WAVEFORM_STEREO_MIN_HEIGHT: f32 = 36.0;
+
 /// Workspace outlines stay visible above graphite surfaces without changing the
 /// darker borders used by meters and controls. Custom palette roles still apply.
 pub fn workspace_panel_style() -> hex_widgets::PanelStyle {

@@ -2465,3 +2465,87 @@ fn arrangement_clip_and_prepared_exact_paint_overrange_markers_only_on_affected_
     assert!(channels[0].has_overrange_markers());
     assert!(!channels[1].has_overrange_markers());
 }
+
+#[test]
+fn zero_line_quad_is_present_in_binned_and_fine_modes_and_compact_rows_sum_stereo_to_one_lane() {
+    let audio = hex_engine::Audio::new(
+        48_000,
+        vec![[0.8, -0.2], [-0.4, 0.9], [0.2, -0.6], [0.5, 0.1]],
+    )
+    .unwrap();
+    let stereo = Arc::new(hex_media::waveform::summarize(&audio, 4).unwrap());
+    assert!(!stereo.has_identical_channels());
+
+    let mono_audio = hex_engine::Audio::new(48_000, vec![[0.6, 0.6]; 4]).unwrap();
+    let mono = Arc::new(hex_media::waveform::summarize(&mono_audio, 4).unwrap());
+    assert!(mono.has_identical_channels());
+
+    let mapping = WaveformMapping::Source { timeline_origin: 0 };
+
+    // 1. Tall stereo row (>= WAVEFORM_STEREO_MIN_HEIGHT): 2 lanes, zero-line guide in BOTH fine & binned modes.
+    let tall = Bounds::new(point(px(10.0), px(20.0)), size(px(200.0), px(80.0)));
+    let fine_tall = prepare_waveform_geometry(&stereo, &mapping, 0, 4, tall, 4, None).unwrap();
+    assert_eq!(fine_tall.display.channels().len(), 2);
+    for ch in fine_tall.display.channels() {
+        let guide = ch
+            .zero_guide()
+            .expect("fine mode must emit zero-line guide");
+        let quad = hex_widgets::zero_guide_device_quad(guide, Point::default(), 2.0).unwrap();
+        assert_eq!(quad.size.height, px(0.5));
+    }
+
+    let binned_grid = WaveformGrid {
+        start: 0,
+        end: 4,
+        left: 10.0,
+        width: 200.0,
+        columns: 4,
+        binned: true,
+    };
+    let binned_tall =
+        prepare_waveform_geometry(&stereo, &mapping, 0, 4, tall, 4, Some(binned_grid)).unwrap();
+    assert_eq!(binned_tall.display.channels().len(), 2);
+    for ch in binned_tall.display.channels() {
+        let guide = ch
+            .zero_guide()
+            .expect("binned mode must also emit 1-device-pixel zero-line guide");
+        let quad = hex_widgets::zero_guide_device_quad(guide, Point::default(), 2.0).unwrap();
+        assert_eq!(quad.size.height, px(0.5));
+    }
+
+    // 2. Short stereo row (< WAVEFORM_STEREO_MIN_HEIGHT): 1 summed lane equal to exact union of L/R.
+    let short = Bounds::new(
+        point(px(10.0), px(20.0)),
+        size(
+            px(200.0),
+            px(crate::theme::WAVEFORM_STEREO_MIN_HEIGHT - 8.0),
+        ),
+    );
+    let compact = prepare_waveform_geometry(&stereo, &mapping, 0, 4, short, 4, None).unwrap();
+    assert_eq!(compact.display.channels().len(), 1);
+    assert!(compact.channels[1].outline.is_empty());
+    assert!(compact.display.channels()[0].zero_guide().is_some());
+    // Column 0 has L=+0.8, R=-0.2 -> union max=+0.8, min=-0.2!
+    let center = 20.0 + f32::from(short.size.height) * 0.5;
+    let amplitude = (f32::from(short.size.height) * 0.44).max(0.5);
+    let (expected_top, expected_bottom) = peak_vertical_bounds(
+        CachedPeak {
+            min: -0.2,
+            max: 0.8,
+        },
+        center,
+        amplitude,
+        WaveformAmplitudeScale::Linear,
+    );
+    assert!((f32::from(compact.channels[0].outline[0].y) - expected_top).abs() < 1e-3);
+    assert!((f32::from(compact.channels[0].outline[4].y) - expected_bottom).abs() < 1e-3);
+
+    // 3. Identical-channel mono draws 1 lane even at tall height; reference_stereo forces 2 lanes.
+    let mono_tall = prepare_waveform_geometry(&mono, &mapping, 0, 4, tall, 4, None).unwrap();
+    assert_eq!(mono_tall.display.channels().len(), 1);
+    {
+        let _ref = use_reference_stereo(true);
+        let forced = prepare_waveform_geometry(&mono, &mapping, 0, 4, tall, 4, None).unwrap();
+        assert_eq!(forced.display.channels().len(), 2);
+    }
+}
