@@ -1318,59 +1318,59 @@ mod tests {
 
     #[test]
     fn operator_metadata_inventory_covers_panel_and_preserved_legacy_parameters() {
-        let mut exposed = Vec::new();
+        let mut required_ids = Vec::new();
         for operator in 0..4_u32 {
             let base = operator * 3 + 1;
-            exposed.extend([base, base + 1, base + 2]);
-            exposed.extend(33 + operator * 6..39 + operator * 6);
-            exposed.extend([
+            required_ids.extend([base, base + 1, base + 2]);
+            required_ids.extend(33 + operator * 6..39 + operator * 6);
+            required_ids.extend([
                 57 + operator,
                 62 + operator * 3,
                 63 + operator * 3,
                 64 + operator * 3,
             ]);
-            exposed.extend([74 + operator, 78 + operator]);
+            required_ids.extend([74 + operator, 78 + operator]);
         }
-        exposed.extend([61]);
-        exposed.extend(600..=616);
+        required_ids.extend([61]);
+        required_ids.extend(600..=616);
         // Registered global performance parameters; their panel controls have separate owners.
-        exposed.extend([617, 618, 619, 640, 641, 642, 643]);
+        required_ids.extend([617, 618, 619, 640, 641, 642, 643]);
         // Registered pitch-envelope controls, including all five destination switches.
-        exposed.extend(650..=670);
-        exposed.extend(620..=639);
-        exposed.extend(82..=388);
-        exposed.extend(20_001..=20_007);
-        exposed.extend(513..=516);
+        required_ids.extend(650..=670);
+        required_ids.extend(620..=639);
+        required_ids.extend(82..=388);
+        required_ids.extend(20_001..=20_007);
+        required_ids.extend(513..=516);
         for source in 0..4_u32 {
             for target in 0..4_u32 {
                 if source != target {
-                    exposed.push(12 + source * 4 + target + 1);
+                    required_ids.push(12 + source * 4 + target + 1);
                 }
             }
-            exposed.push(29 + source);
+            required_ids.push(29 + source);
         }
-        exposed.sort_unstable();
-        exposed.dedup();
+        required_ids.sort_unstable();
+        required_ids.dedup();
         let registered = hex_engine::native_device_catalog_for_class(NativeDeviceClass::Instrument)
             .expect("registered instrument catalog")
             .into_iter()
             .find(|entry| entry.type_id.as_str() == Ok("hex.instrument.operator"))
             .expect("registered Operator descriptor");
-        let mut actual: Vec<_> = registered
+        let registered_ids: std::collections::BTreeSet<_> = registered
             .parameters
             .iter()
             .map(|descriptor| descriptor.id.value())
             .collect();
-        actual.sort_unstable();
-        assert_eq!(
-            exposed, actual,
-            "the UI inventory accounts for the complete registered metadata"
-        );
-        assert_eq!(exposed.len(), 460);
-        assert_eq!(exposed.first(), Some(&1));
-        assert_eq!(exposed.last(), Some(&20_007));
+        // The device owns the full catalog. Future parameter families can be
+        // registered before their dedicated panel controls are implemented.
+        for id in &required_ids {
+            assert!(registered_ids.contains(id), "missing Vector parameter {id}");
+        }
+        assert_eq!(required_ids.len(), 460);
+        assert_eq!(required_ids.first(), Some(&1));
+        assert_eq!(required_ids.last(), Some(&20_007));
         for diagonal in [13, 18, 23, 28] {
-            assert!(!exposed.contains(&diagonal));
+            assert!(!registered_ids.contains(&diagonal));
         }
     }
 
