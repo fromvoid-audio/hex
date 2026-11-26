@@ -824,7 +824,7 @@ fn whole_receiver_projection_excludes_peer_midi_before_source_processing() {
 }
 
 #[test]
-fn receiver_clip_bounce_excludes_shared_contributors_and_whole_track_refuses() {
+fn receiver_clip_and_whole_track_bounce_preserve_shared_contributors_and_pcm() {
     for whole_track in [false, true] {
         shared_receiver_bounce_case(whole_track);
     }
@@ -867,6 +867,8 @@ fn shared_receiver_bounce_case(whole_track: bool) {
         hex_engine::NativeDeviceClass::Effect,
         hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
     )
+    .unwrap()
+    .with_output_gain_millidb(-6000)
     .unwrap();
     session
         .command(Command::InsertDevice {
@@ -901,29 +903,13 @@ fn shared_receiver_bounce_case(whole_track: bool) {
     } else {
         BounceTarget::Clips(vec![receiver_clip])
     };
-    if whole_track {
-        let before = session.project().clone();
-        let error = session
-            .bounce_arrangement(
-                target,
-                true,
-                &folder.0,
-                &hex_export::ExportControl::default(),
-                None,
-            )
-            .unwrap_err();
-        assert!(error.contains("linked tracks"), "{error}");
-        assert_eq!(session.project(), &before);
-        assert_eq!(std::fs::read_dir(&folder.0).unwrap().count(), 0);
-        return;
-    }
     let item = session
         .project()
         .plan_arrangement_bounce(&target, whole_track)
         .unwrap()
         .remove(0);
     let isolated = isolated(session.project(), &target, &item, whole_track).unwrap();
-    assert_eq!(isolated.tracks().len(), if whole_track { 2 } else { 1 });
+    assert_eq!(isolated.tracks().len(), 1);
     if !whole_track {
         let existing_in_place = super::isolated(session.project(), &target, &item, true).unwrap();
         assert!(existing_in_place.track(contributor).is_some());
@@ -938,6 +924,7 @@ fn shared_receiver_bounce_case(whole_track: bool) {
 
     let original = session.project().clone();
     let revision = session.compile_prepared_revision(None).unwrap();
+    let expected_full_mix = pcm(Arc::clone(&revision), 56_000);
     session
         .bounce_arrangement(
             target,
@@ -954,10 +941,7 @@ fn shared_receiver_bounce_case(whole_track: bool) {
         .find_map(|track| track.clips().first())
         .expect("bounce creates an audio clip");
     let actual = session.audio(audio.asset()).unwrap().frames();
-    let expected = pcm(
-        if whole_track { revision } else { receiver_only },
-        (audio.start() + audio.duration()) as usize,
-    );
+    let expected = pcm(receiver_only, (audio.start() + audio.duration()) as usize);
     let expected = &expected[audio.start() as usize..(audio.start() + audio.duration()) as usize];
     let error = actual
         .iter()
@@ -966,15 +950,53 @@ fn shared_receiver_bounce_case(whole_track: bool) {
         .map(|(a, b)| (a - b).abs())
         .fold(0.0_f32, f32::max);
     assert!(error < 1e-5, "shared receiver bounce PCM differs: {error}");
-    if !whole_track {
+    assert_eq!(
+        session.project().native_source(source_id),
+        original.native_source(source_id)
+    );
+    assert_eq!(
+        session.project().track(contributor),
+        original.track(contributor)
+    );
+    if whole_track {
+        let after_receiver = session.project().track(receiver).unwrap();
+        assert!(after_receiver.retained_source_path());
+        assert_eq!(after_receiver.source_id(), Some(source_id));
+        assert_eq!(after_receiver.devices().len(), 1);
+        assert!(after_receiver.midi_clips().is_empty());
+        assert_eq!(after_receiver.clips().len(), 1);
+        // Whole-track bounce preserves receiver's printed audio (without double
+        // local processing) AND keeps contributor audible through the shared
+        // source + receiver local -6 dB utility.
+        let after_revision = session.compile_prepared_revision(None).unwrap();
+        let actual_full_mix = pcm(after_revision, 56_000);
+        let full_error = actual_full_mix
+            .iter()
+            .flatten()
+            .zip(expected_full_mix.iter().flatten())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            full_error < 1e-5,
+            "whole-track shared receiver full mix PCM differs: {full_error}"
+        );
+        let bounced_project = session.project().clone();
         assert_eq!(
-            session.project().native_source(source_id),
-            original.native_source(source_id)
+            Project::from_snapshot(bounced_project.snapshot()).unwrap(),
+            bounced_project
+        );
+        assert!(session.undo());
+        assert_eq!(
+            session.project().snapshot().tracks,
+            original.snapshot().tracks
         );
         assert_eq!(
-            session.project().track(contributor),
-            original.track(contributor)
+            session.project().native_sources(),
+            original.native_sources()
         );
+        assert!(session.redo());
+        assert_eq!(session.project(), &bounced_project);
+    } else {
         assert!(session.undo());
         assert_eq!(
             session.project().snapshot().tracks,
@@ -2156,32 +2178,6 @@ fn whole_track_bounce_replaces_every_console_source_keeps_loops_cells_and_atomic
         });
         let original = session.project().clone();
         let original_bytes = fs::read(folder.0.join("original-console.wav")).unwrap();
-        if shared {
-            let error = session
-                .bounce_arrangement(
-                    BounceTarget::Track(track),
-                    true,
-                    &folder.0,
-                    &hex_export::ExportControl::default(),
-                    None,
-                )
-                .unwrap_err();
-            assert!(error.contains("linked tracks"), "{error}");
-            assert_eq!(session.project(), &original);
-            assert_eq!(
-                fs::read(folder.0.join("original-console.wav")).unwrap(),
-                original_bytes
-            );
-            assert_eq!(
-                session
-                    .project()
-                    .track(contributor.unwrap())
-                    .unwrap()
-                    .source_id(),
-                Some(source)
-            );
-            continue;
-        }
         let plan = original
             .plan_arrangement_bounce(&BounceTarget::Track(track), true)
             .unwrap();
@@ -2200,9 +2196,17 @@ fn whole_track_bounce_replaces_every_console_source_keeps_loops_cells_and_atomic
             )
             .unwrap();
         let owner = session.project().track(track).unwrap();
-        assert!(owner.instrument().is_none() && owner.devices().is_empty());
         let retained = session.project().native_source(source).unwrap();
-        assert_eq!(retained.receiver(), None);
+        if shared {
+            assert!(owner.retained_source_path());
+            assert_eq!(owner.source_id(), Some(source));
+            assert_eq!(owner.devices(), original.track(track).unwrap().devices());
+            assert_eq!(retained.receiver(), Some(track));
+        } else {
+            assert!(!owner.retained_source_path());
+            assert!(owner.instrument().is_none() && owner.devices().is_empty());
+            assert_eq!(retained.receiver(), None);
+        }
         assert_eq!(
             retained.instrument(),
             original.native_source(source).unwrap().instrument()
