@@ -140,6 +140,7 @@ impl SessionWorkEnvelope {
 pub struct PreparedSessionScene {
     pub id: SceneId,
     pub name: String,
+    pub follow_action: hex_project::SceneFollowAction,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1000,6 +1001,7 @@ impl PreparedSessionInventory {
             scenes.push(PreparedSessionScene {
                 id: scene.id(),
                 name: clone_string(scene.name())?,
+                follow_action: scene.follow_action(),
             });
         }
 
@@ -1598,6 +1600,24 @@ impl PreparedSessionInventory {
     /// Sparse stored cells in canonical project order; absent keys remain empty.
     pub fn cells(&self) -> &[PreparedSessionCell] {
         &self.cells
+    }
+
+    /// Configured follow action for `scene`, if present in this revision.
+    pub(crate) fn scene_follow_action(
+        &self,
+        scene: SceneId,
+    ) -> Option<hex_project::SceneFollowAction> {
+        self.scenes
+            .iter()
+            .find(|item| item.id == scene)
+            .map(|item| item.follow_action)
+    }
+
+    /// Next scene in canonical grid order immediately following `scene`, or
+    /// `None` if `scene` is absent or at the end of the grid.
+    pub(crate) fn next_scene_after(&self, scene: SceneId) -> Option<SceneId> {
+        let index = self.scenes.iter().position(|item| item.id == scene)?;
+        self.scenes.get(index + 1).map(|item| item.id)
     }
 
     /// Copyable scene bounds for command paths that mutate playback while iterating.

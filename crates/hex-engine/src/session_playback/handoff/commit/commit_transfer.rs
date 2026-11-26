@@ -670,6 +670,18 @@ impl SessionPlayback {
         self.release_order_scratch = next_order;
         std::mem::swap(&mut self.suppressions, &mut self.suppression_scratch);
         self.performance_frame = previous.performance_frame;
+        self.pending_scene_follow = previous.pending_scene_follow.filter(|follow| {
+            matches!(
+                self.revision
+                    .session()
+                    .scene_follow_action(follow.source_scene),
+                Some(hex_project::SceneFollowAction::NextScene { .. })
+            ) && self
+                .revision
+                .session()
+                .scene_cell_range(follow.next_scene)
+                .is_some()
+        });
         self.arrangement_frame = arrangement_cut;
         self.arrangement_loop_pass = arrangement_cut_pass;
         self.interactive_start_frame = previous.interactive_start_frame;

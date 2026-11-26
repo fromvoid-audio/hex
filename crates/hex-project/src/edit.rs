@@ -123,6 +123,7 @@ impl Project {
             | Command::DuplicateScene(_)
             | Command::MoveScene { .. }
             | Command::RenameScene { .. }
+            | Command::SetSceneFollowAction { .. }
             | Command::RemoveScene(_)
             | Command::CreateSessionMidiClip { .. }
             | Command::CreateSessionAudioClip { .. }

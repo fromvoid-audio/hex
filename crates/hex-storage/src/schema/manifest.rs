@@ -11,8 +11,8 @@
 //! schema identifier `126`.
 use crate::{
     AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION, CAPABILITY_MANIFEST_SCHEMA_VERSION,
-    MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION, Project, StorageError,
-    TRACK_IO_ROUTING_SCHEMA_VERSION,
+    MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION, Project,
+    SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError, TRACK_IO_ROUTING_SCHEMA_VERSION,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -410,6 +410,13 @@ pub(crate) const SCHEMA_FEATURES: &[SchemaFeature] = &[
         present: super::serial_units::contains,
     },
     SchemaFeature {
+        capability: "session_follow_action",
+        schema_version: crate::SESSION_FOLLOW_ACTION_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save session scene follow actions",
+        present: contains_session_follow_action,
+    },
+    SchemaFeature {
         capability: "sidechain",
         schema_version: crate::SIDECHAIN_SCHEMA_VERSION,
         post_112_wrapper: false,
@@ -537,6 +544,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "sampler_modulation",
     "scoped_musical_events",
     "serial_devices",
+    "session_follow_action",
     "sidechain",
     "silent_repeat",
     "sinc_v2",
@@ -642,7 +650,8 @@ pub(crate) fn contains_track_io_routing(project: &Project) -> bool {
 /// Projects with zero post-112 features retain their oldest compatible format;
 /// historical schemas `1..=125` remain readable via explicit versioned decoders.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    contains_track_io_routing(project)
+    contains_session_follow_action(project)
+        || contains_track_io_routing(project)
         || contains_automation_curves_and_freeze(project)
         || contains_midi_expression(project)
         || post_112_feature_count(project) >= 1
@@ -765,6 +774,33 @@ struct ProjectSer<'a> {
     frozen_tracks: Vec<FrozenTrackDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     track_io: Vec<TrackIoDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    scene_follow_actions: Vec<SceneFollowActionDto>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SceneFollowActionDto {
+    scene: u64,
+    after_bars: u16,
+}
+
+fn contains_session_follow_action(project: &Project) -> bool {
+    project
+        .scenes()
+        .iter()
+        .any(|scene| scene.follow_action() != hex_project::SceneFollowAction::None)
+}
+
+fn read_scene_follow_actions<'de, D>(deserializer: D) -> Result<Vec<SceneFollowActionDto>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let items: Vec<SceneFollowActionDto> = Vec::deserialize(deserializer)?;
+    if items.len() > hex_project::MAX_SCENES {
+        return Err(de::Error::custom("scene follow action count exceeds limit"));
+    }
+    Ok(items)
 }
 
 #[derive(Serialize)]
@@ -821,6 +857,8 @@ struct ProjectDe<'a> {
     frozen_tracks: Vec<FrozenTrackDto>,
     #[serde(default, deserialize_with = "read_track_io")]
     track_io: Vec<TrackIoDto>,
+    #[serde(default, deserialize_with = "read_scene_follow_actions")]
+    scene_follow_actions: Vec<SceneFollowActionDto>,
 }
 
 #[derive(Deserialize)]
@@ -921,8 +959,27 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             entries.sort_by_key(|entry| entry.track);
             entries
         },
+        scene_follow_actions: {
+            let mut entries: Vec<_> = project
+                .scenes()
+                .iter()
+                .filter_map(|scene| match scene.follow_action() {
+                    hex_project::SceneFollowAction::None => None,
+                    hex_project::SceneFollowAction::NextScene { after_bars } => {
+                        Some(SceneFollowActionDto {
+                            scene: scene.id().value(),
+                            after_bars,
+                        })
+                    }
+                })
+                .collect();
+            entries.sort_by_key(|entry| entry.scene);
+            entries
+        },
     };
-    let version = if contains_track_io_routing(project) {
+    let version = if contains_session_follow_action(project) {
+        SESSION_FOLLOW_ACTION_SCHEMA_VERSION
+    } else if contains_track_io_routing(project) {
         TRACK_IO_ROUTING_SCHEMA_VERSION
     } else if contains_automation_curves_and_freeze(project) {
         AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
@@ -957,6 +1014,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 | MIDI_EXPRESSION_SCHEMA_VERSION
                 | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
                 | TRACK_IO_ROUTING_SCHEMA_VERSION
+                | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
         )
     {
         return Err(StorageError::Invalid(
@@ -993,6 +1051,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid(
             "schemas before 129 cannot carry track_io_routing",
+        ));
+    }
+    if document.version < SESSION_FOLLOW_ACTION_SCHEMA_VERSION
+        && (document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "session_follow_action")
+            || !document.project.scene_follow_actions.is_empty())
+    {
+        return Err(StorageError::Invalid(
+            "schemas before 130 cannot carry session_follow_action",
         ));
     }
 
@@ -1058,6 +1127,14 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .collect::<Result<Vec<_>, _>>()?,
         frozen_tracks: body.frozen_tracks.into_iter().map(Into::into).collect(),
         track_io: body.track_io.into_iter().map(Into::into).collect(),
+        scene_follow_actions: body
+            .scene_follow_actions
+            .into_iter()
+            .map(|entry| hex_project::SceneFollowActionSnapshot {
+                scene: entry.scene,
+                after_bars: entry.after_bars,
+            })
+            .collect(),
         audio_feeds: body.audio_feeds.into_iter().map(Into::into).collect(),
         midi_routes: body.midi_routes.into_iter().map(Into::into).collect(),
         sidechains: body.sidechains.into_iter().map(Into::into).collect(),

@@ -32,6 +32,8 @@ pub struct Snapshot {
     pub frozen_tracks: Vec<crate::FrozenTrackSnapshot>,
     /// Strictly ascending track IDs carrying non-default output routing or input monitoring.
     pub track_io: Vec<crate::TrackIoSnapshot>,
+    /// Strictly ascending scene IDs carrying a non-default next-scene follow action.
+    pub scene_follow_actions: Vec<crate::SceneFollowActionSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub sidechains: Vec<crate::SidechainRouteSnapshot>,
@@ -380,6 +382,24 @@ impl Project {
                     })
                     .collect();
                 entries.sort_by_key(|entry| entry.track);
+                entries
+            },
+            scene_follow_actions: {
+                let mut entries: Vec<_> = self
+                    .session
+                    .scenes
+                    .iter()
+                    .filter_map(|scene| match scene.follow_action {
+                        crate::SceneFollowAction::None => None,
+                        crate::SceneFollowAction::NextScene { after_bars } => {
+                            Some(crate::SceneFollowActionSnapshot {
+                                scene: scene.id.value(),
+                                after_bars,
+                            })
+                        }
+                    })
+                    .collect();
+                entries.sort_by_key(|entry| entry.scene);
                 entries
             },
             import_provenance: self.import_provenance.clone(),
@@ -1444,7 +1464,30 @@ impl Project {
             scenes.push(crate::Scene {
                 id: crate::SceneId(scene.id),
                 name: scene.name,
+                follow_action: crate::SceneFollowAction::None,
             });
+        }
+        if snapshot.scene_follow_actions.len() > crate::MAX_SCENES {
+            return Err(Invalid("scene follow action count exceeds limit"));
+        }
+        if snapshot
+            .scene_follow_actions
+            .windows(2)
+            .any(|pair| pair[0].scene >= pair[1].scene)
+        {
+            return Err(Invalid(
+                "scene follow actions must have unique ascending scene ids",
+            ));
+        }
+        for entry in snapshot.scene_follow_actions {
+            let action = crate::SceneFollowAction::NextScene {
+                after_bars: entry.after_bars,
+            };
+            action.validate()?;
+            let Some(scene) = scenes.iter_mut().find(|s| s.id.value() == entry.scene) else {
+                return Err(Invalid("scene follow action references unknown scene"));
+            };
+            scene.follow_action = action;
         }
         let mut cell_keys = BTreeSet::new();
         let mut cells = Vec::with_capacity(snapshot.session.cells.len());

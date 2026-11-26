@@ -9,6 +9,7 @@ impl SessionStructureConstruction {
         self.scenes.iter().map(|r| crate::PreparedSessionScene {
             id: r.value.id,
             name: String::new(),
+            follow_action: r.value.follow_action,
         })
     }
     pub(crate) fn assembly_track_targets(

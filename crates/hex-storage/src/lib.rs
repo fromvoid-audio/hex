@@ -83,7 +83,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = TRACK_IO_ROUTING_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = SESSION_FOLLOW_ACTION_SCHEMA_VERSION;
+/// Schema130 adds bounded deterministic next-scene Session follow actions
+/// (`session_follow_action` capability) on top of the unified capability
+/// manifest layout. Older schema129 readers refuse schema130 cleanly.
+pub const SESSION_FOLLOW_ACTION_SCHEMA_VERSION: u32 = 130;
 /// Schema129 adds canonical per-track exclusive output routing and In/Auto/Off
 /// input monitoring (`track_io_routing` capability) on top of the unified
 /// capability manifest layout. Older schema128 readers refuse schema129 cleanly.
@@ -878,6 +882,7 @@ fn decode_impl_within(
             | MIDI_EXPRESSION_SCHEMA_VERSION
             | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
             | TRACK_IO_ROUTING_SCHEMA_VERSION
+            | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
     ) && !inside_envelope
     {
         return schema::manifest::decode(bytes);

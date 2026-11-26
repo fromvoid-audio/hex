@@ -141,6 +141,7 @@ impl SessionPlayback {
                 self.browser_audition.voices = Default::default();
             }
             SessionPlaybackCommand::Stop => {
+                self.pending_scene_follow = None;
                 self.end_paused_source_interval();
                 self.clear_gain_recording_override();
                 self.invalidate_native_parameter_input();
@@ -149,6 +150,7 @@ impl SessionPlayback {
                 }
             }
             SessionPlaybackCommand::Seek(frame) => {
+                self.pending_scene_follow = None;
                 self.seek(frame)?;
                 self.clear_gain_recording_override();
                 self.invalidate_native_parameter_input();
@@ -159,6 +161,7 @@ impl SessionPlayback {
                     let index = self.route_index(track)?;
                     changed = self.routes[index].pending.take().is_some();
                 } else {
+                    changed |= self.pending_scene_follow.take().is_some();
                     for route in &mut self.routes {
                         changed |= route.pending.take().is_some();
                     }
@@ -601,8 +604,27 @@ impl SessionPlayback {
         &mut self,
         command: SessionPlaybackCommand,
     ) -> Result<(), SessionPlaybackError> {
-        self.plan_route_command(command)?;
+        let moment = self.plan_route_command(command)?;
         self.commit_route_scratch();
+        match command {
+            SessionPlaybackCommand::LaunchScene { scene, .. } => {
+                self.pending_scene_follow =
+                    self.plan_scene_follow(scene, moment.target_beat, crate::NoteChase::On);
+            }
+            SessionPlaybackCommand::LaunchSceneWithNoteChase {
+                scene, note_chase, ..
+            } => {
+                self.pending_scene_follow =
+                    self.plan_scene_follow(scene, moment.target_beat, note_chase);
+            }
+            SessionPlaybackCommand::LaunchClip { .. }
+            | SessionPlaybackCommand::LaunchClipWithNoteChase { .. }
+            | SessionPlaybackCommand::StopAllClips { .. }
+            | SessionPlaybackCommand::BackToArrangement { .. } => {
+                self.pending_scene_follow = None;
+            }
+            _ => {}
+        }
         Ok(())
     }
 

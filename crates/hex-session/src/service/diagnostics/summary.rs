@@ -1158,6 +1158,13 @@ pub(super) fn command(value: &Command) -> Description {
         Command::RenameScene { scene, name } => {
             describe!("rename_scene"; ["scene" => scene.value(), "name_redacted_bytes" => name.len()]; omitted="")
         }
+        Command::SetSceneFollowAction { scene, action } => {
+            let after_bars = match action {
+                hex_project::SceneFollowAction::None => 0_u16,
+                hex_project::SceneFollowAction::NextScene { after_bars } => *after_bars,
+            };
+            describe!("set_scene_follow_action"; ["scene" => scene.value(), "after_bars" => after_bars]; omitted="")
+        }
         Command::RemoveScene(value0) => {
             describe!("remove_scene"; ["value0" => value0.value()]; omitted="")
         }

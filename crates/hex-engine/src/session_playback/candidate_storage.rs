@@ -110,6 +110,7 @@ impl SessionPlayback {
             hosted_move: _,
             return_fade: _,
             return_fade_scratch: _,
+            pending_scene_follow: _,
         } = self;
         // The closed owner has no source effect lease or backing quote yet.
         if native_removal.is_some()
