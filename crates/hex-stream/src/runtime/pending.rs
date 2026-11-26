@@ -172,17 +172,16 @@ impl PendingStreamDomain {
         )
         .and_then(crate::EndpointData::bytes)
         .ok_or(StreamRuntimeError::AllocationFailed)?;
-        let scalar_pool = if scalar_definitions.is_empty() {
-            0
-        } else {
-            config
-                .page_buffers
-                .checked_mul(
-                    hex_engine::STREAM_PAGE_FRAMES * std::mem::size_of::<f32>()
-                        + hex_engine::STREAM_PAGE_FRAMES.div_ceil(64) * std::mem::size_of::<u64>(),
-                )
-                .ok_or(StreamRuntimeError::AllocationFailed)?
-        };
+        let scalar_backings =
+            crate::worker::scalar_backing_count(config.page_buffers, scalar_definitions.len());
+        let scalar_pool = scalar_backings
+            .checked_mul(
+                hex_engine::STREAM_PAGE_FRAMES * std::mem::size_of::<f32>()
+                    + hex_engine::STREAM_PAGE_FRAMES.div_ceil(64) * std::mem::size_of::<u64>()
+                    + std::mem::size_of::<crate::endpoint::ScalarPayload>()
+                    + std::mem::size_of::<Box<crate::endpoint::ScalarPayload>>(),
+            )
+            .ok_or(StreamRuntimeError::AllocationFailed)?;
         let transport = crate::footprint::sum([
             scalar_pool,
             pcm,
@@ -212,7 +211,7 @@ impl PendingStreamDomain {
                 .ok_or(StreamRuntimeError::AllocationFailed)?,
             std::mem::size_of::<rtrb::RingBuffer<StreamFailure>>(),
             std::mem::size_of::<CatalogOwner>(),
-            std::mem::size_of::<AtomicBool>(),
+            std::mem::size_of::<crate::worker::WorkerSignal>(),
             std::mem::size_of::<()>(),
         ])
         .ok_or(StreamRuntimeError::AllocationFailed)?;

@@ -28,7 +28,10 @@ impl ScalarJob {
         };
         if start >= definition.metadata().end_frame()
             || end <= definition.metadata().start_frame()
-            || page.scalar_values.len() != hex_engine::STREAM_PAGE_FRAMES
+            || page.scalar.as_deref().is_none_or(|payload| {
+                payload.values.len() != hex_engine::STREAM_PAGE_FRAMES
+                    || payload.coverage.len() != hex_engine::STREAM_PAGE_FRAMES.div_ceil(64)
+            })
         {
             return Err((page, StreamFailureKind::UnknownSource));
         }
@@ -39,8 +42,10 @@ impl ScalarJob {
             Ok(cursor) => cursor,
             Err(_) => return Err((page, StreamFailureKind::SourceChanged)),
         };
-        page.scalar_values.fill(0.0);
-        page.scalar_coverage.fill(0);
+        if let Some(payload) = page.scalar.as_deref_mut() {
+            payload.values.fill(0.0);
+            payload.coverage.fill(0);
+        }
         page.key = None;
         page.valid_frames = (definition.metadata().end_frame() - start)
             .min(hex_engine::STREAM_PAGE_FRAMES as u64) as usize;
@@ -81,15 +86,19 @@ impl ScalarJob {
                     .ok_or(StreamFailureKind::DecodeFailed)?,
             )
             .map_err(|_| StreamFailureKind::DecodeFailed)?;
-            self.page
-                .scalar_values
+            let payload = self
+                .page
+                .scalar
+                .as_deref_mut()
+                .ok_or(StreamFailureKind::DecodeFailed)?;
+            payload
+                .values
                 .get_mut(start..end)
                 .ok_or(StreamFailureKind::DecodeFailed)?
                 .fill(span.value.get());
             for offset in start..end {
-                *self
-                    .page
-                    .scalar_coverage
+                *payload
+                    .coverage
                     .get_mut(offset / 64)
                     .ok_or(StreamFailureKind::DecodeFailed)? |= 1 << (offset % 64);
             }

@@ -1,19 +1,20 @@
 use crate::{
-    endpoint::{Endpoint, EndpointQueues, PageBuffer},
+    endpoint::{Endpoint, EndpointQueues, PageBuffer, ScalarPayload},
     types::{
         CatalogFootprint, ScalarSourceDefinition, SourceDefinition, StreamConfig, StreamFailure,
         StreamFailureKind, StreamRuntimeError, VerifiedCatalog,
     },
-    worker::{WorkerQueues, run_worker},
+    worker::{WorkerQueues, WorkerSignal, run_worker, scalar_backing_count},
 };
 use hex_engine::{MediaPages, StreamSourceKey};
 mod storage;
 use rtrb::RingBuffer;
+#[cfg(test)]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     fmt,
     sync::{
         Arc, Mutex, MutexGuard,
-        atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError},
     },
     thread::{self, JoinHandle, Thread},
@@ -79,7 +80,7 @@ pub struct StreamCallbackPages {
 struct CatalogOwner {
     transport_data: crate::TransportData,
     config: StreamConfig,
-    stop: Arc<AtomicBool>,
+    stop: Arc<WorkerSignal>,
     worker_wake: Thread,
     worker: Mutex<Option<JoinHandle<crate::worker::WorkerExit>>>,
     catalog_state: Mutex<CatalogState>,
@@ -484,44 +485,62 @@ impl StreamRuntime {
             .map_err(|_| StreamRuntimeError::AllocationFailed)?;
         let mut transport_data = crate::TransportData::default();
         for _ in 0..config.page_buffers {
-            let (page, old_capacity) =
-                PageBuffer::new_with_capacity(!scalar_definitions.is_empty())
-                    .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+            let (page, old_capacity) = PageBuffer::new_with_capacity(false)
+                .map_err(|_| StreamRuntimeError::AllocationFailed)?;
             transport_data.page_objects = crate::footprint::add(
                 transport_data.page_objects,
                 std::mem::size_of_val(page.as_ref()),
             )?;
-            let PageBuffer {
-                key: _,
-                frames,
-                scalar_values,
-                scalar_coverage,
-                valid_frames: _,
-            } = page.as_ref();
             transport_data.pcm_boxes = crate::footprint::add(
                 transport_data.pcm_boxes,
-                frames
+                page.frames
                     .len()
                     .checked_mul(std::mem::size_of::<hex_engine::Frame>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
             )?;
+            transport_data.page_boxing_overlap =
+                transport_data.page_boxing_overlap.max(old_capacity);
+            free_pages.push(page);
+        }
+        let scalar_backings_len =
+            scalar_backing_count(config.page_buffers, scalar_definitions.len());
+        let mut free_scalar_backings = Vec::new();
+        free_scalar_backings
+            .try_reserve_exact(scalar_backings_len)
+            .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+        transport_data.page_objects = crate::footprint::add(
+            transport_data.page_objects,
+            free_scalar_backings
+                .capacity()
+                .checked_mul(std::mem::size_of::<Box<ScalarPayload>>())
+                .ok_or(StreamRuntimeError::AllocationFailed)?,
+        )?;
+        for _ in 0..scalar_backings_len {
+            let (payload, old_capacity) = ScalarPayload::new_with_capacity()
+                .map_err(|_| StreamRuntimeError::AllocationFailed)?;
+            transport_data.page_objects = crate::footprint::add(
+                transport_data.page_objects,
+                std::mem::size_of_val(payload.as_ref()),
+            )?;
             transport_data.scalar_boxes = crate::footprint::add(
                 transport_data.scalar_boxes,
-                scalar_values
+                payload
+                    .values
                     .len()
                     .checked_mul(std::mem::size_of::<f32>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
             )?;
             transport_data.scalar_coverage_boxes = crate::footprint::add(
                 transport_data.scalar_coverage_boxes,
-                scalar_coverage
+                payload
+                    .coverage
                     .len()
                     .checked_mul(std::mem::size_of::<u64>())
                     .ok_or(StreamRuntimeError::AllocationFailed)?,
             )?;
             transport_data.page_boxing_overlap =
                 transport_data.page_boxing_overlap.max(old_capacity);
-            free_pages.push(page);
+            free_scalar_backings.push(payload);
         }
         let (request_tx, request_rx) = RingBuffer::new(config.request_capacity);
         let (ready_tx, ready_rx) = RingBuffer::new(config.ready_capacity);
@@ -559,10 +578,10 @@ impl StreamRuntime {
         .ok_or(StreamRuntimeError::AllocationFailed)?;
         transport_data.queue_constructor_supported = crate::footprint::queue_family_supported();
         transport_data.catalog_owner_data = std::mem::size_of::<CatalogOwner>();
-        transport_data.stop_flag_data = std::mem::size_of::<AtomicBool>();
+        transport_data.stop_flag_data = std::mem::size_of::<WorkerSignal>();
         transport_data.pair_owner_data = std::mem::size_of::<()>();
         let (catalog_sender, catalog_result) = mpsc::sync_channel(1);
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(WorkerSignal::new());
         let thread_stop = Arc::clone(&stop);
         let worker_queues = WorkerQueues {
             requests: request_rx,
@@ -680,6 +699,7 @@ impl StreamRuntime {
                     scalar_definitions,
                     granular,
                     free_pages,
+                    free_scalar_backings,
                     worker_queues,
                     thread_stop,
                     catalog_sender,
@@ -883,7 +903,18 @@ impl StreamControl {
 
     /// Explicit worker wake for setup, preparation and shutdown paths.
     pub fn wake_worker(&self) {
+        self.owner.stop.wake();
         self.owner.worker_wake.unpark();
+    }
+
+    /// Park (`idle == true`) or resume (`idle == false`) the stream I/O worker
+    /// via its event condvar when transport is stopped, eliminating idle timer
+    /// wakeups. Control-side only.
+    pub fn set_idle(&self, idle: bool) {
+        self.owner.stop.set_idle_park(idle);
+        if !idle {
+            self.owner.worker_wake.unpark();
+        }
     }
 
     /// Stop and reclaim a matching callback page endpoint. Pair validation is
@@ -908,7 +939,7 @@ impl StreamControl {
             })));
         }
         let cached_pages_returned = pages.endpoint.return_cached_pages();
-        self.owner.stop.store(true, Ordering::Release);
+        self.owner.stop.request_stop();
         self.wake_worker();
         let (worker_pages, worker_joined) = {
             let mut worker_slot = lock_unpoisoned(&self.owner.worker);
@@ -954,7 +985,7 @@ impl StreamControl {
 
 impl Drop for CatalogOwner {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Release);
+        self.stop.request_stop();
         self.worker_wake.unpark();
         let worker_slot = match self.worker.get_mut() {
             Ok(slot) => slot,

@@ -184,7 +184,7 @@ impl PreparedStreamDisposal {
             }
             self.phase = StreamDisposalPhase::Joining;
             self.cached_returned = pages.endpoint.return_cached_pages();
-            control.owner.stop.store(true, Ordering::Release);
+            control.owner.stop.request_stop();
             control.wake_worker();
             // Secure the actual JoinHandle, then release the ordinary worker
             // mutex before joining or touching any panic payload/destructor.
@@ -292,7 +292,7 @@ mod tests {
     fn reported_worker_failure_refuses_both_shutdown_completion_paths() {
         for prepared in [false, true] {
             let (control, pages) = pair();
-            control.owner.stop.store(true, Ordering::Release);
+            control.owner.stop.request_stop();
             control.wake_worker();
             let worker = lock_unpoisoned(&control.owner.worker).take().unwrap();
             drop(worker.join().unwrap().unwrap());
@@ -335,15 +335,7 @@ mod tests {
         let metadata = disposal.metadata_bytes();
         assert!(disposal.advance_on_control().unwrap().is_none());
         assert_eq!(disposal.phase(), StreamDisposalPhase::Owned);
-        assert!(
-            !disposal
-                .control
-                .as_ref()
-                .unwrap()
-                .owner
-                .stop
-                .load(Ordering::Acquire)
-        );
+        assert!(!disposal.control.as_ref().unwrap().owner.stop.is_stopped());
         assert!(lock_unpoisoned(&disposal.control.as_ref().unwrap().owner.worker).is_some());
         drop(lease);
         assert!(disposal.advance_on_control().unwrap().is_none());

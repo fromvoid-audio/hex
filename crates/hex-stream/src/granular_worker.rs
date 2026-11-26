@@ -96,7 +96,19 @@ pub fn run_granular_worker(
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
 ) -> GranularWorkerExit {
-    run_inner(bank, queues, stop, demand_epoch, || {})
+    run_inner(bank, queues, stop, demand_epoch, false, || {})
+}
+
+/// Event-driven worker entry used by `GranularWorkerControl`, which unparks
+/// this thread on every submit, supersede, poll, and shutdown so idle/stopped
+/// granular workers consume zero polling wakeups.
+pub(crate) fn run_granular_worker_signaled(
+    bank: GranularWorkerBank,
+    queues: GranularWorkerQueues,
+    stop: &AtomicBool,
+    demand_epoch: &AtomicU64,
+) -> GranularWorkerExit {
+    run_inner(bank, queues, stop, demand_epoch, true, || {})
 }
 
 #[cfg(feature = "test-support")]
@@ -107,7 +119,18 @@ pub(crate) fn run_with_step_hook(
     demand_epoch: &AtomicU64,
     before_step: impl FnMut(),
 ) -> GranularWorkerExit {
-    run_inner(bank, queues, stop, demand_epoch, before_step)
+    run_inner(bank, queues, stop, demand_epoch, false, before_step)
+}
+
+#[cfg(feature = "test-support")]
+pub(crate) fn run_with_step_hook_signaled(
+    bank: GranularWorkerBank,
+    queues: GranularWorkerQueues,
+    stop: &AtomicBool,
+    demand_epoch: &AtomicU64,
+    before_step: impl FnMut(),
+) -> GranularWorkerExit {
+    run_inner(bank, queues, stop, demand_epoch, true, before_step)
 }
 
 /// Cap on simultaneously open file descriptors inside the dedicated granular
@@ -149,8 +172,19 @@ fn run_inner(
     mut queues: GranularWorkerQueues,
     stop: &AtomicBool,
     demand_epoch: &AtomicU64,
+    signaled: bool,
     mut before_step: impl FnMut(),
 ) -> GranularWorkerExit {
+    let wait_for_event = || {
+        if stop.load(Ordering::Acquire) {
+            return;
+        }
+        if signaled {
+            thread::park();
+        } else {
+            thread::park_timeout(Duration::from_millis(2));
+        }
+    };
     let mut sources = bank.into_sources();
     let mut last_used = vec![0_u64; sources.len()];
     let mut reader_tick = 0_u64;
@@ -168,7 +202,7 @@ fn run_inner(
             // Sampling the epoch first could publish obsolete work as ready or failed.
             let Ok(slot) = queues.results.write_chunk_uninit(1) else {
                 held = Some(outcome);
-                thread::park_timeout(Duration::from_millis(2));
+                wait_for_event();
                 continue;
             };
             if outcome.key.epoch != demand_epoch.load(Ordering::Acquire) {
@@ -241,7 +275,7 @@ fn run_inner(
             continue;
         }
         let Ok(request) = queues.requests.pop() else {
-            thread::park_timeout(Duration::from_millis(2));
+            wait_for_event();
             continue;
         };
         let GranularWorkerRequest { key, frames } = request;
