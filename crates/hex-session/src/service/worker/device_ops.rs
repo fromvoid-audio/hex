@@ -106,6 +106,14 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
         | Request::DeviceAutomationControl { .. }
         | Request::SetDeviceParameter { .. }
         | Request::DeviceAutomationTake { .. }
+        | Request::StartPluginEditorRecording { .. }
+        | Request::StopPluginEditorRecording { .. }
+        | Request::ContinuePluginEditorRecording { .. }
+        | Request::QueryFailedPluginAutomation { .. }
+        | Request::InspectSealedAutomationRecovery { .. }
+        | Request::QueryDeviceAutomationCloseSafety { .. }
+        | Request::PreparePluginEditorClose { .. }
+        | Request::RecoverDeviceAutomationTake { .. }
         | Request::ArmNativeParameterRecording { .. } => automation_ops::handle(ctx, request),
 
         Request::ReloadPlugin { .. }

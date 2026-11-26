@@ -1584,7 +1584,13 @@ fn read_only_observations_do_not_cancel_pending_or_confirmed_device_insert() {
         .unwrap();
     let automation = receive(&service);
     assert!(automation.plugin_parameter_observation);
-    assert!(automation.device_automation_take_complete.is_some());
+    let completion = automation.device_automation_take_complete.unwrap();
+    assert_eq!(completion.request_id, 5);
+    assert_eq!(
+        completion.progress,
+        DeviceAutomationTakeProgress::FailedPluginUnavailable
+    );
+    assert_eq!(automation.state.revision, baseline.revision);
     assert!(offer.is_pending());
 
     let committed = confirm_and_install(&service, &fixture, &offer);
