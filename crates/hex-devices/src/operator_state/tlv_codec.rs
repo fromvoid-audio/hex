@@ -26,14 +26,18 @@ pub(super) const TAG_GLOBAL: u16 = 11;
 pub(super) const TAG_MODULATION: u16 = 12;
 pub(super) const TAG_FINE: u16 = 13;
 pub(super) const TAG_KEYTRACK: u16 = 14;
-const SECTION_COUNT: u16 = 14;
+pub(super) const TAG_PERFORMANCE: u16 = 15;
+const V18_SECTION_COUNT: u16 = 14;
+const SECTION_COUNT: u16 = 15;
 #[cfg(test)]
 pub(super) const CANONICAL_BYTES: usize =
-    HEADER_BYTES + SECTION_COUNT as usize * ENTRY_HEADER_BYTES + PAYLOAD_BYTES;
+    HEADER_BYTES + SECTION_COUNT as usize * ENTRY_HEADER_BYTES + PAYLOAD_BYTES + performance::BYTES;
 
 pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
-    let total_bytes =
-        HEADER_BYTES + usize::from(SECTION_COUNT) * ENTRY_HEADER_BYTES + PAYLOAD_BYTES;
+    let total_bytes = HEADER_BYTES
+        + usize::from(SECTION_COUNT) * ENTRY_HEADER_BYTES
+        + PAYLOAD_BYTES
+        + performance::BYTES;
     if total_bytes > MAX_TLV_BYTES {
         return Err(DeviceContractError::StateTooLarge);
     }
@@ -43,14 +47,37 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&SECTION_COUNT.to_le_bytes());
+    write_v18_sections(&mut out, settings);
+    write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
+        settings.performance.append(buf);
+    });
+    debug_assert_eq!(out.len(), total_bytes);
+    Ok(out)
+}
 
-    write_section(&mut out, TAG_CORE_FIELDS, LEGACY_PAYLOAD_BYTES, |buf| {
+#[cfg(test)]
+pub(super) fn encode_v18(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
+    let total_bytes =
+        HEADER_BYTES + usize::from(V18_SECTION_COUNT) * ENTRY_HEADER_BYTES + PAYLOAD_BYTES;
+    let mut out = Vec::new();
+    out.try_reserve_exact(total_bytes)
+        .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&V18_SECTION_COUNT.to_le_bytes());
+    write_v18_sections(&mut out, settings);
+    debug_assert_eq!(out.len(), total_bytes);
+    Ok(out)
+}
+
+fn write_v18_sections(out: &mut Vec<u8>, settings: &OperatorSettings) {
+    write_section(out, TAG_CORE_FIELDS, LEGACY_PAYLOAD_BYTES, |buf| {
         for field in settings.fields {
             buf.extend_from_slice(&field.to_le_bytes());
         }
     });
     write_section(
-        &mut out,
+        out,
         TAG_WAVEFORMS,
         WAVEFORM_COUNT * size_of::<u32>(),
         |buf| {
@@ -59,11 +86,11 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
             }
         },
     );
-    write_section(&mut out, TAG_TUNING, tuning::BYTES, |buf| {
+    write_section(out, TAG_TUNING, tuning::BYTES, |buf| {
         settings.tuning.append(buf);
     });
     write_section(
-        &mut out,
+        out,
         TAG_AMPLITUDE_VELOCITY,
         VELOCITY_SENSITIVITY_COUNT * size_of::<f32>(),
         |buf| {
@@ -73,7 +100,7 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
         },
     );
     write_section(
-        &mut out,
+        out,
         TAG_FEEDBACK,
         FEEDBACK_COUNT * size_of::<f32>(),
         |buf| {
@@ -82,35 +109,33 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
             }
         },
     );
-    write_section(&mut out, TAG_LFO, lfo::BYTES, |buf| {
+    write_section(out, TAG_LFO, lfo::BYTES, |buf| {
         settings.lfo.append(buf);
     });
-    write_section(&mut out, TAG_ENABLED, enable::BYTES, |buf| {
+    write_section(out, TAG_ENABLED, enable::BYTES, |buf| {
         settings.enabled.append(buf);
     });
-    write_section(&mut out, TAG_FILTER, crate::operator_filter::BYTES, |buf| {
+    write_section(out, TAG_FILTER, crate::operator_filter::BYTES, |buf| {
         settings.filter.append(buf);
     });
-    write_section(&mut out, TAG_HARMONICS, harmonics::BYTES, |buf| {
+    write_section(out, TAG_HARMONICS, harmonics::BYTES, |buf| {
         settings.harmonics.append(buf);
     });
-    write_section(&mut out, TAG_COMPANION, companion::BYTES, |buf| {
+    write_section(out, TAG_COMPANION, companion::BYTES, |buf| {
         settings.companion.append(buf);
     });
-    write_section(&mut out, TAG_GLOBAL, global::BYTES, |buf| {
+    write_section(out, TAG_GLOBAL, global::BYTES, |buf| {
         settings.global.append(buf);
     });
-    write_section(&mut out, TAG_MODULATION, modulation::BYTES, |buf| {
+    write_section(out, TAG_MODULATION, modulation::BYTES, |buf| {
         settings.modulation.append(buf);
     });
-    write_section(&mut out, TAG_FINE, fine::BYTES, |buf| {
+    write_section(out, TAG_FINE, fine::BYTES, |buf| {
         settings.fine.append(buf);
     });
-    write_section(&mut out, TAG_KEYTRACK, keytrack::BYTES, |buf| {
+    write_section(out, TAG_KEYTRACK, keytrack::BYTES, |buf| {
         settings.pitch_keytrack.append(buf);
     });
-    debug_assert_eq!(out.len(), total_bytes);
-    Ok(out)
 }
 
 fn write_section(
@@ -126,7 +151,15 @@ fn write_section(
     debug_assert_eq!(out.len() - start, expected_len);
 }
 
-pub(super) fn decode(bytes: &[u8]) -> Result<OperatorSettings, DeviceContractError> {
+pub(super) fn decode(
+    bytes: &[u8],
+    state_version: u32,
+) -> Result<OperatorSettings, DeviceContractError> {
+    let max_sections = match state_version {
+        TLV_STATE_VERSION => V18_SECTION_COUNT,
+        PERFORMANCE_STATE_VERSION => SECTION_COUNT,
+        _ => return Err(DeviceContractError::UnsupportedStateVersion),
+    };
     if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TLV_BYTES {
         return Err(DeviceContractError::MalformedState);
     }
@@ -138,7 +171,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<OperatorSettings, DeviceContractErr
         return Err(DeviceContractError::UnsupportedStateVersion);
     }
     let section_count = u16::from_le_bytes([bytes[6], bytes[7]]);
-    if section_count == 0 || section_count > SECTION_COUNT {
+    if section_count == 0 || section_count > max_sections {
         return Err(DeviceContractError::MalformedState);
     }
 
@@ -161,6 +194,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<OperatorSettings, DeviceContractErr
     let mut modulation = modulation::Settings::default();
     let mut fine = fine::Settings::default();
     let mut pitch_keytrack = keytrack::Settings::default();
+    let mut performance = performance::Settings::default();
 
     for _ in 0..section_count {
         let header = bytes
@@ -273,6 +307,9 @@ pub(super) fn decode(bytes: &[u8]) -> Result<OperatorSettings, DeviceContractErr
                 pitch_keytrack = keytrack::Settings::decode(section)?;
                 saw_keytrack = true;
             }
+            TAG_PERFORMANCE if state_version >= PERFORMANCE_STATE_VERSION => {
+                performance = performance::Settings::decode(section)?;
+            }
             _ => return Err(DeviceContractError::MalformedState),
         }
     }
@@ -301,6 +338,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<OperatorSettings, DeviceContractErr
         modulation,
         fine,
         pitch_keytrack,
+        performance,
     };
     result.kernel_parts()?;
     Ok(result)
@@ -338,22 +376,35 @@ mod tests {
     }
 
     #[test]
-    fn tlv_roundtrip_and_v1_through_v17_lossless_migration() {
+    fn tlv_roundtrip_and_v1_through_v18_lossless_migration() {
         let rich = rich_settings();
-        let v18 = rich.to_state().unwrap();
-        assert_eq!(v18.state_version(), TLV_STATE_VERSION);
-        assert_eq!(&v18.payload()[..4], &MAGIC);
-        assert_eq!(v18.payload().len(), CANONICAL_BYTES);
-        assert_eq!(OperatorSettings::from_state(&v18).unwrap(), rich);
+        let v19 = rich.to_state().unwrap();
+        assert_eq!(v19.state_version(), OPERATOR_STATE_VERSION);
+        assert_eq!(&v19.payload()[..4], &MAGIC);
+        assert_eq!(v19.payload().len(), CANONICAL_BYTES);
+        assert_eq!(OperatorSettings::from_state(&v19).unwrap(), rich);
 
-        // Lossless v17 -> v18 migration preserves every field and exact PCM.
+        // Historical v18 TLV migrates cleanly to v19 with neutral performance defaults.
+        let v18 = NativeDeviceState::new(
+            OPERATOR_TYPE_ID,
+            TLV_STATE_VERSION,
+            encode_v18(&rich).unwrap(),
+        )
+        .unwrap();
+        let migrated_v18 = OPERATOR_METADATA.migrate_state(&v18).unwrap();
+        assert_eq!(migrated_v18, v19);
+        assert_eq!(OperatorSettings::from_state(&migrated_v18).unwrap(), rich);
+        // Tag 15 is rejected if presented inside a v18 state.
+        assert!(decode(v19.payload(), TLV_STATE_VERSION).is_err());
+
+        // Lossless v17 -> v19 migration preserves every field and exact PCM.
         let v17 = rich.to_v17_state().unwrap();
         assert_eq!(v17.state_version(), KEYTRACK_STATE_VERSION);
         let migrated = OPERATOR_METADATA.migrate_state(&v17).unwrap();
-        assert_eq!(migrated, v18);
+        assert_eq!(migrated, v19);
         assert_eq!(OperatorSettings::from_state(&migrated).unwrap(), rich);
 
-        // Historical v1..v17 prefixes all migrate cleanly into canonical v18 TLV.
+        // Historical v1..v17 prefixes all migrate cleanly into canonical v19 TLV.
         let base_v17 = OperatorSettings::from_state(&super::super::tests::legacy_state())
             .unwrap()
             .to_v17_state()
@@ -383,7 +434,7 @@ mod tests {
             .unwrap();
             let decoded_old = OperatorSettings::from_state(&historical).unwrap();
             let migrated = OPERATOR_METADATA.migrate_state(&historical).unwrap();
-            assert_eq!(migrated.state_version(), TLV_STATE_VERSION);
+            assert_eq!(migrated.state_version(), OPERATOR_STATE_VERSION);
             assert_eq!(
                 OperatorSettings::from_state(&migrated).unwrap(),
                 decoded_old
@@ -399,24 +450,24 @@ mod tests {
         // Bad magic
         let mut bad_magic = bytes.clone();
         bad_magic[0] = b'Z';
-        assert!(decode(&bad_magic).is_err());
+        assert!(decode(&bad_magic, OPERATOR_STATE_VERSION).is_err());
 
         // Unsupported TLV container format version
         let mut bad_fmt = bytes.clone();
         bad_fmt[4..6].copy_from_slice(&2_u16.to_le_bytes());
         assert_eq!(
-            decode(&bad_fmt).unwrap_err(),
+            decode(&bad_fmt, OPERATOR_STATE_VERSION).unwrap_err(),
             DeviceContractError::UnsupportedStateVersion
         );
 
         // Truncated header & truncated payload
-        assert!(decode(&bytes[..4]).is_err());
-        assert!(decode(&bytes[..bytes.len() - 1]).is_err());
+        assert!(decode(&bytes[..4], OPERATOR_STATE_VERSION).is_err());
+        assert!(decode(&bytes[..bytes.len() - 1], OPERATOR_STATE_VERSION).is_err());
 
         // Trailing garbage byte
         let mut trailing = bytes.clone();
         trailing.push(0);
-        assert!(decode(&trailing).is_err());
+        assert!(decode(&trailing, OPERATOR_STATE_VERSION).is_err());
 
         // Unknown tag
         let mut unknown = Vec::new();
@@ -430,7 +481,7 @@ mod tests {
         unknown.extend_from_slice(&99_u16.to_le_bytes());
         unknown.extend_from_slice(&4_u32.to_le_bytes());
         unknown.extend_from_slice(&0_u32.to_le_bytes());
-        assert!(decode(&unknown).is_err());
+        assert!(decode(&unknown, OPERATOR_STATE_VERSION).is_err());
 
         // Duplicate tag
         let mut dup = Vec::new();
@@ -441,7 +492,7 @@ mod tests {
             &bytes[HEADER_BYTES..HEADER_BYTES + ENTRY_HEADER_BYTES + LEGACY_PAYLOAD_BYTES];
         dup.extend_from_slice(core_entry);
         dup.extend_from_slice(core_entry);
-        assert!(decode(&dup).is_err());
+        assert!(decode(&dup, OPERATOR_STATE_VERSION).is_err());
 
         // Missing required core section (starts at tag 2)
         let mut no_core = Vec::new();
@@ -451,6 +502,6 @@ mod tests {
         no_core.extend_from_slice(&TAG_WAVEFORMS.to_le_bytes());
         no_core.extend_from_slice(&16_u32.to_le_bytes());
         no_core.extend_from_slice(&[0_u8; 16]);
-        assert!(decode(&no_core).is_err());
+        assert!(decode(&no_core, OPERATOR_STATE_VERSION).is_err());
     }
 }

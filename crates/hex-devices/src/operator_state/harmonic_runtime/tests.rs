@@ -649,6 +649,7 @@ fn quality_phase_advance_preserves_odd_steps_and_wrap_across_partitions() {
         channel_pitch_bend: 0,
         cc_timbre: 0,
         last_targets: automation::base_target_values(&factory.settings),
+        tone_filter: performance::ToneFilter::default(),
     };
     let note = NativeInstrumentEvent::NoteOn {
         frame_offset: 0,

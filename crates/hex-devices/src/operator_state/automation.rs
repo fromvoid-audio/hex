@@ -15,7 +15,13 @@ pub const FILTER_RESONANCE: ParameterId =
     ParameterId::from_static(crate::operator_filter::FIRST + 5);
 pub const FILTER_MORPH: ParameterId = ParameterId::from_static(crate::operator_filter::FIRST + 6);
 
-pub(super) const TARGET_COUNT: usize = 21;
+pub(super) const TARGET_COUNT: usize = 24;
+pub(super) const TIME_IDX: usize = 18;
+pub(super) const TONE_IDX: usize = 19;
+pub(super) const VOLUME_IDX: usize = 20;
+pub(super) const FILTER_FREQ_IDX: usize = 21;
+pub(super) const FILTER_RES_IDX: usize = 22;
+pub(super) const FILTER_MORPH_IDX: usize = 23;
 
 pub(super) const TARGET_IDS: [ParameterId; TARGET_COUNT] = [
     parameter::oscillator_ratio(1), // 1
@@ -36,6 +42,9 @@ pub(super) const TARGET_IDS: [ParameterId; TARGET_COUNT] = [
     parameter::fine_offset(2),      // 610
     parameter::fine_offset(3),      // 611
     parameter::fine_offset(4),      // 612
+    parameter::TIME,                // 617
+    parameter::TONE,                // 618
+    parameter::VOLUME,              // 619
     FILTER_FREQUENCY,               // 20_005
     FILTER_RESONANCE,               // 20_006
     FILTER_MORPH,                   // 20_007
@@ -120,6 +129,9 @@ pub(super) fn base_target_values(settings: &OperatorSettings) -> [f32; TARGET_CO
         settings.fine.values()[1],
         settings.fine.values()[2],
         settings.fine.values()[3],
+        settings.performance.time,
+        settings.performance.tone,
+        settings.performance.volume,
         read_f32(settings.filter.read(FILTER_FREQUENCY)),
         read_f32(settings.filter.read(FILTER_RESONANCE)),
         read_f32(settings.filter.read(FILTER_MORPH)),

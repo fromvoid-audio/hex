@@ -21,6 +21,9 @@ struct SubBlockSample {
     phase: (f64, u64),
     lfo_amount: f64,
     delta: f64,
+    time_scale: f64,
+    tone_alpha: Option<f64>,
+    volume_gain: f32,
 }
 
 impl Default for SubBlockSample {
@@ -37,6 +40,9 @@ impl Default for SubBlockSample {
             phase: (0.0, 0),
             lfo_amount: 0.0,
             delta: 0.0,
+            time_scale: 1.0,
+            tone_alpha: None,
+            volume_gain: 1.0,
         }
     }
 }
@@ -116,7 +122,22 @@ impl Runtime {
             | (1 << 15)
             | (1 << 16)
             | (1 << 17);
-        const FILTER_MASK: u32 = (1 << 18) | (1 << 19) | (1 << 20);
+        const FILTER_MASK: u32 = (1 << automation::FILTER_FREQ_IDX)
+            | (1 << automation::FILTER_RES_IDX)
+            | (1 << automation::FILTER_MORPH_IDX);
+        const TIME_MASK: u32 = 1 << automation::TIME_IDX;
+        const TONE_MASK: u32 = 1 << automation::TONE_IDX;
+        const VOLUME_MASK: u32 = 1 << automation::VOLUME_IDX;
+        let base_time_scale = self.factory.settings.performance.time_rate();
+        let base_tone_alpha = performance::tone_alpha_for(
+            f64::from(self.factory.settings.performance.tone),
+            self.factory.rate,
+        );
+        let base_volume_gain =
+            performance::volume_gain_for(f64::from(self.factory.settings.performance.volume));
+        let output_stage_active = base_tone_alpha.is_some()
+            || base_volume_gain != 1.0
+            || (mask & (TONE_MASK | VOLUME_MASK)) != 0;
 
         let mut cursor = 0;
         let mut voice_end = self
@@ -270,15 +291,18 @@ impl Runtime {
                 };
                 if (mask & FILTER_MASK) != 0 && self.filter.armed {
                     if local.is_multiple_of(AUTOMATED_FILTER_STRIDE) {
-                        let freq = Self::read_target(values, mask, 18, offset)
-                            .unwrap_or(base_targets[18])
-                            .clamp(20.0, 20_000.0);
-                        let res = Self::read_target(values, mask, 19, offset)
-                            .unwrap_or(base_targets[19])
-                            .clamp(0.0, 100.0);
-                        let morph = Self::read_target(values, mask, 20, offset)
-                            .unwrap_or(base_targets[20])
-                            .clamp(0.0, 100.0);
+                        let freq =
+                            Self::read_target(values, mask, automation::FILTER_FREQ_IDX, offset)
+                                .unwrap_or(base_targets[automation::FILTER_FREQ_IDX])
+                                .clamp(20.0, 20_000.0);
+                        let res =
+                            Self::read_target(values, mask, automation::FILTER_RES_IDX, offset)
+                                .unwrap_or(base_targets[automation::FILTER_RES_IDX])
+                                .clamp(0.0, 100.0);
+                        let morph =
+                            Self::read_target(values, mask, automation::FILTER_MORPH_IDX, offset)
+                                .unwrap_or(base_targets[automation::FILTER_MORPH_IDX])
+                                .clamp(0.0, 100.0);
                         let triplet = [freq, res, morph];
                         let frame = if let Some((prev, frame)) = cached_filter
                             && prev == triplet
@@ -322,6 +346,30 @@ impl Runtime {
                 } else {
                     lfo_rate_hz / rate_f64
                 };
+                let time_scale = if (mask & TIME_MASK) != 0 {
+                    Self::read_target(values, mask, automation::TIME_IDX, offset)
+                        .map_or(base_time_scale, |v| {
+                            performance::time_rate_for(f64::from(v))
+                        })
+                } else {
+                    base_time_scale
+                };
+                let tone_alpha = if (mask & TONE_MASK) != 0 {
+                    Self::read_target(values, mask, automation::TONE_IDX, offset)
+                        .map_or(base_tone_alpha, |v| {
+                            performance::tone_alpha_for(f64::from(v), self.factory.rate)
+                        })
+                } else {
+                    base_tone_alpha
+                };
+                let volume_gain = if (mask & VOLUME_MASK) != 0 {
+                    Self::read_target(values, mask, automation::VOLUME_IDX, offset)
+                        .map_or(base_volume_gain, |v| {
+                            performance::volume_gain_for(f64::from(v))
+                        })
+                } else {
+                    base_volume_gain
+                };
                 *slot = SubBlockSample {
                     beat,
                     running,
@@ -334,6 +382,9 @@ impl Runtime {
                     phase: self.phase,
                     lfo_amount,
                     delta,
+                    time_scale,
+                    tone_alpha,
+                    volume_gain,
                 };
                 if law.active() {
                     let next = self.phase.0 + delta;
@@ -362,7 +413,12 @@ impl Runtime {
             };
             let cc_timbre = self.cc_timbre;
             let factory = &self.factory;
-            let sub_frames = &mut frames[sub_start..sub_end];
+            let mut stage_mix = [[0.0_f32; 2]; SUB_BLOCK];
+            let sub_frames: &mut [StereoFrame] = if output_stage_active {
+                &mut stage_mix[..sub_len]
+            } else {
+                &mut frames[sub_start..sub_end]
+            };
             let sub_slice = &sub_samples[..sub_len];
             let mut any_expired = false;
 
@@ -512,6 +568,22 @@ impl Runtime {
                     }
                 }
                 has_fading = any_fading;
+            }
+
+            if output_stage_active {
+                let dst = &mut frames[sub_start..sub_end];
+                for ((out_frame, &mixed), sample_ctx) in dst
+                    .iter_mut()
+                    .zip(stage_mix[..sub_len].iter())
+                    .zip(sub_slice.iter())
+                {
+                    let toned = self
+                        .tone_filter
+                        .process_sample(mixed, sample_ctx.tone_alpha);
+                    let gain = sample_ctx.volume_gain;
+                    out_frame[0] += toned[0] * gain;
+                    out_frame[1] += toned[1] * gain;
+                }
             }
 
             sub_start = sub_end;
@@ -768,7 +840,12 @@ fn render_voice_sample(
         voice.lfo_fraction = next.fract();
     }
     if quality {
-        voice.envelope_age = (voice.envelope_age + voice.effective.time_rate).min(u64::MAX as f64);
+        let rate = if ctx.time_scale == 1.0 {
+            voice.effective.time_rate
+        } else {
+            (voice.effective.time_rate * ctx.time_scale).clamp(0.25, 16.0)
+        };
+        voice.envelope_age = (voice.envelope_age + rate).min(u64::MAX as f64);
         if let Some(filter) = &mut voice.modulated_filter {
             filter.advance();
         }

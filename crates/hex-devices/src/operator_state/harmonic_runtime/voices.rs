@@ -140,7 +140,7 @@ impl EventProof {
                             .evaluate(voice.pitch, voice.velocity, self.expression)
                             .map_err(|_| Error::InvalidEventBatch)?;
                         factory.modulated_filter(effective)?;
-                        voice.time_rate = effective.time_rate;
+                        voice.time_rate = factory.effective_time_rate(effective.time_rate);
                     }
                 }
             }
@@ -178,7 +178,8 @@ impl EventProof {
                 self.voices[index].pitch = pitch;
                 self.voices[index].sequence = held.sequence;
                 self.voices[index].velocity = velocity;
-                self.voices[index].time_rate = prepared.effective.time_rate;
+                self.voices[index].time_rate =
+                    factory.effective_time_rate(prepared.effective.time_rate);
             }
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
                 self.ledger.off(occurrence_id)?;
@@ -207,7 +208,8 @@ impl EventProof {
                         self.voices[index].pitch = held.pitch;
                         self.voices[index].sequence = held.sequence;
                         self.voices[index].velocity = held.velocity;
-                        self.voices[index].time_rate = prepared.effective.time_rate;
+                        self.voices[index].time_rate =
+                            factory.effective_time_rate(prepared.effective.time_rate);
                     } else {
                         self.voices[index].gate = Some(self.voices[index].age);
                         self.voices[index].envelope_gate =
