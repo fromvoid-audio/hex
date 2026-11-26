@@ -82,7 +82,7 @@ fn note_activation_and_copy_keep_inactive_source_notes(cx: &mut TestAppContext) 
     let (mut visual, editor, _environment, clip) = fixture(cx);
     authored(&editor, &mut visual, clip);
     visual.simulate_keystrokes("cmd-a");
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     assert!(
         notes(&editor, &visual, clip)
@@ -114,7 +114,7 @@ fn note_activation_and_copy_keep_inactive_source_notes(cx: &mut TestAppContext) 
     let copied = notes(&editor, &visual, clip);
     assert_eq!(copied.len(), 4);
     assert!(copied.iter().all(|note| !note.active()));
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     let after = notes(&editor, &visual, clip);
     assert_eq!(after.iter().filter(|note| note.active()).count(), 2);
@@ -135,7 +135,7 @@ fn note_activation_does_not_interrupt_a_held_note_gesture(cx: &mut TestAppContex
     let down = at(&editor, &mut visual, 0.625, 60);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump(&editor, &mut visual);
     assert!(
         notes(&editor, &visual, clip)

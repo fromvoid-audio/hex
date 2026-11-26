@@ -238,6 +238,14 @@ impl EditorView {
             return false;
         }
         let track_id = track.id();
+        if self
+            .interaction
+            .pending_clip_activation
+            .as_ref()
+            .is_some_and(|pending| pending.affects_track(track))
+        {
+            return false;
+        }
         if let Some(edit) = self.clip_name_edit.as_ref()
             && track_contains_clip(track, edit.clip)
         {

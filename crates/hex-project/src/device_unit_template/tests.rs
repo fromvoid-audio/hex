@@ -211,6 +211,33 @@ fn malformed_templates_and_unverified_inactive_assets_refuse() {
         project.capture_portable_device_unit(root).unwrap_err(),
         Invalid("device asset has no verified original content identity")
     );
+
+    // Worker-verified resident original facts succeed without mutating the project.
+    let snapshot_before = project.snapshot();
+    let inactive_facts =
+        OriginalSourceFacts::new(OriginalSourceFacts::LAW_VERSION, [2; 32]).unwrap();
+    let captured = project
+        .capture_portable_device_unit_with_verified_originals(root, |asset| {
+            (asset == inactive).then_some(inactive_facts)
+        })
+        .unwrap();
+    assert_eq!(captured, unit);
+    assert_eq!(project.snapshot(), snapshot_before);
+
+    // Disagreement with already-stamped canonical facts is refused explicitly.
+    let wrong_facts = OriginalSourceFacts::new(OriginalSourceFacts::LAW_VERSION, [99; 32]).unwrap();
+    assert_eq!(
+        project
+            .capture_portable_device_unit_with_verified_originals(root, |asset| {
+                if asset == inactive {
+                    Some(inactive_facts)
+                } else {
+                    Some(wrong_facts)
+                }
+            })
+            .unwrap_err(),
+        Invalid("device original content identity disagrees with canonical metadata")
+    );
 }
 
 #[test]

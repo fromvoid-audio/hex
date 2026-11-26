@@ -571,7 +571,7 @@ fn device_backspace_keeps_eq_graph_removal_local(cx: &mut TestAppContext) {
                 == 1
     });
     visual.run_until_parked();
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("c");
     editor.read_with(cx, |view, _| {
         assert!(
             !view
@@ -1003,7 +1003,7 @@ fn device_delete_release_does_not_rearm_old_card_after_selection_changes(cx: &mu
 }
 
 #[gpui::test]
-fn device_zero_rapid_toggles_remain_ordered_before_worker_responses(cx: &mut TestAppContext) {
+fn device_slash_rapid_toggles_remain_ordered_before_worker_responses(cx: &mut TestAppContext) {
     cx.update(super::super::super::bind_editor_keys);
     let (service, state, track, device, _, _) = actor_utility_fixture();
     let (handle, editor) = actor_editor_window(cx, service, state, track);
@@ -1011,8 +1011,8 @@ fn device_zero_rapid_toggles_remain_ordered_before_worker_responses(cx: &mut Tes
     visual.run_until_parked();
     let point = title(&mut visual, device);
     visual.simulate_click(point, Modifiers::default());
-    visual.simulate_keystrokes("c");
-    visual.simulate_keystrokes("c");
+    visual.simulate_keystrokes("/");
+    visual.simulate_keystrokes("/");
     editor.read_with(cx, |view, _| {
         assert_eq!(view.worker_requests_pending, 2);
         assert!(view.error.is_none());
@@ -1035,7 +1035,7 @@ fn device_zero_rapid_toggles_remain_ordered_before_worker_responses(cx: &mut Tes
 }
 
 #[gpui::test]
-fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
+fn device_slash_toggles_focused_effect_and_instrument_with_history_and_save(
     cx: &mut TestAppContext,
 ) {
     let browser = BrowserDirectory::new();
@@ -1086,7 +1086,7 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
             assert_eq!(
                 actual.as_ref(),
                 expected.project(),
-                "0 toggles only the focused device"
+                "activation toggles only the focused device"
             );
             assert_eq!(view.device_panel.selected_device, Some(device));
             assert_eq!(view.selected_clip, Some(clip));
@@ -1108,14 +1108,14 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
         });
         visual.run_until_parked();
         super::header_actions_tests::assert_power_paint(&mut visual, device, false);
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("/");
         pump_until(&editor, cx, settled);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, original)
         });
         visual.run_until_parked();
     }
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump_until(&editor, cx, settled);
     let expected = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
     let path = browser.0.join("bypassed.hex");
@@ -1143,7 +1143,9 @@ fn device_zero_toggles_focused_effect_and_instrument_with_history_and_save(
 }
 
 #[gpui::test]
-fn device_zero_uses_return_and_main_owner_without_changing_track_or_chain(cx: &mut TestAppContext) {
+fn device_slash_uses_return_and_main_owner_without_changing_track_or_chain(
+    cx: &mut TestAppContext,
+) {
     let browser = BrowserDirectory::new();
     cx.update(super::super::super::bind_editor_keys);
     let (service, _, track, return_id, return_device, _) = actor_return_utility_fixture();
@@ -1180,7 +1182,7 @@ fn device_zero_uses_return_and_main_owner_without_changing_track_or_chain(cx: &m
         visual.run_until_parked();
         let point = title(&mut visual, device);
         visual.simulate_click(point, Modifiers::default());
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("/");
         pump_until(&editor, cx, settled);
         let changed = editor.read_with(cx, |view, _| {
             let project = &view.state.as_ref().unwrap().project;
@@ -1209,7 +1211,7 @@ fn device_zero_uses_return_and_main_owner_without_changing_track_or_chain(cx: &m
             assert_eq!(view.state.as_ref().unwrap().project, changed)
         });
         visual.run_until_parked();
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("/");
         pump_until(&editor, cx, settled);
         editor.read_with(cx, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, original)
@@ -1218,7 +1220,7 @@ fn device_zero_uses_return_and_main_owner_without_changing_track_or_chain(cx: &m
 }
 
 #[gpui::test]
-fn device_zero_preserves_numeric_and_browser_typing_and_modified_keys(cx: &mut TestAppContext) {
+fn device_slash_preserves_numeric_and_browser_typing_and_modified_keys(cx: &mut TestAppContext) {
     let browser = BrowserDirectory::new();
     cx.update(super::super::super::bind_editor_keys);
     let (service, state, track, device, _, _) = actor_utility_fixture();
@@ -1229,7 +1231,11 @@ fn device_zero_preserves_numeric_and_browser_typing_and_modified_keys(cx: &mut T
     visual.run_until_parked();
     let point = title(&mut visual, device);
     visual.simulate_click(point, Modifiers::default());
-    visual.simulate_keystrokes("cmd-0 alt-0 ctrl-0 shift-0");
+    visual.simulate_keystrokes("0 cmd-/ alt-/ ctrl-/ shift-/");
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, original)
+    });
     let field = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
@@ -1263,16 +1269,16 @@ fn device_zero_preserves_numeric_and_browser_typing_and_modified_keys(cx: &mut T
     let search = visual.debug_bounds("browser-search").unwrap();
     visual.simulate_click(search.center(), Modifiers::default());
     visual.simulate_input("find");
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump_until(&editor, cx, settled);
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).text(), "find0");
+        assert_eq!(view.browser.search.read(cx).text(), "find/");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
 }
 
 #[gpui::test]
-fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
+fn device_slash_refuses_retired_hidden_pending_and_unselected_card_handlers(
     cx: &mut TestAppContext,
 ) {
     cx.update(super::super::super::bind_editor_keys);
@@ -1327,7 +1333,7 @@ fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
         });
         let expected = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
         // Dispatch before repaint: the old card handler must inspect live identity.
-        visual.simulate_keystrokes("0");
+        visual.simulate_keystrokes("/");
         editor.read_with(cx, |view, _| {
             assert_eq!(
                 view.state.as_ref().unwrap().project,
@@ -1342,7 +1348,62 @@ fn device_zero_refuses_retired_hidden_pending_and_unselected_card_handlers(
 }
 
 #[gpui::test]
-fn device_zero_orders_valid_parameter_draft_before_bypass_with_separate_undo(
+fn device_slash_auditions_bypass_while_dragging_a_selected_knob(cx: &mut TestAppContext) {
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let original = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+    let header = title(&mut visual, device);
+    visual.simulate_click(header, Modifiers::default());
+    let knob = visual
+        .debug_bounds(Box::leak(
+            format!("device-{}-parameter-2-knob", device.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let start = knob.center();
+    let moved = point(start.x, start.y - px(36.0));
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(moved, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let adjusted = editor.read_with(cx, |view, _| {
+        view.device_panel
+            .gesture
+            .snapshot()
+            .expect("active knob drag")
+            .value
+    });
+    visual.simulate_keystrokes("/");
+    pump_until(&editor, cx, settled);
+    visual.simulate_mouse_up(moved, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let authored = editor.read_with(cx, |view, _| {
+        let entry = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert!(entry.bypassed(), "{:?}", view.error);
+        assert_ne!(entry.state(), &original);
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Effect,
+                entry.state(),
+                hex_lattice_contract::ParameterId::from_static(2)
+            )
+            .unwrap(),
+            adjusted,
+        );
+        entry.state().clone()
+    });
+    visual.simulate_keystrokes("/");
+    pump_until(&editor, cx, settled);
+    editor.read_with(cx, |view, _| {
+        let entry = view.state.as_ref().unwrap().project.device(device).unwrap();
+        assert!(!entry.bypassed(), "{:?}", view.error);
+        assert_eq!(entry.state(), &authored);
+    });
+}
+
+#[gpui::test]
+fn device_slash_orders_valid_parameter_draft_before_bypass_with_separate_undo(
     cx: &mut TestAppContext,
 ) {
     let browser = BrowserDirectory::new();
@@ -1353,6 +1414,8 @@ fn device_zero_orders_valid_parameter_draft_before_bypass_with_separate_undo(
     let mut visual = VisualTestContext::from_window(handle, cx);
     visual.simulate_resize(size(px(1600.0), px(700.0)));
     visual.run_until_parked();
+    let point = title(&mut visual, device);
+    visual.simulate_click(point, Modifiers::default());
     let field = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
@@ -1361,9 +1424,7 @@ fn device_zero_orders_valid_parameter_draft_before_bypass_with_separate_undo(
     visual.simulate_click(field.center(), Modifiers::default());
     visual.simulate_keystrokes("cmd-a");
     visual.simulate_input("6.00 db");
-    let point = title(&mut visual, device);
-    visual.simulate_click(point, Modifiers::default());
-    visual.simulate_keystrokes("0");
+    visual.simulate_keystrokes("/");
     pump_until(&editor, cx, settled);
     editor.read_with(cx, |view, _| {
         assert!(

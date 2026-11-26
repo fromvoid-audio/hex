@@ -2,12 +2,45 @@
 //! This bounded wrapper reuses existing creation, naming and source ownership
 //! commands. It accepts no arbitrary batches, nested wrappers, filesystem or DSP.
 use crate::{
-    AssetId, Command, Created, DeviceComparison, DeviceId, Invalid, PortableDeviceUnit, Project,
-    TrackDeviceSlot,
+    AssetId, Command, Created, DeviceComparison, DeviceId, Invalid, OriginalSourceFacts,
+    PortableDeviceUnit, Project, TrackDeviceSlot,
 };
 use hex_lattice_contract::NativeDeviceState;
+use std::path::PathBuf;
 
 mod unit;
+
+/// Worker-verified original audio metadata registered as a fresh destination
+/// asset inside one complete-unit initialization edit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterUnitOriginal {
+    pub path: PathBuf,
+    pub source_rate: u32,
+    pub source_frames: u64,
+    pub facts: OriginalSourceFacts,
+}
+
+/// How one entry in a `PortableDeviceUnit`'s asset manifest resolves in the
+/// destination project during complete-unit initialization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnitAssetResolution {
+    /// Reuse an existing destination original whose canonical facts, rate and
+    /// frame count match the manifest entry.
+    Existing(AssetId),
+    /// Register a fresh destination original inside the same project edit using
+    /// worker-supplied path, rate, frame count and exact content identity.
+    Register(RegisterUnitOriginal),
+}
+
+/// One fresh destination original reserved by complete-unit initialization for
+/// the prepared audio stage before the edit commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReservedUnitOriginal {
+    /// Zero-based index into `PortableDeviceUnit::assets()`.
+    pub manifest_index: usize,
+    /// Exact fresh destination `AssetId` reserved and registered by this edit.
+    pub asset: AssetId,
+}
 
 /// Validated creation/replacement plus its initial comparison bank. Fields are
 /// private so an unrelated or recursively nested command cannot reach apply.
@@ -79,6 +112,69 @@ impl DeviceInitialization {
             command,
             authored: AuthoredInitialization::Unit(unit),
         })
+    }
+
+    /// Initialize one complete portable subtree whose manifest entries may each
+    /// reuse an existing destination original or register a fresh original
+    /// inside the same project edit. Fresh `AssetId`s are reserved against
+    /// `project` without mutating it and exposed via `reserved_unit_originals`
+    /// and `resolved_unit_assets` for the prepared audio stage.
+    pub fn new_unit_with_originals(
+        project: &Project,
+        mut command: Command,
+        template: PortableDeviceUnit,
+        resolutions: Vec<UnitAssetResolution>,
+    ) -> Result<Self, Invalid> {
+        let unit = unit::CompleteUnit::new_with_originals(
+            project,
+            template,
+            resolutions,
+            state_mut(&mut command)?,
+            unit::ReplacementPolicy::SameProvider,
+        )?;
+        Ok(Self {
+            command,
+            authored: AuthoredInitialization::Unit(unit),
+        })
+    }
+
+    /// Cross-type replacement variant of `new_unit_with_originals` for catalog
+    /// default replacement while reserving fresh destination original IDs.
+    pub fn new_replacement_unit_with_originals(
+        project: &Project,
+        mut command: Command,
+        template: PortableDeviceUnit,
+        resolutions: Vec<UnitAssetResolution>,
+    ) -> Result<Self, Invalid> {
+        let unit = unit::CompleteUnit::new_with_originals(
+            project,
+            template,
+            resolutions,
+            state_mut(&mut command)?,
+            unit::ReplacementPolicy::AllowTypeChange,
+        )?;
+        Ok(Self {
+            command,
+            authored: AuthoredInitialization::Unit(unit),
+        })
+    }
+
+    /// Destination `AssetId` for every entry in the unit's asset manifest
+    /// (combining reused existing IDs and reserved fresh IDs).
+    pub fn resolved_unit_assets(&self) -> &[AssetId] {
+        match &self.authored {
+            AuthoredInitialization::Comparison(_) => &[],
+            AuthoredInitialization::Unit(unit) => unit.resolved_assets(),
+        }
+    }
+
+    /// Exact fresh destination `AssetId`s reserved for manifest entries that
+    /// register new originals, in manifest order.
+    pub fn reserved_unit_originals(&self) -> &[ReservedUnitOriginal] {
+        match &self.authored {
+            AuthoredInitialization::Comparison(_) => &[],
+            AuthoredInitialization::Unit(unit) => unit.reserved_originals(),
+        }
     }
 
     /// The original bounded command, for control-side inspection/diagnostics.
