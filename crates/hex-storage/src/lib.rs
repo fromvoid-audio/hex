@@ -15,6 +15,7 @@
 //! establish ownership or authorize deletion.
 pub mod automation_draft;
 pub mod device_packages;
+pub mod factory_library;
 mod files;
 mod journal;
 pub mod preset;

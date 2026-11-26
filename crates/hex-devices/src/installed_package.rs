@@ -2241,6 +2241,81 @@ impl MutableInstrumentRuntime for SilentUnavailableInstrumentRuntime {
     }
 }
 
+/// Neutral control-side load specification for one admitted installed package
+/// module (`#3004`). Carries only verified catalog paths and identity digests —
+/// zero hardcoded device types or static device switches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstalledPackageLoadEntry {
+    pub dylib_path: std::path::PathBuf,
+    pub publisher_id: String,
+    pub package_sha256: [u8; 32],
+    pub device_kind: u32,
+}
+
+/// Generic control-loaded bank of installed `.hexdevice` effect and instrument
+/// definitions (`#3004`). Builds ordinary `NativeDeviceRegistry` and
+/// `NativeInstrumentRegistry` views purely from admitted on-disk catalog
+/// packages with zero hardcoded device-type switches or static fallbacks.
+pub struct InstalledPackageRuntimeBank {
+    effects: Vec<InstalledPackageEffect>,
+    instruments: Vec<InstalledPackageInstrument>,
+}
+
+impl InstalledPackageRuntimeBank {
+    /// Load all admitted catalog entries on control. Never call on audio callbacks.
+    pub fn load_on_control(
+        entries: &[InstalledPackageLoadEntry],
+    ) -> Result<Self, DeviceContractError> {
+        let mut effects = Vec::new();
+        let mut instruments = Vec::new();
+        for entry in entries {
+            match entry.device_kind {
+                DEVICE_KIND_AUDIO_EFFECT => {
+                    effects.push(InstalledPackageEffect::load_on_control(
+                        &entry.dylib_path,
+                        entry.publisher_id.clone(),
+                        entry.package_sha256,
+                    )?);
+                }
+                DEVICE_KIND_INSTRUMENT => {
+                    instruments.push(InstalledPackageInstrument::load_on_control(
+                        &entry.dylib_path,
+                        entry.publisher_id.clone(),
+                        entry.package_sha256,
+                    )?);
+                }
+                _ => return Err(DeviceContractError::WrongDeviceType),
+            }
+        }
+        Ok(Self {
+            effects,
+            instruments,
+        })
+    }
+
+    pub fn effects(&self) -> &[InstalledPackageEffect] {
+        &self.effects
+    }
+
+    pub fn instruments(&self) -> &[InstalledPackageInstrument] {
+        &self.instruments
+    }
+
+    pub fn effect_refs(&self) -> Vec<&dyn NativeDeviceDefinition> {
+        self.effects
+            .iter()
+            .map(|e| e as &dyn NativeDeviceDefinition)
+            .collect()
+    }
+
+    pub fn instrument_refs(&self) -> Vec<&dyn NativeInstrumentDefinition> {
+        self.instruments
+            .iter()
+            .map(|i| i as &dyn NativeInstrumentDefinition)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

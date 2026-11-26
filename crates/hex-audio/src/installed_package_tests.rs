@@ -2501,3 +2501,337 @@ fn sampler_native_package_empty_loaded_ab_replacement_save_reopen_and_zero_alloc
     drop(rev_b);
     assert_eq!(sampler_def.active_module_leases(), 1);
 }
+
+#[test]
+fn factory_library_offline_bootstrap_precedence_upgrade_restore_and_generic_load() {
+    use hex_devices::installed_package::{InstalledPackageLoadEntry, InstalledPackageRuntimeBank};
+    use hex_storage::device_packages::PackageOrigin;
+    use hex_storage::factory_library::{
+        FACTORY_LIBRARY_DEVICE_COUNT, FACTORY_LIBRARY_SPECS, FactoryBootstrapMode,
+        FactoryItemOutcome, bootstrap_factory_library,
+    };
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicBool;
+
+    let tmp = TempDir::new("factory_lib_3004");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+
+    let token = "reviewed-factory-library-token-v1";
+    let mut policy = AdmissionPolicy::host_default();
+    policy.allow_reviewed_test("hex.factory", sha256_hex(token.as_bytes()));
+
+    // Build complete 11-device v1.0.0 offline factory bundle and v1.1.0 upgrade bundle.
+    let bundle_v1 = tmp.path().join("factory-v1");
+    let bundle_v2 = tmp.path().join("factory-v2");
+    for (out_dir, ver) in [(&bundle_v1, "1.0.0"), (&bundle_v2, "1.1.0")] {
+        let out = Command::new("python3")
+            .arg(root.join("scripts/build_factory_library.py"))
+            .arg("--out-dir")
+            .arg(out_dir)
+            .arg("--version")
+            .arg(ver)
+            .arg("--auth-token")
+            .arg(token)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "build_factory_library.py failed ({ver}): {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // 1. Clean offline first launch installs all 11 factory packages (7 effects + 4 instruments).
+    let lib_dir = tmp.path().join("library");
+    let report1 = bootstrap_factory_library(
+        &lib_dir,
+        &bundle_v1,
+        &policy,
+        FactoryBootstrapMode::StartupOrUpgrade,
+        None,
+    );
+    assert!(report1.catalog_error.is_none());
+    assert_eq!(report1.installed_count(), FACTORY_LIBRARY_DEVICE_COUNT);
+    assert_eq!(report1.failed_count(), 0);
+    assert_eq!(report1.missing_count(), 0);
+
+    // 2. Repeated launch is idempotent: 11 already_installed, 0 newly installed.
+    let report_repeat = bootstrap_factory_library(
+        &lib_dir,
+        &bundle_v1,
+        &policy,
+        FactoryBootstrapMode::StartupOrUpgrade,
+        None,
+    );
+    assert_eq!(
+        report_repeat.already_installed_count(),
+        FACTORY_LIBRARY_DEVICE_COUNT
+    );
+    assert_eq!(report_repeat.installed_count(), 0);
+
+    // 3. Pin a user-selected default on `hex.pkg.utility` (1.0.0) and install a conflicting
+    // user-origin package at `(hex.pkg.sine, 1.1.0)` BEFORE running app upgrade to 1.1.0!
+    let catalog = DevicePackageCatalog::open_and_recover(&lib_dir).unwrap();
+    let v1_util = catalog
+        .select_default_generation("hex.pkg.utility", (1, 0, 0), false)
+        .unwrap();
+    let custom_sine_pkg = tmp.path().join("custom-sine-1.1.0.hexdevice");
+    let custom_sine_rcpt = tmp.path().join("custom-sine-1.1.0.receipt.json");
+    let build_custom = Command::new("python3")
+        .arg(root.join("scripts/build_device_package.py"))
+        .arg("--source")
+        .arg(root.join("third_party/hex-device-abi-qual/fixtures/sine_v1.c"))
+        .arg("--type-id")
+        .arg("hex.pkg.sine")
+        .arg("--display-name")
+        .arg("sine custom")
+        .arg("--publisher-id")
+        .arg("hex.factory")
+        .arg("--device-kind")
+        .arg(DEVICE_KIND_INSTRUMENT.to_string())
+        .arg("--capabilities")
+        .arg(
+            (CAP_INSTRUMENT
+                | CAP_PARAMETER_EVENTS
+                | CAP_NOTE_EVENTS
+                | CAP_ZERO_LATENCY
+                | CAP_STATE_PERSISTENCE)
+                .to_string(),
+        )
+        .arg("--version")
+        .arg("1.1.0")
+        .arg("--auth-token")
+        .arg(token)
+        .arg("--out-archive")
+        .arg(&custom_sine_pkg)
+        .arg("--out-receipt")
+        .arg(&custom_sine_rcpt)
+        .output()
+        .unwrap();
+    assert!(build_custom.status.success());
+    let custom_sine_rec = match catalog
+        .install_file(&custom_sine_pkg, &policy, None)
+        .unwrap()
+    {
+        InstallOutcome::Installed(rec) => rec,
+        other => panic!("expected Installed custom sine, got {other:?}"),
+    };
+    assert_eq!(custom_sine_rec.origin, PackageOrigin::User);
+
+    // 4. App upgrade to v1.1.0:
+    // - installs 10 new factory v1.1.0 generations
+    // - preserves the conflicting user-origin `hex.pkg.sine 1.1.0` without overwriting!
+    // - preserves the user-pinned default on `hex.pkg.utility 1.0.0`!
+    let report_upgrade = bootstrap_factory_library(
+        &lib_dir,
+        &bundle_v2,
+        &policy,
+        FactoryBootstrapMode::StartupOrUpgrade,
+        None,
+    );
+    assert_eq!(report_upgrade.installed_count(), 10);
+    assert_eq!(report_upgrade.preserved_user_conflicts(), 1);
+    assert_eq!(
+        catalog
+            .default_generation_for("hex.pkg.utility")
+            .unwrap()
+            .unwrap()
+            .package_sha256,
+        v1_util.package_sha256,
+        "factory upgrade must never override a user-selected default"
+    );
+    assert_eq!(
+        catalog
+            .default_generation_for("hex.pkg.sine")
+            .unwrap()
+            .unwrap()
+            .package_sha256,
+        custom_sine_rec.package_sha256,
+        "factory upgrade must never overwrite same-ID conflicting user content"
+    );
+
+    // 5. Explicit offline restore recovers a damaged factory generation without touching user content.
+    let damaged_eq = catalog
+        .list()
+        .unwrap()
+        .into_iter()
+        .find(|r| {
+            r.type_id == "hex.pkg.eq" && r.package_minor == 0 && r.origin == PackageOrigin::Factory
+        })
+        .unwrap();
+    let damaged_dylib = lib_dir
+        .join(&damaged_eq.generation_rel_dir)
+        .join(&damaged_eq.native_module_rel_path);
+    std::fs::write(&damaged_dylib, b"corrupted-bytes").unwrap();
+    let report_restore = bootstrap_factory_library(
+        &lib_dir,
+        &bundle_v1,
+        &policy,
+        FactoryBootstrapMode::ExplicitRestore,
+        None,
+    );
+    assert_eq!(report_restore.restored_count(), 1);
+    assert_eq!(report_restore.failed_count(), 0);
+
+    // 6. Missing artifact, corrupted archive, cancelled init, and read-only library degrade cleanly.
+    let broken_bundle = tmp.path().join("broken-bundle");
+    std::fs::create_dir_all(&broken_bundle).unwrap();
+    std::fs::write(
+        broken_bundle.join("hex.pkg.utility.hexdevice"),
+        b"NOT-A-VALID-ARCHIVE",
+    )
+    .unwrap();
+    let report_broken = bootstrap_factory_library(
+        &lib_dir,
+        &broken_bundle,
+        &policy,
+        FactoryBootstrapMode::StartupOrUpgrade,
+        None,
+    );
+    assert_eq!(report_broken.failed_count(), 1);
+    assert_eq!(
+        report_broken.missing_count(),
+        FACTORY_LIBRARY_DEVICE_COUNT - 1
+    );
+
+    let cancel_flag = AtomicBool::new(true);
+    let report_canceled = bootstrap_factory_library(
+        &lib_dir,
+        &bundle_v1,
+        &policy,
+        FactoryBootstrapMode::StartupOrUpgrade,
+        Some(&cancel_flag),
+    );
+    assert_eq!(
+        report_canceled.canceled_count(),
+        FACTORY_LIBRARY_DEVICE_COUNT
+    );
+
+    let ro_dir = tmp.path().join("readonly-lib");
+    std::fs::create_dir_all(&ro_dir).unwrap();
+    std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let report_ro = bootstrap_factory_library(
+        &ro_dir,
+        &bundle_v1,
+        &policy,
+        FactoryBootstrapMode::StartupOrUpgrade,
+        None,
+    );
+    assert!(
+        report_ro.catalog_error.is_some()
+            || report_ro
+                .items
+                .iter()
+                .all(|i| matches!(i, FactoryItemOutcome::Failed { .. })),
+        "read-only library must refuse cleanly without panicking"
+    );
+    std::fs::set_permissions(&ro_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    // 7. Generic catalog loader loads all 11 default factory devices purely from disk (zero hardcoded switches!).
+    let mut load_entries = Vec::new();
+    for spec in FACTORY_LIBRARY_SPECS {
+        let rec = catalog
+            .default_generation_for(spec.type_id)
+            .unwrap()
+            .expect("all 11 devices discoverable via catalog");
+        load_entries.push(InstalledPackageLoadEntry {
+            dylib_path: lib_dir
+                .join(&rec.generation_rel_dir)
+                .join(&rec.native_module_rel_path),
+            publisher_id: rec.publisher_id,
+            package_sha256: hex_to_bytes32(&rec.package_sha256),
+            device_kind: rec.manifest.device_kind,
+        });
+    }
+    let bank = InstalledPackageRuntimeBank::load_on_control(&load_entries).unwrap();
+    assert_eq!(bank.effects().len(), 7);
+    assert_eq!(bank.instruments().len(), 4);
+    let eff_refs = bank.effect_refs();
+    let inst_refs = bank.instrument_refs();
+    let eff_reg = NativeDeviceRegistry::new(&eff_refs).unwrap();
+    let inst_reg = NativeInstrumentRegistry::new(&inst_refs).unwrap();
+
+    // Render one live audio block through catalog-loaded Sine -> catalog-loaded Utility with zero callback allocs!
+    let tuning = TuningTable::default();
+    let ctx = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let sine_state = inst_reg
+        .default_state(DeviceTypeId::new("hex.pkg.sine").unwrap())
+        .unwrap();
+    let prepared_sine = inst_reg.prepare_instrument(&sine_state, &ctx).unwrap();
+    let mut pair = NativeInstrumentRuntimePair::new(
+        prepared_sine
+            .prepare_mutable_runtime()
+            .unwrap()
+            .unwrap()
+            .as_ref(),
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 512 * 1024,
+            max_events_per_block: 64,
+            max_active_occurrences: 16,
+            max_tail_frames: 48_000,
+        },
+    )
+    .unwrap();
+    let util_state = eff_reg
+        .default_state(DeviceTypeId::new("hex.pkg.utility").unwrap())
+        .unwrap();
+    let util_def = bank
+        .effects()
+        .iter()
+        .find(|e| e.type_id().as_str() == Ok("hex.pkg.utility"))
+        .unwrap();
+    let Some(PreparedProcessorFactory::Owned(util_factory)) =
+        util_def.prepare_runtime_factory(&util_state, &ctx).unwrap()
+    else {
+        panic!("utility owned factory");
+    };
+    let mut util_rt = util_factory.create_runtime().unwrap();
+    let mut buf = [[0.0f32; 2]; 64];
+    let on = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 69,
+        velocity: 127,
+    }];
+    pair.begin_block();
+    pair.process_block(&on, &mut buf, &EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    pair.commit_block();
+    util_rt.begin_block();
+    util_rt.process_block(&mut buf, &EMPTY_DEVICE_RESOURCES);
+    util_rt.commit_block();
+    assert!(buf[4][0].abs() > 0.01);
+
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..32 {
+                buf.fill([0.0; 2]);
+                pair.begin_block();
+                let _ = pair.process_block(&[], &mut buf, &EMPTY_DEVICE_RESOURCES);
+                pair.commit_block();
+                util_rt.begin_block();
+                util_rt.process_block(&mut buf, &EMPTY_DEVICE_RESOURCES);
+                util_rt.commit_block();
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+}
