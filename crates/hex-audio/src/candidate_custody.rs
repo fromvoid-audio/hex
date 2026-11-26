@@ -85,6 +85,9 @@ pub enum AudioCandidateReturnKind {
     NeverInstalled,
     FinalActive,
     Replaced,
+    /// Displaced on the callback by an explicit one-way handoff to ordinary
+    /// worker-owned publication on a combined-configured output.
+    HandedOffToOrdinary,
     /// Exact callback-observed native Stop, before successor construction.
     /// This has no replacement manifest and is not terminal backend shutdown.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

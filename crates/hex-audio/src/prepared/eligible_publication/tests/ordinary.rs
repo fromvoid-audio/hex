@@ -3,6 +3,7 @@
 use super::*;
 use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
 use std::collections::BTreeMap;
+use std::time::Duration;
 fn resource_limits() -> hex_engine::AudioStorageLedgerReservation {
     hex_engine::AudioStorageLedgerReservation {
         data_rows: 512,
@@ -5372,5 +5373,660 @@ fn sixteen_aligned_streamed_tracks_cross_page_boundary_with_zero_starved_callbac
     drop(data);
     drop(errors);
     drop(control);
+    finish(&mut retirement);
+}
+
+#[test]
+fn verified_to_ordinary_continuous_handoff_preserves_output_domain_and_refuses_competing_publishers()
+ {
+    let _serial = serial();
+    let (project, _) = utility_fixture::project();
+    let mut snapshot = project.snapshot();
+    snapshot.tracks[0].devices.clear();
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::new();
+    let definition = wav.definition(asset, 11);
+    let verified_context = hex_engine::AudioSourceContext {
+        project_generation: 3,
+        editor_revision: 1,
+    };
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(verified_context),
+    );
+    let verified_identity = owner.identity();
+    let verified = reservation(&mut owner);
+    let ordinary = resource_limits();
+    let total = hex_engine::AudioStorageLedgerReservation {
+        data_rows: verified.data_rows + ordinary.data_rows + 1024,
+        handle_rows: verified.handle_rows + ordinary.handle_rows,
+        root_rows: 1 + ordinary.root_rows,
+        max_retained_bytes: verified.max_retained_data_bytes
+            + ordinary.max_retained_bytes
+            + 1024 * 1024,
+        max_construction_peak_bytes: verified.max_construction_peak_data_bytes
+            + ordinary.max_construction_peak_bytes
+            + 1024 * 1024,
+    };
+
+    let (control, callback) = channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    let output_identity = control.output_identity().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_combined_publication_on_control(verified, ordinary, 3, 4096, total)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition.clone()),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    measured_block(&mut data);
+
+    let verified_ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 3)
+        .ok()
+        .unwrap();
+    assert!(client.activate());
+    client.command(PlaybackCommand::Play).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let output = measured_block(&mut data);
+        if output.iter().any(|frame| frame[0] != 0.0) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "verified source did not play");
+        std::thread::yield_now();
+    }
+    let predecessor = control
+        .status
+        .applied_audio_source()
+        .expect("installed verified audio source");
+    assert_eq!(predecessor.output_identity, output_identity);
+    assert_eq!(predecessor.context, verified_context);
+    assert!(!control.status.ordinary_owner_active());
+
+    let store = ResidentDeviceAssets::default();
+    let handoff_context = hex_engine::AudioSourceContext {
+        project_generation: 4,
+        editor_revision: 1,
+    };
+
+    // Refusals on control must preserve the active verified graph and output.
+    let wrong_output = compile(&project, definition.metadata.clone(), &store);
+    let err = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            wrong_output,
+            output_identity + 1,
+            Some(predecessor),
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AdmittedPublishError::Publication(PublishError {
+            reason: "ordinary handoff output identity mismatch",
+            ..
+        })
+    ));
+
+    let stale_predecessor = AppliedAudioSource {
+        context: hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 99,
+        },
+        ..predecessor
+    };
+    let stale_graph = compile(&project, definition.metadata.clone(), &store);
+    let err = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            stale_graph,
+            output_identity,
+            Some(stale_predecessor),
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AdmittedPublishError::Publication(PublishError {
+            reason: "ordinary handoff predecessor source changed",
+            ..
+        })
+    ));
+
+    let vacant_mismatch = compile(&project, definition.metadata.clone(), &store);
+    let err = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            vacant_mismatch,
+            output_identity,
+            None,
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AdmittedPublishError::Publication(PublishError {
+            reason: "ordinary handoff requires its exact active verified source",
+            ..
+        })
+    ));
+
+    let refused_admit = compile(&project, definition.metadata.clone(), &store);
+    let err = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            refused_admit,
+            output_identity,
+            Some(predecessor),
+            handoff_context,
+            |_| Err("admission refused"),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AdmittedPublishError::Admission {
+            reason: "admission refused",
+            ..
+        }
+    ));
+
+    let wrong_rate = Playback::new(hex_engine::Project::new(44_100, vec![]).unwrap());
+    let err = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            wrong_rate,
+            output_identity,
+            Some(predecessor),
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AdmittedPublishError::Publication(PublishError {
+            reason: "playback rate differs from device",
+            ..
+        })
+    ));
+
+    let uncatalogued_wav = stream_fixture::Wav::new();
+    let uncatalogued_def = uncatalogued_wav.definition(asset, 99);
+    let uncatalogued_graph = compile(&project, uncatalogued_def.metadata.clone(), &store);
+    let err = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            uncatalogued_graph,
+            output_identity,
+            Some(predecessor),
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        AdmittedPublishError::Publication(PublishError {
+            reason: "ordinary graph lacks its actual retained source catalog",
+            ..
+        })
+    ));
+
+    // Legacy publish and Client resident forwarding remain refused before handoff.
+    let legacy_refused = control
+        .publish(Playback::new(
+            hex_engine::Project::new(48_000, vec![]).unwrap(),
+        ))
+        .unwrap_err();
+    assert_eq!(
+        legacy_refused.reason,
+        "constructor publication does not adopt legacy playback"
+    );
+    let forward_refused = client
+        .forward_resident_publication(
+            Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap()),
+            PublicationPolicy::InheritRuntime,
+            4,
+        )
+        .unwrap_err();
+    assert_eq!(forward_refused.reason, "resident publication unavailable");
+
+    // Active verified graph still renders uninterrupted after every refusal.
+    assert_eq!(control.status.applied_audio_source(), Some(predecessor));
+    assert!(!control.status.ordinary_owner_active());
+    client.command(PlaybackCommand::PlayFrom(0)).unwrap();
+    let replay_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let still_playing = measured_block(&mut data);
+        if still_playing.iter().any(|frame| frame[0] != 0.0) {
+            break;
+        }
+        assert!(
+            Instant::now() < replay_deadline,
+            "verified source stopped after refusals"
+        );
+        std::thread::yield_now();
+    }
+
+    // Now perform the actual same-rate continuous verified-to-ordinary handoff.
+    let handoff_graph = compile(&project, definition.metadata.clone(), &store);
+    let handoff_revision = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            handoff_graph,
+            output_identity,
+            Some(predecessor),
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap();
+    assert!(control.status.publication_in_flight());
+
+    // Competing verified staging is refused while handoff is pending.
+    let competing_owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 2,
+        }),
+    );
+    let competing_err = control
+        .stage_eligible_audio_candidate(
+            competing_owner,
+            vec![domain],
+            PublicationPolicy::InheritRuntime,
+            3,
+        )
+        .err()
+        .expect("competing verified stage must refuse while handoff is pending");
+    assert_eq!(competing_err.reason, "playback publication already pending");
+    let competing_owner = competing_err.owner;
+
+    // Drive callback with zero allocations until handoff installs.
+    let handoff_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        measured_block(&mut data);
+        if control.status.applied_revision.load(Acquire) == handoff_revision {
+            break;
+        }
+        assert!(
+            Instant::now() < handoff_deadline,
+            "ordinary handoff did not install"
+        );
+        std::thread::yield_now();
+    }
+    assert!(control.status.ordinary_owner_active());
+    assert!(!control.status.publication_in_flight());
+    assert_eq!(control.status.applied_audio_source(), None);
+    assert_eq!(
+        control.status.recording_source(),
+        Some(AppliedAudioSource {
+            context: handoff_context,
+            audio_revision: handoff_revision,
+            output_identity,
+        })
+    );
+
+    // Recover the displaced verified owner on control.
+    let recover_deadline = Instant::now() + Duration::from_secs(2);
+    let returned = loop {
+        control.reclaim();
+        if let Some(returned) = control.recover_audio_candidate(&verified_ticket) {
+            break returned;
+        }
+        assert!(
+            Instant::now() < recover_deadline,
+            "displaced verified owner did not recover"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(returned.disposed.identity(), verified_identity);
+    assert_eq!(
+        returned.return_kind,
+        crate::AudioCandidateReturnKind::HandedOffToOrdinary
+    );
+    drop(returned);
+
+    // Verified staging, duplicate handoff, and Client resident forwarding are all refused post-handoff.
+    let post_verified_err = control
+        .stage_eligible_audio_candidate(
+            competing_owner,
+            vec![domain],
+            PublicationPolicy::InheritRuntime,
+            3,
+        )
+        .err()
+        .expect("verified staging must refuse after handoff");
+    assert_eq!(
+        post_verified_err.reason,
+        "verified publication ended after ordinary handoff"
+    );
+    drop(post_verified_err);
+    let duplicate_handoff = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            compile(&project, definition.metadata.clone(), &store),
+            output_identity,
+            None,
+            handoff_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap_err();
+    assert!(matches!(
+        duplicate_handoff,
+        AdmittedPublishError::Publication(PublishError {
+            reason: "ordinary owner handoff already completed",
+            ..
+        })
+    ));
+    let post_forward_err = client
+        .forward_resident_publication(
+            Playback::new(hex_engine::Project::new(48_000, vec![]).unwrap()),
+            PublicationPolicy::InheritRuntime,
+            4,
+        )
+        .unwrap_err();
+    assert_eq!(post_forward_err.reason, "resident publication unavailable");
+
+    // Ordinary playback now renders from the same retained streaming domain on the same output.
+    client.command(PlaybackCommand::Play).unwrap();
+    let play_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let output = measured_block(&mut data);
+        if output.iter().any(|frame| frame[0] != 0.0) {
+            break;
+        }
+        assert!(
+            Instant::now() < play_deadline,
+            "handed-off ordinary source did not play"
+        );
+        std::thread::yield_now();
+    }
+
+    // A subsequent ordinary worker edit succeeds on the exact same output and domain.
+    let edit_context = hex_engine::AudioSourceContext {
+        project_generation: 4,
+        editor_revision: 2,
+    };
+    let edit_graph = compile(&project, definition.metadata.clone(), &store);
+    let edit_revision = control
+        .publish_with_admission_and_source_on_control(
+            edit_graph,
+            PublicationPolicy::InheritRuntime,
+            edit_context,
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap();
+    let edit_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        measured_block(&mut data);
+        if control.status.applied_revision.load(Acquire) == edit_revision {
+            break;
+        }
+        assert!(
+            Instant::now() < edit_deadline,
+            "subsequent ordinary edit did not install"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        control.status.recording_source(),
+        Some(AppliedAudioSource {
+            context: edit_context,
+            audio_revision: edit_revision,
+            output_identity,
+        })
+    );
+
+    // Clean control-side shutdown, domain recovery, and resource book retirement.
+    assert!(control.retire_audio_candidate_domain(domain));
+    let book = control.take_device_resource_publication_on_shutdown();
+    assert!(book.is_some());
+    drop(data);
+    drop(errors);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    let _ = crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        control.reclaim();
+        if let Some(report) = control.recover_audio_candidate_domain(domain) {
+            assert!(report.worker_joined && report.accounting_complete);
+            break;
+        }
+        assert!(
+            Instant::now() < cleanup_deadline,
+            "domain recovery timed out"
+        );
+        std::thread::yield_now();
+    }
+    drop(book);
+    client.close();
+    publication.close();
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
+}
+
+#[test]
+fn verified_to_ordinary_handoff_callback_refusal_preserves_active_verified_graph() {
+    let _serial = serial();
+    let (project, _) = utility_fixture::project();
+    let mut snapshot = project.snapshot();
+    snapshot.tracks[0].devices.clear();
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let asset = project.assets().next().unwrap().id();
+    let wav_a = stream_fixture::Wav::new();
+    let def_a = wav_a.definition(asset, 11);
+    let wav_b = stream_fixture::Wav::new();
+    let def_b = wav_b.definition(asset, 22);
+    let verified_context = hex_engine::AudioSourceContext {
+        project_generation: 3,
+        editor_revision: 1,
+    };
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        def_a.metadata.clone(),
+        Some(verified_context),
+    );
+    let verified_identity = owner.identity();
+    let verified = reservation(&mut owner);
+    let ordinary = resource_limits();
+    let total = hex_engine::AudioStorageLedgerReservation {
+        data_rows: verified.data_rows + ordinary.data_rows + 1024,
+        handle_rows: verified.handle_rows + ordinary.handle_rows,
+        root_rows: 1 + ordinary.root_rows,
+        max_retained_bytes: verified.max_retained_data_bytes
+            + ordinary.max_retained_bytes
+            + 1024 * 1024,
+        max_construction_peak_bytes: verified.max_construction_peak_data_bytes
+            + ordinary.max_construction_peak_bytes
+            + 1024 * 1024,
+    };
+
+    let (control, callback) = channel(48_000).unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement = crate::native_callback_owner::NativeRetirement::new(terminals, root);
+    let control = publication.control().unwrap();
+    let output_identity = control.output_identity().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_combined_publication_on_control(verified, ordinary, 3, 4096, total)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain_a = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(def_a),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    measured_block(&mut data);
+    let domain_b = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(def_b.clone()),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    measured_block(&mut data);
+
+    let verified_ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain_a], PublicationPolicy::InheritRuntime, 3)
+        .ok()
+        .unwrap();
+    assert!(client.activate());
+    client.command(PlaybackCommand::Play).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let output = measured_block(&mut data);
+        if output.iter().any(|frame| frame[0] != 0.0) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "verified source did not play");
+        std::thread::yield_now();
+    }
+    let predecessor = control.status.applied_audio_source().unwrap();
+
+    // Mutate wav_b on disk and mark the ordinary handoff candidate playing so
+    // callback stream preflight demands page 0 and rejects with StreamSourceChanged.
+    std::fs::write(&def_b.path, b"corrupted-by-external-writer").unwrap();
+    let store = ResidentDeviceAssets::default();
+    let mut handoff_graph = compile(&project, def_b.metadata.clone(), &store);
+    handoff_graph.apply(PlaybackCommand::Play);
+    let handoff_revision = control
+        .publish_ordinary_handoff_from_verified_on_control(
+            handoff_graph,
+            output_identity,
+            Some(predecessor),
+            hex_engine::AudioSourceContext {
+                project_generation: 4,
+                editor_revision: 1,
+            },
+            |_| Ok::<(), &'static str>(()),
+        )
+        .unwrap();
+
+    let refuse_deadline = Instant::now() + Duration::from_secs(2);
+    let rejection = loop {
+        measured_block(&mut data);
+        if let Some(rejection) = control.status.rejected_revision()
+            && rejection.0 == handoff_revision
+        {
+            break rejection;
+        }
+        assert!(
+            Instant::now() < refuse_deadline,
+            "handoff callback refusal did not arrive"
+        );
+        std::thread::yield_now();
+    };
+    assert_eq!(
+        rejection,
+        (
+            handoff_revision,
+            PlaybackHandoffRejection::StreamSourceChanged
+        )
+    );
+    assert!(!control.status.ordinary_owner_active());
+    assert!(!control.status.publication_in_flight());
+    assert_eq!(control.status.applied_audio_source(), Some(predecessor));
+    assert_eq!(
+        control.status.applied_revision.load(Acquire),
+        predecessor.audio_revision
+    );
+
+    // Control reclamation returns the refused ordinary graph cleanly.
+    control.reclaim();
+    assert_eq!(control.unreturned_resident_graphs_on_control(), Some(0));
+
+    // Active verified graph still plays cleanly after callback refusal.
+    client.command(PlaybackCommand::PlayFrom(0)).unwrap();
+    let replay_deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let still_playing = measured_block(&mut data);
+        if still_playing.iter().any(|frame| frame[0] != 0.0) {
+            break;
+        }
+        assert!(
+            Instant::now() < replay_deadline,
+            "verified source stopped after callback refusal"
+        );
+        std::thread::yield_now();
+    }
+
+    assert!(control.retire_audio_candidate_domain(domain_a));
+    assert!(control.retire_audio_candidate_domain(domain_b));
+    let book = control.take_device_resource_publication_on_shutdown();
+    assert!(book.is_some());
+    drop(data);
+    drop(errors);
+    let mut backend = Some(());
+    let mut pending = false;
+    let mut disposed = false;
+    let _ = crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    let cleanup_deadline = Instant::now() + Duration::from_secs(2);
+    let returned = loop {
+        control.reclaim();
+        if let Some(returned) = control.recover_audio_candidate(&verified_ticket) {
+            break returned;
+        }
+        assert!(Instant::now() < cleanup_deadline);
+        std::thread::yield_now();
+    };
+    assert_eq!(returned.disposed.identity(), verified_identity);
+    assert_eq!(
+        returned.return_kind,
+        crate::AudioCandidateReturnKind::FinalActive
+    );
+    drop(returned);
+    for (idx, domain) in [domain_a, domain_b].into_iter().enumerate() {
+        loop {
+            control.reclaim();
+            if let Some(report) = control.recover_audio_candidate_domain(domain) {
+                assert!(report.worker_joined && report.accounting_complete);
+                break;
+            }
+            assert!(
+                Instant::now() < cleanup_deadline,
+                "domain {idx} recovery timed out"
+            );
+            std::thread::yield_now();
+        }
+    }
+    drop(book);
+    client.close();
+    publication.close();
+    drop(client);
+    drop(publication);
     finish(&mut retirement);
 }

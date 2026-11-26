@@ -157,6 +157,7 @@ impl Client {
             });
         };
         if endpoint.status.constructor_mode.load(Acquire)
+            || endpoint.status.ordinary_owner_active.load(Acquire)
             || endpoint.status.closing.load(Acquire)
             || !endpoint.status.client_exposed.load(Acquire)
         {

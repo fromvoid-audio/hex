@@ -201,11 +201,15 @@ impl Callback {
                     self.deferred_eligible = Some(value);
                 }
                 QueuedPublication::Legacy(publication) => {
-                    if matches!(
-                        self.active,
-                        Some(ActivePublication::Candidate(_) | ActivePublication::Eligible(_))
-                    ) {
-                        self.return_graph(publication);
+                    let verified_handoff = matches!(
+                        publication.policy,
+                        PublicationPolicy::HandoffFromVerified { .. }
+                    );
+                    if matches!(self.active, Some(ActivePublication::Candidate(_)))
+                        || (!verified_handoff
+                            && matches!(self.active, Some(ActivePublication::Eligible(_))))
+                    {
+                        self.return_rejected_graph(publication);
                         self.consume_commands();
                         return;
                     }

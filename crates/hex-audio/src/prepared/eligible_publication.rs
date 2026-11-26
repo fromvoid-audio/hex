@@ -270,6 +270,9 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
         }
+        if self.status.ordinary_owner_active.load(Acquire) {
+            return Err("verified publication ended after ordinary handoff");
+        }
         self.candidate_root
             .adopt_runtime_preparation(token, context, self.rate, cell)
     }
@@ -484,6 +487,9 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("candidate native custody unavailable");
         }
+        if self.status.ordinary_owner_active.load(Acquire) {
+            return Err("verified publication ended after ordinary handoff");
+        }
         if self.status.sampler_edit.native_epoch_active() && expected_context.is_none() {
             return Err("native epoch publication requires its exact ready fence");
         }
@@ -561,6 +567,8 @@ impl PublicationControl {
     ) -> Result<crate::AudioCandidateTicket, crate::AudioCandidateEligibleStageRefusal> {
         let reason = if !self.native_custody || self.status.closing.load(Acquire) {
             Some("candidate native custody unavailable")
+        } else if self.status.ordinary_owner_active.load(Acquire) {
+            Some("verified publication ended after ordinary handoff")
         } else if self.status.sampler_edit.native_epoch_active() {
             Some("native epoch publication requires its exact ready fence")
         } else if owner.sample_rate() != self.rate

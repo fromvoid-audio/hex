@@ -254,6 +254,13 @@ pub enum PublicationPolicy {
     /// Structural live edit under the same source/command gate; inherit the actual
     /// installation-boundary transport, routes and voice/release state.
     InheritUnderArrangement(StoppedEditFence),
+    /// One-way continuous handoff on a combined-configured output from an active
+    /// verified constructor graph (or vacant combined output when `predecessor`
+    /// is `None`) to an admitted ordinary resource graph. Preserves the active
+    /// verified graph and output on refusal.
+    HandoffFromVerified {
+        predecessor: Option<AppliedAudioSource>,
+    },
 }
 
 impl PublicationPolicy {
