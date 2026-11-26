@@ -1092,9 +1092,10 @@ impl EditorView {
                     .opacity(detail_opacity),
                 )
             });
+            let mut midi_drag_span = None;
             if let Some((payload, lane)) = midi_drag_source {
                 let left_border = if border { stroke } else { 0.0 };
-                midi = midi.child(clip_drag_span(&payload, left_border));
+                midi_drag_span = Some(std::rc::Rc::clone(&payload.source_span));
                 let move_surface = self
                     .clip_drag_surface(
                         payload,
@@ -1120,6 +1121,7 @@ impl EditorView {
                     }));
                 midi = midi.children([move_surface]).children(trim_handles);
             }
+            let midi = observe_clip_drag_span(midi, midi_drag_span);
             let framed_clip = if narrow {
                 midi.left(relative(left as f32))
                     .w(relative(width as f32))
@@ -1924,9 +1926,10 @@ impl EditorView {
                     view.open_clip_context_menu(event.position, track, clip_id, window, cx);
                 }),
             );
+        let mut audio_drag_span = None;
         if let Some((payload, lane)) = drag_payload {
             let left_border = if border { stroke } else { 0.0 };
-            content = content.child(clip_drag_span(&payload, left_border));
+            audio_drag_span = Some(std::rc::Rc::clone(&payload.source_span));
             let move_surface = self
                 .clip_drag_surface(
                     payload,
@@ -2003,6 +2006,7 @@ impl EditorView {
                         .children([foreground]),
                 )
         });
+        let content = observe_clip_drag_span(content, audio_drag_span);
         (
             if narrow {
                 content

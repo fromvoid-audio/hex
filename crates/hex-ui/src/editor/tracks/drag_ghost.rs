@@ -50,29 +50,97 @@ impl ClipDragSource {
     }
 }
 
-/// Observe the actual pixel-rounded resting clip rectangle. A clip's move hit
-/// strip excludes handles and cannot define its horizontal thirds. The canvas
-/// includes the parent's leading stroke; the trailing stroke belongs to the
-/// separate boundary shell, so there is no trailing layout border to expand.
-pub(super) fn clip_drag_span(
-    source: &ClipDragSource,
-    leading_border: f32,
-) -> impl IntoElement + use<> {
-    let span = std::rc::Rc::clone(&source.source_span);
-    canvas(
-        move |bounds, _, _| {
+pub(super) type ClipSpanCell = std::rc::Rc<std::cell::Cell<Option<(f32, f32)>>>;
+
+/// Transparent element wrapper that captures a clip surface's completed layout
+/// bounds during prepaint without inserting a child canvas or Taffy layout node.
+pub(super) struct ClipSpanObserver<E> {
+    child: E,
+    span: Option<ClipSpanCell>,
+}
+
+pub(super) fn observe_clip_drag_span<E>(
+    child: E,
+    span: Option<ClipSpanCell>,
+) -> ClipSpanObserver<E> {
+    ClipSpanObserver { child, span }
+}
+
+impl<E: gpui::Styled> gpui::Styled for ClipSpanObserver<E> {
+    fn style(&mut self) -> &mut gpui::StyleRefinement {
+        self.child.style()
+    }
+}
+
+impl<E: gpui::Element + 'static> gpui::IntoElement for ClipSpanObserver<E> {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl<E: gpui::Element + 'static> gpui::Element for ClipSpanObserver<E> {
+    type RequestLayoutState = E::RequestLayoutState;
+    type PrepaintState = E::PrepaintState;
+
+    fn id(&self) -> Option<gpui::ElementId> {
+        self.child.id()
+    }
+
+    fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
+        self.child.source_location()
+    }
+
+    fn request_layout(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
+        self.child.request_layout(id, inspector_id, window, cx)
+    }
+
+    fn prepaint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) -> Self::PrepaintState {
+        if let Some(span) = &self.span {
             span.set(Some((
                 f32::from(bounds.left()),
                 f32::from(bounds.size.width),
             )));
-        },
-        |_, _, _, _| {},
-    )
-    .absolute()
-    .left(px(-leading_border))
-    .right_0()
-    .top_0()
-    .bottom_0()
+        }
+        self.child
+            .prepaint(id, inspector_id, bounds, request_layout, window, cx)
+    }
+
+    fn paint(
+        &mut self,
+        id: Option<&gpui::GlobalElementId>,
+        inspector_id: Option<&gpui::InspectorElementId>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        request_layout: &mut Self::RequestLayoutState,
+        prepaint: &mut Self::PrepaintState,
+        window: &mut gpui::Window,
+        cx: &mut gpui::App,
+    ) {
+        self.child.paint(
+            id,
+            inspector_id,
+            bounds,
+            request_layout,
+            prepaint,
+            window,
+            cx,
+        );
+    }
 }
 
 pub(super) struct ClipGhostGeometry {
