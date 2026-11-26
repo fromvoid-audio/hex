@@ -83,6 +83,10 @@ pub use controlled::{
     render_prepared_with_policy,
 };
 pub use publication::{OverwriteConsent, Publication};
+pub use stale_temporary::{
+    AbandonedExportKind, AbandonedExportStage, discard_verified_export_stage,
+    inspect_abandoned_export_stages,
+};
 pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -2034,6 +2038,57 @@ mod tests {
         );
         assert_eq!(fs::read(stage).unwrap(), b"external changed recording");
         assert_eq!(fs::read(target).unwrap(), b"new staged export");
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn in_place_same_size_same_mtime_mutation_after_consent_is_detected_and_preserved() {
+        let dir = TestDir::new();
+        let target = dir.0.join("overwrite.wav");
+        fs::write(&target, b"original-16bytes").unwrap();
+        let original_mtime = fs::metadata(&target).unwrap().modified().unwrap();
+        let consent = OverwriteConsent::inspect(&target).unwrap();
+
+        // Mutate destination IN PLACE (same inode, identical 16-byte length,
+        // and explicitly restored original mtime). Pre-exchange validation must
+        // refuse without modifying the destination!
+        let mut f = fs::OpenOptions::new().write(true).open(&target).unwrap();
+        f.write_all(b"MUTATED!-16bytes").unwrap();
+        f.set_modified(original_mtime).unwrap();
+        drop(f);
+
+        let refused = publish(
+            &target,
+            48_000,
+            0,
+            1,
+            &Publication::Replace(consent.clone()),
+            || Ok(Constant([0.0; 2])),
+        )
+        .expect_err("in-place same-size same-mtime mutation must be refused");
+        assert!(refused.to_string().contains("changed"));
+        assert_eq!(fs::read(&target).unwrap(), b"MUTATED!-16bytes");
+
+        // Now test the same in-place mutation racing inside the exchange window:
+        // `replace_staged` must report `PublicationConflict` with the mutated
+        // bytes preserved intact at `recovery_path` and never deleted!
+        let consent2 = OverwriteConsent::inspect(&target).unwrap();
+        let mtime2 = fs::metadata(&target).unwrap().modified().unwrap();
+        let stage = dir.0.join("stage.wav");
+        fs::write(&stage, b"newly-rendered-wav").unwrap();
+        let conflict = publication::replace_staged(&stage, &target, &consent2, || {
+            let mut f = fs::OpenOptions::new().write(true).open(&target).unwrap();
+            f.write_all(b"RACED!!!-16bytes").unwrap();
+            f.set_modified(mtime2).unwrap();
+        })
+        .expect_err("in-place same-size same-mtime race must report PublicationConflict");
+        assert!(matches!(
+            conflict,
+            ExportError::PublicationConflict { path, recovery_path }
+                if path == target && recovery_path == stage
+        ));
+        assert_eq!(fs::read(&stage).unwrap(), b"RACED!!!-16bytes");
+        assert_eq!(fs::read(&target).unwrap(), b"newly-rendered-wav");
     }
 
     /// Regression for #4201: exFAT/FAT/SMB volumes refuse hard links, which
