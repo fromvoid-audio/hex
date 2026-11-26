@@ -99,7 +99,7 @@ pub fn plain(value: &str) -> String {
     while let Some(character) = characters.next() {
         match character {
             START => depth = depth.saturating_add(1),
-            END => depth = depth.saturating_sub(1),
+            END if depth > 0 => depth -= 1,
             ESCAPE if depth > 0 && characters.peek().is_some_and(|c| reserved(*c)) => {
                 if let Some(escaped) = characters.next() {
                     out.push(escaped);
@@ -128,8 +128,13 @@ mod tests {
             "project changed at /Users/Me/My Songs/A.hex · retry B"
         );
         assert_eq!(lowercase_outside_verbatim(&lowered), lowered, "idempotent");
-        // Nested and unmatched marks never drop characters.
-        assert_eq!(plain(&lowercase_outside_verbatim("A\u{2069}B")), "ab");
+        // Nested and unmatched marks never drop ordinary characters; a stray end
+        // mark outside any open span is preserved as ordinary text.
+        assert_eq!(
+            plain(&lowercase_outside_verbatim("A\u{2069}B")),
+            "a\u{2069}b"
+        );
+        assert_eq!(plain("a\u{2069}b"), "a\u{2069}b");
         assert_eq!(plain(&lowercase_outside_verbatim("A\u{2068}B")), "aB");
         assert_eq!(
             plain(&lowercase_outside_verbatim("A\u{2068}B\u{2063}x")),

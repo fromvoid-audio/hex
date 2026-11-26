@@ -1,7 +1,10 @@
 //! Validated new-track gain policy, independent of project data and history.
 //! The persisted linear amplitude matches the track control's 0..=2 contract;
 //! zero represents negative infinity dB. Filesystem work stays off UI/audio callbacks.
-use super::{DOCUMENT_VERSION, PreferencesError, atomic_save, read_document};
+use crate::storage::{
+    DOCUMENT_VERSION, PreferencesError, VersionedDocument, app_support_dir_from, load_versioned,
+    save_versioned,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -62,24 +65,21 @@ struct Document {
     preferences: StoredPreferences,
 }
 
+impl VersionedDocument for Document {
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 pub fn track_defaults_path(home: &Path) -> PathBuf {
-    crate::app_support_dir_from(home).join("track-defaults.json")
+    app_support_dir_from(home).join("track-defaults.json")
 }
 
 /// Missing documents and missing gain fields use the −12 dB default.
 pub fn load_track_defaults(path: &Path) -> Result<TrackDefaults, PreferencesError> {
-    let Some(bytes) = read_document(path)? else {
-        return Ok(TrackDefaults::default());
-    };
-    let document: Document = serde_json::from_slice(&bytes)
-        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if document.version != DOCUMENT_VERSION {
-        return Err(PreferencesError::InvalidDocument(format!(
-            "unsupported version {}",
-            document.version
-        )));
-    }
-    TrackDefaults::new(document.preferences.gain)
+    load_versioned::<Document, _>(path, TrackDefaults::default, |document| {
+        TrackDefaults::new(document.preferences.gain)
+    })
 }
 
 /// Refuse to overwrite an unsupported or malformed document; publish atomically.
@@ -87,42 +87,27 @@ pub fn save_track_defaults(
     path: &Path,
     preferences: TrackDefaults,
 ) -> Result<(), PreferencesError> {
-    let _ = load_track_defaults(path)?;
     let preferences = TrackDefaults::new(preferences.gain)?;
-    let bytes = serde_json::to_vec(&Document {
-        version: DOCUMENT_VERSION,
-        preferences: StoredPreferences {
-            gain: preferences.gain,
+    save_versioned(
+        path,
+        |existing| load_track_defaults(existing).map(|_| ()),
+        &Document {
+            version: DOCUMENT_VERSION,
+            preferences: StoredPreferences {
+                gain: preferences.gain,
+            },
         },
-    })
-    .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    atomic_save(path, &bytes)
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Directory(PathBuf);
-    impl Directory {
-        fn new() -> Self {
-            let path = std::env::temp_dir().join(format!(
-                "hex-track-defaults-{}-{}",
-                std::process::id(),
-                super::super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&path).unwrap();
-            Self(path)
-        }
-    }
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::storage::TestDirectory;
 
     #[test]
     fn missing_and_absent_gain_default_to_minus_twelve_db_and_roundtrip() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-track-defaults");
         let path = dir.0.join("track-defaults.json");
         let default = load_track_defaults(&path).unwrap();
         assert!((20.0 * default.gain().log10() + 12.0).abs() < 0.000_01);
@@ -143,7 +128,7 @@ mod tests {
 
     #[test]
     fn invalid_values_and_malformed_documents_are_refused_without_overwrite() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-track-defaults");
         let path = dir.0.join("track-defaults.json");
         for gain in [f32::NAN, f32::INFINITY, -0.1, 2.01] {
             assert!(TrackDefaults::new(gain).is_err());

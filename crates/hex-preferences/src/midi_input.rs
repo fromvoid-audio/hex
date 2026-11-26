@@ -6,7 +6,9 @@
 //! Omni/multi-port documents load losslessly; configured MPE zones persist as
 //! v3 documents. Malformed, unknown, or future documents remain untouched.
 
-use super::{PreferencesError, atomic_save, read_document};
+use crate::storage::{
+    MAX_DOCUMENT_BYTES, PreferencesError, app_support_dir_from, atomic_save, read_document,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -99,7 +101,8 @@ impl MidiInputPreferences {
             && !self.all_ports
             && self.mpe_zone.is_none()
             && (self.ports.is_empty()
-                || (self.ports.len() == 1 && self.ports.first() == self.port.as_ref()))
+                || (self.ports.len() == 1
+                    && (self.port.is_none() || self.ports.first() == self.port.as_ref())))
     }
 
     /// True when this configuration can be represented without loss in the v2
@@ -165,7 +168,7 @@ struct DocumentV3 {
 
 /// Stable app-support path for selected MIDI input preferences.
 pub fn midi_input_preferences_path(home: &Path) -> PathBuf {
-    crate::app_support_dir_from(home).join("midi-input.json")
+    app_support_dir_from(home).join("midi-input.json")
 }
 
 /// Missing preferences leave hardware input disabled and select channel zero.
@@ -246,10 +249,14 @@ pub fn save_midi_input_preferences(
     validate(preferences)?;
     let _ = load_midi_input_preferences(path)?;
     let bytes = if preferences.is_v1_compatible() {
+        let port = preferences
+            .port
+            .clone()
+            .or_else(|| preferences.ports.first().cloned());
         serde_json::to_vec(&DocumentV1 {
             version: MIDI_INPUT_DOCUMENT_VERSION_V1,
             preferences: PreferencesV1 {
-                port: preferences.port.clone(),
+                port,
                 channel: preferences.channel,
             },
         })
@@ -282,9 +289,9 @@ pub fn save_midi_input_preferences(
         })
     }
     .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if bytes.len() as u64 > super::MAX_DOCUMENT_BYTES {
+    if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
         return Err(PreferencesError::DocumentTooLarge {
-            maximum: super::MAX_DOCUMENT_BYTES,
+            maximum: MAX_DOCUMENT_BYTES,
         });
     }
     atomic_save(path, &bytes)
@@ -318,14 +325,17 @@ fn validate(preferences: &MidiInputPreferences) -> Result<(), PreferencesError> 
             "midi input ports exceed {MAX_MIDI_INPUT_PORTS}"
         )));
     }
-    if preferences
-        .port
-        .as_ref()
-        .is_some_and(|port| port.name.len() > MAX_PORT_NAME_BYTES)
-    {
-        return Err(PreferencesError::InvalidDocument(format!(
-            "midi port name exceeds {MAX_PORT_NAME_BYTES} bytes"
-        )));
+    if let Some(primary) = preferences.port.as_ref() {
+        if primary.name.len() > MAX_PORT_NAME_BYTES {
+            return Err(PreferencesError::InvalidDocument(format!(
+                "midi port name exceeds {MAX_PORT_NAME_BYTES} bytes"
+            )));
+        }
+        if !preferences.ports.is_empty() && preferences.ports.first() != Some(primary) {
+            return Err(PreferencesError::InvalidDocument(
+                "primary midi port must match the first selected port".into(),
+            ));
+        }
     }
     let mut seen = HashSet::with_capacity(preferences.ports.len());
     for port in &preferences.ports {
@@ -347,31 +357,15 @@ fn validate(preferences: &MidiInputPreferences) -> Result<(), PreferencesError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
+    use crate::storage::TestDirectory;
 
-    struct Directory(PathBuf);
-
-    impl Directory {
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "hex-midi-input-prefs-{}-{}",
-                std::process::id(),
-                super::super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&root).unwrap();
-            Self(root)
-        }
-    }
-
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    fn dir() -> TestDirectory {
+        TestDirectory::new("hex-midi-input-prefs")
     }
 
     #[test]
     fn missing_preferences_disable_input_and_default_to_channel_zero() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         assert_eq!(
             load_midi_input_preferences(&path).unwrap(),
@@ -389,7 +383,7 @@ mod tests {
 
     #[test]
     fn round_trip_preserves_port_identity_name_case_and_channel() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         let port = MidiInputPort {
             id: u32::MAX,
@@ -412,7 +406,7 @@ mod tests {
 
     #[test]
     fn historical_v1_single_port_document_loads_without_breaking_and_migrates_in_memory() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         let v1 =
             br#"{"version":1,"preferences":{"port":{"id":42,"name":"KeyStep Pro"},"channel":7}}"#;
@@ -441,7 +435,7 @@ mod tests {
 
     #[test]
     fn v2_round_trip_preserves_omni_all_ports_and_multi_port_selection() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         let port_a = MidiInputPort {
             id: 10,
@@ -479,7 +473,7 @@ mod tests {
     #[test]
     fn v3_round_trip_persists_bounded_mpe_lower_and_upper_zones_and_rejects_invalid_member_counts()
     {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         let port = MidiInputPort {
             id: 77,
@@ -599,7 +593,7 @@ mod tests {
 
     #[test]
     fn invalid_channel_oversized_name_duplicate_or_excess_ports_are_rejected() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         let too_many: Vec<MidiInputPort> = (0..=MAX_MIDI_INPUT_PORTS as u32)
             .map(|id| MidiInputPort {
@@ -651,7 +645,7 @@ mod tests {
 
     #[test]
     fn malformed_future_unknown_and_oversized_name_documents_are_preserved() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("midi-input.json");
         let oversized = format!(
             r#"{{"version":1,"preferences":{{"port":{{"id":7,"name":"{}"}},"channel":0}}}}"#,
@@ -673,7 +667,7 @@ mod tests {
 
     #[test]
     fn write_failure_preserves_existing_path_contents() {
-        let dir = Directory::new();
+        let dir = dir();
         let path = dir.0.join("not-a-directory");
         std::fs::write(&path, b"preserve me").unwrap();
         assert!(
@@ -684,5 +678,54 @@ mod tests {
             .is_err()
         );
         assert_eq!(std::fs::read(path).unwrap(), b"preserve me");
+    }
+
+    #[test]
+    fn inconsistent_port_and_ports_are_rejected_and_single_ports_entry_stays_v1_compatible() {
+        let dir = dir();
+        let path = dir.0.join("midi-input.json");
+        let port_a = MidiInputPort {
+            id: 1,
+            name: "Port A".into(),
+        };
+        let port_b = MidiInputPort {
+            id: 2,
+            name: "Port B".into(),
+        };
+
+        // Conflicting primary `port` vs `ports[0]` is rejected on save and load.
+        let mismatched = MidiInputPreferences {
+            port: Some(port_a.clone()),
+            ports: vec![port_b.clone()],
+            all_ports: false,
+            channel: 0,
+            omni: false,
+            mpe_zone: None,
+        };
+        assert!(save_midi_input_preferences(&path, &mismatched).is_err());
+        assert!(!path.exists());
+
+        let bad_v2 = br#"{"version":2,"preferences":{"port":{"id":1,"name":"Port A"},"ports":[{"id":2,"name":"Port B"}],"all_ports":false,"channel":0,"omni":false}}"#;
+        std::fs::write(&path, bad_v2).unwrap();
+        assert!(load_midi_input_preferences(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+
+        // Single-port selection supplied via `ports` (with `port: None`) saves losslessly as v1.
+        let via_ports = MidiInputPreferences {
+            port: None,
+            ports: vec![port_a.clone()],
+            all_ports: false,
+            channel: 4,
+            omni: false,
+            mpe_zone: None,
+        };
+        assert!(via_ports.is_v1_compatible());
+        save_midi_input_preferences(&path, &via_ports).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains(r#""version":1"#));
+        let reloaded = load_midi_input_preferences(&path).unwrap();
+        assert_eq!(reloaded.port, Some(port_a.clone()));
+        assert_eq!(reloaded.ports, vec![port_a]);
+        assert_eq!(reloaded.channel, 4);
     }
 }

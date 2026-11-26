@@ -1,6 +1,9 @@
 //! Independent application import policy, outside project history. Filesystem work
 //! belongs to a control/background worker; malformed documents remain untouched.
-use super::{DOCUMENT_VERSION, PreferencesError, atomic_save, read_document};
+use crate::storage::{
+    DOCUMENT_VERSION, PreferencesError, VersionedDocument, app_support_dir_from, load_versioned,
+    save_versioned,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -17,26 +20,23 @@ struct Document {
     preferences: AudioImportPreferences,
 }
 
+impl VersionedDocument for Document {
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 pub fn audio_import_preferences_path(home: &Path) -> PathBuf {
-    crate::app_support_dir_from(home).join("audio-import.json")
+    app_support_dir_from(home).join("audio-import.json")
 }
 
 /// Missing preferences explicitly select unwarped imports.
 pub fn load_audio_import_preferences(
     path: &Path,
 ) -> Result<AudioImportPreferences, PreferencesError> {
-    let Some(bytes) = read_document(path)? else {
-        return Ok(Default::default());
-    };
-    let document: Document = serde_json::from_slice(&bytes)
-        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if document.version != DOCUMENT_VERSION {
-        return Err(PreferencesError::InvalidDocument(format!(
-            "unsupported version {}",
-            document.version
-        )));
-    }
-    Ok(document.preferences)
+    load_versioned::<Document, _>(path, AudioImportPreferences::default, |document| {
+        Ok(document.preferences)
+    })
 }
 
 /// Atomic publication shares the existing bounded preference-file machinery.
@@ -45,39 +45,24 @@ pub fn save_audio_import_preferences(
     path: &Path,
     preferences: AudioImportPreferences,
 ) -> Result<(), PreferencesError> {
-    let _ = load_audio_import_preferences(path)?;
-    let bytes = serde_json::to_vec(&Document {
-        version: DOCUMENT_VERSION,
-        preferences,
-    })
-    .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    atomic_save(path, &bytes)
+    save_versioned(
+        path,
+        |existing| load_audio_import_preferences(existing).map(|_| ()),
+        &Document {
+            version: DOCUMENT_VERSION,
+            preferences,
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    struct Directory(PathBuf);
-    impl Directory {
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "hex-audio-import-prefs-{}-{}",
-                std::process::id(),
-                super::super::NEXT_TEMPORARY.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&root).unwrap();
-            Self(root)
-        }
-    }
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::storage::TestDirectory;
 
     #[test]
     fn missing_is_off_and_roundtrip_is_independent() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-audio-import-prefs");
         let path = dir.0.join("audio-import.json");
         assert_eq!(
             load_audio_import_preferences(&path).unwrap(),
@@ -100,7 +85,7 @@ mod tests {
 
     #[test]
     fn malformed_future_unknown_and_write_failure_are_controlled() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-audio-import-prefs");
         let path = dir.0.join("audio-import.json");
         for bytes in [
             b"bad json".as_slice(),

@@ -1,7 +1,10 @@
 //! Independent application audio output device preferences, outside project documents and history.
 //! Filesystem work belongs to a control/background worker; rejected files remain untouched.
 
-use super::{DOCUMENT_VERSION, PreferencesError, atomic_save, read_document};
+use crate::storage::{
+    DOCUMENT_VERSION, PreferencesError, VersionedDocument, app_support_dir_from, load_versioned,
+    save_versioned,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -65,9 +68,15 @@ struct Document {
     preferences: AudioDevicePreferences,
 }
 
+impl VersionedDocument for Document {
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 /// Stable app-support location shared by development and review bundles.
 pub fn audio_device_preferences_path(home: &Path) -> PathBuf {
-    crate::app_support_dir_from(home).join("audio-device.json")
+    app_support_dir_from(home).join("audio-device.json")
 }
 
 /// Missing files and omitted fields fall back to Follow System Default without writing.
@@ -75,19 +84,10 @@ pub fn audio_device_preferences_path(home: &Path) -> PathBuf {
 pub fn load_audio_device_preferences(
     path: &Path,
 ) -> Result<AudioDevicePreferences, PreferencesError> {
-    let Some(bytes) = read_document(path)? else {
-        return Ok(AudioDevicePreferences::default());
-    };
-    let document: Document = serde_json::from_slice(&bytes)
-        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if document.version != DOCUMENT_VERSION {
-        return Err(PreferencesError::InvalidDocument(format!(
-            "unsupported version {}",
-            document.version
-        )));
-    }
-    document.preferences.validate()?;
-    Ok(document.preferences)
+    load_versioned::<Document, _>(path, AudioDevicePreferences::default, |document| {
+        document.preferences.validate()?;
+        Ok(document.preferences)
+    })
 }
 
 /// Atomically publish an explicit choice using the shared bounded storage machinery.
@@ -97,54 +97,32 @@ pub fn save_audio_device_preferences(
     preferences: &AudioDevicePreferences,
 ) -> Result<(), PreferencesError> {
     preferences.validate()?;
-    let _ = load_audio_device_preferences(path)?;
-    let bytes = serde_json::to_vec(&Document {
-        version: DOCUMENT_VERSION,
-        preferences: preferences.clone(),
-    })
-    .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    atomic_save(path, &bytes)
+    save_versioned(
+        path,
+        |existing| load_audio_device_preferences(existing).map(|_| ()),
+        &Document {
+            version: DOCUMENT_VERSION,
+            preferences: preferences.clone(),
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, sync::atomic::Ordering};
-
-    struct Directory(PathBuf);
-
-    impl Directory {
-        fn new() -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "hex-audio-device-prefs-{}-{}",
-                std::process::id(),
-                super::super::NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed),
-            ));
-            fs::create_dir(&root).unwrap();
-            Self(root)
-        }
-    }
-
-    impl Drop for Directory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
+    use crate::storage::{MAX_DOCUMENT_BYTES, TestDirectory};
+    use std::fs;
 
     #[test]
     fn missing_file_and_omitted_fields_default_to_follow_system_without_writing() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-audio-device-prefs");
         let path = audio_device_preferences_path(&dir.0);
-        assert_eq!(
-            path,
-            dir.0
-                .join("Library/Application Support/hex/audio-device.json")
-        );
+        assert_eq!(path, app_support_dir_from(&dir.0).join("audio-device.json"));
         assert_eq!(
             load_audio_device_preferences(&path).unwrap(),
             AudioDevicePreferences::default()
         );
-        assert!(!dir.0.join("Library").exists());
+        assert!(!app_support_dir_from(&dir.0).exists());
 
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let minimal = br#"{"version":1,"preferences":{}}"#;
@@ -158,9 +136,9 @@ mod tests {
 
     #[test]
     fn pinned_device_rate_and_buffer_roundtrip_without_touching_other_files() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-audio-device-prefs");
         let path = audio_device_preferences_path(&dir.0);
-        let unrelated = dir.0.join("Library/Application Support/hex/playback.json");
+        let unrelated = app_support_dir_from(&dir.0).join("playback.json");
         fs::create_dir_all(unrelated.parent().unwrap()).unwrap();
         fs::write(&unrelated, b"preserved").unwrap();
 
@@ -178,7 +156,7 @@ mod tests {
 
     #[test]
     fn malformed_future_unknown_and_invalid_values_are_preserved_intact() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-audio-device-prefs");
         let path = dir.0.join("audio-device.json");
         for bytes in [
             b"bad json".as_slice(),
@@ -207,9 +185,9 @@ mod tests {
 
     #[test]
     fn oversized_documents_are_preserved() {
-        let dir = Directory::new();
+        let dir = TestDirectory::new("hex-audio-device-prefs");
         let path = dir.0.join("audio-device.json");
-        let bytes = vec![b' '; super::super::MAX_DOCUMENT_BYTES as usize + 1];
+        let bytes = vec![b' '; MAX_DOCUMENT_BYTES as usize + 1];
         fs::write(&path, &bytes).unwrap();
         assert!(matches!(
             load_audio_device_preferences(&path),

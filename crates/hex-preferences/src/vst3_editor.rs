@@ -1,5 +1,8 @@
 //! Versioned Settings storage for the app's native VST3 editor keyboard policy.
-use super::{DOCUMENT_VERSION, PreferencesError, atomic_save, read_document};
+use crate::storage::{
+    DOCUMENT_VERSION, PreferencesError, VersionedDocument, app_support_dir_from, load_versioned,
+    save_versioned,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -24,18 +27,23 @@ struct Document {
     preferences: Vst3EditorPreferences,
 }
 
+impl VersionedDocument for Document {
+    fn version(&self) -> u32 {
+        self.version
+    }
+}
+
 pub fn vst3_editor_preferences_path(home: &Path) -> PathBuf {
-    crate::app_support_dir_from(home).join("vst3-editor.json")
+    app_support_dir_from(home).join("vst3-editor.json")
 }
 
 /// Missing files and omitted flags reserve plain Space for Hex transport.
 pub fn load_vst3_editor_preferences(
     path: &Path,
 ) -> Result<Vst3EditorPreferences, PreferencesError> {
-    let Some(bytes) = read_document(path)? else {
-        return Ok(Vst3EditorPreferences::default());
-    };
-    decode(&bytes)
+    load_versioned::<Document, _>(path, Vst3EditorPreferences::default, |document| {
+        Ok(document.preferences)
+    })
 }
 
 /// Save the explicit Settings choice without replacing malformed or future files.
@@ -43,31 +51,26 @@ pub fn save_vst3_editor_preferences(
     path: &Path,
     preferences: Vst3EditorPreferences,
 ) -> Result<(), PreferencesError> {
-    let _ = load_vst3_editor_preferences(path)?;
-    let bytes = serde_json::to_vec(&Document {
-        version: DOCUMENT_VERSION,
-        preferences,
-    })
-    .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    atomic_save(path, &bytes)
+    save_versioned(
+        path,
+        |existing| load_vst3_editor_preferences(existing).map(|_| ()),
+        &Document {
+            version: DOCUMENT_VERSION,
+            preferences,
+        },
+    )
 }
 
+#[cfg(test)]
 fn decode(bytes: &[u8]) -> Result<Vst3EditorPreferences, PreferencesError> {
-    let document: Document = serde_json::from_slice(bytes)
-        .map_err(|error| PreferencesError::InvalidDocument(error.to_string()))?;
-    if document.version != DOCUMENT_VERSION {
-        return Err(PreferencesError::InvalidDocument(format!(
-            "unsupported version {}",
-            document.version
-        )));
-    }
-    Ok(document.preferences)
+    crate::storage::decode_versioned::<Document>(bytes).map(|document| document.preferences)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::{fs, sync::atomic::Ordering};
+    use crate::storage::TestDirectory;
+    use std::fs;
 
     #[test]
     fn transport_space_defaults_on_and_requires_a_known_config() {
@@ -98,19 +101,13 @@ mod tests {
 
     #[test]
     fn settings_save_preserves_a_future_document() {
-        let folder = std::env::temp_dir().join(format!(
-            "hex-vst3-editor-prefs-{}-{}",
-            std::process::id(),
-            super::super::NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed),
-        ));
-        fs::create_dir(&folder).unwrap();
-        let path = vst3_editor_preferences_path(&folder);
+        let folder = TestDirectory::new("hex-vst3-editor-prefs");
+        let path = vst3_editor_preferences_path(&folder.0);
         let bytes = br#"{"version":2,"preferences":{"spacebar_controls_transport":false}}"#;
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, bytes).unwrap();
         let refusal = save_vst3_editor_preferences(&path, Vst3EditorPreferences::default());
         let preserved = fs::read(&path);
-        fs::remove_dir_all(folder).unwrap();
         assert!(matches!(refusal, Err(PreferencesError::InvalidDocument(_))));
         assert_eq!(preserved.unwrap(), bytes);
     }
