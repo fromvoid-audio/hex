@@ -1338,3 +1338,158 @@ fn shared_live_unmute_chase_allocates_and_frees_nothing_in_callback() -> Result<
     );
     Ok(())
 }
+
+#[test]
+fn shared_contributor_mute_unmute_and_solo_unsolo_allocate_and_free_nothing_in_callback()
+-> Result<(), Box<dyn Error>> {
+    for solo in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000)?, 32)?;
+        let Created::Track(receiver) = editor.execute(Command::InsertTrackWithDevice {
+            name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_devices::native_instrument_registry()?
+                .default_state(hex_devices::operator_state::OPERATOR_TYPE_ID)?,
+        })?
+        else {
+            return Err("source track missing".into());
+        };
+        let source = editor
+            .project()
+            .track(receiver)
+            .and_then(|track| track.source_id())
+            .ok_or("source missing")?;
+        let Created::Track(contributor) = editor.execute(Command::AddMidiTrack {
+            name: "contributor".into(),
+        })?
+        else {
+            return Err("contributor missing".into());
+        };
+        editor.execute(Command::BindTrackSource {
+            track: contributor,
+            source: Some(source),
+        })?;
+        for (track, pitch) in [(receiver, 60), (contributor, 67)] {
+            let Created::Clip(clip) = editor.execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::from_quarters(4)?,
+            })?
+            else {
+                return Err("clip missing".into());
+            };
+            editor.execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(3)?,
+                pitch,
+                velocity: 100,
+                channel: 0,
+            })?;
+        }
+        let initial = Playback::try_from_prepared_with_session(prepared(editor.project())?)?;
+        let (mut control, mut callback) = prepared::channel(48_000)?;
+        control
+            .publish_with_policy_and_context_generation(
+                initial,
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .map_err(|error| error.reason)?;
+        control
+            .command(PlaybackCommand::Play)
+            .map_err(|_| "command queue full")?;
+        let mut output = [[0.0; 2]; 256];
+        callback.begin_block();
+        callback.render(&mut output)?;
+        assert!(output.iter().any(|frame| frame[0].abs() > 0.001));
+
+        // Transition 1: Mute contributor (or solo receiver) while both voices sound.
+        editor.execute(if solo {
+            Command::ToggleSolo {
+                track: receiver,
+                exclusive: true,
+            }
+        } else {
+            Command::Mute {
+                track: contributor,
+                muted: true,
+            }
+        })?;
+        let muted_candidate =
+            Playback::try_from_prepared_with_session(prepared(editor.project())?)?;
+        let muted_rev = control
+            .publish_with_policy_and_context_generation(
+                muted_candidate,
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .map_err(|error| error.reason)?;
+        let mut mute_res = None;
+        let mute_stats = allocation_counter::measure(|| {
+            callback.begin_block();
+            mute_res = Some(callback.render(&mut output));
+        });
+        mute_res.ok_or("mute render missing")??;
+        assert_eq!(
+            (
+                mute_stats.count_total,
+                mute_stats.bytes_total,
+                mute_stats.count_current,
+                mute_stats.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "solo={solo} mute_stats={mute_stats:?}"
+        );
+        assert_eq!(
+            control
+                .status
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            muted_rev
+        );
+        assert!(control.status.rejected_revision().is_none());
+        // Peer (receiver) remains audible after the 5 ms fade (240 frames at 48 kHz).
+        callback.begin_block();
+        callback.render(&mut output)?;
+        assert!(output.iter().any(|frame| frame[0].abs() > 0.001));
+
+        // Transition 2: Undo (unmute / unsolo) restores contributor with zero callback allocations.
+        assert!(editor.undo());
+        let restored_candidate =
+            Playback::try_from_prepared_with_session(prepared(editor.project())?)?;
+        let restored_rev = control
+            .publish_with_policy_and_context_generation(
+                restored_candidate,
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .map_err(|error| error.reason)?;
+        let mut restore_res = None;
+        let restore_stats = allocation_counter::measure(|| {
+            callback.begin_block();
+            restore_res = Some(callback.render(&mut output));
+        });
+        restore_res.ok_or("restore render missing")??;
+        assert_eq!(
+            (
+                restore_stats.count_total,
+                restore_stats.bytes_total,
+                restore_stats.count_current,
+                restore_stats.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "solo={solo} restore_stats={restore_stats:?}"
+        );
+        assert_eq!(
+            control
+                .status
+                .applied_revision
+                .load(std::sync::atomic::Ordering::Acquire),
+            restored_rev
+        );
+        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status.render_fault_snapshot().is_none());
+    }
+    Ok(())
+}
