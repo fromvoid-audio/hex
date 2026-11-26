@@ -282,7 +282,7 @@ impl WorkerLoop {
             }
             if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {
                 let outcome = if events.resident_publication_enabled()
-                    && session.audio_mode() == DocumentAudioMode::Resident
+                    && (session.uses_ordinary_worker_publication() || resident_snapshot.is_some())
                 {
                     // This path is permitted to retire a failed rebase only after the actual
                     // canonical snapshot accepted publication, never merely after a model edit.
@@ -413,7 +413,7 @@ impl WorkerLoop {
             } else if canonical_changed && !project_replaced && tuning_gesture.snapshot().is_some()
             {
                 let outcome = if events.resident_publication_enabled()
-                    && session.audio_mode() == DocumentAudioMode::Resident
+                    && (session.uses_ordinary_worker_publication() || resident_snapshot.is_some())
                 {
                     // This path is permitted to retire a failed rebase only after the actual
                     // canonical snapshot accepted publication, never merely after a model edit.

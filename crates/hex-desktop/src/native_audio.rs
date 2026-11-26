@@ -332,7 +332,8 @@ impl NativeAudioSink {
             return;
         }
         let mode = snapshot.audio_mode();
-        let configured = if mode == DocumentAudioMode::VerifiedStreaming {
+        let ordinary_owner = snapshot.uses_ordinary_worker_publication();
+        let configured = if mode == DocumentAudioMode::VerifiedStreaming && !ordinary_owner {
             self.policy
                 .as_ref()
                 .map_err(Clone::clone)
@@ -368,7 +369,7 @@ impl NativeAudioSink {
         let Some(mut client) = output.take_client() else {
             return;
         };
-        if mode == DocumentAudioMode::Resident && client.worker_owns_graph_publication() {
+        if ordinary_owner && client.worker_owns_graph_publication() {
             client.bind_resident_transport(generation);
         }
         let reader = output.take_action_outcomes();
@@ -2010,7 +2011,9 @@ impl WorkerAudioSink for NativeAudioSink {
             .map(|s| s.context().project_generation);
         let generation = source.context().project_generation;
         if previous.is_some_and(|previous| previous != generation) {
-            if source.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+            if source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && !source.uses_ordinary_worker_publication()
+            {
                 self.resident.discard_obsolete_pending(source.context());
             }
             if self
@@ -2184,16 +2187,21 @@ impl WorkerAudioSink for NativeAudioSink {
         self.observe_route();
         if let Some(mut output) = self.output.take() {
             if self.lifecycle.output_generation.is_some() {
+                let use_verified_driver = self.desired.as_ref().is_some_and(|s| {
+                    s.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                        && !s.uses_ordinary_worker_publication()
+                }) && output
+                    .publication
+                    .control()
+                    .is_none_or(|control| !control.status.ordinary_owner_active())
+                    && self.resident.pending.is_none()
+                    && self.resident.current_submission.is_none();
                 if self.sampler.is_some() {
                     self.poll_sampler_output(&mut output);
-                } else if self
-                    .desired
-                    .as_ref()
-                    .is_some_and(|s| s.audio_mode() == DocumentAudioMode::VerifiedStreaming)
-                {
+                } else if use_verified_driver {
                     self.drive_verified(&mut output);
                 } else if let Some(control) = output.publication.control() {
-                    control.reclaim();
+                    self.maintain_returns(control);
                     control.poll_resident_publication();
                 }
                 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

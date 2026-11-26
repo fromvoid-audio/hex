@@ -489,6 +489,7 @@ struct DispatchSink {
     calls: Arc<std::sync::atomic::AtomicUsize>,
     expected: hex_engine::AudioSourceContext,
     refuse: bool,
+    expect_inherit: bool,
 }
 impl WorkerAudioSink for DispatchSink {
     fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
@@ -519,14 +520,24 @@ impl WorkerAudioSink for DispatchSink {
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
         self.calls.fetch_add(1, Ordering::Relaxed);
         assert_eq!(metadata.context, self.expected);
-        assert!(matches!(
-            policy,
-            ResidentPublicationPolicy::ReplaceDocument { .. }
-        ));
+        if self.expect_inherit {
+            assert!(matches!(policy, ResidentPublicationPolicy::InheritRuntime));
+        } else {
+            assert!(matches!(
+                policy,
+                ResidentPublicationPolicy::ReplaceDocument { .. }
+            ));
+        }
         assert!(playback.contains_streamed_sources());
         assert!(resources.is_some_and(|resources| resources.metadata_bytes().unwrap() > 0));
         let files = inputs.files.unwrap().sources;
-        assert_eq!(files.context(), self.expected);
+        assert_eq!(
+            files.context().project_generation,
+            self.expected.project_generation
+        );
+        if !self.expect_inherit {
+            assert_eq!(files.context(), self.expected);
+        }
         assert_eq!(files.metadata().catalog_generation(), 7);
         assert_eq!(files.files().len(), 1);
         if self.refuse {
@@ -856,6 +867,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
             calls: Arc::clone(&calls),
             expected,
             refuse: false,
+            expect_inherit: false,
         })),
     );
     let dispatched = prepare_document_replacement(
@@ -867,10 +879,96 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
         sampler_export::Admission::default(),
     )
     .unwrap();
+    assert!(candidate.uses_ordinary_worker_publication());
     assert!(dispatched.resident.is_some());
     assert!(dispatched.sources.is_none());
     assert_eq!(calls.load(Ordering::Relaxed), 1);
     assert_eq!(old.project().snapshot(), before);
+    // Subsequent canonical edit on the mixed verified session routes through
+    // the ordinary worker owner, and refusal preserves canonical state.
+    let mut mixed_session = recovery::prepare_project(
+        &old,
+        16,
+        project.clone(),
+        saved.parent().unwrap(),
+        DocumentAudioMode::VerifiedStreaming,
+        Some(file_reservation(2)),
+        Some(limits),
+        1024,
+        sampler_export::Admission::default(),
+    )
+    .unwrap();
+    let edit_context = hex_engine::AudioSourceContext {
+        project_generation: 4,
+        editor_revision: 11,
+    };
+    let track_id = mixed_session.project().tracks()[0].id();
+    let mut current_resident = dispatched.resident;
+    let edit_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (edit_tx, _edit_rx) = std::sync::mpsc::sync_channel(4);
+    let mut edit_events = WorkerEvents::new(
+        edit_tx,
+        Arc::new(AtomicBool::new(false)),
+        Some(Box::new(DispatchSink {
+            calls: Arc::clone(&edit_calls),
+            expected: edit_context,
+            refuse: true,
+            expect_inherit: true,
+        })),
+    );
+    let mixed_before_edit = mixed_session.project().snapshot();
+    assert!(
+        execute_command_timed(
+            &mut mixed_session,
+            Command::SetTrackGains {
+                gains: vec![(track_id, 0.5)],
+            },
+            None,
+            edit_context,
+            ResidentWorkerContext {
+                events: &mut edit_events,
+                admission: sampler_export::Admission::default(),
+            },
+            &mut current_resident,
+            None,
+        )
+        .is_err()
+    );
+    assert_eq!(edit_calls.load(Ordering::Relaxed), 1);
+    assert_eq!(mixed_session.project().snapshot(), mixed_before_edit);
+    let (edit_tx, _edit_rx) = std::sync::mpsc::sync_channel(4);
+    let mut edit_events = WorkerEvents::new(
+        edit_tx,
+        Arc::new(AtomicBool::new(false)),
+        Some(Box::new(DispatchSink {
+            calls: Arc::clone(&edit_calls),
+            expected: edit_context,
+            refuse: false,
+            expect_inherit: true,
+        })),
+    );
+    let (_, edited_prepared) = execute_command_timed(
+        &mut mixed_session,
+        Command::SetTrackGains {
+            gains: vec![(track_id, 0.5)],
+        },
+        None,
+        edit_context,
+        ResidentWorkerContext {
+            events: &mut edit_events,
+            admission: sampler_export::Admission::default(),
+        },
+        &mut current_resident,
+        None,
+    )
+    .unwrap();
+    assert_eq!(edit_calls.load(Ordering::Relaxed), 2);
+    assert!(current_resident.is_some());
+    assert_eq!(mixed_session.project().tracks()[0].gain(), 0.5);
+    assert!(Arc::ptr_eq(
+        &edited_prepared,
+        &current_resident.as_ref().unwrap().prepared
+    ));
     let (sender, _receiver) = std::sync::mpsc::sync_channel(4);
     let mut events = WorkerEvents::new(
         sender,
@@ -879,6 +977,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
             calls: Arc::clone(&calls),
             expected,
             refuse: true,
+            expect_inherit: false,
         })),
     );
     assert!(
@@ -906,6 +1005,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
         sampler_export::Admission::default(),
     )
     .unwrap();
+    assert!(!file_only.uses_ordinary_worker_publication());
     let (sender, _receiver) = std::sync::mpsc::sync_channel(4);
     let mut events = WorkerEvents::new(
         sender,
@@ -914,6 +1014,7 @@ fn verified_recovered_sampler_and_file_prepare_in_one_bounded_control_graph() {
             calls: Arc::clone(&calls),
             expected,
             refuse: false,
+            expect_inherit: false,
         })),
     );
     let unchanged = prepare_document_replacement(

@@ -416,9 +416,54 @@ impl AudioPolicy {
         self,
         control: &mut hex_audio::prepared::PublicationControl,
     ) -> Result<(), String> {
-        // Publication configures the one shared N2 domain bank as well. The
-        // domains-only and publication constructors are alternative opt-ins.
-        control.configure_audio_candidate_publication(self.publication)?;
+        // Reserve both verified constructor custody and ordinary device-resource
+        // publication under one checked combined ceiling so a verified output
+        // can hand off continuously to mixed ordinary ownership without teardown.
+        const WORKSPACE_GRAPHS: usize = 16;
+        let workspace_rows = WORKSPACE_GRAPHS
+            .checked_mul(5)
+            .ok_or("combined audio reservation overflow")?;
+        let workspace_bytes = WORKSPACE_GRAPHS
+            .checked_mul(self.ordinary_stream_metadata_bytes)
+            .ok_or("combined audio reservation overflow")?;
+        let combined = hex_engine::AudioStorageLedgerReservation {
+            data_rows: self
+                .publication
+                .data_rows
+                .checked_add(self.resident_native.storage.data_rows)
+                .and_then(|n| n.checked_add(workspace_rows))
+                .ok_or("combined data rows overflow")?,
+            handle_rows: self
+                .publication
+                .handle_rows
+                .checked_add(self.resident_native.storage.handle_rows)
+                .ok_or("combined handle rows overflow")?,
+            root_rows: self
+                .resident_native
+                .storage
+                .root_rows
+                .checked_add(1)
+                .ok_or("combined root rows overflow")?,
+            max_retained_bytes: self
+                .publication
+                .max_retained_data_bytes
+                .checked_add(self.resident_native.storage.max_retained_bytes)
+                .and_then(|n| n.checked_add(workspace_bytes))
+                .ok_or("combined retained bytes overflow")?,
+            max_construction_peak_bytes: self
+                .publication
+                .max_construction_peak_data_bytes
+                .checked_add(self.resident_native.storage.max_construction_peak_bytes)
+                .and_then(|n| n.checked_add(workspace_bytes))
+                .ok_or("combined peak bytes overflow")?,
+        };
+        control.configure_combined_publication_on_control(
+            self.publication,
+            self.resident_native.storage,
+            self.readiness.extents_per_role,
+            self.ordinary_stream_metadata_bytes,
+            combined,
+        )?;
         control.configure_audio_candidate_streaming(self.readiness.extents_per_role)?;
         Ok(())
     }

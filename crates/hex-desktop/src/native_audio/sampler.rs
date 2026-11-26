@@ -116,9 +116,10 @@ impl NativeAudioSink {
         };
         if self.worker_owned_resident_graphs
             && (self.lifecycle.replacement_output.is_some()
-                || self.desired.as_ref().is_none_or(|source| {
-                    source.audio_mode() == hex_session::DocumentAudioMode::Resident
-                }))
+                || self
+                    .desired
+                    .as_ref()
+                    .is_none_or(|source| source.uses_ordinary_worker_publication()))
         {
             // The actual fresh Lease has already closed the old teardown frontier. Configure
             // generic graph ownership before either initial publication or Client exposure;

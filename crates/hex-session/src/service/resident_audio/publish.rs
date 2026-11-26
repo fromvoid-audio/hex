@@ -555,7 +555,7 @@ pub(in crate::service) fn execute_command_timed(
     phases: Option<&mut super::diagnostics::SectionPhases>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
     let ResidentWorkerContext { events, admission } = worker;
-    if session.audio_mode() == DocumentAudioMode::Resident
+    if (session.uses_ordinary_worker_publication() || resident.is_some())
         && let Some(sink) = events.resident_audio()
     {
         let (created, snapshot) = session
@@ -607,8 +607,7 @@ pub(in crate::service) fn poll_pending<'audio>(
     let (Some(current), Some(audio)) = (current, audio) else {
         return;
     };
-    if session.audio_mode() != DocumentAudioMode::Resident || !audio.resident_publication_enabled()
-    {
+    if !audio.resident_publication_enabled() {
         return;
     }
     let inputs = session.resident_seek_inputs(admission, None, None);
