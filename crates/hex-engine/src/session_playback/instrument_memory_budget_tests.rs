@@ -186,13 +186,13 @@ fn instrument_memory_budget_large_state_keeps_pcm_history_routes_and_tails() {
     let _guard = DeclaredBytesGuard::new(5 * 1024);
     // Reuse the independent feedback oracle and real engine lifecycle scenarios
     // with honestly allocated larger runtime buffers.
-    registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session();
-    unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_revisions();
-    mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger();
-    mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet();
-    mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processing();
-    mutable_checkpoint_restores_held_and_released_feedback_with_owned_occurrence_ids();
-    prepared_revision_budget_counts_return_effects_with_mutable_instruments_transactionally();
+    mutable_continuity_tests::registered_mutable_instrument_adds_feedback_audio_in_arrangement_and_session();
+    mutable_continuity_tests::unchanged_mutable_arrangement_and_session_owners_keep_history_across_editor_revisions();
+    mutable_continuity_tests::mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger();
+    mutable_continuity_tests::mutable_revision_handoff_keeps_old_gate_and_suffix_until_tail_quiet();
+    mutable_handoff_tests::mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processing();
+    mutable_checkpoint_tests::mutable_checkpoint_restores_held_and_released_feedback_with_owned_occurrence_ids();
+    mutable_continuity_tests::prepared_revision_budget_counts_return_effects_with_mutable_instruments_transactionally();
 }
 
 #[test]
