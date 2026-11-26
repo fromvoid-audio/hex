@@ -688,9 +688,10 @@ fn complete_coverage_checks_only_remaining_pages() {
         4
     );
     coverage.finish(|| false).unwrap();
-    // Header is reread on the second request; the two distinct checked pages
-    // need not be reread during completion, while the other eight do.
-    assert_eq!(reader.raw_page_reads() - before, 11);
+    // Header page 0 is not re-scanned on the second window read; the two
+    // distinct checked pages need not be reread during completion, while the
+    // other eight are verified in `finish()`.
+    assert_eq!(reader.raw_page_reads() - before, 10);
 }
 
 #[test]
@@ -821,8 +822,8 @@ fn reopening_under_a_captured_manifest_reads_only_header_pages() {
     }
     assert_eq!(
         reused.raw_page_reads(),
-        3,
-        "header page plus the window page"
+        2,
+        "header page at reopen plus only the window page"
     );
 }
 
@@ -947,4 +948,37 @@ fn generic_read_failure_clears_decoded_prefix_and_allows_verified_retry() {
         expected.len()
     );
     assert_eq!(output, expected, "a cleared plan leaves the reader intact");
+}
+
+#[test]
+fn sequential_reads_within_one_64kib_page_reuse_cached_verified_page_and_single_pass_open() {
+    let (fixture, frames) = ten_page_fixture();
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(4096)).expect("open");
+    // Open hashes each of the 10 raw pages exactly once (no page 0 re-read).
+    assert_eq!(reader.raw_page_reads(), 10);
+
+    // Four consecutive 4,096-frame (16 KiB) slices starting inside raw page 2
+    // fit completely within a single 64 KiB raw page and must perform only 1
+    // raw page read total instead of 8 (4 header + 4 payload).
+    let page2_start_frame = ((2 * PAGE_BYTES) / 4) as u64;
+    let before = reader.raw_page_reads();
+    let mut slice = vec![[0.0; 2]; 4096];
+    for step in 0..3_u64 {
+        let start = page2_start_frame + step * 4096;
+        let read = reader.read_frames_into(start, &mut slice).unwrap();
+        assert_eq!(read, 4096);
+        let expected_first = frames[start as usize];
+        assert_eq!(
+            slice[0],
+            [
+                f32::from(expected_first[0]) / 32_768.0,
+                f32::from(expected_first[1]) / 32_768.0
+            ]
+        );
+    }
+    assert_eq!(
+        reader.raw_page_reads() - before,
+        1,
+        "sequential 16 KiB reads within one 64 KiB raw page must reuse the verified cache"
+    );
 }

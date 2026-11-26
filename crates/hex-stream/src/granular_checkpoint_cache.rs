@@ -45,6 +45,58 @@ pub struct VerifiedGranularCheckpointCache {
     budget: usize,
     clock: u64,
 }
+/// Pure zero-allocation victim selector over `(position, age)` pairs.
+/// Small caches (`<= 4` entries) use pure LRU; larger caches use
+/// gap-minimizing strided thinning across the timeline while protecting slot 0,
+/// the furthest frontier position, and a small recent hot set so loop-start
+/// anchors and the immediate tail are retained.
+fn select_eviction_from_pairs(pairs: &[(u64, u64)]) -> Option<usize> {
+    let len = pairs.len();
+    if len <= 1 || len > MAX_ENTRIES {
+        return None;
+    }
+    if len <= 4 {
+        return (1..len).min_by_key(|&i| pairs[i].1);
+    }
+    let mut by_pos = [0_usize; MAX_ENTRIES];
+    for (slot, dst) in by_pos.iter_mut().take(len).enumerate() {
+        *dst = slot;
+    }
+    by_pos[..len].sort_unstable_by_key(|&i| pairs[i].0);
+
+    let recent_protect = (len.saturating_sub(3)).min(4);
+    let mut by_age = [0_usize; MAX_ENTRIES];
+    let mut age_count = 0_usize;
+    for i in 1..len {
+        by_age[age_count] = i;
+        age_count += 1;
+    }
+    by_age[..age_count].sort_unstable_by(|&a, &b| pairs[b].1.cmp(&pairs[a].1));
+    let mut protected = [false; MAX_ENTRIES];
+    protected[0] = true;
+    protected[by_pos[len - 1]] = true;
+    for &idx in by_age.iter().take(recent_protect) {
+        protected[idx] = true;
+    }
+
+    let mut best: Option<(u64, u64, usize)> = None;
+    for rank in 1..len - 1 {
+        let idx = by_pos[rank];
+        if protected[idx] {
+            continue;
+        }
+        let prev_pos = pairs[by_pos[rank - 1]].0;
+        let next_pos = pairs[by_pos[rank + 1]].0;
+        let merged_gap = next_pos.saturating_sub(prev_pos);
+        let candidate = (merged_gap, pairs[idx].1, idx);
+        if best.is_none_or(|current| candidate < current) {
+            best = Some(candidate);
+        }
+    }
+    best.map(|(_, _, idx)| idx)
+        .or_else(|| (1..len).min_by_key(|&i| pairs[i].1))
+}
+
 impl VerifiedGranularCheckpointCache {
     /// Capture a pristine cursor's starting state. The entry limit is 2..=64.
     /// `budget` includes retained entry storage and ring payloads, and excludes
@@ -131,6 +183,18 @@ impl VerifiedGranularCheckpointCache {
         }
         Ok(())
     }
+    fn select_eviction_index(&self) -> Option<usize> {
+        let len = self.entries.len();
+        if len <= 1 || len > MAX_ENTRIES {
+            return None;
+        }
+        let mut pairs = [(0_u64, 0_u64); MAX_ENTRIES];
+        for (dst, entry) in pairs.iter_mut().zip(&self.entries) {
+            *dst = (entry.checkpoint.position(), entry.age);
+        }
+        select_eviction_from_pairs(&pairs[..len])
+    }
+
     /// Record one position, reusing an old unpinned slot when at capacity or
     /// when no new snapshot fits. Failure leaves existing entries unchanged.
     pub fn record(
@@ -167,9 +231,7 @@ impl VerifiedGranularCheckpointCache {
                 Err(error) => return Err(error.into()),
             }
         }
-        let index = (1..self.entries.len())
-            .min_by_key(|&i| self.entries[i].age)
-            .ok_or(Error::ScratchLimit)?;
+        let index = self.select_eviction_index().ok_or(Error::ScratchLimit)?;
         let total_bytes = self.backing_bytes().ok_or(Error::ScratchLimit)?;
         let evicted_bytes = self
             .entries
@@ -256,5 +318,57 @@ impl VerifiedGranularCheckpointCache {
             .ok_or(CheckpointCacheError::NotCovered)?;
         let waypoint = position.saturating_add(segment_frames).min(target);
         self.begin_seek(cursor, waypoint, segment_frames, reader, plan, cancelled)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::select_eviction_from_pairs;
+
+    /// Exercises `select_eviction_from_pairs` over 160 sequential 4,096-frame
+    /// pages (> 13.6 s at 48 kHz, > 2.5x the 5.4 s pure-LRU cliff) with a
+    /// 16-entry cache: every backward seek anywhere in the timeline must land
+    /// within a small bounded replay distance instead of replaying from frame 0.
+    #[test]
+    fn strided_checkpoint_eviction_keeps_long_timeline_backward_seeks_bounded() {
+        const LIMIT: usize = super::MAX_ENTRIES;
+        const PAGE_FRAMES: u64 = 4_096;
+        const TOTAL_PAGES: u64 = 256; // 1,048,576 frames (~21.8 s at 48 kHz, 4x past 5.4 s LRU cliff)
+
+        let mut positions: Vec<(u64, u64)> = vec![(0, 0)];
+        let mut clock = 0_u64;
+
+        for page in 1..=TOTAL_PAGES {
+            clock += 1;
+            let pos = page * PAGE_FRAMES;
+            if positions.len() < LIMIT {
+                positions.push((pos, clock));
+            } else {
+                let victim = select_eviction_from_pairs(&positions).unwrap();
+                positions[victim] = (pos, clock);
+            }
+        }
+
+        // Check backward seeks across the entire 21.8 s timeline, including
+        // positions well beyond the old 5.4 s pure-LRU cliff.
+        let mut max_replay_frames = 0_u64;
+        for probe_page in [10_u64, 30, 60, 80, 120, 160, 200, 240] {
+            let target = probe_page * PAGE_FRAMES;
+            let nearest = positions
+                .iter()
+                .map(|&(p, _)| p)
+                .filter(|&p| p <= target)
+                .max()
+                .unwrap();
+            assert!(
+                nearest > 0,
+                "backward seek to page {probe_page} fell back to frame 0"
+            );
+            max_replay_frames = max_replay_frames.max(target - nearest);
+        }
+        assert!(
+            max_replay_frames <= 8 * PAGE_FRAMES,
+            "expected bounded backward-seek replay <= 8 pages, got {max_replay_frames} frames"
+        );
     }
 }

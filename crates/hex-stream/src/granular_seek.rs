@@ -184,16 +184,15 @@ impl VerifiedGranularCursor {
         }
         validate_source(self.reference.metadata(), reader, plan)
             .map_err(VerifiedGranularStepError::Source)?;
-        let mut probe = [[0.0; 2]; 1];
-        let read = reader
-            .read_frames_into_with_cancel(0, &mut probe, &mut cancelled)
-            .map_err(map_import_error)
-            .map_err(VerifiedGranularStepError::Source)?;
-        if read != 1 {
+        if cancelled() {
             return Err(VerifiedGranularStepError::Source(
-                StreamFailureKind::SourceChanged,
+                StreamFailureKind::Cancelled,
             ));
         }
+        reader
+            .verify_metadata()
+            .map_err(map_import_error)
+            .map_err(VerifiedGranularStepError::Source)?;
         self.renderer.restore_granular(checkpoint)?;
         if distance == 0 {
             self.seeking = None;
@@ -228,16 +227,15 @@ impl VerifiedGranularCursor {
         }
         validate_source(self.reference.metadata(), reader, plan)
             .map_err(VerifiedGranularStepError::Source)?;
-        let mut probe = [[0.0; 2]; 1];
-        let read = reader
-            .read_frames_into_with_cancel(0, &mut probe, &mut cancelled)
-            .map_err(map_import_error)
-            .map_err(VerifiedGranularStepError::Source)?;
-        if read != 1 {
+        if cancelled() {
             return Err(VerifiedGranularStepError::Source(
-                StreamFailureKind::SourceChanged,
+                StreamFailureKind::Cancelled,
             ));
         }
+        reader
+            .verify_metadata()
+            .map_err(map_import_error)
+            .map_err(VerifiedGranularStepError::Source)?;
         self.renderer.restore(checkpoint)?;
         if distance == 0 {
             self.seeking = None;
