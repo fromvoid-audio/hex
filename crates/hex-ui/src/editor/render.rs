@@ -796,6 +796,16 @@ impl Render for EditorView {
                     });
                 }
             })
+            .on_drag_move::<super::arrangement_sections::ConsoleSceneDrag>({
+                let scene_drag_root = cx.entity();
+                move |_, _, cx| {
+                    scene_drag_root.update(cx, |view, cx| {
+                        if view.clear_console_scene_drag_preview() {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
             .on_drag_move::<super::drag::BrowserAudioDrag>(move |_, _, cx| {
                 console_drag_entity.update(cx, |view, cx| {
                     if view.mode == super::EditorMode::Session
@@ -822,6 +832,14 @@ impl Render for EditorView {
                 },
             ))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left
+                    && let Some((generation, scene)) = view.sections.scene_drag_identity()
+                {
+                    cx.defer_in(window, move |view, _, cx| {
+                        view.clear_console_scene_drag(generation, scene);
+                        cx.notify();
+                    });
+                }
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.browser.active_audio_drag.clone()
                 {

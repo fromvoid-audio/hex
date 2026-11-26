@@ -217,6 +217,7 @@ pub(super) struct Sections {
     cursor: Option<SectionCursor>,
     clipboard: Option<clipboard::Captured>,
     gesture: Option<Gesture>,
+    scene_drag: Option<ActiveSceneDrag>,
     pending: Option<Pending>,
     // At most one keyboard duplicate may follow a committed pending copy.
     ahead: Option<Pending>,
@@ -252,6 +253,11 @@ impl Sections {
     pub(super) fn naming(&self) -> bool {
         self.name.is_some()
     }
+    pub(super) fn scene_drag_identity(&self) -> Option<(u64, hex_project::SceneId)> {
+        self.scene_drag
+            .as_ref()
+            .map(|active| (active.payload.project_generation, active.payload.scene))
+    }
 }
 #[derive(Clone)]
 pub(super) struct MenuAction {
@@ -277,7 +283,10 @@ enum MenuKind {
 mod geometry;
 mod gestures;
 mod render;
+mod scene_drop;
 use geometry::{copied_section_source, same_command, section_preview_span};
+use scene_drop::ActiveSceneDrag;
+pub(in crate::editor) use scene_drop::{ConsoleSceneDrag, ConsoleSceneDragGhost};
 
 #[cfg(all(test, not(feature = "ui-test-support")))]
 pub(super) mod tests;

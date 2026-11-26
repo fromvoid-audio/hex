@@ -1187,6 +1187,7 @@ impl EditorView {
             .map(|_| crate::section_surface::SectionCoverage::default());
         let section_elements =
             self.section_elements(viewport, scale, window, cx, section_coverage.as_ref());
+        let scene_drop_move_entity = cx.entity();
         let lane = div()
             .id("main-track-lane")
             .debug_selector(|| "main-track-lane".to_owned())
@@ -1194,6 +1195,38 @@ impl EditorView {
             .flex_1()
             .min_w_0()
             .h_full()
+            .on_drag_move::<super::arrangement_sections::ConsoleSceneDrag>(move |event, _, cx| {
+                if let Some(drag) = event
+                    .dragged_item()
+                    .downcast_ref::<super::arrangement_sections::ConsoleSceneDrag>()
+                {
+                    let pos = event.event.position;
+                    let modifiers = event.event.modifiers;
+                    scene_drop_move_entity.update(cx, |view, cx| {
+                        if view.hover_console_scene_on_main_track(
+                            drag,
+                            f32::from(pos.x),
+                            f32::from(pos.y),
+                            modifiers,
+                        ) {
+                            cx.notify();
+                        }
+                    });
+                }
+            })
+            .on_drop(cx.listener(
+                |view, drag: &super::arrangement_sections::ConsoleSceneDrag, window, cx| {
+                    let pos = window.mouse_position();
+                    let modifiers = window.modifiers();
+                    view.drop_console_scene_on_main_track(
+                        drag,
+                        f32::from(pos.x),
+                        f32::from(pos.y),
+                        modifiers,
+                    );
+                    cx.notify();
+                },
+            ))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|view, event: &MouseDownEvent, window, cx| {

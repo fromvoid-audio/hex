@@ -529,6 +529,21 @@ pub(super) fn same_command(a: &Command, b: &Command) -> bool {
             Command::SplitArrangementSection { section: a, at: aa },
             Command::SplitArrangementSection { section: b, at: ba },
         ) => (a, aa) == (b, ba),
+        (
+            Command::PlaceLinkedScene {
+                scene: a,
+                start: as_,
+                end: ae,
+                color: ac,
+            },
+            Command::PlaceLinkedScene {
+                scene: b,
+                start: bs,
+                end: be,
+                color: bc,
+            },
+        ) => (a, as_, ae, ac) == (b, bs, be, bc),
+        (Command::UnlinkSectionScene(a), Command::UnlinkSectionScene(b)) => a == b,
         (Command::MergeArrangementSections(a), Command::MergeArrangementSections(b)) => a == b,
         (Command::RemoveArrangementSection(a), Command::RemoveArrangementSection(b)) => a == b,
         _ => false,

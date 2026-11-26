@@ -18,9 +18,11 @@ impl EditorView {
                 && self.sections.pending.is_none()
                 && self.sections.queued.is_none()
                 && self.sections.gesture.is_none()
+                && self.sections.scene_drag.is_none()
                 && self.sections.name.is_none()
         });
         let canonical;
+        let scene_preview;
         let (display, preview_state, drag_gesture) = if let Some(g) = self
             .sections
             .gesture
@@ -51,6 +53,9 @@ impl EditorView {
             .or(self.sections.pending.as_ref())
         {
             (&p.display, p.layout.as_deref(), None)
+        } else if let Some(preview) = self.console_scene_drag_preview_display() {
+            scene_preview = preview;
+            (&scene_preview, None, None)
         } else {
             canonical = Display {
                 markers: state
