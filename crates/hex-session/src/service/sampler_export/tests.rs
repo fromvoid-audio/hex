@@ -1074,10 +1074,28 @@ fn verified_recovery_candidate_keeps_originals_and_clip_files_in_separate_owners
     assert!(prepare(1024).is_err(), "cancelled candidate is refused");
     assert_eq!(current.project().snapshot(), before);
     current.shutdown.store(false, Ordering::Release);
-    let refusal = super::super::recovery::open_source_with_limits(
+    // Public verified open succeeds with native limits, preserves exact original
+    // identity and verified/native separation, round-trips save/reopen, and
+    // refuses missing native limits without mutating the original session.
+    assert!(
+        super::super::recovery::open_source_with_limits(
+            &current,
+            16,
+            &super::super::recovery::ProjectSource::Saved(saved.clone()),
+            &Default::default(),
+            DocumentAudioMode::VerifiedStreaming,
+            Some(file_reservation(2)),
+            None,
+            1024,
+            Admission::default(),
+        )
+        .is_err(),
+        "verified open with sampler original must refuse without native limits"
+    );
+    let (opened, _, _, _) = super::super::recovery::open_source_with_limits(
         &current,
         16,
-        &super::super::recovery::ProjectSource::Saved(saved),
+        &super::super::recovery::ProjectSource::Saved(saved.clone()),
         &Default::default(),
         DocumentAudioMode::VerifiedStreaming,
         Some(file_reservation(2)),
@@ -1085,10 +1103,29 @@ fn verified_recovery_candidate_keeps_originals_and_clip_files_in_separate_owners
         1024,
         Admission::default(),
     )
-    .err()
     .unwrap();
-    assert_eq!(
-        refusal,
-        "device-original verified opening is not yet available"
-    );
+    assert_eq!(opened.audio_mode(), DocumentAudioMode::VerifiedStreaming);
+    assert!(opened.uses_ordinary_worker_publication());
+    assert_eq!(opened.project(), &project);
+    assert_eq!(opened.native_assets.ids().count(), 1);
+    assert_eq!(opened.verified_sources.len(), 1);
+    assert!(opened.media.is_empty());
+    let resaved = saved.with_file_name("verified-mixed-resaved.hex");
+    hex_storage::save_new(&resaved, opened.project()).unwrap();
+    let (reopened, _, _, _) = super::super::recovery::open_source_with_limits(
+        &current,
+        16,
+        &super::super::recovery::ProjectSource::Saved(resaved),
+        &Default::default(),
+        DocumentAudioMode::VerifiedStreaming,
+        Some(file_reservation(2)),
+        Some(reservation()),
+        1024,
+        Admission::default(),
+    )
+    .unwrap();
+    assert_eq!(reopened.project(), &project);
+    assert_eq!(reopened.native_assets.ids().count(), 1);
+    assert_eq!(reopened.verified_sources.len(), 1);
+    assert_eq!(current.project().snapshot(), before);
 }
