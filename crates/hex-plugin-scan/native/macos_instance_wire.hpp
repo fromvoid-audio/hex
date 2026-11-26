@@ -450,12 +450,12 @@ struct Packet {
                 if(raw[2]!=(pressure?2:3) || (pressure && raw[5])) return -1;
                 if(note_id) {
                     const bool tuning=status==0xe0;
-                    if(raw[6] || (!tuning && (status!=0xb0 || raw[4]!=74))) return -1;
+                    if(!tuning && (status!=0xb0 || raw[4]!=74)) return -1;
                     const int bend=(raw[4]|(raw[5]<<7))-8192;
                     const double cents=std::round(bend*4800.0/(bend<0?8192.0:8191.0));
                     notes[note_count++]={static_cast<int32_t>(offset),static_cast<int16_t>(raw[3]&15),
                         0,0,tuning?hex_instance::InputNoteKind::Tuning:hex_instance::InputNoteKind::Brightness,
-                        static_cast<int32_t>(note_id),false,tuning?0.5+cents/24000.0:raw[5]/127.0};
+                        static_cast<int32_t>(note_id),raw[6]!=0,tuning?0.5+cents/24000.0:raw[5]/127.0};
                     continue;
                 }
                 if(controller_count>=controllers.size()) return -1;

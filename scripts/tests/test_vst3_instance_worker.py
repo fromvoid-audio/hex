@@ -819,6 +819,12 @@ class NativeInstanceTests(unittest.TestCase):
         self.assertEqual(render(resumed, [(0x82, 0, 42)]), 0)
 
     def test_authored_expression_targets_held_id_and_supported_sdk_type(self):
+        self.check_identified_expression(False)
+
+    def test_live_expression_targets_held_id_and_supported_sdk_type(self):
+        self.check_identified_expression(True)
+
+    def check_identified_expression(self, live):
         events = [(0, 0x91, 60, 127, 51), (1, 0x92, 60, 127, 52),
                   (1, 0xe1, 127, 127, 51), (2, 0xb2, 74, 96, 52),
                   (3, 0xe1, 0, 0, 51), (4, 0xe2, 0, 64, 52),
@@ -826,7 +832,7 @@ class NativeInstanceTests(unittest.TestCase):
         def send(session, events):
             header = bytearray(session.packet(8))
             struct.pack_into("<HHH", header, 4, 3, 8, len(events))
-            records = b"".join(struct.pack("<HBBBB2xI", frame, 3, status, a, b, identity)
+            records = b"".join(struct.pack("<HBBBBBxI", frame, 3, status, a, b, live, identity)
                                for frame, status, a, b, identity in events)
             session.socket.sendall(header + bytes(64) + records)
         trace = self.root / "expressions.bin"
@@ -841,8 +847,8 @@ class NativeInstanceTests(unittest.TestCase):
         raw = trace.read_bytes()
         rows = list(struct.iter_unpack("<6q", raw[8:]))
         self.assertEqual([(kind, frame, identity, flags) for kind, frame, _, identity, flags, _ in rows],
-                         [(0, 0, 51, 0), (0, 1, 52, 0), (4, 1, 51, 0), (4, 2, 52, 0),
-                          (4, 3, 51, 0), (1, 5, 51, 0), (1, 7, 52, 0)])
+                         [(0, 0, 51, live), (0, 1, 52, live), (4, 1, 51, live), (4, 2, 52, live),
+                          (4, 3, 51, live), (1, 5, 51, live), (1, 7, 52, live)])
         bits = lambda value: struct.unpack("<q", struct.pack("<d", value))[0]
         self.assertEqual([row[2] for row in rows if row[0] == 4],
                          [bits(0.7), bits(96 / 127), bits(0.3)])
@@ -858,6 +864,12 @@ class NativeInstanceTests(unittest.TestCase):
         send(absent, [(0, 0xb2, 74, 96, 52)])
         self.error(absent, 8)
         self.terminal(absent, 8)
+
+        invalid = self.session(variant=145, channels=(0, 2))
+        self.assertEqual(invalid.message()[0], b"HXVIRD06")
+        send(invalid, [(0, 0x91, 60, 127, 51), (1, 0xb1, 71, 96, 51)])
+        self.error(invalid, 8)
+        self.assertEqual(self.terminal(invalid, 8)[5:7], (0, 0))
 
     def test_dense_identified_input_notes_cross_sdk_with_exact_offsets_and_ids(self):
         def send(session, notes, version=3):
