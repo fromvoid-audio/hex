@@ -154,10 +154,10 @@ impl NativeWorker {
         if request.kind != Kind::Extension {
             return Err("native controller operation kind differs");
         }
-        match self.poll_reply(request)? {
+        match self.poll_reply(request, |reply| reply.extension)? {
             Poll::Pending => Ok(NativeWorkerAuthoredParameterProgress::Pending),
             Poll::Failed => Ok(NativeWorkerAuthoredParameterProgress::Failed),
-            Poll::Ready(reply) => reply.extension.ok_or("native extension terminal differs"),
+            Poll::Ready(reply) => reply.ok_or("native extension terminal differs"),
         }
     }
 }

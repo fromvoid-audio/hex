@@ -129,12 +129,10 @@ impl NativeWorker {
         if request.kind != Kind::GuardedWrite {
             return Err("native controller operation kind differs");
         }
-        match self.poll_reply(request)? {
+        match self.poll_reply(request, |reply| reply.guarded_write)? {
             Poll::Pending => Ok(Progress::Pending),
             Poll::Failed => Ok(Progress::Failed),
-            Poll::Ready(reply) => reply
-                .guarded_write
-                .ok_or("native guarded editor write terminal differs"),
+            Poll::Ready(reply) => reply.ok_or("native guarded editor write terminal differs"),
         }
     }
 
