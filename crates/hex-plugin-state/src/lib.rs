@@ -205,6 +205,7 @@ pub fn available<'a>(
     Ok(state)
 }
 
+pub mod buses;
 pub mod programs;
 pub mod vstpreset;
 

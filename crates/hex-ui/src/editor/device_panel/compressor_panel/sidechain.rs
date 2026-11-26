@@ -46,7 +46,7 @@ fn submit(
     cx.notify();
 }
 
-pub(super) fn control(
+pub(in crate::editor::device_panel) fn control(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
@@ -60,6 +60,14 @@ pub(super) fn control(
     }
     if let std::collections::hash_map::Entry::Vacant(entry) = controls.entries.entry(device) {
         let project = &view.state.as_ref()?.project;
+        let device_type = project.device(device)?.state().type_id();
+        let id_prefix = if device_type == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
+            "vst3-sidechain"
+        } else if device_type == hex_lattice_contract::DeviceTypeId::from_static("hex.gate") {
+            "gate-sidechain"
+        } else {
+            "compressor-sidechain"
+        };
         let sources: Arc<[_]> = std::iter::once(None)
             .chain(
                 project
@@ -95,7 +103,7 @@ pub(super) fn control(
             )
         });
         let config = SelectorConfig::new(
-            format!("compressor-sidechain-{}", device.value()),
+            format!("{id_prefix}-{}", device.value()),
             labels,
             selected,
             theme::control_style(),

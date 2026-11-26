@@ -99,6 +99,7 @@ pub(in crate::editor) fn render_body(
     let follow_mapping = follow_row.as_ref().and_then(|row| {
         super::super::modulators::vst3_target_overlay(view, cx, device, row, "follow")
     });
+    let sidechain = super::super::compressor_panel::sidechain::control(view, cx, device);
     let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device) else {
         return body.h(px(56.0)).child(div().h(px(56.0)).flex_shrink_0());
     };
@@ -226,7 +227,16 @@ pub(in crate::editor) fn render_body(
                 .child(panel.search.clone()),
         )
         .child(controls);
-    let body = body.child(toolbar);
+    let body = body.child(toolbar).when_some(sidechain, |body, control| {
+        body.child(
+            div()
+                .debug_selector(|| "vst3-sidechain-row".to_string())
+                .w_full()
+                .flex_shrink_0()
+                .text_size(px(9.0))
+                .child(control),
+        )
+    });
     match &panel.result {
         None => body.child(
             div()
