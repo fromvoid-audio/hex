@@ -41,6 +41,11 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/console_returns.rs": '.child(button(glyph, label, id)) .child(self.track_name_label(target, name, cx)) .child(gain) .child(mute) .child(controls) .child(header) .child(mixer) .child(self.sample_arm_button(arm, cx)) .child(super::track_meters::render_return(id, levels, height))',
                 "crates/hex-ui/src/editor/mixer.rs": '.child(self.main_volume(cx))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
+                "crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs": (
+                    ".child(rate_mode) .child(sync_division) .child(a) .child(b) .child(stereo_mode) "
+                    ".child(invert) .child(dial_row(offset, shape)) .child(main_caption) .child(amount) "
+                    ".child(mod_mode) .child(stereo_rail) .child(main_rail)"
+                ),
                 "crates/hex-ui/src/editor/device_panel/modulators/source_card.rs": '.child(parameter_control_with_presentation(view, cx, id, identity, row)) .child(control_row)',
                 "crates/hex-ui/src/editor/device_panel/saturator_panel.rs": '.child(ws_caption) .child(dial_row(ws_drive, ws_curve))',
             }
@@ -53,6 +58,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
             baseline = run()
             self.assertEqual(baseline.returncode, 0, baseline.stderr)
             for name, content in [
+                ("other.rs", ".child(stereo_rail)"),
+                ("editor/device_panel/auto_pan_panel.rs", '.child(div().child("Unnormalized"))'),
+                ("editor/device_panel/auto_pan_panel.rs", ".child(self.unregistered_component(cx))"),
                 ("other.rs", '.child(super::super::render(&self.state, self.owner, self.now))'),
                 ("editor/track_performance/tests.rs", '.child("Unnormalized")'),
                 ("editor/track_performance/tests.rs", '.child(self.unregistered_component(cx))'),
