@@ -34,6 +34,56 @@ struct Reply {
     guarded_write: Option<NativeWorkerGuardedEditorWriteProgress>,
 }
 
+impl Reply {
+    fn observation(&self) -> NativeWorkerControllerProgress {
+        if let Some(editor) = self.editor {
+            NativeWorkerControllerProgress::Editor(editor)
+        } else if let Some(seal) = self.editor_seal {
+            NativeWorkerControllerProgress::EditorSeal(seal)
+        } else if let Some(frontier) = self.editor_frontier {
+            NativeWorkerControllerProgress::EditorFrontier(frontier)
+        } else if let Some(admission) = self.editor_admission {
+            NativeWorkerControllerProgress::EditorAdmission(admission)
+        } else if let Some(conversion) = self.conversion {
+            NativeWorkerControllerProgress::Conversion(Box::new(conversion))
+        } else if self.changed {
+            NativeWorkerControllerProgress::Changed {
+                revision: self.page.revision,
+                total: self.page.total,
+            }
+        } else {
+            NativeWorkerControllerProgress::Page(Box::new(self.page))
+        }
+    }
+
+    fn from_page_progress(progress: ParameterPageProgress) -> Option<Self> {
+        if matches!(progress, ParameterPageProgress::Pending) {
+            return None;
+        }
+        // One inline page serves every terminal, including unoptimized builds.
+        let mut reply = Self::default();
+        match progress {
+            ParameterPageProgress::Pending => return None,
+            ParameterPageProgress::Editor(editor) => reply.editor = Some(editor),
+            ParameterPageProgress::EditorSeal(seal) => reply.editor_seal = Some(seal),
+            ParameterPageProgress::EditorFrontier(frontier) => {
+                reply.editor_frontier = Some(frontier)
+            }
+            ParameterPageProgress::EditorAdmission(admission) => {
+                reply.editor_admission = Some(admission)
+            }
+            ParameterPageProgress::Page(page) => reply.page = *page,
+            ParameterPageProgress::Conversion(conversion) => reply.conversion = Some(*conversion),
+            ParameterPageProgress::Changed { revision, total } => {
+                reply.changed = true;
+                reply.page.revision = revision;
+                reply.page.total = total;
+            }
+        }
+        Some(reply)
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Slot {
     ordinal: u64,
@@ -115,12 +165,10 @@ pub enum NativeWorkerControllerProgress {
     Failed,
 }
 
-// One bounded copied terminal on control. Boxing would allocate a second
-// page merely to move it into the public observation result.
-#[allow(clippy::large_enum_variant)]
-enum Poll {
+// Convert the inline reply on control before returning only the requested result.
+enum Poll<T> {
     Pending,
-    Ready(Reply),
+    Ready(T),
     Failed,
 }
 
@@ -287,35 +335,27 @@ impl NativeWorker {
         if request.kind != Kind::Observe {
             return Err("native controller operation kind differs");
         }
-        let reply = match self.poll_reply(request)? {
-            Poll::Pending => return Ok(NativeWorkerControllerProgress::Pending),
-            Poll::Failed => return Ok(NativeWorkerControllerProgress::Failed),
-            Poll::Ready(reply) => reply,
+        let progress = match self.poll_reply(request, Reply::observation)? {
+            Poll::Pending => NativeWorkerControllerProgress::Pending,
+            Poll::Failed => NativeWorkerControllerProgress::Failed,
+            Poll::Ready(progress) => progress,
         };
-        Ok(if let Some(editor) = reply.editor {
-            NativeWorkerControllerProgress::Editor(editor)
-        } else if let Some(seal) = reply.editor_seal {
-            if request.stopped && seal == EditorSealState::Sealed {
-                self.editor_edits_sealed = true;
-            }
-            NativeWorkerControllerProgress::EditorSeal(seal)
-        } else if let Some(frontier) = reply.editor_frontier {
-            NativeWorkerControllerProgress::EditorFrontier(frontier)
-        } else if let Some(admission) = reply.editor_admission {
-            NativeWorkerControllerProgress::EditorAdmission(admission)
-        } else if let Some(conversion) = reply.conversion {
-            NativeWorkerControllerProgress::Conversion(Box::new(conversion))
-        } else if reply.changed {
-            NativeWorkerControllerProgress::Changed {
-                revision: reply.page.revision,
-                total: reply.page.total,
-            }
-        } else {
-            NativeWorkerControllerProgress::Page(Box::new(reply.page))
-        })
+        if request.stopped
+            && matches!(
+                progress,
+                NativeWorkerControllerProgress::EditorSeal(EditorSealState::Sealed)
+            )
+        {
+            self.editor_edits_sealed = true;
+        }
+        Ok(progress)
     }
 
-    fn poll_reply(&mut self, request: &NativeWorkerControllerQuery) -> Result<Poll, &'static str> {
+    fn poll_reply<T>(
+        &mut self,
+        request: &NativeWorkerControllerQuery,
+        ready: impl FnOnce(&Reply) -> T,
+    ) -> Result<Poll<T>, &'static str> {
         if request.binding != self.binding
             || request.source.as_ptr() != Arc::as_ptr(&self.reaper.completed)
         {
@@ -349,41 +389,10 @@ impl NativeWorker {
                 return Ok(Poll::Failed);
             };
             let reply = match progress {
-                Ok(ParameterPageProgress::Pending) => return Ok(Poll::Pending),
-                Ok(ParameterPageProgress::Editor(editor)) => Reply {
-                    editor: Some(editor),
-                    ..Reply::default()
+                Ok(progress) => match Reply::from_page_progress(progress) {
+                    Some(reply) => reply,
+                    None => return Ok(Poll::Pending),
                 },
-                Ok(ParameterPageProgress::EditorSeal(seal)) => Reply {
-                    editor_seal: Some(seal),
-                    ..Reply::default()
-                },
-                Ok(ParameterPageProgress::EditorFrontier(frontier)) => Reply {
-                    editor_frontier: Some(frontier),
-                    ..Reply::default()
-                },
-                Ok(ParameterPageProgress::EditorAdmission(admission)) => Reply {
-                    editor_admission: Some(admission),
-                    ..Reply::default()
-                },
-                Ok(ParameterPageProgress::Page(page)) => Reply {
-                    page: *page,
-                    ..Reply::default()
-                },
-                Ok(ParameterPageProgress::Conversion(conversion)) => Reply {
-                    conversion: Some(*conversion),
-                    ..Reply::default()
-                },
-                Ok(ParameterPageProgress::Changed { revision, total }) => {
-                    let mut page = ParameterPage::default();
-                    page.revision = revision;
-                    page.total = total;
-                    Reply {
-                        page,
-                        changed: true,
-                        ..Reply::default()
-                    }
-                }
                 Err(error) => {
                     self.record_control_failure("control", error);
                     return Ok(Poll::Failed);
@@ -397,7 +406,8 @@ impl NativeWorker {
                 .map_err(|_| "native controller mailbox failed")?;
             mailbox.controller.requested = false;
             mailbox.controller.via_control_channel = false;
-            return Ok(Poll::Ready(reply));
+            drop(mailbox);
+            return Ok(Poll::Ready(ready(&reply)));
         }
         if request.stopped || (!live && changes_editor_admission) {
             match self.service_stopped_controller() {
@@ -434,7 +444,7 @@ impl NativeWorker {
                 .record_guarded_write(ordinal, terminal == Guarded::Applied);
         }
         drop(mailbox);
-        Ok(Poll::Ready(reply))
+        Ok(Poll::Ready(ready(&reply)))
     }
 
     fn service_stopped_controller(&mut self) -> Result<(), &'static str> {
@@ -705,43 +715,7 @@ impl State {
             self.controller.result = if self.controller.extension {
                 Reply::extension(instance.poll_authored_parameter_extension_on_worker()?)
             } else {
-                match instance.poll_parameter_page_on_worker()? {
-                    ParameterPageProgress::Pending => None,
-                    ParameterPageProgress::Editor(editor) => Some(Reply {
-                        editor: Some(editor),
-                        ..Reply::default()
-                    }),
-                    ParameterPageProgress::EditorSeal(seal) => Some(Reply {
-                        editor_seal: Some(seal),
-                        ..Reply::default()
-                    }),
-                    ParameterPageProgress::EditorFrontier(frontier) => Some(Reply {
-                        editor_frontier: Some(frontier),
-                        ..Reply::default()
-                    }),
-                    ParameterPageProgress::EditorAdmission(admission) => Some(Reply {
-                        editor_admission: Some(admission),
-                        ..Reply::default()
-                    }),
-                    ParameterPageProgress::Page(page) => Some(Reply {
-                        page: *page,
-                        ..Reply::default()
-                    }),
-                    ParameterPageProgress::Conversion(conversion) => Some(Reply {
-                        conversion: Some(*conversion),
-                        ..Reply::default()
-                    }),
-                    ParameterPageProgress::Changed { revision, total } => {
-                        let mut page = ParameterPage::default();
-                        page.revision = revision;
-                        page.total = total;
-                        Some(Reply {
-                            page,
-                            changed: true,
-                            ..Reply::default()
-                        })
-                    }
-                }
+                Reply::from_page_progress(instance.poll_parameter_page_on_worker()?)
             };
         }
         self.controller.poll_after = Instant::now()
