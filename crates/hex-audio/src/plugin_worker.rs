@@ -42,6 +42,8 @@ pub struct SlowPluginExchange {
     pub empty_poll_to_pickup_ns: Option<u64>,
     pub exchange_ns: u64,
     pub sdk_process_ns: u64,
+    /// CPU time on the original SDK processing thread, when available.
+    pub sdk_thread_cpu_ns: Option<u64>,
     pub quantum_ns: u64,
     /// Samples dropped since the previous successful drain, saturating.
     pub dropped: u64,
@@ -485,6 +487,7 @@ impl State {
                     performs: Default::default(),
                     restorations: Default::default(),
                     sdk_process_ns: None,
+                    sdk_thread_cpu_ns: None,
                 }),
             Some(Processor::Function(_)) => Err(Fault::InvalidParameters),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -879,6 +882,7 @@ fn transport_runner_with_setup(
                                 empty_poll_to_pickup_ns,
                                 exchange_ns,
                                 sdk_process_ns,
+                                sdk_thread_cpu_ns: reply.sdk_thread_cpu_ns,
                                 quantum_ns,
                                 dropped: 0,
                             });
@@ -890,6 +894,7 @@ fn transport_runner_with_setup(
                              performs,
                              restorations,
                              sdk_process_ns: _,
+                             sdk_thread_cpu_ns: _,
                          }| {
                             // Native exchange already validated the complete SDK
                             // reply. Retain its private input receipt even if Stop
@@ -1445,6 +1450,7 @@ mod tests {
             empty_poll_to_pickup_ns: Some(300),
             exchange_ns: 900,
             sdk_process_ns: 400,
+            sdk_thread_cpu_ns: Some(150),
             quantum_ns: 800,
             dropped: 0,
         };

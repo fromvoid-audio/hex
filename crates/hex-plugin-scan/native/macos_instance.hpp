@@ -14,6 +14,7 @@
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <atomic>
 #include <chrono>
+#include <time.h>
 #include <cmath>
 #include "pluginterfaces/vst/ivstnoteexpression.h"
 #include <cstring>
@@ -563,7 +564,8 @@ public:
         return true;
     }
     bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr,
-                 const float* aux_left=nullptr,const float* aux_right=nullptr) {
+                 const float* aux_left=nullptr,const float* aux_right=nullptr,
+                 uint64_t* sdk_thread_cpu_ns=nullptr) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
             quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
         auto sdk=data;
@@ -571,13 +573,13 @@ public:
         if (double_processing_) {
             double_processing_->attach(configuration_,sdk);
             if (!process_checked(sdk,double_processing_->aux_input,double_processing_->instrument_outputs,
-                                 aux_left,aux_right,sdk_process_ns)) return false;
+                                 aux_left,aux_right,sdk_process_ns,sdk_thread_cpu_ns)) return false;
             if (configuration_.output_enabled) {
                 double_processing_->instrument_outputs.mix_into_main(sdk.outputs[0],sdk.numSamples);
                 double_processing_->copy_outputs(data);
             }
         } else {
-            if (!process_checked(sdk,aux_input_,instrument_outputs_,aux_left,aux_right,sdk_process_ns)) return false;
+            if (!process_checked(sdk,aux_input_,instrument_outputs_,aux_left,aux_right,sdk_process_ns,sdk_thread_cpu_ns)) return false;
             if (configuration_.output_enabled)
                 instrument_outputs_.mix_into_main(sdk.outputs[0],sdk.numSamples);
         }
@@ -589,12 +591,13 @@ private:
     template<class Sample> bool process_checked(ProcessData& sdk,AuxInputBus<Sample>& aux_input,
                                                 InstrumentOutputs<Sample>& outputs,
                                                 const float* aux_left,const float* aux_right,
-                                                uint64_t* sdk_process_ns) {
+                                                uint64_t* sdk_process_ns,uint64_t* sdk_thread_cpu_ns) {
         aux_input.attach(sdk,aux_left,aux_right);
         outputs.attach(sdk);
         const ProcessingShape<Sample> shape(sdk);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
+        const auto cpu_start=sdk_thread_cpu_ns?clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID):0;
         const auto start=sdk_process_ns?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
         const auto result=processor->process(sdk);
         if(sdk_process_ns) {
@@ -602,6 +605,14 @@ private:
             const auto ns=elapsed>0?static_cast<uint64_t>(elapsed):0;
             *sdk_process_ns=ns>std::numeric_limits<uint64_t>::max()-*sdk_process_ns?
                 std::numeric_limits<uint64_t>::max():*sdk_process_ns+ns;
+        }
+        if(sdk_thread_cpu_ns) {
+            const auto cpu_end=clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+            // Any unavailable slice makes the complete quantum unavailable.
+            if(!cpu_start || cpu_end<cpu_start || cpu_end-cpu_start>=UINT64_MAX-*sdk_thread_cpu_ns)
+                *sdk_thread_cpu_ns=UINT64_MAX;
+            else
+                *sdk_thread_cpu_ns+=cpu_end-cpu_start;
         }
         if (result!=kResultOk || !shape.unchanged(sdk) || !aux_input.unchanged(sdk) || !outputs.unchanged()) {
             processing_fault.store(true); return false;

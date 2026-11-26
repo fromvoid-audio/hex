@@ -69,6 +69,8 @@ impl Plugins {
                     if let Some(log) = &self.diagnostics
                         && let Some(sample) = control.take_native_source_slow_exchange(source.binding)
                     {
+                        let thread_cpu = sample.sdk_thread_cpu_ns
+                            .map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string());
                         let pickup_interval = sample
                             .empty_poll_to_pickup_ns
                             .map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string());
@@ -76,7 +78,7 @@ impl Plugins {
                             hex_diagnostics::Level::Warn,
                             hex_diagnostics::Category::Audio,
                             &format!(
-                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} quantum_ns={} dropped={} queue_ns=unavailable empty_poll_to_pickup_ns={pickup_interval}",
+                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} sdk_thread_cpu_ns={thread_cpu} quantum_ns={} dropped={} queue_ns=unavailable empty_poll_to_pickup_ns={pickup_interval}",
                                 source.device, sample.binding, sample.sequence, sample.exchange_ns,
                                 sample.sdk_process_ns, sample.quantum_ns, sample.dropped
                             ),

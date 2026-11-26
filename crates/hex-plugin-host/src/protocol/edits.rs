@@ -46,6 +46,9 @@ pub struct EditorPcm {
     pub restorations: EditorRestorations,
     /// Sum of the helper's SDK process calls in this quantum, when requested.
     pub sdk_process_ns: Option<u64>,
+    /// User and kernel CPU time on the calling SDK thread, summed over the same slices.
+    /// Other plug-in threads are outside this observation. A failed clock read yields None.
+    pub sdk_thread_cpu_ns: Option<u64>,
 }
 
 /// The canonical restoration choice for one original worker target.

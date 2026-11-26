@@ -667,7 +667,7 @@ impl Prepared {
         if observe_editor {
             bytes[5] |= (protocol::EDITOR_PCM_BIT >> 8) as u8;
         }
-        bytes[5] |= (protocol::SDK_TIMING_BIT >> 8) as u8;
+        bytes[5] |= ((protocol::SDK_TIMING_BIT | protocol::SDK_THREAD_CPU_BIT) >> 8) as u8;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();
         self.lease.channel.send_pcm(
@@ -714,14 +714,7 @@ impl Prepared {
                 self.last_pcm_edit_sequence,
             )?
         } else {
-            let (block, sdk_process_ns) =
-                protocol::timed_pcm(self.packet.data(), &self.config, self.sequence)?;
-            protocol::EditorPcm {
-                block,
-                performs: protocol::EditorPerforms::default(),
-                restorations: Default::default(),
-                sdk_process_ns,
-            }
+            protocol::timed_pcm(self.packet.data(), &self.config, self.sequence)?
         };
         if output.sdk_process_ns.is_none() {
             return Err(Error::Protocol("missing requested SDK processing timing"));

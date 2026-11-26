@@ -1436,7 +1436,7 @@ int main(int argc,char** argv) {
                             const float* slice_aux_left=packet.has_sidechain?aux_left.data()+first:nullptr;
                             const float* slice_aux_right=packet.has_sidechain?aux_right.data()+first:nullptr;
                             const bool processed=instance.process(window,packet.observe_sdk_timing?&packet.sdk_process_ns:nullptr,
-                                slice_aux_left,slice_aux_right);
+                                slice_aux_left,slice_aux_right,packet.observe_thread_cpu?&packet.sdk_thread_cpu_ns:nullptr);
 #if defined(HEX_ORIGINAL_SLICE_CLOCK_OBSERVATION)
                             slice_clock.end(observed_slice,processed);
 #endif
