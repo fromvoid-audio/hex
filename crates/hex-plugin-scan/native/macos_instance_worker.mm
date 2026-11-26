@@ -495,7 +495,7 @@ int main(int argc,char** argv) {
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
             setup.process_mode=process_mode;
-            const auto configured=instance.configure(setup);
+            const auto configured=instance.configure(setup,restoration.report_output_buses);
             if(configured!=hex_instance::ConfigurationResult::Prepared) {
                 failure=setup_failure(configured);throw Refusal{};
             }

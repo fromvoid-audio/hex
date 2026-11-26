@@ -215,6 +215,7 @@ constexpr int output_notes_variant=167, full_output_notes_variant=168, excess_ou
 constexpr int active_aux_outputs_variant=172, double_aux_outputs_variant=173;
 constexpr int channel_output_variant=174, invalid_output_channel_variant=175,
     invalid_output_value_variant=176, invalid_output_second_value_variant=177, system_output_variant=178;
+constexpr int invalid_output_name_variant=179;
 static bool has_note_output(int variant) {
     return (variant>=output_notes_variant && variant<=unsupported_output_event_variant) ||
         (variant>=channel_output_variant && variant<=system_output_variant);
@@ -708,7 +709,7 @@ public:
 class ProcessingProcessor final : public Processor,public IAudioPresentationLatency {
     const int fault=next_fault;
     const bool active_aux_outputs=fault==active_aux_outputs_variant || fault==double_aux_outputs_variant;
-    const bool multiple_outputs=(fault>=128 && fault<=130) || active_aux_outputs || fault==179;
+    const bool multiple_outputs=(fault>=128 && fault<=130) || active_aux_outputs || fault==invalid_output_name_variant;
     const bool multiple_aux_inputs=fault>=multiple_aux_inputs_variant && fault<=multiple_aux_mismatch_variant;
     const bool silent_input=fault==120 || fault==136;
     const bool midi_instrument=fault==115 || silent_input || fault==127 || multiple_outputs ||
@@ -978,7 +979,7 @@ public:
         if(extra_output && index==1) std::memcpy(info.name,aux_name,sizeof(aux_name));
         else if(extra_output) std::memcpy(info.name,third_name,sizeof(third_name));
         else std::memcpy(info.name,main_name,sizeof(main_name));
-        if(extra_output && index==2 && fault==179) info.name[0]=static_cast<char16>(0xdc00);
+        if(extra_output && index==2 && fault==invalid_output_name_variant) info.name[0]=static_cast<char16>(0xdc00);
         return kResultOk;
     }
     tresult PLUGIN_API getBusArrangement(BusDirection direction,int32 index,SpeakerArrangement& value) override {
@@ -1596,7 +1597,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>system_output_variant) return false;next_fault=value;
+        if (value>invalid_output_name_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);
