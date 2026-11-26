@@ -30,8 +30,7 @@ mod audio_edit;
 mod extended_attributes;
 mod replacement;
 mod schema;
-#[cfg(test)]
-mod temporaries;
+pub mod temporaries;
 pub use extended_attributes::MetadataWarning;
 pub use files::{
     FileToken, SaveNewOutcome, load, load_with_token, same_existing_file, save_new,
@@ -43,6 +42,10 @@ pub use replacement::{
     prepare_replacement_within, recovery_path, replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
+pub use temporaries::{
+    AbandonedStage, AbandonedStageKind, discard_verified_stage, inspect_abandoned_stages,
+    recover_abandoned_stage_as,
+};
 
 /// Current saved-project schema for projects without sinc v2 media; independent
 /// of the application version. Such projects keep the layout older readers open.
