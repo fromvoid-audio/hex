@@ -193,11 +193,23 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
     let plot = visual
         .debug_bounds(selector("arrangement-automation-plot", track.value()))
         .unwrap();
-    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
-    let down = point(
-        plot.left() + plot.size.width * 0.25,
-        plot.top() + plot.size.height * 0.4,
+    // Drag a painted point. A drag starting in empty foreground space owns a marquee.
+    visual.simulate_click(
+        point(
+            plot.left() + plot.size.width * 0.25,
+            plot.top() + plot.size.height * 0.4,
+        ),
+        Modifiers::default(),
     );
+    pump(&editor, &mut visual);
+    let (before, beat) = editor.read_with(&visual, |v, _| {
+        let project = &v.state.as_ref().unwrap().project;
+        let points = project.track(track).unwrap().gain_envelope();
+        assert_eq!(points.len(), 1);
+        (project.snapshot(), points[0].beat)
+    });
+    let marker = Box::leak(format!("gain-point-{}-{}", track.value(), beat.raw()).into_boxed_str());
+    let down = visual.debug_bounds(marker).unwrap().center();
     let target = point(down.x, plot.top() + plot.size.height * 0.7);
     visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
@@ -216,8 +228,7 @@ fn foreground_curve_owns_pointer_and_released_marker_until_exact_worker_terminal
         );
         v.gain_lane.draft.unwrap().point
     });
-    let marker =
-        Box::leak(format!("gain-point-{}-{}", track.value(), authored.beat.raw()).into_boxed_str());
+    assert_eq!(authored.beat, beat);
     let held = visual.debug_bounds(marker).unwrap();
     assert!((held.center().y - target.y).abs() < px(1.0));
     visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
