@@ -718,11 +718,25 @@ fn automated_auto_pan_callback_publication_and_late_failure_retry_are_allocation
         .map_err(|_| "auto pan allocation probe panicked")?
         .map_err(Into::into)
 }
+#[test]
+fn automated_chorus_callback_publication_and_late_failure_retry_are_allocation_free()
+-> Result<(), Box<dyn Error>> {
+    std::thread::Builder::new()
+        .stack_size(16 * 1024 * 1024)
+        .spawn(|| {
+            run_automated_native_allocation_probe(AutomatedFamily::Chorus)
+                .map_err(|e| e.to_string())
+        })?
+        .join()
+        .map_err(|_| "chorus allocation probe panicked")?
+        .map_err(Into::into)
+}
 #[derive(Clone, Copy)]
 enum AutomatedFamily {
     Utility,
     Saturator,
     AutoPan,
+    Chorus,
 }
 fn run_automated_native_allocation_probe(family: AutomatedFamily) -> Result<(), Box<dyn Error>> {
     use hex_project::{AutomationInterpolation, AutomationPoint, AutomationValue};
@@ -775,6 +789,15 @@ fn run_automated_native_allocation_probe(family: AutomatedFamily) -> Result<(), 
                     (2, 0.25, 0.75),
                     (3, 0.9, 0.0),
                     (4, 0.0, 1.0),
+                ],
+            ),
+            AutomatedFamily::Chorus => (
+                Some(hex_devices::chorus::CHORUS_DEFINITION.default_state()?),
+                &[
+                    (1, 0.25, 0.75),
+                    (2, 0.2, 0.8),
+                    (4, 0.3, 0.7),
+                    (8, 0.25, 0.75),
                 ],
             ),
         };

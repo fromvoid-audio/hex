@@ -206,6 +206,19 @@ impl ChainCustody {
                         OwnedShared::<hex_devices::delay::PreparedDelay>::declared_parts(),
                     )?),
                 )
+            } else if state.type_id() == hex_devices::chorus::CHORUS_TYPE_ID {
+                let migrated = hex_devices::chorus::CHORUS_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::chorus::ChorusDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::chorus::PreparedChorus>::declared_parts(),
+                    )?),
+                )
             } else if state.type_id() == hex_devices::compressor::COMPRESSOR_TYPE_ID {
                 let migrated = hex_devices::compressor::COMPRESSOR_DEFINITION
                     .migrate_state(state)
@@ -462,6 +475,7 @@ impl ChainCustody {
             let eq = device.state().type_id() == EQ_TYPE_ID;
             let eq8 = device.state().type_id() == hex_devices::eq8::EQ8_TYPE_ID;
             let delay = device.state().type_id() == hex_devices::delay::TYPE_ID;
+            let chorus = device.state().type_id() == hex_devices::chorus::CHORUS_TYPE_ID;
             let limiter = device.state().type_id() == hex_devices::limiter::TYPE_ID;
             let native = crate::native_effect_storage::is_closed_type(device.state().type_id());
             let definition = &hex_devices::utility::UTILITY_DEFINITION;
@@ -498,6 +512,11 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
             } else if delay {
                 hex_devices::delay::DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if chorus {
+                hex_devices::chorus::CHORUS_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
@@ -622,6 +641,7 @@ impl ChainCustody {
                 || eq
                 || eq8
                 || delay
+                || chorus
                 || limiter
             {
                 StereoMatrix::identity()
@@ -789,6 +809,23 @@ impl ChainCustody {
                     Some(PreparedProcessorFactory::Owned(owner)),
                     Some(declaration),
                 )
+            } else if chorus {
+                let (owner, declaration) = OwnedShared::new_owned(
+                    hex_devices::chorus::ChorusDefinition::prepare_owned(
+                        &configuration,
+                        rate,
+                        parameters,
+                    )
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                )
+                .into_owned_processor_parts_on_control();
+                declaration
+                    .parts(&owner)
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                (
+                    Some(PreparedProcessorFactory::Owned(owner)),
+                    Some(declaration),
+                )
             } else if eq {
                 let prepared = EqDefinition::prepare_owned(&configuration, rate, parameters)
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
@@ -879,6 +916,8 @@ impl ChainCustody {
                         &hex_devices::eq8::EQ8_DEFINITION
                     } else if delay {
                         &hex_devices::delay::DEFINITION
+                    } else if chorus {
+                        &hex_devices::chorus::CHORUS_DEFINITION
                     } else if limiter {
                         &hex_devices::limiter::DEFINITION
                     } else if rattle {
