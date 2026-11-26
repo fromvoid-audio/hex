@@ -52,7 +52,7 @@ pub enum NoteEvent {
         pitch: u8,
         value: u8,
     },
-    /// Per-note pitch bend offset in cents (`-4800..=4800`) attributed to one
+    /// Per-note pitch bend offset in cents (`-9600..=9600`) attributed to one
     /// active note on an MPE member channel.
     NotePitchBend {
         channel: u8,
