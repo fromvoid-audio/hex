@@ -580,3 +580,338 @@ fn installed_package_automation_and_expression_match_oracle_with_zero_callback_a
         );
     }
 }
+
+/// Independent same-source Rust reference oracles for the four stateful stock
+/// effect packages (`#2999`): Saturator, Compressor, Gate, and Auto Pan.
+fn oracle_saturator(frames: &mut [[f32; 2]], drive_db: f32, trim_db: f32, mix: f32) {
+    let drive = 10.0_f32.powf(drive_db * 0.05);
+    let trim = 10.0_f32.powf(trim_db * 0.05);
+    let dc_r = 0.995_f32;
+    let (mut x1_l, mut y1_l, mut x1_r, mut y1_r) = (0.0_f32, 0.0_f32, 0.0_f32, 0.0_f32);
+    for frame in frames.iter_mut() {
+        let (dry_l, dry_r) = (frame[0], frame[1]);
+        let mut wet_l = (dry_l * drive).tanh() * trim;
+        let mut wet_r = (dry_r * drive).tanh() * trim;
+        let yl = wet_l - x1_l + dc_r * y1_l;
+        x1_l = wet_l;
+        y1_l = yl;
+        wet_l = yl;
+        let yr = wet_r - x1_r + dc_r * y1_r;
+        x1_r = wet_r;
+        y1_r = yr;
+        wet_r = yr;
+        frame[0] = dry_l + (wet_l - dry_l) * mix;
+        frame[1] = dry_r + (wet_r - dry_r) * mix;
+    }
+}
+
+fn oracle_compressor(frames: &mut [[f32; 2]], sample_rate: u32) {
+    let sr = sample_rate as f32;
+    let (threshold_db, ratio, attack_ms, release_ms, makeup_db, mix) =
+        (-12.0_f32, 4.0_f32, 10.0_f32, 100.0_f32, 0.0_f32, 1.0_f32);
+    let mut env = 0.0_f32;
+    for frame in frames.iter_mut() {
+        let (dry_l, dry_r) = (frame[0], frame[1]);
+        let peak = dry_l.abs().max(dry_r.abs());
+        let atk = (-1.0_f32 / (attack_ms * 0.001 * sr).max(1.0)).exp();
+        let rel = (-1.0_f32 / (release_ms * 0.001 * sr).max(1.0)).exp();
+        let coeff = if peak > env { atk } else { rel };
+        env = coeff * env + (1.0 - coeff) * peak;
+        let mut gr_db = 0.0_f32;
+        if env > 1e-6 {
+            let env_db = 20.0 * env.log10();
+            if env_db > threshold_db {
+                gr_db = (threshold_db - env_db) * (1.0 - 1.0 / ratio);
+            }
+        }
+        let gain = 10.0_f32.powf((gr_db + makeup_db) * 0.05);
+        frame[0] = dry_l + (dry_l * gain - dry_l) * mix;
+        frame[1] = dry_r + (dry_r * gain - dry_r) * mix;
+    }
+}
+
+fn oracle_gate(frames: &mut [[f32; 2]], sample_rate: u32) {
+    let sr = sample_rate as f32;
+    let (threshold_db, floor_db, attack_ms, hold_ms, release_ms) =
+        (-24.0_f32, -60.0_f32, 2.0_f32, 20.0_f32, 100.0_f32);
+    let thresh_lin = 10.0_f32.powf(threshold_db * 0.05);
+    let floor_lin = 10.0_f32.powf(floor_db * 0.05);
+    let mut gate_env = 0.0_f32;
+    let mut hold_remaining = 0u32;
+    for frame in frames.iter_mut() {
+        let (l, r) = (frame[0], frame[1]);
+        let peak = l.abs().max(r.abs());
+        let open_target = if peak >= thresh_lin {
+            hold_remaining = (hold_ms * 0.001 * sr) as u32;
+            1.0_f32
+        } else if hold_remaining > 0 {
+            hold_remaining -= 1;
+            1.0_f32
+        } else {
+            0.0_f32
+        };
+        let atk = (-1.0_f32 / (attack_ms * 0.001 * sr).max(1.0)).exp();
+        let rel = (-1.0_f32 / (release_ms * 0.001 * sr).max(1.0)).exp();
+        let coeff = if open_target > gate_env { atk } else { rel };
+        gate_env = coeff * gate_env + (1.0 - coeff) * open_target;
+        let gain = floor_lin + (1.0 - floor_lin) * gate_env;
+        frame[0] = l * gain;
+        frame[1] = r * gain;
+    }
+}
+
+fn oracle_auto_pan(frames: &mut [[f32; 2]], sample_rate: u32) {
+    let sr = sample_rate as f64;
+    let two_pi = std::f64::consts::TAU;
+    let (amount, rate_hz, phase_deg) = (0.5_f32, 2.0_f64, 180.0_f64);
+    let offset_rad = (phase_deg / 360.0) * two_pi;
+    let mut phase = 0.0_f64;
+    for frame in frames.iter_mut() {
+        let mod_l = 0.5 * (1.0 + phase.sin() as f32);
+        let mod_r = 0.5 * (1.0 + (phase + offset_rad).sin() as f32);
+        let gain_l = 1.0 - amount * (1.0 - mod_l);
+        let gain_r = 1.0 - amount * (1.0 - mod_r);
+        frame[0] *= gain_l;
+        frame[1] *= gain_r;
+        phase += (two_pi * rate_hz) / sr;
+        if phase >= two_pi {
+            phase -= two_pi;
+        }
+    }
+}
+
+#[test]
+fn four_stateful_stock_effects_pass_static_oracle_odd_blocks_schema_history_and_zero_allocs() {
+    use hex_lattice_contract::package_ui::{
+        PACKAGE_UI_VERSION_V1, PackageNumericFormat, PackageUiControl, PackageUiItem,
+        PackageUiSchema, PackageUiSection, PackageUiWidgetKind, UI_CAP_METER, UI_CAP_SCALAR,
+    };
+    use hex_project::{Command as ProjectCommand, Created, Editor, Project};
+
+    let tmp = TempDir::new("cohort-fx");
+    let token = "reviewed-test-fixture-token-v1";
+    let mut policy = AdmissionPolicy::host_default();
+    policy.allow_reviewed_test("hex.factory", sha256_hex(token.as_bytes()));
+    let fx_caps =
+        CAP_AUDIO_EFFECT | CAP_PARAMETER_EVENTS | CAP_ZERO_LATENCY | CAP_STATE_PERSISTENCE;
+
+    let specs = [
+        ("saturator_v1.c", "hex.pkg.saturator", "saturator"),
+        ("compressor_v1.c", "hex.pkg.compressor", "compressor"),
+        ("gate_v1.c", "hex.pkg.gate", "gate"),
+        ("auto_pan_v1.c", "hex.pkg.auto_pan", "auto_pan"),
+    ];
+    let lib_dir = tmp.path().join("library");
+    let catalog = DevicePackageCatalog::open_and_recover(&lib_dir).unwrap();
+
+    let mut defs = Vec::new();
+    for (src, type_id, display) in specs {
+        let archive = build_package(
+            &tmp,
+            src,
+            type_id,
+            display,
+            DEVICE_KIND_AUDIO_EFFECT,
+            fx_caps,
+            token,
+        );
+        let rec = match catalog.install_file(&archive, &policy, None).unwrap() {
+            InstallOutcome::Installed(rec) => rec,
+            other => panic!("expected Installed for {display}, got {other:?}"),
+        };
+        let dylib = lib_dir
+            .join(&rec.generation_rel_dir)
+            .join(&rec.native_module_rel_path);
+        defs.push(
+            InstalledPackageEffect::load_on_control(
+                &dylib,
+                rec.publisher_id.clone(),
+                hex_to_bytes32(&rec.package_sha256),
+            )
+            .unwrap(),
+        );
+    }
+
+    let tuning = TuningTable::default();
+    let input_signal: Vec<[f32; 2]> = (0..180)
+        .map(|i| {
+            let amp = if i < 90 { 0.8 } else { 0.02 };
+            let phase = (i as f32) * 0.13;
+            [amp * phase.sin(), amp * (phase * 1.1).cos()]
+        })
+        .collect();
+
+    // 1. Validate same-source static oracle vs installed package across multiple
+    //    sample rates and odd block chunking (17, 37, 64, 62), plus rollback & schema validation.
+    for sample_rate in [44_100u32, 48_000, 96_000] {
+        let ctx = DevicePreparationContext {
+            sample_rate,
+            tuning: &tuning,
+            resources: &EMPTY_DEVICE_RESOURCES,
+        };
+        for (idx, def) in defs.iter().enumerate() {
+            let state = def.default_state().unwrap();
+            // Validate declarative PackageUiSchema against every parameter of this package.
+            let descs = def.descriptors_for_state(&state).unwrap();
+            let schema = PackageUiSchema {
+                ui_version: PACKAGE_UI_VERSION_V1,
+                required_capabilities: UI_CAP_SCALAR | UI_CAP_METER,
+                frame_width: 240.0,
+                sections: vec![PackageUiSection {
+                    heading: "controls".into(),
+                    columns: 2,
+                    items: descs
+                        .iter()
+                        .map(|d| {
+                            PackageUiItem::Control(PackageUiControl {
+                                parameter_id: d.id,
+                                widget: PackageUiWidgetKind::Dial,
+                                label: Some(d.label.to_owned()),
+                                tooltip: None,
+                                display_format: PackageNumericFormat::Default,
+                                show_when: None,
+                            })
+                        })
+                        .collect(),
+                }],
+            };
+            assert_eq!(schema.validate(&descs), Ok(()));
+
+            let Some(PreparedProcessorFactory::Owned(factory)) =
+                def.prepare_runtime_factory(&state, &ctx).unwrap()
+            else {
+                panic!("owned factory");
+            };
+            let mut rt = factory.create_runtime().unwrap();
+
+            // Render through odd block chunks (17, 37, 64, 62 = 180 frames) with a
+            // speculative rollback in the middle to prove stateful history integrity.
+            let mut actual = input_signal.clone();
+            let mut cursor = 0usize;
+            for chunk_len in [17usize, 37, 64, 62] {
+                if cursor == 17 {
+                    let mut scratch = actual[cursor..cursor + chunk_len].to_vec();
+                    rt.begin_block();
+                    rt.process_block(&mut scratch, &EMPTY_DEVICE_RESOURCES);
+                    rt.rollback_block();
+                }
+                rt.begin_block();
+                rt.process_block(
+                    &mut actual[cursor..cursor + chunk_len],
+                    &EMPTY_DEVICE_RESOURCES,
+                );
+                rt.commit_block();
+                cursor += chunk_len;
+            }
+
+            let mut expected = input_signal.clone();
+            match idx {
+                0 => oracle_saturator(&mut expected, 6.0, 0.0, 1.0),
+                1 => oracle_compressor(&mut expected, sample_rate),
+                2 => oracle_gate(&mut expected, sample_rate),
+                3 => oracle_auto_pan(&mut expected, sample_rate),
+                _ => unreachable!(),
+            }
+            for (frame_idx, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (a[0] - e[0]).abs() < 1e-4 && (a[1] - e[1]).abs() < 1e-4,
+                    "effect {idx} @ {sample_rate} Hz frame {frame_idx}: actual={a:?} expected={e:?}"
+                );
+            }
+        }
+    }
+
+    // 2. Save/reopen & Undo/Redo history with all 4 packaged effects on one track.
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(ProjectCommand::AddTrack {
+            name: "cohort".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let mut inserted_ids = Vec::new();
+    for def in &defs {
+        let Created::Device(id) = editor
+            .execute(ProjectCommand::InsertDevice {
+                track,
+                before: None,
+                state: def.default_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        inserted_ids.push(id);
+    }
+    let save_path = tmp.path().join("cohort.hexproj");
+    hex_storage::save_new(&save_path, editor.project()).unwrap();
+    let reopened = hex_storage::load(&save_path).unwrap();
+    assert_eq!(reopened.track(track).unwrap().devices().len(), 4);
+    for (&id, def) in inserted_ids.iter().zip(defs.iter()) {
+        assert_eq!(
+            reopened.device(id).unwrap().state(),
+            &def.default_state().unwrap()
+        );
+    }
+    assert!(editor.undo());
+    assert_eq!(editor.project().track(track).unwrap().devices().len(), 3);
+    assert!(editor.redo());
+    assert_eq!(editor.project().track(track).unwrap().devices().len(), 4);
+
+    // 3. Zero callback total/net allocation/free across all 4 stateful effects + control-only final drop.
+    let ctx48 = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let mut runtimes: Vec<_> = defs
+        .iter()
+        .map(|def| {
+            let state = def.default_state().unwrap();
+            let Some(PreparedProcessorFactory::Owned(factory)) =
+                def.prepare_runtime_factory(&state, &ctx48).unwrap()
+            else {
+                panic!("owned factory");
+            };
+            factory.create_runtime().unwrap()
+        })
+        .collect();
+    let mut block = [[0.4f32, -0.3f32]; 64];
+    for rt in &mut runtimes {
+        rt.begin_block();
+        rt.process_block(&mut block, &EMPTY_DEVICE_RESOURCES);
+        rt.commit_block();
+    }
+    #[cfg(feature = "allocation-probe")]
+    {
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..32 {
+                block.fill([0.4, -0.3]);
+                for rt in &mut runtimes {
+                    rt.begin_block();
+                    rt.process_block(&mut block, &EMPTY_DEVICE_RESOURCES);
+                    rt.commit_block();
+                }
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    drop(runtimes);
+    for def in &defs {
+        assert_eq!(
+            def.active_module_leases(),
+            1,
+            "control-only final drop must release all runtime module leases"
+        );
+    }
+}
