@@ -328,10 +328,16 @@ pub(in crate::editor) fn render_source(
                 .items_center()
                 .gap(px(4.0))
                 .children(std::iter::once(manager))
-                .children([title.into_any_element(), comparison.into_any_element()])
+                .children([
+                    title.into_any_element(),
+                    bypass_action(view, device, identity.class, cx).into_any_element(),
+                    comparison.into_any_element(),
+                ])
                 .children(std::iter::once(close)),
         )
         .child(body);
+    let panel =
+        keyboard::activation_card(view, cx, device.id(), identity.class, focus.clone(), panel);
     device_comparison::card(view, cx, device.id(), identity.class, focus, panel)
 }
 
@@ -790,7 +796,7 @@ pub(in crate::editor) fn render_track(
             rendered,
         )
         .track_focus(&focus);
-        let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
+        let card = keyboard::card(view, cx, device.id(), class, focus.clone(), card);
         let card = crate::editor::device_comparison::card(
             view,
             cx,

@@ -1,6 +1,6 @@
-//! Device-selection keys own only the directly focused card, never its editors.
-//! C/zero read live canonical bypass and use the same terminal barrier as pointer
-//! bypass; rendered generation/owner/type identity refuses retired card handlers.
+//! Selection keys belong to the directly focused card. Slash also auditions
+//! bypass from its selected parameter controls through the pointer bypass barrier.
+//! Rendered generation, owner and type identity refuse retired card handlers.
 //! Left/right step the selection through the chain, and paste targets a chosen
 //! insertion gap, else the position after the selection. Duplicate uses the
 //! worker clipboard edit and follows only its own committed insertion.
@@ -704,10 +704,95 @@ fn remove_selected_device(
     cx.notify();
 }
 
+pub(super) fn activation_card(
+    view: &EditorView,
+    cx: &Context<EditorView>,
+    device: DeviceId,
+    class: NativeDeviceClass,
+    focus: FocusHandle,
+    card: Stateful<Div>,
+) -> Stateful<Div> {
+    let generation = view.project_generation;
+    let owner = view.device_panel.owner;
+    let type_id = view.state.as_ref().and_then(|state| {
+        crate::editor::device_action_owner::device_in_panel(owner?, &state.project, device, class)
+            .map(|item| item.state().type_id())
+    });
+    card
+        // Slash auditions bypass from the selected card's parameter controls, even
+        // during numeric entry. Free-text controls and other cards keep their input.
+        .capture_key_down(
+            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                if !super::super::activation::is_activation_key(event) {
+                    return;
+                }
+                if !focus.is_focused(window)
+                    && (event.keystroke.key != "/"
+                        || view.device_panel.selected_device != Some(device)
+                        || !focus.contains_focused(window, cx)
+                        || window.context_stack().iter().any(|context| {
+                            context.contains("hex_text_input")
+                                || (context.contains("hex_text_editing")
+                                    && !context.contains("hex_numeric_control"))
+                        }))
+                {
+                    return;
+                }
+                cx.stop_propagation();
+                if generation != view.project_generation
+                    || owner != view.device_panel.owner
+                    || view.device_panel.selected_device != Some(device)
+                    || !view.audio_detail.clip_view_open
+                    || !view.device_panel.active
+                {
+                    return;
+                }
+                if !view.device_panel.selected_others.is_empty() {
+                    view.error = Some("select one device to toggle it".into());
+                    cx.notify();
+                    return;
+                }
+                if view.persistence.opening_project
+                    || view.persistence.close_prompt_open
+                    || view.gain_recorder.blocks_edits()
+                    || ((!view.pending_requests.is_empty()
+                        || !view.device_panel.gesture_barriers.is_empty()
+                        || view.worker_requests_pending > 1
+                        || (view.worker_requests_pending != 0
+                            && view.device_panel.gesture.snapshot().is_none()))
+                        && !view.only_bypass_requests_pending())
+                {
+                    view.error =
+                        Some("finish pending edits before toggling the selected device".into());
+                    cx.notify();
+                    return;
+                }
+                let valid = view.state.as_ref().and_then(|state| {
+                    let owner = owner?;
+                    if selected_owner(view, state) != Some(owner) {
+                        return None;
+                    }
+                    let item = crate::editor::device_action_owner::device_in_panel(
+                        owner,
+                        &state.project,
+                        device,
+                        class,
+                    )?;
+                    (Some(item.state().type_id()) == type_id).then_some(())
+                });
+                if valid.is_some() && finalize_controls(view, cx) {
+                    view.toggle_device_bypass(device);
+                    cx.notify();
+                }
+            }),
+        )
+}
+
 pub(super) fn card(
     view: &EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
+    class: NativeDeviceClass,
     focus: FocusHandle,
     card: Stateful<Div>,
 ) -> Stateful<Div> {
@@ -720,10 +805,6 @@ pub(super) fn card(
         device,
     };
     let x_focus = focus.clone();
-    let toggle_focus = focus.clone();
-    let type_id = view.state.as_ref().and_then(|state| {
-        owned_device(&state.project, owner?, device).map(|item| item.state().type_id())
-    });
     let copy_focus = focus.clone();
     let cut_focus = focus.clone();
     let paste_focus = focus.clone();
@@ -733,7 +814,8 @@ pub(super) fn card(
     let next_focus = focus.clone();
     let collapse_focus = focus.clone();
     let expand_focus = focus.clone();
-    card.key_context("hex_device_selection")
+    activation_card(view, cx, device, class, focus.clone(), card)
+        .key_context("hex_device_selection")
         .on_action(
             cx.trace(move |view, _: &CollapseSelectedDevices, window, cx| {
                 if collapse_focus.is_focused(window) {
@@ -798,68 +880,6 @@ pub(super) fn card(
                 cx.propagate();
             }
         }))
-        // Slash auditions bypass from the selected card's parameter controls, even
-        // during numeric entry. Free-text controls and other cards keep their input.
-        .capture_key_down(
-            cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
-                if !super::super::activation::is_activation_key(event) {
-                    return;
-                }
-                if !toggle_focus.is_focused(window)
-                    && (event.keystroke.key != "/"
-                        || view.device_panel.selected_device != Some(device)
-                        || !toggle_focus.contains_focused(window, cx)
-                        || window.context_stack().iter().any(|context| {
-                            context.contains("hex_text_input")
-                                || (context.contains("hex_text_editing")
-                                    && !context.contains("hex_numeric_control"))
-                        }))
-                {
-                    return;
-                }
-                cx.stop_propagation();
-                if generation != view.project_generation
-                    || owner != view.device_panel.owner
-                    || view.device_panel.selected_device != Some(device)
-                    || !view.audio_detail.clip_view_open
-                    || !view.device_panel.active
-                {
-                    return;
-                }
-                if !view.device_panel.selected_others.is_empty() {
-                    view.error = Some("select one device to toggle it".into());
-                    cx.notify();
-                    return;
-                }
-                if view.persistence.opening_project
-                    || view.persistence.close_prompt_open
-                    || view.gain_recorder.blocks_edits()
-                    || ((!view.pending_requests.is_empty()
-                        || !view.device_panel.gesture_barriers.is_empty()
-                        || view.worker_requests_pending > 1
-                        || (view.worker_requests_pending != 0
-                            && view.device_panel.gesture.snapshot().is_none()))
-                        && !view.only_bypass_requests_pending())
-                {
-                    view.error =
-                        Some("finish pending edits before toggling the selected device".into());
-                    cx.notify();
-                    return;
-                }
-                let valid = view.state.as_ref().and_then(|state| {
-                    let owner = owner?;
-                    if selected_owner(view, state) != Some(owner) {
-                        return None;
-                    }
-                    let item = owned_device(&state.project, owner, device)?;
-                    (Some(item.state().type_id()) == type_id).then_some(())
-                });
-                if valid.is_some() && finalize_controls(view, cx) {
-                    view.toggle_device_bypass(device);
-                    cx.notify();
-                }
-            }),
-        )
         .on_action(cx.trace(move |view, _: &RemoveSelectedDevice, window, cx| {
             remove_selected_device(view, intent, &focus, window, cx);
         }))
