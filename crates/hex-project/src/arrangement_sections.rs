@@ -61,6 +61,7 @@ pub struct ArrangementSection {
     pub(crate) color: ElementColor,
     pub(crate) start: BeatTime,
     pub(crate) end: BeatTime,
+    pub(crate) linked_scene: Option<crate::SceneId>,
 }
 impl ArrangementSection {
     pub fn id(&self) -> SectionId {
@@ -78,6 +79,9 @@ impl ArrangementSection {
     pub fn end(&self) -> BeatTime {
         self.end
     }
+    pub fn linked_scene(&self) -> Option<crate::SceneId> {
+        self.linked_scene
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrangementSectionSnapshot {
@@ -86,6 +90,7 @@ pub struct ArrangementSectionSnapshot {
     pub color: ElementColor,
     pub start: BeatTime,
     pub end: BeatTime,
+    pub linked_scene: Option<u64>,
 }
 impl From<&ArrangementSection> for ArrangementSectionSnapshot {
     fn from(section: &ArrangementSection) -> Self {
@@ -95,6 +100,7 @@ impl From<&ArrangementSection> for ArrangementSectionSnapshot {
             color: section.color,
             start: section.start,
             end: section.end,
+            linked_scene: section.linked_scene.map(crate::SceneId::value),
         }
     }
 }
@@ -105,12 +111,18 @@ pub(crate) fn from_snapshot(
     if section.id == 0 || section.start >= section.end {
         return Err(Invalid("arrangement section identity/range is invalid"));
     }
+    let linked_scene = match section.linked_scene {
+        None => None,
+        Some(0) => return Err(Invalid("arrangement section linked scene id is invalid")),
+        Some(id) => Some(crate::SceneId(id)),
+    };
     Ok(ArrangementSection {
         id: SectionId(section.id),
         name: section.name,
         color: section.color,
         start: section.start,
         end: section.end,
+        linked_scene,
     })
 }
 pub(crate) fn validate(
@@ -204,6 +216,42 @@ impl Project {
         self.arrangement_sections
             .iter()
             .find(|section| section.id == id)
+    }
+    /// All Arrangement placements linked to the canonical Console `scene`.
+    pub fn linked_sections_for_scene(
+        &self,
+        scene: crate::SceneId,
+    ) -> impl Iterator<Item = &ArrangementSection> {
+        self.arrangement_sections
+            .iter()
+            .filter(move |section| section.linked_scene == Some(scene))
+    }
+    /// Default beat length when placing `scene` onto the Arrangement Main track:
+    /// longest active cell length in beats, or 4 bars (16 quarter notes) when empty.
+    pub fn default_scene_placement_length(&self, scene: crate::SceneId) -> BeatTime {
+        let mut longest = BeatTime::ZERO;
+        for cell in self.session_cells().iter().filter(|c| c.scene() == scene) {
+            let cell_beats = match cell.content() {
+                crate::SessionCellContent::Midi(clip) if clip.active() => {
+                    clip.source().source_length()
+                }
+                crate::SessionCellContent::Audio(clip) if clip.active() => {
+                    let frames = clip.source_end().saturating_sub(clip.source_start());
+                    self.tempo_map
+                        .frame_to_beat(frames)
+                        .unwrap_or(BeatTime::ZERO)
+                }
+                _ => BeatTime::ZERO,
+            };
+            if cell_beats > longest {
+                longest = cell_beats;
+            }
+        }
+        if longest > BeatTime::ZERO {
+            longest
+        } else {
+            BeatTime::from_quarters(16).unwrap_or(BeatTime::from_raw(16_u64 << 32))
+        }
     }
     /// True when `other` differs from `self` only in section markers and the
     /// ID allocator they advance. No playback input reads either, so a prepared
@@ -365,10 +413,51 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 color,
                 start,
                 end,
+                linked_scene: None,
             });
             project.arrangement_sections.sort_by_key(|s| s.start);
             validate(&project.arrangement_sections, project.tempo_map())?;
             Ok(Created::ArrangementSection(id))
+        }
+        Command::PlaceLinkedScene {
+            scene,
+            start,
+            end,
+            color,
+        } => {
+            let name = project
+                .scenes()
+                .iter()
+                .find(|item| item.id() == scene)
+                .map(|item| item.name().to_owned())
+                .ok_or(Invalid("console scene no longer exists"))?;
+            if project.arrangement_sections.len() == MAX_ARRANGEMENT_SECTIONS {
+                return Err(Invalid("arrangement section limit reached"));
+            }
+            let id = SectionId(project.allocate_id()?);
+            project.arrangement_sections.push(ArrangementSection {
+                id,
+                name,
+                color,
+                start,
+                end,
+                linked_scene: Some(scene),
+            });
+            project.arrangement_sections.sort_by_key(|s| s.start);
+            validate(&project.arrangement_sections, project.tempo_map())?;
+            Ok(Created::ArrangementSection(id))
+        }
+        Command::UnlinkSectionScene(id) => {
+            let section = project
+                .arrangement_sections
+                .iter_mut()
+                .find(|s| s.id == id)
+                .ok_or(Invalid("arrangement section no longer exists"))?;
+            if section.linked_scene.is_none() {
+                return Err(Invalid("arrangement section is not linked to a scene"));
+            }
+            section.linked_scene = None;
+            Ok(Created::None)
         }
         Command::ReorderSectionBefore { section, before } => reorder(project, section, before),
         Command::MoveArrangementSectionMarker { section, start } => {
@@ -465,7 +554,23 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 }
                 Command::RenameArrangementSection { name, .. } => {
                     crate::edit::name_valid(&name)?;
-                    section.name = name;
+                    let linked = section.linked_scene;
+                    section.name = name.clone();
+                    if let Some(scene_id) = linked {
+                        if let Some(scene) = project
+                            .session
+                            .scenes
+                            .iter_mut()
+                            .find(|item| item.id == scene_id)
+                        {
+                            scene.name = name.clone();
+                        }
+                        for sibling in &mut project.arrangement_sections {
+                            if sibling.linked_scene == Some(scene_id) {
+                                sibling.name = name.clone();
+                            }
+                        }
+                    }
                 }
                 Command::SetArrangementSectionColor { color, .. } => section.color = color,
                 _ => return Err(Invalid("unsupported arrangement section command")),
@@ -479,6 +584,8 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 mod append;
 mod clipboard;
 mod color;
+#[cfg(test)]
+mod linked_scene_tests;
 mod meter;
 mod move_beyond_end;
 mod reorder;

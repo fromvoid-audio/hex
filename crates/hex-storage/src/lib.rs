@@ -83,7 +83,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = SESSION_FOLLOW_ACTION_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION;
+/// Schema131 adds optional `linked_scene_id` references on Arrangement sections
+/// (`linked_scene_placements` capability) on top of the unified capability
+/// manifest layout. Older schema130 readers refuse schema131 cleanly.
+pub const LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION: u32 = 131;
 /// Schema130 adds bounded deterministic next-scene Session follow actions
 /// (`session_follow_action` capability) on top of the unified capability
 /// manifest layout. Older schema129 readers refuse schema130 cleanly.
@@ -883,6 +887,7 @@ fn decode_impl_within(
             | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
             | TRACK_IO_ROUTING_SCHEMA_VERSION
             | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
+            | LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
     ) && !inside_envelope
     {
         return schema::manifest::decode(bytes);

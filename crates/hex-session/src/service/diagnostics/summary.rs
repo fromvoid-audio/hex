@@ -319,6 +319,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("add_arrangement_section"; ["name_redacted_bytes" => name.len(), "start_beats_q32" => start.raw(), "end_beats_q32" => end.raw()]; omitted="color")
         }
+        Command::PlaceLinkedScene {
+            scene, start, end, ..
+        } => {
+            describe!("place_linked_scene"; ["scene" => scene.value(), "start_beats_q32" => start.raw(), "end_beats_q32" => end.raw()]; omitted="color")
+        }
+        Command::UnlinkSectionScene(section) => {
+            describe!("unlink_section_scene"; ["section" => section.value()]; omitted="")
+        }
         Command::SetArrangementSectionRange {
             section,
             start,

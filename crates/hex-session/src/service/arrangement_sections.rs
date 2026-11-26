@@ -9,6 +9,8 @@ pub(super) fn is_command(command: &Command) -> bool {
     matches!(
         command,
         Command::AddArrangementSection { .. }
+            | Command::PlaceLinkedScene { .. }
+            | Command::UnlinkSectionScene(_)
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
             | Command::ResizeArrangementSectionMarker { .. }
@@ -62,7 +64,16 @@ pub(super) fn command(
         }
         return session.command_prepared_revision(command, previous);
     }
-    if !structural {
+    let linked_rename = matches!(
+        &command,
+        Command::RenameArrangementSection { section, .. }
+            if session
+                .project()
+                .arrangement_section(*section)
+                .and_then(|s| s.linked_scene())
+                .is_some()
+    );
+    if !structural && !linked_rename {
         // Marker-only edits take no callback lease; fence stays zero.
         let mut phases = SectionPhases::default();
         if session.audio_mode() == DocumentAudioMode::Resident

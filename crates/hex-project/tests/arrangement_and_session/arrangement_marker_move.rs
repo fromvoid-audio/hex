@@ -365,6 +365,7 @@ fn contained_marker_move_respects_section_capacity_without_publishing_a_partial_
                 color: ElementColor::Gray,
                 start: b(start),
                 end: b(start + 1),
+                linked_scene: None,
             });
         snapshot.next_id += 1;
     }

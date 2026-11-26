@@ -426,6 +426,7 @@ fn plan_layout(
                         .checked_add(len)
                         .ok_or(Invalid("split section end overflow"))?,
                 ),
+                linked_scene: marker.linked_scene,
             });
         } else if marker.start >= at {
             let mut shifted = marker.clone();
@@ -456,6 +457,7 @@ fn plan_layout(
             color: gap_color,
             start: last_end,
             end: at,
+            linked_scene: None,
         });
     }
     sections.push(ArrangementSection {
@@ -464,6 +466,7 @@ fn plan_layout(
         color: clipboard.color,
         start: at,
         end,
+        linked_scene: None,
     });
     sections.sort_by_key(|marker| marker.start);
 

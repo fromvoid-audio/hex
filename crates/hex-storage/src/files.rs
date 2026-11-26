@@ -85,6 +85,7 @@ impl FileToken {
                 | crate::AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
                 | crate::TRACK_IO_ROUTING_SCHEMA_VERSION
                 | crate::SESSION_FOLLOW_ACTION_SCHEMA_VERSION
+                | crate::LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
         ) {
             let Some(existing) = self.2.as_deref() else {
                 return true;

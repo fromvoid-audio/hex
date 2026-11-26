@@ -309,7 +309,12 @@ pub(crate) fn apply(
                 .iter_mut()
                 .find(|item| item.id == scene)
                 .ok_or(Invalid("scene no longer exists"))?;
-            target.name = name;
+            target.name = name.clone();
+            for section in &mut project.arrangement_sections {
+                if section.linked_scene == Some(scene) {
+                    section.name = name.clone();
+                }
+            }
             Ok(Created::None)
         }
         Command::SetSceneFollowAction { scene, action } => {
@@ -332,6 +337,11 @@ pub(crate) fn apply(
                 .ok_or(Invalid("scene no longer exists"))?;
             project.session.scenes.remove(index);
             project.session.cells.retain(|cell| cell.scene != scene);
+            for section in &mut project.arrangement_sections {
+                if section.linked_scene == Some(scene) {
+                    section.linked_scene = None;
+                }
+            }
             Ok(Created::None)
         }
         Command::CreateSessionMidiClip {

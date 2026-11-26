@@ -94,6 +94,7 @@ pub(super) fn preview(
         color: gap_color,
         start: plan.gap_start,
         end: start,
+        linked_scene: None,
     });
     sections.sort_by_key(|marker| marker.start);
     super::validate(&sections, &plan.layout.tempo_map)?;

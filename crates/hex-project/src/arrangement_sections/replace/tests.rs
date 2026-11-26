@@ -239,6 +239,7 @@ fn self_stale_and_late_allocation_refusal_preserve_complete_state_and_history() 
             color: ElementColor::Blue,
             start: beat(0),
             end: beat(4),
+            linked_scene: None,
         },
         ArrangementSection {
             id: SectionId(2),
@@ -246,6 +247,7 @@ fn self_stale_and_late_allocation_refusal_preserve_complete_state_and_history() 
             color: ElementColor::Rose,
             start: beat(8),
             end: beat(10),
+            linked_scene: None,
         },
     ];
     project.next_id = u64::MAX;
@@ -282,6 +284,7 @@ fn replacement_reuses_the_target_marker_slot_at_capacity() {
             color: ElementColor::Blue,
             start: beat(i as u64),
             end: beat(i as u64 + 1),
+            linked_scene: None,
         })
         .collect();
     project.next_id = MAX_ARRANGEMENT_SECTIONS as u64 + 1;

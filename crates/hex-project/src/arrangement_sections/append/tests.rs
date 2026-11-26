@@ -149,6 +149,7 @@ fn capacity_accounts_for_both_copy_and_gap_before_mutation() {
                 color: ElementColor::Blue,
                 start: beat(index as u64),
                 end: beat(index as u64 + 1),
+                linked_scene: None,
             })
             .collect();
         project.next_id = count as u64 + 1;

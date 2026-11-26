@@ -1489,6 +1489,13 @@ impl Project {
             };
             scene.follow_action = action;
         }
+        for section in &project.arrangement_sections {
+            if let Some(scene_id) = section.linked_scene
+                && !scene_ids.contains(&scene_id.value())
+            {
+                return Err(Invalid("arrangement section references missing scene"));
+            }
+        }
         let mut cell_keys = BTreeSet::new();
         let mut cells = Vec::with_capacity(snapshot.session.cells.len());
         for cell in snapshot.session.cells {
