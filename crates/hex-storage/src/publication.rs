@@ -180,6 +180,59 @@ pub(crate) fn rename_directory_exclusive_at(
     .map_err(io::Error::from)
 }
 
+/// Publish a new isolated regular file inside a pinned directory descriptor
+/// `dir_fd`, without re-traversing pathnames or creating hard-link aliases.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn publish_new_isolated_at(
+    dir_fd: impl rustix::fd::AsFd,
+    source: &mut File,
+    staging_name: &str,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<IsolatedPublished> {
+    match rename_directory_exclusive_at(&dir_fd, staging_name, destination_name) {
+        Ok(()) => return Ok(IsolatedPublished::Renamed),
+        Err(error) if rename_unsupported(&error) => {}
+        Err(error) => return Err(error),
+    }
+    #[cfg(target_os = "macos")]
+    {
+        #[cfg(test)]
+        let simulated = simulate::clone_error();
+        #[cfg(not(test))]
+        let simulated: Option<io::Error> = None;
+        let cloned = match simulated {
+            Some(error) => Err(error),
+            None => rustix::fs::fclonefileat(
+                &*source,
+                &dir_fd,
+                destination_name,
+                rustix::fs::CloneFlags::empty(),
+            )
+            .map_err(io::Error::from),
+        };
+        match cloned {
+            Ok(()) => return Ok(IsolatedPublished::Cloned),
+            Err(error) if clone_unsupported(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    source.seek(SeekFrom::Start(0))?;
+    let target_fd = rustix::fs::openat(
+        &dir_fd,
+        destination_name,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::from_bits_truncate(0o600),
+    )
+    .map_err(io::Error::from)?;
+    let mut target = File::from(target_fd);
+    io::copy(source, &mut target)?;
+    target.sync_all()?;
+    Ok(IsolatedPublished::Copied)
+}
+
 /// Atomically claim an absent `destination` directory and publish `staging`'s
 /// contents without replacing any existing file or directory.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

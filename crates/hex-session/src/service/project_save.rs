@@ -76,7 +76,7 @@ fn publish_as(
         Destination::Folder(folder) => {
             let image = (|| {
                 let image = Image::new(project, Some(folder.root()), recovery_path)?;
-                image.collect(cancellation)?;
+                image.collect_into_folder(&folder, cancellation)?;
                 Ok::<_, String>(image)
             })()
             .map_err(|error| {
@@ -161,6 +161,28 @@ impl Image {
                     )
                 })?;
             }
+        }
+        if cancellation.is_cancelled() {
+            return Err("project save cancelled".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn collect_into_folder(
+        &self,
+        folder: &project_folder::NewFolder,
+        cancellation: &RequestCancellation,
+    ) -> Result<(), String> {
+        for (source, relative) in &self.samples {
+            folder
+                .collect_sample(relative, source, || cancellation.is_cancelled())
+                .map_err(|error| {
+                    format!(
+                        "could not collect sample {} · {}",
+                        hex_storage::text::verbatim(source.display()),
+                        display(error)
+                    )
+                })?;
         }
         if cancellation.is_cancelled() {
             return Err("project save cancelled".into());

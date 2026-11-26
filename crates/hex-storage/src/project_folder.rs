@@ -31,8 +31,17 @@
 //! boundary *does* guarantee:
 //! - Symlinks, regular files, and non-empty unrelated directories substituted
 //!   between `mkdirat` and `openat` are never acquired or modified.
-//! - Initialization of `.hex-project` and `samples/` occurs strictly through
-//!   the pinned `stage_fd`, never by re-traversing pathnames.
+//! - Initialization of `.hex-project` and `samples/`, generated sample
+//!   collection via [`NewFolder::collect_sample`], and project document staging
+//!   during [`NewFolder::publish`] occur strictly through the pinned `stage_fd`,
+//!   never by re-traversing staging pathnames or following symbolic links.
+//! - Before sample collection and before final folder publication,
+//!   `statat(parent_fd, stage_name, AT_SYMLINK_NOFOLLOW)` verifies that the
+//!   staging directory entry still matches the recorded `(dev, ino)` identity.
+//!   Because macOS APFS rejects `renameat(stage_fd, ".", ...)` with `EINVAL`,
+//!   no kernel-atomic fd-to-directory rename exists on macOS; `statat` plus
+//!   `renameat_with(RENAME_EXCL)` narrows substitution without claiming
+//!   atomicity across the final syscall window.
 //! - Any failure or cancellation preserves the staging path untouched (never
 //!   running `remove_dir_all`) and reports it via [`StageRetained`].
 //! - Normal Save As with collected generated media (`samples/`) is preserved.
@@ -212,7 +221,7 @@ pub struct StageIdentity {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 struct StageCustody {
     parent_fd: OwnedFd,
-    _stage_fd: OwnedFd,
+    stage_fd: OwnedFd,
     stage_name: String,
     identity: StageIdentity,
 }
@@ -239,6 +248,26 @@ impl NewFolder {
         self.custody.identity
     }
 
+    /// Collect one generated sample into this staged project folder anchored
+    /// strictly to the pinned staging directory descriptor (on macOS/Linux)
+    /// without re-traversing the staging pathname.
+    pub fn collect_sample(
+        &self,
+        relative: &Path,
+        source: &Path,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<(), StorageError> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            verify_stage_entry_identity(&self.custody)?;
+            collect_sample_at(&self.custody.stage_fd, relative, source, cancelled)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            collect_sample(&self.staging, relative, source, cancelled)
+        }
+    }
+
     pub fn publish(
         self,
         project: &Project,
@@ -257,10 +286,16 @@ impl NewFolder {
             let root = path
                 .parent()
                 .ok_or(StorageError::Invalid("project target needs a folder"))?;
-            let stage = staging.as_path();
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            verify_stage_entry_identity(&custody)?;
-            let mut outcome = crate::save_new_with_outcome(stage.join(name), project)?;
+            let mut outcome = {
+                verify_stage_entry_identity(&custody)?;
+                save_document_at(&custody.stage_fd, &path, name, project)?
+            };
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let mut outcome = {
+                let stage = staging.as_path();
+                crate::save_new_with_outcome(stage.join(name), project)?
+            };
             // At this point the document is private. If its stage could not be
             // synchronized, leave the chosen destination absent.
             if let Some(warning) = outcome.warning.take() {
@@ -299,6 +334,7 @@ impl NewFolder {
             }
             #[cfg(not(any(target_os = "linux", target_os = "macos")))]
             {
+                let stage = staging.as_path();
                 publication::rename_directory_exclusive(stage, root)?;
                 outcome.path = path.clone();
                 if let Some(retained) = outcome.retained_stage.take()
@@ -412,9 +448,193 @@ fn initialize_stage_at(
     rustix::fs::fsync(&stage_fd).map_err(io::Error::from)?;
     Ok(StageCustody {
         parent_fd,
-        _stage_fd: stage_fd,
+        stage_fd,
         stage_name,
         identity,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_sample_directory_at(stage_fd: &OwnedFd, subpath: &Path) -> io::Result<OwnedFd> {
+    use rustix::fs::{Mode, OFlags};
+    let mut current = rustix::fs::openat(
+        stage_fd,
+        SAMPLES,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let dir_mode = Mode::from_bits_truncate(0o700);
+    for component in subpath.components() {
+        let Component::Normal(component) = component else {
+            return Err(io::Error::other("invalid project sample path"));
+        };
+        match rustix::fs::mkdirat(&current, component, dir_mode) {
+            Ok(()) => rustix::fs::fsync(&current).map_err(io::Error::from)?,
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+        current = rustix::fs::openat(
+            &current,
+            component,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)?;
+    }
+    Ok(current)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn collect_sample_at(
+    stage_fd: &OwnedFd,
+    relative: &Path,
+    source: &Path,
+    cancelled: impl Fn() -> bool,
+) -> Result<(), StorageError> {
+    use rustix::fs::{Mode, OFlags};
+    let name = relative
+        .file_name()
+        .ok_or(StorageError::Invalid("project sample needs a filename"))?;
+    let parent = relative
+        .parent()
+        .ok_or(StorageError::Invalid("project sample needs a parent"))?;
+    let dir_fd = open_sample_directory_at(stage_fd, parent)?;
+    let source_meta = fs::symlink_metadata(source)?;
+    if source_meta.file_type().is_symlink() || !source_meta.is_file() {
+        return Err(StorageError::Invalid(
+            "generated sample is not a regular file",
+        ));
+    }
+    let mut input = File::open(source)?;
+    let len = input.metadata()?.len();
+    match rustix::fs::openat(
+        &dir_fd,
+        name,
+        OFlags::RDONLY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    ) {
+        Ok(existing_fd) => {
+            let existing_file = File::from(existing_fd);
+            let existing_meta = existing_file.metadata()?;
+            if existing_meta.is_file()
+                && existing_meta.len() == len
+                && same_bytes(&mut input, existing_file, &cancelled)?
+            {
+                return Ok(());
+            }
+            return Err(StorageError::Invalid(
+                "project sample name is already in use",
+            ));
+        }
+        Err(rustix::io::Errno::NOENT) => {}
+        Err(rustix::io::Errno::LOOP | rustix::io::Errno::ISDIR) => {
+            return Err(StorageError::Invalid(
+                "project sample name is already in use",
+            ));
+        }
+        Err(error) => return Err(io::Error::from(error).into()),
+    }
+    let mut staged = None;
+    for _ in 0..32 {
+        let serial = NEXT_STAGE.fetch_add(1, Relaxed);
+        let temp_name = format!(".hex-r-{}-{serial}", std::process::id());
+        match rustix::fs::openat(
+            &dir_fd,
+            temp_name.as_str(),
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
+            Mode::from_bits_truncate(0o600),
+        ) {
+            Ok(fd) => {
+                staged = Some((temp_name, File::from(fd)));
+                break;
+            }
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(io::Error::from(error).into()),
+        }
+    }
+    let (temp_name, mut file) = staged.ok_or(StorageError::Invalid(
+        "could not reserve sample staging filename",
+    ))?;
+    {
+        let mut reader = BufReader::new(input.take(len));
+        loop {
+            check_cancelled(&cancelled)?;
+            let bytes = reader.fill_buf()?;
+            if bytes.is_empty() {
+                break;
+            }
+            file.write_all(bytes)?;
+            let count = bytes.len();
+            reader.consume(count);
+        }
+        if reader.into_inner().limit() != 0 {
+            return Err(io::Error::other("generated sample changed while saving").into());
+        }
+    }
+    file.sync_all()?;
+    check_cancelled(&cancelled)?;
+    let _published = publication::publish_new_isolated_at(&dir_fd, &mut file, &temp_name, name)?;
+    drop(file);
+    rustix::fs::fsync(&dir_fd).map_err(io::Error::from)?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn save_document_at(
+    stage_fd: &OwnedFd,
+    final_path: &Path,
+    doc_name: &std::ffi::OsStr,
+    project: &Project,
+) -> Result<SaveNewOutcome, StorageError> {
+    use rustix::fs::{Mode, OFlags};
+    if crate::project_name::check(final_path).is_err() {
+        return Err(StorageError::Invalid(
+            "project name is too long to keep recovery files beside it; choose a shorter name",
+        ));
+    }
+    let bytes = crate::encode(project)?;
+    let mut staged = None;
+    for _ in 0..32 {
+        let serial = NEXT_STAGE.fetch_add(1, Relaxed);
+        let temp_name = format!(".hex-pending-{}-{serial}", std::process::id());
+        match rustix::fs::openat(
+            stage_fd,
+            temp_name.as_str(),
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
+            Mode::from_bits_truncate(0o600),
+        ) {
+            Ok(fd) => {
+                staged = Some((temp_name, File::from(fd)));
+                break;
+            }
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(io::Error::from(error).into()),
+        }
+    }
+    let (temp_name, mut file) = staged.ok_or(StorageError::Invalid(
+        "could not reserve project temporary file",
+    ))?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    let published =
+        publication::publish_new_isolated_at(stage_fd, &mut file, &temp_name, doc_name)?;
+    drop(file);
+    let retained_stage = published
+        .staging_remains()
+        .then(|| PathBuf::from(&temp_name));
+    let warning = rustix::fs::fsync(stage_fd)
+        .map_err(io::Error::from)
+        .err()
+        .map(|source| ReplaceWarning {
+            operation: "synchronize the project staging directory",
+            source,
+        });
+    Ok(SaveNewOutcome {
+        path: final_path.to_path_buf(),
+        token: crate::files::FileToken::from_validated_bytes(std::sync::Arc::from(bytes)),
+        warning,
+        retained_stage,
     })
 }
 
@@ -864,5 +1084,98 @@ mod tests {
         );
         assert!(!stage.join("Guarded.hex").exists());
         assert!(displaced.join(MARKER).is_file());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn substitution_before_sample_collection_refuses_and_preserves_foreign_folder() {
+        let files = Files::new();
+        let chosen = files.0.join("Collected.hex");
+        let Destination::Folder(folder) = Destination::prepare(chosen, false).unwrap() else {
+            panic!("expected new project folder");
+        };
+        let stage = folder.root().to_path_buf();
+        let displaced = files.0.join("displaced-original");
+        let source = files.0.join("take.wav");
+        fs::write(&source, b"recorded-take-pcm").unwrap();
+
+        // Adversarial swap before sample collection: replace stage path with a
+        // foreign directory containing existing user media.
+        fs::rename(&stage, &displaced).unwrap();
+        fs::create_dir_all(stage.join(SAMPLES).join("recorded")).unwrap();
+        fs::write(
+            stage.join(SAMPLES).join("recorded/foreign.wav"),
+            b"foreign-audio",
+        )
+        .unwrap();
+
+        let error = folder
+            .collect_sample(Path::new("recorded/take.wav"), &source, || false)
+            .expect_err("substituted stage must refuse sample collection");
+        assert!(error.to_string().contains("identity changed"));
+        assert!(!stage.join(SAMPLES).join("recorded/take.wav").exists());
+        assert_eq!(
+            fs::read(stage.join(SAMPLES).join("recorded/foreign.wav")).unwrap(),
+            b"foreign-audio"
+        );
+        assert!(displaced.join(MARKER).is_file());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn anchored_sample_collection_publish_and_cancellation_preserve_data() {
+        let files = Files::new();
+        let source = files.0.join("bounce.wav");
+        fs::write(&source, b"bounced-wav-data").unwrap();
+
+        // Normal Save As with generated media through anchored `NewFolder::collect_sample`.
+        let chosen = files.0.join("Anchored.hex");
+        let Destination::Folder(folder) = Destination::prepare(chosen, false).unwrap() else {
+            panic!("expected new project folder");
+        };
+        folder
+            .collect_sample(Path::new("bounces/bounce.wav"), &source, || false)
+            .expect("anchored sample collection");
+        // Repeated collection of identical bytes succeeds idempotently.
+        folder
+            .collect_sample(Path::new("bounces/bounce.wav"), &source, || false)
+            .expect("idempotent anchored sample collection");
+        // Path escape is rejected at the descriptor boundary.
+        assert!(
+            folder
+                .collect_sample(Path::new("../escape.wav"), &source, || false)
+                .is_err()
+        );
+        let project = Project::new(48_000).unwrap();
+        let outcome = folder
+            .publish(&project, || false)
+            .expect("anchored publish");
+        assert_eq!(outcome.path, files.0.join("Anchored/Anchored.hex"));
+        assert_eq!(crate::load(&outcome.path).unwrap(), project);
+        assert_eq!(
+            fs::read(files.0.join("Anchored/samples/bounces/bounce.wav")).unwrap(),
+            b"bounced-wav-data"
+        );
+
+        // Cancellation after anchored collection retains the stage and leaves
+        // the target destination absent.
+        let cancelled_target = files.0.join("Cancelled.hex");
+        let Destination::Folder(folder2) = Destination::prepare(cancelled_target, false).unwrap()
+        else {
+            panic!("expected new project folder");
+        };
+        let stage2 = folder2.root().to_path_buf();
+        folder2
+            .collect_sample(Path::new("bounces/bounce.wav"), &source, || false)
+            .expect("collect before cancel");
+        let err = folder2
+            .publish(&project, || true)
+            .expect_err("cancelled publish must fail");
+        assert!(err.to_string().contains("cancelled"));
+        assert!(!files.0.join("Cancelled").exists());
+        assert_eq!(
+            fs::read(stage2.join("samples/bounces/bounce.wav")).unwrap(),
+            b"bounced-wav-data"
+        );
     }
 }
