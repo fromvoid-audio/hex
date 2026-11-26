@@ -915,3 +915,284 @@ fn four_stateful_stock_effects_pass_static_oracle_odd_blocks_schema_history_and_
         );
     }
 }
+
+fn oracle_peaking_biquad(
+    frames: &mut [[f32; 2]],
+    sample_rate: u32,
+    bands: &[(f32, f32, f32, bool)],
+) {
+    let sr = f64::from(sample_rate);
+    let mut state = vec![[0.0f32; 4]; bands.len()];
+    for frame in frames.iter_mut() {
+        let mut l = frame[0];
+        let mut r = frame[1];
+        for (idx, &(freq_hz, gain_db, q, enabled)) in bands.iter().enumerate() {
+            if !enabled {
+                continue;
+            }
+            let f = f64::from(freq_hz).min(sr * 0.45);
+            let a = 10.0_f64.powf(f64::from(gain_db) / 40.0);
+            let w0 = (std::f64::consts::TAU * f) / sr;
+            let alpha = w0.sin() / (2.0 * f64::from(q));
+            let cs = w0.cos();
+            let inv_a0 = 1.0 / (1.0 + alpha / a);
+            let b0 = ((1.0 + alpha * a) * inv_a0) as f32;
+            let b1 = ((-2.0 * cs) * inv_a0) as f32;
+            let b2 = ((1.0 - alpha * a) * inv_a0) as f32;
+            let a1 = ((-2.0 * cs) * inv_a0) as f32;
+            let a2 = ((1.0 - alpha / a) * inv_a0) as f32;
+            let yl = b0 * l + state[idx][0];
+            state[idx][0] = b1 * l - a1 * yl + state[idx][1];
+            state[idx][1] = b2 * l - a2 * yl;
+            l = yl;
+            let yr = b0 * r + state[idx][2];
+            state[idx][2] = b1 * r - a1 * yr + state[idx][3];
+            state[idx][3] = b2 * r - a2 * yr;
+            r = yr;
+        }
+        frame[0] = l;
+        frame[1] = r;
+    }
+}
+
+#[test]
+fn eq_and_eq8_packages_pass_biquad_oracle_curve_schema_stale_band_refusal_and_zero_allocs() {
+    use hex_lattice_contract::package_ui::{
+        PACKAGE_UI_VERSION_V1, PackageUiCurveNodeBinding, PackageUiCurvePlot, PackageUiItem,
+        PackageUiSchema, PackageUiSection, UI_CAP_CURVE_PLOT, UI_CAP_SPECTRUM_OVERLAY,
+    };
+    use hex_project::{Command as ProjectCommand, Created, Editor, Project};
+
+    let tmp = TempDir::new("cohort-eq");
+    let token = "reviewed-test-fixture-token-v1";
+    let mut policy = AdmissionPolicy::host_default();
+    policy.allow_reviewed_test("hex.factory", sha256_hex(token.as_bytes()));
+    let fx_caps =
+        CAP_AUDIO_EFFECT | CAP_PARAMETER_EVENTS | CAP_ZERO_LATENCY | CAP_STATE_PERSISTENCE;
+
+    let lib_dir = tmp.path().join("library");
+    let catalog = DevicePackageCatalog::open_and_recover(&lib_dir).unwrap();
+    let mut defs = Vec::new();
+    for (src, type_id, display, band_count) in [
+        ("eq_v1.c", "hex.pkg.eq", "eq", 4u32),
+        ("eq8_v1.c", "hex.pkg.eq8", "eq8", 8u32),
+    ] {
+        let archive = build_package(
+            &tmp,
+            src,
+            type_id,
+            display,
+            DEVICE_KIND_AUDIO_EFFECT,
+            fx_caps,
+            token,
+        );
+        let rec = match catalog.install_file(&archive, &policy, None).unwrap() {
+            InstallOutcome::Installed(rec) => rec,
+            other => panic!("expected Installed for {display}, got {other:?}"),
+        };
+        let dylib = lib_dir
+            .join(&rec.generation_rel_dir)
+            .join(&rec.native_module_rel_path);
+        let def = InstalledPackageEffect::load_on_control(
+            &dylib,
+            rec.publisher_id.clone(),
+            hex_to_bytes32(&rec.package_sha256),
+        )
+        .unwrap();
+        defs.push((def, band_count));
+    }
+
+    let tuning = TuningTable::default();
+    let input_signal: Vec<[f32; 2]> = (0..128)
+        .map(|i| {
+            let t = i as f32;
+            [
+                0.5 * (t * 0.09).sin() + 0.3 * (t * 0.37).cos(),
+                0.4 * (t * 0.11).cos() - 0.25 * (t * 0.29).sin(),
+            ]
+        })
+        .collect();
+
+    for (def, band_count) in &defs {
+        // Patch band 1 gain to +6 dB and band 2 gain to -4.5 dB via canonical patch_parameter.
+        let mut state = def.default_state().unwrap();
+        state = def
+            .patch_parameter(
+                &state,
+                ParameterId::from_static(12),
+                ParameterValue::Float(6.0),
+            )
+            .unwrap();
+        state = def
+            .patch_parameter(
+                &state,
+                ParameterId::from_static(22),
+                ParameterValue::Float(-4.5),
+            )
+            .unwrap();
+        // Dynamic/removed band parameter ID refuses explicitly.
+        assert!(
+            def.patch_parameter(
+                &state,
+                ParameterId::from_static(999),
+                ParameterValue::Float(1.0)
+            )
+            .is_err()
+        );
+
+        // Validate reusable CurvePlot + SpectrumOverlay declarative schema (zero type-ID switch).
+        let descs = def.descriptors_for_state(&state).unwrap();
+        let nodes: Vec<PackageUiCurveNodeBinding> = (1..=*band_count)
+            .map(|b| PackageUiCurveNodeBinding {
+                node_id: b,
+                freq_parameter: ParameterId::from_static(b * 10 + 1),
+                gain_parameter: ParameterId::from_static(b * 10 + 2),
+                q_parameter: Some(ParameterId::from_static(b * 10 + 3)),
+                enable_parameter: Some(ParameterId::from_static(b * 10 + 4)),
+            })
+            .collect();
+        let curve_schema = PackageUiSchema {
+            ui_version: PACKAGE_UI_VERSION_V1,
+            required_capabilities: UI_CAP_CURVE_PLOT | UI_CAP_SPECTRUM_OVERLAY,
+            frame_width: 360.0,
+            sections: vec![PackageUiSection {
+                heading: "eq".into(),
+                columns: 1,
+                items: vec![PackageUiItem::CurvePlot(PackageUiCurvePlot {
+                    plot_id: 1,
+                    label: "response".into(),
+                    min_freq_hz: 20.0,
+                    max_freq_hz: 20_000.0,
+                    min_db: -24.0,
+                    max_db: 24.0,
+                    spectrum_overlay: true,
+                    nodes,
+                })],
+            }],
+        };
+        assert_eq!(curve_schema.validate(&descs), Ok(()));
+
+        // Build oracle band table matching patched state.
+        let mut oracle_bands = Vec::new();
+        for b in 1..=*band_count {
+            let ParameterValue::Float(f) = def
+                .read_parameter(&state, ParameterId::from_static(b * 10 + 1))
+                .unwrap()
+            else {
+                panic!("float");
+            };
+            let ParameterValue::Float(g) = def
+                .read_parameter(&state, ParameterId::from_static(b * 10 + 2))
+                .unwrap()
+            else {
+                panic!("float");
+            };
+            let ParameterValue::Float(q) = def
+                .read_parameter(&state, ParameterId::from_static(b * 10 + 3))
+                .unwrap()
+            else {
+                panic!("float");
+            };
+            oracle_bands.push((f, g, q, true));
+        }
+
+        // Verify odd-block + rollback biquad PCM oracle across 44.1/48/96 kHz.
+        for sample_rate in [44_100u32, 48_000, 96_000] {
+            let ctx = DevicePreparationContext {
+                sample_rate,
+                tuning: &tuning,
+                resources: &EMPTY_DEVICE_RESOURCES,
+            };
+            let Some(PreparedProcessorFactory::Owned(factory)) =
+                def.prepare_runtime_factory(&state, &ctx).unwrap()
+            else {
+                panic!("owned factory");
+            };
+            let mut rt = factory.create_runtime().unwrap();
+            let mut actual = input_signal.clone();
+            let mut cursor = 0usize;
+            for chunk_len in [19usize, 37, 72] {
+                if cursor == 19 {
+                    let mut scratch = actual[cursor..cursor + chunk_len].to_vec();
+                    rt.begin_block();
+                    rt.process_block(&mut scratch, &EMPTY_DEVICE_RESOURCES);
+                    rt.rollback_block();
+                }
+                rt.begin_block();
+                rt.process_block(
+                    &mut actual[cursor..cursor + chunk_len],
+                    &EMPTY_DEVICE_RESOURCES,
+                );
+                rt.commit_block();
+                cursor += chunk_len;
+            }
+            let mut expected = input_signal.clone();
+            oracle_peaking_biquad(&mut expected, sample_rate, &oracle_bands);
+            for (idx, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+                assert!(
+                    (a[0] - e[0]).abs() < 1e-4 && (a[1] - e[1]).abs() < 1e-4,
+                    "eq({band_count}) @ {sample_rate} Hz frame {idx}: actual={a:?} expected={e:?}"
+                );
+            }
+        }
+
+        // Save/reopen round-trip & zero callback allocations.
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(ProjectCommand::AddTrack { name: "eq".into() })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Device(dev_id) = editor
+            .execute(ProjectCommand::InsertDevice {
+                track,
+                before: None,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("device");
+        };
+        let save_path = tmp.path().join(format!("eq_{band_count}.hexproj"));
+        hex_storage::save_new(&save_path, editor.project()).unwrap();
+        let reopened = hex_storage::load(&save_path).unwrap();
+        assert_eq!(reopened.device(dev_id).unwrap().state(), &state);
+
+        let ctx48 = DevicePreparationContext {
+            sample_rate: 48_000,
+            tuning: &tuning,
+            resources: &EMPTY_DEVICE_RESOURCES,
+        };
+        let Some(PreparedProcessorFactory::Owned(factory)) =
+            def.prepare_runtime_factory(&state, &ctx48).unwrap()
+        else {
+            panic!("owned factory");
+        };
+        let mut rt = factory.create_runtime().unwrap();
+        let mut block = [[0.25f32, -0.25f32]; 64];
+        rt.begin_block();
+        rt.process_block(&mut block, &EMPTY_DEVICE_RESOURCES);
+        rt.commit_block();
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                for _ in 0..32 {
+                    block.fill([0.25, -0.25]);
+                    rt.begin_block();
+                    rt.process_block(&mut block, &EMPTY_DEVICE_RESOURCES);
+                    rt.commit_block();
+                }
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+    }
+}
