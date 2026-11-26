@@ -1103,3 +1103,402 @@ fn compensated_parameter_gestures_match_scalar_pcm_and_receipts() {
         }
     }
 }
+
+#[test]
+fn parallel_wave_executes_return_buses_behind_512_frame_pdc() {
+    use crate::wave_executor::{
+        SerialWaveExecutor, WaveClockWindow, WaveExecutor, WaveStageArrival,
+    };
+    use hex_lattice::NativeRuntimeChain;
+    use hex_lattice_contract::{DeviceContractError, DeviceTypeId};
+    use hex_project::{Command, Created};
+
+    struct CountingWaveExecutor {
+        inner: SerialWaveExecutor,
+        waves: usize,
+        tasks: usize,
+    }
+    impl WaveExecutor for CountingWaveExecutor {
+        fn worker_count(&self) -> usize {
+            2
+        }
+        fn prepare_clock(&mut self) -> Option<&mut WaveClockWindow> {
+            self.inner.prepare_clock()
+        }
+        fn push_task(
+            &mut self,
+            owner_index: usize,
+            chain: NativeRuntimeChain,
+            audio: &[Frame],
+            frame_offset: usize,
+            stage_start: usize,
+            stage_end: usize,
+            compensated: bool,
+            stage_arrivals: &[WaveStageArrival],
+        ) -> Result<usize, NativeRuntimeChain> {
+            self.tasks += 1;
+            self.inner.push_task(
+                owner_index,
+                chain,
+                audio,
+                frame_offset,
+                stage_start,
+                stage_end,
+                compensated,
+                stage_arrivals,
+            )
+        }
+        fn execute_staged(&mut self) {
+            self.waves += 1;
+            self.inner.execute_staged();
+        }
+        fn reclaim_task(
+            &mut self,
+            slot: usize,
+            audio_out: &mut [Frame],
+        ) -> (usize, NativeRuntimeChain, Option<DeviceContractError>) {
+            self.inner.reclaim_task(slot, audio_out)
+        }
+        fn finish_wave(&mut self) {
+            self.inner.finish_wave();
+        }
+    }
+
+    // Track 0 has two 6 ms lookahead limiters (>= 512 frames of PDC latency,
+    // matching a VST3 bridge at 256-frame quantum) and feeds 4 independent
+    // Return buses, placing all 4 Return chains in a single topological wave
+    // at `input_arrival_frames >= 512 > 256`.
+    let mut f = fixture(&[&[]], 2048);
+    let limiter_6ms = hex_lattice_contract::NativeDeviceMetadata::patch_parameter(
+        &hex_devices::limiter::DEFINITION,
+        &hex_lattice_contract::NativeDeviceMetadata::default_state(
+            &hex_devices::limiter::DEFINITION,
+        )
+        .unwrap(),
+        hex_devices::limiter::parameter::LOOKAHEAD,
+        hex_lattice_contract::ParameterValue::Choice(2),
+    )
+    .unwrap();
+    for _ in 0..2 {
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: limiter_6ms.clone(),
+            })
+            .unwrap();
+    }
+    for r in 0..4 {
+        let Created::ReturnTrack(ret) = f
+            .editor
+            .execute(Command::AddReturnTrack {
+                name: format!("r{r}"),
+            })
+            .unwrap()
+        else {
+            panic!("return track");
+        };
+        f.editor
+            .execute(Command::SetReturnSend {
+                track: f.tracks[0],
+                return_track: ret,
+                gain: 0.25,
+            })
+            .unwrap();
+        f.editor
+            .execute(Command::InsertReturnDevice {
+                return_track: ret,
+                before: None,
+                state: crate::default_native_device_state(DeviceTypeId::from_static("hex.eq"))
+                    .unwrap(),
+            })
+            .unwrap();
+    }
+    let revision = Arc::new(
+        PreparedRevision::prepare(
+            f.editor.project(),
+            &f.media,
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut parallel = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut scalar = SessionPlayback::new(revision).unwrap();
+    scalar.resident_source_scratch.clear();
+    for runtime in [&mut parallel, &mut scalar] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    // Verify the Return devices sit behind >= 512 frames of arrival latency.
+    let comp = parallel.compensation.as_ref().unwrap();
+    assert_eq!(comp.graph.returns.len(), 4);
+    let mut max_arrival = 0u32;
+    for ret in &comp.graph.returns {
+        let arrival = comp.graph.plan.nodes()[ret.devices[0]].input_arrival_frames;
+        assert!(arrival >= 512, "expected arrival >= 512, got {arrival}");
+        max_arrival = max_arrival.max(arrival);
+    }
+
+    let mut wave = CountingWaveExecutor {
+        inner: SerialWaveExecutor::default(),
+        waves: 0,
+        tasks: 0,
+    };
+    let mut warmup_a = vec![[0.0; 2]; max_arrival as usize + 64];
+    let mut warmup_b = warmup_a.clone();
+    parallel
+        .render_with_wave_executor(&mut warmup_a, &mut wave)
+        .unwrap();
+    scalar.render(&mut warmup_b).unwrap();
+    assert_eq!(warmup_a, warmup_b);
+    assert!(parallel.can_block_compensated_route(256));
+
+    wave.waves = 0;
+    wave.tasks = 0;
+    let mut block_a = [[0.0; 2]; 256];
+    let mut block_b = [[0.0; 2]; 256];
+    parallel
+        .render_with_wave_executor(&mut block_a, &mut wave)
+        .unwrap();
+    scalar.render(&mut block_b).unwrap();
+    assert_eq!(block_a, block_b);
+    assert!(
+        wave.waves >= 1 && wave.tasks >= 4,
+        "4 return buses behind 512-frame PDC must execute in a parallel wave (waves={}, tasks={})",
+        wave.waves,
+        wave.tasks
+    );
+}
+
+#[test]
+fn block_compensated_route_handles_active_audio_release_and_scalar_automation() {
+    use crate::{
+        BorrowedMediaPage, BorrowedScalarPage, ScalarAutomationBinding, ScalarFileIdentity,
+        ScalarProjectionIdentity, ScalarSourceKey, ScalarSourceMetadata, ScalarSourceTarget,
+    };
+    use hex_devices::utility::parameter;
+    use hex_lattice_contract::{DeviceAutomationTarget, DeviceTypeId};
+    use hex_project::{Command, Created};
+    use sha2::{Digest, Sha256};
+
+    // Part A: Active clip-cut `audio_release` fade stays in block mode and matches scalar.
+    {
+        let mut f = fixture(&[&[16], &[]], 2048);
+        let Created::Scene(scene) = f
+            .editor
+            .execute(Command::AddScene {
+                name: "session".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        let asset = f.editor.project().track(f.tracks[0]).unwrap().clips()[0].asset();
+        f.editor
+            .execute(Command::CreateSessionAudioClip {
+                track: f.tracks[0],
+                scene,
+                name: "clip".into(),
+                asset,
+                source_start: 0,
+                source_end: 2048,
+            })
+            .unwrap();
+        let revision = crate::signal_graph::tests::prepare(&f).unwrap();
+        let mut block = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut block, &mut scalar] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime
+                .apply(SessionPlaybackCommand::LaunchScene {
+                    scene,
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        let mut warm_a = [[0.0; 2]; 128];
+        let mut warm_b = [[0.0; 2]; 128];
+        block.render(&mut warm_a).unwrap();
+        scalar.render(&mut warm_b).unwrap();
+        assert_eq!(warm_a, warm_b);
+        for runtime in [&mut block, &mut scalar] {
+            runtime
+                .apply(SessionPlaybackCommand::StopTrack {
+                    track: f.tracks[0],
+                    quantization: LaunchQuantization::Immediate,
+                })
+                .unwrap();
+        }
+        // Advance 1 frame so the due stop transition installs `route.audio_release`.
+        let mut trig_a = [[0.0; 2]; 1];
+        let mut trig_b = [[0.0; 2]; 1];
+        block.render(&mut trig_a).unwrap();
+        scalar.render(&mut trig_b).unwrap();
+        assert_eq!(trig_a, trig_b);
+        assert!(block.routes[0].audio_release.is_some());
+        assert!(
+            block.can_block_compensated_route(256),
+            "active audio_release fade must stay eligible for block compensated routing"
+        );
+
+        let mut max_slice = 0usize;
+        let mut out_a = [[0.0; 2]; 256];
+        let mut out_b = [[0.0; 2]; 256];
+        block
+            .render_with_node_signal_observer(
+                &mut out_a,
+                Some(&mut |_, _, _, frames: &[Frame]| max_slice = max_slice.max(frames.len())),
+            )
+            .unwrap();
+        scalar.render(&mut out_b).unwrap();
+        assert_eq!(out_a, out_b);
+        assert!(max_slice > 1, "expected block slice > 1, got {max_slice}");
+        assert!(
+            block.routes[0].audio_release.is_none(),
+            "expired audio_release must be pruned after block render"
+        );
+    }
+
+    // Part B: Recorded scalar automation stays in block mode and matches scalar.
+    {
+        struct ScalarPages {
+            key: ScalarSourceKey,
+            values: Vec<f32>,
+            coverage: Vec<u64>,
+        }
+        impl MediaPages for ScalarPages {
+            fn page(&mut self, _: crate::StreamSourceKey, _: u64) -> Option<BorrowedMediaPage<'_>> {
+                None
+            }
+            fn request_page(&mut self, _: crate::StreamSourceKey, _: u64) {}
+            fn scalar_page(
+                &mut self,
+                key: ScalarSourceKey,
+                page_index: u64,
+            ) -> Option<BorrowedScalarPage<'_>> {
+                (key == self.key && page_index == 0).then_some(BorrowedScalarPage {
+                    key,
+                    page_index,
+                    values: &self.values,
+                    coverage: &self.coverage,
+                })
+            }
+            fn request_scalar_page(&mut self, _: ScalarSourceKey, _: u64) {}
+        }
+
+        let mut f = fixture(&[&[], &[]], 4096);
+        f.editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: crate::default_native_device_state(DeviceTypeId::from_static("hex.limiter"))
+                    .unwrap(),
+            })
+            .unwrap();
+        let Created::Device(util) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: crate::default_native_device_state(DeviceTypeId::from_static("hex.utility"))
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("utility device");
+        };
+        let target = DeviceAutomationTarget::Parameter(parameter::GAIN);
+        let mut hash = Sha256::new();
+        hex_project::visit_automation_projection_identity(
+            f.editor.project().tempo_map(),
+            &mut |bytes| hash.update(bytes),
+        );
+        let key = ScalarSourceKey::new(7, 1, 1).unwrap();
+        let source = ScalarSourceMetadata::new(
+            key,
+            ScalarSourceTarget::Device {
+                device: util,
+                target,
+            },
+            48_000,
+            0,
+            4096,
+            ScalarProjectionIdentity {
+                version: hex_project::AUTOMATION_PROJECTION_VERSION,
+                fingerprint: hash.finalize().into(),
+            },
+            ScalarFileIdentity {
+                format_version: 2,
+                file_bytes: 100,
+                terminal_chain: [1; 32],
+            },
+        )
+        .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_scalar_automation(
+                f.editor.project(),
+                &f.media,
+                Arc::new(crate::SineTable::new()),
+                None,
+                ScalarAutomationBinding {
+                    device: util,
+                    target,
+                    source,
+                },
+            )
+            .unwrap(),
+        );
+        let mut values = vec![0.5f32; 4096];
+        for (i, v) in values.iter_mut().enumerate() {
+            *v = (i as f32 / 4096.0).clamp(0.1, 0.9);
+        }
+        let coverage = vec![u64::MAX; 4096 / 64];
+        let mut pages_a = ScalarPages {
+            key,
+            values: values.clone(),
+            coverage: coverage.clone(),
+        };
+        let mut pages_b = ScalarPages {
+            key,
+            values,
+            coverage,
+        };
+        let mut block = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        let mut scalar = SessionPlayback::new(revision).unwrap();
+        scalar.resident_source_scratch.clear();
+        for runtime in [&mut block, &mut scalar] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        }
+        let latency = block
+            .compensation
+            .as_ref()
+            .unwrap()
+            .graph
+            .plan
+            .max_latency_frames() as usize;
+        let mut warm_a = vec![[0.0; 2]; latency + 32];
+        let mut warm_b = warm_a.clone();
+        block.render_with_pages(&mut warm_a, &mut pages_a).unwrap();
+        scalar.render_with_pages(&mut warm_b, &mut pages_b).unwrap();
+        assert_eq!(warm_a, warm_b);
+        assert!(block.can_block_compensated_route(256));
+
+        let mut max_slice = 0usize;
+        let mut out_a = [[0.0; 2]; 256];
+        let mut out_b = [[0.0; 2]; 256];
+        block
+            .render_with_pages_and_node_signal_observer(
+                &mut out_a,
+                &mut pages_a,
+                Some(&mut |_, _, _, frames: &[Frame]| max_slice = max_slice.max(frames.len())),
+            )
+            .unwrap();
+        scalar.render_with_pages(&mut out_b, &mut pages_b).unwrap();
+        assert_eq!(out_a, out_b);
+        assert!(
+            max_slice > 1,
+            "recorded scalar automation must stay in block mode (got max_slice={max_slice})"
+        );
+    }
+}
