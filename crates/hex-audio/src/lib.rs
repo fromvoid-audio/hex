@@ -43,6 +43,7 @@ pub(crate) fn retry_pending_push<T: Copy>(
 pub mod audio_diagnostics;
 pub mod cpu_meter;
 mod device;
+pub mod external_audio_effect;
 pub mod hardware_send_return;
 pub mod input_capture;
 pub mod input_devices;
