@@ -500,7 +500,7 @@ impl Session {
     }
 
     /// Bind the exact candidate and predecessor owners before preparation.
-    pub(super) fn document_replacement_inputs<'a>(
+    pub(in crate::service) fn document_replacement_inputs<'a>(
         &'a self,
         old: &'a Session,
         admission: sampler_export::Admission<'a>,
@@ -730,6 +730,88 @@ impl Session {
         })();
         sink.finish_resident_effect_edit(context, result.is_ok());
         result
+    }
+
+    /// Source-bound worker-side preparation for a transient verified clip move
+    /// using the real Session media bank, current native device resources, and
+    /// host file catalog without publishing a graph, transferring ownership, or
+    /// mutating canonical project/history.
+    pub(in crate::service) fn prepare_verified_clip_move_snapshot(
+        &self,
+        command: Command,
+        resident: ResidentSinkContext<'_>,
+        current: &Snapshot,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<(Arc<Project>, Snapshot), SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
+        let mut inputs =
+            self.resident_seek_inputs(admission, Some(current), Some(cancel.as_ref()))?;
+        inputs.stopped_history = true;
+        let result = self.audio_transforms.with_preview_cancellation(cancel, || {
+            let project = self.editor.stage_preview(command)?;
+            let media = self.media_bank();
+            let mut snapshot = inputs.prepare_transition(
+                self.project(),
+                &project,
+                false,
+                sink,
+                CompileResources {
+                    media: &media,
+                    table: self.sine_table(),
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                },
+                context,
+            )?;
+            snapshot.source_origin = ResidentSourceOrigin::ClipMovePreview;
+            if cancel.load(Ordering::Acquire) || self.shutdown.load(Ordering::Acquire) {
+                return Err(SessionError::Invalid("clip audition cancelled"));
+            }
+            Ok::<_, SessionError>((project, snapshot))
+        });
+        sink.finish_resident_effect_edit(context, result.is_ok());
+        result
+    }
+
+    /// Publish an already-prepared transient verified clip move snapshot through
+    /// the ordinary native publication owner without re-running preparation.
+    pub(in crate::service) fn publish_verified_clip_move_snapshot(
+        &self,
+        project: &Project,
+        snapshot: &mut Snapshot,
+        identity: ClipMovePreviewIdentity,
+        resident: ResidentSinkContext<'_>,
+        current: &Snapshot,
+        cancel: &AtomicBool,
+    ) -> Result<(), SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
+        let mut inputs = self.resident_seek_inputs(admission, Some(current), Some(cancel))?;
+        inputs.stopped_history = true;
+        if cancel.load(Ordering::Acquire) || self.shutdown.load(Ordering::Acquire) {
+            return Err(SessionError::Invalid("clip audition cancelled"));
+        }
+        let metadata = ResidentPublicationMetadata {
+            source_origin: ResidentSourceOrigin::Unknown,
+            clip_preview: Some(identity),
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: false,
+            computer_keyboard_request: None,
+            gain_recording_track: snapshot.prepared.gain_recording_track(),
+            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+        };
+        inputs.publish_tagged(snapshot, project, sink, metadata)?;
+        Ok(())
     }
     /// Restore canonical audio as a successor to a preview that may have
     /// advanced a foreign worker. The older canonical graph can lack the

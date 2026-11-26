@@ -269,8 +269,10 @@ pub(super) fn restore(
     Ok(Some((session.project_arc(), prepared)))
 }
 
+#[allow(clippy::too_many_arguments)] // One canonical worker's actual current/preview owners and verified source custody.
 pub(super) fn clip_audition(
     session: &Session,
+    canonical_source: Option<&Arc<CanonicalAudioSourceSnapshot>>,
     target: clip_audition::Target,
     current: &mut Option<resident_audio::Snapshot>,
     preview: &mut Option<Preview>,
@@ -278,6 +280,62 @@ pub(super) fn clip_audition(
     admission: sampler_export::Admission<'_>,
     cancel: &Arc<AtomicBool>,
 ) -> crate::device_gesture::PreparedGesture {
+    if session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+        && let clip_audition::Target::Move(move_target) = &target
+    {
+        let canonical_source =
+            canonical_source.ok_or(SessionError::Invalid("canonical audio source unavailable"))?;
+        let canonical = current
+            .as_mut()
+            .ok_or(SessionError::Invalid("canonical playback unavailable"))?;
+        let mut admission = with_preview(admission, preview.as_ref());
+        let identity = Identity::Clip(target.clone());
+        admission.runtime_bytes = admission
+            .runtime_bytes
+            .checked_add(
+                canonical
+                    .inputs
+                    .capture_bytes()?
+                    .checked_add(std::mem::size_of::<Preview>())
+                    .and_then(|bytes| bytes.checked_add(target.retained_bytes()))
+                    .ok_or(SessionError::Invalid("preview metadata overflow"))?,
+            )
+            .ok_or(SessionError::Invalid("preview metadata overflow"))?;
+        let prepared_audition =
+            verified_clip_move::PreparedVerifiedClipAudition::prepare_on_control(
+                session,
+                Arc::clone(canonical_source),
+                move_target.clone(),
+                canonical,
+                sink,
+                admission,
+                cancel,
+            )?;
+        if !Arc::ptr_eq(prepared_audition.canonical(), canonical_source) {
+            return Err(SessionError::Invalid("clip audition source changed"));
+        }
+        let (project, move_identity, mut snapshot) = prepared_audition.into_parts();
+        session.publish_verified_clip_move_snapshot(
+            &project,
+            &mut snapshot,
+            move_identity,
+            resident_audio::ResidentSinkContext {
+                context: move_identity.context,
+                sink,
+                admission,
+            },
+            canonical,
+            cancel.as_ref(),
+        )?;
+        let prepared = Arc::clone(&snapshot.prepared);
+        canonical.inputs = snapshot.inputs.clone();
+        *preview = Some(Preview {
+            project: Arc::clone(&project),
+            snapshot,
+            identity,
+        });
+        return Ok(Some((project, prepared)));
+    }
     session
         .audio_transforms
         .with_preview_cancellation(cancel, || {

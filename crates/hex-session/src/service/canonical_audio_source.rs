@@ -64,7 +64,7 @@ impl CanonicalAudioSourceSnapshot {
     /// ordinary resource publisher rather than the closed verified constructor.
     pub fn uses_ordinary_worker_publication(&self) -> bool {
         self.mode == crate::DocumentAudioMode::Resident
-            || hex_engine::native_device_resources::requires_private_sampler_sources(&self.project)
+            || crate::verified_import::project_uses_ordinary_verified_playback(&self.project)
     }
     /// Immutable resolved bindings paired with this exact Project/context.
     /// Facts only: native publication must match actual retained source leases.
