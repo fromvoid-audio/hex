@@ -472,6 +472,14 @@ impl VerifiedWavReader {
 
         // Public reads always invalidate the prior page. Header/layout pages
         // and requested payload pages are then verified in one reader pass.
+        // Share the caller's cancellation closure across both raw page reads
+        // and FLAC frame boundaries without overlapping mutable borrows.
+        let cancel_cell = std::cell::RefCell::new(cancelled);
+        let mut page_cancelled = || {
+            cancel_cell
+                .try_borrow_mut()
+                .is_ok_and(|mut callback| (*callback)())
+        };
         let decode_count = {
             let mut verified = VerifiedPageReader::new(
                 &mut self.file,
@@ -479,7 +487,7 @@ impl VerifiedWavReader {
                 &mut self.scratch,
                 captured_len,
                 captured_modified,
-                cancelled,
+                &mut page_cancelled,
                 PageReadAccounting {
                     reads: &mut self.raw_page_reads,
                     coverage,
@@ -503,7 +511,11 @@ impl VerifiedWavReader {
                     captured_len,
                     start_frame,
                     output,
-                    || false,
+                    || {
+                        cancel_cell
+                            .try_borrow_mut()
+                            .is_ok_and(|mut callback| (*callback)())
+                    },
                 )
                 .map_err(map_verified_error)?,
                 media::MediaLayout::Wav(wav_layout) => {
@@ -590,7 +602,10 @@ impl VerifiedWavReader {
                 }
             }
         };
-        if cancelled() {
+        if cancel_cell
+            .try_borrow_mut()
+            .is_ok_and(|mut callback| (*callback)())
+        {
             return Err(ImportError::Cancelled);
         }
         check_metadata(&self.file, captured_len, captured_modified)?;
