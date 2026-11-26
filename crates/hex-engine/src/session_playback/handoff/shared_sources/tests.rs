@@ -3752,6 +3752,55 @@ fn shared_authored_note_started_muted_resumes_when_unmuted() {
 }
 
 #[test]
+fn shared_authored_note_started_excluded_by_solo_resumes_on_unsolo_across_rates_and_partitions() {
+    for rate in [8_000_u32, 44_100, 96_000] {
+        for partition in [1usize, 7, 64] {
+            on_control(move || {
+                let mut f = fixture_at(rate);
+                f.editor
+                    .execute(Command::ToggleSolo {
+                        track: f.receiver,
+                        exclusive: true,
+                    })
+                    .unwrap();
+                let mut old = playback(&f);
+                old.apply(SessionPlaybackCommand::Play).unwrap();
+                check_pcm(&mut old, 0, 7, 0.25);
+                f.editor
+                    .execute(Command::ToggleSolo {
+                        track: f.receiver,
+                        exclusive: false,
+                    })
+                    .unwrap();
+                let mut next = playback(&f);
+                next.try_inherit_state_from(&mut old).unwrap();
+                let fade_frames = rate.div_ceil(200) as usize;
+                let mut frames = vec![[0.0; 2]; fade_frames + 32];
+                for chunk in frames.chunks_mut(partition) {
+                    next.render(chunk).unwrap();
+                }
+                for (i, frame) in frames.iter().enumerate() {
+                    let fade = i.min(fade_frames) as f32 / fade_frames as f32;
+                    for channel in 0..2 {
+                        let expected =
+                            0.25 * (PCM[(7 + i) % 4][channel] + PCM[i % 4][channel] * fade);
+                        assert!(
+                            (frame[channel] - expected).abs() < 0.000_002,
+                            "rate={rate} partition={partition} frame={i} ch={channel}: got {} expected {expected}",
+                            frame[channel]
+                        );
+                    }
+                }
+                next.apply(SessionPlaybackCommand::Stop).unwrap();
+                let mut stopped = [[0.0; 2]; 16];
+                next.render(&mut stopped).unwrap();
+                assert!(stopped.iter().all(|frame| *frame == [0.0; 2]));
+            });
+        }
+    }
+}
+
+#[test]
 fn pending_shared_unmute_survives_empty_render_and_refuses_another_handoff() {
     on_control(|| {
         let mut f = fixture();
