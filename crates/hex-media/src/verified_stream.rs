@@ -105,12 +105,12 @@ pub struct VerifiedWavReader {
     path: PathBuf,
     layout: media::MediaLayout,
     flac_cursor: flac::FlacStreamCursor,
-    max_header_count: usize,
     max_window_frames: usize,
     manifest: VerifiedWavManifest,
     raw_page_reads: u64,
     #[cfg(feature = "test-support")]
     page_read_failure_after: Option<u32>,
+    cached_page: Option<usize>,
     scratch: [u8; PAGE_BYTES],
 }
 
@@ -173,14 +173,13 @@ impl VerifiedWavReader {
 
         let mut scratch = [0_u8; PAGE_BYTES];
         let mut raw_page_reads = 0_u64;
-        let mut whole_file = Sha256::new();
+        let mut verified_page0_layout: Option<media::MediaLayout> = None;
         for page in 0..page_count {
             if cancelled() {
                 return Err(ImportError::Cancelled);
             }
             let page_start = page_start(page)?;
             let page_len = page_len(captured_len, page_start)?;
-            check_metadata(&file, captured_len, captured_modified)?;
             file.seek(SeekFrom::Start(page_start))?;
             if let Err(error) = file.read_exact(&mut scratch[..page_len]) {
                 return Err(if error.kind() == io::ErrorKind::UnexpectedEof {
@@ -192,18 +191,52 @@ impl VerifiedWavReader {
             raw_page_reads += 1;
             check_metadata(&file, captured_len, captured_modified)?;
             let page_digest: [u8; DIGEST_BYTES] = Sha256::digest(&scratch[..page_len]).into();
-            whole_file.update(&scratch[..page_len]);
+            if page == 0 {
+                // Fast path: when all container headers fit in the first 64 KiB
+                // page (the overwhelming majority of audio files), verify the
+                // layout directly from the already-hashed page 0 bytes so
+                // `open_with_cancel` never re-reads or re-hashes page 0.
+                let mut cursor = io::Cursor::new(&scratch[..page_len]);
+                if let Ok(layout) =
+                    media::scan(&mut cursor, captured_len, limits.reader.max_header_count)
+                {
+                    verified_page0_layout = Some(layout);
+                }
+            }
             page_digests.push(page_digest);
         }
         check_metadata(&file, captured_len, captured_modified)?;
+        let fingerprint = manifest_fingerprint(&page_digests);
         let manifest = VerifiedWavManifest {
             facts: Arc::new(ManifestFacts {
                 file_len: captured_len,
                 modified: captured_modified,
-                fingerprint: whole_file.finalize().into(),
+                fingerprint,
                 page_digests,
             }),
         };
+        if let Some(layout) = verified_page0_layout {
+            if layout != preliminary_layout {
+                return Err(ImportError::SourceChanged);
+            }
+            layout.require_seekable()?;
+            if layout.frames() > limits.reader.max_source_frames {
+                return Err(ImportError::LimitExceeded("source frames"));
+            }
+            return Ok(Self {
+                file,
+                path,
+                layout,
+                flac_cursor: flac::FlacStreamCursor::default(),
+                max_window_frames: limits.reader.max_window_frames,
+                manifest,
+                raw_page_reads,
+                #[cfg(feature = "test-support")]
+                page_read_failure_after: None,
+                cached_page: None,
+                scratch,
+            });
+        }
         let mut reader = Self::scan_verified(file, path, limits, manifest, cancelled)?;
         reader.raw_page_reads += raw_page_reads;
         if reader.layout != preliminary_layout {
@@ -255,6 +288,7 @@ impl VerifiedWavReader {
     ) -> Result<Self, ImportError> {
         let (captured_len, captured_modified) = (manifest.file_len(), manifest.modified());
         let mut scratch = [0_u8; PAGE_BYTES];
+        let mut cached_page = None;
         let mut raw_page_reads = 0_u64;
         #[cfg(feature = "test-support")]
         let mut page_read_failure_after = None;
@@ -264,6 +298,7 @@ impl VerifiedWavReader {
                 &mut file,
                 manifest.page_digests(),
                 &mut scratch,
+                &mut cached_page,
                 captured_len,
                 captured_modified,
                 &mut cancelled,
@@ -290,14 +325,28 @@ impl VerifiedWavReader {
             path,
             layout,
             flac_cursor: flac::FlacStreamCursor::default(),
-            max_header_count: limits.reader.max_header_count,
             max_window_frames: limits.reader.max_window_frames,
             manifest,
             raw_page_reads,
             #[cfg(feature = "test-support")]
             page_read_failure_after: None,
+            cached_page: None,
             scratch,
         })
+    }
+
+    /// Lightweight metadata check verifying the opened file descriptor still
+    /// matches the manifest's captured length and modification time without
+    /// reading or hashing any audio pages from disk. Invalidates the cached
+    /// raw page on mismatch.
+    pub fn verify_metadata(&mut self) -> Result<(), ImportError> {
+        let (captured_len, captured_modified) =
+            (self.manifest.file_len(), self.manifest.modified());
+        if let Err(error) = check_metadata(&self.file, captured_len, captured_modified) {
+            self.cached_page = None;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// The complete verification this reader serves pages under. Cloning it
@@ -332,6 +381,9 @@ impl VerifiedWavReader {
             return Err(ImportError::LimitExceeded("verified page coverage bytes"));
         }
         covered.resize(count, 0);
+        // Start a coverage pass with an empty page cache so every covered page
+        // is verified from disk during this pass.
+        self.cached_page = None;
         Ok(VerifiedWavCoverage {
             reader: self,
             covered,
@@ -468,23 +520,29 @@ impl VerifiedWavReader {
         }
         let (captured_len, captured_modified) =
             (self.manifest.file_len(), self.manifest.modified());
-        check_metadata(&self.file, captured_len, captured_modified)?;
+        if let Err(error) = check_metadata(&self.file, captured_len, captured_modified) {
+            self.cached_page = None;
+            return Err(error);
+        }
 
-        // Public reads always invalidate the prior page. Header/layout pages
-        // and requested payload pages are then verified in one reader pass.
-        // Share the caller's cancellation closure across both raw page reads
-        // and FLAC frame boundaries without overlapping mutable borrows.
+        // Reuse the verified layout captured at open and retain the last
+        // verified 64 KiB raw page in `self.scratch` across sequential reads
+        // (guarded by the metadata check above). Share the caller's
+        // cancellation closure across both raw page reads and FLAC frame
+        // boundaries without overlapping mutable borrows.
         let cancel_cell = std::cell::RefCell::new(cancelled);
         let mut page_cancelled = || {
             cancel_cell
                 .try_borrow_mut()
                 .is_ok_and(|mut callback| (*callback)())
         };
+        let layout = &self.layout;
         let decode_count = {
             let mut verified = VerifiedPageReader::new(
                 &mut self.file,
                 self.manifest.page_digests(),
                 &mut self.scratch,
+                &mut self.cached_page,
                 captured_len,
                 captured_modified,
                 &mut page_cancelled,
@@ -495,18 +553,10 @@ impl VerifiedWavReader {
                 #[cfg(feature = "test-support")]
                 &mut self.page_read_failure_after,
             );
-            let layout = media::scan(&mut verified, captured_len, self.max_header_count)
-                .map_err(map_verified_error)?;
-            if layout != self.layout {
-                return Err(ImportError::SourceChanged);
-            }
-            if start_frame > layout.frames() {
-                return Err(ImportError::Invalid("window starts beyond source end"));
-            }
             match layout {
                 media::MediaLayout::Flac(flac_layout) => flac::read_window(
                     &mut verified,
-                    &flac_layout,
+                    flac_layout,
                     &mut self.flac_cursor,
                     captured_len,
                     start_frame,
@@ -608,7 +658,6 @@ impl VerifiedWavReader {
         {
             return Err(ImportError::Cancelled);
         }
-        check_metadata(&self.file, captured_len, captured_modified)?;
         Ok(decode_count)
     }
 }
@@ -665,6 +714,7 @@ impl VerifiedWavCoverage<'_> {
                 &mut reader.file,
                 reader.manifest.page_digests(),
                 &mut reader.scratch,
+                &mut reader.cached_page,
                 len,
                 modified,
                 &mut cancelled,
@@ -695,6 +745,21 @@ impl VerifiedWavCoverage<'_> {
     }
 }
 
+/// Derive a deterministic 32-byte manifest fingerprint from the verified page
+/// digests in one pass (matching raw SHA-256 directly for single-page files,
+/// and hashing the ordered 32-byte page digests for multi-page files so large
+/// sources are hashed once instead of twice on open).
+fn manifest_fingerprint(page_digests: &[[u8; DIGEST_BYTES]]) -> [u8; DIGEST_BYTES] {
+    if page_digests.len() == 1 {
+        return page_digests[0];
+    }
+    let mut hasher = Sha256::new();
+    for digest in page_digests {
+        hasher.update(digest);
+    }
+    hasher.finalize().into()
+}
+
 struct PageReadAccounting<'a> {
     reads: &'a mut u64,
     coverage: Option<&'a mut [u8]>,
@@ -707,7 +772,7 @@ struct VerifiedPageReader<'a> {
     captured_len: u64,
     captured_modified: SystemTime,
     position: u64,
-    cached_page: Option<usize>,
+    cached_page: &'a mut Option<usize>,
     cancelled: &'a mut dyn FnMut() -> bool,
     accounting: PageReadAccounting<'a>,
     #[cfg(feature = "test-support")]
@@ -716,11 +781,12 @@ struct VerifiedPageReader<'a> {
 
 impl<'a> VerifiedPageReader<'a> {
     // Fixed reader owners plus the optional test-only I/O failure plan.
-    #[cfg_attr(feature = "test-support", allow(clippy::too_many_arguments))]
+    #[allow(clippy::too_many_arguments)]
     fn new(
         file: &'a mut File,
         digests: &'a [[u8; DIGEST_BYTES]],
         scratch: &'a mut [u8; PAGE_BYTES],
+        cached_page: &'a mut Option<usize>,
         captured_len: u64,
         captured_modified: SystemTime,
         cancelled: &'a mut dyn FnMut() -> bool,
@@ -734,7 +800,7 @@ impl<'a> VerifiedPageReader<'a> {
             captured_len,
             captured_modified,
             position: 0,
-            cached_page: None,
+            cached_page,
             cancelled,
             accounting,
             #[cfg(feature = "test-support")]
@@ -746,10 +812,13 @@ impl<'a> VerifiedPageReader<'a> {
         if (self.cancelled)() {
             return Err(cancelled_io());
         }
-        if self.cached_page == Some(page) {
+        if *self.cached_page == Some(page) {
+            if let Some(coverage) = self.accounting.coverage.as_deref_mut() {
+                *coverage.get_mut(page).ok_or_else(source_changed_io)? = 1;
+            }
             return Ok(());
         }
-        self.cached_page = None;
+        *self.cached_page = None;
         let expected = self.digests.get(page).ok_or_else(source_changed_io)?;
         let page_start = u64::try_from(page)
             .ok()
@@ -757,8 +826,6 @@ impl<'a> VerifiedPageReader<'a> {
             .ok_or_else(source_changed_io)?;
         let length = usize::try_from((self.captured_len - page_start).min(PAGE_BYTES as u64))
             .map_err(|_| source_changed_io())?;
-        check_metadata(self.file, self.captured_len, self.captured_modified)
-            .map_err(import_to_io)?;
         self.file.seek(SeekFrom::Start(page_start))?;
         #[cfg(feature = "test-support")]
         if *self.page_read_failure_after == Some(0) {
@@ -787,7 +854,7 @@ impl<'a> VerifiedPageReader<'a> {
         if let Some(coverage) = self.accounting.coverage.as_deref_mut() {
             *coverage.get_mut(page).ok_or_else(source_changed_io)? = 1;
         }
-        self.cached_page = Some(page);
+        *self.cached_page = Some(page);
         Ok(())
     }
 }
@@ -946,12 +1013,12 @@ impl VerifiedWavReader {
             path,
             layout: _,
             flac_cursor: _,
-            max_header_count: _,
             max_window_frames: _,
             manifest,
             raw_page_reads: _,
             #[cfg(feature = "test-support")]
                 page_read_failure_after: _,
+            cached_page: _,
             scratch: _,
         } = self;
         VerifiedReaderDataLayout {

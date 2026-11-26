@@ -2476,8 +2476,8 @@ pub(crate) mod tests {
             1024 * 1024,
         );
         let verified = VerifiedWavReader::open(&fixture.0, limits).expect("verified source");
-        // Three hashed pages, then the verified header scan re-reads page 0.
-        assert_eq!(verified.raw_page_reads(), 4);
+        // Three hashed pages; header is verified inline on page 0 without re-reading.
+        assert_eq!(verified.raw_page_reads(), 3);
         let mut editor = Editor::new(Project::new(48_000).expect("project"), 2).expect("editor");
         let Created::Asset(asset) = editor
             .execute(Command::AddAsset {
@@ -2566,7 +2566,7 @@ pub(crate) mod tests {
             &stop,
         )
         .expect("full rebuild");
-        assert_eq!(pool.raw_page_reads(sources[0].asset_index), 4);
+        assert_eq!(pool.raw_page_reads(sources[0].asset_index), 3);
         drop((sources, pool));
         // A touched but byte-identical file fails the identity check and is
         // re-hashed in full, which still matches the expected fingerprint.
@@ -2586,7 +2586,7 @@ pub(crate) mod tests {
         let (sources, pool, _, _) =
             build_catalog(&config, vec![definition()], &mut scratch, 0, &stop)
                 .expect("touched rebuild");
-        assert_eq!(pool.raw_page_reads(sources[0].asset_index), 4);
+        assert_eq!(pool.raw_page_reads(sources[0].asset_index), 3);
         drop((sources, pool));
         // A content change on disk is refused.
         use std::io::{Seek, SeekFrom};

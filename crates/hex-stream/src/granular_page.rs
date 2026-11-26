@@ -210,7 +210,7 @@ impl VerifiedGranularPages {
         policy: SeekPolicy,
         reader: &mut VerifiedWavReader,
         plan: &ResamplePlan,
-        cancelled: impl FnMut() -> bool,
+        mut cancelled: impl FnMut() -> bool,
     ) -> Result<(), (GranularPageError, Box<[Frame]>)> {
         let Some(start) = index.checked_mul(STREAM_PAGE_FRAMES as u64) else {
             return Err((GranularPageError::InvalidRequest, frames));
@@ -223,28 +223,58 @@ impl VerifiedGranularPages {
         }
         let valid =
             (self.metadata.playback_frames() - start).min(STREAM_PAGE_FRAMES as u64) as usize;
-        let seek = match policy {
-            SeekPolicy::Strict(max_preroll_frames) => self.cache.begin_seek(
-                &mut self.cursor,
-                start,
-                max_preroll_frames,
-                reader,
-                plan,
-                cancelled,
-            ),
-            SeekPolicy::Segmented(segment_frames) => self.cache.begin_seek_toward(
-                &mut self.cursor,
-                start,
-                segment_frames,
-                reader,
-                plan,
-                cancelled,
-            ),
-        };
-        let phase = match seek {
-            Ok(GranularSeekProgress::Pending { .. }) => Phase::Seeking,
-            Ok(GranularSeekProgress::Reached { .. }) => Phase::Rendering,
-            Err(error) => return Err((error.into(), frames)),
+        // Fast-path sequential playback: when the cursor is already positioned
+        // cleanly at `start`, validate source metadata without restoring a
+        // checkpoint or re-reading page 0 from disk.
+        let phase = if self.cursor.seek_target().is_none()
+            && !self.cursor.is_poisoned()
+            && self.cursor.position() == start
+        {
+            if let Err(error) = validate_source(self.cursor.source_metadata(), reader, plan) {
+                return Err((
+                    GranularPageError::Step(VerifiedGranularStepError::Source(error)),
+                    frames,
+                ));
+            }
+            if cancelled() {
+                return Err((
+                    GranularPageError::Step(VerifiedGranularStepError::Source(
+                        StreamFailureKind::Cancelled,
+                    )),
+                    frames,
+                ));
+            }
+            if let Err(error) = reader.verify_metadata().map_err(map_import_error) {
+                return Err((
+                    GranularPageError::Step(VerifiedGranularStepError::Source(error)),
+                    frames,
+                ));
+            }
+            Phase::Rendering
+        } else {
+            let seek = match policy {
+                SeekPolicy::Strict(max_preroll_frames) => self.cache.begin_seek(
+                    &mut self.cursor,
+                    start,
+                    max_preroll_frames,
+                    reader,
+                    plan,
+                    cancelled,
+                ),
+                SeekPolicy::Segmented(segment_frames) => self.cache.begin_seek_toward(
+                    &mut self.cursor,
+                    start,
+                    segment_frames,
+                    reader,
+                    plan,
+                    cancelled,
+                ),
+            };
+            match seek {
+                Ok(GranularSeekProgress::Pending { .. }) => Phase::Seeking,
+                Ok(GranularSeekProgress::Reached { .. }) => Phase::Rendering,
+                Err(error) => return Err((error.into(), frames)),
+            }
         };
         frames.fill([0.0; 2]);
         self.pending = Some(PendingPage {
@@ -343,18 +373,17 @@ impl VerifiedGranularPages {
                 validate_source(self.cursor.source_metadata(), reader, plan).map_err(|error| {
                     GranularPageError::Step(VerifiedGranularStepError::Source(error))
                 })?;
-                let mut probe = [[0.0; 2]; 1];
-                let read = reader
-                    .read_frames_into_with_cancel(0, &mut probe, &mut cancelled)
+                if cancelled() {
+                    return Err(GranularPageError::Step(VerifiedGranularStepError::Source(
+                        StreamFailureKind::Cancelled,
+                    )));
+                }
+                reader
+                    .verify_metadata()
                     .map_err(map_import_error)
                     .map_err(|error| {
                         GranularPageError::Step(VerifiedGranularStepError::Source(error))
                     })?;
-                if read != 1 {
-                    return Err(GranularPageError::Step(VerifiedGranularStepError::Source(
-                        StreamFailureKind::SourceChanged,
-                    )));
-                }
                 self.cache.record(&self.cursor)?;
                 pending.phase = Phase::Complete;
                 Ok(GranularPageProgress::Complete)
