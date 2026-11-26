@@ -16,7 +16,7 @@ fn output_unavailable_export(grouped: bool) {
     let original_bytes = fs::read(&original).unwrap();
     let (events, audio_events) = mpsc::sync_channel(8);
     let mut sink = NativeAudioSink::new(events);
-    sink.output_factory = Some(Box::new(|_| Err("fixture output unavailable".into())));
+    sink.hooks.output_factory = Some(Box::new(|_| Err("fixture output unavailable".into())));
     let service = Service::with_audio_sink_and_native_reservation(
         16,
         0,

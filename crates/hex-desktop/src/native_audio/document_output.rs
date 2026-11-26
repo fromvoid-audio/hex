@@ -42,7 +42,7 @@ impl NativeAudioSink {
     }
 
     pub(super) fn open_requires_plugin_profile(&self) -> bool {
-        self.replacement_output.as_ref().map_or_else(
+        self.lifecycle.replacement_output.as_ref().map_or_else(
             || {
                 self.desired
                     .as_ref()
@@ -54,10 +54,10 @@ impl NativeAudioSink {
 
     pub(super) fn release_output_for_document(&mut self, generation: u64) {
         self.relinquish_output();
-        if self.pending_release_event.is_none()
-            && let Some(old_output_identity) = self.relinquished_output_identity
+        if self.events.pending_release.is_none()
+            && let Some(old_output_identity) = self.lifecycle.relinquished_output_identity
         {
-            self.pending_release_event = Some(EditorAudioEvent::OutputReleased {
+            self.events.pending_release = Some(EditorAudioEvent::OutputReleased {
                 project_generation: generation,
                 old_output_identity,
             });
@@ -90,7 +90,7 @@ impl NativeAudioSink {
         // retire before the exclusive lifecycle lane can build the candidate.
         self.release_output_for_document(generation);
         self.request_open(Some(sample_rate), None);
-        self.replacement_output = Some(ReplacementOutput {
+        self.lifecycle.replacement_output = Some(ReplacementOutput {
             context,
             deadline,
             requires_plugin_profile,
@@ -117,13 +117,13 @@ impl NativeAudioSink {
             }
             self.flush_events();
             self.poll_open();
-            if let Some(error) = self.open_error.take() {
+            if let Some(error) = self.lifecycle.open_error.take() {
                 break Err(error.to_string());
             }
             if self.output.is_some() {
                 break Ok(());
             }
-            if !self.open_pending {
+            if !self.lifecycle.open_pending {
                 break Err("audio output preparation stopped".into());
             }
             std::thread::sleep(Duration::from_millis(1));
@@ -136,6 +136,7 @@ impl NativeAudioSink {
 
     pub(super) fn check_replacement_deadline(&self) -> Result<(), String> {
         let replacement = self
+            .lifecycle
             .replacement_output
             .as_ref()
             .ok_or("project audio preparation is unavailable")?;
@@ -143,7 +144,7 @@ impl NativeAudioSink {
     }
 
     pub(super) fn wait_for_replacement_installation(&mut self) -> Result<(), String> {
-        let Some(replacement) = self.replacement_output.as_ref() else {
+        let Some(replacement) = self.lifecycle.replacement_output.as_ref() else {
             return Ok(()); // Existing same-rate deferred publication.
         };
         let context = replacement.context;
@@ -186,19 +187,19 @@ impl NativeAudioSink {
     }
 
     pub(super) fn refuse_replacement_output(&mut self, reason: &str) {
-        self.replacement_output = None;
+        self.lifecycle.replacement_output = None;
         // A private candidate's identity never crossed the Client boundary.
-        self.output_identity = None;
+        self.lifecycle.output_identity = None;
         self.relinquish_output();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         if self.plugins.retiring_editor_close_blocker()
             == Some(hex_session::service::RetiringEditorCloseBlocker::Unresolved)
         {
-            self.open_error =
+            self.lifecycle.open_error =
                 Some("project open refused · original vst3 editor changes retained".into());
             return;
         }
-        self.open_error = Some(
+        self.lifecycle.open_error = Some(
             format!(
                 "project open failed: {reason}; use restart audio to restore the current project"
             )

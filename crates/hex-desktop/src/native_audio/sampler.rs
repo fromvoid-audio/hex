@@ -91,7 +91,7 @@ impl NativeAudioSink {
         add(held, self.edit_hold())
     }
     pub(super) fn opened_output(&mut self, mut output: WorkerPreparedOutput) {
-        self.relinquished_output_identity = None;
+        self.lifecycle.relinquished_output_identity = None;
         self.plugins.fresh_output();
         // Both production and headless factories must acquire the existing
         // exclusive Lease. Successful fresh construction proves old retirement;
@@ -99,8 +99,8 @@ impl NativeAudioSink {
         self.retired_sampler_hold = Hold::default();
         self.resident.retired = None;
         self.ordinary_pcm_frames = 0;
-        self.verified_pcm_frames = 0;
-        self.suspended_output = None;
+        self.verified.pcm_frames = 0;
+        self.lifecycle.suspended_output = None;
         let preflighted = self
             .sampler
             .as_ref()
@@ -115,7 +115,7 @@ impl NativeAudioSink {
             })
         };
         if self.worker_owned_resident_graphs
-            && (self.replacement_output.is_some()
+            && (self.lifecycle.replacement_output.is_some()
                 || self.desired.as_ref().is_none_or(|source| {
                     source.audio_mode() == hex_session::DocumentAudioMode::Resident
                 }))
@@ -137,12 +137,13 @@ impl NativeAudioSink {
                             policy.resident_native.storage,
                         )
                         .map_err(str::to_owned)?;
-                    let domains =
-                        if self.plugins.wants_profile() && self.bridge_rate_mismatch.is_none() {
-                            policy.plugins.domains(policy.ordinary_domains)?
-                        } else {
-                            policy.ordinary_domains
-                        };
+                    let domains = if self.plugins.wants_profile()
+                        && self.lifecycle.bridge_rate_mismatch.is_none()
+                    {
+                        policy.plugins.domains(policy.ordinary_domains)?
+                    } else {
+                        policy.ordinary_domains
+                    };
                     control
                         .configure_ordinary_streaming_on_control(
                             domains,
@@ -150,7 +151,7 @@ impl NativeAudioSink {
                             policy.ordinary_stream_metadata_bytes,
                         )
                         .map_err(str::to_owned)?;
-                    if self.bridge_rate_mismatch.is_none()
+                    if self.lifecycle.bridge_rate_mismatch.is_none()
                         && let Err(error) = self.plugins.configure(control, policy.plugins)
                     {
                         self.plugins.refuse_profile(error);
@@ -158,7 +159,7 @@ impl NativeAudioSink {
                     Ok(())
                 });
             if let Err(error) = configured {
-                self.open_error = Some(error.into());
+                self.lifecycle.open_error = Some(error.into());
                 return;
             }
         }
@@ -171,7 +172,7 @@ impl NativeAudioSink {
         if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control()) {
             self.ordinary_pcm_frames = control
                 .suspend_resident_forwarding_pcm()
-                .and_then(|n| n.checked_add(self.verified_pcm_frames))
+                .and_then(|n| n.checked_add(self.verified.pcm_frames))
                 .unwrap_or(u64::MAX);
         }
         self.retired_sampler_hold = add(
@@ -179,8 +180,8 @@ impl NativeAudioSink {
             add(self.output_hold, pcm_hold(self.ordinary_pcm_frames)),
         );
         self.ordinary_pcm_frames = 0;
-        self.verified_pcm_frames = 0;
-        self.suspended_output = None;
+        self.verified.pcm_frames = 0;
+        self.lifecycle.suspended_output = None;
         self.output_hold = Hold::default();
     }
     pub(super) fn sampler_blocks_client(&self) -> bool {
@@ -190,11 +191,11 @@ impl NativeAudioSink {
     }
     fn resume_sampler_forwarding(&mut self) {
         if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control())
-            && control.output_identity() == self.suspended_output
+            && control.output_identity() == self.lifecycle.suspended_output
         {
             control.resume_resident_forwarding();
         }
-        self.suspended_output = None;
+        self.lifecycle.suspended_output = None;
     }
     fn clean_preflight(&mut self) -> bool {
         let Some(state) = self.sampler.as_mut() else {
@@ -223,7 +224,7 @@ impl NativeAudioSink {
             };
             if self.output.is_some() {
                 self.output_hold = add(self.output_hold, control);
-            } else if self.open_pending || self.opening.is_some() {
+            } else if self.lifecycle.open_pending || self.lifecycle.opening.is_some() {
                 self.retired_sampler_hold = add(self.retired_sampler_hold, control);
             }
         }
@@ -243,10 +244,10 @@ impl NativeAudioSink {
         true
     }
     fn sampler_refusal_observation(&mut self, context: AudioSourceContext, error: String) {
-        if self.output_identity.is_none() {
-            self.pending_open_event = Some(EditorAudioEvent::Unavailable {
+        if self.lifecycle.output_identity.is_none() {
+            self.events.pending_open = Some(EditorAudioEvent::Unavailable {
                 project_generation: context.project_generation,
-                restart_request: self.restart_request,
+                restart_request: self.lifecycle.restart_request,
                 error: error.into(),
             });
         } else {
@@ -259,7 +260,7 @@ impl NativeAudioSink {
     }
     pub(super) fn report_sampler_cleanup_failure(&mut self, context: AudioSourceContext) {
         let error = "native sampler ownership cleanup is incomplete; restart hex".to_owned();
-        if self.output_identity.is_some() {
+        if self.lifecycle.output_identity.is_some() {
             self.observe(
                 context,
                 "sampler-incomplete",
@@ -291,9 +292,9 @@ impl NativeAudioSink {
         if disturbed {
             self.relinquish_output();
             if let Some(context) = context {
-                self.pending_open_event = Some(EditorAudioEvent::Unavailable {
+                self.events.pending_open = Some(EditorAudioEvent::Unavailable {
                     project_generation: context.project_generation,
-                    restart_request: self.restart_request,
+                    restart_request: self.lifecycle.restart_request,
                     error: error.into(),
                 });
             }
@@ -333,8 +334,8 @@ impl NativeAudioSink {
                 let Some(frames) = control.suspend_resident_forwarding_pcm() else {
                     return;
                 };
-                self.ordinary_pcm_frames = frames.saturating_add(self.verified_pcm_frames);
-                self.suspended_output = control.output_identity();
+                self.ordinary_pcm_frames = frames.saturating_add(self.verified.pcm_frames);
+                self.lifecycle.suspended_output = control.output_identity();
             }
             let (quote, storage, sources, frames) = match input.quote() {
                 Ok(v) => v,
@@ -418,12 +419,10 @@ impl NativeAudioSink {
                     return;
                 }
             }
-            let catalog = self.next_catalog;
-            let Some(next) = catalog.checked_add(1) else {
+            let Some(catalog) = self.verified.allocate_catalog() else {
                 self.sampler_refused("sampler source identity exhausted".into());
                 return;
             };
-            self.next_catalog = next;
             let result = self
                 .sampler
                 .as_mut()
@@ -462,13 +461,13 @@ impl NativeAudioSink {
                 );
                 return;
             }
-            let old_output_identity = self.output_identity;
+            let old_output_identity = self.lifecycle.output_identity;
             if let Some(state) = self.sampler.as_mut() {
                 state.phase = Phase::Draining;
             }
             self.relinquish_output();
             if let Some(old_output_identity) = old_output_identity {
-                self.pending_open_event = Some(EditorAudioEvent::RelinquishClient {
+                self.events.pending_open = Some(EditorAudioEvent::RelinquishClient {
                     old_output_identity,
                     target: context,
                 });
@@ -487,7 +486,7 @@ impl NativeAudioSink {
             return;
         }
         if state.phase == Phase::Draining && self.output.is_none() {
-            if let Some(error) = self.open_error.take() {
+            if let Some(error) = self.lifecycle.open_error.take() {
                 self.sampler_refused(error.to_string());
             }
             return;

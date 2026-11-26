@@ -31,20 +31,20 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         let (events, receiver) = mpsc::sync_channel(1);
         let mut sink = NativeAudioSink::new(events);
         sink.canonical_changed(source.clone());
-        sink.lifecycle_status = Some(|| None);
+        sink.hooks.lifecycle_status = Some(|| None);
         let attempts = Arc::new(AtomicU64::new(0));
         let calls = attempts.clone();
-        sink.output_factory = Some(Box::new(move |_| {
+        sink.hooks.output_factory = Some(Box::new(move |_| {
             calls.fetch_add(1, Acquire);
             Ok(None)
         }));
         sink.request_open(Some(48000), Some(17));
         sink.poll();
-        assert!(sink.open_pending);
-        assert!(sink.open_error.is_none());
+        assert!(sink.lifecycle.open_pending);
+        assert!(sink.lifecycle.open_error.is_none());
         assert!(receiver.try_recv().is_err());
         assert_eq!(attempts.load(Acquire), 1);
-        sink.lifecycle_status = Some(status);
+        sink.hooks.lifecycle_status = Some(status);
         sink.poll();
         let EditorAudioEvent::Unavailable {
             project_generation,
@@ -59,8 +59,8 @@ fn pending_open_and_confirmed_lifecycle_failures_have_distinct_recovery_results(
         let error = error.to_string();
         assert_eq!(error, error.to_lowercase());
         assert!(error.contains(expected));
-        assert!(!sink.open_pending);
-        assert!(sink.opening.is_none());
+        assert!(!sink.lifecycle.open_pending);
+        assert!(sink.lifecycle.opening.is_none());
         sink.poll();
         assert!(receiver.try_recv().is_err());
         assert_eq!(attempts.load(Acquire), 1); // no retry or new output
@@ -89,8 +89,8 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
     let old = next_source(&service);
     let (events, receiver) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events.clone());
-    sink.lifecycle_status = Some(|| Some(AudioLifecycleFailure::Cleanup));
-    sink.output_factory = Some(Box::new(|_| panic!("retained failure must not reopen")));
+    sink.hooks.lifecycle_status = Some(|| Some(AudioLifecycleFailure::Cleanup));
+    sink.hooks.output_factory = Some(Box::new(|_| panic!("retained failure must not reopen")));
     sink.canonical_changed(old.clone());
     sink.request_open(Some(48000), Some(1));
     // Fill the result lane with a stale event already owned by the UI queue.
@@ -105,7 +105,7 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
     );
     sink.poll();
     assert!(matches!(
-        sink.pending_open_event,
+        sink.events.pending_open,
         Some(EditorAudioEvent::Unavailable {
             restart_request: Some(1),
             ..
@@ -123,7 +123,7 @@ fn replacement_discards_pending_old_failure_and_correlates_new_result_under_back
         current.context().project_generation
     );
     sink.canonical_changed(current.clone());
-    assert!(sink.pending_open_event.is_none()); // stale undelivered result retired
+    assert!(sink.events.pending_open.is_none()); // stale undelivered result retired
     sink.poll();
     assert!(matches!(
         receiver.try_recv().unwrap(),
@@ -174,12 +174,12 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
         }
     };
     let mut output = Some(output);
-    sink.output_factory = Some(Box::new(move |_| Ok(output.take())));
-    sink.lifecycle_status = Some(|| None);
+    sink.hooks.output_factory = Some(Box::new(move |_| Ok(output.take())));
+    sink.hooks.lifecycle_status = Some(|| None);
     sink.canonical_changed(source.clone());
     sink.request_open(Some(48_000), Some(7));
     sink.poll_open();
-    assert!(!sink.open_pending && sink.open_error.is_none());
+    assert!(!sink.lifecycle.open_pending && sink.lifecycle.open_error.is_none());
     sink.deliver_open();
     sink.flush_events();
     let EditorAudioEvent::Opened {
@@ -193,7 +193,7 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
     assert_eq!(project_generation, source.context().project_generation);
     assert_eq!(restart_request, Some(7));
     sink.request_open(Some(48_000), Some(8));
-    sink.lifecycle_status = Some(|| Some(AudioLifecycleFailure::Retirement));
+    sink.hooks.lifecycle_status = Some(|| Some(AudioLifecycleFailure::Retirement));
     sink.poll_open();
     // Observation must not release the actual exclusive lease: a second
     // constructor still refuses while this output and callback remain retained.
@@ -201,7 +201,7 @@ fn successful_open_without_confirmed_failure_keeps_output_and_emits_opened() {
         hex_audio::worker_fixture::open_with_reliable_action_outcomes(48_000),
         Err(error) if error == "audio output is open or still shutting down"
     ));
-    assert!(!sink.open_pending);
+    assert!(!sink.lifecycle.open_pending);
     drop(audio);
     drop(backend);
     sink.close();
@@ -229,13 +229,13 @@ fn restart_on_a_device_at_another_rate_reports_a_typed_recoverable_mismatch() {
         }
     };
     let mut output = Some(output);
-    sink.output_factory = Some(Box::new(move |_| Ok(output.take())));
-    sink.lifecycle_status = Some(|| None);
+    sink.hooks.output_factory = Some(Box::new(move |_| Ok(output.take())));
+    sink.hooks.lifecycle_status = Some(|| None);
     sink.canonical_changed(source.clone());
     let generation = source.context().project_generation;
     WorkerAudioSink::restart_audio(&mut sink, generation, 9).unwrap();
     sink.poll_open();
-    assert!(!sink.open_pending);
+    assert!(!sink.lifecycle.open_pending);
     assert!(
         sink.output.is_none(),
         "a mismatched output is never exposed"

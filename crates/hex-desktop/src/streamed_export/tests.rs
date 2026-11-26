@@ -1,6 +1,7 @@
 //! Unsupported scalar offline capture refuses before resolving any file.
 use super::*;
 use hex_project::{Command, Created, Editor, Project};
+use std::sync::atomic::Ordering;
 
 #[test]
 fn pitched_and_raw_file_pages_match_resident_and_validate_source_identity() {

@@ -185,10 +185,10 @@ impl NativeAudioSink {
     ) -> bool {
         let source = match update {
             VerifiedArrangementGainUpdate::Cancel(source) => {
-                if matches!(self.verified_preview.as_ref(), Some(VerifiedSource::ArrangementGain(active))
+                if matches!(self.verified.preview.as_ref(), Some(VerifiedSource::ArrangementGain(active))
                     if Arc::ptr_eq(active, &source))
                 {
-                    self.verified_preview = None;
+                    self.verified.preview = None;
                     return true;
                 }
                 return false;
@@ -202,7 +202,7 @@ impl NativeAudioSink {
         {
             return false;
         }
-        if let Some(preview) = &self.verified_preview {
+        if let Some(preview) = &self.verified.preview {
             if !matches!(preview, VerifiedSource::ArrangementGain(current)
                 if current.sequence() < source.sequence())
             {
@@ -211,7 +211,7 @@ impl NativeAudioSink {
             // Let the previous value reach publication before replacing it;
             // Session keeps just the newest undelivered value while busy.
             let key = preview.key();
-            if self.verified_last != Some(key) && self.verified_blocked != Some(key) {
+            if self.verified.last != Some(key) && self.verified.blocked != Some(key) {
                 return false;
             }
         }
@@ -227,10 +227,10 @@ impl NativeAudioSink {
                         .applied_audio_source()
                         .is_some_and(|applied| applied.context == source.canonical().context())
             });
-        if !ready || self.preparation.is_some() {
+        if !ready || self.verified.preparation.is_some() {
             return false;
         }
-        self.verified_preview = Some(VerifiedSource::ArrangementGain(source));
+        self.verified.preview = Some(VerifiedSource::ArrangementGain(source));
         true
     }
 
@@ -241,10 +241,10 @@ impl NativeAudioSink {
         let source = match update {
             VerifiedArrangementPlayStartUpdate::Cancel(source) => {
                 if matches!(
-                    self.verified_preview.as_ref(),
+                    self.verified.preview.as_ref(),
                     Some(VerifiedSource::ArrangementPlayStart(active)) if Arc::ptr_eq(active, &source)
                 ) {
-                    self.verified_preview = None;
+                    self.verified.preview = None;
                     return true;
                 }
                 return false;
@@ -258,7 +258,7 @@ impl NativeAudioSink {
         {
             return false;
         }
-        if let Some(preview) = &self.verified_preview {
+        if let Some(preview) = &self.verified.preview {
             if !matches!(
                 preview,
                 VerifiedSource::ArrangementPlayStart(current) if current.sequence() < source.sequence()
@@ -266,7 +266,7 @@ impl NativeAudioSink {
                 return false;
             }
             let key = preview.key();
-            if self.verified_last != Some(key) && self.verified_blocked != Some(key) {
+            if self.verified.last != Some(key) && self.verified.blocked != Some(key) {
                 return false;
             }
         }
@@ -282,10 +282,10 @@ impl NativeAudioSink {
                         .applied_audio_source()
                         .is_some_and(|applied| applied.context == source.canonical().context())
             });
-        if !ready || self.preparation.is_some() {
+        if !ready || self.verified.preparation.is_some() {
             return false;
         }
-        self.verified_preview = Some(VerifiedSource::ArrangementPlayStart(source));
+        self.verified.preview = Some(VerifiedSource::ArrangementPlayStart(source));
         true
     }
 
@@ -307,7 +307,7 @@ impl NativeAudioSink {
             return;
         }
         if let Some(identity) = source.preview_identity() {
-            if self.preview_watermark.is_some_and(|old| {
+            if self.verified.preview_watermark.is_some_and(|old| {
                 identity.key.generation != old.key.generation
                     || identity.key.token < old.key.token
                     || (identity.key == old.key
@@ -318,28 +318,29 @@ impl NativeAudioSink {
                 return;
             }
             if self
-                .verified_preview
+                .verified
+                .preview
                 .as_ref()
                 .and_then(|s| s.preview_identity())
                 == Some(identity)
             {
                 return;
             }
-            self.preview_watermark = Some(PreviewWatermark {
+            self.verified.preview_watermark = Some(PreviewWatermark {
                 key: identity.key,
                 sequence: identity.sequence,
                 authoring_revision: identity.canonical_revision,
                 closed: false,
             });
-            self.verified_preview = Some(source);
+            self.verified.preview = Some(source);
         } else if let Some(key) = source.terminal_key() {
-            if self.preview_watermark.is_some_and(|old| {
+            if self.verified.preview_watermark.is_some_and(|old| {
                 key.generation != old.key.generation || key.token < old.key.token
             }) {
                 return;
             }
-            let previous = self.preview_watermark.filter(|old| old.key == key);
-            self.preview_watermark = Some(PreviewWatermark {
+            let previous = self.verified.preview_watermark.filter(|old| old.key == key);
+            self.verified.preview_watermark = Some(PreviewWatermark {
                 key,
                 sequence: previous
                     .map_or(0, |old| old.sequence)
@@ -349,7 +350,7 @@ impl NativeAudioSink {
                 }),
                 closed: true,
             });
-            self.verified_preview = None;
+            self.verified.preview = None;
         }
     }
 }

@@ -55,7 +55,7 @@ impl Harness {
         let (events, receiver) = mpsc::sync_channel(1);
         let setup_sender = rendered.then(|| events.clone());
         let mut sink = NativeAudioSink::new(events);
-        sink.output_factory = Some(Box::new(move |rate| {
+        sink.hooks.output_factory = Some(Box::new(move |rate| {
             let mut slot = factory_backend.lock().unwrap();
             if slot.is_some() {
                 return Ok(None);
@@ -503,7 +503,7 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
     let (events, receiver) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
     let mut opens = 0;
-    sink.output_factory = Some(Box::new(move |rate| {
+    sink.hooks.output_factory = Some(Box::new(move |rate| {
         let mut slot = factory_backend.lock().unwrap();
         if slot.is_some() {
             return Ok(None);

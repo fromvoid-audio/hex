@@ -18,7 +18,7 @@ pub(crate) fn native_harness_with(configure: impl FnOnce(&mut NativeAudioSink)) 
     let mut sink = NativeAudioSink::new(events);
     configure(&mut sink);
     assert!(sink.resident_publication_enabled());
-    sink.output_factory = Some(Box::new(move |rate| {
+    sink.hooks.output_factory = Some(Box::new(move |rate| {
         let mut slot = factory_backend.lock().unwrap();
         if slot.is_some() {
             return Ok(None);
