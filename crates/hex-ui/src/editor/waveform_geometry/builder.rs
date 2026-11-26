@@ -252,6 +252,8 @@ pub(in crate::editor) fn build_waveform_geometry(
         super::super::navigation_metrics::Stage::WaveformSampling,
     );
     let mut stereo_peaks = Vec::with_capacity(last.saturating_sub(first));
+    let mut stereo_rms = Vec::with_capacity(last.saturating_sub(first));
+    let mut has_any_rms = false;
     // A fixed total bound keeps close-zoom refinement proportional to the
     // viewport, including columns that straddle a loop boundary.
     let detail_budget = layout.detail_budget();
@@ -263,6 +265,56 @@ pub(in crate::editor) fn build_waveform_geometry(
             .start
             .saturating_add(fraction_u64(frames, column + 1, grid.columns))
             .max(start.saturating_add(1));
+        let rms_raw = match mapping {
+            WaveformMapping::Source { timeline_origin }
+            | WaveformMapping::GainedSource {
+                timeline_origin, ..
+            } => start
+                .checked_sub(*timeline_origin)
+                .zip(end.checked_sub(*timeline_origin))
+                .and_then(|(s, e)| usize::try_from(s).ok().zip(usize::try_from(e).ok()))
+                .and_then(|(s, e)| waveform.rms_for_frames(s, e)),
+            WaveformMapping::Prepared {
+                timeline_origin,
+                root_offset,
+                ..
+            } => {
+                let translation = i128::from(*root_offset) - i128::from(*timeline_origin);
+                let available = waveform.source_frames() as i128;
+                let s = (i128::from(start) + translation).clamp(0, available) as usize;
+                let e = (i128::from(end) + translation).clamp(0, available) as usize;
+                (s < e).then(|| waveform.rms_for_frames(s, e)).flatten()
+            }
+            WaveformMapping::Clip {
+                clip,
+                timeline_origin,
+                ..
+            } => {
+                let ranges = timeline_source_ranges_at(
+                    clip,
+                    *timeline_origin,
+                    start..end,
+                    waveform.source_frames(),
+                );
+                let mut sum_sq = [0.0_f64; 2];
+                let mut weight = 0_usize;
+                for range in ranges.as_slice() {
+                    if let Some(rms) = waveform.rms_for_frames(range.start, range.end) {
+                        let w = range.len();
+                        sum_sq[0] += f64::from(rms[0]).powi(2) * w as f64;
+                        sum_sq[1] += f64::from(rms[1]).powi(2) * w as f64;
+                        weight += w;
+                    }
+                }
+                (weight > 0).then(|| {
+                    [
+                        (sum_sq[0] / weight as f64).sqrt() as f32,
+                        (sum_sq[1] / weight as f64).sqrt() as f32,
+                    ]
+                })
+            }
+            _ => None,
+        };
         let peaks = match mapping {
             WaveformMapping::Frame { projection, .. } => {
                 let frame = frame.as_ref()?;
@@ -397,6 +449,15 @@ pub(in crate::editor) fn build_waveform_geometry(
         if let Some(columns) = &mut exact_overrange {
             columns.push(Some(waveform_frame::overrange(peaks)));
         }
+        let rms = rms_raw.map(|raw| {
+            has_any_rms = true;
+            let abs_gain = gain.abs();
+            [
+                (raw[0] * abs_gain).min(peaks[0].max.abs().max(peaks[0].min.abs())),
+                (raw[1] * abs_gain).min(peaks[1].max.abs().max(peaks[1].min.abs())),
+            ]
+        });
+        stereo_rms.push(rms);
         stereo_peaks.push(peaks);
     }
 
@@ -434,6 +495,8 @@ pub(in crate::editor) fn build_waveform_geometry(
         let amplitude = (band_height * 0.44).max(0.5);
         let mut maxima = Vec::with_capacity(point_count);
         let mut minima = Vec::with_capacity(point_count);
+        let mut rms_upper = Vec::with_capacity(if has_any_rms { point_count } else { 0 });
+        let mut rms_lower = Vec::with_capacity(if has_any_rms { point_count } else { 0 });
         for (column, peaks) in stereo_peaks.iter().enumerate() {
             let peak = if single_lane {
                 CachedPeak {
@@ -444,6 +507,24 @@ pub(in crate::editor) fn build_waveform_geometry(
                 peaks[lane]
             };
             let (top, bottom) = peak_vertical_bounds(peak, center, amplitude, amplitude_scale);
+            let rms_bounds = has_any_rms.then(|| {
+                let rms_val = stereo_rms[column].map_or(0.0, |rms| {
+                    if single_lane {
+                        ((rms[0] * rms[0] + rms[1] * rms[1]) * 0.5).sqrt()
+                    } else {
+                        rms[lane]
+                    }
+                });
+                peak_vertical_bounds(
+                    CachedPeak {
+                        min: -rms_val,
+                        max: rms_val,
+                    },
+                    center,
+                    amplitude,
+                    amplitude_scale,
+                )
+            });
             if grid.binned {
                 for edge in [column, column + 1] {
                     let x = if let Some(pitch) = local_pitch {
@@ -453,12 +534,20 @@ pub(in crate::editor) fn build_waveform_geometry(
                     };
                     maxima.push(point(px(x), y + px(top)));
                     minima.push(point(px(x), y + px(bottom)));
+                    if let Some((r_top, r_bottom)) = rms_bounds {
+                        rms_upper.push(point(px(x), y + px(r_top)));
+                        rms_lower.push(point(px(x), y + px(r_bottom)));
+                    }
                 }
             } else {
                 let x =
                     grid.left + ((first + column) as f32 + 0.5) * grid.width / grid.columns as f32;
                 maxima.push(point(px(x), bounds.origin.y + px(top)));
                 minima.push(point(px(x), bounds.origin.y + px(bottom)));
+                if let Some((r_top, r_bottom)) = rms_bounds {
+                    rms_upper.push(point(px(x), bounds.origin.y + px(r_top)));
+                    rms_lower.push(point(px(x), bounds.origin.y + px(r_bottom)));
+                }
             }
         }
 
@@ -486,6 +575,11 @@ pub(in crate::editor) fn build_waveform_geometry(
             },
             std::iter::empty(),
         )?;
+        let display = if has_area && !rms_upper.is_empty() {
+            display.with_rms_band(&rms_upper, &rms_lower)?
+        } else {
+            display
+        };
         let display = if let WaveformOverrange::Ready(columns) = &overrange {
             let step = local_pitch.unwrap_or(grid.width / grid.columns as f32);
             let left = if local_pitch.is_some() {

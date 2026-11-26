@@ -28,6 +28,11 @@ pub struct Waveform {
     identical_channels: bool,
     // Pairwise extrema above the leaf bins; built once on the control worker.
     levels: Vec<Vec<[Peak; 2]>>,
+    /// Per-bin mean-square energy (`sum(x^2) / bin_frames`) for inner RMS bands.
+    /// Absent for peak-only fixtures constructed via [`Waveform::from_peaks`].
+    rms_bins: Option<Vec<[f32; 2]>>,
+    /// Frame-count-weighted mean-square pyramid above `rms_bins`.
+    rms_levels: Vec<Vec<[f32; 2]>>,
     samples: Option<Audio>,
     sparse: Option<Arc<SparseFrameMap>>,
     /// Present when summary frame `f` reads `samples[offset + (phase + f) % period]`.
@@ -200,11 +205,67 @@ impl Waveform {
             bins,
             identical_channels: false,
             levels,
+            rms_bins: None,
+            rms_levels: Vec::new(),
             samples: None,
             sparse: None,
             repeat: None,
             repeat_root: None,
         })
+    }
+
+    fn from_peaks_and_mean_squares(
+        source_frames: usize,
+        bins: Vec<[Peak; 2]>,
+        mean_squares: Vec<[f32; 2]>,
+    ) -> Result<Self, ImportError> {
+        let mut waveform = Self::from_peaks(source_frames, bins)?;
+        let bin_count = waveform.bins.len();
+        if mean_squares.len() != bin_count
+            || mean_squares
+                .iter()
+                .flatten()
+                .any(|v| !v.is_finite() || *v < 0.0)
+        {
+            return Err(ImportError::LimitExceeded("invalid waveform rms values"));
+        }
+        let mut rms_levels = Vec::new();
+        rms_levels
+            .try_reserve_exact(waveform.levels.len())
+            .map_err(|_| ImportError::AllocationFailed)?;
+        let mut level = 0_usize;
+        let mut previous = mean_squares.as_slice();
+        while previous.len() > 1 {
+            let mut next = Vec::new();
+            next.try_reserve_exact(previous.len().div_ceil(2))
+                .map_err(|_| ImportError::AllocationFailed)?;
+            for (parent_idx, pair) in previous.chunks(2).enumerate() {
+                let merged = if let Some(right) = pair.get(1) {
+                    let w0 = node_frame_count(source_frames, bin_count, level, parent_idx * 2);
+                    let w1 = node_frame_count(source_frames, bin_count, level, parent_idx * 2 + 1);
+                    let total = (w0 + w1) as f64;
+                    if total > 0.0 {
+                        [
+                            ((f64::from(pair[0][0]) * w0 as f64 + f64::from(right[0]) * w1 as f64)
+                                / total) as f32,
+                            ((f64::from(pair[0][1]) * w0 as f64 + f64::from(right[1]) * w1 as f64)
+                                / total) as f32,
+                        ]
+                    } else {
+                        [0.0, 0.0]
+                    }
+                } else {
+                    pair[0]
+                };
+                next.push(merged);
+            }
+            rms_levels.push(next);
+            previous = rms_levels.last().map(Vec::as_slice).unwrap_or(&[]);
+            level += 1;
+        }
+        waveform.rms_bins = Some(mean_squares);
+        waveform.rms_levels = rms_levels;
+        Ok(waveform)
     }
 
     /// Leaf bins retained by this summary and its repeat-cycle cache.
@@ -226,6 +287,32 @@ impl Waveform {
                 .as_ref()
                 .map_or(0, |root| root.cached_bin_count()),
         )
+    }
+
+    /// RMS bins retained across all resolutions (0 for peak-only summaries).
+    pub fn cached_rms_bin_count(&self) -> usize {
+        let base = self.rms_bins.as_ref().map_or(0, Vec::len);
+        let count = self
+            .rms_levels
+            .iter()
+            .fold(base, |count, level| count.saturating_add(level.len()));
+        count.saturating_add(
+            self.repeat_root
+                .as_ref()
+                .map_or(0, |root| root.cached_rms_bin_count()),
+        )
+    }
+
+    /// Total summary pyramid bytes (peak extrema plus optional RMS mean-square bins).
+    /// Adds 8 bytes per bin (+50% over 16-byte stereo peak bins) when RMS is present.
+    pub fn summary_bytes(&self) -> Option<usize> {
+        let peak_bytes = self
+            .cached_bin_count()
+            .checked_mul(std::mem::size_of::<[Peak; 2]>())?;
+        let rms_bytes = self
+            .cached_rms_bin_count()
+            .checked_mul(std::mem::size_of::<[f32; 2]>())?;
+        peak_bytes.checked_add(rms_bytes)
     }
 
     /// Whether this summary represents repetitions of retained source PCM.
@@ -403,6 +490,135 @@ impl Waveform {
         self.cached_peaks_for_bins(bin_at(start), bin_at(end - 1) + 1)
     }
 
+    /// Root-mean-square amplitude per channel for a half-open source range.
+    /// Returns `None` for peak-only summaries without RMS storage.
+    pub fn rms_for_frames(&self, start: usize, end: usize) -> Option<[f32; 2]> {
+        self.rms_bins.as_ref()?;
+        let start = start.min(self.source_frames);
+        let end = end.min(self.source_frames);
+        if start >= end || self.bins.is_empty() || self.bins.len() > self.source_frames {
+            return None;
+        }
+        if end - start <= 64 && self.samples.is_some() {
+            return self.exact_rms_range(start, end);
+        }
+        if let (Some(repeat), Some(root)) = (self.repeat, self.repeat_root.as_deref()) {
+            let length = end - start;
+            if length >= repeat.period {
+                return root.rms_for_frames(0, repeat.period);
+            }
+            let phase = start % repeat.period;
+            let begin = if repeat.phase >= repeat.period - phase {
+                repeat.phase - (repeat.period - phase)
+            } else {
+                repeat.phase + phase
+            };
+            let first_len = length.min(repeat.period - begin);
+            let first = root.rms_for_frames(begin, begin + first_len)?;
+            if first_len == length {
+                return Some(first);
+            }
+            let second_len = length - first_len;
+            let second = root.rms_for_frames(0, second_len)?;
+            let total = length as f64;
+            return Some([
+                ((f64::from(first[0]).powi(2) * first_len as f64
+                    + f64::from(second[0]).powi(2) * second_len as f64)
+                    / total)
+                    .sqrt() as f32,
+                ((f64::from(first[1]).powi(2) * first_len as f64
+                    + f64::from(second[1]).powi(2) * second_len as f64)
+                    / total)
+                    .sqrt() as f32,
+            ]);
+        }
+        let count = self.bins.len();
+        let width = self.source_frames / count;
+        let extra = self.source_frames % count;
+        let wide_frames = (width + 1).saturating_mul(extra);
+        let bin_at = |frame: usize| {
+            if frame < wide_frames {
+                frame / (width + 1)
+            } else {
+                extra + (frame - wide_frames) / width
+            }
+        };
+        let ms = self.cached_mean_square_for_bins(bin_at(start), bin_at(end - 1) + 1)?;
+        Some([ms[0].max(0.0).sqrt(), ms[1].max(0.0).sqrt()])
+    }
+
+    fn exact_rms_range(&self, start: usize, end: usize) -> Option<[f32; 2]> {
+        let len = end.checked_sub(start)?;
+        if len == 0 {
+            return None;
+        }
+        if let Some(map) = &self.sparse {
+            let frames = self.samples.as_ref()?.frames();
+            let mut sum_sq = [0.0_f64; 2];
+            map.visit(start..end, |_, packed| {
+                for &sample in &frames[packed] {
+                    sum_sq[0] += f64::from(sample[0]) * f64::from(sample[0]);
+                    sum_sq[1] += f64::from(sample[1]) * f64::from(sample[1]);
+                }
+            });
+            return Some([
+                (sum_sq[0] / len as f64).sqrt() as f32,
+                (sum_sq[1] / len as f64).sqrt() as f32,
+            ]);
+        }
+        let mut sum_sq = [0.0_f64; 2];
+        for frame in start..end {
+            let sample = self.sample(frame)?;
+            sum_sq[0] += f64::from(sample[0]) * f64::from(sample[0]);
+            sum_sq[1] += f64::from(sample[1]) * f64::from(sample[1]);
+        }
+        Some([
+            (sum_sq[0] / len as f64).sqrt() as f32,
+            (sum_sq[1] / len as f64).sqrt() as f32,
+        ])
+    }
+
+    fn cached_mean_square_for_bins(&self, mut left: usize, mut right: usize) -> Option<[f32; 2]> {
+        let rms_bins = self.rms_bins.as_deref()?;
+        let bin_count = rms_bins.len();
+        let mut level = 0_usize;
+        let mut weighted = [0.0_f64; 2];
+        let mut total_frames = 0_usize;
+        while left < right {
+            let nodes = if level == 0 {
+                rms_bins
+            } else {
+                self.rms_levels.get(level - 1)?.as_slice()
+            };
+            if left % 2 == 1 {
+                let node = *nodes.get(left)?;
+                let w = node_frame_count(self.source_frames, bin_count, level, left);
+                weighted[0] += f64::from(node[0]) * w as f64;
+                weighted[1] += f64::from(node[1]) * w as f64;
+                total_frames += w;
+                left += 1;
+            }
+            if right % 2 == 1 {
+                right -= 1;
+                let node = *nodes.get(right)?;
+                let w = node_frame_count(self.source_frames, bin_count, level, right);
+                weighted[0] += f64::from(node[0]) * w as f64;
+                weighted[1] += f64::from(node[1]) * w as f64;
+                total_frames += w;
+            }
+            left /= 2;
+            right /= 2;
+            level += 1;
+        }
+        if total_frames == 0 {
+            return None;
+        }
+        Some([
+            (weighted[0] / total_frames as f64) as f32,
+            (weighted[1] / total_frames as f64) as f32,
+        ])
+    }
+
     fn cached_peaks_for_bins(&self, mut left: usize, mut right: usize) -> Option<[Peak; 2]> {
         let mut level = 0;
         let mut result = None;
@@ -427,6 +643,23 @@ impl Waveform {
         result
     }
 }
+fn bin_frame_boundary(source_frames: usize, bin_count: usize, bin: usize) -> usize {
+    let width = source_frames / bin_count;
+    let extra = source_frames % bin_count;
+    bin * width + bin.min(extra)
+}
+
+fn node_frame_count(source_frames: usize, bin_count: usize, level: usize, index: usize) -> usize {
+    let span = 1_usize.checked_shl(level as u32).unwrap_or(usize::MAX);
+    let start_bin = index.saturating_mul(span).min(bin_count);
+    let end_bin = index.saturating_add(1).saturating_mul(span).min(bin_count);
+    bin_frame_boundary(source_frames, bin_count, end_bin).saturating_sub(bin_frame_boundary(
+        source_frames,
+        bin_count,
+        start_bin,
+    ))
+}
+
 fn merge(target: &mut [Peak; 2], other: [Peak; 2]) {
     for (target, other) in target.iter_mut().zip(other) {
         target.min = target.min.min(other.min);
@@ -462,18 +695,27 @@ pub fn summarize_sparse(
     let mut bins = Vec::new();
     bins.try_reserve_exact(count)
         .map_err(|_| ImportError::AllocationFailed)?;
+    let mut mean_squares = Vec::new();
+    mean_squares
+        .try_reserve_exact(count)
+        .map_err(|_| ImportError::AllocationFailed)?;
     let width = frames / count;
     let extra = frames % count;
     let mut start = 0;
     let mut identical_channels = true;
     for bin in 0..count {
         let end = start + width + usize::from(bin < extra);
+        let len = (end - start) as f64;
+        let mut sum_sq = [0.0_f64; 2];
         bins.push(sparse_peaks_observed(audio, &map, start..end, |frame| {
             identical_channels &= frame[0].to_bits() == frame[1].to_bits();
+            sum_sq[0] += f64::from(frame[0]) * f64::from(frame[0]);
+            sum_sq[1] += f64::from(frame[1]) * f64::from(frame[1]);
         }));
+        mean_squares.push([(sum_sq[0] / len) as f32, (sum_sq[1] / len) as f32]);
         start = end;
     }
-    let mut waveform = Waveform::from_peaks(frames, bins)?;
+    let mut waveform = Waveform::from_peaks_and_mean_squares(frames, bins, mean_squares)?;
     waveform.samples = Some(audio.clone());
     waveform.sparse = Some(map);
     waveform.identical_channels = identical_channels;
@@ -535,6 +777,10 @@ pub fn summarize_repeated(
     let mut bins = Vec::new();
     bins.try_reserve_exact(count)
         .map_err(|_| ImportError::AllocationFailed)?;
+    let mut mean_squares = Vec::new();
+    mean_squares
+        .try_reserve_exact(count)
+        .map_err(|_| ImportError::AllocationFailed)?;
     let width = frames / count;
     let extra = frames % count;
     let mut index = repeat.phase;
@@ -544,19 +790,27 @@ pub fn summarize_repeated(
             min: sample,
             max: sample,
         });
+        let mut sum_sq = [0.0_f64; 2];
         for _ in 0..length {
-            for (peak, sample) in peaks.iter_mut().zip(root[index]) {
-                peak.min = peak.min.min(sample);
-                peak.max = peak.max.max(sample);
+            let sample = root[index];
+            for (peak, s) in peaks.iter_mut().zip(sample) {
+                peak.min = peak.min.min(s);
+                peak.max = peak.max.max(s);
             }
+            sum_sq[0] += f64::from(sample[0]) * f64::from(sample[0]);
+            sum_sq[1] += f64::from(sample[1]) * f64::from(sample[1]);
             index += 1;
             if index == repeat.period {
                 index = 0;
             }
         }
         bins.push(peaks);
+        mean_squares.push([
+            (sum_sq[0] / length as f64) as f32,
+            (sum_sq[1] / length as f64) as f32,
+        ]);
     }
-    let mut waveform = Waveform::from_peaks(frames, bins)?;
+    let mut waveform = Waveform::from_peaks_and_mean_squares(frames, bins, mean_squares)?;
     waveform.samples = Some(audio.clone());
     waveform.repeat = Some(repeat);
     let mut root_summary = summarize_slice(root, requested_bins)?;
@@ -603,6 +857,10 @@ fn summarize_slice_with_check(
     let mut bins = Vec::new();
     bins.try_reserve_exact(count)
         .map_err(|_| ImportError::AllocationFailed)?;
+    let mut mean_squares = Vec::new();
+    mean_squares
+        .try_reserve_exact(count)
+        .map_err(|_| ImportError::AllocationFailed)?;
     // Quotient/remainder avoids multiplication overflow for long resident sources.
     let width = frames.len() / count;
     let extra = frames.len() % count;
@@ -617,6 +875,10 @@ fn summarize_slice_with_check(
             min: sample,
             max: sample,
         });
+        let mut sum_sq = [
+            f64::from(first[0]) * f64::from(first[0]),
+            f64::from(first[1]) * f64::from(first[1]),
+        ];
         for window in frames[start + 1..end].chunks(crate::CANCEL_CHECK_FRAMES) {
             check()?;
             for frame in window {
@@ -625,12 +887,16 @@ fn summarize_slice_with_check(
                     peak.min = peak.min.min(*sample);
                     peak.max = peak.max.max(*sample);
                 }
+                sum_sq[0] += f64::from(frame[0]) * f64::from(frame[0]);
+                sum_sq[1] += f64::from(frame[1]) * f64::from(frame[1]);
             }
         }
+        let len = (end - start) as f64;
         bins.push(peaks);
+        mean_squares.push([(sum_sq[0] / len) as f32, (sum_sq[1] / len) as f32]);
         start = end;
     }
-    let mut waveform = Waveform::from_peaks(frames.len(), bins)?;
+    let mut waveform = Waveform::from_peaks_and_mean_squares(frames.len(), bins, mean_squares)?;
     waveform.identical_channels = identical_channels;
     check()?;
     Ok(waveform)
@@ -1088,6 +1354,54 @@ mod tests {
                 ]
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn rms_pyramid_merges_accurately_and_accounts_for_fifty_percent_memory_growth() {
+        // Non-power-of-two frame count (1,003) and bin count (19) with asymmetric stereo.
+        let mut frames = Vec::with_capacity(1_003);
+        for i in 0..1_003 {
+            let t = i as f32 * 0.07;
+            let left = (t.sin() * 0.8).clamp(-1.0, 1.0);
+            let right = if i < 400 { 0.25 } else { -0.6 };
+            frames.push([left, right]);
+        }
+        let audio = Audio::new(48_000, frames.clone()).unwrap();
+        let summary = summarize(&audio, 19).unwrap();
+
+        // Direct RMS over full extent vs pyramid merge.
+        let direct_rms = |start: usize, end: usize| -> [f32; 2] {
+            let mut sq = [0.0_f64; 2];
+            for frame in &frames[start..end] {
+                sq[0] += f64::from(frame[0]).powi(2);
+                sq[1] += f64::from(frame[1]).powi(2);
+            }
+            let n = (end - start) as f64;
+            [(sq[0] / n).sqrt() as f32, (sq[1] / n).sqrt() as f32]
+        };
+
+        let full = summary.rms_for_frames(0, 1_003).expect("full rms");
+        let expected_full = direct_rms(0, 1_003);
+        assert!((full[0] - expected_full[0]).abs() < 1e-4);
+        assert!((full[1] - expected_full[1]).abs() < 1e-4);
+
+        // Exact deep-zoom query (<= 64 frames).
+        let detail = summary.rms_for_frames(100, 140).expect("detail rms");
+        let expected_detail = direct_rms(100, 140);
+        assert!((detail[0] - expected_detail[0]).abs() < 1e-5);
+        assert!((detail[1] - expected_detail[1]).abs() < 1e-5);
+
+        // Peak-only summary reports None for RMS and 16 bytes/bin; RMS summary reports 24 bytes/bin (+50%).
+        let peak_only = Waveform::from_peaks(1_003, summary.bins().to_vec()).unwrap();
+        assert_eq!(peak_only.rms_for_frames(0, 1_003), None);
+        assert_eq!(
+            peak_only.summary_bytes().unwrap(),
+            peak_only.cached_bin_count() * 16
+        );
+        assert_eq!(
+            summary.summary_bytes().unwrap(),
+            summary.cached_bin_count() * 24
         );
     }
 }

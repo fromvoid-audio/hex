@@ -551,7 +551,9 @@ impl Session {
                 .ok_or(SessionError::Invalid("bounce waveform count overflows"))?;
             total_bytes = total_bytes
                 .checked_add(
-                    bins.checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+                    member
+                        .waveform
+                        .summary_bytes()
                         .ok_or(SessionError::Allocation)?,
                 )
                 .ok_or(SessionError::Allocation)?;
@@ -876,7 +878,9 @@ impl Session {
         let total_bytes = self
             .resident_waveform_bytes
             .checked_add(
-                bins.checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+                member
+                    .waveform
+                    .summary_bytes()
                     .ok_or(SessionError::Allocation)?,
             )
             .ok_or(SessionError::Allocation)?;

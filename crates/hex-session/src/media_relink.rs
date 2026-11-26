@@ -11,7 +11,7 @@ use crate::{
     import_batch::{Preparation, prepare_asset_free},
 };
 use hex_project::{AssetId, Command, Project};
-use std::{mem, sync::Arc};
+use std::sync::Arc;
 
 impl Session {
     /// Relink offline assets to prepared media as one Undo step, preparing the
@@ -115,8 +115,9 @@ impl Session {
                 .iter()
                 .try_fold(0_usize, |n, m| n.checked_add(m.waveform.cached_bin_count()))
                 .ok_or(SessionError::Invalid("waveform bin count overflow"))?;
-            let bytes = bins
-                .checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+            let bytes = kept
+                .iter()
+                .try_fold(0_usize, |n, m| n.checked_add(m.waveform.summary_bytes()?))
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
             (frames, bins, bytes)
         };
@@ -152,7 +153,9 @@ impl Session {
                 .ok_or(SessionError::Invalid("waveform bin count overflow"))?;
             total_bytes = total_bytes
                 .checked_add(
-                    bins.checked_mul(mem::size_of::<[hex_media::waveform::Peak; 2]>())
+                    member
+                        .waveform
+                        .summary_bytes()
                         .ok_or(SessionError::Invalid("waveform memory count overflow"))?,
                 )
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
