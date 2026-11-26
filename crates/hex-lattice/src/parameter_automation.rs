@@ -117,6 +117,35 @@ pub trait NativeParameterAutomation {
     /// Canonical units at this segment's sample offset. None means no authored
     /// lane or unavailable content origin; callers use their immutable base.
     fn value_at(&self, parameter: ParameterId, sample_offset: usize) -> Option<ParameterValue>;
+
+    /// Normalized scalar value in `0.0..=1.0` at `sample_offset` when the
+    /// provider can supply it directly without canonical-to-normalized
+    /// round-trips (`powf`/`ln`). Returns `None` if unavailable or unsupported.
+    fn normalized_value_at(&self, _parameter: ParameterId, _sample_offset: usize) -> Option<f32> {
+        None
+    }
+
+    /// Fill `output` with normalized values (`Some(0.0..=1.0)` or `None` for
+    /// base fallback) across `0..output.len()` in one chunk pass, amortizing
+    /// lane lookup and curve search. Returns `true` when filled directly in
+    /// normalized space; callers fall back to `value_at` when `false`.
+    fn fill_normalized_slice(&self, _parameter: ParameterId, _output: &mut [Option<f32>]) -> bool {
+        false
+    }
+
+    /// Fill `output` with canonical values for `parameter` across
+    /// `0..output.len()` in one block pass, amortizing per-sample virtual
+    /// dispatch and binary searches.
+    fn fill_values(
+        &self,
+        parameter: ParameterId,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), Error> {
+        for (offset, slot) in output.iter_mut().enumerate() {
+            *slot = self.value_at(parameter, offset);
+        }
+        Ok(())
+    }
     /// Query in parameter_ids order, overwriting every output slot. Exact length
     /// is required; a malformed buffer/offset is an error. Unavailable values
     /// are None; the current Arrangement block requires a content origin.

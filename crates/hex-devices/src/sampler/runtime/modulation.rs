@@ -243,10 +243,18 @@ impl SamplerRuntime {
         &self,
         active: &mut Active,
         fading: &mut Fading,
+        midi: &mut MidiState,
         event: NativeInstrumentEvent,
         gain_at: &dyn Fn(u64) -> f64,
         fm: Option<&FrameModulation>,
     ) -> Result<(), Error> {
+        if Self::apply_midi_control(active, midi, event)? {
+            if let Some(fm) = fm {
+                self.retire_zero_with_modulation(active, fading, fm);
+                return Ok(());
+            }
+            return self.advance(active, fading, midi, 0);
+        }
         match event {
             NativeInstrumentEvent::NotePressure { .. } => {
                 return Err(Error::UnsupportedNotePressure);
@@ -254,19 +262,19 @@ impl SamplerRuntime {
             NativeInstrumentEvent::ControlChange { .. }
             | NativeInstrumentEvent::PitchBend { .. }
             | NativeInstrumentEvent::NotePitchBend { .. }
-            | NativeInstrumentEvent::NoteTimbre { .. } => {}
-            NativeInstrumentEvent::Expression { expression, .. } => {
-                if !expression.is_valid() {
-                    return Err(Error::InvalidEventBatch);
-                }
-            }
+            | NativeInstrumentEvent::NoteTimbre { .. }
+            | NativeInstrumentEvent::Expression { .. } => {}
             NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
                 for voice in active
                     .iter_mut()
                     .flatten()
                     .filter(|voice| voice.occurrence == occurrence_id)
                 {
-                    if voice.gate.is_none() {
+                    if midi.sustain_pedal {
+                        if voice.gate.is_none() {
+                            voice.pedal_held = true;
+                        }
+                    } else if voice.gate.is_none() {
                         voice.gate = Some(voice.age);
                     }
                 }
@@ -298,7 +306,7 @@ impl SamplerRuntime {
                                 self.retire_zero_with_modulation(active, fading, fm);
                                 return Ok(());
                             }
-                            return self.advance(active, fading, 0);
+                            return self.advance(active, fading, midi, 0);
                         }
                         Steal::AllHeld => return Err(Error::EventCapacityExceeded),
                     }
@@ -315,6 +323,9 @@ impl SamplerRuntime {
                     age: 0,
                     position: 0,
                     gate: None,
+                    pitch_offset_cents: 0,
+                    timbre: 0,
+                    pedal_held: false,
                 });
             }
         }
@@ -322,7 +333,7 @@ impl SamplerRuntime {
             self.retire_zero_with_modulation(active, fading, fm);
             Ok(())
         } else {
-            self.advance(active, fading, 0)
+            self.advance(active, fading, midi, 0)
         }
     }
 
@@ -330,6 +341,7 @@ impl SamplerRuntime {
         &self,
         active: &mut Active,
         fading: &mut Fading,
+        midi: &MidiState,
         fm: &FrameModulation,
         fade: u64,
     ) {
@@ -345,7 +357,8 @@ impl SamplerRuntime {
                 continue;
             }
             cursor.age = cursor.age.saturating_add(1);
-            cursor.position = cursor.position.saturating_add(u128::from(note.step));
+            let step = midi.effective_step(note.step, cursor.pitch_offset_cents);
+            cursor.position = cursor.position.saturating_add(u128::from(step));
             *entry = (!Self::voice_retired(&cursor, &note)).then_some(cursor);
         }
         for entry in fading.iter_mut() {
@@ -362,7 +375,8 @@ impl SamplerRuntime {
                 continue;
             }
             item.voice.age = item.voice.age.saturating_add(1);
-            item.voice.position = item.voice.position.saturating_add(u128::from(note.step));
+            let step = midi.effective_step(note.step, item.voice.pitch_offset_cents);
+            item.voice.position = item.voice.position.saturating_add(u128::from(step));
             *entry = (!Self::voice_retired(&item.voice, &note)
                 && item.voice.age.saturating_sub(item.start) < fade)
                 .then_some(item);
@@ -392,6 +406,7 @@ impl SamplerRuntime {
         }
         let mut active = self.active;
         let mut fading = self.fading;
+        let mut midi = self.midi;
         let fade_u64 = self.prepared.steal_fade_frames();
         let fade = fade_u64 as f64;
         let mut next = 0;
@@ -418,6 +433,7 @@ impl SamplerRuntime {
                     let _ = self.event_with_modulation(
                         &mut active,
                         &mut fading,
+                        &mut midi,
                         events[next],
                         &gain_at,
                         Some(&fm),
@@ -439,10 +455,11 @@ impl SamplerRuntime {
                         *entry = None;
                         continue;
                     }
-                    let gain = gain_at(cursor.occurrence);
+                    let gain = gain_at(cursor.occurrence) * midi.gain_multiplier(cursor.timbre);
                     Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
                     cursor.age = cursor.age.saturating_add(1);
-                    cursor.position = cursor.position.saturating_add(u128::from(note.step));
+                    let step = midi.effective_step(note.step, cursor.pitch_offset_cents);
+                    cursor.position = cursor.position.saturating_add(u128::from(step));
                     *entry = (!Self::voice_retired(&cursor, &note)).then_some(cursor);
                 }
                 for entry in &mut fading {
@@ -463,9 +480,17 @@ impl SamplerRuntime {
                         continue;
                     }
                     let declick = 1.0 - item.voice.age.saturating_sub(item.start) as f64 / fade;
-                    Self::mix_prepared(frame, view.pcm, &item.voice, item.gain * declick, &note);
+                    let midi_gain = midi.gain_multiplier(item.voice.timbre);
+                    Self::mix_prepared(
+                        frame,
+                        view.pcm,
+                        &item.voice,
+                        item.gain * declick * midi_gain,
+                        &note,
+                    );
                     item.voice.age = item.voice.age.saturating_add(1);
-                    item.voice.position = item.voice.position.saturating_add(u128::from(note.step));
+                    let step = midi.effective_step(note.step, item.voice.pitch_offset_cents);
+                    item.voice.position = item.voice.position.saturating_add(u128::from(step));
                     *entry = (!Self::voice_retired(&item.voice, &note)
                         && item.voice.age.saturating_sub(item.start) < fade_u64)
                         .then_some(item);
@@ -485,7 +510,7 @@ impl SamplerRuntime {
                     .is_some_and(|event| event.frame_offset() == offset)
                 {
                     if self
-                        .event(&mut active, &mut fading, events[next], &gain_at)
+                        .event(&mut active, &mut fading, &mut midi, events[next], &gain_at)
                         .is_err()
                     {
                         return;
@@ -509,24 +534,26 @@ impl SamplerRuntime {
                     for channel_gain in &mut note.channel_gain {
                         *channel_gain *= voice.gain;
                     }
+                    let effective_step = midi.effective_step(note.step, voice.pitch_offset_cents);
+                    let midi_gain = midi.gain_multiplier(voice.timbre);
                     let gain_index = gains
                         .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
                         .ok();
-                    let Ok(count) = self.sounding_frames(&voice, span, None) else {
+                    let Ok(count) = self.sounding_frames(&voice, &midi, span, None) else {
                         return;
                     };
                     let mut final_voice = voice;
-                    let Ok(alive) = self.advance_voice(&mut final_voice, span as u64) else {
+                    let Ok(alive) = self.advance_voice(&mut final_voice, &midi, span as u64) else {
                         return;
                     };
                     let mut cursor = voice;
                     for (relative, frame) in frames[offset..offset + count].iter_mut().enumerate() {
                         let gain = gain_index.map_or(1.0, |index| {
                             gains[index].value_at_offset((offset + relative) as u64)
-                        });
+                        }) * midi_gain;
                         Self::mix_prepared(frame, view.pcm, &cursor, gain, &note);
                         cursor.age = cursor.age.wrapping_add(1);
-                        cursor.position = cursor.position.wrapping_add(u128::from(note.step));
+                        cursor.position = cursor.position.wrapping_add(u128::from(effective_step));
                     }
                     *entry = alive.then_some(final_voice);
                 }
@@ -540,20 +567,31 @@ impl SamplerRuntime {
                     for channel_gain in &mut note.channel_gain {
                         *channel_gain *= item.voice.gain;
                     }
-                    let Ok(count) = self.sounding_frames(&item.voice, span, Some(item.start))
+                    let effective_step =
+                        midi.effective_step(note.step, item.voice.pitch_offset_cents);
+                    let midi_gain = midi.gain_multiplier(item.voice.timbre);
+                    let Ok(count) =
+                        self.sounding_frames(&item.voice, &midi, span, Some(item.start))
                     else {
                         return;
                     };
                     let mut final_item = item;
-                    let Ok(alive) = self.advance_voice(&mut final_item.voice, span as u64) else {
+                    let Ok(alive) = self.advance_voice(&mut final_item.voice, &midi, span as u64)
+                    else {
                         return;
                     };
                     let mut cursor = item.voice;
                     for frame in &mut frames[offset..offset + count] {
                         let declick = 1.0 - cursor.age.saturating_sub(item.start) as f64 / fade;
-                        Self::mix_prepared(frame, view.pcm, &cursor, item.gain * declick, &note);
+                        Self::mix_prepared(
+                            frame,
+                            view.pcm,
+                            &cursor,
+                            item.gain * declick * midi_gain,
+                            &note,
+                        );
                         cursor.age = cursor.age.wrapping_add(1);
-                        cursor.position = cursor.position.wrapping_add(u128::from(note.step));
+                        cursor.position = cursor.position.wrapping_add(u128::from(effective_step));
                     }
                     *entry = (alive && final_item.voice.age.saturating_sub(item.start) < fade_u64)
                         .then_some(final_item);
@@ -563,6 +601,7 @@ impl SamplerRuntime {
         }
         self.active = active;
         self.fading = fading;
+        self.midi = midi;
         if !frames.is_empty() {
             if MODULATED {
                 self.record_last_targets(values, mask, frames.len() - 1);

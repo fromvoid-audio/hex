@@ -270,4 +270,38 @@ fn codec_versions_link_laws_validation_and_fully_charged_storage() {
     assert!(output.iter().flatten().all(|v| v.is_finite()));
 }
 
+#[test]
+fn tiered_delay_rings_bound_short_memory_and_preserve_cross_tier_handoff() {
+    // Default free 250 ms delay at 48 kHz uses the 1 s tier (~768 KB) rather than 12.3 MB.
+    let short_f = factory(48_000, [250.0, 0.5, 0.5]);
+    assert!(
+        short_f.declared_pair_bytes() < 2 * 1024 * 1024,
+        "short delay should stay well under 2 MB, got {}",
+        short_f.declared_pair_bytes()
+    );
+    // 192 kHz 250 ms free delay stays well under 4 MB instead of 49.2 MB.
+    let short_192 = factory(192_000, [250.0, 0.5, 0.5]);
+    assert!(
+        short_192.declared_pair_bytes() < 4 * 1024 * 1024,
+        "192 kHz short delay should stay under 4 MB, got {}",
+        short_192.declared_pair_bytes()
+    );
+    // Long 4 s free delay steps up to the 4 s tier, and cross-tier handoff preserves history.
+    let long_f = factory(8_000, [3000.0, 0.5, 1.0]);
+    let small_f = factory(8_000, [10.0, 0.0, 1.0]);
+    assert!(small_f.declared_pair_bytes() < long_f.declared_pair_bytes());
+
+    let mut donor = small_f.create_runtime().unwrap();
+    let mut impulse = [[0.0; 2]; 80];
+    impulse[0] = [0.75, -0.5];
+    donor.begin_block();
+    donor.process_block(&mut impulse, &EMPTY_DEVICE_RESOURCES);
+    donor.commit_block();
+
+    let mut receiver = long_f.create_runtime().unwrap();
+    assert!(receiver.can_inherit_from(donor.as_ref()));
+    receiver.transfer_history_from(donor.as_mut());
+    assert!(!receiver.committed_is_quiescent());
+}
+
 mod expanded;

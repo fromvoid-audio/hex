@@ -1562,6 +1562,7 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
         prepared,
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
         fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        midi: MidiState::default(),
     };
     runtime.active[0] = Some(ActiveVoice {
         occurrence: 7,
@@ -1570,6 +1571,9 @@ fn looping_release_deadline_overflow_refuses_before_changing_cursor_or_gate() {
         age,
         position,
         gate: None,
+        pitch_offset_cents: 0,
+        timbre: 0,
+        pedal_held: false,
     });
     assert_eq!(
         runtime.preflight_events(&[off(0, 7)], 1, &BorrowedDeviceResources(&views)),
@@ -1600,6 +1604,7 @@ fn frame_major_oracle(
         .unwrap();
     let mut active = runtime.active;
     let mut fading = runtime.fading;
+    let mut midi = runtime.midi;
     let fade = runtime.prepared.steal_fade_frames() as f64;
     let mut next = 0;
     for (offset, frame) in frames.iter_mut().enumerate() {
@@ -1614,21 +1619,32 @@ fn frame_major_oracle(
             .is_some_and(|event| event.frame_offset() == offset)
         {
             runtime
-                .event(&mut active, &mut fading, events[next], &gain_at)
+                .event(&mut active, &mut fading, &mut midi, events[next], &gain_at)
                 .unwrap();
             next += 1;
         }
         for voice in active.iter().flatten() {
-            runtime.mix(frame, view.pcm, voice, gain_at(voice.occurrence));
+            runtime.mix(
+                frame,
+                view.pcm,
+                voice,
+                gain_at(voice.occurrence) * midi.gain_multiplier(voice.timbre),
+            );
         }
         for item in fading.iter().flatten() {
             let declick = 1.0 - item.voice.age.saturating_sub(item.start) as f64 / fade;
-            runtime.mix(frame, view.pcm, &item.voice, item.gain * declick);
+            runtime.mix(
+                frame,
+                view.pcm,
+                &item.voice,
+                item.gain * declick * midi.gain_multiplier(item.voice.timbre),
+            );
         }
-        runtime.advance(&mut active, &mut fading, 1).unwrap();
+        runtime.advance(&mut active, &mut fading, &midi, 1).unwrap();
     }
     runtime.active = active;
     runtime.fading = fading;
+    runtime.midi = midi;
 }
 
 fn voice_signature(voice: ActiveVoice) -> (u64, u8, u64, u64, u128, Option<u64>) {
@@ -1663,12 +1679,14 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
             prepared: prepared.clone(),
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            midi: MidiState::default(),
         };
         let mut expected = SamplerRuntime {
             last_targets: prepared.base_targets(),
             prepared,
             active: [None; MAX_SAMPLER_RUNTIME_VOICES],
             fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+            midi: MidiState::default(),
         };
         let batches: Vec<Vec<NativeInstrumentEvent>> = if looping {
             vec![
@@ -1736,6 +1754,140 @@ fn event_spans_match_frame_major_pcm_and_voice_state() {
             );
         }
     }
+}
+
+#[test]
+fn sampler_wires_pitch_bend_cc_expression_sustain_and_mpe() {
+    let pcm: Vec<f32> = (0..128)
+        .map(|i| (i as f32 * 0.25).sin() * 0.5 + 0.25)
+        .collect();
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(views[0], Mode::Classic { loop_region: None }, 4);
+
+    // 1. Baseline vs Channel PitchBend (+8191 => +200 cents) and MPE NotePitchBend (+1200 cents).
+    let mut base = pair(&prepared);
+    let mut base_out = [[0.0; 2]; 32];
+    process(&mut base, &[on(0, 1, 60)], &mut base_out, &resources);
+
+    let mut bent = pair(&prepared);
+    let mut bent_out = [[0.0; 2]; 32];
+    process(
+        &mut bent,
+        &[
+            NativeInstrumentEvent::PitchBend {
+                frame_offset: 0,
+                value: 8191,
+            },
+            on(0, 1, 60),
+        ],
+        &mut bent_out,
+        &resources,
+    );
+    assert_ne!(
+        base_out, bent_out,
+        "channel pitch bend must alter playback pitch"
+    );
+
+    let mut mpe = pair(&prepared);
+    let mut mpe_out = [[0.0; 2]; 32];
+    process(
+        &mut mpe,
+        &[
+            on(0, 1, 60),
+            NativeInstrumentEvent::NotePitchBend {
+                frame_offset: 0,
+                occurrence_id: std::num::NonZeroU64::new(1).unwrap(),
+                cents: 1200,
+            },
+        ],
+        &mut mpe_out,
+        &resources,
+    );
+    assert_ne!(
+        base_out, mpe_out,
+        "MPE note pitch bend must alter voice step"
+    );
+
+    // 2. CC11 Expression and CC7 Volume scale output amplitude; NoteTimbre & ChannelPressure lift it.
+    let mut quiet = pair(&prepared);
+    let mut quiet_out = [[0.0; 2]; 16];
+    process(
+        &mut quiet,
+        &[
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 11,
+                value: 64,
+            },
+            on(0, 1, 60),
+        ],
+        &mut quiet_out,
+        &resources,
+    );
+    for (b, q) in base_out[..16].iter().zip(quiet_out.iter()) {
+        let expected = b[0] * (64.0 / 127.0);
+        assert!((q[0] - expected).abs() < 1e-5);
+    }
+
+    let mut timbre = pair(&prepared);
+    let mut timbre_out = [[0.0; 2]; 16];
+    process(
+        &mut timbre,
+        &[
+            on(0, 1, 60),
+            NativeInstrumentEvent::NoteTimbre {
+                frame_offset: 0,
+                occurrence_id: std::num::NonZeroU64::new(1).unwrap(),
+                value: 127,
+            },
+            NativeInstrumentEvent::Expression {
+                frame_offset: 0,
+                expression: hex_lattice::NativeInstrumentExpression::ChannelPressure(127),
+            },
+        ],
+        &mut timbre_out,
+        &resources,
+    );
+    assert!(
+        timbre_out[4][0].abs() > base_out[4][0].abs() * 1.4,
+        "NoteTimbre and ChannelPressure expression must visibly affect output"
+    );
+
+    // 3. CC64 sustain pedal defers NoteOff until pedal release.
+    let mut sustained = pair(&prepared);
+    let mut sus_out = [[0.0; 2]; 16];
+    process(
+        &mut sustained,
+        &[
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 64,
+                value: 127,
+            },
+            on(0, 1, 60),
+            off(2, 1),
+        ],
+        &mut sus_out,
+        &resources,
+    );
+    // Voice remains at full sustained level after NoteOff while pedal is down.
+    assert!((sus_out[12][0] - base_out[12][0]).abs() < 1e-6);
+    // Releasing pedal releases the held voice so it fades below the still-held baseline.
+    let mut rel_out = [[0.0; 2]; 16];
+    process(
+        &mut sustained,
+        &[NativeInstrumentEvent::ControlChange {
+            frame_offset: 0,
+            cc: 64,
+            value: 0,
+        }],
+        &mut rel_out,
+        &resources,
+    );
+    let rel_energy: f32 = rel_out.iter().map(|f| f[0].abs()).sum();
+    let base_energy: f32 = base_out[16..32].iter().map(|f| f[0].abs()).sum();
+    assert!(rel_energy < base_energy);
 }
 
 #[test]
@@ -1816,6 +1968,7 @@ fn modulated_transpose_down_release_bound_fading_cursor_and_partial_region_targe
         prepared: mono_prepared.clone(),
         active: [None; MAX_SAMPLER_RUNTIME_VOICES],
         fading: [None; MAX_SAMPLER_RUNTIME_VOICES],
+        midi: MidiState::default(),
         last_targets: mono_prepared.base_targets(),
     };
     let mut direct_out = [[0.0; 2]; 14];
