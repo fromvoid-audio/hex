@@ -775,7 +775,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         request @ (Request::Undo | Request::Redo)
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some())
                 && ctx
                     .worker
                     .session
@@ -832,7 +833,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         request @ (Request::Undo | Request::Redo)
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some())
                 && ctx
                     .worker
                     .session
@@ -872,7 +874,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         request @ (Request::Undo | Request::Redo)
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some())
                 && ctx.worker.resident_snapshot.is_some()
                 && ctx
                     .worker
@@ -912,7 +915,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         request @ (Request::Undo | Request::Redo)
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident =>
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some()) =>
         {
             let redo = matches!(request, Request::Redo);
             let context = hex_engine::AudioSourceContext {

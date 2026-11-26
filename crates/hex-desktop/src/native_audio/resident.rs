@@ -1627,6 +1627,19 @@ impl NativeAudioSink {
                             }
                         }
                     }
+                    _ if control.needs_ordinary_handoff_from_verified() => {
+                        if let Some(preparation) = self.verified.preparation.take() {
+                            let _ = control.cancel_audio_candidate_preparation(preparation.token);
+                        }
+                        let predecessor = control.status.applied_audio_source();
+                        control.publish_ordinary_handoff_from_verified_on_control(
+                            retained_playback,
+                            output_identity,
+                            predecessor,
+                            metadata.context,
+                            |prospective| admit(&[prospective, retired, pending]),
+                        )
+                    }
                     _ => control.publish_with_admission_and_source_on_control(
                         retained_playback,
                         policy,

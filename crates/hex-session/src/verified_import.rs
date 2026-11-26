@@ -64,6 +64,15 @@ impl Session {
     pub fn audio_mode(&self) -> DocumentAudioMode {
         self.audio_mode
     }
+    /// True when canonical graph compilation, resource admission, and native
+    /// publication belong to the worker-owned ordinary resource owner rather
+    /// than the closed verified constructor. Always true for `Resident`
+    /// documents, and true for `VerifiedStreaming` documents containing private
+    /// sampler sources.
+    pub fn uses_ordinary_worker_publication(&self) -> bool {
+        self.audio_mode == DocumentAudioMode::Resident
+            || hex_engine::native_device_resources::requires_private_sampler_sources(self.project())
+    }
     pub fn source_plan_reservation(&self) -> Option<SourcePlanReservation> {
         self.source_reservation
     }

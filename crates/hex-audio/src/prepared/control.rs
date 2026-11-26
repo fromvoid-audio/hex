@@ -608,6 +608,16 @@ impl PublicationControl {
         )
     }
 
+    /// True when this output is combined-configured and still in verified
+    /// constructor ownership, so the first ordinary graph must transition via
+    /// `publish_ordinary_handoff_from_verified_on_control`.
+    pub fn needs_ordinary_handoff_from_verified(&self) -> bool {
+        self.status.constructor_mode.load(Acquire)
+            && !self.status.ordinary_owner_active.load(Acquire)
+            && self.candidate_root.ordinary_streams_configured()
+            && self.device_resources.is_some()
+    }
+
     /// Admit and submit a one-way continuous handoff from verified constructor
     /// ownership to ordinary worker-owned resource publication on a
     /// combined-configured output. Preserves the active verified graph and

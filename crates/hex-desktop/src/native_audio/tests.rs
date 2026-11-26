@@ -2530,3 +2530,292 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
     sink.close();
     drop(backend);
 }
+
+#[test]
+fn verified_mixed_owner_routing_transitions_combined_output_and_preserves_verified_only_path() {
+    use hex_session::service::{
+        ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    };
+
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let policy = AudioPolicy::new().unwrap();
+    let (mut output, mut backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, true).unwrap();
+    let control = output.publication.control().unwrap();
+    policy.configure(control).unwrap();
+    let mut client = output.take_client().unwrap();
+    let reader = output.take_action_outcomes().unwrap();
+    assert!(client.attach_action_outcomes(reader).is_ok());
+    let output_identity = client.output_identity().unwrap();
+
+    // 1. Verified file-only document runs on the combined output via drive_verified.
+    let files = Files::new();
+    let wav = files.wav(48_000, 4096);
+    let service = Service::new(48_000, 8, 8_000_000).unwrap();
+    let recv = |service: &Service| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Ok(event) = service.try_event() {
+                return event;
+            }
+            assert!(std::time::Instant::now() < deadline, "service timed out");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    };
+    let _ = recv(&service);
+    service
+        .submit(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        })
+        .unwrap();
+    let _ = recv(&service);
+    service.submit(Request::Import(wav)).unwrap();
+    let imported = recv(&service);
+    let verified_snapshot = Arc::clone(
+        imported
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .expect("canonical verified audio source"),
+    );
+    let verified_context = verified_snapshot.context();
+    assert!(!verified_snapshot.uses_ordinary_worker_publication());
+
+    let (events_tx, events_rx) = mpsc::sync_channel(16);
+    let mut sink = NativeAudioSink::new(events_tx);
+    sink.output = Some(output);
+    sink.desired = Some(Arc::clone(&verified_snapshot));
+    sink.lifecycle.output_identity = Some(output_identity);
+    sink.lifecycle.output_generation = Some(verified_context.project_generation);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut pcm = [[0.0; 2]; 32];
+    loop {
+        sink.poll();
+        let measured = allocation_counter::measure(|| backend.render(&mut pcm).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        if sink
+            .output
+            .as_mut()
+            .and_then(|o| o.publication.control())
+            .is_some_and(|c| {
+                c.status.applied_audio_source().is_some_and(|source| {
+                    source.context == verified_context && source.output_identity == output_identity
+                })
+            })
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "verified file-only graph did not install via drive_verified"
+        );
+        std::thread::yield_now();
+    }
+    while events_rx.try_recv().is_ok() {}
+    assert!(
+        sink.output
+            .as_mut()
+            .unwrap()
+            .publication
+            .control()
+            .unwrap()
+            .needs_ordinary_handoff_from_verified()
+    );
+
+    // 2. Ordinary mixed handoff on the exact same combined output:
+    // admission refusal preserves the active verified graph and output.
+    let mixed_project = hex_project::Project::new(48_000).unwrap();
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &mixed_project,
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let view =
+        Arc::new(hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap());
+    let handoff_context = AudioSourceContext {
+        project_generation: verified_context.project_generation,
+        editor_revision: verified_context.editor_revision + 1,
+    };
+    let handoff_metadata = ResidentPublicationMetadata {
+        context: handoff_context,
+        device_preview: None,
+        tuning_preview: None,
+        clip_preview: None,
+        source_origin: hex_session::service::ResidentSourceOrigin::CanonicalCandidate,
+        seek_request: None,
+        stopped_restore: false,
+        computer_keyboard_request: None,
+        gain_recording_track: None,
+        requires_preroll: false,
+    };
+    let mut refuse_admit =
+        |_: &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>]| {
+            Err("mixed budget refused".to_owned())
+        };
+    let refused = sink
+        .publish_resident_graph(
+            hex_engine::playback::Playback::from_prepared(Arc::clone(&prepared)),
+            None,
+            Arc::clone(&view),
+            handoff_metadata,
+            ResidentPublicationPolicy::InstallFreshRuntime,
+            0,
+            &mut refuse_admit,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+    assert_eq!(refused.error, "mixed budget refused");
+    assert!(
+        sink.output
+            .as_mut()
+            .unwrap()
+            .publication
+            .control()
+            .unwrap()
+            .needs_ordinary_handoff_from_verified()
+    );
+
+    // 3. Accepted ordinary handoff commits on callback with zero allocations
+    // and disables verified driver polling (no competing publishers).
+    let mut ok_admit =
+        |_: &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>]| Ok(());
+    let ResidentPublicationAcceptance::Submitted {
+        output_identity: handoff_output,
+        audio_revision: handoff_rev,
+    } = sink
+        .publish_resident_graph(
+            refused.playback,
+            None,
+            Arc::clone(&view),
+            handoff_metadata,
+            ResidentPublicationPolicy::InstallFreshRuntime,
+            0,
+            &mut ok_admit,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("expected active combined-output handoff submission")
+    };
+    assert_eq!(handoff_output, output_identity);
+    while events_rx.try_recv().is_ok() {}
+
+    let handoff_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let measured = allocation_counter::measure(|| backend.render(&mut pcm).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        sink.poll();
+        let control = sink.output.as_mut().unwrap().publication.control().unwrap();
+        if control.status.ordinary_owner_active()
+            && control.status.recording_source().is_some_and(|source| {
+                source.context == handoff_context
+                    && source.audio_revision == handoff_rev
+                    && source.output_identity == output_identity
+            })
+            && sink.verified.submitted.iter().all(Option::is_none)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < handoff_deadline,
+            "mixed owner handoff did not install and reclaim displaced verified owner"
+        );
+        std::thread::yield_now();
+    }
+
+    // 4. Subsequent canonical edit publishes directly via ordinary ownership on
+    // the exact same output with zero callback allocations.
+    let edit_context = AudioSourceContext {
+        project_generation: verified_context.project_generation,
+        editor_revision: verified_context.editor_revision + 2,
+    };
+    let edit_metadata = ResidentPublicationMetadata {
+        context: edit_context,
+        ..handoff_metadata
+    };
+    let ResidentPublicationAcceptance::Submitted {
+        audio_revision: edit_rev,
+        ..
+    } = sink
+        .publish_resident_graph(
+            hex_engine::playback::Playback::from_prepared(Arc::clone(&prepared)),
+            None,
+            view,
+            edit_metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            0,
+            &mut ok_admit,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("expected post-handoff ordinary edit submission")
+    };
+    assert!(edit_rev > handoff_rev);
+    let edit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let measured = allocation_counter::measure(|| backend.render(&mut pcm).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        sink.poll();
+        if sink
+            .output
+            .as_mut()
+            .unwrap()
+            .publication
+            .control()
+            .unwrap()
+            .status
+            .recording_source()
+            .is_some_and(|source| {
+                source.context == edit_context && source.audio_revision == edit_rev
+            })
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < edit_deadline,
+            "post-handoff ordinary edit did not install"
+        );
+        std::thread::yield_now();
+    }
+
+    client.close();
+    sink.close();
+    drop(backend);
+}

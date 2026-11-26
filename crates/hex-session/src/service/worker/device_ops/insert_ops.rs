@@ -794,7 +794,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 Ok(command) => {
                     let before = ctx.worker.session.project().clone();
                     let outcome = if ctx.worker.events.resident_publication_enabled()
-                        && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                        && (ctx.worker.session.uses_ordinary_worker_publication()
+                            || ctx.worker.resident_snapshot.is_some())
                     {
                         ctx.worker.events.resident_audio().ok_or(SessionError::Invalid("native worker unavailable"))
                             .and_then(|sink| ctx.worker.session.comparison_resident_snapshot(
@@ -933,7 +934,7 @@ fn reconcile_commit_failure_audio(
 ) -> String {
     if !was_verified
         && events.resident_publication_enabled()
-        && session.audio_mode() == DocumentAudioMode::Resident
+        && (session.uses_ordinary_worker_publication() || resident_snapshot.is_some())
     {
         let resync = events
             .resident_audio()
