@@ -120,6 +120,7 @@ pub(in crate::editor) struct DevicePanelState {
     pub(super) auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     pub(super) reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
     pub(super) overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
+    pub(super) overdrive_graphs: HashMap<DeviceId, overdrive_panel::GraphControl>,
     pub(super) rattle_previews: HashMap<DeviceId, rattle_panel::PreviewCache>,
     pub(super) eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     pub(super) eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
@@ -616,6 +617,11 @@ fn release_active_graph_captures(
             panel.release_pointer_capture(cx);
         }
     }
+    for graph in view.device_panel.overdrive_graphs.values() {
+        if Some(graph.entity_id()) != excluded_graph {
+            graph.release_pointer_capture(cx);
+        }
+    }
 }
 
 pub(in crate::editor) fn retire_removed_send_controls(
@@ -716,6 +722,7 @@ pub(in crate::editor) fn clear_owner_state(
     view.device_panel.auto_pan_previews.clear();
     view.device_panel.reverb_previews.clear();
     view.device_panel.overdrive_previews.clear();
+    view.device_panel.overdrive_graphs.clear();
     view.device_panel.rattle_previews.clear();
     view.device_panel.meter_states.clear();
     view.device_panel.meter_views.clear();
@@ -894,6 +901,9 @@ pub(in crate::editor) fn retire_transfer_previews(
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
     });
     panel.overdrive_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
+    });
+    panel.overdrive_graphs.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.overdrive"))
     });
     panel.rattle_previews.retain(|device, _| {

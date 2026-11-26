@@ -69,6 +69,7 @@ impl OverdriveRuntime {
             envelope,
             attack,
             release,
+            dc_pole,
             kernel,
             delay,
             delay_index,
@@ -83,17 +84,21 @@ impl OverdriveRuntime {
             &[f64; 2],
             &f64,
             &f64,
+            &f64,
             &&'static Kernel,
             &[[f64; 3]; LATENCY_FRAMES],
-        ) = (envelope, attack, release, kernel, delay);
+        ) = (envelope, attack, release, dc_pole, kernel, delay);
         for Channel {
             high,
             low,
             oversampler,
+            dc_in,
+            dc_out,
             tone,
         } in channels
         {
-            let _: (&[f64; 2], &[f64; 2], &Oversampler, &f64) = (high, low, oversampler, tone);
+            let _: (&[f64; 2], &[f64; 2], &Oversampler, &f64, &f64, &f64) =
+                (high, low, oversampler, dc_in, dc_out, tone);
         }
     }
 
@@ -115,13 +120,10 @@ impl OverdriveRuntime {
             target[1] = lp;
         }
         if settings.0[2] != old.0[2] {
-            target[2] = 10.0_f64.powf(f64::from(settings.0[2]) * 1.5);
+            target[2] = drive_gain(settings.0[2]);
         }
         if settings.0[3] != old.0[3] {
-            target[3] = pole(
-                (500.0 * 40.0_f64.powf(f64::from(settings.0[3]))).min(f64::from(self.rate) * 0.45),
-                f64::from(self.rate),
-            );
+            target[3] = tone_pole(settings.0[3], self.rate);
         }
         target[4] = f64::from(settings.0[4]);
         target[5] = f64::from(settings.0[5]);

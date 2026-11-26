@@ -29,17 +29,32 @@ use std::any::Any;
 
 use crate::oversampling::{BLOCK_CHUNK, Kernel, LATENCY_FRAMES, Oversampler, Shaper};
 
-/// Overdrive's transfer: tanh, with `hex-dsp`'s fast C1 `ln(cosh)` antiderivative.
-struct Tanh;
-impl Shaper for Tanh {
+/// Guitar-pedal asymmetric diode clipping transfer with exact C1 antiderivative
+/// for 8x ADAA oversampling:
+/// `f(u) = (tanh(u + b) - tanh(b)) / (1 - tanh²(b))`
+/// `F(u) = (ln(cosh(u + b)) - u * tanh(b)) / (1 - tanh²(b))`
+///
+/// Properties:
+/// - `f(0) = 0` (zero quiescent DC offset)
+/// - `f'(0) = 1` (unit small-signal gain)
+/// - Positive half-wave saturates slightly earlier (`~0.85`) than negative (`~-1.22`),
+///   generating warm 2nd + 3rd pedal harmonics while a post-shaper DC blocker removes
+///   rectified DC.
+const ASYMMETRY_BIAS: f64 = 0.18;
+struct AsymmetricPedal;
+impl Shaper for AsymmetricPedal {
     fn tag(&self) -> u8 {
-        1
+        2
     }
     fn value(&self, x: f64) -> f64 {
-        x.tanh()
+        let tb = ASYMMETRY_BIAS.tanh();
+        let inv_sech2 = 1.0 / (1.0 - tb * tb);
+        ((x + ASYMMETRY_BIAS).tanh() - tb) * inv_sech2
     }
     fn antiderivative(&self, x: f64) -> f64 {
-        hex_dsp::fast_ln_cosh_f64(x)
+        let tb = ASYMMETRY_BIAS.tanh();
+        let inv_sech2 = 1.0 / (1.0 - tb * tb);
+        (hex_dsp::fast_ln_cosh_f64(x + ASYMMETRY_BIAS) - x * tb) * inv_sech2
     }
 }
 
@@ -297,6 +312,22 @@ fn band_poles(settings: Settings, rate: u32) -> [f64; 2] {
         pole((center * spread).clamp(20.0, rate * 0.45), rate),
     ]
 }
+fn drive_gain(drive: f32) -> f64 {
+    hex_dsp::Decibels::new(f64::from(drive) * 30.0)
+        .and_then(hex_dsp::Decibels::linear_amplitude)
+        .map_or(1.0, hex_dsp::LinearAmplitude::value)
+}
+/// Post-distortion tone low-pass pole: 400 Hz warm dark roll-off at `0.0`,
+/// ~2.8 kHz pedal presence at `0.5`, and smoothly open (`0.0`) at `1.0`.
+fn tone_pole(tone: f32, rate: u32) -> f64 {
+    let t = f64::from(tone).clamp(0.0, 1.0);
+    if t >= 1.0 {
+        return 0.0;
+    }
+    let rate_f = f64::from(rate);
+    let cutoff = (400.0 * 50.0_f64.powf(t)).min(rate_f * 0.45);
+    pole(cutoff, rate_f) * (1.0 - t.powi(8))
+}
 // Static targets are prepared on control. Authored changes convert only their
 // changed coefficient groups at delivery; held values reuse these targets.
 fn targets(settings: Settings, rate: u32) -> [f64; 6] {
@@ -304,13 +335,8 @@ fn targets(settings: Settings, rate: u32) -> [f64; 6] {
     [
         hp,
         lp,
-        hex_dsp::Decibels::new(f64::from(settings.0[2]) * 30.0)
-            .and_then(hex_dsp::Decibels::linear_amplitude)
-            .map_or(1.0, hex_dsp::LinearAmplitude::value),
-        pole(
-            (500.0 * 40.0_f64.powf(f64::from(settings.0[3]))).min(f64::from(rate) * 0.45),
-            f64::from(rate),
-        ),
+        drive_gain(settings.0[2]),
+        tone_pole(settings.0[3], rate),
         f64::from(settings.0[4]),
         f64::from(settings.0[5]),
     ]
@@ -440,6 +466,7 @@ impl crate::inline_owned::InlinePreparedProcessor for PreparedOverdrive {
             envelope: [0.0; 2],
             attack: hex_dsp::one_pole_pole(self.rate, 0.001).unwrap_or(0.0),
             release: hex_dsp::one_pole_pole(self.rate, 0.080).unwrap_or(0.0),
+            dc_pole: pole(15.0, f64::from(self.rate)),
             kernel: self.kernel,
             delay: [[0.0; 3]; LATENCY_FRAMES],
             delay_index: 0,
@@ -455,6 +482,8 @@ struct Channel {
     high: [f64; 2],
     low: [f64; 2],
     oversampler: Oversampler,
+    dc_in: f64,
+    dc_out: f64,
     tone: f64,
 }
 fn quiet(value: f64) -> f64 {
@@ -475,9 +504,18 @@ impl Channel {
         }
         sample
     }
-    fn distort(&mut self, input: f64, drive: f64, kernel: &Kernel, tone: f64) -> f64 {
-        let sample = self.oversampler.process_sample(input, drive, kernel, &Tanh);
-        lowpass(sample, &mut self.tone, tone)
+    fn block_dc(&mut self, input: f64, dc_pole: f64) -> f64 {
+        let out = quiet(input - self.dc_in + dc_pole * self.dc_out);
+        self.dc_in = quiet(input);
+        self.dc_out = out;
+        out
+    }
+    fn distort(&mut self, input: f64, drive: f64, kernel: &Kernel, dc_pole: f64, tone: f64) -> f64 {
+        let shaped = self
+            .oversampler
+            .process_sample(input, drive, kernel, &AsymmetricPedal);
+        let centered = self.block_dc(shaped, dc_pole);
+        lowpass(centered, &mut self.tone, tone)
     }
 }
 
@@ -492,6 +530,7 @@ pub struct OverdriveRuntime {
     envelope: [f64; 2],
     attack: f64,
     release: f64,
+    dc_pole: f64,
     kernel: &'static Kernel,
     /// Dry left/right and input band peak, delayed by the oversampler latency.
     delay: [[f64; 3]; LATENCY_FRAMES],
@@ -533,10 +572,11 @@ impl OverdriveRuntime {
         let input = sanitized.map(f64::from);
         let mut wet = [0.0; 2];
         let mut input_peak = 0.0_f64;
+        let dc_pole = self.dc_pole;
         for (i, channel) in self.channels.iter_mut().enumerate() {
             let band = channel.band(input[i], hp, lp);
             input_peak = input_peak.max(band.abs());
-            wet[i] = channel.distort(band, drive, self.kernel, tone);
+            wet[i] = channel.distort(band, drive, self.kernel, dc_pole, tone);
         }
         // Align the dry path and the envelope's input peak with the wet path.
         let [dry_left, dry_right, band_peak] = std::mem::replace(
@@ -626,11 +666,14 @@ impl NativeProcessorRuntime for OverdriveRuntime {
                 &mut band_r[..n],
                 drive,
                 kernel,
-                &Tanh,
+                &AsymmetricPedal,
             );
+            let dc_pole = self.dc_pole;
             for i in 0..n {
-                let wl = lowpass(f64::from(band_l[i]), &mut left_ch.tone, tone);
-                let wr = lowpass(f64::from(band_r[i]), &mut right_ch.tone, tone);
+                let cl = left_ch.block_dc(f64::from(band_l[i]), dc_pole);
+                let cr = right_ch.block_dc(f64::from(band_r[i]), dc_pole);
+                let wl = lowpass(cl, &mut left_ch.tone, tone);
+                let wr = lowpass(cr, &mut right_ch.tone, tone);
                 let wet_peak = wl.abs().max(wr.abs());
                 for (envelope, peak) in self.envelope.iter_mut().zip([delayed_peak[i], wet_peak]) {
                     let p = if peak > *envelope {
@@ -664,7 +707,12 @@ impl NativeProcessorRuntime for OverdriveRuntime {
     }
     fn is_quiescent(&self) -> bool {
         self.channels.iter().all(|c| {
-            c.high == [0.0; 2] && c.low == [0.0; 2] && c.oversampler.is_quiescent() && c.tone == 0.0
+            c.high == [0.0; 2]
+                && c.low == [0.0; 2]
+                && c.oversampler.is_quiescent()
+                && c.dc_in == 0.0
+                && c.dc_out == 0.0
+                && c.tone == 0.0
         }) && self.envelope == [0.0; 2]
             && self.delay.iter().flatten().all(|v| *v == 0.0)
     }

@@ -256,3 +256,112 @@ fn overdrive_preview_uses_unacknowledged_draft_and_retires_on_owner_change(
         assert!(overdrive_panel::cached_curve(view, device).is_none())
     });
 }
+
+#[gpui::test]
+fn overdrive_xy_filter_graph_drag_updates_freq_and_bandwidth_atomically(cx: &mut TestAppContext) {
+    let service = Service::new(48_000, 8, 8_000_000).expect("service");
+    let _ = receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddTrack {
+            name: "overdrive xy".into(),
+        }))
+        .expect("track");
+    let Created::Track(track) = receive_service_event(&service).created.expect("track") else {
+        panic!("track");
+    };
+    service
+        .submit(Request::AddNativeDevice {
+            track,
+            class: NativeDeviceClass::Effect,
+            type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                "hex.overdrive",
+            )),
+            before: None,
+        })
+        .expect("device");
+    let state = receive_service_event(&service).state;
+    let device = state.project.track(track).expect("track").devices()[0].id();
+    let original = state.project.track(track).expect("track").devices()[0]
+        .state()
+        .clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+
+    let graph = editor.read_with(cx, |v, _| overdrive_panel::graph_for_test(v, device));
+    let (plot, node_pos) = graph.read_with(cx, |g, _| {
+        (
+            g.plot_bounds().expect("plot bounds"),
+            g.node_position(1).expect("xy node"),
+        )
+    });
+    let point_at = |p: [f32; 2]| {
+        point(
+            plot.left() + plot.size.width * p[0],
+            plot.bottom() - plot.size.height * p[1],
+        )
+    };
+    let start = point_at(node_pos);
+    let dest = point_at([0.35, 0.25]);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(dest, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |v, _| {
+        assert!(
+            v.device_panel.gesture.snapshot().is_some(),
+            "xy graph drag must start paired gesture; plot={plot:?} node={node_pos:?} msg={:?}",
+            v.device_panel.message
+        );
+    });
+    visual.simulate_mouse_up(dest, MouseButton::Left, Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.pending_requests.is_empty()
+            && view.device_panel.gesture.snapshot().is_none()
+            && view.device_panel.gesture_barriers.is_empty()
+    });
+
+    let freq_id = hex_lattice_contract::ParameterId::from_static(1);
+    let bw_id = hex_lattice_contract::ParameterId::from_static(2);
+    editor.read_with(cx, |view, _| {
+        let updated = view
+            .state
+            .as_ref()
+            .expect("state")
+            .project
+            .track(track)
+            .expect("track")
+            .devices()[0]
+            .state();
+        assert_ne!(updated, &original);
+        assert_ne!(
+            hex_engine::native_device_parameter(updated, freq_id).unwrap(),
+            hex_engine::native_device_parameter(&original, freq_id).unwrap(),
+            "horizontal drag must change frequency"
+        );
+        assert_ne!(
+            hex_engine::native_device_parameter(updated, bw_id).unwrap(),
+            hex_engine::native_device_parameter(&original, bw_id).unwrap(),
+            "vertical drag must change bandwidth"
+        );
+    });
+
+    // Single Undo restores both Frequency and Bandwidth atomically.
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .expect("state")
+                .project
+                .track(track)
+                .expect("track")
+                .devices()[0]
+                .state(),
+            &original
+        );
+    });
+}
