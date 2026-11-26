@@ -168,7 +168,7 @@ int main(int argc,char** argv) {
             if (!length || length>2) return 2;
             int scenario=0;
             for (size_t n=0;n<length;++n) { if (argv[2][n]<'0' || argv[2][n]>'9') return 2; scenario=scenario*10+(argv[2][n]-'0'); }
-            if (scenario>38) return 2;
+            if (scenario>41) return 2;
             processing_evidence.scenario=scenario;
             try { const bool valid=fixture("processing",HEX_PROCESSING_SHA256); print_processing(); return valid?0:1; }
             catch (...) { std::fprintf(stderr,"processing fault; module custody retained until process exit\n"); return 1; }

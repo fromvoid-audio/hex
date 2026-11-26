@@ -145,6 +145,13 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertEqual(observed[11:], [0, 1])  # no component left; one loader factory reference
         return value, observed
 
+    def test_multi_output_process_preserves_original_slots_and_calls_sdk_once(self):
+        for scenario in (39, 40, 41):
+            with self.subTest(scenario=scenario):
+                value, observed = self.processing(scenario)
+                self.assertEqual(value["configuration"], 0)
+                self.assertEqual(observed[7:11], [1, 1, 4, 0])
+
     def test_processing_pcm_bus_shapes_aliasing_silence_and_rates(self):
         for scenario in list(range(10)) + [23, 24, 25, 27, 28]:
             with self.subTest(scenario=scenario):

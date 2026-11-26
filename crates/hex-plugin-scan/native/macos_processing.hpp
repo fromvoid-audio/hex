@@ -141,6 +141,19 @@ public:
 // Preserve SDK slots for multi-out instrument outputs. Activated auxiliary output
 // buses receive preallocated non-null sample buffers and mix cleanly into main
 // stereo output; inactive trailing buses keep stable null sample pointers.
+// Borrowed disjoint storage on the serialized SDK lane. Bus zero remains in
+// ProcessData. Other bus rows retain their SDK index, with stereo frames at
+// (bus - 1) * numSamples. An inactive row or unused mono channel is zero.
+struct AuxiliaryOutputBlock {
+    std::array<Sample32,2>* frames=nullptr;
+    size_t capacity=0;
+
+    bool fits(int32 bus_count,int32 num_samples) const {
+        const auto required=static_cast<size_t>(bus_count-1)*static_cast<size_t>(num_samples);
+        return required<=capacity && (!required || frames);
+    }
+};
+
 template<class Sample> class InstrumentOutputs {
     int32 count=1;
     int32 stride_=0;
@@ -202,6 +215,20 @@ public:
             }
         }
         return true;
+    }
+    void copy_unmixed(AuxiliaryOutputBlock target,int32 num_samples) const {
+        for (int32 bus=1;bus<count;++bus) {
+            auto* row=target.frames+static_cast<size_t>(bus-1)*num_samples;
+            for (int32 n=0;n<num_samples;++n) {
+                row[n]={};
+                if (!active_[bus-1]) continue;
+                for (int32 c=0;c<channels[bus-1];++c) {
+                    const auto value=pointers[bus-1][c][n];
+                    if (std::abs(value)<=std::numeric_limits<Sample32>::max())
+                        row[n][c]=static_cast<Sample32>(value);
+                }
+            }
+        }
     }
     // Mix active auxiliary output buses into bus zero so multi-out instruments
     // deliver all routed voices with non-finite sanitization.

@@ -1575,7 +1575,8 @@ public:
 } // namespace
 
 extern "C" __attribute__((visibility("default"))) bool HexProcessingConfigure(int mode,int fault) {
-    if (!control() || mode<0 || mode>4 || fault<0 || fault>13) return false;
+    const bool output_fixture=fault==128 || fault==active_aux_outputs_variant || fault==double_aux_outputs_variant;
+    if (!control() || mode<0 || mode>4 || fault<0 || (fault>13 && !output_fixture)) return false;
     next_mode=mode;next_fault=fault;return true;
 }
 extern "C" __attribute__((visibility("default"))) int HexProcessingObservation(int* out,int capacity) {
