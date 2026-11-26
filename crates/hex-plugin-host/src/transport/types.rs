@@ -380,8 +380,29 @@ pub struct MidiEvent {
     /// True for monitored live input (VST3 `Event::kIsLive`); false for sequenced playback.
     pub is_live: bool,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EventDirection {
+    Input,
+    Output,
+}
+
 impl MidiEvent {
+    /// Decode the SDK identity on a validated VST3 processor output. Positive
+    /// IDs retain their existing copied value. An absent ID represents SDK -1,
+    /// the all-ones value represents SDK zero, and plug-in-reserved negative
+    /// IDs preserve their two's-complement bits.
+    pub fn vst3_output_note_id(self) -> Option<i32> {
+        self.note_id.map(|id| {
+            let raw = id.get();
+            if raw == u32::MAX { 0 } else { raw as i32 }
+        })
+    }
+
     pub(super) fn valid(self, frames: usize) -> bool {
+        self.valid_for(frames, EventDirection::Input)
+    }
+
+    fn valid_for(self, frames: usize, direction: EventDirection) -> bool {
         let status = self.bytes[0] & 0xf0;
         let carries_note_identity = matches!(status, 0x80 | 0x90 | 0xa0);
         let authored_expression =
@@ -398,7 +419,13 @@ impl MidiEvent {
                 .all(|b| *b < 128)
             && (self.len == 3 || self.bytes[2] == 0)
             && self.note_id.is_none_or(|id| {
-                (carries_note_identity || authored_expression) && i32::try_from(id.get()).is_ok()
+                if i32::try_from(id.get()).is_ok() {
+                    return carries_note_identity || authored_expression;
+                }
+                // Steinberg ivstevents.h reserves this range for the plug-in.
+                direction == EventDirection::Output
+                    && carries_note_identity
+                    && (id.get() == u32::MAX || (-10_000..=-1_000).contains(&(id.get() as i32)))
             })
             && (!self.is_live || carries_note_identity || matches!(status, 0xb0 | 0xd0 | 0xe0))
     }
@@ -440,8 +467,10 @@ impl<const CAPACITY: usize> Events<CAPACITY> {
         self.len += 1;
         Ok(())
     }
-    pub(super) fn valid(&self, frames: usize) -> bool {
-        self.as_slice().iter().all(|event| event.valid(frames))
+    fn valid(&self, frames: usize, direction: EventDirection) -> bool {
+        self.as_slice()
+            .iter()
+            .all(|event| event.valid_for(frames, direction))
     }
 }
 
@@ -579,6 +608,16 @@ impl Block {
         Ok(())
     }
     pub(crate) fn valid(&self, binding: Binding, quantum: u16, sequence: u64) -> Result<(), Fault> {
+        self.valid_for(binding, quantum, sequence, EventDirection::Input)
+    }
+
+    pub(super) fn valid_for(
+        &self,
+        binding: Binding,
+        quantum: u16,
+        sequence: u64,
+        direction: EventDirection,
+    ) -> Result<(), Fault> {
         if self.binding != binding
             || self.sequence != sequence
             || self.frames != quantum
@@ -593,7 +632,7 @@ impl Block {
         {
             return Err(Fault::InvalidSamples);
         }
-        if !self.events.valid(usize::from(quantum)) {
+        if !self.events.valid(usize::from(quantum), direction) {
             return Err(Fault::InvalidEvents);
         }
         if !self.parameters.valid(usize::from(quantum)) {
@@ -629,6 +668,6 @@ impl Block {
         if !self.timing_changes.as_slice().is_empty() {
             return Err(Fault::Protocol);
         }
-        self.valid(binding, quantum, sequence)
+        self.valid_for(binding, quantum, sequence, EventDirection::Output)
     }
 }

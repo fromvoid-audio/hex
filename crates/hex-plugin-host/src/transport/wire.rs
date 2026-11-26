@@ -370,6 +370,17 @@ fn read_timing(reader: &mut impl Read, version: u16) -> io::Result<ProcessTiming
 /// Read exactly one packet, without allocating or trusting a peer's extent.
 /// EOF at a packet boundary is a clean end; truncated header/body is an error.
 pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
+    read_for(reader, super::types::EventDirection::Input)
+}
+
+pub(crate) fn read_native_reply(reader: &mut impl Read) -> io::Result<Option<Block>> {
+    read_for(reader, super::types::EventDirection::Output)
+}
+
+fn read_for(
+    reader: &mut impl Read,
+    direction: super::types::EventDirection,
+) -> io::Result<Option<Block>> {
     let mut header = [0_u8; HEADER_BYTES];
     match reader.read_exact(&mut header[..1]) {
         Ok(()) => (),
@@ -495,7 +506,7 @@ pub fn read(reader: &mut impl Read) -> io::Result<Option<Block>> {
             .map_err(|_| invalid())?;
     }
     block
-        .valid(binding, frames, block.sequence)
+        .valid_for(binding, frames, block.sequence, direction)
         .map_err(|_| invalid())?;
     Ok(Some(block))
 }
