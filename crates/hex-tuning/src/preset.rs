@@ -66,12 +66,35 @@ impl KeyboardMapping {
         })
     }
 
+    /// Validate all structural, MIDI-range, and frequency invariants on this mapping.
+    pub fn validate(&self) -> Result<(), Invalid> {
+        if self.map_size > MAX_KBM_MAP_SIZE
+            || self.first_key > 127
+            || self.last_key > 127
+            || self.first_key > self.last_key
+            || self.middle_note > 127
+            || self.reference_note > 127
+            || !self.reference_hz.is_finite()
+            || !(10.0..=20_000.0).contains(&self.reference_hz)
+            || self.formal_octave > MAX_DEGREES
+            || self.entries.len() != self.map_size
+            || self
+                .entries
+                .iter()
+                .any(|entry| matches!(entry, Some(degree) if *degree >= MAX_DEGREES))
+        {
+            return Err(Invalid("invalid scala kbm mapping"));
+        }
+        Ok(())
+    }
+
     /// Resolve the root MIDI key, reference frequency, and root degree for a scale
     /// with `scale_count` degrees.
     pub fn resolve_reference(&self, scale_count: usize) -> Result<(u8, f64, usize), Invalid> {
         if !(3..=MAX_DEGREES).contains(&scale_count) {
             return Err(Invalid("scala scale degree count must be 3–48"));
         }
+        self.validate()?;
         if self.formal_octave != 0 && self.formal_octave != scale_count {
             return Err(Invalid(
                 "scala kbm formal octave must be 0 or match scale degree count",
@@ -94,6 +117,51 @@ impl KeyboardMapping {
             degree
         };
         Ok((self.reference_note, self.reference_hz, root_degree))
+    }
+
+    /// Verify that this `.kbm` mapping can be represented faithfully by a periodic
+    /// linear [`Scale`] without silently discarding key bounds, unmapped (`'x'`)
+    /// keys, or non-linear key-to-degree layouts.
+    pub fn ensure_linear_for_scale(&self, scale_count: usize) -> Result<(), Invalid> {
+        self.validate()?;
+        if !(3..=MAX_DEGREES).contains(&scale_count) {
+            return Err(Invalid("scala scale degree count must be 3–48"));
+        }
+        if self.first_key != 0 || self.last_key != 127 {
+            return Err(Invalid(
+                "scala kbm key range bounds are not supported by linear scale presets",
+            ));
+        }
+        if self.map_size == 0 {
+            return Ok(());
+        }
+        if self.entries.iter().any(Option::is_none) {
+            return Err(Invalid(
+                "scala kbm unmapped keys ('x') are not supported by linear scale presets",
+            ));
+        }
+        if self.map_size != scale_count {
+            return Err(Invalid(
+                "non-linear scala kbm key mappings are not supported by linear scale presets",
+            ));
+        }
+        let Some(Some(first_degree)) = self.entries.first().copied() else {
+            return Err(Invalid(
+                "non-linear scala kbm key mappings are not supported by linear scale presets",
+            ));
+        };
+        if first_degree >= scale_count {
+            return Err(Invalid("scala kbm degree entry exceeds scale degree count"));
+        }
+        for (offset, entry) in self.entries.iter().enumerate() {
+            let expected = (first_degree + offset) % scale_count;
+            if *entry != Some(expected) {
+                return Err(Invalid(
+                    "non-linear scala kbm key mappings are not supported by linear scale presets",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -290,10 +358,15 @@ pub fn decode_scl(text: &str) -> Result<Preset, Invalid> {
 }
 
 /// Parse a Scala `.scl` scale paired with a Scala `.kbm` keyboard mapping.
+///
+/// Refuses `.kbm` mappings with restricted key ranges, unmapped (`'x'`) keys, or
+/// non-linear key-to-degree layouts rather than silently discarding them.
 pub fn decode_scl_with_kbm(scl: &str, kbm: &str) -> Result<Preset, Invalid> {
     let mapping = decode_kbm(kbm)?;
     let parsed = decode_scl(scl)?;
-    let (root_key, root_hz, root_degree) = mapping.resolve_reference(parsed.scale.count())?;
+    let scale_count = parsed.scale.count();
+    let (root_key, root_hz, root_degree) = mapping.resolve_reference(scale_count)?;
+    mapping.ensure_linear_for_scale(scale_count)?;
     let mut scale = parsed.scale;
     scale.set_reference(root_key, root_hz, root_degree)?;
     Ok(Preset {
@@ -354,19 +427,7 @@ pub fn encode_kbm(scale: Scale) -> Result<String, Invalid> {
 
 /// Encode a [`KeyboardMapping`] into standard Scala `.kbm` text format.
 pub fn encode_keyboard_mapping(mapping: &KeyboardMapping) -> Result<String, Invalid> {
-    if mapping.map_size > MAX_KBM_MAP_SIZE
-        || mapping.first_key > 127
-        || mapping.last_key > 127
-        || mapping.first_key > mapping.last_key
-        || mapping.middle_note > 127
-        || mapping.reference_note > 127
-        || !mapping.reference_hz.is_finite()
-        || !(10.0..=20_000.0).contains(&mapping.reference_hz)
-        || mapping.formal_octave > MAX_DEGREES
-        || mapping.entries.len() != mapping.map_size
-    {
-        return Err(Invalid("invalid scala kbm mapping"));
-    }
+    mapping.validate()?;
     let mut text = format!(
         "! Exported by hex\n{}\n{}\n{}\n{}\n{}\n{}\n{}\n",
         mapping.map_size,
@@ -593,7 +654,9 @@ Just Major 5-Limit
             }
         }
 
-        // 3. Explicit non-linear .kbm mapping with unmapped 'x' keys and comments.
+        // 3. Explicit non-linear/bounded .kbm mapping parses and round-trips through
+        //    decode_kbm/encode_keyboard_mapping, while decode_scl_with_kbm explicitly
+        //    refuses mappings that cannot be represented faithfully by a linear Scale.
         let explicit_kbm = "\
 ! Custom 7-key keyboard map
 7
@@ -616,20 +679,105 @@ x
         assert_eq!(mapping.entries[2], None);
         assert_eq!(mapping.reference_note, 69);
         assert_eq!(mapping.reference_hz, 432.0);
-        // (69 - 60) % 7 = 2 -> unmapped 'x', so applying to a 7-note scale rejects cleanly.
+        // Unmapped reference key rejects cleanly.
         assert!(decode_scl_with_kbm(just_scl, explicit_kbm).is_err());
 
-        // Map reference_note=67 -> (67 - 60) % 7 = 0 -> degree 0.
+        // Bounded + 'x' mapping with mapped reference key is also refused instead of
+        // silently discarding key bounds and unmapped keys.
         let mapped_kbm = explicit_kbm.replace("\n69\n", "\n67\n");
-        let combined = decode_scl_with_kbm(just_scl, &mapped_kbm).unwrap();
-        assert_eq!(combined.scale.root_key(), 67);
-        assert_eq!(combined.scale.root_hz(), 432.0);
-        assert_eq!(combined.scale.root_degree(), 0);
+        assert!(decode_scl_with_kbm(just_scl, &mapped_kbm).is_err());
         let reencoded = encode_keyboard_mapping(&decode_kbm(&mapped_kbm).unwrap()).unwrap();
         assert_eq!(
             decode_kbm(&reencoded).unwrap(),
             decode_kbm(&mapped_kbm).unwrap()
         );
+
+        // Full-range explicit linear mapping (including cyclic degree rotation) is honored.
+        let linear_explicit_kbm = "\
+! Full-range cyclic linear 7-key map
+7
+0
+127
+60
+67
+432.0
+7
+2
+3
+4
+5
+6
+0
+1
+";
+        let combined = decode_scl_with_kbm(just_scl, linear_explicit_kbm).unwrap();
+        assert_eq!(combined.scale.root_key(), 67);
+        assert_eq!(combined.scale.root_hz(), 432.0);
+        assert_eq!(combined.scale.root_degree(), 2);
+
+        // Restricted key range (21..=108) even with map_size = 0 is refused explicitly.
+        let bounded_linear_kbm = "0\n21\n108\n60\n69\n440.0\n7\n";
+        assert!(decode_scl_with_kbm(just_scl, bounded_linear_kbm).is_err());
+
+        // Non-linear mapping (duplicated degree) over full range is refused explicitly.
+        let nonlinear_kbm = "7\n0\n127\n60\n60\n261.6255653005986\n7\n0\n1\n1\n3\n4\n5\n6\n";
+        assert!(decode_scl_with_kbm(just_scl, nonlinear_kbm).is_err());
+    }
+
+    #[test]
+    fn resolve_reference_validates_bounds_without_divide_by_zero_panic() {
+        // map_size == 1 << 32 previously wrapped to 0i32 and panicked with divide-by-zero.
+        let wrap_zero = KeyboardMapping {
+            map_size: 1_usize << 32,
+            first_key: 0,
+            last_key: 127,
+            middle_note: 60,
+            reference_note: 69,
+            reference_hz: 440.0,
+            formal_octave: 0,
+            entries: Vec::new(),
+        };
+        assert!(wrap_zero.resolve_reference(12).is_err());
+
+        // Out-of-range reference_note and non-finite / out-of-range reference_hz.
+        let bad_note = KeyboardMapping {
+            map_size: 0,
+            first_key: 0,
+            last_key: 127,
+            middle_note: 60,
+            reference_note: 128,
+            reference_hz: 440.0,
+            formal_octave: 0,
+            entries: Vec::new(),
+        };
+        assert!(bad_note.resolve_reference(12).is_err());
+
+        for bad_hz in [f64::NAN, f64::INFINITY, 0.0, 9.9, 20_000.1] {
+            let mapping = KeyboardMapping {
+                map_size: 0,
+                first_key: 0,
+                last_key: 127,
+                middle_note: 60,
+                reference_note: 69,
+                reference_hz: bad_hz,
+                formal_octave: 0,
+                entries: Vec::new(),
+            };
+            assert!(mapping.resolve_reference(12).is_err());
+        }
+
+        // Mismatched entries.len() != map_size is rejected.
+        let mismatched = KeyboardMapping {
+            map_size: 3,
+            first_key: 0,
+            last_key: 127,
+            middle_note: 60,
+            reference_note: 60,
+            reference_hz: 261.625_565_300_598_6,
+            formal_octave: 0,
+            entries: vec![Some(0)],
+        };
+        assert!(mismatched.resolve_reference(7).is_err());
     }
 
     #[test]

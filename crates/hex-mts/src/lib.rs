@@ -178,6 +178,10 @@ struct Mailbox {
     shutdown: bool,
     #[cfg(test)]
     last_idle_latest: Option<Revision>,
+    #[cfg(test)]
+    idle_passes: u64,
+    #[cfg(test)]
+    last_wait_unbounded: bool,
 }
 #[derive(Default)]
 struct Shared {
@@ -228,6 +232,47 @@ impl Handle {
         }
         if publication.revision.serial == 0 {
             return Err(ControlError::Stale);
+        }
+        if state.snapshot.owner == Some(publication.revision.owner) {
+            if state.snapshot.desired.is_some_and(|old| {
+                publication.revision.serial <= old.serial
+                    || publication.revision.project_revision < old.project_revision
+            }) {
+                return Err(ControlError::Stale);
+            }
+            state.latest = Some(publication);
+            state.snapshot.desired = Some(publication.revision);
+            match state.snapshot.state {
+                State::Active | State::Pending => {
+                    if state.snapshot.published != Some(publication.revision) {
+                        state.snapshot.state = State::Pending;
+                    }
+                }
+                State::Blocked { .. } | State::Unavailable(_) => {
+                    state.attempt = state
+                        .attempt
+                        .checked_add(1)
+                        .ok_or(ControlError::Exhausted)?;
+                    state.recover = false;
+                    state.snapshot.state = State::Pending;
+                }
+                State::Disabled | State::Disabling | State::Stopped => {
+                    state.epoch = state.epoch.checked_add(1).ok_or(ControlError::Exhausted)?;
+                    state.attempt = state
+                        .attempt
+                        .checked_add(1)
+                        .ok_or(ControlError::Exhausted)?;
+                    state.recover = false;
+                    state.snapshot = Snapshot {
+                        owner: Some(publication.revision.owner),
+                        desired: Some(publication.revision),
+                        state: State::Pending,
+                        ..Snapshot::default()
+                    };
+                }
+            }
+            self.0.ready.notify_one();
+            return Ok(());
         }
         let epoch = state.epoch.checked_add(1).ok_or(ControlError::Exhausted)?;
         let attempt = state
@@ -335,6 +380,22 @@ impl Handle {
             let (next, _) = self.0.idle.wait_timeout(state, remaining).unwrap();
             state = next;
         }
+    }
+    #[cfg(test)]
+    fn wait_for_idle_pass(&self, min_passes: u64) -> (u64, bool) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut state = self.0.mailbox.lock().unwrap();
+        while state.idle_passes < min_passes {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for idle pass >= {min_passes}; observed {}",
+                state.idle_passes
+            );
+            let (next, _) = self.0.idle.wait_timeout(state, remaining).unwrap();
+            state = next;
+        }
+        (state.idle_passes, state.last_wait_unbounded)
     }
 }
 
@@ -491,9 +552,11 @@ fn run(shared: &Shared, mut transport: impl Transport) {
                             published = None;
                             if let Ok(mut state) = shared.mailbox.lock()
                                 && state.epoch == epoch
+                                && !state.shutdown
                             {
                                 state.snapshot.state = State::Unavailable(error);
                                 state.snapshot.published = None;
+                                state.snapshot.clients = 0;
                             }
                         }
                     }
@@ -520,13 +583,19 @@ fn run(shared: &Shared, mut transport: impl Transport) {
         #[cfg(test)]
         {
             state.last_idle_latest = latest.map(|p| p.revision);
+            state.idle_passes = state.idle_passes.saturating_add(1);
+            state.last_wait_unbounded = active_epoch.is_none();
             shared.idle.notify_all();
         }
-        if shared
-            .ready
-            .wait_timeout(state, Duration::from_millis(100))
-            .is_err()
-        {
+        let poisoned = if active_epoch.is_some() {
+            shared
+                .ready
+                .wait_timeout(state, Duration::from_millis(100))
+                .is_err()
+        } else {
+            shared.ready.wait(state).is_err()
+        };
+        if poisoned {
             transport.release();
             return;
         }

@@ -371,3 +371,72 @@ fn publishes_sanitized_authored_scale_name_through_mock_transport() {
     drop(published);
     worker.shutdown();
 }
+
+#[test]
+fn disabled_worker_parks_without_polling_and_same_owner_enable_preserves_master() {
+    let (mut worker, handle, probe, owner) = fixture();
+
+    // 1. Fresh disabled worker parks via unbounded wait() (active_epoch is None).
+    let (passes, unbounded) = handle.wait_for_idle_pass(1);
+    assert!(unbounded, "disabled worker must block on ready.wait()");
+    assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 0);
+
+    // 2. Enabling acquires once and switches to timed polling for client counts.
+    let first = publication(owner, 1);
+    handle.enable(first).unwrap();
+    let active = wait(&handle, |s| {
+        s.state == State::Active && s.published == Some(first.revision)
+    });
+    assert_eq!(active.clients, 3);
+    assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 0);
+    let (_, unbounded_when_active) = handle.wait_for_idle_pass(passes + 1);
+    assert!(!unbounded_when_active);
+
+    // 3. Same-owner enable() with a newer revision publishes without tearing down or re-acquiring.
+    let second = publication(owner, 2);
+    handle.enable(second).unwrap();
+    let updated = wait(&handle, |s| {
+        s.state == State::Active && s.published == Some(second.revision)
+    });
+    assert_eq!(updated.clients, 3);
+    assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 1);
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        handle.enable(publication(owner, 2)),
+        Err(ControlError::Stale)
+    );
+
+    // 4. clients() error after active publication clears stale clients to 0 and parks unbounded.
+    let before_err_passes = handle.wait_for_idle_pass(1).0;
+    probe.bad_clients.store(true, Ordering::SeqCst);
+    let third = publication(owner, 3);
+    handle.publish(third).unwrap();
+    let unavailable = wait(&handle, |s| {
+        s.state == State::Unavailable(NativeError::InvalidClientCount(-1))
+    });
+    assert_eq!(unavailable.clients, 0);
+    assert_eq!(unavailable.published, None);
+    assert_eq!(probe.releases.load(Ordering::SeqCst), 1);
+    let (_, unbounded_after_err) = handle.wait_for_idle_pass(before_err_passes + 1);
+    assert!(unbounded_after_err);
+
+    // 5. Same-owner enable() while Unavailable re-attempts cleanly without bumping unrelated state.
+    probe.bad_clients.store(false, Ordering::SeqCst);
+    let fourth = publication(owner, 4);
+    handle.enable(fourth).unwrap();
+    let recovered = wait(&handle, |s| {
+        s.state == State::Active && s.published == Some(fourth.revision)
+    });
+    assert_eq!(recovered.clients, 3);
+    assert_eq!(probe.acquisitions.load(Ordering::SeqCst), 2);
+
+    // 6. Disabling returns to unbounded wait().
+    let before_disable_passes = handle.wait_for_idle_pass(1).0;
+    handle.disable(owner).unwrap();
+    wait(&handle, |s| s.state == State::Disabled);
+    let (_, unbounded_after_disable) = handle.wait_for_idle_pass(before_disable_passes + 1);
+    assert!(unbounded_after_disable);
+
+    worker.shutdown();
+}
