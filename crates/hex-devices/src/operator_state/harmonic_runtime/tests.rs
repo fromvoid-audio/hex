@@ -636,6 +636,7 @@ fn quality_phase_advance_preserves_odd_steps_and_wrap_across_partitions() {
     let mut runtime = Runtime {
         factory: factory.clone(),
         voices: [Voice::default(); VOICES],
+        fading: [StealFade::default(); STEAL_FADE_SLOTS],
         source: factory.target,
         elapsed: 0,
         frames: 1,

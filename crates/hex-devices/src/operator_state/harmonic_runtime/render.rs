@@ -43,6 +43,7 @@ impl Runtime {
             .iter()
             .rposition(|voice| voice.id != 0)
             .map_or(0, |i| i + 1);
+        let mut has_fading = self.fading.iter().any(|fade| fade.remaining > 0);
         let mut may_expire = self
             .voices
             .iter()
@@ -109,6 +110,7 @@ impl Runtime {
                     .iter()
                     .rposition(|voice| voice.id != 0)
                     .map_or(0, |i| i + 1);
+                has_fading = self.fading.iter().any(|fade| fade.remaining > 0);
             }
             let transition = (self.elapsed < self.frames).then(|| self.spectrum());
             let spectrum = transition.as_ref().unwrap_or(&self.factory.target);
@@ -205,271 +207,48 @@ impl Runtime {
             } else {
                 lfo_rate_hz / rate_f64
             };
+            let voice_ctx = VoiceRenderContext {
+                factory: &self.factory,
+                phase: self.phase,
+                channel_pitch_bend: self.channel_pitch_bend,
+                cc_timbre: self.cc_timbre,
+                spectrum,
+                parameters,
+                pitch_mod,
+                has_modulation,
+                automated_filter_triplet,
+                automated_filter_frame,
+                filter_frame,
+                effective_filter_rate,
+                lfo_amount,
+                delta,
+            };
             for voice in self.voices.iter_mut().take(voice_end) {
                 if voice.id == 0 {
                     continue;
                 }
-                let phase = if law.retrigger() || self.factory.settings.global.active {
-                    (voice.lfo_fraction, voice.lfo_cycle)
-                } else {
-                    self.phase
-                };
-                let multiplier = if law.active() {
-                    ((if self.factory.settings.global.active {
-                        self.factory.lfo_table.sample(
-                            law.0[1],
-                            phase.0,
-                            phase.1,
-                            self.factory.settings.global.interpolation,
-                        )
-                    } else {
-                        lfo::waveform(law.0[1], phase.0, phase.1)
-                    }) * (lfo_amount
-                        + if self.factory.settings.global.active {
-                            voice.effective.lfo_amount_delta / 100.0
-                        } else {
-                            0.0
-                        })
-                    .clamp(-1.0, 1.0))
-                    .exp2()
-                } else {
-                    1.0
-                };
-                let quality = self.factory.settings.global.active;
-                let base_steps = if quality {
-                    voice.pitch_steps
-                } else {
-                    PreparedOperatorConfiguration::lfo_steps(&voice.note)
-                };
-                let steps = if let Some((scales, fine_deltas)) = pitch_mod {
-                    std::array::from_fn(|op| {
-                        let s = (base_steps[op] as f64) * scales[op] + fine_deltas[op];
-                        (s.round() as u64).clamp(1, (1_u64 << 63) - 1)
-                    })
-                } else {
-                    base_steps
-                };
-                let steps = if voice.pitch_offset_cents != 0
-                    || (!quality && self.channel_pitch_bend != 0)
-                {
-                    let channel_cents = if quality {
-                        0.0
-                    } else {
-                        f64::from(self.channel_pitch_bend)
-                            / if self.channel_pitch_bend < 0 {
-                                8192.0
-                            } else {
-                                8191.0
-                            }
-                            * 200.0
-                    };
-                    let ratio = 2.0_f64
-                        .powf((f64::from(voice.pitch_offset_cents) + channel_cents) / 1200.0);
-                    steps.map(|step| {
-                        (((step as f64) * ratio).round() as u64).clamp(1, (1_u64 << 63) - 1)
-                    })
-                } else {
-                    steps
-                };
-                let age = if quality {
-                    voice.envelope_frame()
-                } else {
-                    voice.age
-                };
-                let gate = if quality {
-                    voice.envelope_gate.unwrap_or(u64::MAX)
-                } else {
-                    voice.gate.unwrap_or(u64::MAX)
-                };
-                let mut amplitudes = if self.factory.companion_active {
-                    if self.factory.uniform_companion {
-                        [voice.machines[0]
-                            .as_ref()
-                            .map_or(0.0, |machine| machine.level(age)); 4]
-                    } else if self.factory.partial_companion {
-                        partial_levels(&voice.machines, self.factory.companion_sources, age)
-                    } else {
-                        let independent = || {
-                            std::array::from_fn(|i| {
-                                voice.machines[i]
-                                    .as_ref()
-                                    .map_or(0.0, |machine| machine.level(age))
-                            })
-                        };
-                        if self.factory.shared_loop_timing {
-                            companion::Machine::shared_loop_levels(&voice.machines, age)
-                                .unwrap_or_else(independent)
-                        } else {
-                            independent()
-                        }
-                    }
-                } else if self.factory.uniform_envelopes {
-                    self.factory
-                        .configuration
-                        .uniform_envelope_levels(age, gate)
-                } else {
-                    self.factory.configuration.envelope_levels(age, gate)
-                };
-                // Unified MPE/CC74 timbre law (matching FM4): boosts FM modulator
-                // depth (operators with carrier weight == 0.0) by up to +50% without
-                // inflating carrier output gain.
-                let voice_timbre = voice.timbre.max(self.cc_timbre);
-                if voice_timbre != 0 {
-                    let boost = 1.0 + 0.5 * (f64::from(voice_timbre) / 127.0);
-                    for (op, amp) in amplitudes.iter_mut().enumerate() {
-                        if parameters[4 + op] == 0.0 {
-                            *amp *= boost;
-                        }
-                    }
-                }
-                let voice_filter_frame = if let Some(triplet) = automated_filter_triplet {
-                    if quality
-                        && voice.modulated_filter.is_some_and(|f| f.armed)
-                        && (voice.effective.cutoff_octaves != 0.0
-                            || voice.effective.resonance_delta != 0.0
-                            || voice.effective.morph_delta != 0.0)
-                    {
-                        let freq = (f64::from(triplet[0]) * voice.effective.cutoff_octaves.exp2())
-                            .clamp(20.0, 20_000.0);
-                        let res = (f64::from(triplet[1]) + voice.effective.resonance_delta)
-                            .clamp(0.0, 100.0);
-                        let morph =
-                            (f64::from(triplet[2]) + voice.effective.morph_delta).clamp(0.0, 100.0);
-                        self.factory
-                            .settings
-                            .filter
-                            .frame_with_overrides(effective_filter_rate, freq, res, morph)
-                            .or(automated_filter_frame)
-                    } else {
-                        automated_filter_frame
-                    }
-                } else if quality {
-                    voice
-                        .modulated_filter
-                        .filter(|f| f.armed)
-                        .map(|f| f.frame())
-                } else {
-                    filter_frame
-                };
-                let mut rendered = 0.0;
-                for subframe in 0..if quality { 2 } else { 1 } {
-                    let (sample, previous) =
-                        self.factory.configuration.sample_with_waveform_sampler(
-                            &voice.note,
-                            amplitudes,
-                            &voice.phases,
-                            voice.previous,
-                            std::array::from_fn(|i| {
-                                (parameters[i]
-                                    * if quality {
-                                        voice.effective.level_gain[i]
-                                    } else {
-                                        1.0
-                                    })
-                                .clamp(0.0, 8.0)
-                            }),
-                            std::array::from_fn(|i| parameters[4 + i]),
-                            std::array::from_fn(|i| parameters[8 + i]),
-                            has_modulation,
-                            voice_filter_frame.map(|frame| (&mut voice.filters, frame)),
-                            |operator, phase, base_step| {
-                                spectrum.sample_policy(
-                                    operator,
-                                    phase,
-                                    voice.age,
-                                    || {
-                                        let step = steps[operator];
-                                        let render_step = match (law.active(), quality) {
-                                            (true, false) => step.saturating_mul(2),
-                                            (false, true) => step / 2,
-                                            _ => step,
-                                        };
-                                        (render_step, base_step)
-                                    },
-                                    self.factory.table,
-                                    self.factory.bank,
-                                    self.factory.phase_table,
-                                    !quality || self.factory.settings.global.interpolation,
-                                )
-                            },
-                        );
-                    let filtered = if quality {
-                        voice.decimator.sample(sample)
-                    } else {
-                        sample
-                    };
-                    rendered = if quality && self.factory.settings.global.antialias {
-                        filtered
-                    } else {
-                        sample
-                    };
-                    voice.previous = previous;
-                    if quality && !law.active() {
-                        for (phase, step) in voice.phases.iter_mut().zip(steps) {
-                            let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
-                            *phase = phase.wrapping_add(step);
-                        }
-                    } else {
-                        for (i, step) in steps.iter().enumerate() {
-                            let step = if law.active() && law.selected(i) {
-                                (*step as f64 * multiplier).round() as u64
-                            } else {
-                                *step
-                            };
-                            let step = if quality {
-                                step / 2 + if subframe == 1 { step % 2 } else { 0 }
-                            } else {
-                                step
-                            };
-                            voice.phases[i] = voice.phases[i].wrapping_add(step);
-                        }
-                    }
-                }
-                let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
-                let left = rendered
-                    * pan_gains[0]
-                    * if quality {
-                        voice.effective.gain as f32
-                    } else {
-                        1.0
-                    };
-                let right = rendered
-                    * pan_gains[1]
-                    * if quality {
-                        voice.effective.gain as f32
-                    } else {
-                        1.0
-                    };
+                let [left, right] = render_voice(voice, &voice_ctx);
                 frame[0] += super::occurrence_gain::sample(left, voice.id, offset, gains);
                 frame[1] += super::occurrence_gain::sample(right, voice.id, offset, gains);
-                if law.active() {
-                    let next = voice.lfo_fraction
-                        + delta
-                            * if quality {
-                                voice.lfo_rate_multiplier
-                            } else {
-                                1.0
-                            };
-                    voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
-                    voice.lfo_fraction = next.fract();
-                }
-                if quality {
-                    voice.envelope_age =
-                        (voice.envelope_age + voice.effective.time_rate).min(u64::MAX as f64);
-                    if let Some(filter) = &mut voice.modulated_filter {
-                        filter.advance();
+            }
+            if has_fading {
+                let mut any_fading = false;
+                for fade in &mut self.fading {
+                    if fade.remaining == 0 {
+                        continue;
                     }
-                }
-                voice.age = voice.age.saturating_add(1);
-                if quality {
-                    if voice.envelope_gate.is_some()
-                        && EventVoice::read(voice, &self.factory).envelope_finished()
-                    {
-                        voice.drain = voice.drain.saturating_add(1);
+                    let gain = f32::from(fade.remaining) / f32::from(fade.total.max(1));
+                    let [left, right] = render_voice(&mut fade.voice, &voice_ctx);
+                    frame[0] += left * gain;
+                    frame[1] += right * gain;
+                    fade.remaining -= 1;
+                    if fade.remaining == 0 {
+                        *fade = StealFade::default();
                     } else {
-                        voice.drain = 0;
+                        any_fading = true;
                     }
                 }
+                has_fading = any_fading;
             }
             if law.active() {
                 let next = self.phase.0 + delta;
@@ -506,4 +285,275 @@ impl Runtime {
             }
         }
     }
+}
+
+struct VoiceRenderContext<'a> {
+    factory: &'a Factory,
+    phase: (f64, u64),
+    channel_pitch_bend: i16,
+    cc_timbre: u8,
+    spectrum: &'a Spectrum,
+    parameters: [f64; 12],
+    pitch_mod: Option<([f64; OPERATORS], [f64; OPERATORS])>,
+    has_modulation: bool,
+    automated_filter_triplet: Option<[f32; 3]>,
+    automated_filter_frame: Option<crate::operator_filter::Frame>,
+    filter_frame: Option<crate::operator_filter::Frame>,
+    effective_filter_rate: u32,
+    lfo_amount: f64,
+    delta: f64,
+}
+
+#[inline]
+fn render_voice(voice: &mut Voice, ctx: &VoiceRenderContext<'_>) -> StereoFrame {
+    let factory = ctx.factory;
+    let law = factory.settings.lfo;
+    let parameters = ctx.parameters;
+    let phase = if law.retrigger() || factory.settings.global.active {
+        (voice.lfo_fraction, voice.lfo_cycle)
+    } else {
+        ctx.phase
+    };
+    let multiplier = if law.active() {
+        ((if factory.settings.global.active {
+            factory.lfo_table.sample(
+                law.0[1],
+                phase.0,
+                phase.1,
+                factory.settings.global.interpolation,
+            )
+        } else {
+            lfo::waveform(law.0[1], phase.0, phase.1)
+        }) * (ctx.lfo_amount
+            + if factory.settings.global.active {
+                voice.effective.lfo_amount_delta / 100.0
+            } else {
+                0.0
+            })
+        .clamp(-1.0, 1.0))
+        .exp2()
+    } else {
+        1.0
+    };
+    let quality = factory.settings.global.active;
+    let base_steps = if quality {
+        voice.pitch_steps
+    } else {
+        PreparedOperatorConfiguration::lfo_steps(&voice.note)
+    };
+    let steps = if let Some((scales, fine_deltas)) = ctx.pitch_mod {
+        std::array::from_fn(|op| {
+            let s = (base_steps[op] as f64) * scales[op] + fine_deltas[op];
+            (s.round() as u64).clamp(1, (1_u64 << 63) - 1)
+        })
+    } else {
+        base_steps
+    };
+    let steps = if voice.pitch_offset_cents != 0 || (!quality && ctx.channel_pitch_bend != 0) {
+        let channel_cents = if quality {
+            0.0
+        } else {
+            f64::from(ctx.channel_pitch_bend)
+                / if ctx.channel_pitch_bend < 0 {
+                    8192.0
+                } else {
+                    8191.0
+                }
+                * 200.0
+        };
+        let ratio = 2.0_f64.powf((f64::from(voice.pitch_offset_cents) + channel_cents) / 1200.0);
+        steps.map(|step| (((step as f64) * ratio).round() as u64).clamp(1, (1_u64 << 63) - 1))
+    } else {
+        steps
+    };
+    let age = if quality {
+        voice.envelope_frame()
+    } else {
+        voice.age
+    };
+    let gate = if quality {
+        voice.envelope_gate.unwrap_or(u64::MAX)
+    } else {
+        voice.gate.unwrap_or(u64::MAX)
+    };
+    let mut amplitudes = if factory.companion_active {
+        if factory.uniform_companion {
+            [voice.machines[0]
+                .as_ref()
+                .map_or(0.0, |machine| machine.level(age)); 4]
+        } else if factory.partial_companion {
+            partial_levels(&voice.machines, factory.companion_sources, age)
+        } else {
+            let independent = || {
+                std::array::from_fn(|i| {
+                    voice.machines[i]
+                        .as_ref()
+                        .map_or(0.0, |machine| machine.level(age))
+                })
+            };
+            if factory.shared_loop_timing {
+                companion::Machine::shared_loop_levels(&voice.machines, age)
+                    .unwrap_or_else(independent)
+            } else {
+                independent()
+            }
+        }
+    } else if factory.uniform_envelopes {
+        factory.configuration.uniform_envelope_levels(age, gate)
+    } else {
+        factory.configuration.envelope_levels(age, gate)
+    };
+    // Unified MPE/CC74 timbre law (matching FM4): boosts FM modulator
+    // depth (operators with carrier weight == 0.0) by up to +50% without
+    // inflating carrier output gain.
+    let voice_timbre = voice.timbre.max(ctx.cc_timbre);
+    if voice_timbre != 0 {
+        let boost = 1.0 + 0.5 * (f64::from(voice_timbre) / 127.0);
+        for (op, amp) in amplitudes.iter_mut().enumerate() {
+            if parameters[4 + op] == 0.0 {
+                *amp *= boost;
+            }
+        }
+    }
+    let voice_filter_frame = if let Some(triplet) = ctx.automated_filter_triplet {
+        if quality
+            && voice.modulated_filter.is_some_and(|f| f.armed)
+            && (voice.effective.cutoff_octaves != 0.0
+                || voice.effective.resonance_delta != 0.0
+                || voice.effective.morph_delta != 0.0)
+        {
+            let freq = (f64::from(triplet[0]) * voice.effective.cutoff_octaves.exp2())
+                .clamp(20.0, 20_000.0);
+            let res = (f64::from(triplet[1]) + voice.effective.resonance_delta).clamp(0.0, 100.0);
+            let morph = (f64::from(triplet[2]) + voice.effective.morph_delta).clamp(0.0, 100.0);
+            factory
+                .settings
+                .filter
+                .frame_with_overrides(ctx.effective_filter_rate, freq, res, morph)
+                .or(ctx.automated_filter_frame)
+        } else {
+            ctx.automated_filter_frame
+        }
+    } else if quality {
+        voice
+            .modulated_filter
+            .filter(|f| f.armed)
+            .map(|f| f.frame())
+    } else {
+        ctx.filter_frame
+    };
+    let mut rendered = 0.0;
+    for subframe in 0..if quality { 2 } else { 1 } {
+        let (sample, previous) = factory.configuration.sample_with_waveform_sampler(
+            &voice.note,
+            amplitudes,
+            &voice.phases,
+            voice.previous,
+            std::array::from_fn(|i| {
+                (parameters[i]
+                    * if quality {
+                        voice.effective.level_gain[i]
+                    } else {
+                        1.0
+                    })
+                .clamp(0.0, 8.0)
+            }),
+            std::array::from_fn(|i| parameters[4 + i]),
+            std::array::from_fn(|i| parameters[8 + i]),
+            ctx.has_modulation,
+            voice_filter_frame.map(|frame| (&mut voice.filters, frame)),
+            |operator, phase, base_step| {
+                ctx.spectrum.sample_policy(
+                    operator,
+                    phase,
+                    voice.age,
+                    || {
+                        let step = steps[operator];
+                        let render_step = match (law.active(), quality) {
+                            (true, false) => step.saturating_mul(2),
+                            (false, true) => step / 2,
+                            _ => step,
+                        };
+                        (render_step, base_step)
+                    },
+                    factory.table,
+                    factory.bank,
+                    factory.phase_table,
+                    !quality || factory.settings.global.interpolation,
+                )
+            },
+        );
+        let filtered = if quality {
+            voice.decimator.sample(sample)
+        } else {
+            sample
+        };
+        rendered = if quality && factory.settings.global.antialias {
+            filtered
+        } else {
+            sample
+        };
+        voice.previous = previous;
+        if quality && !law.active() {
+            for (phase, step) in voice.phases.iter_mut().zip(steps) {
+                let step = step / 2 + if subframe == 1 { step % 2 } else { 0 };
+                *phase = phase.wrapping_add(step);
+            }
+        } else {
+            for (i, step) in steps.iter().enumerate() {
+                let step = if law.active() && law.selected(i) {
+                    (*step as f64 * multiplier).round() as u64
+                } else {
+                    *step
+                };
+                let step = if quality {
+                    step / 2 + if subframe == 1 { step % 2 } else { 0 }
+                } else {
+                    step
+                };
+                voice.phases[i] = voice.phases[i].wrapping_add(step);
+            }
+        }
+    }
+    let pan_gains = if quality { voice.pan_gains } else { [1.0, 1.0] };
+    let left = rendered
+        * pan_gains[0]
+        * if quality {
+            voice.effective.gain as f32
+        } else {
+            1.0
+        };
+    let right = rendered
+        * pan_gains[1]
+        * if quality {
+            voice.effective.gain as f32
+        } else {
+            1.0
+        };
+    if law.active() {
+        let next = voice.lfo_fraction
+            + ctx.delta
+                * if quality {
+                    voice.lfo_rate_multiplier
+                } else {
+                    1.0
+                };
+        voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
+        voice.lfo_fraction = next.fract();
+    }
+    if quality {
+        voice.envelope_age = (voice.envelope_age + voice.effective.time_rate).min(u64::MAX as f64);
+        if let Some(filter) = &mut voice.modulated_filter {
+            filter.advance();
+        }
+    }
+    voice.age = voice.age.saturating_add(1);
+    if quality {
+        if voice.envelope_gate.is_some() && EventVoice::read(voice, factory).envelope_finished() {
+            voice.drain = voice.drain.saturating_add(1);
+        } else {
+            voice.drain = 0;
+        }
+    }
+    [left, right]
 }

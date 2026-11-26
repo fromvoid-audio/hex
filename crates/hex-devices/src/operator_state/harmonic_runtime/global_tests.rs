@@ -84,6 +84,7 @@ fn runtime(settings: OperatorSettings) -> Runtime {
         last_targets: automation::base_target_values(&factory.settings),
         factory,
         voices: [Voice::default(); VOICES],
+        fading: [StealFade::default(); STEAL_FADE_SLOTS],
         elapsed: 1,
         frames: 1,
         parameters: None,
@@ -1129,4 +1130,169 @@ fn zero_occurrence_noteoff_history_is_preserved_on_copy() {
         target.preflight_events(next, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES),
         clean.preflight_events(next, 1, &hex_lattice::EMPTY_DEVICE_RESOURCES)
     );
+}
+
+#[test]
+fn channel_pitch_bend_and_cc_timbre_persist_across_block_commits_and_live_retargets() {
+    use hex_lattice::{NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair};
+
+    for global_active in [false, true] {
+        let mut s = settings();
+        s.global.active = global_active;
+        // Enable modulator op 2 -> carrier op 1 via validated parameter patch so
+        // CC74 timbre audibly boosts FM modulation depth.
+        let patched_state = OPERATOR_METADATA
+            .patch_parameter(
+                &s.to_state().unwrap(),
+                ParameterId::from_static(13 + 4),
+                ParameterValue::Float(0.5),
+            )
+            .unwrap();
+        let mut s = OperatorSettings::from_state(&patched_state).unwrap();
+        s.global.active = global_active;
+        let factory = Factory::new(
+            s,
+            s.prepare_configuration(48_000).unwrap(),
+            crate::shared_sine_table(),
+            48_000,
+        )
+        .unwrap();
+        let limits = NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 512 * 1024,
+            max_events_per_block: 512,
+            max_active_occurrences: 64,
+            max_tail_frames: 48_000 * 60,
+        };
+        let mut pair = NativeInstrumentRuntimePair::new(&factory, limits).unwrap();
+        let mut reference = runtime(s);
+        let mut baseline = runtime(s);
+
+        let block0_events = [
+            on(1, 60),
+            NativeInstrumentEvent::PitchBend {
+                frame_offset: 0,
+                value: 8191,
+            },
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 74,
+                value: 127,
+            },
+        ];
+        // Block 0: apply note-on, pitch wheel +2 semitones, and CC74=127.
+        let mut pair_b0 = [[0.0; 2]; 128];
+        pair.begin_block();
+        pair.process_block(
+            &block0_events,
+            &mut pair_b0,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+        pair.commit_block();
+        let ref_b0 = process(&mut reference, &block0_events, 128);
+        let _ = process(&mut baseline, &[on(1, 60)], 128);
+        assert_eq!(pair_b0.as_slice(), ref_b0.as_slice());
+
+        // Block 1 & Block 2: no events; pair's committed->scratch twin copy must
+        // preserve both channel_pitch_bend and cc_timbre identically to continuous render.
+        for block_idx in 1..=2 {
+            let mut pair_out = [[0.0; 2]; 128];
+            pair.begin_block();
+            pair.process_block(&[], &mut pair_out, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+                .unwrap();
+            pair.commit_block();
+            let ref_out = process(&mut reference, &[], 128);
+            let base_out = process(&mut baseline, &[], 128);
+            assert_eq!(
+                pair_out.as_slice(),
+                ref_out.as_slice(),
+                "global_active={global_active} block={block_idx}: pair lost pitch_bend/cc_timbre"
+            );
+            assert_ne!(
+                pair_out.as_slice(),
+                base_out.as_slice(),
+                "global_active={global_active} block={block_idx}: pitch_bend/cc_timbre must affect PCM"
+            );
+        }
+
+        // Live history retarget to a slightly edited Factory must also retain both fields.
+        let mut edited = s;
+        edited.fields[1] = 0.85;
+        let mut retargeted = runtime(edited);
+        let InstrumentHistoryRetargetPreparation::Prepared(proof) = retargeted
+            .factory
+            .prepare_history_retarget_target()
+            .unwrap()
+        else {
+            panic!("expected prepared retarget proof");
+        };
+        assert!(retargeted.can_retarget_history_from(&reference, proof.as_ref()));
+        retargeted.retarget_history_from(&reference, proof.as_ref());
+        assert_eq!(retargeted.channel_pitch_bend, 8191);
+        assert_eq!(retargeted.cc_timbre, 127);
+    }
+}
+
+#[test]
+fn voice_stealing_prefers_releasing_voices_over_held_and_declicks_steal_boundary() {
+    let mut s = settings();
+    s.global.voices = 1; // capacity = 2
+    // Slow release so note 2 stays releasing when note 3 arrives.
+    for i in 0..4 {
+        let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
+        s.fields[base..base + 6].copy_from_slice(&[1.0, 1.0, 1.0, 0.0, 0.001, 0.25]);
+    }
+    let mut r = runtime(s);
+    assert!(r.factory.declared_twin_bytes() <= 256 * 1024);
+
+    // Hold note 1 (oldest), start note 2, release note 2 so it is releasing while note 1 is held.
+    process(&mut r, &[on(1, 60)], 64);
+    process(&mut r, &[on(2, 64)], 64);
+    process(&mut r, &[off(2)], 32);
+    assert_eq!(active(&r), vec![1, 2]);
+
+    // Note 3 saturates polyphony: must steal releasing note 2 rather than held note 1.
+    process(&mut r, &[on(3, 67)], 1);
+    assert_eq!(
+        active(&r),
+        vec![1, 3],
+        "stealing must prefer already-releasing voice 2 over older held voice 1"
+    );
+    assert!(
+        r.fading.iter().any(|f| f.remaining > 0),
+        "stolen releasing voice must enter the ~1 ms linear de-click fade pool"
+    );
+
+    // Now test click-free fade at a loud non-zero crest when stealing a held voice.
+    let mut loud = settings();
+    loud.global.voices = 1; // capacity = 2
+    let mut r_steal = runtime(loud);
+    let mut r_ref = runtime(loud);
+    // Warm up two sustained notes until both are near full amplitude.
+    let warm = process(&mut r_steal, &[on(1, 57), on(2, 64)], 200);
+    let _ = process(&mut r_ref, &[on(1, 57), on(2, 64)], 200);
+    let prev_sample = *warm.last().unwrap();
+    // Steal voice 1 with a new silent-attack note (velocity 1) and verify no hard cut click.
+    let steal_event = NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 3,
+        pitch: 72,
+        velocity: 1,
+    };
+    let after_steal = process(&mut r_steal, &[steal_event], 128);
+    let no_steal_next = process(&mut r_ref, &[], 1)[0];
+    // On the very first frame of the steal, the stolen voice starts at gain 1.0 (not 0.0!),
+    // so the jump from prev_sample stays smooth like the unstolen continuation.
+    let jump_at_steal = (after_steal[0][0] - prev_sample[0]).abs();
+    let natural_step = (no_steal_next[0] - prev_sample[0]).abs();
+    assert!(
+        (jump_at_steal - natural_step).abs() < 0.08,
+        "steal boundary must not drop instantaneously: prev={prev_sample:?} after={:?} natural={no_steal_next:?}",
+        after_steal[0]
+    );
+    assert!(r_steal.fading.iter().all(|f| f.remaining == 0));
+
+    // After releasing all remaining held voices, runtime returns to quiescent.
+    process(&mut r_steal, &[off(1), off(2), off(3)], 5000);
+    assert!(r_steal.is_quiescent());
 }
