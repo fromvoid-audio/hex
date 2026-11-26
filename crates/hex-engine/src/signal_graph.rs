@@ -1348,10 +1348,11 @@ impl SignalGraph {
             && self.returns.is_empty()
             && self.tracks.iter().all(|track| track.audio_feeds.is_empty())
     }
-    /// Acyclic tracks (including group buses), sidechains, return buses and
-    /// Main chains can run whole compensated blocks in topological `owner_order`
-    /// once the stamp ring covers `plan.max_latency_frames()` consecutive
-    /// running frames.
+    /// Acyclic tracks (including group buses, active clip-cut audio releases,
+    /// gain recording, and recorded scalar automation), sidechains, return
+    /// buses, and Main chains can run whole compensated blocks in topological
+    /// `owner_order` once the stamp ring covers `plan.max_latency_frames()`
+    /// consecutive running frames.
     pub(crate) fn supports_block_compensated_routing(&self) -> bool {
         !self.has_custom_outputs
             && self

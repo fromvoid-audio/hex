@@ -133,6 +133,10 @@ impl SessionPlayback {
                 })
         });
 
+        // Borrow one revision handle across the whole render block instead of
+        // cloning and dropping `Arc<PreparedRevision>` per scalar frame.
+        let revision = Arc::clone(&self.revision);
+
         while output_offset < output.len() {
             if let Some(region) = region {
                 (arrangement_frame, arrangement_loop_pass) =
@@ -188,10 +192,7 @@ impl SessionPlayback {
                 .compensation
                 .as_ref()
                 .is_some_and(|runtime| runtime.graph.needs_upstream_frame_routing());
-            if upstream_frame_routing
-                && resident_source_index == resident_source_end
-                && scalar.is_none()
-            {
+            if upstream_frame_routing && resident_source_index == resident_source_end {
                 let mut block_count = (output.len() - output_offset).min(256);
                 if let Some(next) = next_route.filter(|next| *next > performance_frame) {
                     block_count = block_count
@@ -213,8 +214,49 @@ impl SessionPlayback {
                     let chunk_end = output_offset
                         .checked_add(block_count)
                         .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+                    if let Some(scalar) = scalar.as_deref_mut() {
+                        let bindings = self
+                            .revision
+                            .scalar_automation
+                            .as_deref()
+                            .ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        let endpoint = pages
+                            .as_deref_mut()
+                            .ok_or(SessionPlaybackError::MediaPagesUnavailable)?;
+                        let history = self.compensation.as_ref().map(|runtime| &runtime.delays);
+                        let origin = |source_offset| {
+                            arrangement_frame
+                                .checked_add(source_offset)
+                                .map(Some)
+                                .ok_or(crate::Invalid("scalar automation origin overflow"))
+                        };
+                        scalar
+                            .fill(
+                                bindings,
+                                endpoint,
+                                block_count,
+                                output_offset,
+                                |delay, index| {
+                                    if delay == 0 {
+                                        origin(index as u64)
+                                    } else {
+                                        crate::compensation::CompensationRuntime::preview_stage_frame(
+                                            history,
+                                            delay,
+                                            index as u64,
+                                            origin,
+                                        )
+                                    }
+                                },
+                            )
+                            .map_err(|_| SessionPlaybackError::MediaPagesUnavailable)?;
+                    }
+                    let external = scalar
+                        .as_deref()
+                        .map(|state| state as &dyn hex_lattice::NativeExternalAutomationSet);
                     let mut tail_scratch = std::mem::take(&mut self.grouped_tail_scratch);
                     let rendered = self.render_compensated_route_block(
+                        &revision,
                         performance_frame,
                         arrangement_frame,
                         arrangement_loop_pass,
@@ -226,6 +268,7 @@ impl SessionPlayback {
                         wave,
                         inputs,
                         foreign,
+                        external,
                         &mut tail_scratch,
                     );
                     self.grouped_tail_scratch = tail_scratch;
@@ -247,6 +290,11 @@ impl SessionPlayback {
                     }
                     self.release_scratch
                         .retain(|entry| entry.end_frame() > performance_frame);
+                    for route in &mut self.route_scratch {
+                        route.audio_release = route
+                            .audio_release
+                            .filter(|release| release.active_at(performance_frame));
+                    }
                     output_offset = chunk_end;
                     continue;
                 }
@@ -448,6 +496,7 @@ impl SessionPlayback {
                 .map(|state| state as &dyn hex_lattice::NativeExternalAutomationSet);
             if upstream_frame_routing {
                 self.render_compensated_route_frame(
+                    &revision,
                     performance_frame,
                     arrangement_frame,
                     arrangement_loop_pass,

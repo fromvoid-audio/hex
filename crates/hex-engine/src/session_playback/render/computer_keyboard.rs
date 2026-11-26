@@ -160,6 +160,7 @@ impl SessionPlayback {
             self.return_effect_tails.begin_block();
         }
         self.route_scratch.copy_from_slice(&self.routes);
+        let revision = Arc::clone(&self.revision);
         let mut offset = 0usize;
         while offset < output.len() {
             let max_frames =
@@ -176,6 +177,7 @@ impl SessionPlayback {
             let chunk = &mut output[offset..end];
             if self.compensation.is_some() {
                 self.render_compensated_route_frame::<dyn MediaPages>(
+                    &revision,
                     self.performance_frame,
                     self.arrangement_frame,
                     self.arrangement_loop_pass,

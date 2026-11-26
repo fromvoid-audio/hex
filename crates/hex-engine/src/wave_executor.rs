@@ -17,8 +17,15 @@ use std::num::NonZeroU64;
 /// Maximum stereo frame count processed in a single wave dispatch.
 pub const WAVE_MAX_FRAMES: usize = 256;
 
-/// Maximum compensation lookback frames carried by a wave clock snapshot.
+/// Maximum inline low-delay compensation lookback frames carried by a wave clock snapshot.
 pub const WAVE_CLOCK_HISTORY_FRAMES: usize = 256;
+
+/// Maximum distinct high-delay (`> WAVE_CLOCK_HISTORY_FRAMES`) history windows
+/// carried per wave. Each window covers up to `WAVE_MAX_FRAMES` consecutive
+/// history stamps at arbitrary PDC arrival delays (up to `MAX_COMPENSATION_FRAMES`),
+/// allowing VST3 bridges (512+ frames), linear-phase EQs, and lookahead limiters
+/// to run in parallel waves without copying the entire compensation ring.
+pub const WAVE_CLOCK_HIGH_DELAY_WINDOWS: usize = 64;
 
 /// Maximum independent chain tasks admitted in one topological wave.
 pub const MAX_WAVE_TASKS: usize = 128;
@@ -68,6 +75,25 @@ impl WaveStamp {
     }
 }
 
+/// Contiguous slice of compensation stamp history for high-latency stages
+/// (`delay > WAVE_CLOCK_HISTORY_FRAMES`).
+#[derive(Clone, Debug)]
+pub struct WaveDelayWindow {
+    pub start_delay: u32,
+    pub len: usize,
+    pub stamps: [WaveStamp; WAVE_MAX_FRAMES],
+}
+
+impl Default for WaveDelayWindow {
+    fn default() -> Self {
+        Self {
+            start_delay: 0,
+            len: 0,
+            stamps: [WaveStamp::default(); WAVE_MAX_FRAMES],
+        }
+    }
+}
+
 /// Shared read-only clock snapshot for all tasks in one topological wave.
 ///
 /// Allocated once on control inside the `WaveExecutor` implementation and updated
@@ -76,17 +102,25 @@ impl WaveStamp {
 pub struct WaveClockWindow {
     pub history_len: usize,
     pub incoming_len: usize,
+    pub high_delay_len: usize,
     pub history: [WaveStamp; WAVE_CLOCK_HISTORY_FRAMES],
     pub incoming: [WaveStamp; WAVE_MAX_FRAMES],
+    high_delays: Box<[WaveDelayWindow]>,
 }
 
 impl Default for WaveClockWindow {
     fn default() -> Self {
+        let high_delays = std::iter::repeat_with(WaveDelayWindow::default)
+            .take(WAVE_CLOCK_HIGH_DELAY_WINDOWS)
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Self {
             history_len: 0,
             incoming_len: 0,
+            high_delay_len: 0,
             history: [WaveStamp::default(); WAVE_CLOCK_HISTORY_FRAMES],
             incoming: [WaveStamp::default(); WAVE_MAX_FRAMES],
+            high_delays,
         }
     }
 }
@@ -97,14 +131,36 @@ impl WaveClockWindow {
         Box::new(Self::default())
     }
 
-    /// Populate from a compensated delay ring and upcoming transport stamp window.
+    /// Populate from a compensated delay ring and upcoming transport stamp window
+    /// for stages with arrival delays `<= WAVE_CLOCK_HISTORY_FRAMES`.
+    #[allow(dead_code)]
     pub(crate) fn fill_from_compensated(
         &mut self,
         delays: &crate::compensation::CompensationRuntime,
         stamps: &[Option<TransportStamp>],
         max_delay: usize,
     ) {
-        let history_len = max_delay.min(WAVE_CLOCK_HISTORY_FRAMES);
+        self.fill_from_compensated_delays(delays, stamps, max_delay, &mut []);
+    }
+
+    /// Populate from a compensated delay ring for both low-delay stages
+    /// (`<= WAVE_CLOCK_HISTORY_FRAMES`) and arbitrary high-delay stages
+    /// (up to `MAX_COMPENSATION_FRAMES`) without copying unused intermediate history.
+    pub(crate) fn fill_from_compensated_delays(
+        &mut self,
+        delays: &crate::compensation::CompensationRuntime,
+        stamps: &[Option<TransportStamp>],
+        base_max_delay: usize,
+        high_delays: &mut [u32],
+    ) {
+        let incoming_len = stamps.len().min(WAVE_MAX_FRAMES);
+        self.incoming_len = incoming_len;
+        for (slot, stamp) in self.incoming[..incoming_len].iter_mut().zip(stamps) {
+            *slot = stamp
+                .map(WaveStamp::from_transport_stamp)
+                .unwrap_or_default();
+        }
+        let history_len = base_max_delay.min(WAVE_CLOCK_HISTORY_FRAMES);
         self.history_len = history_len;
         for (delay, slot) in self.history[..history_len].iter_mut().enumerate() {
             *slot = delays
@@ -113,19 +169,39 @@ impl WaveClockWindow {
                 .map(WaveStamp::from_transport_stamp)
                 .unwrap_or_default();
         }
-        let incoming_len = stamps.len().min(WAVE_MAX_FRAMES);
-        self.incoming_len = incoming_len;
-        for (slot, stamp) in self.incoming[..incoming_len].iter_mut().zip(stamps) {
-            *slot = stamp
-                .map(WaveStamp::from_transport_stamp)
-                .unwrap_or_default();
+        high_delays.sort_unstable();
+        let mut window_count = 0usize;
+        let mut covered_end = history_len as u32;
+        let incoming_u32 = incoming_len as u32;
+        for &delay in high_delays.iter() {
+            if delay <= covered_end || window_count >= self.high_delays.len() {
+                continue;
+            }
+            let start = delay.saturating_sub(incoming_u32).max(covered_end);
+            let len = (delay - start) as usize;
+            debug_assert!(len <= WAVE_MAX_FRAMES);
+            let len = len.min(WAVE_MAX_FRAMES);
+            let window = &mut self.high_delays[window_count];
+            window.start_delay = start;
+            window.len = len;
+            for (i, slot) in window.stamps[..len].iter_mut().enumerate() {
+                *slot = delays
+                    .stamp_at_delay_ref(start + i as u32)
+                    .copied()
+                    .map(WaveStamp::from_transport_stamp)
+                    .unwrap_or_default();
+            }
+            covered_end = start + len as u32;
+            window_count += 1;
         }
+        self.high_delay_len = window_count;
     }
 
     /// Populate from any `NativeInstrumentClock` (such as `ArrangementEffectClock`)
     /// for `frames` samples with zero history lookback.
     pub(crate) fn fill_from_clock(&mut self, clock: &dyn NativeInstrumentClock, frames: usize) {
         self.history_len = 0;
+        self.high_delay_len = 0;
         let incoming_len = frames.min(WAVE_MAX_FRAMES);
         self.incoming_len = incoming_len;
         let running = clock.transport_is_running().unwrap_or(false);
@@ -153,16 +229,35 @@ impl WaveClockWindow {
 
     #[inline]
     fn stamp_ref(&self, delay: u32, offset: usize) -> Option<&WaveStamp> {
-        let delay = delay as usize;
-        let stamp = if let Some(upcoming) = offset.checked_sub(delay) {
+        let delay_usize = delay as usize;
+        let stamp = if let Some(upcoming) = offset.checked_sub(delay_usize) {
             self.incoming
                 .get(upcoming)
                 .filter(|_| upcoming < self.incoming_len)?
         } else {
-            let hist_index = delay - offset - 1;
-            self.history
-                .get(hist_index)
-                .filter(|_| hist_index < self.history_len)?
+            let hist_index = delay_usize - offset - 1;
+            if hist_index < self.history_len {
+                self.history.get(hist_index)?
+            } else {
+                let hist_u32 = u32::try_from(hist_index).ok()?;
+                let windows = &self.high_delays[..self.high_delay_len];
+                let pos = windows
+                    .binary_search_by(|w| {
+                        let end = w.start_delay.saturating_add(w.len as u32);
+                        if hist_u32 < w.start_delay {
+                            std::cmp::Ordering::Greater
+                        } else if hist_u32 >= end {
+                            std::cmp::Ordering::Less
+                        } else {
+                            std::cmp::Ordering::Equal
+                        }
+                    })
+                    .ok()?;
+                let window = &windows[pos];
+                window
+                    .stamps
+                    .get((hist_u32 - window.start_delay) as usize)?
+            }
         };
         stamp.present.then_some(stamp)
     }
@@ -650,5 +745,101 @@ mod tests {
         assert_eq!(clock.contiguous_running_frames(0, 4), Some((98, 98)));
         assert_eq!(clock.constant_tempo_micro_bpm(0, 4), Some(120_000_000));
         assert_eq!(clock.arrangement_meter_at_offset(0), Some((4, 4)));
+    }
+
+    #[test]
+    fn wave_clock_window_serves_high_pdc_delays_above_256_frames() {
+        use crate::compensation::{
+            CompensationLimits, CompensationRuntime, LatencyEdge, LatencyNode, LatencyPlan,
+        };
+
+        let plan = LatencyPlan::build(
+            &[
+                LatencyNode {
+                    key: 0,
+                    latency_frames: Some(4096),
+                },
+                LatencyNode {
+                    key: 1,
+                    latency_frames: Some(0),
+                },
+            ],
+            &[LatencyEdge {
+                key: 0,
+                from: 0,
+                to: 1,
+            }],
+            CompensationLimits::default(),
+        )
+        .unwrap();
+        let mut runtime = CompensationRuntime::new(plan, CompensationLimits::default()).unwrap();
+        runtime.begin_transaction().unwrap();
+        for frame in 0..4096u64 {
+            runtime
+                .push_transport_stamp(TransportStamp {
+                    authored_clock_epoch: None,
+                    tempo_micro_bpm: Some(120_000_000),
+                    performance_frame: frame,
+                    transport_is_running: true,
+                    arrangement_frame: frame,
+                    loop_pass: 0,
+                    performance_beat_raw: frame,
+                    arrangement_beat_raw: Some(frame),
+                    meter: None,
+                    cycle_beats_raw: None,
+                })
+                .unwrap();
+        }
+        let incoming: Vec<Option<TransportStamp>> = (4096..4160u64)
+            .map(|frame| {
+                Some(TransportStamp {
+                    authored_clock_epoch: None,
+                    tempo_micro_bpm: Some(120_000_000),
+                    performance_frame: frame,
+                    transport_is_running: true,
+                    arrangement_frame: frame,
+                    loop_pass: 0,
+                    performance_beat_raw: frame,
+                    arrangement_beat_raw: Some(frame),
+                    meter: None,
+                    cycle_beats_raw: None,
+                })
+            })
+            .collect();
+
+        let mut window = WaveClockWindow::default();
+        // Mix overlapping and disjoint high PDC arrival delays (>= 512 frames).
+        let mut high = [4096, 512, 600, 2048, 512];
+        window.fill_from_compensated_delays(&runtime, &incoming, 64, &mut high);
+        assert!(window.high_delay_len >= 3);
+
+        for delay in [64u32, 512, 600, 2048, 4096] {
+            let clock = WaveStageClock {
+                window: &window,
+                delay,
+            };
+            let origin = crate::compensation::OriginWindow {
+                history: &runtime,
+                incoming: &incoming,
+                delay,
+            };
+            for offset in 0..incoming.len() {
+                assert_eq!(
+                    clock.arrangement_frame_at_offset(offset),
+                    origin.arrangement_frame_at_offset(offset),
+                    "delay={delay} offset={offset}"
+                );
+                assert_eq!(
+                    clock.performance_frame_at_offset(offset),
+                    origin.performance_frame_at_offset(offset),
+                    "delay={delay} offset={offset}"
+                );
+            }
+            assert_eq!(
+                clock.contiguous_running_frames(0, incoming.len()),
+                origin.contiguous_running_frames(0, incoming.len()),
+                "delay={delay}"
+            );
+        }
     }
 }
