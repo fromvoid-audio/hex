@@ -678,6 +678,7 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
         "sequence=",
         "exchange_ns=",
         "sdk_process_ns=",
+        "sdk_thread_cpu_ns=",
         "quantum_ns=",
         "dropped=",
         "queue_ns=unavailable",

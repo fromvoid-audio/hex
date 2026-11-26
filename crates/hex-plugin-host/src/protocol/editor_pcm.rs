@@ -9,6 +9,8 @@ pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
 pub(crate) const EDITOR_TOUCH_BIT: u16 = 0x2000;
 pub(crate) const EDITOR_GROUP_TOUCH_BIT: u16 = 0x1000;
 pub(crate) const SDK_TIMING_BIT: u16 = 0x0400;
+pub(crate) const SDK_THREAD_CPU_BIT: u16 = 0x0100;
+const SDK_TIMING_FLAGS: u16 = SDK_TIMING_BIT | SDK_THREAD_CPU_BIT;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) const SIDECHAIN_PCM_BIT: u16 = 0x0200;
 const EDITOR_RESTORE_BYTES: usize = 24;
@@ -29,6 +31,7 @@ struct Layout {
     touch: u16,
     restore: usize,
     sdk_timing: bool,
+    thread_cpu: bool,
 }
 impl Layout {
     fn extent(&self) -> usize {
@@ -36,7 +39,24 @@ impl Layout {
             + self.len * EDITOR_POINT_BYTES
             + self.restore * EDITOR_RESTORE_BYTES
             + usize::from(self.sdk_timing) * 8
+            + usize::from(self.thread_cpu) * 8
     }
+}
+
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
+fn read_timing(layout: &Layout, reader: &mut Reader<'_>) -> Result<(Option<u64>, Option<u64>)> {
+    let wall = if layout.sdk_timing {
+        Some(u64::from_le_bytes(reader.array()?))
+    } else {
+        None
+    };
+    let cpu = if layout.thread_cpu {
+        let value = u64::from_le_bytes(reader.array()?);
+        (value != u64::MAX).then_some(value)
+    } else {
+        None
+    };
+    Ok((wall, cpu))
 }
 
 fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
@@ -46,6 +66,7 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
     let wire_version = u16::from_le_bytes([header[4], header[5]]);
     let editor = wire_version & EDITOR_PCM_BIT != 0;
     let sdk_timing = wire_version & SDK_TIMING_BIT != 0;
+    let thread_cpu = wire_version & SDK_THREAD_CPU_BIT != 0;
     let touch = wire_version & (EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT);
     let restore = usize::from(header[13]);
     let limit = match touch {
@@ -55,7 +76,7 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         _ => return Err(Error::Protocol("conflicting editor touch modes")),
     };
     let version = wire_version
-        & !(EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_BIT);
+        & !(EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_FLAGS);
     let events = usize::from(u16::from_le_bytes([header[8], header[9]]));
     let valid_events = match version {
         1 | 2 => events == 0,
@@ -75,6 +96,7 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         || (parameters != 0 && (frames == 0 || !pcm))
         || (editor && (!pcm || frames == 0))
         || (sdk_timing && (!pcm || frames == 0))
+        || (thread_cpu && !sdk_timing)
         || len > MAX_PARAMETER_EDITS
         || (!editor && len != 0)
     {
@@ -87,15 +109,12 @@ fn layout(header: &[u8; HEADER_BYTES]) -> Result<Layout> {
         touch,
         restore,
         sdk_timing,
+        thread_cpu,
     })
 }
 
 #[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
-pub(crate) fn timed_pcm(
-    bytes: &[u8],
-    config: &Configuration,
-    sequence: u64,
-) -> Result<(Block, Option<u64>)> {
+pub(crate) fn timed_pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<EditorPcm> {
     let (header, payload) = bytes
         .split_first_chunk::<HEADER_BYTES>()
         .ok_or(Error::Protocol("missing instance PCM header"))?;
@@ -104,7 +123,7 @@ pub(crate) fn timed_pcm(
         return Err(Error::Protocol("instance PCM extent or opt-in differs"));
     }
     let mut ordinary = *header;
-    ordinary[5] &= !((SDK_TIMING_BIT >> 8) as u8);
+    ordinary[5] &= !((SDK_TIMING_FLAGS >> 8) as u8);
     let block = read_pcm(
         ordinary
             .as_slice()
@@ -112,16 +131,16 @@ pub(crate) fn timed_pcm(
         config,
         sequence,
     )?;
-    let duration = if layout.sdk_timing {
-        Some(u64::from_le_bytes(
-            bytes[layout.pcm_end..]
-                .try_into()
-                .map_err(|_| Error::Protocol("invalid SDK timing"))?,
-        ))
-    } else {
-        None
-    };
-    Ok((block, duration))
+    let mut reader = Reader::new(&bytes[layout.pcm_end..]);
+    let (sdk_process_ns, sdk_thread_cpu_ns) = read_timing(&layout, &mut reader)?;
+    reader.end()?;
+    Ok(EditorPcm {
+        block,
+        performs: Default::default(),
+        restorations: Default::default(),
+        sdk_process_ns,
+        sdk_thread_cpu_ns,
+    })
 }
 
 pub(crate) fn pcm_packet_extent(header: &[u8]) -> Result<usize> {
@@ -207,8 +226,9 @@ fn decode(
     }
     // Pass the unchanged ordinary PCM payload through the same strict decoder.
     let mut ordinary = *header;
-    ordinary[5] &= !(((EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_BIT)
-        >> 8) as u8);
+    ordinary[5] &=
+        !(((EDITOR_PCM_BIT | EDITOR_TOUCH_BIT | EDITOR_GROUP_TOUCH_BIT | SDK_TIMING_FLAGS) >> 8)
+            as u8);
     ordinary[12] = 0;
     ordinary[13] = 0;
     let ordinary_reader = ordinary
@@ -270,17 +290,14 @@ fn decode(
         })?;
         previous_restoration = sequence;
     }
-    let sdk_process_ns = if layout.sdk_timing {
-        Some(u64::from_le_bytes(reader.array()?))
-    } else {
-        None
-    };
+    let (sdk_process_ns, sdk_thread_cpu_ns) = read_timing(&layout, &mut reader)?;
     reader.end()?;
     Ok(EditorPcm {
         block,
         performs,
         restorations,
         sdk_process_ns,
+        sdk_thread_cpu_ns,
     })
 }
 
@@ -381,7 +398,11 @@ mod tests {
         plain[12] = 0;
         assert_eq!(pcm(&plain, &config, 4).unwrap().events.as_slice(), events);
         assert_eq!(
-            timed_pcm(&plain, &config, 4).unwrap().0.events.as_slice(),
+            timed_pcm(&plain, &config, 4)
+                .unwrap()
+                .block
+                .events
+                .as_slice(),
             events
         );
         assert!(pcm(&plain[..plain.len() - 1], &config, 4).is_err());
@@ -520,9 +541,32 @@ mod tests {
         assert!(editor_pcm(&bytes[..bytes.len() - 1], &config, 4, 0).is_err());
         assert!(editor_pcm(&bytes, &config, 5, 0).is_err());
         bytes[5] &= !((EDITOR_PCM_BIT >> 8) as u8);
-        let (block, duration) = timed_pcm(&bytes, &config, 4).unwrap();
-        assert_eq!(block.binding, config.binding);
-        assert_eq!(duration, Some(123_456));
+        let plain = timed_pcm(&bytes, &config, 4).unwrap();
+        assert_eq!(plain.block.binding, config.binding);
+        assert_eq!(plain.sdk_process_ns, Some(123_456));
+        assert_eq!(plain.sdk_thread_cpu_ns, None);
+        bytes[5] |= (SDK_THREAD_CPU_BIT >> 8) as u8;
+        assert!(timed_pcm(&bytes, &config, 4).is_err());
+        bytes.extend(0_u64.to_le_bytes());
+        assert_eq!(
+            timed_pcm(&bytes, &config, 4).unwrap().sdk_thread_cpu_ns,
+            Some(0)
+        );
+        bytes[5] |= (EDITOR_PCM_BIT >> 8) as u8;
+        assert_eq!(
+            editor_pcm(&bytes, &config, 4, 0).unwrap().sdk_thread_cpu_ns,
+            Some(0)
+        );
+        let cpu_at = bytes.len() - 8;
+        bytes[cpu_at..].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(
+            editor_pcm(&bytes, &config, 4, 0).unwrap().sdk_thread_cpu_ns,
+            None
+        );
+        bytes[5] &= !((EDITOR_PCM_BIT >> 8) as u8);
+        bytes[5] &= !((SDK_TIMING_BIT >> 8) as u8);
+        assert!(timed_pcm(&bytes, &config, 4).is_err());
+        bytes[5] |= (SDK_TIMING_BIT >> 8) as u8;
         assert!(timed_pcm(&bytes[..bytes.len() - 1], &config, 4).is_err());
         bytes.push(0);
         assert!(timed_pcm(&bytes, &config, 4).is_err());

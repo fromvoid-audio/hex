@@ -221,7 +221,7 @@ struct Packet {
     static constexpr size_t editor_touch_bytes=24, editor_restore_bytes=24;
     static constexpr size_t dense_header_bytes=8;
     static constexpr uint64_t dense_parameter_bit=0x0800;
-    static constexpr uint64_t sdk_timing_bit=0x0400;
+    static constexpr uint64_t sdk_timing_bit=0x0400, sdk_thread_cpu_bit=0x0100;
     static constexpr uint64_t sidechain_pcm_bit=0x0200;
     static constexpr size_t editor_target_bytes=16, editor_group_header_bytes=16;
     static constexpr size_t editor_group_bytes=editor_group_header_bytes+
@@ -231,9 +231,9 @@ struct Packet {
     std::array<uint8_t,header_size+max_frames*8+hex_instance::INPUT_NOTE_COUNT*12+hex_instance::PARAMETER_POINT_COUNT*20+extended_timing_size+timing_change_limit*timing_change_bytes+dense_header_bytes+max_frames*8+max_frames*8+editor_group_bytes> bytes{};
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> parameters{};
     std::array<uint32_t,hex_instance::PARAMETER_POINT_COUNT> authored_steps{};
-    bool authored_parameters=false,manual_parameter=false,dense_parameter=false,observe_sdk_timing=false,has_sidechain=false;
+    bool authored_parameters=false,manual_parameter=false,dense_parameter=false,observe_sdk_timing=false,observe_thread_cpu=false,has_sidechain=false;
     size_t sidechain_offset=0;
-    uint64_t sdk_process_ns=0;
+    uint64_t sdk_process_ns=0,sdk_thread_cpu_ns=0;
     uint32_t dense_id=0,dense_steps=0;
     std::array<Steinberg::Vst::ParamValue,max_frames> dense_values{};
     std::array<hex_instance::InputNote,hex_instance::INPUT_NOTE_COUNT> notes{};
@@ -298,6 +298,8 @@ struct Packet {
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
         observe_sdk_timing=pcm && (wire_version&sdk_timing_bit);sdk_process_ns=0;
+        observe_thread_cpu=pcm && (wire_version&sdk_thread_cpu_bit);sdk_thread_cpu_ns=0;
+        if(observe_thread_cpu && !observe_sdk_timing) return -1;
         has_sidechain=pcm && (wire_version&sidechain_pcm_bit);sidechain_offset=0;
         dense_parameter=pcm && (wire_version&dense_parameter_bit);
         if(dense_parameter && !authored_parameters) return -1;
@@ -309,7 +311,7 @@ struct Packet {
         const auto version=wire_version&~((authored_parameters?authored_bit:0)|
             (observe_editor_pcm?editor_pcm_bit:0)|(touch?editor_touch_bit:0)|
             (group_touch?editor_group_touch_bit:0)|(dense_parameter?dense_parameter_bit:0)|
-            (observe_sdk_timing?sdk_timing_bit:0)|(has_sidechain?sidechain_pcm_bit:0));
+            (observe_sdk_timing?sdk_timing_bit:0)|(observe_thread_cpu?sdk_thread_cpu_bit:0)|(has_sidechain?sidechain_pcm_bit:0));
         release_gates=quiesce && version==2;
         observe_latency=edit_query && (version==2 || version==3);
         flush_idle_edits=edit_query && version==3;
@@ -697,7 +699,7 @@ struct Packet {
         bytes[4]=output_event_count?3:(reply_parameter_count?2:1);
         bytes[5]=static_cast<uint8_t>(((observe_editor_pcm?editor_pcm_bit:0)|
             (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0))|
-            (observe_sdk_timing?sdk_timing_bit:0))>>8);
+            (observe_sdk_timing?sdk_timing_bit:0)|(observe_thread_cpu?sdk_thread_cpu_bit:0))>>8);
         bytes[8]=static_cast<uint8_t>(output_event_count);bytes[9]=0;
         bytes[10]=static_cast<uint8_t>(reply_parameter_count);
         std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
@@ -725,6 +727,10 @@ struct Packet {
         if(observe_sdk_timing) {
             if(size+8>bytes.size()) return false;
             put(bytes.data()+size,sdk_process_ns,8);size+=8;
+        }
+        if(observe_thread_cpu) {
+            if(size+8>bytes.size()) return false;
+            put(bytes.data()+size,sdk_thread_cpu_ns,8);size+=8;
         }
         if(shm && shm->active()) {
             if(!shm->write_reply(bytes.data(),size)) return false;
