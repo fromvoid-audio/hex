@@ -250,6 +250,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         sink.finish_resident_effect_edit(submission.context, accepted);
                     }
                 }
+                if outcome == DeviceInsertOutcome::ProjectCommitFailed {
+                    reconcile_audio_after_commit_failure(ctx, verified.is_some());
+                }
                 if let Some(plugin) = plugin {
                     ctx.outcome
                         .plugin_effect_complete
@@ -878,10 +881,339 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
     flow
 }
 
+/// Reconcile native audio when the callback installed a staged device edit but
+/// the canonical project commit failed. Re-publishes the committed project
+/// snapshot in Resident mode (or restores compiled playback in legacy mode),
+/// and closes/fences the audio sink with an explicit recovery message whenever
+/// resynchronization cannot be guaranteed.
+fn reconcile_audio_after_commit_failure(ctx: &mut WorkerDispatch<'_>, was_verified: bool) {
+    let base_error = ctx
+        .outcome
+        .error
+        .take()
+        .unwrap_or_else(|| "project commit failed".into());
+    let context = hex_engine::AudioSourceContext {
+        project_generation: ctx.worker.project_generation,
+        editor_revision: ctx.worker.revision,
+    };
+    let admission = ctx.worker.export_lane.admission_with_resident_owners(
+        ctx.worker.compiled.as_ref().map(|(_, prepared)| {
+            hex_engine::native_device_resources::ControlSamplerSelection {
+                sources: ctx.worker.current_sources.as_ref(),
+                prepared: Some(prepared),
+            }
+        }),
+        ctx.worker.resident_seek.as_ref(),
+        ctx.worker.resident_preview.as_ref(),
+    );
+    ctx.outcome.error = Some(reconcile_commit_failure_audio(
+        &ctx.worker.session,
+        &mut ctx.worker.events,
+        &mut ctx.worker.resident_snapshot,
+        ctx.worker.compiled.as_ref(),
+        admission,
+        context,
+        was_verified,
+        base_error,
+        &mut ctx.outcome.restore_prepared,
+    ));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn reconcile_commit_failure_audio(
+    session: &Session,
+    events: &mut WorkerEvents,
+    resident_snapshot: &mut Option<resident_audio::Snapshot>,
+    compiled: Option<&(u64, Arc<PreparedRevision>)>,
+    admission: sampler_export::Admission<'_>,
+    context: hex_engine::AudioSourceContext,
+    was_verified: bool,
+    base_error: String,
+    restore_prepared: &mut Option<Arc<PreparedRevision>>,
+) -> String {
+    if !was_verified
+        && events.resident_publication_enabled()
+        && session.audio_mode() == DocumentAudioMode::Resident
+    {
+        let resync = events
+            .resident_audio()
+            .ok_or(SessionError::Invalid("native worker unavailable"))
+            .and_then(|sink| {
+                session.publish_resident_snapshot(
+                    context,
+                    sink,
+                    admission,
+                    resident_snapshot.as_ref(),
+                )
+            });
+        match resync {
+            Ok(restored) => {
+                *resident_snapshot = Some(restored);
+                format!("{base_error}; audio resynchronized to committed project")
+            }
+            Err(resync_error) => {
+                if let Some(sink) = events.sampler_edit_audio() {
+                    sink.close();
+                }
+                format!(
+                    "{base_error}; audio output closed after resync failed ({resync_error}) · restart audio to recover"
+                )
+            }
+        }
+    } else if was_verified || session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        if let Some(sink) = events.sampler_edit_audio() {
+            sink.close();
+        }
+        format!(
+            "{base_error}; audio output closed to prevent model desync · restart audio to recover"
+        )
+    } else if let Some((_, prepared)) = compiled {
+        *restore_prepared = Some(Arc::clone(prepared));
+        format!("{base_error}; audio resynchronized to committed project")
+    } else {
+        if let Some(sink) = events.sampler_edit_audio() {
+            sink.close();
+        }
+        format!(
+            "{base_error}; audio output closed to prevent model desync · restart audio to recover"
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::arrangement_device_command;
     use super::*;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
+
+    struct CommitFailureSink {
+        resident: bool,
+        allow_publish: bool,
+        published_contexts: Arc<Mutex<Vec<hex_engine::AudioSourceContext>>>,
+        close_calls: Arc<AtomicUsize>,
+    }
+
+    impl WorkerAudioSink for CommitFailureSink {
+        fn initialize(&mut self, _shutdown: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _source: Arc<CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {}
+        fn close(&mut self) {
+            self.close_calls.fetch_add(1, Ordering::AcqRel);
+        }
+        fn resident_publication_enabled(&self) -> bool {
+            self.resident
+        }
+        fn publish_resident(
+            &mut self,
+            playback: Playback,
+            _resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+            _observation: Arc<hex_engine::PreparedPlaybackObservation>,
+            metadata: ResidentPublicationMetadata,
+            _policy: ResidentPublicationPolicy,
+            _metadata_limit: usize,
+            _admit: &mut dyn FnMut(
+                &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+            ) -> Result<(), String>,
+        ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+            if self.allow_publish {
+                self.published_contexts
+                    .lock()
+                    .unwrap()
+                    .push(metadata.context);
+                Ok(ResidentPublicationAcceptance::Submitted {
+                    output_identity: 1,
+                    audio_revision: 7,
+                })
+            } else {
+                Err(ResidentPublicationRefusal {
+                    kind: ResidentPublicationFailure::Other,
+                    playback,
+                    error: "native audio sink refused resync".into(),
+                })
+            }
+        }
+    }
+
+    fn resident_session_with_limits() -> Session {
+        Session::new(48_000, 8, 1024)
+            .unwrap()
+            .with_native_reservation(crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 128,
+                    handle_rows: 16,
+                    root_rows: 8,
+                    max_retained_bytes: 64 * 1024 * 1024,
+                    max_construction_peak_bytes: 64 * 1024 * 1024,
+                },
+                max_scan_frames: 48_000 * 60,
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn commit_failure_republishes_committed_project_in_resident_mode() {
+        let session = resident_session_with_limits();
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (tx, _rx) = mpsc::sync_channel(4);
+        let mut events = WorkerEvents::new(
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(CommitFailureSink {
+                resident: true,
+                allow_publish: true,
+                published_contexts: Arc::clone(&published),
+                close_calls: Arc::clone(&closes),
+            })),
+        );
+        let mut snapshot = None;
+        let mut restore = None;
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 11,
+        };
+        let message = reconcile_commit_failure_audio(
+            &session,
+            &mut events,
+            &mut snapshot,
+            None,
+            sampler_export::Admission::default(),
+            context,
+            false,
+            "staged edit changed".into(),
+            &mut restore,
+        );
+        assert!(
+            message.contains("audio resynchronized to committed project"),
+            "unexpected message: {message}"
+        );
+        assert_eq!(*published.lock().unwrap(), vec![context]);
+        assert_eq!(closes.load(Ordering::Acquire), 0);
+        assert!(snapshot.is_some());
+        assert!(restore.is_none());
+    }
+
+    #[test]
+    fn commit_failure_fences_audio_sink_when_resident_resync_fails() {
+        let session = resident_session_with_limits();
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (tx, _rx) = mpsc::sync_channel(4);
+        let mut events = WorkerEvents::new(
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(CommitFailureSink {
+                resident: true,
+                allow_publish: false,
+                published_contexts: Arc::clone(&published),
+                close_calls: Arc::clone(&closes),
+            })),
+        );
+        let mut snapshot = None;
+        let mut restore = None;
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 3,
+            editor_revision: 11,
+        };
+        let message = reconcile_commit_failure_audio(
+            &session,
+            &mut events,
+            &mut snapshot,
+            None,
+            sampler_export::Admission::default(),
+            context,
+            false,
+            "staged edit changed".into(),
+            &mut restore,
+        );
+        assert!(message.contains("restart audio to recover"));
+        assert_eq!(closes.load(Ordering::Acquire), 1);
+        assert!(snapshot.is_none());
+    }
+
+    #[test]
+    fn commit_failure_fences_audio_sink_for_verified_graph_edits() {
+        let session = resident_session_with_limits();
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (tx, _rx) = mpsc::sync_channel(4);
+        let mut events = WorkerEvents::new(
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(CommitFailureSink {
+                resident: true,
+                allow_publish: true,
+                published_contexts: Arc::clone(&published),
+                close_calls: Arc::clone(&closes),
+            })),
+        );
+        let mut snapshot = None;
+        let mut restore = None;
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 4,
+            editor_revision: 2,
+        };
+        let message = reconcile_commit_failure_audio(
+            &session,
+            &mut events,
+            &mut snapshot,
+            None,
+            sampler_export::Admission::default(),
+            context,
+            true,
+            "staged edit changed".into(),
+            &mut restore,
+        );
+        assert!(message.contains("restart audio to recover"));
+        assert_eq!(closes.load(Ordering::Acquire), 1);
+        assert!(published.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn commit_failure_restores_compiled_playback_in_legacy_mode() {
+        let session = Session::new(48_000, 8, 1024).unwrap();
+        let prepared = session.compile_prepared_revision(None).unwrap();
+        let closes = Arc::new(AtomicUsize::new(0));
+        let (tx, _rx) = mpsc::sync_channel(4);
+        let mut events = WorkerEvents::new(
+            tx,
+            Arc::new(AtomicBool::new(false)),
+            Some(Box::new(CommitFailureSink {
+                resident: false,
+                allow_publish: true,
+                published_contexts: Arc::new(Mutex::new(Vec::new())),
+                close_calls: Arc::clone(&closes),
+            })),
+        );
+        let mut snapshot = None;
+        let mut restore = None;
+        let compiled = (1, Arc::clone(&prepared));
+        let message = reconcile_commit_failure_audio(
+            &session,
+            &mut events,
+            &mut snapshot,
+            Some(&compiled),
+            sampler_export::Admission::default(),
+            hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            false,
+            "staged edit changed".into(),
+            &mut restore,
+        );
+        assert!(
+            message.contains("audio resynchronized to committed project"),
+            "unexpected message: {message}"
+        );
+        assert_eq!(closes.load(Ordering::Acquire), 0);
+        assert!(restore.is_some());
+    }
 
     #[test]
     fn arrangement_device_command_rejects_missing_target_track() {

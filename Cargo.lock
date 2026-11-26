@@ -2814,6 +2814,7 @@ dependencies = [
  "hex-lattice-contract",
  "hex-media",
  "hex-plugin-state",
+ "hex-preferences",
  "hex-project",
  "hex-storage",
  "hex-tuning",

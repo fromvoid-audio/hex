@@ -1088,3 +1088,131 @@ fn submission_matches_stopped_history_predecessor_across_applied_pending_and_ref
         }
     ));
 }
+
+#[test]
+fn stalled_event_channel_returns_within_bound_coalesces_and_flushes_on_drain() {
+    let session = Session::new(48_000, 8, 1024).unwrap();
+    let make_event = |revision: u64| {
+        let project = session.project_arc();
+        let state = Arc::new(ViewState {
+            canonical_audio_source: None,
+            comparison_audio: None,
+            gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
+            project,
+            waveforms: session.waveforms(),
+            source_overviews: session.source_overviews().at_context(
+                hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: revision,
+                },
+            ),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
+            timeline_frames: 48_000 * 8,
+            can_undo: false,
+            can_redo: false,
+            revision,
+            unsaved: false,
+            document_path: None,
+        });
+        Event {
+            state,
+            playback: None,
+            status: None,
+            error: None,
+            resident_edit_source_unavailable: None,
+            recovery_failure: None,
+            audio_batch_failure: None,
+            import_truncation: None,
+            request_complete: true,
+            sampler_load_complete: None,
+            sampler_edit_complete: None,
+            plugin_effect_complete: Vec::new(),
+            device_insert_proposal_complete: None,
+            device_insert_confirmation: None,
+            device_insert_complete: None,
+            plugin_parameter_observation: false,
+            plugin_parameters: None,
+            plugin_parameter_conversion: None,
+            computer_keyboard_complete: None,
+            midi_take_complete: None,
+            device_automation_take_complete: None,
+            tuning_audition_complete: None,
+            live_expression_complete: None,
+            bounce_complete: None,
+            audio_batch_complete: None,
+            save_complete: false,
+            save_correlation: None,
+            document_format_upgrade_required: false,
+            save_confirmation_required: false,
+            open_complete: false,
+            project_replaced: false,
+            stopped_playback_restore_complete: false,
+            created: None,
+            duplicate_complete: false,
+            restore_complete: None,
+            device_preview: None,
+            gesture_ack: None,
+            gesture_protocol_ack: false,
+            gesture_request: false,
+            active_device_gesture: None,
+            tuning_preview: None,
+            tuning_gesture_ack: None,
+            tuning_gesture_request: false,
+            active_tuning_gesture: None,
+            tuning_library: None,
+        }
+    };
+    let (tx, rx) = mpsc::sync_channel(1);
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wake_hook = super::client::WakeHook::default();
+    let wake_counter = Arc::clone(&wakes);
+    wake_hook.set(Some(Arc::new(move || {
+        wake_counter.fetch_add(1, Ordering::AcqRel);
+    })));
+    let mut events =
+        WorkerEvents::new(tx, Arc::new(AtomicBool::new(false)), None).with_wake_hook(wake_hook);
+
+    // Fill the single-slot channel with revision 1.
+    let pending1 = events.capture_outcome(make_event(1));
+    assert!(events.send_pending_with_control_poll_bounded(
+        pending1,
+        Duration::from_millis(20),
+        |_| {}
+    ));
+    assert_eq!(events.backpressure_coalesced(), 0);
+
+    // Revision 2 hits full channel and parks within the bounded wait instead of hanging.
+    let started = Instant::now();
+    let pending2 = events.capture_outcome(make_event(2));
+    assert!(events.send_pending_with_control_poll_bounded(
+        pending2,
+        Duration::from_millis(20),
+        |_| {}
+    ));
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "bounded backpressure exceeded expected bound: {:?}",
+        started.elapsed()
+    );
+    assert!(events.has_stalled_outcome());
+    assert_eq!(events.backpressure_coalesced(), 1);
+    assert!(wakes.load(Ordering::Acquire) >= 2);
+
+    // Revision 3 coalesces into the stalled slot without deadlocking.
+    let pending3 = events.capture_outcome(make_event(3));
+    assert!(events.send_pending_with_control_poll_bounded(
+        pending3,
+        Duration::from_millis(10),
+        |_| {}
+    ));
+    assert_eq!(events.backpressure_coalesced(), 2);
+
+    // Once the UI drains revision 1, poll() delivers the coalesced revision 3.
+    let first = rx.try_recv().unwrap();
+    assert_eq!(first.state.revision, 1);
+    events.poll();
+    assert!(!events.has_stalled_outcome());
+    let flushed = rx.try_recv().unwrap();
+    assert_eq!(flushed.state.revision, 3);
+}
