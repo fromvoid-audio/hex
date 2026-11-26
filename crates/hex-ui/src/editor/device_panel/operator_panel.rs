@@ -235,13 +235,12 @@ pub(super) fn render_body(
         detail = detail.child(control);
     }
     let preview = preview::render(view, cx, device, device_view);
-    let performance = performance_column(view, cx, device, identity, parameters);
     let right = div()
         .flex()
         .h_full()
         .flex_shrink_0()
         .child(preview)
-        .child(performance);
+        .child(performance_column(view, cx, device, identity, parameters));
     crate::device_composition::three_pane(left, detail, right)
         .tab_group()
         .id(ElementId::Name(

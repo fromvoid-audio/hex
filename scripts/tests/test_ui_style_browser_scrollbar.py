@@ -47,6 +47,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                     ".child(mod_mode) .child(stereo_rail) .child(main_rail)"
                 ),
                 "crates/hex-ui/src/editor/device_panel/modulators/source_card.rs": '.child(parameter_control_with_presentation(view, cx, id, identity, row)) .child(control_row)',
+                "crates/hex-ui/src/editor/device_panel/operator_panel.rs": ".child(performance_column(view, cx, device, identity, parameters))",
                 "crates/hex-ui/src/editor/device_panel/saturator_panel.rs": '.child(ws_caption) .child(dial_row(ws_drive, ws_curve))',
             }
             for name, text in files.items():
@@ -68,6 +69,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(self.browser_scrollbar(cx))'),
                 ("other.rs", '.child(list)'),
                 ("other.rs", '.child(ws_caption)'),
+                ("editor/device_panel/operator_panel.rs", '.child("Raw caption")'),
+                ("other.rs", ".child(performance_column(view, cx, device, identity, parameters))"),
                 ("editor/device_panel/saturator_panel.rs", '.child("Raw caption")'),
                 ("editor/device_panel/saturator_panel.rs", '.child(unknown_dial)'),
                 ("other.rs", '.child(bar)'),
