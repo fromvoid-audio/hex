@@ -523,9 +523,15 @@ public:
         const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
         if (interface_absent(queried,view)) return PresentationResult::Absent;
         if (queried!=kResultOk || !view) { if (view) view->release();return PresentationResult::Refused; }
-        const bool ok=(silent_input_ || !configuration_.input_channels ||
+        bool ok=(silent_input_ || !configuration_.input_channels ||
             view->setAudioPresentationLatencySamples(kInput,0,input)==kResultOk) &&
             view->setAudioPresentationLatencySamples(kOutput,0,output)==kResultOk;
+        // All admitted instrument auxiliaries currently mix into the same
+        // monitored stereo output and share its downstream presentation delay.
+        for (int32 bus=1;ok && bus<output_bus_count_;++bus) {
+            if (active_aux_outputs_mask_ & (uint32_t{1}<<bus))
+                ok=view->setAudioPresentationLatencySamples(kOutput,bus,output)==kResultOk;
+        }
         view->release();return ok?PresentationResult::Applied:PresentationResult::Refused;
     }
     std::optional<uint32> reported_latency_on_control() const {
