@@ -350,7 +350,24 @@ fn registered_operator_matches_independent_arrangement_session_seek_and_loop_pcm
         .iter()
         .find(|entry| entry.type_id == OPERATOR)
         .expect("Operator catalog entry");
-    assert_eq!(operator.parameters.len(), 432);
+    let performance: Vec<_> = operator
+        .parameters
+        .iter()
+        .filter(|parameter| matches!(parameter.id.value(), 617..=619 | 640..=643))
+        .map(|parameter| (parameter.id.value(), parameter.label, parameter.default))
+        .collect();
+    assert_eq!(
+        performance,
+        [
+            (617, "time", ParameterValue::Float(0.0)),
+            (618, "tone", ParameterValue::Float(100.0)),
+            (619, "volume", ParameterValue::Float(0.0)),
+            (640, "transpose", ParameterValue::Float(0.0)),
+            (641, "spread", ParameterValue::Float(0.0)),
+            (642, "glide enabled", ParameterValue::Bool(false)),
+            (643, "glide time", ParameterValue::Float(0.05)),
+        ]
+    );
     let enables: Vec<_> = operator
         .parameters
         .iter()
