@@ -3705,7 +3705,13 @@ fn candidate_two_domain_capacity_case(action: TwoDomainAfterPressure) {
             }
             let (failed, next_width, _) = crate::candidate_window_probe::finish().unwrap();
             assert_eq!((failed, next_width), (256, 128));
-            assert_eq!(output, [[0.75; 2]; 256]);
+            // The first domain remains at 0.25. The newly unmuted source in
+            // the second domain reaches 0.5 over five milliseconds at 48 kHz.
+            let (ramp, settled) = output.split_at(240);
+            assert_stream_window(ramp, ramp.len(), [0.25; 2], false, 1e-6, |i| {
+                0.25 + 0.5 * (i + 1) as f32 / 240.0
+            });
+            assert!(settled.iter().all(|frame| *frame == [0.75; 2]));
         }
     }
     assert!(control.retire_audio_candidate_domain(first_domain));
