@@ -198,6 +198,10 @@ editor_components = {
     'device_panel/device_meter.rs': ('view.device_overlay_slot_or_inline(meter_entity))',),
     'device_panel/eq8_panel/graph.rs': ('view.device_overlay_slot_or_inline(graph_entity))',),
     'device_panel/gate_panel.rs': ('ctrl)', 'row(', 'extras)'),
+    'device_panel/auto_pan_panel.rs': (
+        'rate_mode)', 'sync_division)', 'a)', 'b)', 'stereo_mode)', 'invert)',
+        'dial_row(', 'main_caption)', 'amount)', 'mod_mode)', 'stereo_rail)', 'main_rail)',
+    ),
     'device_panel/compressor_panel.rs': ('ctrl)', 'row(', 'extras)', 'mode_col)', 'sc_col)'),
     'device_panel/overdrive_panel.rs': ('entity)', 'top_dials)', 'bottom_dials)'),
     'device_panel/saturator_panel.rs': (
