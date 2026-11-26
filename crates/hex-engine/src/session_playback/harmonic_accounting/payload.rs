@@ -184,6 +184,8 @@ pub(super) struct HostOwner {
     sample_rate: u32,
     frozen_parameters: crate::mutable_instrument::frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
+    // Harmonic fixtures have no MIDI processor, but each host reserves its box pointer.
+    midi_processor: Option<Box<()>>,
     output_trim: Option<crate::mutable_instrument::output_trim::OutputTrim>,
     // Mirror the actual inline optional lease header. Harmonic fixtures have no
     // resource lease; source/configuration owners use the separate resource ledger.
