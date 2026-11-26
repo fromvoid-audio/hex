@@ -310,6 +310,8 @@ pub(super) struct Voice {
     pub machines: [Option<companion::Machine>; 4],
     pub pitch_offset_cents: i16,
     pub timbre: u8,
+    pub glide_semitones: f64,
+    pub glide_target_pitch: f64,
 }
 #[derive(Clone, Copy)]
 pub(super) struct ParameterRamp {
@@ -364,6 +366,8 @@ pub(super) struct Runtime {
     cc_timbre: u8,
     last_targets: [f32; automation::TARGET_COUNT],
     tone_filter: performance::ToneFilter,
+    last_note_pitch: Option<f64>,
+    spread_stage: pitch_perf::SpreadStage,
 }
 
 // Borrow the source bank through validation/retargeting. Legacy runtimes convert
@@ -487,6 +491,8 @@ impl PreparedMutableInstrumentRuntime for Factory {
             cc_timbre: 0,
             last_targets: automation::base_target_values(&self.settings),
             tone_filter: performance::ToneFilter::default(),
+            last_note_pitch: None,
+            spread_stage: pitch_perf::SpreadStage::default(),
         })
     }
     fn as_any(&self) -> &dyn Any {

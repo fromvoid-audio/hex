@@ -24,6 +24,9 @@ struct SubBlockSample {
     time_scale: f64,
     tone_alpha: Option<f64>,
     volume_gain: f32,
+    transpose_st: f64,
+    spread_pct: f64,
+    glide_decay: f64,
 }
 
 impl Default for SubBlockSample {
@@ -43,6 +46,9 @@ impl Default for SubBlockSample {
             time_scale: 1.0,
             tone_alpha: None,
             volume_gain: 1.0,
+            transpose_st: 0.0,
+            spread_pct: 0.0,
+            glide_decay: 0.0,
         }
     }
 }
@@ -128,6 +134,9 @@ impl Runtime {
         const TIME_MASK: u32 = 1 << automation::TIME_IDX;
         const TONE_MASK: u32 = 1 << automation::TONE_IDX;
         const VOLUME_MASK: u32 = 1 << automation::VOLUME_IDX;
+        const TRANSPOSE_MASK: u32 = 1 << automation::TRANSPOSE_IDX;
+        const SPREAD_MASK: u32 = 1 << automation::SPREAD_IDX;
+        const GLIDE_TIME_MASK: u32 = 1 << automation::GLIDE_TIME_IDX;
         let base_time_scale = self.factory.settings.performance.time_rate();
         let base_tone_alpha = performance::tone_alpha_for(
             f64::from(self.factory.settings.performance.tone),
@@ -135,9 +144,16 @@ impl Runtime {
         );
         let base_volume_gain =
             performance::volume_gain_for(f64::from(self.factory.settings.performance.volume));
+        let base_transpose_st = f64::from(self.factory.settings.pitch_perf.transpose);
+        let base_spread_pct = f64::from(self.factory.settings.pitch_perf.spread);
+        let base_glide_decay = pitch_perf::glide_decay_coeff(
+            f64::from(self.factory.settings.pitch_perf.glide_time),
+            self.factory.rate,
+        );
         let output_stage_active = base_tone_alpha.is_some()
             || base_volume_gain != 1.0
-            || (mask & (TONE_MASK | VOLUME_MASK)) != 0;
+            || base_spread_pct > 0.0
+            || (mask & (TONE_MASK | VOLUME_MASK | SPREAD_MASK)) != 0;
 
         let mut cursor = 0;
         let mut voice_end = self
@@ -370,6 +386,33 @@ impl Runtime {
                 } else {
                     base_volume_gain
                 };
+                let transpose_st = if (mask & TRANSPOSE_MASK) != 0 {
+                    Self::read_target(values, mask, automation::TRANSPOSE_IDX, offset).map_or(
+                        base_transpose_st,
+                        |v| {
+                            f64::from(v).clamp(
+                                f64::from(pitch_perf::MIN_TRANSPOSE_ST),
+                                f64::from(pitch_perf::MAX_TRANSPOSE_ST),
+                            )
+                        },
+                    )
+                } else {
+                    base_transpose_st
+                };
+                let spread_pct = if (mask & SPREAD_MASK) != 0 {
+                    Self::read_target(values, mask, automation::SPREAD_IDX, offset)
+                        .map_or(base_spread_pct, |v| f64::from(v).clamp(0.0, 100.0))
+                } else {
+                    base_spread_pct
+                };
+                let glide_decay = if (mask & GLIDE_TIME_MASK) != 0 {
+                    Self::read_target(values, mask, automation::GLIDE_TIME_IDX, offset)
+                        .map_or(base_glide_decay, |v| {
+                            pitch_perf::glide_decay_coeff(f64::from(v), self.factory.rate)
+                        })
+                } else {
+                    base_glide_decay
+                };
                 *slot = SubBlockSample {
                     beat,
                     running,
@@ -385,6 +428,9 @@ impl Runtime {
                     time_scale,
                     tone_alpha,
                     volume_gain,
+                    transpose_st,
+                    spread_pct,
+                    glide_decay,
                 };
                 if law.active() {
                     let next = self.phase.0 + delta;
@@ -577,9 +623,14 @@ impl Runtime {
                     .zip(stage_mix[..sub_len].iter())
                     .zip(sub_slice.iter())
                 {
+                    let spread_out = self.spread_stage.process_sample(
+                        mixed,
+                        sample_ctx.spread_pct,
+                        self.factory.rate,
+                    );
                     let toned = self
                         .tone_filter
-                        .process_sample(mixed, sample_ctx.tone_alpha);
+                        .process_sample(spread_out, sample_ctx.tone_alpha);
                     let gain = sample_ctx.volume_gain;
                     out_frame[0] += toned[0] * gain;
                     out_frame[1] += toned[1] * gain;
@@ -665,6 +716,16 @@ fn render_voice_sample(
         }
     } else {
         static_steps
+    };
+    let pitch_perf_st = ctx.transpose_st + voice.glide_semitones;
+    let steps = if pitch_perf_st != 0.0 {
+        pitch_perf::scale_steps_by_semitones(
+            steps,
+            pitch_perf_st,
+            factory.settings.pitch_keytrack.values(),
+        )
+    } else {
+        steps
     };
     let age = if quality {
         voice.envelope_frame()
@@ -848,6 +909,12 @@ fn render_voice_sample(
         voice.envelope_age = (voice.envelope_age + rate).min(u64::MAX as f64);
         if let Some(filter) = &mut voice.modulated_filter {
             filter.advance();
+        }
+    }
+    if voice.glide_semitones != 0.0 {
+        voice.glide_semitones *= ctx.glide_decay;
+        if voice.glide_semitones.abs() < 1e-4 {
+            voice.glide_semitones = 0.0;
         }
     }
     voice.age = voice.age.saturating_add(1);

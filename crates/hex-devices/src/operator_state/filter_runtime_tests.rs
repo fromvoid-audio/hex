@@ -210,8 +210,7 @@ fn version_seven_migrates_disabled_without_consuming_reserved_formats_or_ids() {
             .descriptors()
             .iter()
             .all(|d| d.id.value() <= 388
-                || (600..=619).contains(&d.id.value())
-                || (620..=639).contains(&d.id.value())
+                || (600..=643).contains(&d.id.value())
                 || (513..=516).contains(&d.id.value())
                 || d.id.value() >= 20001)
     );
