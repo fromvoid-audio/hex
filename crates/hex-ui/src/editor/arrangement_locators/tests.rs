@@ -1900,8 +1900,16 @@ fn review_markers_follow_the_audible_playhead_and_either_handle_removes_only_its
         .center();
     visual.simulate_click(second, Modifiers::default());
     visual.run_until_parked();
+    let surface = visual.debug_bounds("arrangement-surface").unwrap();
     editor.read_with(&visual, |view, _| {
-        assert!(view.locators.review_frames.is_empty());
+        assert!(
+            view.locators.review_frames.is_empty(),
+            "remaining {:?} after clicks at {:?} and {:?} on {:?}",
+            view.locators.review_frames,
+            top.center(),
+            second,
+            surface
+        );
         assert_eq!(view.state.as_ref().unwrap().revision, original.revision);
         assert_eq!(view.state.as_ref().unwrap().project, original.project);
         assert!(view.pending_requests.is_empty());

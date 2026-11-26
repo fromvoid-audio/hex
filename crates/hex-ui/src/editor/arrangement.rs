@@ -1044,6 +1044,9 @@ impl EditorView {
             } else {
                 theme::PaletteRole::Border
             })));
+        let upper = upper
+            .relative()
+            .children(self.review_marker_layer(viewport, cx));
         let timeline_column = div()
             .id("arrangement-timeline-column")
             .relative()
@@ -1058,8 +1061,7 @@ impl EditorView {
             .child(self.arrangement_playback_layer(cx))
             .children(clip_move_guide)
             .child(self.track_resize_events(cx))
-            .children([self.track_reorder_events(cx)])
-            .children(self.review_marker_layer(viewport, cx));
+            .children([self.track_reorder_events(cx)]);
         div()
             .debug_selector(|| "arrangement-surface".into())
             .relative()
