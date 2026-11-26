@@ -391,15 +391,7 @@ pub(super) fn open_source_with_limits(
     }
     // Validate saved sampler identity before inspecting its media. The prepare
     // boundary repeats this check because other callers enter it directly.
-    let private_sampler = validate_sampler_source_identity(&project)?;
-    if mode == DocumentAudioMode::VerifiedStreaming
-        && (private_sampler
-            || project
-                .assets()
-                .any(|asset| asset.original_source().is_some()))
-    {
-        return Err("device-original verified opening is not yet available".into());
-    }
+    let _private_sampler = validate_sampler_source_identity(&project)?;
     project = with_missing_media_offline(project, &project_dir)?;
     let session = prepare_project(
         current,

@@ -30,11 +30,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         "first sampler load only; active sampler replacement is unavailable",
                     ));
                 }
-                if ctx.worker.session.audio_mode() != DocumentAudioMode::Resident
-                    || ctx.worker.session.native_reservation.is_none()
-                {
+                if ctx.worker.session.native_reservation.is_none() {
                     return Err(SessionError::Invalid(
-                        "sampler requires explicit resident document admission",
+                        "sampler requires explicit native document admission",
                     ));
                 }
                 if cancel.load(Ordering::Acquire) {
@@ -189,7 +187,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     },
                 );
                 if ctx.worker.events.resident_publication_enabled()
-                    && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                    && (ctx.worker.session.uses_ordinary_worker_publication()
+                        || ctx.worker.resident_snapshot.is_some())
                 {
                     resident_audio::execute_command(
                         &mut ctx.worker.session,
@@ -246,7 +245,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         Request::ImportDeviceAsset { path, cancel }
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident =>
+                && ctx.worker.session.native_reservation.is_some() =>
         {
             let result = (|| {
                 if cancel.load(Ordering::Acquire) {
@@ -336,7 +335,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
 
         Request::SamplerEdit(mut edit)
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident =>
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some()) =>
         {
             ctx.outcome.sampler_edit_complete = Some(edit.request_id());
             let result = (|| {

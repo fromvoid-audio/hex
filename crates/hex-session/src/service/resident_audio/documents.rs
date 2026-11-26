@@ -104,13 +104,8 @@ pub(in crate::service) fn prepare_document_replacement(
             .ok_or("project revision exhausted")?,
     };
     // Mixed verified/file and private sampler preparation needs the ordinary
-    // resource owner. Public mixed opening remains guarded until the native
-    // publication-owner transition is implemented.
-    let ordinary = candidate.audio_mode() == DocumentAudioMode::Resident
-        || (candidate.audio_mode() == DocumentAudioMode::VerifiedStreaming
-            && hex_engine::native_device_resources::requires_private_sampler_sources(
-                candidate.project(),
-            ));
+    // resource owner so the worker hands off or opens on the ordinary path.
+    let ordinary = candidate.uses_ordinary_worker_publication();
     if ordinary && let Some(sink) = events.resident_audio() {
         let resident = candidate
             .prepare_resident_document_replacement(old, context, sink, admission, current)

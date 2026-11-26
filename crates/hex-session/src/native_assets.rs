@@ -145,11 +145,6 @@ impl Session {
         let reservation = self.native_reservation.ok_or(SessionError::Invalid(
             "native source import requires an explicit resident reservation",
         ))?;
-        if self.audio_mode != DocumentAudioMode::Resident {
-            return Err(SessionError::Invalid(
-                "native source import requires resident document mode",
-            ));
-        }
         if cancel.load(Ordering::Relaxed) || self.shutdown.load(Ordering::Relaxed) {
             return Err(ResourcePreparationError::Cancelled.into());
         }
