@@ -180,3 +180,64 @@ fn missing_or_corrupted_originals_refuse_without_replacing_the_retained_file() {
     cancel.store(true, Ordering::Release);
     assert!(matches!(store.load(entry, &cancel), Err(Error::Cancelled)));
 }
+
+#[test]
+fn session_captures_live_resident_original_unit_without_mutating_project() {
+    let directory = TestDirectory::new();
+    let cancel = AtomicBool::new(false);
+    let frames = [[0.0, 0.25], [0.3, -0.5], [0.8, 0.125]];
+    let manifest_entry = expected(8000, &frames);
+    let path = directory.0.join("live-resident.wav");
+    write_original(&path, 8000, &frames, &cancel);
+
+    let mut live = session(48_000);
+    let Created::Track(track) = live
+        .editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let decoded = hex_media::decode_wav_file(&path, Limits::new(1024, 1024)).unwrap();
+    let (Created::Asset(asset_id), _) = live.import_device_asset(decoded, &cancel, None).unwrap()
+    else {
+        panic!("asset")
+    };
+    assert_eq!(
+        live.project().asset(asset_id).unwrap().original_source(),
+        None
+    );
+
+    let state = NativeDeviceState::new(
+        DeviceTypeId::from_static("test.preset.original"),
+        1,
+        vec![1],
+    )
+    .unwrap()
+    .with_asset_references(vec![DeviceAssetReference {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        asset: DeviceAssetKey::new(asset_id.value()).unwrap(),
+    }])
+    .unwrap();
+    let Created::Device(root) = live
+        .editor
+        .execute(Command::InsertInstrument { track, state })
+        .unwrap()
+    else {
+        panic!("instrument")
+    };
+
+    let before = live.project().clone();
+    assert!(live.project().capture_portable_device_unit(root).is_err());
+    let captured = live.capture_portable_device_unit(root).unwrap();
+    assert_eq!(live.project(), &before);
+    assert_eq!(captured.assets(), &[manifest_entry]);
+    assert_eq!(
+        captured.nodes()[0].state.asset_references()[0]
+            .asset
+            .value(),
+        1
+    );
+}

@@ -167,7 +167,9 @@ mod device_clipboard;
 pub use device_clipboard::{DeviceChainOwner, DeviceClipboard, DeviceSelectionIds};
 mod device_comparison;
 mod device_initialization;
-pub use device_initialization::DeviceInitialization;
+pub use device_initialization::{
+    DeviceInitialization, RegisterUnitOriginal, ReservedUnitOriginal, UnitAssetResolution,
+};
 mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod native_sources;
