@@ -211,7 +211,7 @@ impl AsRef<hex_widgets::WaveformGeometry> for WaveformGeometry {
 pub(super) struct RenderedWaveformSample {
     pub(super) source: Arc<CachedWaveform>,
     pub(super) prepared: Option<(u64, u64)>,
-    pub(super) spans: [f32; 2],
+    pub(super) spans: Vec<f32>,
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -221,6 +221,7 @@ pub(super) struct WaveformPaintSample {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) mask: Bounds<Pixels>,
     pub(super) ordinates: [(f32, f32); 2],
+    pub(super) lane_count: usize,
     pub(super) envelope_points: usize,
     pub(super) outline_fingerprint: [u64; 2],
     pub(super) overrange_ready: bool,
