@@ -524,14 +524,14 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
                 assert_eq!(actual, retained, "every retained file must be reported");
             };
             for (start, frames, resources, control, expect_stage) in [
-                (0, 1, &foreign.resources, ExportControl::default(), true),
+                (0, 1, &foreign.resources, ExportControl::default(), false),
                 (u64::MAX, 2, &f.resources, ExportControl::default(), false),
                 (
                     hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES + 1,
                     1,
                     &f.resources,
                     ExportControl::default(),
-                    true,
+                    false,
                 ),
                 (
                     0,
@@ -560,7 +560,7 @@ fn resource_scope_cancel_range_and_preroll_refusals_leave_no_output() {
             }
             assert_refused(
                 hex_export::render_prepared_new(&path, Arc::clone(&f.revision), 0, 1),
-                true,
+                false,
             );
             assert_refused(
                 hex_export::render_bounce_new_with_device_resources(

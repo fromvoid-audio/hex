@@ -1,6 +1,190 @@
 //! One-pass capture and exclusive publication of a new batch directory.
 use super::*;
 use hex_engine::{OutputCapture, OutputCaptureId};
+use std::{cell::RefCell, io::Seek, rc::Rc};
+
+/// Upper bound on simultaneously open stem `File` handles during a batch export,
+/// kept well below macOS's default soft `RLIMIT_NOFILE = 256` even when
+/// exporting up to `hex_engine::MAX_OUTPUT_CAPTURES` (272) stems.
+const MAX_OPEN_STEM_FILES: usize = 64;
+
+struct StemFileSlot {
+    path: PathBuf,
+    pos: u64,
+    writer: Option<BufWriter<File>>,
+    last_use: u64,
+}
+
+struct StemFilePool {
+    slots: Vec<StemFileSlot>,
+    open_count: usize,
+    max_open: usize,
+    peak_open: usize,
+    tick: u64,
+}
+
+impl StemFilePool {
+    fn new(max_open: usize) -> Self {
+        Self {
+            slots: Vec::new(),
+            open_count: 0,
+            max_open: max_open.max(1),
+            peak_open: 0,
+            tick: 0,
+        }
+    }
+
+    fn next_tick(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+
+    fn evict_lru(&mut self) -> io::Result<()> {
+        let Some((evict_idx, _)) = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| slot.writer.is_some())
+            .min_by_key(|(_, slot)| slot.last_use)
+        else {
+            return Ok(());
+        };
+        if let Some(mut writer) = self.slots[evict_idx].writer.take() {
+            self.open_count = self.open_count.saturating_sub(1);
+            writer.flush()?;
+        }
+        Ok(())
+    }
+
+    fn create_slot(&mut self, path: PathBuf) -> io::Result<usize> {
+        if self.open_count >= self.max_open {
+            self.evict_lru()?;
+        }
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
+        let tick = self.next_tick();
+        let index = self.slots.len();
+        self.slots.push(StemFileSlot {
+            path,
+            pos: 0,
+            writer: Some(BufWriter::with_capacity(IO_BUFFER_BYTES, file)),
+            last_use: tick,
+        });
+        self.open_count += 1;
+        self.peak_open = self.peak_open.max(self.open_count);
+        Ok(index)
+    }
+
+    fn ensure_open(&mut self, index: usize) -> io::Result<&mut StemFileSlot> {
+        let needs_open = self
+            .slots
+            .get(index)
+            .ok_or_else(|| io::Error::other("stem file pool slot out of bounds"))?
+            .writer
+            .is_none();
+        if needs_open {
+            if self.open_count >= self.max_open {
+                self.evict_lru()?;
+            }
+            let (path, pos) = {
+                let slot = &self.slots[index];
+                (slot.path.clone(), slot.pos)
+            };
+            let mut file = OpenOptions::new().write(true).open(&path)?;
+            file.seek(io::SeekFrom::Start(pos))?;
+            self.slots[index].writer = Some(BufWriter::with_capacity(IO_BUFFER_BYTES, file));
+            self.open_count += 1;
+            self.peak_open = self.peak_open.max(self.open_count);
+        }
+        let tick = self.next_tick();
+        let slot = &mut self.slots[index];
+        slot.last_use = tick;
+        Ok(slot)
+    }
+
+    fn sync_and_close(&mut self, index: usize) -> io::Result<()> {
+        let slot = self.ensure_open(index)?;
+        let result = if let Some(mut writer) = slot.writer.take() {
+            writer.flush().and_then(|()| writer.get_ref().sync_all())
+        } else {
+            Ok(())
+        };
+        self.open_count = self.open_count.saturating_sub(1);
+        result
+    }
+}
+
+struct PooledStemWriter {
+    pool: Rc<RefCell<StemFilePool>>,
+    index: usize,
+}
+
+impl PooledStemWriter {
+    fn sync_and_close(self) -> io::Result<()> {
+        let mut pool = self
+            .pool
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("stem file pool already borrowed"))?;
+        pool.sync_and_close(self.index)
+    }
+}
+
+impl Write for PooledStemWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let mut pool = self
+            .pool
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("stem file pool already borrowed"))?;
+        let slot = pool.ensure_open(self.index)?;
+        let Some(writer) = slot.writer.as_mut() else {
+            return Err(io::Error::other("stem file slot not open"));
+        };
+        let written = writer.write(buf)?;
+        slot.pos = slot
+            .pos
+            .checked_add(written as u64)
+            .ok_or_else(|| io::Error::other("stem file offset overflow"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        let mut pool = self
+            .pool
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("stem file pool already borrowed"))?;
+        if let Some(slot) = pool.slots.get_mut(self.index)
+            && let Some(writer) = slot.writer.as_mut()
+        {
+            writer.flush()?;
+        }
+        Ok(())
+    }
+}
+
+impl Seek for PooledStemWriter {
+    fn seek(&mut self, pos: io::SeekFrom) -> io::Result<u64> {
+        let mut pool = self
+            .pool
+            .try_borrow_mut()
+            .map_err(|_| io::Error::other("stem file pool already borrowed"))?;
+        if pos == io::SeekFrom::Current(0) {
+            return pool
+                .slots
+                .get(self.index)
+                .map(|slot| slot.pos)
+                .ok_or_else(|| io::Error::other("stem file pool slot out of bounds"));
+        }
+        let slot = pool.ensure_open(self.index)?;
+        let Some(writer) = slot.writer.as_mut() else {
+            return Err(io::Error::other("stem file slot not open"));
+        };
+        let new_pos = writer.seek(pos)?;
+        slot.pos = new_pos;
+        Ok(new_pos)
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct Stem {
@@ -82,7 +266,7 @@ pub(super) fn render_stems_using_pages(
     spec: StemBatchSpec<'_>,
     pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
-    render_stems_with_resources_and_hook(spec, || {}, pages)
+    render_stems_with_resources_and_hook(spec, MAX_OPEN_STEM_FILES, || {}, pages)
 }
 #[cfg(test)]
 fn render_stems_with_hook(
@@ -105,6 +289,7 @@ fn render_stems_with_hook(
             format: ExportFormat::Pcm16,
             control,
         },
+        MAX_OPEN_STEM_FILES,
         before_publication,
         None,
     )
@@ -112,6 +297,7 @@ fn render_stems_with_hook(
 
 fn render_stems_with_resources_and_hook(
     spec: StemBatchSpec<'_>,
+    max_open_files: usize,
     before_publication: impl FnOnce(),
     mut pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
@@ -138,6 +324,11 @@ fn render_stems_with_resources_and_hook(
     let rate = revision.arrangement().sample_rate();
     let frame_bytes = format.frame_bytes();
     let (bytes, byte_rate) = if format.is_flac() {
+        if frames == 0 {
+            return Err(ExportError::Invalid(
+                "flac export requires at least one frame",
+            ));
+        }
         if !(8_000..=192_000).contains(&rate) {
             return Err(ExportError::Invalid("invalid sample rate"));
         }
@@ -195,24 +386,28 @@ fn render_stems_with_resources_and_hook(
         .map_err(|_| ExportError::Invalid("invalid stem owner selection"))?;
     let mut staging = Staging::new(path)?;
     enum StemWriter {
-        Wav(BufWriter<File>),
-        Flac(hex_media::FlacStreamWriter<BufWriter<File>>),
+        Wav(PooledStemWriter),
+        Flac(hex_media::FlacStreamWriter<PooledStemWriter>),
     }
+    let file_pool = Rc::new(RefCell::new(StemFilePool::new(max_open_files)));
     let mut writers = Vec::with_capacity(ordered.len());
     for stem in &ordered {
         control.check()?;
         let filename = filename(stem, format);
         let target = staging.path.join(filename);
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&target)
+        let slot_index = file_pool
+            .try_borrow_mut()
+            .map_err(|_| ExportError::Invalid("stem file pool already borrowed"))?
+            .create_slot(target.clone())
             .map_err(|source| ExportError::Io {
                 operation: "create a staged stem",
                 source,
             })?;
         staging.files.push(target);
-        let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
+        let mut writer = PooledStemWriter {
+            pool: Rc::clone(&file_pool),
+            index: slot_index,
+        };
         if format.is_flac() {
             let flac =
                 hex_media::FlacStreamWriter::new(writer, rate, 2, format.bits_per_sample(), frames)
@@ -319,7 +514,7 @@ fn render_stems_with_resources_and_hook(
     let mut max_flac_bytes = 0_u64;
     for writer in writers {
         control.check()?;
-        let mut buf_writer = match writer {
+        let pooled = match writer {
             StemWriter::Wav(w) => w,
             StemWriter::Flac(f) => {
                 let (w, bytes_written) = f.finish().map_err(map_flac_encode_error)?;
@@ -327,13 +522,10 @@ fn render_stems_with_resources_and_hook(
                 w
             }
         };
-        buf_writer
-            .flush()
-            .and_then(|()| buf_writer.get_ref().sync_all())
-            .map_err(|source| ExportError::Io {
-                operation: "synchronize a staged stem",
-                source,
-            })?;
+        pooled.sync_and_close().map_err(|source| ExportError::Io {
+            operation: "synchronize a staged stem",
+            source,
+        })?;
     }
     let report_bytes = if format.is_flac() {
         max_flac_bytes
@@ -341,12 +533,10 @@ fn render_stems_with_resources_and_hook(
         u64::from(bytes)
     };
     #[cfg(unix)]
-    File::open(&staging.path)
-        .and_then(|file| file.sync_all())
-        .map_err(|source| ExportError::Io {
-            operation: "synchronize the staged batch directory",
-            source,
-        })?;
+    sync_directory(&staging.path).map_err(|source| ExportError::Io {
+        operation: "synchronize the staged batch directory",
+        source,
+    })?;
     before_publication();
     if let Some(pages) = pages {
         pages.finish(control)?;
@@ -680,5 +870,149 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[test]
+    fn stem_file_pool_caps_open_handles_and_preserves_random_access_seeks() {
+        let parent = std::env::temp_dir().join(format!(
+            "hex-stems-pool-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&parent).unwrap();
+        let pool = Rc::new(RefCell::new(StemFilePool::new(4)));
+        let mut writers = Vec::new();
+        let mut paths = Vec::new();
+        for i in 0..20_u8 {
+            let path = parent.join(format!("stem-{i:03}.bin"));
+            let idx = pool.borrow_mut().create_slot(path.clone()).unwrap();
+            let mut writer = PooledStemWriter {
+                pool: Rc::clone(&pool),
+                index: idx,
+            };
+            writer.write_all(&[0, 0, 0, 0]).unwrap();
+            writers.push(writer);
+            paths.push(path);
+        }
+        for round in 0..3_u8 {
+            for (i, writer) in writers.iter_mut().enumerate() {
+                writer.write_all(&[i as u8, round]).unwrap();
+            }
+        }
+        for (i, writer) in writers.into_iter().enumerate() {
+            let mut w = writer;
+            assert_eq!(w.stream_position().unwrap(), 10);
+            w.seek(io::SeekFrom::Start(0)).unwrap();
+            w.write_all(&(i as u32).to_le_bytes()).unwrap();
+            w.sync_and_close().unwrap();
+        }
+        assert!(pool.borrow().peak_open <= 4);
+        assert_eq!(pool.borrow().open_count, 0);
+        for (i, path) in paths.iter().enumerate() {
+            let bytes = fs::read(path).unwrap();
+            let mut expected = (i as u32).to_le_bytes().to_vec();
+            for round in 0..3_u8 {
+                expected.extend_from_slice(&[i as u8, round]);
+            }
+            assert_eq!(bytes, expected);
+        }
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn zero_frame_flac_stem_export_is_refused_before_creating_staging() {
+        let parent = std::env::temp_dir().join(format!(
+            "hex-stems-empty-flac-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&parent).unwrap();
+        let (revision, stems) = fixture();
+        let error = crate::render_prepared_with_policy(crate::ExportJobSpec {
+            path: &parent.join("empty-flac-stems"),
+            revision,
+            resources: None,
+            start: 0,
+            frames: 0,
+            signal: ExportSignal::Stems(stems.to_vec()),
+            format: ExportFormat::Flac16,
+            control: &ExportControl::default(),
+            publication: &Publication::CreateNew,
+        })
+        .unwrap_err();
+        assert!(matches!(error, ExportError::Invalid(_)));
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn multi_stem_export_above_fd_cap_succeeds_for_wav_and_flac() {
+        const { assert!(MAX_OPEN_STEM_FILES <= 64) };
+        let parent = std::env::temp_dir().join(format!(
+            "hex-stems-fdcap-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir(&parent).unwrap();
+        let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        let stem_count = 16;
+        let mut stems = Vec::with_capacity(stem_count);
+        for i in 0..stem_count {
+            let Created::Track(track) = editor
+                .execute(Command::AddTrack {
+                    name: format!("stem-{i:03}"),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            stems.push(Stem {
+                id: OutputCaptureId::Track(track),
+                name: format!("stem-{i:03}"),
+            });
+        }
+        let revision = Arc::new(
+            PreparedRevision::prepare(
+                editor.project(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        for format in [ExportFormat::Pcm16, ExportFormat::Flac16] {
+            let batch_path = parent.join(format!("batch-{format:?}"));
+            let report = render_stems_with_resources_and_hook(
+                StemBatchSpec {
+                    path: &batch_path,
+                    revision: Arc::clone(&revision),
+                    resources: None,
+                    start: 0,
+                    frames: 257,
+                    stems: &stems,
+                    format,
+                    control: &ExportControl::default(),
+                },
+                4,
+                || {},
+                None,
+            )
+            .unwrap();
+            assert_eq!(report.frames, 257);
+            assert_eq!(fs::read_dir(&batch_path).unwrap().count(), stem_count);
+            for stem in [&stems[0], &stems[stem_count - 1]] {
+                let stem_path = batch_path.join(filename(stem, format));
+                assert!(stem_path.is_file());
+                if format.is_flac() {
+                    let decoded = hex_media::decode_audio_file(
+                        &stem_path,
+                        hex_media::Limits::new(8 * 1024 * 1024, 65_536),
+                    )
+                    .unwrap();
+                    assert_eq!(decoded.audio().frames().len(), 257);
+                }
+            }
+        }
+        fs::remove_dir_all(parent).unwrap();
     }
 }

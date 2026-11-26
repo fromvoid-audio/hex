@@ -114,6 +114,12 @@ impl ExportControl {
         Ok(())
     }
 
+    pub(super) fn add_total(&self, extra: u64) {
+        if extra > 0 {
+            self.total.fetch_add(extra, Ordering::Release);
+        }
+    }
+
     pub(super) fn advance(&self, count: usize) {
         let processed = self.processed.fetch_add(count as u64, Ordering::Release) + count as u64;
         if let Some(item) = self.bounce_item {
@@ -549,8 +555,12 @@ pub fn render_prepared_with_options(
     control.check()?;
 
     // Apply explicit opt-in peak or LUFS normalization and capture exact applied gain.
-    let applied_gain =
-        crate::post::apply_normalization(&mut processed, target_rate, options.normalization)?;
+    let applied_gain = crate::post::apply_normalization(
+        &mut processed,
+        target_rate,
+        options.normalization,
+        control,
+    )?;
     control.check()?;
 
     let output_frames = processed.len() as u64;
@@ -767,15 +777,15 @@ fn render_prepared_using_pages(
                 return Err(ExportError::Invalid("stem batches require batch rendering"));
             }
         };
-        let mut renderer = ControlledRenderer {
+        let mut renderer = Box::new(ControlledRenderer {
             playback,
             sources: None,
             pages,
             plan,
             buffers,
             control: control.clone(),
-        };
-        discard_latency(&mut renderer, latency)?;
+        });
+        discard_latency(&mut *renderer, latency)?;
         Ok(renderer)
     };
     publish_encoded(
@@ -844,15 +854,15 @@ pub fn render_control_sampler_with_policy(
         playback
             .apply(SessionPlaybackCommand::Play)
             .map_err(ExportError::SessionRender)?;
-        let mut renderer = ControlledRenderer {
+        let mut renderer = Box::new(ControlledRenderer {
             playback,
             sources: Some(sources),
             pages: None,
             plan: None,
             buffers: Vec::new(),
             control: control.clone(),
-        };
-        discard_latency(&mut renderer, latency)?;
+        });
+        discard_latency(&mut *renderer, latency)?;
         Ok(renderer)
     })
 }

@@ -359,6 +359,15 @@ trait BlockRenderer {
     }
 }
 
+impl<R: BlockRenderer> BlockRenderer for Box<R> {
+    fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError> {
+        (**self).render_block(frames)
+    }
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        (**self).before_publication()
+    }
+}
+
 /// Publish an original-rate float WAV from a bounded control-side frame reader.
 /// Uses the same create-new custody and cancellation frontier as other exports.
 pub fn write_float_wav_new(
@@ -525,6 +534,11 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
         .checked_add(frames)
         .ok_or(ExportError::Invalid("frame range overflows"))?;
     let (wav_data_bytes, byte_rate) = if encoding.is_flac() {
+        if frames == 0 {
+            return Err(ExportError::Invalid(
+                "flac export requires at least one frame",
+            ));
+        }
         if !(8_000..=192_000).contains(&sample_rate) {
             return Err(ExportError::Invalid(
                 "flac sample rate must be within 8000..=192000 hz",
@@ -546,12 +560,13 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
         (data_bytes, byte_rate)
     };
     preflight_destination(path, publication)?;
+    let mut renderer = prepare_renderer()?;
     // A matching name and an available advisory lock do not establish file
     // ownership. Retain unclaimed files, including possible recovery copies.
     let (file, temporary_path) = create_temporary(path)?;
     // When available, keep this lock until return for older cooperating sweeps.
     let _ownership = stale_temporary::hold(&file);
-    let write_result = prepare_renderer().and_then(|mut renderer| {
+    let write_result = (|| {
         let (clipped, actual_data_bytes) = if encoding.is_flac() {
             write_flac(file, sample_rate, start, frames, encoding, &mut renderer)?
         } else {
@@ -571,7 +586,7 @@ fn publish_encoded_with_gain<R: BlockRenderer>(
         };
         renderer.before_publication()?;
         Ok((clipped, actual_data_bytes))
-    });
+    })();
     let (clipped_samples, data_bytes) = match write_result {
         Ok(result) => result,
         Err(error) => return Err(retained_stage(temporary_path, error)),
@@ -997,6 +1012,36 @@ fn write_all(
 }
 
 #[cfg(unix)]
+fn is_unsupported_directory_sync(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::Unsupported {
+        return true;
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Some(code) = error.raw_os_error() {
+        let errno = rustix::io::Errno::from_raw_os_error(code);
+        return errno == rustix::io::Errno::INVAL
+            || errno == rustix::io::Errno::NOTSUP
+            || errno == rustix::io::Errno::OPNOTSUPP;
+    }
+    false
+}
+
+#[cfg(unix)]
+fn sync_directory(dir: &Path) -> io::Result<()> {
+    match File::open(dir).and_then(|file| file.sync_all()) {
+        Ok(()) => Ok(()),
+        Err(error) if is_unsupported_directory_sync(&error) => {
+            eprintln!(
+                "hex-export warning: directory sync unsupported for {} ({error}); continuing without directory fsync",
+                dir.display()
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
 fn sync_parent_directory(path: &Path) -> io::Result<()> {
     #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
     if after_exchange_hook::sync_fails() {
@@ -1006,7 +1051,7 @@ fn sync_parent_directory(path: &Path) -> io::Result<()> {
         .parent()
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    File::open(parent)?.sync_all()
+    sync_directory(parent)
 }
 
 fn write_header_encoded(
@@ -2047,5 +2092,93 @@ mod tests {
         publication::rename_exclusive(&stage, &target).unwrap();
         assert!(!stage.exists());
         assert_eq!(fs::read(target.join("complete.wav")).unwrap(), b"complete");
+    }
+
+    #[test]
+    fn pre_prepare_failure_creates_no_temporary_file() {
+        struct UnusedRenderer;
+        impl BlockRenderer for UnusedRenderer {
+            fn render_block(&mut self, _: &mut [Frame]) -> Result<(), ExportError> {
+                Ok(())
+            }
+        }
+        let dir = TestDir::new();
+        let target = dir.0.join("refused.wav");
+        let error = publish_new(
+            &target,
+            48_000,
+            0,
+            256,
+            || -> Result<UnusedRenderer, ExportError> {
+                Err(ExportError::Invalid("pre-render preparation failed"))
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ExportError::Invalid("pre-render preparation failed")
+        ));
+        assert!(!target.exists());
+        assert_eq!(
+            fs::read_dir(&dir.0).unwrap().count(),
+            0,
+            "pre-prepare failure must leave zero temporary files on disk"
+        );
+    }
+
+    #[test]
+    fn zero_frame_flac_export_is_refused_before_touching_disk() {
+        struct UnusedRenderer;
+        impl BlockRenderer for UnusedRenderer {
+            fn render_block(&mut self, _: &mut [Frame]) -> Result<(), ExportError> {
+                Ok(())
+            }
+        }
+        let dir = TestDir::new();
+        for format in [ExportFormat::Flac16, ExportFormat::Flac24] {
+            let target = dir.0.join(format!("empty-{format:?}.flac"));
+            let error = publish_encoded(
+                &target,
+                48_000,
+                0,
+                0,
+                &Publication::CreateNew,
+                format,
+                || -> Result<UnusedRenderer, ExportError> { Ok(UnusedRenderer) },
+            )
+            .unwrap_err();
+            assert!(matches!(error, ExportError::Invalid(_)));
+            assert!(!target.exists());
+        }
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsupported_directory_sync_errors_do_not_mask_real_io_errors() {
+        assert!(is_unsupported_directory_sync(&io::Error::new(
+            io::ErrorKind::Unsupported,
+            "unsupported"
+        )));
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            for errno in [
+                rustix::io::Errno::INVAL,
+                rustix::io::Errno::NOTSUP,
+                rustix::io::Errno::OPNOTSUPP,
+            ] {
+                assert!(is_unsupported_directory_sync(
+                    &io::Error::from_raw_os_error(errno.raw_os_error())
+                ));
+            }
+            for errno in [rustix::io::Errno::IO, rustix::io::Errno::NOSPC] {
+                assert!(!is_unsupported_directory_sync(
+                    &io::Error::from_raw_os_error(errno.raw_os_error())
+                ));
+            }
+        }
+        assert!(!is_unsupported_directory_sync(&io::Error::other(
+            "injected directory sync failure"
+        )));
     }
 }

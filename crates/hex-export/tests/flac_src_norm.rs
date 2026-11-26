@@ -281,7 +281,13 @@ fn target_src_and_peak_loudness_normalization_report_exact_applied_gain() {
     assert_eq!(lufs_report.sample_rate, 48_000);
     assert!(lufs_report.applied_gain_linear > 1.0);
     let decoded_lufs = decode_audio_file(&lufs_path, Limits::new(8 * 1024 * 1024, 65_536)).unwrap();
-    let measured_lufs = measure_integrated_lufs(decoded_lufs.audio().frames(), 48_000).unwrap();
+    let measured_lufs = measure_integrated_lufs(
+        decoded_lufs.audio().frames(),
+        48_000,
+        &ExportControl::default(),
+    )
+    .unwrap()
+    .unwrap();
     assert!(
         (measured_lufs - (-14.0)).abs() < 0.1,
         "measured LUFS {measured_lufs}"

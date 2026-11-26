@@ -20,6 +20,9 @@ const MAX_TARGET_SAMPLE_RATE: u32 = 192_000;
 pub(crate) const MAX_POST_PROCESSED_FRAMES: usize = 360_000_000;
 /// Converted frames rendered between cooperative cancellation polls during SRC.
 const SRC_CANCEL_CHUNK_FRAMES: usize = 16_384;
+/// Frames processed between cooperative cancellation polls and progress updates
+/// during normalization, integrated loudness, and 4x true-peak measurement.
+const POST_CANCEL_CHUNK_FRAMES: usize = 4_096;
 
 /// Explicit opt-in normalization mode for an export job.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -180,6 +183,7 @@ fn resample_export_frames_with_hook(
         .try_reserve_exact(output_capacity)
         .map_err(|_| ExportError::Invalid("could not allocate resampled export buffer"))?;
     output.resize(output_capacity, [0.0; 2]);
+    control.add_total(output_capacity as u64);
     let mut window_start = 0_u64;
     for (chunk_index, window) in output.chunks_mut(SRC_CANCEL_CHUNK_FRAMES).enumerate() {
         control.check()?;
@@ -190,6 +194,7 @@ fn resample_export_frames_with_hook(
         window_start = window_start.checked_add(count).ok_or(ExportError::Invalid(
             "resampled export window range overflows",
         ))?;
+        control.advance(window.len());
         after_chunk(chunk_index);
     }
     drop(frames);
@@ -200,9 +205,23 @@ fn resample_export_frames_with_hook(
 /// Measure 4x oversampled inter-sample true peak using a 4-phase, 12-tap-per-phase
 /// Blackman-windowed sinc polyphase FIR (phase 0 is the exact integer sample, so
 /// the result is always `>= sample_peak`). Zero heap allocations.
-fn measure_true_peak_4x(frames: &[Frame], sample_peak: f64) -> f64 {
+fn measure_true_peak_4x(
+    frames: &[Frame],
+    sample_peak: f64,
+    control: &ExportControl,
+) -> Result<f64, ExportError> {
+    measure_true_peak_4x_with_hook(frames, sample_peak, control, |_| {})
+}
+
+fn measure_true_peak_4x_with_hook(
+    frames: &[Frame],
+    sample_peak: f64,
+    control: &ExportControl,
+    mut after_chunk: impl FnMut(usize),
+) -> Result<f64, ExportError> {
+    control.check()?;
     if frames.len() < 2 {
-        return sample_peak;
+        return Ok(sample_peak);
     }
     let phases: [[f64; 12]; 3] = std::array::from_fn(|p| {
         let frac = (p + 1) as f64 * 0.25;
@@ -226,24 +245,32 @@ fn measure_true_peak_4x(frames: &[Frame], sample_peak: f64) -> f64 {
     });
 
     let len = frames.len();
+    control.add_total(len as u64);
     let mut true_peak = sample_peak;
-    for i in 0..len {
-        for taps in &phases {
-            let mut acc_l = 0.0_f64;
-            let mut acc_r = 0.0_f64;
-            for (j, &coeff) in taps.iter().enumerate() {
-                let offset = j as isize - 5;
-                let idx = i as isize + offset;
-                if idx >= 0 && (idx as usize) < len {
-                    let [l, r] = frames[idx as usize];
-                    acc_l += f64::from(l) * coeff;
-                    acc_r += f64::from(r) * coeff;
+    for (chunk_index, chunk_start) in (0..len).step_by(POST_CANCEL_CHUNK_FRAMES).enumerate() {
+        control.check()?;
+        let chunk_end = (chunk_start + POST_CANCEL_CHUNK_FRAMES).min(len);
+        for i in chunk_start..chunk_end {
+            for taps in &phases {
+                let mut acc_l = 0.0_f64;
+                let mut acc_r = 0.0_f64;
+                for (j, &coeff) in taps.iter().enumerate() {
+                    let offset = j as isize - 5;
+                    let idx = i as isize + offset;
+                    if idx >= 0 && (idx as usize) < len {
+                        let [l, r] = frames[idx as usize];
+                        acc_l += f64::from(l) * coeff;
+                        acc_r += f64::from(r) * coeff;
+                    }
                 }
+                true_peak = true_peak.max(acc_l.abs()).max(acc_r.abs());
             }
-            true_peak = true_peak.max(acc_l.abs()).max(acc_r.abs());
         }
+        control.advance(chunk_end - chunk_start);
+        after_chunk(chunk_index);
     }
-    true_peak
+    control.check()?;
+    Ok(true_peak)
 }
 
 /// Compute and apply explicit opt-in normalization in-place, returning the
@@ -252,18 +279,25 @@ pub(crate) fn apply_normalization(
     frames: &mut [Frame],
     sample_rate: u32,
     mode: ExportNormalization,
+    control: &ExportControl,
 ) -> Result<AppliedGain, ExportError> {
+    control.check()?;
     mode.validate()?;
     if frames.is_empty() || matches!(mode, ExportNormalization::Off) {
         return Ok(AppliedGain::UNITY);
     }
 
+    control.add_total(frames.len() as u64);
     let mut peak = 0.0_f64;
-    for &[left, right] in frames.iter() {
-        if !left.is_finite() || !right.is_finite() {
-            return Err(ExportError::Invalid("render produced a non-finite sample"));
+    for chunk in frames.chunks(POST_CANCEL_CHUNK_FRAMES) {
+        control.check()?;
+        for &[left, right] in chunk {
+            if !left.is_finite() || !right.is_finite() {
+                return Err(ExportError::Invalid("render produced a non-finite sample"));
+            }
+            peak = peak.max(f64::from(left).abs()).max(f64::from(right).abs());
         }
-        peak = peak.max(f64::from(left).abs()).max(f64::from(right).abs());
+        control.advance(chunk.len());
     }
     if peak == 0.0 {
         return Ok(AppliedGain::UNITY);
@@ -279,13 +313,13 @@ pub(crate) fn apply_normalization(
             target_lufs,
             true_peak_ceiling_dbfs,
         } => {
-            let Some(measured_lufs) = measure_integrated_lufs(frames, sample_rate) else {
+            let Some(measured_lufs) = measure_integrated_lufs(frames, sample_rate, control)? else {
                 return Ok(AppliedGain::UNITY);
             };
             let mut linear = db_to_linear(target_lufs - measured_lufs);
             if let Some(ceiling_dbfs) = true_peak_ceiling_dbfs {
                 let ceiling_linear = db_to_linear(ceiling_dbfs);
-                let true_peak = measure_true_peak_4x(frames, peak);
+                let true_peak = measure_true_peak_4x(frames, peak, control)?;
                 linear = linear.min(ceiling_linear / true_peak);
             }
             linear
@@ -296,10 +330,16 @@ pub(crate) fn apply_normalization(
         return Ok(AppliedGain::UNITY);
     }
     let applied = AppliedGain::from_linear(gain);
-    for frame in frames.iter_mut() {
-        frame[0] = (f64::from(frame[0]) * applied.linear) as f32;
-        frame[1] = (f64::from(frame[1]) * applied.linear) as f32;
+    control.add_total(frames.len() as u64);
+    for chunk in frames.chunks_mut(POST_CANCEL_CHUNK_FRAMES) {
+        control.check()?;
+        for frame in chunk.iter_mut() {
+            frame[0] = (f64::from(frame[0]) * applied.linear) as f32;
+            frame[1] = (f64::from(frame[1]) * applied.linear) as f32;
+        }
+        control.advance(chunk.len());
     }
+    control.check()?;
     Ok(applied)
 }
 
@@ -377,10 +417,25 @@ fn k_weighting_filters(sample_rate: u32) -> (Biquad, Biquad) {
 }
 
 /// Measure ITU-R BS.1770-4 K-weighted integrated loudness in LUFS.
-/// Returns `None` for digital silence or below-gate signals.
-pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64> {
+/// Returns `Ok(None)` for digital silence or below-gate signals, and honors
+/// cooperative cancellation and progress reporting on `control`.
+pub fn measure_integrated_lufs(
+    frames: &[Frame],
+    sample_rate: u32,
+    control: &ExportControl,
+) -> Result<Option<f64>, ExportError> {
+    measure_integrated_lufs_with_hook(frames, sample_rate, control, |_| {})
+}
+
+fn measure_integrated_lufs_with_hook(
+    frames: &[Frame],
+    sample_rate: u32,
+    control: &ExportControl,
+    mut after_chunk: impl FnMut(usize),
+) -> Result<Option<f64>, ExportError> {
+    control.check()?;
     if frames.is_empty() || sample_rate == 0 {
-        return None;
+        return Ok(None);
     }
     let (mut shelf_l, mut hp_l) = k_weighting_filters(sample_rate);
     let (mut shelf_r, mut hp_r) = k_weighting_filters(sample_rate);
@@ -388,21 +443,29 @@ pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64
     let block_frames = ((u64::from(sample_rate) * 400) / 1000).max(1) as usize;
     let hop_frames = ((u64::from(sample_rate) * 100) / 1000).max(1) as usize;
 
+    control.add_total(frames.len() as u64);
+
     // Short-clip fallback when clip duration < 400 ms: measure K-weighted mean
     // power over the entire clip so short cues still normalize deterministically.
     if frames.len() < block_frames {
         let mut sum_sq = 0.0_f64;
-        for &[l, r] in frames {
-            let kl = hp_l.process(shelf_l.process(f64::from(l)));
-            let kr = hp_r.process(shelf_r.process(f64::from(r)));
-            sum_sq += kl * kl + kr * kr;
+        for (chunk_index, chunk) in frames.chunks(POST_CANCEL_CHUNK_FRAMES).enumerate() {
+            control.check()?;
+            for &[l, r] in chunk {
+                let kl = hp_l.process(shelf_l.process(f64::from(l)));
+                let kr = hp_r.process(shelf_r.process(f64::from(r)));
+                sum_sq += kl * kl + kr * kr;
+            }
+            control.advance(chunk.len());
+            after_chunk(chunk_index);
         }
+        control.check()?;
         let mean_power = sum_sq / (frames.len() as f64);
         if mean_power <= 0.0 {
-            return None;
+            return Ok(None);
         }
         let lufs = -0.691 + 10.0 * mean_power.log10();
-        return (lufs > -70.0 && lufs.is_finite()).then_some(lufs);
+        return Ok((lufs > -70.0 && lufs.is_finite()).then_some(lufs));
     }
 
     // Stream K-weighted squared power in 100 ms sub-blocks so memory stays
@@ -410,20 +473,26 @@ pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64
     let mut hop_sums: Vec<f64> = Vec::new();
     let mut current_sum = 0.0_f64;
     let mut in_hop = 0_usize;
-    for &[l, r] in frames {
-        let kl = hp_l.process(shelf_l.process(f64::from(l)));
-        let kr = hp_r.process(shelf_r.process(f64::from(r)));
-        current_sum += kl * kl + kr * kr;
-        in_hop += 1;
-        if in_hop == hop_frames {
-            hop_sums.push(current_sum);
-            current_sum = 0.0;
-            in_hop = 0;
+    for (chunk_index, chunk) in frames.chunks(POST_CANCEL_CHUNK_FRAMES).enumerate() {
+        control.check()?;
+        for &[l, r] in chunk {
+            let kl = hp_l.process(shelf_l.process(f64::from(l)));
+            let kr = hp_r.process(shelf_r.process(f64::from(r)));
+            current_sum += kl * kl + kr * kr;
+            in_hop += 1;
+            if in_hop == hop_frames {
+                hop_sums.push(current_sum);
+                current_sum = 0.0;
+                in_hop = 0;
+            }
         }
+        control.advance(chunk.len());
+        after_chunk(chunk_index);
     }
+    control.check()?;
 
     if hop_sums.len() < 4 {
-        return None;
+        return Ok(None);
     }
     let inv_block = 1.0 / (4 * hop_frames) as f64;
     let mut block_powers: Vec<f64> = Vec::with_capacity(hop_sums.len() - 3);
@@ -433,6 +502,7 @@ pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64
     }
 
     // Step 1: Absolute gate at -70 LUFS.
+    control.check()?;
     let abs_threshold = 10.0_f64.powf((-70.0 + 0.691) / 10.0);
     let mut abs_sum = 0.0_f64;
     let mut abs_count = 0_usize;
@@ -443,11 +513,12 @@ pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64
         }
     }
     if abs_count == 0 {
-        return None;
+        return Ok(None);
     }
     let ungated_lufs = -0.691 + 10.0 * (abs_sum / abs_count as f64).log10();
 
     // Step 2: Relative gate at ungated_lufs - 10 LU.
+    control.check()?;
     let rel_threshold = 10.0_f64.powf((ungated_lufs - 10.0 + 0.691) / 10.0);
     let mut rel_sum = 0.0_f64;
     let mut rel_count = 0_usize;
@@ -458,10 +529,10 @@ pub fn measure_integrated_lufs(frames: &[Frame], sample_rate: u32) -> Option<f64
         }
     }
     if rel_count == 0 {
-        return None;
+        return Ok(None);
     }
     let integrated = -0.691 + 10.0 * (rel_sum / rel_count as f64).log10();
-    integrated.is_finite().then_some(integrated)
+    Ok(integrated.is_finite().then_some(integrated))
 }
 
 #[cfg(test)]
@@ -485,6 +556,7 @@ mod tests {
             &mut frames,
             48_000,
             ExportNormalization::Peak { target_dbfs: -6.0 },
+            &ExportControl::default(),
         )
         .unwrap();
         let expected_peak = db_to_linear(-6.0);
@@ -503,9 +575,13 @@ mod tests {
         // (+0.65 dB K-weighting boost at 1 kHz cancels the -0.691 dB offset), so
         // amplitude 0.1 (-20 dBFS) measures ~ -20.04 LUFS.
         let mut frames = sine_stereo(48_000, 48_000, 1000.0, 0.1);
-        let initial_lufs = measure_integrated_lufs(&frames, 48_000).unwrap();
+        let control = ExportControl::default();
+        let initial_lufs = measure_integrated_lufs(&frames, 48_000, &control)
+            .unwrap()
+            .unwrap();
         assert!((initial_lufs - (-20.0)).abs() < 0.15, "got {initial_lufs}");
 
+        let norm_control = ExportControl::default();
         let gain = apply_normalization(
             &mut frames,
             48_000,
@@ -513,9 +589,15 @@ mod tests {
                 target_lufs: -14.0,
                 true_peak_ceiling_dbfs: Some(-1.0),
             },
+            &norm_control,
         )
         .unwrap();
-        let after_lufs = measure_integrated_lufs(&frames, 48_000).unwrap();
+        let progress = norm_control.progress();
+        assert_eq!(progress.processed_frames, progress.total_frames);
+        assert!(progress.processed_frames >= 4 * 48_000);
+        let after_lufs = measure_integrated_lufs(&frames, 48_000, &ExportControl::default())
+            .unwrap()
+            .unwrap();
         assert!((after_lufs - (-14.0)).abs() < 0.05, "got {after_lufs}");
         assert!((gain.db - (-14.0 - initial_lufs)).abs() < 1e-6);
 
@@ -528,6 +610,7 @@ mod tests {
                 target_lufs: -1.0,
                 true_peak_ceiling_dbfs: Some(-6.0),
             },
+            &ExportControl::default(),
         )
         .unwrap();
         let peak = clamped
@@ -548,7 +631,8 @@ mod tests {
                 true_peak_ceiling_dbfs: Some(-1.0),
             },
         ] {
-            let gain = apply_normalization(&mut silent, 48_000, mode).unwrap();
+            let gain =
+                apply_normalization(&mut silent, 48_000, mode, &ExportControl::default()).unwrap();
             assert_eq!(gain, AppliedGain::UNITY);
             assert!(silent.iter().all(|&f| f == [0.0, 0.0]));
         }
@@ -606,7 +690,7 @@ mod tests {
                 [s, s]
             })
             .collect();
-        let initial_tp = measure_true_peak_4x(&frames, 0.5);
+        let initial_tp = measure_true_peak_4x(&frames, 0.5, &ExportControl::default()).unwrap();
         assert!(
             initial_tp > 0.68,
             "expected ~0.707 true peak, got {initial_tp}"
@@ -619,13 +703,15 @@ mod tests {
                 target_lufs: -1.0,
                 true_peak_ceiling_dbfs: Some(-6.0),
             },
+            &ExportControl::default(),
         )
         .unwrap();
         let after_sample_peak = frames
             .iter()
             .flat_map(|f| [f[0].abs(), f[1].abs()])
             .fold(0.0_f64, |acc, s| acc.max(f64::from(s)));
-        let after_true_peak = measure_true_peak_4x(&frames, after_sample_peak);
+        let after_true_peak =
+            measure_true_peak_4x(&frames, after_sample_peak, &ExportControl::default()).unwrap();
         let ceiling = db_to_linear(-6.0);
         assert!(
             (after_true_peak - ceiling).abs() < 1e-3,
@@ -635,5 +721,58 @@ mod tests {
             after_sample_peak < ceiling - 0.1,
             "sample peak {after_sample_peak} should be well below true-peak ceiling {ceiling}"
         );
+    }
+
+    #[test]
+    fn measure_integrated_lufs_and_true_peak_honor_mid_pass_cancellation() {
+        let frames = sine_stereo(48_000, POST_CANCEL_CHUNK_FRAMES * 6, 1000.0, 0.25);
+
+        let lufs_control = ExportControl::default();
+        let mut lufs_chunks = 0_usize;
+        let lufs_result =
+            measure_integrated_lufs_with_hook(&frames, 48_000, &lufs_control, |chunk_index| {
+                lufs_chunks += 1;
+                if chunk_index == 0 {
+                    lufs_control.cancel();
+                }
+            });
+        assert!(matches!(lufs_result, Err(ExportError::Cancelled)));
+        assert_eq!(lufs_chunks, 1);
+        assert_eq!(
+            lufs_control.progress().processed_frames,
+            POST_CANCEL_CHUNK_FRAMES as u64
+        );
+        assert_eq!(lufs_control.progress().total_frames, frames.len() as u64);
+
+        let tp_control = ExportControl::default();
+        let mut tp_chunks = 0_usize;
+        let tp_result = measure_true_peak_4x_with_hook(&frames, 0.25, &tp_control, |chunk_index| {
+            tp_chunks += 1;
+            if chunk_index == 0 {
+                tp_control.cancel();
+            }
+        });
+        assert!(matches!(tp_result, Err(ExportError::Cancelled)));
+        assert_eq!(tp_chunks, 1);
+        assert_eq!(
+            tp_control.progress().processed_frames,
+            POST_CANCEL_CHUNK_FRAMES as u64
+        );
+        assert_eq!(tp_control.progress().total_frames, frames.len() as u64);
+
+        let mut untouched = frames.clone();
+        let pre_cancelled = ExportControl::default();
+        pre_cancelled.cancel();
+        let norm_result = apply_normalization(
+            &mut untouched,
+            48_000,
+            ExportNormalization::Loudness {
+                target_lufs: -14.0,
+                true_peak_ceiling_dbfs: Some(-1.0),
+            },
+            &pre_cancelled,
+        );
+        assert!(matches!(norm_result, Err(ExportError::Cancelled)));
+        assert_eq!(untouched, frames);
     }
 }
