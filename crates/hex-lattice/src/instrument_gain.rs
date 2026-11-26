@@ -147,6 +147,13 @@ impl NativeInstrumentOccurrenceGain {
             None => base,
         }
     }
+    pub(crate) fn advance_frames(self, delta: u64) -> Result<Self, NativeInstrumentRuntimeError> {
+        let next = self
+            .offset_frames
+            .checked_add(delta)
+            .ok_or(NativeInstrumentRuntimeError::InvalidOccurrenceGain)?;
+        self.with_offset_frames(next)
+    }
     pub(crate) fn covers_frames(self, frames: usize) -> bool {
         u64::try_from(frames).ok().is_some_and(|frames| {
             self.offset_frames

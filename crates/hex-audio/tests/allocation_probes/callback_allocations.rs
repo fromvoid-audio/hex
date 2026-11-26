@@ -15,6 +15,8 @@ mod filter;
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
 mod gate;
+#[path = "callback_allocations/instrument_rack.rs"]
+mod instrument_rack;
 #[path = "callback_allocations/midi_processor.rs"]
 mod midi_processor;
 #[path = "callback_allocations/multisample_zones.rs"]

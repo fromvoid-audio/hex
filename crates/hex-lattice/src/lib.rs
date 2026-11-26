@@ -120,6 +120,7 @@ pub use analytic_continuation::{
 mod instrument;
 mod instrument_gain;
 mod instrument_pair;
+mod instrument_rack;
 mod instrument_runtime;
 mod midi_processor;
 pub use instrument::{
@@ -133,6 +134,14 @@ pub use instrument_gain::{
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
+};
+pub use instrument_rack::{
+    INSTRUMENT_RACK_BRANCH_COUNT, INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES,
+    INSTRUMENT_RACK_MAX_BRANCH_GAIN, INSTRUMENT_RACK_MAX_COMPENSATION_DELAY_FRAMES,
+    INSTRUMENT_RACK_MAX_DEPTH, INSTRUMENT_RACK_MAX_EVENTS_PER_BLOCK,
+    INSTRUMENT_RACK_RUNTIME_VERSION, INSTRUMENT_RACK_STATE_VERSION, INSTRUMENT_RACK_TYPE_ID,
+    InstrumentRackBranchSpec, InstrumentRackDefinition, InstrumentRackSpec, PARAM_BRANCH_1_BYPASS,
+    PARAM_BRANCH_1_GAIN, PARAM_BRANCH_2_BYPASS, PARAM_BRANCH_2_GAIN,
 };
 pub use instrument_runtime::{
     AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, InstrumentParameterRuntime,
