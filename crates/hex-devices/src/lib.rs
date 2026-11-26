@@ -37,6 +37,7 @@ pub mod fm4;
 pub mod gate;
 pub mod limiter;
 pub mod modulation;
+pub mod multisample;
 pub mod operator_envelope;
 pub mod operator_state;
 pub mod operator_waveform;
