@@ -91,7 +91,8 @@ impl ActiveView<'_> {
         let Some(workspace) = self.state.streaming.as_mut() else {
             return StageAction::Refused(PlaybackActionRejection::SessionNotPrepared);
         };
-        if playing && is_stream_seek(action) {
+        let playing_seek = playing && is_stream_seek(action);
+        if playing_seek && !workspace.page_fade.settled_hold() {
             // Render F frames of the old position fading smoothly to zero
             // before preparing the target action against the post-fade clock.
             let _ = prepared;
@@ -103,10 +104,12 @@ impl ActiveView<'_> {
             });
             return StageAction::Pending;
         }
+        // A settled page hold already silenced the old position. Admit the
+        // destination through normal readiness and ramp it up after commit.
         workspace.pending_action = Some(PendingAction {
             prepared,
             ticket,
-            fade_in: false,
+            fade_in: playing_seek,
         });
         StageAction::Pending
     }
