@@ -1030,23 +1030,45 @@ pub(super) fn check_cancel(cancellation: Option<&RequestCancellation>) -> Result
         Ok(())
     }
 }
+const NATIVE_CONTROL_BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn check_busy_deadline(
+    deadline: std::time::Instant,
+    cancellation: Option<&RequestCancellation>,
+    timeout_message: &'static str,
+) -> Result<(), String> {
+    check_cancel(cancellation)?;
+    if std::time::Instant::now() >= deadline {
+        return Err(timeout_message.into());
+    }
+    Ok(())
+}
+
 pub(super) fn captured_state_approved(
     control: &mut PublicationControl,
     binding: Binding,
     state: &NativeDeviceState,
     cancellation: Option<&RequestCancellation>,
 ) -> Result<bool, String> {
+    let deadline = std::time::Instant::now() + NATIVE_CONTROL_BUSY_TIMEOUT;
     loop {
-        check_cancel(cancellation)?;
+        check_busy_deadline(
+            deadline,
+            cancellation,
+            "timed out waiting for vst3 state approval",
+        )?;
         match control.try_native_source_approves_captured_state_on_control(binding, state) {
             Err("native preparation is busy" | "native source is busy") => poll_control(control),
             result => return result.map_err(str::to_owned),
         }
     }
 }
-pub(super) fn poll_control(control: &mut PublicationControl) {
+pub(super) fn poll_control_nonblocking(control: &mut PublicationControl) {
     control.reclaim();
     control.poll_resident_publication();
+}
+pub(super) fn poll_control(control: &mut PublicationControl) {
+    poll_control_nonblocking(control);
     // Existing control-worker polling cadence. This is not a paint delay,
     // native ACK, timeout-based acceptance or an audio callback wait.
     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1056,8 +1078,13 @@ pub(super) fn source_metadata(
     binding: Binding,
     cancellation: Option<&RequestCancellation>,
 ) -> Result<hex_audio::plugin_effects::EffectSourceMetadata, String> {
+    let deadline = std::time::Instant::now() + NATIVE_CONTROL_BUSY_TIMEOUT;
     loop {
-        check_cancel(cancellation)?;
+        check_busy_deadline(
+            deadline,
+            cancellation,
+            "timed out waiting for vst3 source metadata",
+        )?;
         match control.native_source_metadata(binding) {
             Err(reason)
                 if matches!(
@@ -1076,8 +1103,13 @@ pub(super) fn original_state(
     binding: Binding,
     cancellation: Option<&RequestCancellation>,
 ) -> Result<NativeDeviceState, String> {
+    let deadline = std::time::Instant::now() + NATIVE_CONTROL_BUSY_TIMEOUT;
     loop {
-        check_cancel(cancellation)?;
+        check_busy_deadline(
+            deadline,
+            cancellation,
+            "timed out waiting for original vst3 source state",
+        )?;
         if let Some(state) = control.native_source_prepared_state(binding) {
             return Ok(state);
         }
@@ -1166,8 +1198,13 @@ pub(super) fn canonical_bases(
                 .0
         }
     };
+    let begin_deadline = std::time::Instant::now() + NATIVE_CONTROL_BUSY_TIMEOUT;
     let mut query = loop {
-        check_cancel(cancellation)?;
+        check_busy_deadline(
+            begin_deadline,
+            cancellation,
+            "timed out beginning vst3 canonical bases capture",
+        )?;
         let result = match stopped {
             Some((_, fence)) => host.begin_stopped_canonical_bases_capture_on_control(
                 control, source, fence, binding, state, selection,

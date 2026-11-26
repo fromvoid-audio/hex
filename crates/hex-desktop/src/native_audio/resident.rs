@@ -1504,6 +1504,10 @@ impl NativeAudioSink {
                 },
             );
             let mut retained_playback = playback;
+            const NATIVE_GRAPH_BUSY_TIMEOUT: std::time::Duration =
+                std::time::Duration::from_secs(5);
+            let busy_deadline = replacement_deadline
+                .unwrap_or_else(|| std::time::Instant::now() + NATIVE_GRAPH_BUSY_TIMEOUT);
             let result = loop {
                 let cut = tempo_edit
                     .and_then(|edit| prepare_resident_tempo_cut(control, &retained_playback, edit));
@@ -1645,6 +1649,11 @@ impl NativeAudioSink {
                         if !inserting_device
                             && error.reason == "native graph preparation is busy" =>
                     {
+                        if std::time::Instant::now() >= busy_deadline {
+                            break Err(hex_audio::prepared::AdmittedPublishError::Publication(
+                                error,
+                            ));
+                        }
                         // Root has not retained sources or enqueued the graph,
                         // but the caller's admission hook may already have won.
                         // Retry the exact graph and preserve that cutoff while

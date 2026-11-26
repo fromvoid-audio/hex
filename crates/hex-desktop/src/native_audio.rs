@@ -91,6 +91,7 @@ fn settled_resident_effect_fence(
 
 pub(crate) struct NativeAudioSink {
     audio_diagnostics: hex_audio::audio_diagnostics::AudioDiagnosticsFlags,
+    diagnostics_log: Option<hex_diagnostics::DiagnosticsHandle>,
     pub(crate) plugins: plugins::Plugins,
     request_cancellation: Option<hex_session::service::RequestCancellation>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -126,6 +127,7 @@ impl NativeAudioSink {
     pub(crate) fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
             audio_diagnostics: Default::default(),
+            diagnostics_log: None,
             plugins: plugins::Plugins::default(),
             request_cancellation: None,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -1948,7 +1950,13 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         self.reload_output_preferences();
         self.plugins.initialize();
-        self.lifecycle.route_watch = hex_audio::OutputRouteWatch::spawn().ok();
+        self.lifecycle.route_watch = match hex_audio::OutputRouteWatch::spawn() {
+            Ok(watch) => Some(watch),
+            Err(error) => {
+                self.log_audio_warning(&format!("output route watch unavailable: {error}"));
+                None
+            }
+        };
         // Choose the rate before the first project is authored. Stream
         // completion still happens asynchronously.
         let rate = self
@@ -2294,27 +2302,23 @@ impl WorkerAudioSink for NativeAudioSink {
         }
         self.flush_events();
     }
-    /// Idle only with every poll-driven duty quiescent (#4574): no open,
+    /// Idle only with every poll-driven duty quiescent (#4574, #13527): no open,
     /// queued event, sampler, section/sampler edit, plugin or resident work,
-    /// no VerifiedStreaming page driving, and an opened output that is
-    /// delivered, stopped and has applied its latest resident submission.
+    /// no active VerifiedStreaming preparation/domain/return work, and an opened
+    /// output that is delivered, stopped and has applied its latest resident submission.
     /// Any doubt keeps the busy cadence; transport commands reach the
     /// callback through the UI client, so stopped playback cannot be starved.
     fn worker_idle(&mut self) -> bool {
         let quiescent = self.lifecycle.is_quiescent()
             && self.events.is_quiescent()
-            && self.verified.is_quiescent()
+            && self.verified.is_quiescent_for(self.desired.as_ref())
             && self.sampler.is_none()
             && self.sampler_parameter.is_none()
             && self.sampler_budget_wait.is_none()
             && self.section_edit.is_none()
             && self.resident.pending.is_none()
             && self.resident.retired.is_none()
-            && self.plugins.idle()
-            && self
-                .desired
-                .as_ref()
-                .is_none_or(|source| source.audio_mode() != DocumentAudioMode::VerifiedStreaming);
+            && self.plugins.idle();
         let Some(output) = self.output.as_mut() else {
             return quiescent;
         };
@@ -2345,8 +2349,20 @@ impl WorkerAudioSink for NativeAudioSink {
 }
 
 impl NativeAudioSink {
+    fn log_audio_warning(&self, message: &str) {
+        if let Some(log) = self.diagnostics_log.as_ref() {
+            let _ = log.record_typed(
+                hex_diagnostics::Level::Warn,
+                hex_diagnostics::Category::Audio,
+                message,
+            );
+        }
+    }
+
     fn reload_output_preferences(&mut self) {
-        self.lifecycle.reload_preferences();
+        if let Err(error) = self.lifecycle.reload_preferences() {
+            self.log_audio_warning(&format!("audio device preferences unavailable: {error}"));
+        }
     }
 }
 
@@ -2366,6 +2382,7 @@ pub(super) fn backend(
         .map_err(StartupFailure::at(Stage::RecoveryLocation))?;
     let mut sink = NativeAudioSink::new(events);
     sink.audio_diagnostics = flags;
+    sink.diagnostics_log = log.clone();
     sink.plugins.set_diagnostics(log);
     let service = Service::with_audio_sink_and_claimed_recovery(
         32,

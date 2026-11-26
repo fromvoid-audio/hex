@@ -126,16 +126,20 @@ impl OutputLifecycle {
         self.output_identity = None;
     }
 
-    pub(super) fn reload_preferences(&mut self) {
+    pub(super) fn reload_preferences(&mut self) -> Result<(), String> {
         let Some(path) = self.output_preferences_path.as_deref() else {
-            return;
+            return Ok(());
         };
-        if let Ok(prefs) = hex_preferences::load_audio_device_preferences(path) {
-            self.output_selection = hex_audio::OutputDeviceSelection {
-                device_uid: prefs.output_device_uid,
-                buffer_size_frames: prefs.buffer_size_frames,
-            };
-            self.preferred_sample_rate = prefs.sample_rate_hz;
+        match hex_preferences::load_audio_device_preferences(path) {
+            Ok(prefs) => {
+                self.output_selection = hex_audio::OutputDeviceSelection {
+                    device_uid: prefs.output_device_uid,
+                    buffer_size_frames: prefs.buffer_size_frames,
+                };
+                self.preferred_sample_rate = prefs.sample_rate_hz;
+                Ok(())
+            }
+            Err(error) => Err(error.to_string()),
         }
     }
 

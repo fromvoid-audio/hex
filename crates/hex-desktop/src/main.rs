@@ -19,6 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::io::Write;
 use std::process::ExitCode;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 mod audio_policy;
 mod granular_sources;
@@ -79,14 +80,33 @@ fn main() -> ExitCode {
     let exit = StartupExit::new(start_session_log(&format!(
         "audio={audio_diagnostics:?} actions={action_diagnostics}"
     )));
+    install_panic_hook(Arc::clone(&exit.log));
     let log_handle = exit.log_handle();
     if let Ok(handle) = &log_handle {
         record_startup_identity(handle);
     }
-    let midi_worker = hex_midi::Worker::start();
-    let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
-    let mts_worker = hex_mts::Worker::start();
-    let mts_handle = mts_worker.as_ref().ok().map(hex_mts::Worker::handle);
+    let midi_worker = match hex_midi::Worker::start() {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            record_startup_warning(
+                log_handle.as_ref().ok(),
+                &format!("midi worker unavailable: {error}"),
+            );
+            None
+        }
+    };
+    let midi_handle = midi_worker.as_ref().map(hex_midi::Worker::handle);
+    let mts_worker = match hex_mts::Worker::start() {
+        Ok(worker) => Some(worker),
+        Err(error) => {
+            record_startup_warning(
+                log_handle.as_ref().ok(),
+                &format!("mts-esp worker unavailable: {error}"),
+            );
+            None
+        }
+    };
+    let mts_handle = mts_worker.as_ref().map(hex_mts::Worker::handle);
     let (update_client, update_supervisor) = if update_lease.is_some() {
         match std::env::current_exe()
             .ok()
@@ -97,6 +117,10 @@ fn main() -> ExitCode {
                 match update_supervisor::start(target, worker) {
                     Ok(handle) => Some((client, handle)),
                     Err(error) => {
+                        record_startup_warning(
+                            log_handle.as_ref().ok(),
+                            &format!("local update worker unavailable: {error}"),
+                        );
                         eprintln!("local update worker unavailable: {error}");
                         None
                     }
@@ -110,14 +134,14 @@ fn main() -> ExitCode {
     };
     exit.attach_runtime(DesktopRuntime {
         update_supervisor,
-        mts_worker: mts_worker.ok(),
-        midi_worker: midi_worker.ok(),
+        mts_worker,
+        midi_worker,
         update_lease,
     });
     let run_exit = Rc::clone(&exit);
     let application = Application::new().with_assets(hex_ui::assets::HexAssets);
     application.run(move |cx: &mut App| {
-        run_exit.exit_on_failed_quit(cx);
+        run_exit.install_quit_teardown(cx);
         if let Some(client) = &update_client {
             hex_ui::install_update_client(cx, client.clone());
         }
@@ -169,6 +193,63 @@ fn record_startup_identity(handle: &hex_diagnostics::DiagnosticsHandle) {
     );
 }
 
+fn record_startup_warning(handle: Option<&hex_diagnostics::DiagnosticsHandle>, message: &str) {
+    if let Some(handle) = handle {
+        let _ = handle.record_typed(
+            hex_diagnostics::Level::Warn,
+            hex_diagnostics::Category::Startup,
+            message,
+        );
+    }
+}
+
+fn format_panic_message(info: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = if let Some(text) = info.payload().downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = info.payload().downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "non-string panic payload".to_owned()
+    };
+    match info.location() {
+        Some(location) => format!(
+            "panic at {}:{}:{}: {payload}",
+            location.file(),
+            location.line(),
+            location.column()
+        ),
+        None => format!("panic at unknown location: {payload}"),
+    }
+}
+
+fn record_panic_and_flush_log(
+    log: &Mutex<Result<hex_diagnostics::SessionLog, String>>,
+    message: &str,
+) {
+    // Use try_lock so a panic originating while holding the log mutex never
+    // deadlocks the panicking thread.
+    let Ok(mut guard) = log.try_lock() else {
+        return;
+    };
+    if let Ok(session_log) = guard.as_mut() {
+        let _ = session_log.handle().record_typed(
+            hex_diagnostics::Level::Error,
+            hex_diagnostics::Category::Uncategorised,
+            message,
+        );
+        let _ = session_log.shutdown();
+    }
+}
+
+fn install_panic_hook(log: Arc<Mutex<Result<hex_diagnostics::SessionLog, String>>>) {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = format_panic_message(info);
+        record_panic_and_flush_log(&log, &message);
+        previous(info);
+    }));
+}
+
 /// Desktop-owned workers and shared publication lease torn down in strict order:
 /// every background worker joins before the update lease is released.
 #[derive(Default)]
@@ -184,11 +265,11 @@ struct DesktopRuntime {
 /// Any run that never opens the editor exits 1. macOS `terminate:` exits the
 /// process inside `Application::run` without returning, so the quit observer
 /// always shuts down every desktop worker, flushes the session log, and drops
-/// the update lease in custody order before returning or exiting 1 on failed
-/// startup. Platforms whose `run` returns call the same idempotent teardown
-/// and exit with [`StartupExit::code`].
+/// the update lease in custody order on **all** exits (both normal quit
+/// `code() == 0` and failed startup `code() != 0`). Platforms whose `run`
+/// returns call the same idempotent teardown and exit with [`StartupExit::code`].
 struct StartupExit {
-    log: RefCell<Result<hex_diagnostics::SessionLog, String>>,
+    log: Arc<Mutex<Result<hex_diagnostics::SessionLog, String>>>,
     runtime: RefCell<Option<DesktopRuntime>>,
     /// Set only once the editor (or demo) window opens.
     opened: Cell<bool>,
@@ -197,7 +278,7 @@ struct StartupExit {
 impl StartupExit {
     fn new(log: Result<hex_diagnostics::SessionLog, String>) -> Rc<Self> {
         Rc::new(Self {
-            log: RefCell::new(log),
+            log: Arc::new(Mutex::new(log)),
             runtime: RefCell::new(None),
             opened: Cell::new(false),
         })
@@ -210,7 +291,7 @@ impl StartupExit {
     }
 
     fn log_handle(&self) -> Result<hex_diagnostics::DiagnosticsHandle, String> {
-        match self.log.try_borrow() {
+        match self.log.try_lock() {
             Ok(log) => log.as_ref().map(|log| log.handle()).map_err(Clone::clone),
             Err(_) => Err("session log is busy".into()),
         }
@@ -222,7 +303,7 @@ impl StartupExit {
     }
 
     fn shutdown_log(&self) {
-        let Ok(mut log) = self.log.try_borrow_mut() else {
+        let Ok(mut log) = self.log.lock() else {
             return;
         };
         if let Ok(log) = log.as_mut()
@@ -279,7 +360,11 @@ impl StartupExit {
         (code != 0).then(|| i32::from(code))
     }
 
-    fn exit_on_failed_quit(self: &Rc<Self>, cx: &mut App) {
+    /// Run ordered desktop teardown on all macOS exits inside GPUI's
+    /// `on_app_quit` observer (including normal quit `code() == 0`, because
+    /// `NSApplication terminate:` exits inside `Application::run` without
+    /// returning), and exit non-zero if startup failed.
+    fn install_quit_teardown(self: &Rc<Self>, cx: &mut App) {
         let exit = Rc::clone(self);
         cx.on_app_quit(move |_| {
             if let Some(code) = exit.prepare_quit_exit() {
@@ -316,7 +401,7 @@ fn report_before_editor(failure: StartupFailure) {
     Application::new()
         .with_assets(hex_ui::assets::HexAssets)
         .run(move |cx: &mut App| {
-            run_exit.exit_on_failed_quit(cx);
+            run_exit.install_quit_teardown(cx);
             hex_ui::install_session_log(cx, log_handle.clone());
             hex_ui::open_or_report(cx, |_| Err(report));
         });
@@ -511,6 +596,67 @@ mod startup_exit_tests {
             .expect("exclusive lock must be released before failed startup exits");
         let _ = fs2::FileExt::unlock(&installer);
         drop(client);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn normal_quit_prepare_quit_exit_tears_down_workers_flushes_log_and_releases_lease() {
+        let dir = temp_dir("hex-normal-quit-prepare");
+        let target = dir.join("hex.app");
+        fs::create_dir(&target).unwrap();
+        let lock_path = dir.join(".hex-test-build.lock");
+        let lease = update_lease::UpdateLease::acquire_lock_file_for_test(&lock_path).unwrap();
+        let installer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&installer).is_err());
+
+        let (client, worker) = hex_ui::update_channel();
+        let supervisor = update_supervisor::start(target, worker).unwrap();
+        let log = hex_diagnostics::SessionLog::start(dir.join("logs")).unwrap();
+        let log_path = log.path().to_path_buf();
+        let exit = StartupExit::new(Ok(log));
+        exit.opened.set(true);
+        exit.attach_runtime(DesktopRuntime {
+            update_supervisor: Some(supervisor),
+            mts_worker: hex_mts::Worker::start().ok(),
+            midi_worker: hex_midi::Worker::start().ok(),
+            update_lease: Some(lease),
+        });
+        let handle = exit.log_handle().unwrap();
+        super::record_startup_warning(Some(&handle), "midi worker unavailable: test");
+
+        // Normal macOS quit calls prepare_quit_exit() from on_app_quit without
+        // returning from Application::run; it must return None and release everything.
+        assert_eq!(exit.prepare_quit_exit(), None);
+        fs2::FileExt::try_lock_exclusive(&installer)
+            .expect("exclusive lock must be available after normal quit teardown");
+        let _ = fs2::FileExt::unlock(&installer);
+        let contents = fs::read_to_string(&log_path).unwrap();
+        assert!(
+            contents.contains("level=warn category=startup")
+                && contents.contains("midi worker unavailable: test"),
+            "session log must flush startup warning on normal quit: {contents}"
+        );
+        drop(client);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn panic_record_helper_logs_and_flushes_session_log() {
+        let dir = temp_dir("hex-panic-log");
+        let log = hex_diagnostics::SessionLog::start(dir.clone()).unwrap();
+        let log_path = log.path().to_path_buf();
+        let shared = std::sync::Mutex::new(Ok(log));
+        super::record_panic_and_flush_log(&shared, "panic at main.rs:42:5: simulated crash");
+        let contents = fs::read_to_string(&log_path).unwrap();
+        assert!(
+            contents.contains("level=error category=uncategorised")
+                && contents.contains("panic at main.rs:42:5: simulated crash"),
+            "panic hook helper must record error and flush session log: {contents}"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 }
