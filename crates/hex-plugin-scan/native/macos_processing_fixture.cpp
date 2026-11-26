@@ -209,6 +209,11 @@ constexpr int midi_cc_mapping_restart_variant=161, midi_cc_mapping_and_value_res
 constexpr int stale_step_count_two_lanes_variant=163;
 constexpr int double_only_effect_variant=164;
 constexpr int midi_effect_variant=165, auxiliary_event_effect_variant=166;
+constexpr int output_notes_variant=167, full_output_notes_variant=168, excess_output_notes_variant=169,
+    outside_output_slice_variant=170, unsupported_output_event_variant=171;
+static bool has_note_output(int variant) {
+    return variant>=output_notes_variant && variant<=unsupported_output_event_variant;
+}
 static bool held_parameter_input(int variant) {
     return variant==144 || variant==held_instrument_variant || grouped_editor(variant);
 }
@@ -713,7 +718,7 @@ class ProcessingProcessor final : public Processor,public IAudioPresentationLate
     bool auxiliary_disabled=false;
     unsigned inactive_aux_inputs=0;
     unsigned inactive_outputs=0;
-    bool event_active=false;
+    bool event_active=false, output_event_active=false;
     float note_signal=0;
     struct Voice { int32 id=-1; float gain=0; int16 channel=-1; };
     std::array<Voice,2> named_voices{};
@@ -919,6 +924,7 @@ public:
     }
     int32 PLUGIN_API getBusCount(MediaType media,BusDirection direction) override {
         if (!control() || !initialized) return 0;
+        if (media==kEvent && direction==kOutput) return has_note_output(fault)?1:0;
         if (media==kEvent) return (requires_event_input || fault==auxiliary_event_effect_variant) && direction==kInput?1:0;
         if (media!=kAudio) return 0;
         if (fault==5) return 2;
@@ -1018,7 +1024,7 @@ public:
         }
         if (!control() || !setup || active || processing || index || !getBusCount(media,direction)) return kResultFalse;
         if (!enabled && (fault==stopped_bus_refusal_effect || fault==stopped_bus_refusal_instrument)) return kResultFalse;
-        if (media==kEvent) { event_active=enabled;return kResultOk; }
+        if (media==kEvent) { (direction==kOutput?output_event_active:event_active)=enabled;return kResultOk; }
         ++observed.activations;
         if (enabled && fault==7) return kResultFalse;
         (direction==kInput?input:output)=enabled;return kResultOk;
@@ -1169,6 +1175,42 @@ public:
             }
             return kResultOk;
         }
+        if(has_note_output(fault)) {
+            if(!output_event_active || !data.outputEvents || data.inputEvents) return kInvalidArgument;
+            Event event{};
+            event.type=Event::kNoteOnEvent;
+            event.noteOn={2,61,0,0.5f,0,0};
+            if(fault==output_notes_variant) {
+                if(block==0) {
+                    int32 index=0;
+                    auto* queue=data.outputParameterChanges->addParameterData(parameter_id(fault),index);
+                    if(!queue || queue->addPoint(2,0.75,index)!=kResultOk) return kInvalidArgument;
+                    event.sampleOffset=1;
+                    if(data.outputEvents->addEvent(event)!=kResultOk) return kInvalidArgument;
+                } else if(block==1) {
+                    event.type=Event::kPolyPressureEvent;event.sampleOffset=0;
+                    event.polyPressure={2,61,0.25f,0};
+                    if(data.outputEvents->addEvent(event)!=kResultOk) return kInvalidArgument;
+                    event.type=Event::kNoteOffEvent;event.sampleOffset=data.numSamples-1;
+                    event.noteOff={2,61,1.0f,0,0};
+                    if(data.outputEvents->addEvent(event)!=kResultOk) return kInvalidArgument;
+                }
+            } else if(fault==full_output_notes_variant || fault==excess_output_notes_variant) {
+                for(int n=0;n<64;++n) {
+                    event.noteOn.noteId=n+1;
+                    event.noteOn.velocity=n?0.5f:0.001f;
+                    if(data.outputEvents->addEvent(event)!=kResultOk) return kInvalidArgument;
+                }
+                if(fault==excess_output_notes_variant) {
+                    event.type=Event::kNoteOffEvent;event.noteOff={2,61,0.0f,1,0};
+                    data.outputEvents->addEvent(event);
+                }
+            } else {
+                if(fault==outside_output_slice_variant) event.sampleOffset=data.numSamples;
+                else event.type=Event::kDataEvent;
+                data.outputEvents->addEvent(event);
+            }
+        } else if(data.outputEvents) return kInvalidArgument;
         if (!processing || data.numSamples<1 || data.numSamples>maximum ||
             (requires_event_input?(!event_active || !data.inputEvents):data.inputEvents!=nullptr) ||
             data.numInputs!=((mode==1 && !silent_input) || (!input && data.numInputs==0)?0:1) ||
@@ -1468,7 +1510,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>auxiliary_event_effect_variant) return false;next_fault=value;
+        if (value>unsupported_output_event_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

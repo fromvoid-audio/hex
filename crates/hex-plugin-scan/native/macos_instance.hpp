@@ -42,7 +42,7 @@ class Instance final {
     bool handler_set = false, connected_component = false, connected_controller = false;
     bool input_active = false, output_active = false, active = false;
     bool silent_input_ = false;
-    int32 event_input_channels_ = 0;
+    int32 event_input_channels_ = 0, event_output_channels_ = 0;
     int32 aux_input_channels_ = 0;
     int32 output_bus_count_ = 1;
     uint32_t active_aux_outputs_mask_ = 0;
@@ -244,6 +244,16 @@ public:
                 return ConfigurationResult::UnsupportedTopology;
             }
         }
+        int32 output_event_channels=0;
+        const auto output_event_buses=component->getBusCount(kEvent,kOutput);
+        if(output_event_buses<0 || output_event_buses>1) return ConfigurationResult::UnsupportedTopology;
+        if(output_event_buses==1) {
+            BusInfo info{};
+            if(component->getBusInfo(kEvent,kOutput,0,info)!=kResultOk || info.mediaType!=kEvent ||
+                info.direction!=kOutput || info.busType!=kMain || info.channelCount<1 || info.channelCount>16)
+                return ConfigurationResult::UnsupportedTopology;
+            output_event_channels=info.channelCount;
+        }
         if (silent_input && !event_channels) return ConfigurationResult::UnsupportedTopology;
         auto main_input=arrangement(sdk.input_channels);
         if (silent_input &&
@@ -340,6 +350,10 @@ public:
                 return ConfigurationResult::ActivationRefused;
             event_input_channels_=event_channels;
         }
+        if(output_event_channels) {
+            if(component->activateBus(kEvent,kOutput,0,true)!=kResultOk) return ConfigurationResult::ActivationRefused;
+            event_output_channels_=output_event_channels;
+        }
         if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
         configuration_=sdk;
         aux_input_channels_=aux_in_channels;
@@ -368,6 +382,7 @@ public:
         return configured?&configuration_:nullptr;
     }
     // Immutable while the serialized processing lane owns the instance.
+    int32 event_output_channels() const { return event_output_channels_; }
     int32 event_input_channels() const { return event_input_channels_; }
     int32 aux_input_channels() const { return aux_input_channels_; }
     uint32_t active_aux_outputs_mask() const { return active_aux_outputs_mask_; }
@@ -744,6 +759,7 @@ private:
             aux_input_channels_ = 0;
             active_aux_outputs_mask_ = 0;
             event_input_channels_ = 0;
+            event_output_channels_ = 0;
             output_active = false;
         } else {
             if (aux_input_channels_) {
@@ -759,6 +775,10 @@ private:
             if (input_active) {
                 if (component->activateBus(kAudio, kInput, 0, false) != kResultOk) return refuse_cleanup();
                 input_active = false;
+            }
+            if(event_output_channels_) {
+                if(component->activateBus(kEvent,kOutput,0,false)!=kResultOk) return refuse_cleanup();
+                event_output_channels_=0;
             }
             if (event_input_channels_) {
                 if (component->activateBus(kEvent,kInput,0,false)!=kResultOk) return refuse_cleanup();
