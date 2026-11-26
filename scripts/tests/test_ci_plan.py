@@ -5582,7 +5582,7 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(steps["ui-unit-unit_device"].requires_tests)
         self.assertFalse(steps["ui-feature-tests"].requires_tests)
 
-    def test_update_ready_custody_is_default_unit_only(self):
+    def test_update_and_reporting_routes_keep_default_units_and_consumer_lints(self):
         root = SCRIPTS.parent
         owner, native = "hex-ui", "hex-desktop"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
@@ -5591,22 +5591,28 @@ class ModuleScopeTests(unittest.TestCase):
                      {"name": native, "manifest": "crates/hex-desktop/Cargo.toml",
                       "features": {"allocation-probe": []}, "dependencies": [{"name": owner}],
                       "targets": [{"kind": ["bin"]}]}]
-        path = "crates/hex-ui/src/update.rs"
-        unit = "update::tests::cancelled_ready_cannot_block_or_replace_a_new_request"
-        _, affected, _ = plan.classify([path], inventory)
-        self.assertEqual(set(affected), {owner, native})
-        boundary = plan.boundary_selection(root, [path], inventory, affected)
-        self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
-        self.assertIn("update::", boundary["module_filters"][owner])
-        steps = {step.step_id: step for step in ci.planned_steps({
-            "scope": "rust", "affected_packages": affected, "boundary": boundary,
-            "cargo_inventory": inventory, "paths": [path]})}
-        default = steps["ui-default-lib-unit-tests"]
-        self.assertEqual(default.argv[default.argv.index("--") + 1:], (unit,))
-        self.assertTrue(default.requires_tests)
-        feature = steps["ui-feature-tests"]
-        self.assertEqual(feature.argv[feature.argv.index("--") + 1:], ("update::",))
-        self.assertFalse(feature.requires_tests)
+        cases = (
+            ("update.rs", "update::", "update::tests::cancelled_ready_cannot_block_or_replace_a_new_request"),
+            ("report.rs", "report::", "report::tests::"),
+            ("editor/issue_report.rs", "editor::issue_report::", "editor::issue_report::tests::"),
+        )
+        for source, module, unit in cases:
+            with self.subTest(source=source):
+                path = "crates/hex-ui/src/" + source
+                _, affected, _ = plan.classify([path], inventory)
+                self.assertEqual(set(affected), {owner, native})
+                boundary = plan.boundary_selection(root, [path], inventory, affected)
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                self.assertIn(module, boundary["module_filters"][owner])
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": affected, "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertEqual(default.argv[default.argv.index("--") + 1:], (unit,))
+                self.assertTrue(default.requires_tests)
+                feature = steps["ui-feature-tests"]
+                self.assertEqual(feature.argv[feature.argv.index("--") + 1:], (module,))
+                self.assertFalse(feature.requires_tests)
         self.assertIn(owner, steps["affected-clippy"].argv)
         self.assertIn("--all-targets", steps["affected-clippy"].argv)
         self.assertIn(native, steps["consumer-clippy"].argv)

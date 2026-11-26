@@ -370,6 +370,8 @@ CONTROLLER_PUBLICATION_UNIT = "editor::controller::publication::"
 CONTROLLER_SESSION_ACTION_UNIT = "editor::controller::session_action_unit_tests::"
 CONTROLLER_SOURCE_BINDING_UNIT = "editor::controller::source_binding_unit_tests::"
 UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
+    "src/report.rs": ("report::tests::",),
+    "src/editor/issue_report.rs": ("editor::issue_report::tests::",),
     "src/update.rs": ("update::tests::cancelled_ready_cannot_block_or_replace_a_new_request",),
     "src/editor/export.rs": ("editor::export::status_tests::",),
     "src/editor/header.rs": ("editor::header::tests::",),
