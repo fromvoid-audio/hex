@@ -1566,6 +1566,8 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
         ] {
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME, "--ignored"])
+                // Debug playback construction uses the native fixture test stack.
+                .env("RUST_MIN_STACK", "16777216")
                 .env(CHILD, scenario)
                 .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
                 .output()
