@@ -485,6 +485,7 @@ pub(super) fn render_body(
     .debug_selector(move || format!("eq-sidebar-{}", device.value()));
     let graph = view.device_overlay_slot_or_inline(entity);
     crate::device_composition::eq_graph_body(graph, sidebar)
+        .min_w(px(crate::device_composition::EQ8_FRAME_WIDTH))
         .on_children_prepainted(spectrum::focus_listener(view, cx, device))
         .id(ElementId::Name(
             format!("eq-body-{}", device.value()).into(),
