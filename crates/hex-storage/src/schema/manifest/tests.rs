@@ -439,24 +439,28 @@ fn overwrite_consent_tracks_schema126_upgrade_and_preserves_original_bytes() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    // Start with a schema 114 (single post-112 feature) file on disk
+    // Start with a historical schema 114 (single post-112 feature) file on disk
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     editor
         .execute(Command::AddArrangementLocator { frame: 48_000 })
         .unwrap();
     let old_project = editor.project().clone();
+    // Default saves with any post-112 feature now target schema 126 directly.
     assert_eq!(
         crate::schema_version_for(&old_project),
-        crate::ARRANGEMENT_LOCATOR_SCHEMA_VERSION
+        CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
 
     let path = dir.join("song.hex");
-    crate::save_new(&path, &old_project).unwrap();
+    let legacy_bytes = crate::encode_stacked_legacy(&old_project).unwrap();
+    std::fs::write(&path, &legacy_bytes).unwrap();
     let original_bytes = std::fs::read(&path).unwrap();
-    let (_, old_token) = crate::load_with_token(&path).unwrap();
+    let (loaded_old, old_token) = crate::load_with_token(&path).unwrap();
+    assert_eq!(loaded_old, old_project);
 
-    // Re-saving unchanged project needs no confirmation
-    assert!(!old_token.requires_save_confirmation(&old_project).unwrap());
+    // Re-saving an existing schema 114 file as schema 126 requires explicit upgrade confirmation
+    assert!(old_token.requires_schema_upgrade_for(&old_project));
+    assert!(old_token.requires_save_confirmation(&old_project).unwrap());
 
     // Upgrading to schema 126 requires explicit confirmation and preserves original bytes
     let rich = build_rich_multi_feature_project();
@@ -504,6 +508,36 @@ fn stacked_legacy_and_schema126_decode_to_identical_project() {
     assert_eq!(from_stacked, project);
     assert_eq!(from_unified, project);
     assert_eq!(from_stacked, from_unified);
+}
+
+#[test]
+fn single_post_112_feature_defaults_directly_to_schema126_and_matches_legacy() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    editor
+        .execute(Command::AddArrangementLocator { frame: 48_000 })
+        .unwrap();
+    let project = editor.project().clone();
+    assert_eq!(post_112_feature_count(&project), 1);
+    assert_eq!(
+        crate::schema_version_for(&project),
+        CAPABILITY_MANIFEST_SCHEMA_VERSION
+    );
+    let unified = crate::encode(&project).unwrap();
+    let json: Value = serde_json::from_slice(&unified).unwrap();
+    assert_eq!(json["version"], CAPABILITY_MANIFEST_SCHEMA_VERSION);
+    assert_eq!(
+        json["capabilities"],
+        serde_json::json!(["arrangement_locators"])
+    );
+    assert_eq!(crate::decode(&unified).unwrap(), project);
+
+    let legacy = crate::encode_stacked_legacy(&project).unwrap();
+    let legacy_json: Value = serde_json::from_slice(&legacy).unwrap();
+    assert_eq!(
+        legacy_json["version"],
+        crate::ARRANGEMENT_LOCATOR_SCHEMA_VERSION
+    );
+    assert_eq!(crate::decode(&legacy).unwrap(), project);
 }
 
 #[test]

@@ -279,11 +279,13 @@ mod tests {
         let project = editor.project();
         assert_eq!(
             crate::schema_version_for(project),
-            crate::OUTER_CLIP_FADE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         let bytes = crate::encode(project).unwrap();
         let decoded = crate::decode(&bytes).unwrap();
         assert_eq!(&decoded, project);
+        let legacy = crate::encode_stacked_legacy(project).unwrap();
+        assert_eq!(&crate::decode(&legacy).unwrap(), project);
         let restored = decoded.tracks()[0].clips()[0].retained_fade();
         assert_eq!(
             (restored.in_position(), restored.out_position()),

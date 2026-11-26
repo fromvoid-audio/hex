@@ -6,8 +6,8 @@ use crate::{
 };
 use hex_project::Project;
 use std::{
-    fs::{self, File, OpenOptions, Permissions},
-    io::{self, Write},
+    fs::{self, File, Metadata, OpenOptions, Permissions},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
     sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
@@ -216,14 +216,14 @@ fn replace_encoded_with_hooks(
 ) -> Result<ReplaceOutcome, StorageError> {
     let basename = target_basename(target)?;
     let recovery = recovery_path(target)?;
-    let target_permissions = check_target(target, expected)?;
+    let (target_permissions, mut target_fingerprint) = check_target_initial(target, expected)?;
     let parent = target_parent(target);
-    let old_recovery = match inspect_recovery(&recovery, &basename)? {
-        SidecarState::Absent => None,
-        SidecarState::Owned(bytes) => Some(bytes),
+    let old_recovery = match inspect_recovery_header(&recovery, &basename)? {
+        SidecarHeaderState::Absent => None,
+        SidecarHeaderState::Owned(fingerprint) => Some(fingerprint),
         // A case-only or Unicode-normalization rename makes this path resolve to
         // the sidecar of the old name. Preserve it and start a fresh generation.
-        SidecarState::Foreign { stored_basename } => {
+        SidecarHeaderState::Foreign { stored_basename } => {
             set_aside_recovery(&recovery, &parent, &stored_basename)?;
             None
         }
@@ -236,23 +236,15 @@ fn replace_encoded_with_hooks(
     let metadata_warnings = copy_metadata(target, &project_temp.path);
     let mut recovery_temp = prepare_temp(&parent, &envelope, Some(target_permissions.clone()))?;
 
-    // Refresh both paths before committing the recovery copy. A valid prior
-    // generation may be rolled; anything unrecognized remains untouched.
-    check_target_permissions(target, expected, &target_permissions)?;
-    let current_recovery = match inspect_recovery(&recovery, &basename)? {
-        SidecarState::Absent => None,
-        SidecarState::Owned(bytes) => Some(bytes),
-        SidecarState::Foreign { .. } => {
-            return Err(StorageError::Invalid(
-                "recovery sidecar changed during project replacement",
-            ));
-        }
-    };
-    if current_recovery.as_deref() != old_recovery.as_deref() {
-        return Err(StorageError::Invalid(
-            "recovery sidecar changed during project replacement",
-        ));
-    }
+    // Refresh both paths before committing the recovery copy using lightweight
+    // metadata fingerprints (falling back to full read only if target metadata changed).
+    recheck_target_fast(
+        target,
+        expected,
+        &target_permissions,
+        &mut target_fingerprint,
+    )?;
+    recheck_recovery_fast(&recovery, old_recovery.as_ref())?;
     publish_recovery(
         &mut recovery_temp,
         &recovery,
@@ -268,7 +260,12 @@ fn replace_encoded_with_hooks(
 
     // Recheck immediately before the target rename. This is optimistic validation,
     // not a lock against a noncooperating writer in the final syscall window.
-    check_target_permissions(target, expected, &target_permissions)?;
+    recheck_target_fast(
+        target,
+        expected,
+        &target_permissions,
+        &mut target_fingerprint,
+    )?;
     before_project_rename().map_err(|source| StorageError::RecoveryBackupPublished {
         path: target.to_path_buf(),
         recovery_path: recovery.clone(),
@@ -317,7 +314,62 @@ fn target_basename(path: &Path) -> Result<String, StorageError> {
         ))
 }
 
-fn check_target(path: &Path, expected: &FileToken) -> Result<Permissions, StorageError> {
+#[cfg(test)]
+thread_local! {
+    static REPLACEMENT_FULL_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn read_document_counted(path: &Path) -> Result<Vec<u8>, StorageError> {
+    #[cfg(test)]
+    REPLACEMENT_FULL_READS.with(|count| count.set(count.get() + 1));
+    read_document(path)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileFingerprint {
+    len: u64,
+    #[cfg(unix)]
+    dev: u64,
+    #[cfg(unix)]
+    ino: u64,
+    #[cfg(unix)]
+    mtime: i64,
+    #[cfg(unix)]
+    mtime_nsec: i64,
+    #[cfg(unix)]
+    ctime: i64,
+    #[cfg(unix)]
+    ctime_nsec: i64,
+    #[cfg(not(unix))]
+    modified: Option<std::time::SystemTime>,
+}
+
+impl FileFingerprint {
+    fn from_metadata(metadata: &Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            Self {
+                len: metadata.len(),
+                dev: metadata.dev(),
+                ino: metadata.ino(),
+                mtime: metadata.mtime(),
+                mtime_nsec: metadata.mtime_nsec(),
+                ctime: metadata.ctime(),
+                ctime_nsec: metadata.ctime_nsec(),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                len: metadata.len(),
+                modified: metadata.modified().ok(),
+            }
+        }
+    }
+}
+
+fn inspect_target_metadata(path: &Path) -> Result<Metadata, StorageError> {
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -335,25 +387,52 @@ fn check_target(path: &Path, expected: &FileToken) -> Result<Permissions, Storag
             "project replacement target must be a regular file",
         ));
     }
-    if read_document(path)?.as_slice() != expected.0.as_ref() {
+    Ok(metadata)
+}
+
+fn check_target_initial(
+    path: &Path,
+    expected: &FileToken,
+) -> Result<(Permissions, FileFingerprint), StorageError> {
+    let metadata = inspect_target_metadata(path)?;
+    if metadata.len() != expected.0.len() as u64 {
         return Err(StorageError::Conflict {
             path: path.to_path_buf(),
         });
     }
-    Ok(metadata.permissions())
+    if read_document_counted(path)?.as_slice() != expected.0.as_ref() {
+        return Err(StorageError::Conflict {
+            path: path.to_path_buf(),
+        });
+    }
+    let fingerprint = FileFingerprint::from_metadata(&metadata);
+    Ok((metadata.permissions(), fingerprint))
 }
 
-fn check_target_permissions(
+fn recheck_target_fast(
     path: &Path,
     expected: &FileToken,
-    initial: &Permissions,
+    initial_permissions: &Permissions,
+    initial_fingerprint: &mut FileFingerprint,
 ) -> Result<(), StorageError> {
-    let current = check_target(path, expected)?;
-    if !same_basic_permissions(&current, initial) {
+    let metadata = inspect_target_metadata(path)?;
+    if !same_basic_permissions(&metadata.permissions(), initial_permissions) {
         return Err(StorageError::Invalid(
             "project permissions changed during replacement",
         ));
     }
+    let current_fingerprint = FileFingerprint::from_metadata(&metadata);
+    if current_fingerprint == *initial_fingerprint {
+        return Ok(());
+    }
+    if metadata.len() != expected.0.len() as u64
+        || read_document_counted(path)?.as_slice() != expected.0.as_ref()
+    {
+        return Err(StorageError::Conflict {
+            path: path.to_path_buf(),
+        });
+    }
+    *initial_fingerprint = current_fingerprint;
     Ok(())
 }
 
@@ -370,10 +449,11 @@ fn same_basic_permissions(left: &Permissions, right: &Permissions) -> bool {
 }
 
 /// What occupies a project's recovery sidecar path.
-enum SidecarState {
+enum SidecarHeaderState {
     Absent,
-    /// A recognized envelope bound to this exact target name.
-    Owned(Vec<u8>),
+    /// A recognized envelope bound to this exact target name, fingerprinted
+    /// without reading its full project payload into memory.
+    Owned(FileFingerprint),
     /// A recognized envelope bound to another target name, such as the pre-rename
     /// name after a case-only rename on a case-insensitive volume.
     Foreign {
@@ -381,9 +461,12 @@ enum SidecarState {
     },
 }
 
-fn inspect_recovery(path: &Path, basename: &str) -> Result<SidecarState, StorageError> {
+fn inspect_recovery_header(
+    path: &Path,
+    basename: &str,
+) -> Result<SidecarHeaderState, StorageError> {
     match fs::symlink_metadata(path) {
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(SidecarState::Absent),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(SidecarHeaderState::Absent),
         Err(error) => Err(error.into()),
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
@@ -397,20 +480,96 @@ fn inspect_recovery(path: &Path, basename: &str) -> Result<SidecarState, Storage
                     "recovery sidecar is not a regular file; refusing replacement",
                 ));
             }
-            let bytes = read_document(path)?;
             // Recognizing the framing and bound name is enough to own a
-            // generation. Its payload is never decoded here: decoding cost a
-            // full project parse per save, and a payload that a stricter build
-            // no longer accepts must not block saving the project it backs up.
-            // Unrecognized or future-framed files are still refused untouched.
-            let (stored_basename, _payload) = parse_envelope(&bytes)?;
+            // generation. Read only the fixed header + basename (<= 279 bytes)
+            // and check the total file length against the header rather than
+            // reading the full project payload on every save.
+            let file_len = metadata.len();
+            if file_len < RECOVERY_HEADER_BYTES as u64 {
+                return Err(StorageError::Invalid("invalid recovery envelope length"));
+            }
+            let mut file = File::open(path)?;
+            let mut header = [0_u8; RECOVERY_HEADER_BYTES];
+            file.read_exact(&mut header)?;
+            if &header[..8] != RECOVERY_MAGIC {
+                return Err(StorageError::Invalid("unrecognized recovery sidecar"));
+            }
+            let version = u32::from_le_bytes(
+                header[8..12]
+                    .try_into()
+                    .map_err(|_| StorageError::Invalid("invalid recovery envelope version"))?,
+            );
+            if version != RECOVERY_VERSION {
+                return Err(StorageError::Invalid(
+                    "unsupported recovery envelope version",
+                ));
+            }
+            let basename_length = u32::from_le_bytes(
+                header[12..16]
+                    .try_into()
+                    .map_err(|_| StorageError::Invalid("invalid recovery target name length"))?,
+            ) as usize;
+            let payload_length = u64::from_le_bytes(
+                header[16..24]
+                    .try_into()
+                    .map_err(|_| StorageError::Invalid("invalid recovery payload length"))?,
+            );
+            if basename_length == 0 || basename_length > MAX_COMPONENT_BYTES {
+                return Err(StorageError::Invalid("invalid recovery target name length"));
+            }
+            let expected_length = (RECOVERY_HEADER_BYTES as u64)
+                .checked_add(basename_length as u64)
+                .and_then(|length| length.checked_add(payload_length))
+                .ok_or(StorageError::Invalid("recovery envelope length overflow"))?;
+            if expected_length != file_len {
+                return Err(StorageError::Invalid(
+                    "recovery envelope length does not match its payload",
+                ));
+            }
+            let mut name_buf = [0_u8; MAX_COMPONENT_BYTES];
+            let name_bytes = &mut name_buf[..basename_length];
+            file.read_exact(name_bytes)?;
+            let stored_basename = std::str::from_utf8(name_bytes)
+                .map_err(|_| StorageError::Invalid("recovery target name is not utf-8"))?;
             if stored_basename == basename {
-                Ok(SidecarState::Owned(bytes))
+                Ok(SidecarHeaderState::Owned(FileFingerprint::from_metadata(
+                    &metadata,
+                )))
             } else {
-                Ok(SidecarState::Foreign {
+                Ok(SidecarHeaderState::Foreign {
                     stored_basename: stored_basename.to_owned(),
                 })
             }
+        }
+    }
+}
+
+fn recheck_recovery_fast(
+    path: &Path,
+    expected: Option<&FileFingerprint>,
+) -> Result<(), StorageError> {
+    match (expected, fs::symlink_metadata(path)) {
+        (None, Err(error)) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        (None, Ok(_)) => Err(StorageError::Invalid(
+            "recovery sidecar changed during project replacement",
+        )),
+        (None, Err(error)) => Err(error.into()),
+        (Some(_), Err(error)) if error.kind() == io::ErrorKind::NotFound => Err(
+            StorageError::Invalid("recovery sidecar changed during project replacement"),
+        ),
+        (Some(_), Err(error)) => Err(error.into()),
+        (Some(expected_fp), Ok(metadata)) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(StorageError::Invalid(
+                    "recovery sidecar changed during project replacement",
+                ));
+            }
+            if FileFingerprint::from_metadata(&metadata) != *expected_fp {
+                return Err(StorageError::Invalid(
+                    "recovery sidecar changed during project replacement",
+                ));
+            }
+            Ok(())
         }
     }
 }
@@ -1254,5 +1413,32 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o640);
+    }
+
+    #[test]
+    fn existing_project_replacement_performs_single_full_read_with_recovery_sidecar() {
+        let directory = TestDir::new();
+        let target = directory.0.join("single-read.hex");
+        let first = project(48_000);
+        let second = project(44_100);
+        let third = project(96_000);
+        save_new(&target, &first).expect("initial save");
+        let (_, first_token) = load_with_token(&target).expect("first token");
+        let second_outcome = replace_existing(&target, &first_token, &second)
+            .expect("first replace creates sidecar");
+
+        // Second replacement has both an existing target AND an existing owned
+        // recovery sidecar. It must verify in 1 full read of target (down from 5).
+        REPLACEMENT_FULL_READS.with(|count| count.set(0));
+        let third_outcome =
+            replace_existing(&target, &second_outcome.token, &third).expect("second replace");
+        let full_reads = REPLACEMENT_FULL_READS.with(|count| count.get());
+        assert_eq!(
+            full_reads, 1,
+            "existing-project save with recovery sidecar must perform 1 full read, got {full_reads}"
+        );
+        assert_eq!(load(&target).expect("latest project"), third);
+        assert_eq!(load_recovery(&target).expect("recovery").project, second);
+        third_outcome.token.check_unchanged(&target).unwrap();
     }
 }

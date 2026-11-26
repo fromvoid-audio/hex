@@ -17,17 +17,18 @@ pub(super) fn build(state: &ViewState, command: &Command) -> Option<Arc<ViewStat
         return None;
     }
     let project = state.project.preview_section_layout(command).ok()?;
-    let mut audio_clip_waveforms = state.audio_clip_waveforms.clone();
-    for (id, prepared) in &mut audio_clip_waveforms {
+    let mut audio_clip_waveforms = Arc::clone(&state.audio_clip_waveforms);
+    let mut updated_clips = Vec::new();
+    for (&id, prepared) in state.audio_clip_waveforms.iter() {
         let Some(clip) = project
-            .clip(*id)
-            .filter(|&c| state.project.clip(*id) != Some(c))
+            .clip(id)
+            .filter(|&c| state.project.clip(id) != Some(c))
         else {
             continue;
         };
         let (Some(before), Some(after)) = (
-            projected_offset(&state.project, *id),
-            projected_offset(&project, *id),
+            projected_offset(&state.project, id),
+            projected_offset(&project, id),
         ) else {
             continue;
         };
@@ -37,8 +38,16 @@ pub(super) fn build(state: &ViewState, command: &Command) -> Option<Arc<ViewStat
             prepared.offset.checked_sub(before - after)
         };
         if let Some(offset) = offset {
-            prepared.offset = offset;
-            prepared.length = clip.duration();
+            updated_clips.push((id, offset, clip.duration()));
+        }
+    }
+    if !updated_clips.is_empty() {
+        let map = Arc::make_mut(&mut audio_clip_waveforms);
+        for (id, offset, length) in updated_clips {
+            if let Some(prepared) = map.get_mut(&id) {
+                prepared.offset = offset;
+                prepared.length = length;
+            }
         }
     }
     let midi_preview = midi_preview(state, &project)?;

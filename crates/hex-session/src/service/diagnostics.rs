@@ -425,6 +425,7 @@ pub(super) struct EventReceiver {
     receiver: std::sync::mpsc::Receiver<ObservedEvent>,
     diagnostics: Arc<Hooks>,
     closed: Option<Arc<std::sync::atomic::AtomicBool>>,
+    drain_signal: Option<Arc<super::WakeSignal>>,
 }
 impl EventReceiver {
     #[cfg(test)]
@@ -436,37 +437,56 @@ impl EventReceiver {
             receiver,
             diagnostics,
             closed: None,
+            drain_signal: None,
         }
     }
     pub fn with_closed(
         receiver: std::sync::mpsc::Receiver<ObservedEvent>,
         diagnostics: Arc<Hooks>,
         closed: Arc<std::sync::atomic::AtomicBool>,
+        drain_signal: Arc<super::WakeSignal>,
     ) -> Self {
         Self {
             receiver,
             diagnostics,
             closed: Some(closed),
+            drain_signal: Some(drain_signal),
+        }
+    }
+    fn notify_drained(&self) {
+        if let Some(signal) = &self.drain_signal {
+            signal.notify();
         }
     }
     fn received(&self, observed: ObservedEvent) -> Event {
+        self.notify_drained();
         self.diagnostics
             .outcome(observed.request, &observed.event, true, None, None, None);
         observed.event
     }
     pub fn try_recv(&self) -> Result<Event, std::sync::mpsc::TryRecvError> {
-        self.receiver
+        let result = self
+            .receiver
             .try_recv()
-            .map(|observed| self.received(observed))
+            .map(|observed| self.received(observed));
+        if matches!(result, Err(std::sync::mpsc::TryRecvError::Disconnected)) {
+            self.notify_drained();
+        }
+        result
     }
     #[cfg(test)]
     pub fn recv_timeout(
         &self,
         timeout: std::time::Duration,
     ) -> Result<Event, std::sync::mpsc::RecvTimeoutError> {
-        self.receiver
+        let result = self
+            .receiver
             .recv_timeout(timeout)
-            .map(|observed| self.received(observed))
+            .map(|observed| self.received(observed));
+        if matches!(result, Err(std::sync::mpsc::RecvTimeoutError::Disconnected)) {
+            self.notify_drained();
+        }
+        result
     }
 }
 impl Drop for EventReceiver {
@@ -474,6 +494,7 @@ impl Drop for EventReceiver {
         if let Some(closed) = &self.closed {
             closed.store(true, std::sync::atomic::Ordering::Release);
         }
+        self.notify_drained();
     }
 }
 

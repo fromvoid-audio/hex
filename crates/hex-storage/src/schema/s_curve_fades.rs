@@ -321,14 +321,20 @@ mod tests {
             .execute(Command::GroupClips(vec![clip, other]))
             .unwrap();
         let expected = editor.project();
-        let bytes = crate::encode(expected).unwrap();
+        let bytes = crate::encode_stacked_legacy(expected).unwrap();
         assert_eq!(
             crate::schema_version_for(expected),
-            S_CURVE_FADE_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         let decoded = crate::decode(&bytes).unwrap();
         assert_eq!(decoded.snapshot(), expected.snapshot());
-        assert_eq!(crate::encode(&decoded).unwrap(), bytes);
+        assert_eq!(crate::encode_stacked_legacy(&decoded).unwrap(), bytes);
+        assert_eq!(
+            crate::decode(&crate::encode(expected).unwrap())
+                .unwrap()
+                .snapshot(),
+            expected.snapshot()
+        );
         assert!(crate::encode_schema22(expected).is_err());
 
         let folder = std::env::temp_dir().join(format!("hex-s-curve-{}", std::process::id()));

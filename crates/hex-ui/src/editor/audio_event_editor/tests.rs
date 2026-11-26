@@ -839,7 +839,7 @@ fn grouped_audio_hides_single_source_view_and_anchor_waveform_fallback(cx: &mut 
         view.audio_detail.event.source_view = true;
         // Exercise the no-prepared-composite case while retaining the original
         // anchor waveform that used to be incorrectly shown for every event.
-        let mut audio_clip_waveforms = state.audio_clip_waveforms.clone();
+        let mut audio_clip_waveforms = (*state.audio_clip_waveforms).clone();
         audio_clip_waveforms.remove(&grouped.id());
         let changed = hex_session::service::ViewState {
             canonical_audio_source: state.canonical_audio_source.clone(),
@@ -847,7 +847,7 @@ fn grouped_audio_hides_single_source_view_and_anchor_waveform_fallback(cx: &mut 
             project: std::sync::Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
             source_overviews: state.source_overviews.clone(),
-            audio_clip_waveforms,
+            audio_clip_waveforms: std::sync::Arc::new(audio_clip_waveforms),
             midi_preview: std::sync::Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,

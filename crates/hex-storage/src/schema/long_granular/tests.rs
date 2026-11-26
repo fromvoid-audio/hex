@@ -88,29 +88,31 @@ fn fixture() -> (Project, Project) {
 fn complete_long_roots_round_trip_over_valid_prior_document_and_warn_before_overwrite() {
     let (prior, project) = fixture();
     let old = crate::encode(&prior).unwrap();
-    let bytes = crate::encode(&project).unwrap();
+    let bytes = crate::encode_stacked_legacy(&project).unwrap();
     assert_eq!(
         crate::schema_version_for(&project),
-        LONG_GRANULAR_SCHEMA_VERSION
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
     let dto: Document<'_> = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(dto.base.get().as_bytes(), old);
     assert_eq!(crate::decode(&old).unwrap(), prior);
     assert_eq!(crate::decode(&bytes).unwrap(), project);
     assert_eq!(
-        crate::encode(&crate::decode(&bytes).unwrap()).unwrap(),
+        crate::encode_stacked_legacy(&crate::decode(&bytes).unwrap()).unwrap(),
         bytes
     );
+    let unified = crate::encode(&project).unwrap();
+    assert_eq!(crate::decode(&unified).unwrap(), project);
     let token = crate::FileToken::from_validated_bytes(old.into());
     assert!(token.requires_save_confirmation(&project).unwrap());
-    let token = crate::FileToken::from_validated_bytes(bytes.into());
+    let token = crate::FileToken::from_validated_bytes(unified.into());
     assert!(!token.requires_save_confirmation(&project).unwrap());
 }
 #[test]
 fn malformed_unknown_and_old_schema_long_states_are_refused() {
     let (_, project) = fixture();
     let original: serde_json::Value =
-        serde_json::from_slice(&crate::encode(&project).unwrap()).unwrap();
+        serde_json::from_slice(&crate::encode_stacked_legacy(&project).unwrap()).unwrap();
     for case in 0..11 {
         let mut value = original.clone();
         match case {
@@ -216,10 +218,10 @@ fn long_inactive_warp_wraps_schema120_and_round_trips_with_overwrite_warning() {
         clip
     });
     let active = editor.project().clone();
-    let older = crate::encode(&active).unwrap();
+    let older = crate::encode_stacked_legacy(&active).unwrap();
     assert_eq!(
         crate::schema_version_for(&active),
-        LONG_GRANULAR_SCHEMA_VERSION
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&older).unwrap(), active);
     editor
@@ -229,22 +231,24 @@ fn long_inactive_warp_wraps_schema120_and_round_trips_with_overwrite_warning() {
         })
         .unwrap();
     let inactive = editor.project();
-    let bytes = crate::encode(inactive).unwrap();
+    let bytes = crate::encode_stacked_legacy(inactive).unwrap();
     assert_eq!(
         crate::schema_version_for(inactive),
-        crate::LONG_INACTIVE_WARP_SCHEMA_VERSION
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
     let envelope: Document<'_> = serde_json::from_slice(&bytes).unwrap();
     let base: serde_json::Value = serde_json::from_str(envelope.base.get()).unwrap();
     assert_eq!(base["version"], LONG_GRANULAR_SCHEMA_VERSION);
     assert_eq!(&crate::decode(&bytes).unwrap(), inactive);
     assert_eq!(
-        crate::encode(&crate::decode(&bytes).unwrap()).unwrap(),
+        crate::encode_stacked_legacy(&crate::decode(&bytes).unwrap()).unwrap(),
         bytes
     );
+    let unified = crate::encode(inactive).unwrap();
+    assert_eq!(&crate::decode(&unified).unwrap(), inactive);
     let token = crate::FileToken::from_validated_bytes(older.into());
     assert!(token.requires_save_confirmation(inactive).unwrap());
-    let token = crate::FileToken::from_validated_bytes(bytes.clone().into());
+    let token = crate::FileToken::from_validated_bytes(unified.into());
     assert!(!token.requires_save_confirmation(inactive).unwrap());
 
     let flat = super::super::content_view_resampler::encode(inactive).unwrap();
@@ -267,10 +271,14 @@ fn authored_neutral_outer_fade_composes_over_schema120() {
     let project = editor.project();
     assert_eq!(
         crate::schema_version_for(project),
-        crate::OUTER_CLIP_FADE_SCHEMA_VERSION
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
-    let bytes = crate::encode(project).unwrap();
+    let bytes = crate::encode_stacked_legacy(project).unwrap();
     let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(document["base"]["version"], LONG_GRANULAR_SCHEMA_VERSION);
     assert_eq!(&crate::decode(&bytes).unwrap(), project);
+    assert_eq!(
+        &crate::decode(&crate::encode(project).unwrap()).unwrap(),
+        project
+    );
 }

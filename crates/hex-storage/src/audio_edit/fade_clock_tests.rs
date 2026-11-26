@@ -93,13 +93,15 @@ fn versioned_outer_fade_preserves_exact_state() {
     let project = hex_project::Project::from_snapshot(snapshot).unwrap();
     assert_eq!(
         schema_version_for(&project),
-        crate::OUTER_CLIP_FADE_SCHEMA_VERSION
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
     let bytes = encode(&project).unwrap();
     assert_eq!(decode(&bytes).unwrap(), project);
+    let legacy_outer_bytes = crate::encode_stacked_legacy(&project).unwrap();
+    assert_eq!(decode(&legacy_outer_bytes).unwrap(), project);
     assert_ne!(
         schema_version_for(plain),
-        crate::OUTER_CLIP_FADE_SCHEMA_VERSION
+        crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
     );
     assert!(crate::encode_schema20(&project).is_err());
 
@@ -128,7 +130,7 @@ fn versioned_outer_fade_preserves_exact_state() {
     assert_eq!(std::fs::read(&old_path).unwrap(), legacy_bytes);
     std::fs::remove_dir_all(&dir).unwrap();
 
-    let saved: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(&legacy_outer_bytes).unwrap();
     let mut malformed = saved.clone();
     malformed["fades"][0]["clip"] = u64::MAX.into();
     assert!(decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
@@ -263,7 +265,12 @@ fn schema122_preserves_musical_trim_context_inside_group_and_alias() {
     assert_eq!(domain.fade_clock, AudioClipFadeClock::Outer);
     assert_eq!(domain.fade_start, BeatTime::ONE.raw() / 8);
 
-    let mut bad: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    let legacy_bytes = crate::encode_stacked_legacy(&project).unwrap();
+    assert_eq!(
+        decode(&legacy_bytes).unwrap().snapshot(),
+        project.snapshot()
+    );
+    let mut bad: serde_json::Value = serde_json::from_slice(&legacy_bytes).unwrap();
     let rows = bad["fades"].as_array_mut().unwrap();
     let member_row = rows
         .iter()

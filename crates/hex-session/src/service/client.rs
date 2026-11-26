@@ -54,6 +54,10 @@ pub struct Service {
     pub(super) arrangement_edit_views: arrangement_edit_views::Receiver,
     pub(super) diagnostics: Arc<diagnostics::Hooks>,
     pub(super) export_events: Receiver<ExportEvent>,
+    pub(super) export_drain_signal: Arc<WakeSignal>,
+    pub(super) outcome_drain_signal: Arc<WakeSignal>,
+    pub(super) worker_wake_signal: Arc<WakeSignal>,
+    pub(super) worker_exited: Arc<WakeSignal>,
     pub(super) export_busy: Arc<AtomicBool>,
     pub(super) shutdown: Arc<AtomicBool>,
     pub(super) arrangement_seek: Option<ArrangementSeekWorker>,
@@ -389,17 +393,26 @@ impl Service {
         let worker_test_hook = Arc::clone(&export_test_hook);
         let export_shutdown = Arc::clone(&shutdown);
         let export_wake_hook = wake_hook.clone();
+        let export_drain_signal = Arc::new(WakeSignal::default());
+        let worker_export_drain = Arc::clone(&export_drain_signal);
+        let outcome_drain_signal = Arc::new(WakeSignal::default());
+        let worker_outcome_drain = Arc::clone(&outcome_drain_signal);
+        let worker_wake_signal = Arc::new(WakeSignal::default());
+        let worker_wake = Arc::clone(&worker_wake_signal);
+        let worker_exited = Arc::new(WakeSignal::default());
+        let worker_exit_notify = Arc::clone(&worker_exited);
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                run_export_worker(
+                run_export_worker_with_signal(
                     export_work_rx,
                     export_event_tx,
                     exporter,
                     finished_tx,
                     export_shutdown,
                     export_wake_hook,
+                    worker_export_drain,
                     #[cfg(test)]
                     worker_test_hook,
                 )
@@ -418,6 +431,13 @@ impl Service {
             // Structural stopped publications reuse the bounded preroll constructor.
             .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
+                struct ExitNotify(Arc<WakeSignal>);
+                impl Drop for ExitNotify {
+                    fn drop(&mut self) {
+                        self.0.notify();
+                    }
+                }
+                let _exit_notify = ExitNotify(worker_exit_notify);
                 // Establish export-worker custody before fallible session startup,
                 // so an early return still closes and joins that worker.
                 let export_lane = ExportLane::new(export_work_tx, finished_rx, export_worker);
@@ -428,6 +448,7 @@ impl Service {
                     worker_diagnostics,
                 )
                 .with_events_closed(worker_events_closed)
+                .with_wake_signals(worker_outcome_drain, worker_wake)
                 .with_wake_hook(worker_wake_hook);
                 let session = match session {
                     Some(session) => session,
@@ -520,11 +541,20 @@ impl Service {
             )),
             clip_audition,
             diagnostics: Arc::clone(&diagnostics),
-            events: diagnostics::EventReceiver::with_closed(event_rx, diagnostics, events_closed),
+            events: diagnostics::EventReceiver::with_closed(
+                event_rx,
+                diagnostics,
+                events_closed,
+                Arc::clone(&outcome_drain_signal),
+            ),
             wake_hook,
             track_switch_views,
             arrangement_edit_views,
             export_events: export_event_rx,
+            export_drain_signal,
+            outcome_drain_signal,
+            worker_wake_signal,
+            worker_exited,
             export_busy,
             shutdown,
             arrangement_seek,
@@ -813,10 +843,12 @@ impl Service {
         match self.export_events.try_recv() {
             Ok(event) => {
                 self.export_busy.store(false, Ordering::Release);
+                self.export_drain_signal.notify();
                 Ok(event)
             }
             Err(TryRecvError::Disconnected) => {
                 self.export_busy.store(false, Ordering::Release);
+                self.export_drain_signal.notify();
                 Err(TryRecvError::Disconnected)
             }
             Err(TryRecvError::Empty) => Err(TryRecvError::Empty),

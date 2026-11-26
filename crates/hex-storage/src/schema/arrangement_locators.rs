@@ -111,7 +111,8 @@ mod tests {
     fn assert_prior_document_bytes(project: &Project, bytes: &[u8]) {
         let mut snapshot = project.snapshot();
         snapshot.arrangement_locators.clear();
-        let prior = crate::encode(&Project::from_snapshot(snapshot).unwrap()).unwrap();
+        let prior =
+            crate::encode_stacked_legacy(&Project::from_snapshot(snapshot).unwrap()).unwrap();
         let envelope: Document<'_, &RawValue> = serde_json::from_slice(bytes).unwrap();
         assert_eq!(envelope.base.get().as_bytes(), prior);
         assert_eq!(crate::encode_document(&envelope).unwrap(), bytes);
@@ -124,9 +125,13 @@ mod tests {
             .execute(Command::AddArrangementLocator { frame: 40 })
             .unwrap();
         let project = editor.project();
-        let bytes = crate::encode(project).unwrap();
-        assert_prior_document_bytes(project, &bytes);
-        assert_eq!(crate::decode(&bytes).unwrap(), *project);
+        let legacy_bytes = crate::encode_stacked_legacy(project).unwrap();
+        assert_prior_document_bytes(project, &legacy_bytes);
+        assert_eq!(crate::decode(&legacy_bytes).unwrap(), *project);
+        assert_eq!(
+            crate::decode(&crate::encode(project).unwrap()).unwrap(),
+            *project
+        );
     }
 
     #[test]
@@ -149,7 +154,7 @@ mod tests {
         editor
             .execute(Command::SetClipFadeEnvelope { clip, fade })
             .unwrap();
-        let prior = crate::encode(editor.project()).unwrap();
+        let prior = crate::encode_stacked_legacy(editor.project()).unwrap();
         assert_eq!(
             serde_json::from_slice::<Value>(&prior).unwrap()["version"],
             113
@@ -157,7 +162,7 @@ mod tests {
         let migrated = crate::decode(&prior).unwrap();
         assert!(migrated.arrangement_locators().is_empty());
         assert_eq!(migrated, *editor.project());
-        assert_eq!(crate::encode(&migrated).unwrap(), prior);
+        assert_eq!(crate::encode_stacked_legacy(&migrated).unwrap(), prior);
 
         let Created::ArrangementLocator(locator) = editor
             .execute(Command::AddArrangementLocator { frame: 40 })
@@ -175,12 +180,16 @@ mod tests {
             .execute(Command::AddArrangementLocator { frame: 101 })
             .unwrap();
         let expected = editor.project();
-        let bytes = crate::encode(expected).unwrap();
+        let bytes = crate::encode_stacked_legacy(expected).unwrap();
         assert_eq!(
             crate::schema_version_for(expected),
-            ARRANGEMENT_LOCATOR_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(crate::decode(&bytes).unwrap(), *expected);
+        assert_eq!(
+            crate::decode(&crate::encode(expected).unwrap()).unwrap(),
+            *expected
+        );
         assert_prior_document_bytes(expected, &bytes);
         assert!(crate::encode_schema22(expected).is_err());
 

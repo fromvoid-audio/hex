@@ -25,9 +25,11 @@ pub(crate) use document_ops::{
     TuningLibraryContext, apply_current_save_outcome, run_tuning_library_operation_in,
     run_tuning_library_operation_in_using,
 };
+#[cfg(test)]
+pub(crate) use export_worker::run_export_worker;
 pub(crate) use export_worker::{
-    export_destination_is_original_media, latest_timeline_content_end, run_export_worker,
-    same_existing_file,
+    export_destination_is_original_media, latest_timeline_content_end,
+    run_export_worker_with_signal, same_existing_file,
 };
 pub(crate) use live_input::{
     TuningInputPublication, compile, native_playback, prepare_tuning_input_publication,

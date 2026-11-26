@@ -223,13 +223,19 @@ mod tests {
             .unwrap()
             .cycle_phase = 9_000;
         let project = Project::from_snapshot(snapshot).unwrap();
-        let encoded = encode(&project).unwrap();
+        let encoded = crate::encode_stacked_legacy(&project).unwrap();
         assert_eq!(
             crate::schema_version_for(&project),
-            SILENT_REPEAT_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
         assert_eq!(
             crate::decode(&encoded).unwrap().snapshot(),
+            project.snapshot()
+        );
+        assert_eq!(
+            crate::decode(&crate::encode(&project).unwrap())
+                .unwrap()
+                .snapshot(),
             project.snapshot()
         );
         let document: Document<'_> = serde_json::from_slice(&encoded).unwrap();
@@ -237,13 +243,13 @@ mod tests {
         assert!(!contains(&prior));
         assert_eq!(
             crate::schema_version_for(&prior),
-            crate::ARRANGEMENT_LOCATOR_SCHEMA_VERSION
+            crate::CAPABILITY_MANIFEST_SCHEMA_VERSION
         );
     }
 
     #[test]
     fn malformed_rows_are_refused() {
-        let encoded = encode(&project()).unwrap();
+        let encoded = crate::encode_stacked_legacy(&project()).unwrap();
         let document: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
         for mutation in 0..4 {
             let mut invalid = document.clone();

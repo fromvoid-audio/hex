@@ -67,6 +67,8 @@ mod export_lane;
 #[cfg(test)]
 mod resident_limit_tests;
 mod shutdown;
+mod wake_signal;
+use wake_signal::WakeSignal;
 #[cfg(test)]
 mod startup_failure_tests;
 pub use shutdown::{DROP_SHUTDOWN_BOUND, ShutdownError};
@@ -230,9 +232,11 @@ use protocol::{
 pub use resident_audio::device_insert::{
     DeviceInsertConfirmation, GraphEditOperation, VerifiedGraphEditAttempt,
 };
+#[cfg(test)]
+use worker::run_export_worker;
 use worker::{
     DocumentHandle, SaveCurrentCommit, bind_new_save, compile, device_track_command,
-    native_device_name, run_export_worker, run_worker, save_document_as,
+    native_device_name, run_export_worker_with_signal, run_worker, save_document_as,
 };
 #[cfg(test)]
 use worker::{

@@ -1099,7 +1099,7 @@ fn stalled_event_channel_returns_within_bound_coalesces_and_flushes_on_drain() {
             comparison_audio: None,
             gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
             project,
-            waveforms: session.waveforms(),
+            waveforms: Arc::new(session.waveforms()),
             source_overviews: session.source_overviews().at_context(
                 hex_engine::AudioSourceContext {
                     project_generation: 1,

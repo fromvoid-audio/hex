@@ -65,6 +65,8 @@ pub(in crate::service) struct WorkerEvents {
     recovery_timing: Option<(&'static str, Duration)>,
     shutdown: Arc<AtomicBool>,
     events_closed: Arc<AtomicBool>,
+    outcome_drain_signal: Arc<super::WakeSignal>,
+    worker_wake_signal: Arc<super::WakeSignal>,
     wake_hook: super::client::WakeHook,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_context: Option<hex_engine::AudioSourceContext>,
@@ -254,6 +256,8 @@ impl WorkerEvents {
             recovery_timing: None,
             shutdown,
             events_closed: Arc::new(AtomicBool::new(false)),
+            outcome_drain_signal: Arc::new(super::WakeSignal::default()),
+            worker_wake_signal: Arc::new(super::WakeSignal::default()),
             wake_hook: super::client::WakeHook::default(),
             audio,
             last_context: None,
@@ -483,6 +487,16 @@ impl WorkerEvents {
         }
     }
 
+    pub(in crate::service) fn with_wake_signals(
+        mut self,
+        outcome_drain_signal: Arc<super::WakeSignal>,
+        worker_wake_signal: Arc<super::WakeSignal>,
+    ) -> Self {
+        self.outcome_drain_signal = outcome_drain_signal;
+        self.worker_wake_signal = worker_wake_signal;
+        self
+    }
+
     pub(in crate::service) fn send_pending_with_control_poll<R>(
         &mut self,
         pending: PendingOutcome,
@@ -520,6 +534,7 @@ impl WorkerEvents {
         let started = std::time::Instant::now();
         let mut reported_backpressure = false;
         loop {
+            let drain_seq = self.outcome_drain_signal.snapshot();
             if self.shutdown.load(Ordering::Acquire) {
                 self.diagnostics.emit(
                     diagnostic,
@@ -555,7 +570,10 @@ impl WorkerEvents {
                         self.wake_hook.wake();
                         return true;
                     }
-                    thread::sleep(BUSY_POLL_INTERVAL.min(max_wait.saturating_sub(elapsed)));
+                    self.outcome_drain_signal.wait_since(
+                        drain_seq,
+                        BUSY_POLL_INTERVAL.min(max_wait.saturating_sub(elapsed)),
+                    );
                     continue;
                 }
                 Err(()) => return false,
@@ -601,9 +619,12 @@ impl WorkerEvents {
                 self.wake_hook.wake();
                 return true;
             }
-            // Transient event backpressure retries at the busy cadence so short
-            // bursts retain every canonical outcome in FIFO order.
-            thread::sleep(BUSY_POLL_INTERVAL.min(max_wait.saturating_sub(elapsed)));
+            // Transient event backpressure wakes immediately when the consumer
+            // drains an outcome or triggers shutdown, bounded by BUSY_POLL_INTERVAL.
+            self.outcome_drain_signal.wait_since(
+                drain_seq,
+                BUSY_POLL_INTERVAL.min(max_wait.saturating_sub(elapsed)),
+            );
         }
     }
     /// Park one edit ahead of the FIFO while the current publication settles.
@@ -669,6 +690,7 @@ impl WorkerEvents {
         document_intent: &Arc<std::sync::atomic::AtomicU64>,
     ) -> Option<QueuedRequest> {
         loop {
+            let wake_seq = self.worker_wake_signal.snapshot();
             let shutdown = self.shutdown.load(Ordering::Acquire);
             let intent = document_intent.load(Ordering::Acquire);
             let sink = self
@@ -686,7 +708,8 @@ impl WorkerEvents {
             if !self.stopped_fence.active() {
                 return None; // Resume the ordinary request loop.
             }
-            thread::sleep(super::stopped_arrangement::FENCE_POLL);
+            self.worker_wake_signal
+                .wait_since(wake_seq, super::stopped_arrangement::FENCE_POLL);
         }
     }
     /// Requests that observe or save the committed predecessor without mutating
@@ -736,6 +759,7 @@ impl WorkerEvents {
         if let Some(pending) = device_insert {
             let gesture_active = device_gesture_active || tuning_gesture_active;
             loop {
+                let wake_seq = self.worker_wake_signal.snapshot();
                 let cancel = self.shutdown.load(Ordering::Acquire)
                     || pending.document_intent != document_intent.load(Ordering::Acquire);
                 if self.device_insert_deferred.is_some() {
@@ -749,7 +773,8 @@ impl WorkerEvents {
                 }
                 self.poll();
                 if cancel || self.device_insert_deferred.is_some() {
-                    thread::sleep(BUSY_POLL_INTERVAL);
+                    self.worker_wake_signal
+                        .wait_since(wake_seq, BUSY_POLL_INTERVAL);
                     continue;
                 }
                 if self
@@ -796,6 +821,7 @@ impl WorkerEvents {
         // work without consuming a later request; accepted New/Open intent and
         // shutdown are observable independently of the bounded channel.
         while recording_barrier.active() {
+            let wake_seq = self.worker_wake_signal.snapshot();
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
@@ -816,7 +842,8 @@ impl WorkerEvents {
             {
                 return Some(request);
             }
-            thread::sleep(super::recording_barrier::POLL);
+            self.worker_wake_signal
+                .wait_since(wake_seq, super::recording_barrier::POLL);
         }
         if self.stopped_fence.active()
             && let Some(request) = self.next_request_while_fenced(requests, document_intent)
@@ -824,6 +851,7 @@ impl WorkerEvents {
             return Some(request);
         }
         while let Some(wait) = self.publication_wait.take() {
+            let wake_seq = self.worker_wake_signal.snapshot();
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
@@ -844,7 +872,8 @@ impl WorkerEvents {
                 super::publication_wait::Step::Ready(request) => return Some(request),
                 super::publication_wait::Step::Waiting(wait) => self.publication_wait = Some(wait),
             }
-            thread::sleep(super::publication_wait::POLL);
+            self.worker_wake_signal
+                .wait_since(wake_seq, super::publication_wait::POLL);
         }
         control_poll(
             self.audio

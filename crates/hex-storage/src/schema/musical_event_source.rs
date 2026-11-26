@@ -282,12 +282,17 @@ mod tests {
             })
             .unwrap();
         let prior = editor.project().clone();
-        let historical = super::super::outer_clip_fades::encode(&prior).unwrap();
+        let historical = crate::encode_stacked_legacy(&prior).unwrap();
         assert_eq!(
             crate::decode(&historical).unwrap().snapshot(),
             prior.snapshot()
         );
-        assert_eq!(crate::encode(&prior).unwrap(), historical);
+        assert_eq!(
+            crate::decode(&crate::encode(&prior).unwrap())
+                .unwrap()
+                .snapshot(),
+            prior.snapshot()
+        );
 
         editor
             .execute(Command::EditAudioEvents {
@@ -299,7 +304,7 @@ mod tests {
             })
             .unwrap();
         let project = editor.project();
-        let document = crate::encode(project).unwrap();
+        let document = crate::encode_stacked_legacy(project).unwrap();
         let mut json: Value = serde_json::from_slice(&document).unwrap();
         assert_eq!(json["version"], SCOPED_MUSICAL_EVENTS_SCHEMA_VERSION);
         assert_eq!(
@@ -308,6 +313,12 @@ mod tests {
         );
         assert_eq!(
             crate::decode(&document).unwrap().snapshot(),
+            project.snapshot()
+        );
+        assert_eq!(
+            crate::decode(&crate::encode(project).unwrap())
+                .unwrap()
+                .snapshot(),
             project.snapshot()
         );
         let duplicate = json["musical_event_sources"][0].clone();

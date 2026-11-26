@@ -73,7 +73,7 @@ fn editor_window_with_environment(
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     source_overviews: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
+                    audio_clip_waveforms: Default::default(),
                     midi_preview,
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
                     timeline_frames: 384_000,

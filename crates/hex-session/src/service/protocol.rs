@@ -103,11 +103,11 @@ pub struct ViewState {
     /// Sealed worker proof of comparison-only authoring, never a callback ACK.
     pub comparison_audio: Option<ComparisonAudioBinding>,
     pub project: Arc<Project>,
-    pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
+    pub waveforms: Arc<BTreeMap<hex_project::AssetId, Arc<Waveform>>>,
     /// Peak-only original-source table; cloned handles allocate no rows or PCM.
     pub source_overviews: crate::OriginalSourceOverviews,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
-    pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
+    pub audio_clip_waveforms: Arc<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
     /// Control-prepared MIDI clip summaries matching this project revision.
     pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
     /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
