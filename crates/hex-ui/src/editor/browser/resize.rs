@@ -10,18 +10,27 @@ use gpui::{
 pub(super) enum Divider {
     Outer,
     Sidebar,
+    MiniTags,
 }
 impl Divider {
     fn active(self, view: &EditorView) -> bool {
         match self {
             Self::Outer => view.browser.resizing,
             Self::Sidebar => view.browser.layout.sidebar_drag.is_some(),
+            Self::MiniTags => view.browser.layout.mini_tags_drag.is_some(),
         }
     }
     fn clear(self, view: &mut EditorView) {
         match self {
             Self::Outer => view.browser.resizing = false,
             Self::Sidebar => view.browser.layout.sidebar_drag = None,
+            Self::MiniTags => view.browser.layout.mini_tags_drag = None,
+        }
+    }
+    fn cursor(self) -> CursorStyle {
+        match self {
+            Self::Outer | Self::Sidebar => CursorStyle::ResizeColumn,
+            Self::MiniTags => CursorStyle::ResizeRow,
         }
     }
 }
@@ -48,7 +57,7 @@ impl EditorView {
         if !window.capture_pointer(
             cx.entity_id(),
             MouseButton::Left,
-            CursorStyle::ResizeColumn,
+            divider.cursor(),
             move |event, window, cx| {
                 let moved = event.downcast_ref::<MouseMoveEvent>();
                 let released = event
@@ -93,6 +102,13 @@ impl EditorView {
                                         view.clamped_browser_width(view.browser.width, available);
                                     view.browser.layout.update_sidebar_resize(x, width);
                                 }
+                                Divider::MiniTags => {
+                                    let y = f32::from(position.y);
+                                    let window_height = f32::from(window.bounds().size.height);
+                                    view.browser
+                                        .layout
+                                        .update_mini_tags_resize(y, window_height);
+                                }
                             }
                         }
                     } else {
@@ -117,6 +133,7 @@ impl EditorView {
         }
         self.browser.resizing = false;
         self.browser.layout.sidebar_drag = None;
+        self.browser.layout.mini_tags_drag = None;
         match divider {
             Divider::Outer => {
                 self.browser.width = initial;
@@ -126,6 +143,10 @@ impl EditorView {
                 .browser
                 .layout
                 .begin_sidebar_resize(f32::from(event.position.x), initial),
+            Divider::MiniTags => self
+                .browser
+                .layout
+                .begin_mini_tags_resize(f32::from(event.position.y), initial),
         }
         self.browser.results_focus.focus(window);
         cx.notify();
@@ -140,7 +161,7 @@ impl EditorView {
             && self.browser.open
             && self.browser.results_focus.is_focused(window)
         {
-            window.renew_pointer_capture(owner, CursorStyle::ResizeColumn);
+            window.renew_pointer_capture(owner, divider.cursor());
         }
     }
 }

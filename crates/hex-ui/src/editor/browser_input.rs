@@ -44,6 +44,13 @@ pub(super) fn plugin_parameter_search(cx: &mut Context<TextInput>) -> TextInput 
     settings.max_bytes = 256;
     TextInput::new(cx, settings)
 }
+pub(super) fn tag_input(cx: &mut Context<TextInput>) -> TextInput {
+    let mut settings = config(TextInputKind::Value);
+    settings.id = "browser-mini-tag-text".into();
+    settings.placeholder = theme::text("tag");
+    settings.max_bytes = hex_library::catalog::MAX_TAG_BYTES;
+    TextInput::new(cx, settings)
+}
 pub(super) fn device_search(cx: &mut Context<TextInput>) -> TextInput {
     let mut settings = config(TextInputKind::Search);
     settings.id = "device-picker-search".into();
