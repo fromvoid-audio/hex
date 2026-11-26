@@ -40,6 +40,10 @@ pub const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// idle interval applies, so returns that follow the last busy poll (graph
 /// retirement, observation release) are still collected at the busy cadence.
 pub(in crate::service) const IDLE_GRACE_POLLS: u32 = 10;
+/// Maximum time the Session worker will block on a full UI event channel before
+/// parking/coalescing the latest canonical outcome and returning to service
+/// native audio polling and shutdown (#13526).
+pub(in crate::service) const OUTCOME_BACKPRESSURE_LIMIT: Duration = Duration::from_secs(5);
 /// The wait after `idle_polls` consecutive idle iterations.
 pub(in crate::service) fn poll_interval(idle_polls: u32) -> Duration {
     if idle_polls > IDLE_GRACE_POLLS {
@@ -74,6 +78,10 @@ pub(in crate::service) struct WorkerEvents {
     publication_wait: Option<super::publication_wait::Wait>,
     // Park only the FIFO head while the callback owns a staged edit.
     device_insert_deferred: Option<QueuedRequest>,
+    // Latest outcome retained when the UI event channel stayed full past
+    // OUTCOME_BACKPRESSURE_LIMIT; flushed automatically as soon as space opens.
+    stalled_outcome: Option<(Event, Option<super::diagnostics::DiagnosticRequest>)>,
+    backpressure_coalesced: u64,
     // Consecutive request-wait iterations with no pending work (#4574).
     idle_polls: u32,
 }
@@ -255,6 +263,8 @@ impl WorkerEvents {
             stopped_fence: Default::default(),
             publication_wait: None,
             device_insert_deferred: None,
+            stalled_outcome: None,
+            backpressure_coalesced: 0,
             idle_polls: 0,
         }
     }
@@ -361,6 +371,46 @@ impl WorkerEvents {
         if let Some(audio) = self.audio.as_mut() {
             audio.poll();
         }
+        let _ = self.flush_stalled_outcome();
+    }
+
+    #[cfg(test)]
+    pub(in crate::service) fn backpressure_coalesced(&self) -> u64 {
+        self.backpressure_coalesced
+    }
+
+    #[cfg(test)]
+    pub(in crate::service) fn has_stalled_outcome(&self) -> bool {
+        self.stalled_outcome.is_some()
+    }
+
+    fn flush_stalled_outcome(&mut self) -> Result<bool, ()> {
+        let Some((event, diagnostic)) = self.stalled_outcome.take() else {
+            return Ok(true);
+        };
+        match self.sender.try_send(event, diagnostic) {
+            Ok(()) => {
+                self.wake_hook.wake();
+                self.diagnostics.emit(
+                    diagnostic,
+                    super::diagnostics::DiagnosticStage::OutcomeQueued,
+                    None,
+                );
+                Ok(true)
+            }
+            Err(TrySendError::Full(returned)) => {
+                self.stalled_outcome = Some((returned, diagnostic));
+                Ok(false)
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.diagnostics.emit(
+                    diagnostic,
+                    super::diagnostics::DiagnosticStage::ConsumerClosed,
+                    None,
+                );
+                Err(())
+            }
+        }
     }
     /// The control poll's result (pending lanes) is not needed here: event
     /// backpressure already retries at the busy cadence.
@@ -436,6 +486,19 @@ impl WorkerEvents {
     pub(in crate::service) fn send_pending_with_control_poll<R>(
         &mut self,
         pending: PendingOutcome,
+        control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
+    ) -> bool {
+        self.send_pending_with_control_poll_bounded(
+            pending,
+            OUTCOME_BACKPRESSURE_LIMIT,
+            control_poll,
+        )
+    }
+
+    pub(in crate::service) fn send_pending_with_control_poll_bounded<R>(
+        &mut self,
+        pending: PendingOutcome,
+        max_wait: Duration,
         mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>) -> R,
     ) -> bool {
         let PendingOutcome {
@@ -454,6 +517,7 @@ impl WorkerEvents {
             edit_phases,
             recovery_timing,
         );
+        let started = std::time::Instant::now();
         let mut reported_backpressure = false;
         loop {
             if self.shutdown.load(Ordering::Acquire) {
@@ -464,12 +528,38 @@ impl WorkerEvents {
                 );
                 return false;
             }
-            self.poll();
+            if let Some(audio) = self.audio.as_mut() {
+                audio.poll();
+            }
             control_poll(
                 self.audio
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
             );
+            match self.flush_stalled_outcome() {
+                Ok(true) => {}
+                Ok(false) => {
+                    if !reported_backpressure {
+                        self.wake_hook.wake();
+                        self.diagnostics.emit(
+                            diagnostic,
+                            super::diagnostics::DiagnosticStage::OutcomeBackpressure,
+                            None,
+                        );
+                        reported_backpressure = true;
+                    }
+                    let elapsed = started.elapsed();
+                    if elapsed >= max_wait {
+                        self.stalled_outcome = Some((event, diagnostic));
+                        self.backpressure_coalesced = self.backpressure_coalesced.saturating_add(1);
+                        self.wake_hook.wake();
+                        return true;
+                    }
+                    thread::sleep(BUSY_POLL_INTERVAL.min(max_wait.saturating_sub(elapsed)));
+                    continue;
+                }
+                Err(()) => return false,
+            }
             match self.sender.try_send(event, diagnostic) {
                 Ok(()) => {
                     self.wake_hook.wake();
@@ -491,6 +581,7 @@ impl WorkerEvents {
                 Err(TrySendError::Full(returned)) => {
                     event = returned;
                     if !reported_backpressure {
+                        self.wake_hook.wake();
                         self.diagnostics.emit(
                             diagnostic,
                             super::diagnostics::DiagnosticStage::OutcomeBackpressure,
@@ -500,9 +591,19 @@ impl WorkerEvents {
                     }
                 }
             }
-            // Control-side event backpressure retains this exact event. It does
-            // not strand native returns or require dropping a canonical ACK.
-            thread::sleep(Duration::from_millis(5));
+            let elapsed = started.elapsed();
+            if elapsed >= max_wait {
+                // Prolonged UI stall: park/coalesce the latest canonical outcome
+                // so the worker stays responsive to audio polling and shutdown,
+                // and flush automatically as soon as the UI drains the channel.
+                self.stalled_outcome = Some((event, diagnostic));
+                self.backpressure_coalesced = self.backpressure_coalesced.saturating_add(1);
+                self.wake_hook.wake();
+                return true;
+            }
+            // Transient event backpressure retries at the busy cadence so short
+            // bursts retain every canonical outcome in FIFO order.
+            thread::sleep(BUSY_POLL_INTERVAL.min(max_wait.saturating_sub(elapsed)));
         }
     }
     /// Park one edit ahead of the FIFO while the current publication settles.
@@ -895,6 +996,7 @@ impl WorkerEvents {
                 && plugin_effect.is_none()
                 && stopped_restore.is_none()
                 && !self.stopped_fence.active()
+                && self.stalled_outcome.is_none()
                 && self.audio.as_mut().is_some_and(|audio| audio.worker_idle());
             self.idle_polls = if idle {
                 self.idle_polls.saturating_add(1)

@@ -111,10 +111,39 @@ pub(crate) fn apply_current_save_outcome(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn tuning_library_directory_from(home: &Path) -> PathBuf {
+    hex_preferences::app_support_dir_from(home).join("scales")
+}
+
+/// Legacy macOS tuning preset location used prior to portable app-support paths.
+/// Retained as a read-only fallback so existing presets remain visible and
+/// loadable without mutating or migrating files on disk.
+#[cfg(target_os = "macos")]
+fn legacy_macos_tuning_library_directory_from(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/PORTALSURFER/hex/scales")
+}
+
+fn legacy_tuning_library_directory() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let home = recovery::user_home_directory()?;
+        let legacy = legacy_macos_tuning_library_directory_from(&home);
+        match std::fs::symlink_metadata(&legacy) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_dir() => Some(legacy),
+            _ => None,
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 pub(crate) fn tuning_library_directory() -> Result<PathBuf, String> {
-    let home = recovery::user_home_directory()
-        .ok_or_else(|| "home directory is unavailable for tuning presets".to_owned())?;
-    Ok(home.join("Library/Application Support/PORTALSURFER/hex/scales"))
+    hex_preferences::app_support_dir()
+        .map(|base| base.join("scales"))
+        .map_err(|_| "home directory is unavailable for tuning presets".to_owned())
 }
 
 pub(crate) struct TuningLibraryContext {
@@ -133,7 +162,15 @@ pub(crate) fn run_tuning_library_operation(
 ) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
     match tuning_library_directory() {
         Ok(directory) => {
-            run_tuning_library_operation_in_using(session, context, operation, &directory, apply)
+            let legacy = legacy_tuning_library_directory();
+            run_tuning_library_operation_with_fallback(
+                session,
+                context,
+                operation,
+                &directory,
+                legacy.as_deref(),
+                apply,
+            )
         }
         Err(reason) => (
             TuningLibraryResult {
@@ -170,11 +207,66 @@ pub(crate) fn run_tuning_library_operation_in(
 }
 
 /// Library I/O selects a validated tuning; the caller owns its existing reserved graph transaction.
+#[cfg(test)]
 pub(crate) fn run_tuning_library_operation_in_using(
     session: &mut Session,
     context: TuningLibraryContext,
     operation: TuningLibraryOperation,
     directory: &Path,
+    apply: impl FnMut(&mut Session, Command) -> Result<Arc<PreparedRevision>, SessionError>,
+) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
+    run_tuning_library_operation_with_fallback(session, context, operation, directory, None, apply)
+}
+
+fn load_tuning_slot_with_fallback(
+    directory: &Path,
+    legacy_directory: Option<&Path>,
+    slot: usize,
+) -> Result<hex_tuning::preset::Preset, String> {
+    match hex_storage::tuning_library::load(directory, slot) {
+        Ok(preset) => Ok(preset),
+        Err(error) => {
+            let canonical_slot = directory.join(format!("slot-{slot}.freqs"));
+            let canonical_missing = matches!(
+                std::fs::symlink_metadata(&canonical_slot),
+                Err(io_error) if io_error.kind() == std::io::ErrorKind::NotFound
+            );
+            if canonical_missing
+                && let Some(legacy) = legacy_directory
+                && let Ok(preset) = hex_storage::tuning_library::load(legacy, slot)
+            {
+                return Ok(preset);
+            }
+            Err(error)
+        }
+    }
+}
+
+fn list_tuning_slots_with_fallback(
+    directory: &Path,
+    legacy_directory: Option<&Path>,
+) -> Vec<hex_storage::tuning_library::Slot> {
+    let mut slots = hex_storage::tuning_library::list(directory);
+    if let Some(legacy) = legacy_directory {
+        let legacy_slots = hex_storage::tuning_library::list(legacy);
+        for (slot, legacy_slot) in slots.iter_mut().zip(legacy_slots) {
+            if slot.name.is_none()
+                && slot.error.is_none()
+                && (legacy_slot.name.is_some() || legacy_slot.error.is_some())
+            {
+                *slot = legacy_slot;
+            }
+        }
+    }
+    slots
+}
+
+fn run_tuning_library_operation_with_fallback(
+    session: &mut Session,
+    context: TuningLibraryContext,
+    operation: TuningLibraryOperation,
+    directory: &Path,
+    legacy_directory: Option<&Path>,
     mut apply: impl FnMut(&mut Session, Command) -> Result<Arc<PreparedRevision>, SessionError>,
 ) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
     let mut result = TuningLibraryResult {
@@ -209,7 +301,7 @@ pub(crate) fn run_tuning_library_operation_in_using(
             {
                 Err("tuning load belongs to a changed project revision".into())
             } else {
-                match hex_storage::tuning_library::load(directory, slot) {
+                match load_tuning_slot_with_fallback(directory, legacy_directory, slot) {
                     Ok(preset) => {
                         result.loaded_name = Some(preset.name);
                         match ProjectTuning::new(
@@ -285,7 +377,7 @@ pub(crate) fn run_tuning_library_operation_in_using(
         ),
     };
     result.error = operation_result.err();
-    result.slots = hex_storage::tuning_library::list(directory);
+    result.slots = list_tuning_slots_with_fallback(directory, legacy_directory);
     (result, prepared)
 }
 
@@ -1337,13 +1429,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tuning_library_directory_points_under_scales() {
+    fn tuning_library_directory_uses_portable_app_support_dir_without_portalsurfer() {
+        let home = Path::new("/tmp/hex-home");
+        let path = tuning_library_directory_from(home);
+        assert_eq!(
+            path,
+            hex_preferences::app_support_dir_from(home).join("scales")
+        );
+        assert!(
+            !path.to_string_lossy().contains("PORTALSURFER"),
+            "canonical tuning directory must not embed personal PORTALSURFER segment: {path:?}"
+        );
         if cfg!(windows) && std::env::var_os("USERPROFILE").is_some_and(|v| !v.is_empty()) {
-            let path = tuning_library_directory()
+            let resolved = tuning_library_directory()
                 .expect("windows user profile resolves tuning library directory");
-            assert!(path.ends_with("scales"));
-        } else if let Ok(path) = tuning_library_directory() {
-            assert!(path.ends_with("scales"));
+            assert!(resolved.ends_with("scales"));
+        } else if let Ok(resolved) = tuning_library_directory() {
+            assert!(resolved.ends_with("scales"));
         }
+    }
+
+    #[test]
+    fn tuning_library_reads_legacy_fallback_without_writing_to_legacy_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "hex-tuning-fallback-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let canonical = root.join("canonical");
+        let legacy = root.join("legacy");
+        std::fs::create_dir_all(&legacy).unwrap();
+
+        let legacy_scale = hex_tuning::Scale::equal(12);
+        hex_storage::tuning_library::save(&legacy, 1, "legacy-preset", legacy_scale).unwrap();
+
+        let mut session = Session::new(48_000, 8, 1024).unwrap();
+        let ctx = TuningLibraryContext {
+            request_generation: 1,
+            request_revision: 0,
+            operation_id: 1,
+            current_generation: 1,
+            current_revision: 0,
+        };
+        let (listed, _) = run_tuning_library_operation_with_fallback(
+            &mut session,
+            ctx,
+            TuningLibraryOperation::List,
+            &canonical,
+            Some(&legacy),
+            |session, cmd| session.command_prepared_revision(cmd, None).map(|(_, p)| p),
+        );
+        assert!(listed.error.is_none());
+        assert_eq!(listed.slots[0].name.as_deref(), Some("legacy-preset"));
+
+        let (loaded, _) = run_tuning_library_operation_with_fallback(
+            &mut session,
+            TuningLibraryContext {
+                request_generation: 1,
+                request_revision: 0,
+                operation_id: 2,
+                current_generation: 1,
+                current_revision: 0,
+            },
+            TuningLibraryOperation::Load { slot: 1 },
+            &canonical,
+            Some(&legacy),
+            |session, cmd| session.command_prepared_revision(cmd, None).map(|(_, p)| p),
+        );
+        assert!(loaded.error.is_none());
+        assert_eq!(loaded.loaded_name.as_deref(), Some("legacy-preset"));
+
+        let (saved, _) = run_tuning_library_operation_with_fallback(
+            &mut session,
+            TuningLibraryContext {
+                request_generation: 1,
+                request_revision: 0,
+                operation_id: 3,
+                current_generation: 1,
+                current_revision: 0,
+            },
+            TuningLibraryOperation::Save {
+                slot: 2,
+                name: "canonical-preset".to_owned(),
+            },
+            &canonical,
+            Some(&legacy),
+            |session, cmd| session.command_prepared_revision(cmd, None).map(|(_, p)| p),
+        );
+        assert!(saved.error.is_none());
+        assert!(canonical.join("slot-2.freqs").is_file());
+        assert!(!legacy.join("slot-2.freqs").exists());
+        assert_eq!(saved.slots[0].name.as_deref(), Some("legacy-preset"));
+        assert_eq!(saved.slots[1].name.as_deref(), Some("canonical-preset"));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

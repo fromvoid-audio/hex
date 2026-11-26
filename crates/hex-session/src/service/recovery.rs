@@ -130,14 +130,21 @@ fn user_home_directory_from(
         .map(PathBuf::from)
 }
 
+#[cfg(test)]
+pub(crate) fn untitled_recovery_path_from(home: &Path) -> PathBuf {
+    hex_preferences::app_support_dir_from(home)
+        .join("recovery")
+        .join("untitled.hex-journal")
+}
+
 /// Slot 0 of the native application's untitled recovery directory, shared by
 /// development and review bundles; its parent anchors derived media folders.
 /// Running instances each claim their own slot with
 /// [`claim_untitled_recovery_slot`]. No fallback to another user's directory
 /// when the current user's home directory is unavailable.
 pub fn untitled_recovery_path() -> Result<PathBuf, String> {
-    let home = user_home_directory().ok_or("home directory is unavailable")?;
-    Ok(home.join("Library/Application Support/hex/recovery/untitled.hex-journal"))
+    hex_preferences::app_support_dir()
+        .map(|base| base.join("recovery").join("untitled.hex-journal"))
 }
 
 /// Claim this instance's own untitled recovery slot so concurrent hex
@@ -1480,5 +1487,22 @@ mod tests {
                 None
             );
         }
+    }
+
+    #[test]
+    fn untitled_recovery_path_uses_portable_app_support_dir() {
+        let home = Path::new("/tmp/hex-home");
+        let path = untitled_recovery_path_from(home);
+        assert_eq!(
+            path,
+            hex_preferences::app_support_dir_from(home)
+                .join("recovery")
+                .join("untitled.hex-journal")
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            path,
+            home.join("Library/Application Support/hex/recovery/untitled.hex-journal")
+        );
     }
 }

@@ -30,7 +30,7 @@ ALLOWED = {
     'hex-media': {'hex-engine', 'hex-project'},
     'hex-storage': {'hex-project', 'hex-text', 'hex-lattice-contract', 'hex-tuning', 'hex-plugin-state'},
     # Pure captured-save envelope validation; no native runtime/ABI ownership.
-    'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-lattice-contract', 'hex-plugin-state'},
+    'hex-session': {'hex-tuning', 'hex-project', 'hex-media', 'hex-engine', 'hex-storage', 'hex-export', 'hex-preferences', 'hex-lattice-contract', 'hex-plugin-state'},
     'hex-warp': set(),
     'hex-engine': {'hex-warp', 'hex-project', 'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     'hex-stream': {'hex-engine', 'hex-media', 'hex-project', 'hex-storage', 'hex-warp'},
