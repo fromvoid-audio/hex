@@ -140,13 +140,21 @@ impl TextInput {
     /// Installs caller-validated external state, preserving its bytes and casing.
     /// Repaints without emitting a native edit notification.
     pub fn set_text(&mut self, content: &str, cx: &mut Context<Self>) {
-        self.mouse_selection = None;
+        let target_selected = content.len()..content.len();
+        let changed = self.content != content
+            || self.selected != target_selected
+            || self.reversed
+            || self.marked.is_some()
+            || self.mouse_selection.is_some();
         self.text_click.clear();
-        self.marked = None;
-        self.content = content.to_owned();
-        self.selected = self.content.len()..self.content.len();
-        self.reversed = false;
-        cx.notify();
+        if changed {
+            self.mouse_selection = None;
+            self.marked = None;
+            self.content = content.to_owned();
+            self.selected = target_selected;
+            self.reversed = false;
+            cx.notify();
+        }
     }
     pub fn select_all_text(&mut self, cx: &mut Context<Self>) {
         self.selected = 0..self.content.len();
@@ -167,13 +175,15 @@ impl TextInput {
         }
     }
     pub fn set_tab_navigation(&mut self, enabled: bool, cx: &mut Context<Self>) {
-        self.tab_navigation = enabled;
-        self.focus = self
-            .focus
-            .clone()
-            .tab_index(0)
-            .tab_stop(enabled && self.enabled);
-        cx.notify();
+        if self.tab_navigation != enabled {
+            self.tab_navigation = enabled;
+            self.focus = self
+                .focus
+                .clone()
+                .tab_index(0)
+                .tab_stop(enabled && self.enabled);
+            cx.notify();
+        }
     }
     pub fn set_external_style(
         &mut self,
@@ -1261,6 +1271,92 @@ mod tests {
         assert_eq!(lowercase_utf16_offset(raw, 1), "🎛".len());
         assert_eq!(lowercase_utf16_offset(raw, 2), "🎛".len());
         assert_eq!(lowercase_utf16_offset(raw, 3), "🎛a".len());
+    }
+
+    #[gpui::test]
+    fn set_text_and_set_tab_navigation_skip_redundant_notifications(cx: &mut gpui::TestAppContext) {
+        use super::{TextInput, TextInputConfig, TextInputKind};
+        use crate::{ActionStyle, tests::STYLE};
+        use gpui::AppContext;
+        use std::{cell::Cell, rc::Rc};
+
+        let input = cx.new(|cx| {
+            TextInput::new(
+                cx,
+                TextInputConfig {
+                    id: "notify-guard".into(),
+                    kind: TextInputKind::Value,
+                    style: STYLE,
+                    action_style: ActionStyle {
+                        background: STYLE.surface,
+                        text: STYLE.text,
+                        hover_background: STYLE.hover,
+                        hover_text: Some(STYLE.hover_text),
+                    },
+                    font_family: "Ioskeley Mono".into(),
+                    placeholder: "placeholder".into(),
+                    clear_name: "clear".into(),
+                    clear_glyph: "x".into(),
+                    max_bytes: 128,
+                },
+            )
+        });
+        let notifications = Rc::new(Cell::new(0usize));
+        let count = Rc::clone(&notifications);
+        let _subscription = cx.update(|app| {
+            app.observe(&input, move |_, _| {
+                count.set(count.get() + 1);
+            })
+        });
+
+        // Initial state is empty with caret at 0..0 and tab_navigation == false.
+        cx.update(|app| {
+            input.update(app, |input, cx| {
+                input.set_text("", cx);
+                input.set_tab_navigation(false, cx);
+            });
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 0);
+
+        // Changing text notifies once; repeating the same text does not.
+        cx.update(|app| {
+            input.update(app, |input, cx| input.set_text("bass", cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+
+        cx.update(|app| {
+            input.update(app, |input, cx| input.set_text("bass", cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), 1);
+
+        // Restoring caret/selection from select_all_text notifies once.
+        cx.update(|app| {
+            input.update(app, |input, cx| input.select_all_text(cx));
+        });
+        cx.run_until_parked();
+        let after_select = notifications.get();
+        cx.update(|app| {
+            input.update(app, |input, cx| input.set_text("bass", cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), after_select + 1);
+
+        // Toggling tab_navigation notifies once; repeating the same flag does not.
+        let before_tab = notifications.get();
+        cx.update(|app| {
+            input.update(app, |input, cx| input.set_tab_navigation(true, cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), before_tab + 1);
+
+        cx.update(|app| {
+            input.update(app, |input, cx| input.set_tab_navigation(true, cx));
+        });
+        cx.run_until_parked();
+        assert_eq!(notifications.get(), before_tab + 1);
     }
 }
 

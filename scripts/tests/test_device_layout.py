@@ -112,7 +112,7 @@ class DeviceLayoutGuardTests(unittest.TestCase):
             preview.write_text(original.replace("composition::utility", "local_utility").replace("device_composition::utility", "local_utility"))
             self.assertTrue(any("missing shared call device_composition::utility" in error for error in guard.analyze(root)))
             preview.write_text(original)
-            entry = root / "crates/hex-sandbox/src/main.rs"
+            entry = root / "crates/hex-sandbox/src/gallery.rs"
             entry.write_text(entry.read_text().replace("device_composition,", "/* removed */"))
             self.assertTrue(any("hex-sandbox" in error and "hex_ui_kit::device_composition" in error for error in guard.analyze(root)))
 

@@ -1,13 +1,13 @@
 //! Local owners for workspace primitives and the actual shared menu/meter
 //! compositions. No EditorView, canonical commands or audio/file service exists.
-use crate::{
-    context_menu::{MenuItem, PopupMenu},
-    output_meter::{self, MeterInput},
-    theme,
-};
 use gpui::{
     Context, Div, Entity, FocusHandle, Focusable, Render, Subscription, Window, div, prelude::*,
     px, rgb,
+};
+use hex_ui_kit::{
+    context_menu::{self, MenuItem, PopupMenu},
+    output_meter::{self, MeterInput},
+    theme,
 };
 use hex_widgets::*;
 use std::{cell::Cell, rc::Rc};
@@ -879,7 +879,7 @@ impl Render for Workspace {
                         div()
                             .w(window.bounds().size.width)
                             .h(window.bounds().size.height)
-                            .child(crate::context_menu::popup(
+                            .child(context_menu::popup(
                                 menu,
                                 window,
                                 cx,

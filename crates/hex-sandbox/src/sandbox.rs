@@ -10,11 +10,12 @@ mod sample;
 mod tests;
 #[path = "workspace.rs"]
 mod workspace;
-use crate::{gallery, theme};
+use crate::gallery;
 use catalog::{CATEGORIES, Demo, Item, Page, inventory, pages};
 use gpui::{
     Context, Div, Entity, FocusHandle, KeyDownEvent, Render, Window, div, prelude::*, px, rgb,
 };
+use hex_ui_kit::theme;
 use sample::Sample;
 use std::collections::HashMap;
 

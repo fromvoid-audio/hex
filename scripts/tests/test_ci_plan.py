@@ -988,7 +988,7 @@ class ScopeTests(unittest.TestCase):
             | set(plan.SINGLE_RUN_COMPANION_FEATURES.get(name, ()))
             for name in live_affected
         }
-        reviewed["hex-sandbox"] = reviewed.get("hex-sandbox", set()) | {"ui-test-support", "ui-unit-tier"}
+        reviewed["hex-sandbox"] = reviewed.get("hex-sandbox", set()) | {"ui-test-support"}
         reviewed["hex-ui-kit"] = reviewed.get("hex-ui-kit", set()) | {"ui-test-support"}
         unreviewed = {p["name"]: set(p["features"]) - reviewed.get(p["name"], set())
                       for p in live_inventory if p["name"] in live_affected}

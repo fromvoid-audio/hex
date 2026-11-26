@@ -212,7 +212,7 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
 
     if gallery:
         # The sandbox target must import the production owner crate, not a local copy or #[path] shim.
-        entry = SANDBOX / "main.rs"
+        entry = SANDBOX / "gallery.rs"
         source = (root / entry).read_text() if (root / entry).is_file() else ""
         uses_crate = re.search(r'\buse\s+hex_ui_kit::\{[^}]*\bdevice_composition\b', source) or re.search(r'\buse\s+hex_ui_kit::device_composition\b', source)
         if not uses_crate or re.search(r'#\[\s*path\s*=.*device_composition', source):

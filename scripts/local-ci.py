@@ -273,7 +273,6 @@ FULL_STEPS = (
     Step("ui-feature-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
     Step("desktop-ui-clippy", ("cargo", "clippy", "-p", "hex-desktop", "--all-targets", "--features", "ui-test-support", "--locked", "--", "-D", "warnings")),
     Step("ui-unit-clippy", ("cargo", "clippy", "-p", "hex-ui", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
-    Step("sandbox-unit-clippy", ("cargo", "clippy", "-p", "hex-sandbox", "--all-targets", "--features", "ui-unit-tier", "--locked", "--", "-D", "warnings")),
     Step("audio-feature-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-desktop", "-p", "hex-plugin-host", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("vst3-sdk-clippy", ("cargo", "clippy", "-p", "hex-audio", "-p", "hex-plugin-host", "--all-targets", "--features", "vst3-sdk-tests", "--locked", "--", "-D", "warnings")),
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
@@ -810,7 +809,6 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     # Keep separate default/feature configurations, including feature-gated
     # examples and allocation probes. Do not deduplicate by overlapping names.
     covered_features = {"hex-plugin-host": {"allocation-probe", "vst3-sdk-tests"}, "hex-ui": {"ui-test-support", "ui-unit-tier"}, "hex-export": {"instrument-test-support"},
-                        "hex-sandbox": {"ui-unit-tier"},
                         "hex-audio": {"allocation-probe", "vst3-sdk-tests"}, "hex-stream": {"allocation-probe"},
                         "hex-desktop": {"allocation-probe", "ui-test-support"}}
     # Every consumer's reviewed feature configurations lint in ONE invocation:

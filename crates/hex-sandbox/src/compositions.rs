@@ -85,6 +85,7 @@ impl Gallery {
         ))
         .debug_selector(|| "catalog-card".into())
         .track_focus(&self.header_focus)
+        .w_auto()
         .min_w(px(
             self.entry.width() + hex_widgets::DEVICE_FRAME_HEADER_WIDTH
         ))
