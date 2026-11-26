@@ -860,20 +860,13 @@ pub(crate) fn run_worker(
         if !held_pages.is_empty() || !held_failures.is_empty() {
             continue;
         }
-        let deferred_granular_next = granular
-            .as_mut()
-            .filter(|routing| routing.can_submit())
-            .and_then(granular::GranularRouting::pop_deferred)
-            .map(PageRequest);
-        let request = if scalar_job.is_none() {
-            deferred_scalar
-                .pop_front()
-                .map(PageRequest)
-                .or(deferred_granular_next)
-                .or_else(|| queues.requests.pop().ok())
-        } else {
-            deferred_granular_next.or_else(|| queues.requests.pop().ok())
-        };
+        let request = next_deferred_page(
+            scalar_job.is_none(),
+            &mut deferred_scalar,
+            granular.as_mut(),
+        )
+        .map(PageRequest)
+        .or_else(|| queues.requests.pop().ok());
         let Some(PageRequest(key)) = request else {
             if scalar_job.is_none() {
                 seen_epoch = idle_backoff.wait(&signal, seen_epoch);
@@ -1123,6 +1116,19 @@ pub(crate) fn run_worker(
     drop(reader_pool);
     drop(source_scratch);
     Ok(free_pages)
+}
+
+fn next_deferred_page(
+    scalar_available: bool,
+    scalar: &mut VecDeque<crate::ResourcePageKey>,
+    granular: Option<&mut granular::GranularRouting>,
+) -> Option<crate::ResourcePageKey> {
+    if scalar_available && let Some(page) = scalar.pop_front() {
+        return Some(page);
+    }
+    granular
+        .filter(|routing| routing.can_submit())
+        .and_then(granular::GranularRouting::pop_deferred)
 }
 
 fn poll_granular_outcomes(
@@ -3185,14 +3191,6 @@ pub(crate) mod tests {
                 kind: StreamFailureKind::Cancelled,
             })
         );
-        assert_eq!(
-            routing.pop_deferred(),
-            Some(crate::ResourcePageKey {
-                source: gkey.into(),
-                page_index: 0,
-            })
-        );
-
         // The superseded active page 6 completes as Cancelled (never Ready).
         let deadline = Instant::now() + Duration::from_secs(2);
         let (reclaimed, status) = loop {
@@ -3203,6 +3201,24 @@ pub(crate) mod tests {
             std::thread::yield_now();
         };
         assert_eq!(status, Err(StreamFailureKind::Cancelled));
+        // Both page classes can now run. Servicing the scalar page must leave
+        // the jumped granular page in the FIFO for the next worker iteration.
+        let scalar_key = crate::ResourcePageKey {
+            source: hex_engine::ScalarSourceKey::new(1, 1, 1).unwrap().into(),
+            page_index: 1,
+        };
+        let mut deferred_scalar = VecDeque::from([scalar_key]);
+        assert_eq!(
+            next_deferred_page(true, &mut deferred_scalar, Some(&mut routing)),
+            Some(scalar_key)
+        );
+        assert_eq!(
+            next_deferred_page(false, &mut deferred_scalar, Some(&mut routing)),
+            Some(crate::ResourcePageKey {
+                source: gkey.into(),
+                page_index: 0
+            })
+        );
         let mut free_pages = vec![reclaimed];
 
         // Now submit the jumped target page 0 at epoch 2 and verify it completes Ready.
