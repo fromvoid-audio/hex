@@ -10,6 +10,7 @@ pub struct CpuMeter {
     peak: AtomicU32,
     frames: AtomicU32,
     rate: AtomicU32,
+    clock_unavailable: AtomicU64,
 }
 
 /// Callback period in nanoseconds for a non-empty block at a nonzero sample rate.
@@ -37,6 +38,12 @@ impl CpuMeter {
         self.rate.store(rate, Relaxed);
     }
 
+    /// Record a callback whose wall-clock measurement was unavailable without
+    /// fabricating `0 ns` load or mutating peak/budget counters.
+    pub(crate) fn record_clock_unavailable(&self) {
+        self.clock_unavailable.fetch_add(1, Relaxed);
+    }
+
     /// Best-effort independent observations; samples may straddle callbacks.
     pub fn snapshot(&self) -> CpuSample {
         CpuSample {
@@ -45,6 +52,7 @@ impl CpuMeter {
             peak: self.peak.load(Relaxed),
             frames: self.frames.load(Relaxed),
             rate: self.rate.load(Relaxed),
+            clock_unavailable: self.clock_unavailable.load(Relaxed),
         }
     }
 
@@ -61,6 +69,7 @@ pub struct CpuSample {
     pub peak: u32,
     pub frames: u32,
     pub rate: u32,
+    pub clock_unavailable: u64,
 }
 
 #[cfg(test)]
@@ -77,7 +86,8 @@ mod tests {
                 budget: 10_000_000,
                 peak: 1000,
                 frames: 480,
-                rate: 48_000
+                rate: 48_000,
+                clock_unavailable: 0,
             }
         );
         meter.record(2_000_000, 96, 48_000);
@@ -85,8 +95,13 @@ mod tests {
         meter.record(250_000, 96, 48_000);
         assert_eq!(meter.snapshot().elapsed, 3_250_000);
         assert_eq!(meter.snapshot().budget, 14_000_000);
+        meter.record_clock_unavailable();
+        assert_eq!(meter.snapshot().clock_unavailable, 1);
+        assert_eq!(meter.snapshot().elapsed, 3_250_000);
+        assert_eq!(meter.snapshot().budget, 14_000_000);
         meter.reset_peak();
         assert_eq!(meter.snapshot().peak, 0);
+        assert_eq!(meter.snapshot().clock_unavailable, 1);
         meter.record(1, 0, 48_000);
         assert_eq!(meter.snapshot().peak, 0);
     }

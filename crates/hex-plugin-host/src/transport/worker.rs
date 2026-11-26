@@ -122,6 +122,7 @@ impl Worker {
             authored_program: request.authored_program,
             manual_origin_available: request.manual_origin.is_some(),
             editor_scope: request.editor_scope,
+            published_at_ns: request.published_at_ns,
         }))
     }
     /// Publish exactly one matching reply after the isolated processor finishes.

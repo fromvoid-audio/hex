@@ -99,6 +99,10 @@ struct InputRequest {
     authored_program: Option<NonZeroU64>,
     manual_origin: Option<ManualParameterOrigin>,
     editor_scope: Option<NonZeroU64>,
+    /// Optional monotonic nanosecond timestamp stamped at exact queue commit
+    /// (`Callback::finish_with_publish_timestamp`). `None` when the callback
+    /// clock is unavailable or omitted; never fabricated from an earlier entry.
+    published_at_ns: Option<u64>,
 }
 
 pub struct WorkerRequest {
@@ -118,6 +122,9 @@ pub struct WorkerRequest {
     /// The control scope active at the original accepted physical quantum's
     /// first sample. No request already staged at arm time is retroactively tagged.
     pub editor_scope: Option<NonZeroU64>,
+    /// Optional monotonic nanosecond timestamp captured at exact queue commit,
+    /// or `None` when unavailable.
+    pub published_at_ns: Option<u64>,
 }
 
 /// The one exact host operation applied at offset zero in a successful SDK
@@ -418,6 +425,7 @@ fn channel_with_policy(
                 authored_program: None,
                 manual_origin: None,
                 editor_scope: None,
+                published_at_ns: None,
             },
             staged: None,
             accepted_manual: None,

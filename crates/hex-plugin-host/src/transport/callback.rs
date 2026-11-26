@@ -622,6 +622,7 @@ impl Callback {
                     authored_program: self.authored_origins.program,
                     manual_origin: self.state.input_manual_origin,
                     editor_scope: self.state.input_editor_scope,
+                    published_at_ns: None,
                 };
                 stage.has_request = true;
             }
@@ -643,6 +644,17 @@ impl Callback {
     /// Call only after final host-format validation. Refusal terminates this
     /// epoch; consumed replies and foreign DSP are never rolled back/replayed.
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
+        self.finish_with_publish_timestamp(host_accepted, None)
+    }
+
+    /// Same final commit as [`Self::finish`], attaching an optional monotonic
+    /// nanosecond timestamp captured at the exact queue commit point (`None`
+    /// when the callback clock is unavailable).
+    pub fn finish_with_publish_timestamp(
+        &mut self,
+        host_accepted: bool,
+        published_at_ns: Option<u64>,
+    ) -> Result<(), Fault> {
         if self.committed_quantum.is_none() {
             // Mark the first transition before any state can be accepted.
             self.revoked
@@ -665,6 +677,7 @@ impl Callback {
         if stage.has_request {
             self.staged_request.parameter_capacity =
                 self.staged_request.parameter_capacity.min(remaining);
+            self.staged_request.published_at_ns = published_at_ns;
             if self.requests.push(self.staged_request).is_err() {
                 return self.fail(Fault::Saturated);
             }
