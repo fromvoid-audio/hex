@@ -505,8 +505,11 @@ impl WorkerLoop {
                             project_generation,
                             editor_revision: revision,
                         };
+                        let ordinary_owner = session.uses_ordinary_worker_publication()
+                            || resident_snapshot.is_some();
                         let verified_available = available
-                            && session.audio_mode() == DocumentAudioMode::VerifiedStreaming;
+                            && session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                            && !ordinary_owner;
                         let verified_pending = verified_clip_audition_lane.drive(
                             clip_audition,
                             state,
@@ -534,6 +537,7 @@ impl WorkerLoop {
                         let clip_pending = clip_audition_lane.drive(
                             clip_audition,
                             session,
+                            state.canonical_audio_source.as_ref(),
                             context,
                             resident_snapshot,
                             resident_preview,
