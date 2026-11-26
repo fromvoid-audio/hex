@@ -1083,7 +1083,7 @@ public:
             const auto& expression=event.noteExpressionValue;
             const auto voice=std::find_if(named_voices.begin(),named_voices.end(),
                 [&](const Voice& v) { return v.id==expression.noteId; });
-            if(fault!=authored_instrument_variant || voice==named_voices.end() || event.flags ||
+            if(fault!=authored_instrument_variant || voice==named_voices.end() || (event.flags & ~Event::kIsLive) ||
                (voice->channel==1?expression.typeId!=kTuningTypeID:
                 voice->channel!=2 || expression.typeId!=kBrightnessTypeID)) return false;
             voice->gain=static_cast<float>(expression.value);
