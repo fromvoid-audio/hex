@@ -725,8 +725,8 @@ fn commit_planned(
             owner.color = original.color;
             owner.gain = original.gain;
             owner.balance = original.balance;
-            owner.gain_lane = original.gain_lane;
-            owner.sends = original.sends;
+            owner.gain_lane = original.gain_lane.clone();
+            owner.sends = original.sends.clone();
             owner.muted = original.muted;
             owner.soloed = original.soloed;
             (id, file.start)

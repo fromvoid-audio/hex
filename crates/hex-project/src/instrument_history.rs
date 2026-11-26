@@ -1,5 +1,5 @@
 //! Borrowed neutral classification of one instrument-state history edge.
-use crate::{Asset, AssetId, Device, GainLane, Project, SourceId, Track, TrackId};
+use crate::{Asset, AssetId, Device, GainLane, Project, SourceId, TrackId};
 use std::collections::BTreeMap;
 
 /// At most one catalog membership change; every shared asset is identical.
@@ -117,7 +117,10 @@ impl Project {
         let asset_change = asset_delta(assets, &target.assets)?;
         let mut changed = None;
         for (current, next) in tracks.iter().zip(&target.tracks) {
-            let Track {
+            if current.ptr_eq(next) {
+                continue;
+            }
+            let crate::TrackData {
                 group_output_mutes,
                 tags,
                 kind,
@@ -143,7 +146,7 @@ impl Project {
                 instrument_position,
                 content,
                 sends,
-            } = current;
+            } = &**current;
             let GainLane {
                 base,
                 spans,

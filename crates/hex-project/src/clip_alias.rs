@@ -71,6 +71,153 @@ impl Project {
     pub fn clip_aliases_snapshot(&self) -> ClipAliasesSnapshot {
         self.aliases.snapshot()
     }
+    /// Directly validate clip alias inventory, source payloads, note limits,
+    /// and member bindings in place without a full `Snapshot` + `Project` round-trip.
+    pub(crate) fn validate_aliases(&self) -> Result<(), Invalid> {
+        let aliases = &self.aliases;
+        if aliases.sources.len() > crate::MAX_CLIPS || aliases.members.len() > crate::MAX_CLIPS {
+            return Err(Invalid("clip alias inventory exceeds project limits"));
+        }
+        let mut seen_ids = BTreeSet::new();
+        let mut alias_note_count = 0usize;
+        for (source_id, content) in &aliases.sources {
+            let raw = source_id.value();
+            if raw == 0 || raw >= self.next_id || !seen_ids.insert(raw) {
+                return Err(Invalid("invalid or duplicate alias source id"));
+            }
+            match content {
+                Content::Audio { asset, content } => {
+                    if !self.assets.contains_key(asset) {
+                        return Err(Invalid("alias audio asset is missing"));
+                    }
+                    if matches!(
+                        content.clock,
+                        crate::AudioDomainClock::Frames(length)
+                            if length > crate::MAX_AUDIO_DOMAIN_FRAMES
+                    ) {
+                        return Err(Invalid(
+                            "linked audio exceeds the supported frame event extent",
+                        ));
+                    }
+                }
+                Content::ConsoleAudio(asset) => {
+                    if !self.assets.contains_key(asset) {
+                        return Err(Invalid("alias console audio asset is missing"));
+                    }
+                }
+                Content::Midi(content) => {
+                    if content.source_length == BeatTime::ZERO {
+                        return Err(Invalid("alias midi source must have positive length"));
+                    }
+                    alias_note_count = alias_note_count
+                        .checked_add(content.notes.len())
+                        .filter(|count| *count <= crate::MAX_NOTES)
+                        .ok_or(Invalid("alias note limit reached"))?;
+                    for note in &content.notes {
+                        let note_raw = note.id.value();
+                        if note_raw == 0 || note_raw >= self.next_id || !seen_ids.insert(note_raw) {
+                            return Err(Invalid("invalid or duplicate alias note id"));
+                        }
+                        crate::midi::validate_note(
+                            note.start,
+                            note.duration,
+                            content.source_length,
+                            note.pitch,
+                            note.channel,
+                            note.velocity,
+                        )?;
+                        note.expression.validate()?;
+                        crate::midi::validate_note_expression_points(
+                            &note.expression_points,
+                            note.duration,
+                        )?;
+                    }
+                    crate::midi_note_overwrite::validate_occupancy(&content.notes)?;
+                    crate::midi::validate_expression_lanes(
+                        &content.expression_lanes,
+                        content.source_length,
+                    )?;
+                }
+            }
+        }
+        let mut total_notes = alias_note_count;
+        for track in &self.tracks {
+            for clip in track.midi_clips() {
+                if !aliases.members.contains_key(&clip.id()) {
+                    total_notes = total_notes
+                        .checked_add(clip.notes().len())
+                        .filter(|count| *count <= crate::MAX_NOTES)
+                        .ok_or(Invalid("project note limit reached"))?;
+                }
+            }
+        }
+        for cell in &self.session.cells {
+            if let crate::SessionCellContent::Midi(clip) = &cell.content
+                && !aliases.members.contains_key(&clip.id())
+            {
+                total_notes = total_notes
+                    .checked_add(clip.source.notes().len())
+                    .filter(|count| *count <= crate::MAX_NOTES)
+                    .ok_or(Invalid("project note limit reached"))?;
+            }
+        }
+        let mut referenced_sources = BTreeSet::new();
+        for (clip, source_id) in &aliases.members {
+            if clip.value() == 0 {
+                return Err(Invalid("invalid or duplicate alias member reference"));
+            }
+            let source = aliases
+                .sources
+                .get(source_id)
+                .ok_or(Invalid("alias source missing"))?;
+            referenced_sources.insert(*source_id);
+            match source {
+                Content::Midi(content) => {
+                    let current = self
+                        .midi_source(*clip)
+                        .ok_or(Invalid("alias midi member missing"))?;
+                    if current.content.as_ref() != content.as_ref() {
+                        return Err(Invalid("alias midi member contradicts source"));
+                    }
+                    if let Some(arr) = self.midi_clip(*clip) {
+                        arr.source_playback()?;
+                    } else {
+                        current.playback_for_duration(current.source_length())?;
+                    }
+                }
+                Content::Audio { asset, content } => {
+                    let target = self
+                        .clip(*clip)
+                        .ok_or(Invalid("alias audio member missing"))?;
+                    if target.asset != *asset {
+                        return Err(Invalid("alias audio media differs from source"));
+                    }
+                    let edit = target
+                        .audio_edit()
+                        .ok_or(Invalid("alias audio member has no processing root"))?;
+                    if edit.domain.content.as_ref() != content.as_ref() {
+                        return Err(Invalid("alias audio member contradicts source"));
+                    }
+                    crate::audio_edit::validate_clip(self, target)?;
+                }
+                Content::ConsoleAudio(asset) => {
+                    if self.session.cells.iter().all(|cell| {
+                        !matches!(
+                            &cell.content,
+                            crate::SessionCellContent::Audio(audio)
+                                if audio.id == *clip && audio.asset == *asset
+                        )
+                    }) {
+                        return Err(Invalid("alias console audio member differs from source"));
+                    }
+                }
+            }
+        }
+        if referenced_sources.len() != aliases.sources.len() {
+            return Err(Invalid("orphan alias source"));
+        }
+        Ok(())
+    }
 }
 impl ClipAliases {
     pub(crate) fn snapshot(&self) -> ClipAliasesSnapshot {

@@ -295,7 +295,7 @@ fn row(project: &mut Project, index: usize) -> Result<&mut TrackContent, Invalid
     project
         .tracks
         .get_mut(index)
-        .map(|track| &mut track.content)
+        .map(|track| &mut *track.content)
         .ok_or(Invalid("clip edit track changed"))
 }
 

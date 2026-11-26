@@ -1,7 +1,7 @@
 //! Private, nonowning provenance for one canonical MIDI command in global history.
 use crate::{
     BeatTime, ClipId, Command, Created, GainLane, Invalid, MidiClip, MidiSource, NoteId, Project,
-    SceneId, SessionCellContent, Track, TrackContent, TrackId,
+    SceneId, SessionCellContent, TrackContent, TrackId,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1142,7 +1142,10 @@ fn same_shell(
         return false;
     }
     tracks.iter().zip(&b.tracks).all(|(a, b)| {
-        let Track {
+        if a.ptr_eq(b) {
+            return true;
+        }
+        let crate::TrackData {
             group_output_mutes,
             tags,
             kind,
@@ -1168,7 +1171,7 @@ fn same_shell(
             instrument_position,
             content,
             sends,
-        } = a;
+        } = &**a;
         let GainLane {
             base,
             spans,
@@ -1177,7 +1180,7 @@ fn same_shell(
         let TrackContent {
             audio_clips,
             midi_clips: _,
-        } = content;
+        } = &**content;
         kind == &b.kind
             && parent_group == &b.parent_group
             && output_destination == &b.output_destination
