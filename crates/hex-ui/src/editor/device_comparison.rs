@@ -58,9 +58,9 @@ pub(super) fn actions(
         Slot::B => "b",
     };
     let tooltip = if target.owner.type_id == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
-        "click or p to switch · right-click to copy"
+        "click to switch · right-click to copy"
     } else {
-        "click or p to switch · right-click to copy · , selects a · . selects b · opt-, copies a to b · opt-. copies b to a"
+        "click to switch · right-click to copy · , selects a · . selects b · opt-, copies a to b · opt-. copies b to a"
     };
     div().child(
         super::device_panel::segment_button(
@@ -117,31 +117,26 @@ pub(super) fn card(
     let Some(target) = intent(view, device, class, Action::Switch) else {
         return card;
     };
+    if target.owner.type_id == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
+        return card;
+    }
     card.on_key_down(
         cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
             if !focus.is_focused(window) {
                 return;
             }
+            let slot = match event.keystroke.key.as_str() {
+                "," => Slot::A,
+                "." => Slot::B,
+                _ => return,
+            };
             let modifiers = event.keystroke.modifiers;
-            let key = event.keystroke.key.as_str();
-            let action = if key == "p" && !modifiers.modified() {
-                Some(Action::Switch)
+            let action = if modifiers == gpui::Modifiers::alt() {
+                Some(Action::CopyFrom(slot))
+            } else if !modifiers.modified() {
+                (slot != target.expected).then_some(Action::Switch)
             } else {
-                if target.owner.type_id == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
-                    return;
-                }
-                let slot = match key {
-                    "," => Slot::A,
-                    "." => Slot::B,
-                    _ => return,
-                };
-                if modifiers == gpui::Modifiers::alt() {
-                    Some(Action::CopyFrom(slot))
-                } else if !modifiers.modified() {
-                    (slot != target.expected).then_some(Action::Switch)
-                } else {
-                    return;
-                }
+                return;
             };
             cx.stop_propagation();
             if event.is_held
