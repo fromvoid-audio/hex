@@ -1514,6 +1514,9 @@ fn paste_view_and_ack_precede_checkpoint_for_single_clip_and_multi_clip_insert()
             undone.state.project.track(track).unwrap().midi_clips(),
             before.project.track(track).unwrap().midi_clips()
         );
+        // Redo has the same project bytes as the preceding paste. Observe
+        // Undo on disk first so a stale paste cannot satisfy the Redo wait.
+        wait_for_journal(&path, &undone.state.project);
         service.submit(Request::Redo).unwrap();
         let redone = next(&service);
         assert!(redone.error.is_none());
