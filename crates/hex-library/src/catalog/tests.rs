@@ -791,6 +791,7 @@ fn metadata_query_tags_collections_and_sorting_accurate_across_10k_entries() {
                     frame_count,
                     codec,
                 }),
+                audio_inspected: true,
             },
         );
         if i % 100 == 0 {
@@ -834,4 +835,187 @@ fn metadata_query_tags_collections_and_sorting_accurate_across_10k_entries() {
             .unwrap()
             .contains(&e.path)
     }));
+}
+
+#[test]
+fn v2_migrated_records_populate_audio_metadata_on_next_scan_without_re_reading_v3_unparseable() {
+    let fixture = Fixture::new();
+    let valid_wav = fixture.0.join("drums/kick.wav");
+    let raw_bytes = fixture.0.join("drums/opaque.wav");
+    write(&valid_wav, &minimal_wav(48_000, 2, 24, 48_000));
+    write(&raw_bytes, b"not-a-valid-audio-header");
+
+    let roots = [fixture.0.clone()];
+    let initial = scan_samples(&roots);
+    assert_eq!(initial.fingerprinted, 2);
+    assert!(initial.catalog.audio_metadata(&valid_wav).is_some());
+    assert_eq!(initial.catalog.audio_metadata(&raw_bytes), None);
+
+    // Save v3 and reload: both the valid wav and the v3-inspected unparseable file
+    // must be reused on incremental rescan (0 re-fingerprints).
+    let v3_db = fixture.0.join("v3.db");
+    initial.catalog.save(&v3_db).unwrap();
+    let v3_loaded = SampleCatalog::load(&v3_db).unwrap();
+    let v3_rescan = scan_samples_with(
+        &roots,
+        ScanControl {
+            previous: Some(&v3_loaded),
+            ..ScanControl::default()
+        },
+    );
+    assert_eq!((v3_rescan.reused, v3_rescan.fingerprinted), (2, 0));
+
+    // Construct a genuine legacy hexsmp2 cache with matching size/mtime/fingerprint
+    // for both unchanged files: upgrading v2 -> v3 must inspect headers on the next
+    // scan instead of permanently starving metadata.
+    let v3_raw = fs::read(&v3_db).unwrap();
+    let encode_path = |p: &Path| -> Vec<u8> {
+        #[cfg(windows)]
+        {
+            use std::os::windows::ffi::OsStrExt;
+            p.as_os_str()
+                .encode_wide()
+                .flat_map(u16::to_le_bytes)
+                .collect()
+        }
+        #[cfg(not(windows))]
+        {
+            p.as_os_str().as_encoded_bytes().to_vec()
+        }
+    };
+    let mut v2 = b"hexsmp2".to_vec();
+    v2.push(v3_raw[7]);
+    v2.extend_from_slice(&2_u32.to_le_bytes());
+    for path in [&valid_wav, &raw_bytes] {
+        let rec = initial.catalog.record(path).unwrap();
+        let raw_path = encode_path(path);
+        v2.extend_from_slice(&(raw_path.len() as u32).to_le_bytes());
+        v2.extend_from_slice(&raw_path);
+        v2.push(2); // RECORD_FINGERPRINTED (v2)
+        v2.extend_from_slice(&rec.size.to_le_bytes());
+        v2.extend_from_slice(&rec.modified_ns.to_le_bytes());
+        v2.extend_from_slice(&rec.fingerprint.unwrap().value().to_le_bytes());
+    }
+    let v2_db = fixture.0.join("v2.db");
+    fs::write(&v2_db, &v2).unwrap();
+    let migrated = SampleCatalog::load(&v2_db).unwrap();
+    assert!(!migrated.record(&valid_wav).unwrap().audio_inspected);
+    assert_eq!(migrated.audio_metadata(&valid_wav), None);
+
+    // Next incremental scan re-inspects both legacy v2 records and populates audio metadata.
+    let upgraded = scan_samples_with(
+        &roots,
+        ScanControl {
+            previous: Some(&migrated),
+            ..ScanControl::default()
+        },
+    );
+    assert_eq!((upgraded.reused, upgraded.fingerprinted), (0, 2));
+    assert_eq!(
+        upgraded
+            .catalog
+            .audio_metadata(&valid_wav)
+            .unwrap()
+            .sample_rate,
+        48_000
+    );
+    assert!(upgraded.catalog.record(&raw_bytes).unwrap().audio_inspected);
+    assert_eq!(upgraded.catalog.audio_metadata(&raw_bytes), None);
+
+    // Subsequent scan reuses both (including the v3-inspected unparseable file).
+    let steady = scan_samples_with(
+        &roots,
+        ScanControl {
+            previous: Some(&upgraded.catalog),
+            ..ScanControl::default()
+        },
+    );
+    assert_eq!((steady.reused, steady.fingerprinted), (2, 0));
+}
+
+#[test]
+fn mutations_enforce_absolute_paths_and_bounds_and_invalid_filters_return_empty() {
+    let fixture = Fixture::new();
+    let root_a = fixture.0.join("a");
+    let root_b = fixture.0.join("b");
+    let sample_a = root_a.join("kick.wav");
+    let sample_b = root_b.join("kick.wav");
+    write(&sample_a, &minimal_wav(48_000, 2, 24, 24_000));
+    write(&sample_b, &minimal_wav(48_000, 2, 24, 24_000));
+    let mut catalog = scan_samples(std::slice::from_ref(&fixture.0)).catalog;
+
+    // 1. Relative and oversized paths are refused at mutation time (never producing unloadable saves).
+    assert!(
+        catalog
+            .add_tag(Path::new("relative/kick.wav"), "drums")
+            .is_err()
+    );
+    assert!(
+        catalog
+            .add_to_collection("favs", Path::new("relative/kick.wav"))
+            .is_err()
+    );
+    let oversized = fixture.0.join("x".repeat(MAX_PATH_BYTES + 1));
+    assert!(catalog.add_tag(&oversized, "drums").is_err());
+    assert!(catalog.add_to_collection("favs", &oversized).is_err());
+
+    // 2. Relocating root_a onto root_b merges tags capped at MAX_TAGS_PER_SAMPLE and stays save/loadable.
+    for i in 0..20 {
+        catalog
+            .add_tag(&sample_a, &format!("a-tag-{i:02}"))
+            .unwrap();
+        catalog
+            .add_tag(&sample_b, &format!("b-tag-{i:02}"))
+            .unwrap();
+    }
+    // Relative relocate_root target is ignored safely.
+    catalog.relocate_root(&root_a, Path::new("relative/target"));
+    assert!(catalog.tags_for(&sample_a).is_some());
+
+    catalog.relocate_root(&root_a, &root_b);
+    assert_eq!(
+        catalog.tags_for(&sample_b).unwrap().len(),
+        MAX_TAGS_PER_SAMPLE
+    );
+    let db = fixture.0.join("bounded.db");
+    catalog.save(&db).unwrap();
+    assert_eq!(SampleCatalog::load(&db).unwrap(), catalog);
+
+    // 3. Invalid q.tag / q.collection return empty results rather than silently dropping the filter.
+    for bad in ["", "   ", "bad\0label", &"z".repeat(MAX_TAG_BYTES + 1)] {
+        assert!(
+            catalog
+                .query(&CatalogQuery {
+                    tag: Some(bad),
+                    ..CatalogQuery::default()
+                })
+                .is_empty(),
+            "invalid tag {bad:?} must return empty"
+        );
+        assert!(
+            catalog
+                .query(&CatalogQuery {
+                    collection: Some(bad),
+                    ..CatalogQuery::default()
+                })
+                .is_empty(),
+            "invalid collection {bad:?} must return empty"
+        );
+    }
+
+    // 4. search_with_listing_in shares inline tokenization (e.g. invalid rate: or tag: filter).
+    let listing = crate::scan_directory(&root_b).unwrap();
+    assert!(
+        catalog
+            .search_with_listing_in("rate:notanumber", None, Some(&listing))
+            .is_empty()
+    );
+    assert!(
+        catalog
+            .search_with_listing_in("tag:nonexistent", Some(&root_b), Some(&listing))
+            .is_empty()
+    );
+    let tagged = catalog.search_with_listing_in("tag:a-tag-00 kick", Some(&root_b), Some(&listing));
+    assert_eq!(tagged.len(), 1);
+    assert_eq!(tagged[0].path, sample_b);
 }
