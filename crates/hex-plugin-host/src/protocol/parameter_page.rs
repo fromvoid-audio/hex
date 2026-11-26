@@ -127,6 +127,11 @@ impl ControllerParameter {
         self.flags & (!PARAMETER_FLAGS | IS_READ_ONLY | IS_HIDDEN) == 0
     }
 
+    /// Whether this parameter is a VST3 `kIsProgramChange` unit program selector.
+    pub fn is_program_change(&self) -> bool {
+        self.flags & IS_PROGRAM_CHANGE != 0
+    }
+
     /// Eligibility for authored envelopes. Program selection can change other
     /// parameter definitions and has no authored playback contract here.
     pub fn supports_authored_automation(&self) -> bool {

@@ -205,5 +205,8 @@ pub fn available<'a>(
     Ok(state)
 }
 
+pub mod programs;
+pub mod vstpreset;
+
 #[cfg(test)]
 mod tests;
