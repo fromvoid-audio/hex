@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = FILTER_SHAPER_STATE_VERSION;
+pub const OPERATOR_STATE_VERSION: u32 = OSC_ENV_SHAPE_STATE_VERSION;
+const OSC_ENV_SHAPE_STATE_VERSION: u32 = 24;
 const FILTER_SHAPER_STATE_VERSION: u32 = 23;
 const FILTER_ENV_STATE_VERSION: u32 = 22;
 const PITCH_ENV_STATE_VERSION: u32 = 21;
@@ -56,6 +57,7 @@ mod harmonics;
 mod keytrack;
 mod mod_env;
 mod modulation;
+mod osc_env_shape;
 mod performance;
 mod pitch_env;
 mod pitch_perf;
@@ -100,7 +102,8 @@ const PARAMETER_COUNT: usize = STORED_PARAMETER_COUNT
     + pitch_perf::COUNT
     + pitch_env::COUNT
     + filter_env::COUNT
-    + filter_shaper::COUNT;
+    + filter_shaper::COUNT
+    + osc_env_shape::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -308,6 +311,27 @@ pub mod parameter {
         ParameterId::from_static(super::filter_shaper::SHAPER_DRY_WET_ID);
     pub const FILTER_DRIVE: ParameterId =
         ParameterId::from_static(super::filter_shaper::FILTER_DRIVE_ID);
+
+    /// Per-operator attack segment slope (-100..+100%, default 0%). Operators are one-based.
+    pub const fn oscillator_attack_slope(operator: u32) -> ParameterId {
+        super::osc_env_shape::param_id(operator, 0)
+    }
+    /// Per-operator decay segment slope (-100..+100%, default 0%). Operators are one-based.
+    pub const fn oscillator_decay_slope(operator: u32) -> ParameterId {
+        super::osc_env_shape::param_id(operator, 1)
+    }
+    /// Per-operator release segment slope (-100..+100%, default 0%). Operators are one-based.
+    pub const fn oscillator_release_slope(operator: u32) -> ParameterId {
+        super::osc_env_shape::param_id(operator, 2)
+    }
+    /// Per-operator release end level (0..1, default 0.0). Operators are one-based.
+    pub const fn oscillator_end(operator: u32) -> ParameterId {
+        super::osc_env_shape::param_id(operator, 3)
+    }
+    /// Per-operator note-pitch envelope loop ratio (0.25..4.0x, default 1.0x). Operators are one-based.
+    pub const fn oscillator_loop_note_ratio(operator: u32) -> ParameterId {
+        super::osc_env_shape::param_id(operator, 4)
+    }
 
     /// Derived eleven-algorithm selector; zero preserves custom legacy routing.
     pub const ALGORITHM: ParameterId = ParameterId::from_static(600);
@@ -578,6 +602,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < fine::COUNT {
         result[PARAMETER_COUNT
+            - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
             - pitch_env::COUNT
@@ -592,6 +617,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < keytrack::COUNT {
         result[PARAMETER_COUNT
+            - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
             - pitch_env::COUNT
@@ -605,6 +631,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < performance::COUNT {
         result[PARAMETER_COUNT
+            - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
             - pitch_env::COUNT
@@ -617,6 +644,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < pitch_perf::COUNT {
         result[PARAMETER_COUNT
+            - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
             - pitch_env::COUNT
@@ -627,21 +655,32 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let pitch_env = pitch_env::descriptors();
     let mut offset = 0;
     while offset < pitch_env::COUNT {
-        result[PARAMETER_COUNT - filter_shaper::COUNT - filter_env::COUNT - pitch_env::COUNT
+        result[PARAMETER_COUNT
+            - osc_env_shape::COUNT
+            - filter_shaper::COUNT
+            - filter_env::COUNT
+            - pitch_env::COUNT
             + offset] = pitch_env[offset];
         offset += 1;
     }
     let filter_env = filter_env::descriptors();
     let mut offset = 0;
     while offset < filter_env::COUNT {
-        result[PARAMETER_COUNT - filter_shaper::COUNT - filter_env::COUNT + offset] =
-            filter_env[offset];
+        result[PARAMETER_COUNT - osc_env_shape::COUNT - filter_shaper::COUNT - filter_env::COUNT
+            + offset] = filter_env[offset];
         offset += 1;
     }
     let filter_shaper = filter_shaper::descriptors();
     let mut offset = 0;
     while offset < filter_shaper::COUNT {
-        result[PARAMETER_COUNT - filter_shaper::COUNT + offset] = filter_shaper[offset];
+        result[PARAMETER_COUNT - osc_env_shape::COUNT - filter_shaper::COUNT + offset] =
+            filter_shaper[offset];
+        offset += 1;
+    }
+    let osc_env_shape = osc_env_shape::descriptors();
+    let mut offset = 0;
+    while offset < osc_env_shape::COUNT {
+        result[PARAMETER_COUNT - osc_env_shape::COUNT + offset] = osc_env_shape[offset];
         offset += 1;
     }
     result
@@ -671,6 +710,7 @@ pub struct OperatorSettings {
     pitch_env: pitch_env::Settings,
     filter_env: filter_env::Settings,
     filter_shaper: filter_shaper::Settings,
+    osc_env_shape: osc_env_shape::Settings,
 }
 
 impl OperatorSettings {
@@ -703,6 +743,7 @@ impl OperatorSettings {
             pitch_env: pitch_env::Settings::default(),
             filter_env: filter_env::Settings::default(),
             filter_shaper: filter_shaper::Settings::default(),
+            osc_env_shape: osc_env_shape::Settings::default(),
         }
     }
 
@@ -724,6 +765,7 @@ impl OperatorSettings {
                 | PITCH_ENV_STATE_VERSION
                 | FILTER_ENV_STATE_VERSION
                 | FILTER_SHAPER_STATE_VERSION
+                | OSC_ENV_SHAPE_STATE_VERSION
         ) {
             return tlv_codec::decode(state.payload(), state.state_version());
         }
@@ -855,9 +897,13 @@ impl OperatorSettings {
             crate::operator_filter::Settings::default()
         };
         let companion = if state.state_version() >= COMPANION_STATE_VERSION {
-            companion::Settings::decode(
+            let decoded = companion::Settings::decode(
                 &state.payload()[HARMONIC_PAYLOAD_BYTES..COMPANION_PAYLOAD_BYTES],
-            )?
+            )?;
+            if decoded.has_note_pitch_loop() {
+                return Err(DeviceContractError::MalformedState);
+            }
+            decoded
         } else {
             companion::Settings::default()
         };
@@ -889,6 +935,7 @@ impl OperatorSettings {
             return Err(DeviceContractError::MalformedState);
         }
         let result = Self {
+            osc_env_shape: osc_env_shape::Settings::default(),
             filter_shaper: filter_shaper::Settings::default(),
             filter_env: filter_env::Settings::default(),
             pitch_env: pitch_env::Settings::default(),
@@ -1029,6 +1076,7 @@ impl OperatorSettings {
         self.pitch_env.validate()?;
         self.filter_env.validate()?;
         self.filter_shaper.validate()?;
+        self.osc_env_shape.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -1238,6 +1286,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.osc_env_shape.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.filter_shaper.read(parameter) {
             return Ok(value);
         }
@@ -1362,6 +1413,10 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.osc_env_shape.patch(parameter, value)? {
+            settings.global.active = true;
+            return settings.to_state();
+        }
         if settings.filter_shaper.patch(parameter, value)? {
             settings.global.active = true;
             return settings.to_state();
@@ -1555,6 +1610,7 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
             || self.harmonic_runtime.settings.pitch_env.enabled()
             || !self.harmonic_runtime.settings.filter_env.is_neutral()
             || !self.harmonic_runtime.settings.filter_shaper.is_neutral()
+            || !self.harmonic_runtime.settings.osc_env_shape.is_neutral()
             || self.harmonic_runtime.settings.filter.circuit() != 0
             || self.harmonic_runtime.settings.fine.values() != [0.0; OPERATORS]
             || self

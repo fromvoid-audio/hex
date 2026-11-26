@@ -624,7 +624,14 @@ impl MutableInstrumentRuntime for Runtime {
             && Admission::read(previous).is_some_and(|p| {
                 self.factory.rate == p.rate
                     && (p.admission_voices().all(|(id, _)| id == 0)
-                        || self.factory.settings.companion == p.companion)
+                        || (self.factory.settings.companion == p.companion
+                            && previous
+                                .as_any()
+                                .downcast_ref::<Self>()
+                                .map_or(osc_env_shape::Settings::default(), |s| {
+                                    s.factory.settings.osc_env_shape
+                                })
+                                == self.factory.settings.osc_env_shape))
                     && compatible_base(
                         &self.factory.base,
                         &p.base,
