@@ -795,7 +795,38 @@ mod tests {
         let operator_view =
             native_device_view_for_class(NativeDeviceClass::Instrument, &operator_state).unwrap();
         assert_eq!(operator_view.name, "vector");
-        assert_eq!(operator_view.parameters.len(), 432);
+        assert!(
+            operator_view
+                .parameters
+                .iter()
+                .map(|p| &p.descriptor)
+                .eq(operator.parameters.iter()),
+            "the default Vector view retains the ordered instrument catalog"
+        );
+        let performance: Vec<_> = operator_view
+            .parameters
+            .iter()
+            .filter(|parameter| matches!(parameter.descriptor.id.value(), 617..=619 | 640..=643))
+            .map(|parameter| {
+                (
+                    parameter.descriptor.id.value(),
+                    parameter.descriptor.label,
+                    parameter.value,
+                )
+            })
+            .collect();
+        assert_eq!(
+            performance,
+            [
+                (617, "time", ParameterValue::Float(0.0)),
+                (618, "tone", ParameterValue::Float(100.0)),
+                (619, "volume", ParameterValue::Float(0.0)),
+                (640, "transpose", ParameterValue::Float(0.0)),
+                (641, "spread", ParameterValue::Float(0.0)),
+                (642, "glide enabled", ParameterValue::Bool(false)),
+                (643, "glide time", ParameterValue::Float(0.05)),
+            ]
+        );
         let enables: Vec<_> = operator_view
             .parameters
             .iter()
