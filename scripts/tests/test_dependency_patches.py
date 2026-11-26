@@ -104,6 +104,49 @@ class DependencyPatchTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 xattr_mod.verify()
 
+    def test_cpal_reverse_patch_verification_and_xattr_provenance_only_flag(self):
+        import hashlib
+        import json
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            for name in (
+                "Cargo.toml",
+                "Cargo.lock",
+                "scripts/check-cpal-patch.py",
+                "scripts/check-xattr-compat.py",
+            ):
+                shutil.copyfile(ROOT / name, root / name)
+            for crate in ("cpal", "xattr"):
+                shutil.copytree(
+                    ROOT / "third_party" / crate,
+                    root / "third_party" / crate,
+                    ignore=shutil.ignore_patterns(".DS_Store"),
+                )
+
+            xattr_prov = subprocess.run(
+                [sys.executable, str(root / "scripts/check-xattr-compat.py"), "--provenance-only"],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(xattr_prov.returncode, 0, xattr_prov.stderr)
+            self.assertIn("xattr provenance and dependency boundary passed", xattr_prov.stdout)
+
+            # Corrupt hex-patches.diff and update patch_sha256 so only reverse-apply catches it.
+            cpal_vendor = root / "third_party/cpal"
+            diff_path = cpal_vendor / "hex-patches.diff"
+            diff_path.write_bytes(b"")
+            manifest_path = cpal_vendor / "hex-provenance.json"
+            manifest = json.loads(manifest_path.read_text())
+            manifest["patch_sha256"] = hashlib.sha256(b"").hexdigest()
+            manifest_path.write_text(json.dumps(manifest, indent=2))
+            tampered = subprocess.run(
+                [sys.executable, str(root / "scripts/check-cpal-patch.py")],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+            self.assertIn("CPAL cumulative patch", tampered.stderr)
+
     def test_future_lints_rustflags_env_handles_empty_encoded_rustflags(self):
         future_lints = load_script(
             "future_lints_fixture", ROOT / "scripts/check-dependency-future-lints.py"

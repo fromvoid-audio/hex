@@ -1,5 +1,5 @@
 //! Waveform geometry cache and projection unit tests.
-#[cfg(not(feature = "ui-test-support"))]
+#[cfg(all(test, not(feature = "ui-test-support")))]
 use super::cache::coarse_entry_key;
 use super::cache::waveform_geometry_key;
 use super::*;

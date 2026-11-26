@@ -36,7 +36,7 @@ finally:
 _PYTHON_SOURCE_SHA256 = hashlib.sha256(_PYTHON_SOURCE_BYTES).hexdigest()
 exec(compile(_PYTHON_SOURCE_BYTES, _PYTHON_SPEC.origin, "exec", dont_inherit=True), python_tests.__dict__)
 
-POLICY_VERSION = 54
+POLICY_VERSION = 55
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 # Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
 # Changes here must be reviewed with the real registration/codec consumers.
@@ -65,8 +65,26 @@ TOOLING = {
     ".config/nextest.toml",
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
+    "scripts/check-cpal-patch.py", "scripts/check-xattr-compat.py",
     "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py", "scripts/ci_checkpoint.py", "scripts/ci_target_storage.py",
     "scripts/test_shards.py", "scripts/python_shards.py",
+}
+# Excluded Hex-authored FFI/SHM crates that sit outside the Cargo workspace
+# to keep workspace-wide `unsafe_code = "forbid"` intact. Changes inside these
+# crates or their owning adapter crates trigger explicit manifest-path tests.
+EXCLUDED_FFI_CRATES: dict[str, dict[str, str]] = {
+    "mts-esp-master": {
+        "prefix": "third_party/mts-esp-master/",
+        "manifest": "third_party/mts-esp-master/Cargo.toml",
+        "owner": "hex-mts",
+        "step_id": "mts-esp-master-tests",
+    },
+    "hex-shm-ring": {
+        "prefix": "third_party/hex-shm-ring/",
+        "manifest": "third_party/hex-shm-ring/Cargo.toml",
+        "owner": "hex-plugin-host",
+        "step_id": "hex-shm-ring-tests",
+    },
 }
 
 
@@ -239,6 +257,25 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
             changed.add(owner["name"])
             reasons.append("package build/config input: include owner and declared consumers: " + path)
         else:
+            ffi_info = next(
+                (info for info in EXCLUDED_FFI_CRATES.values()
+                 if path.startswith(info["prefix"])
+                 and any(p["name"] == info["owner"] for p in inventory)),
+                None,
+            )
+            if ffi_info is not None:
+                relative = Path(path).relative_to(ffi_info["prefix"].rstrip("/"))
+                if (path.endswith(".rs") and not path.endswith("/build.rs")
+                        and relative.parts and relative.parts[0] in {"src", "tests"}):
+                    scopes.add("rust")
+                    changed.add(ffi_info["owner"])
+                    reasons.append("excluded FFI/SHM crate source: include owning adapter and manifest tests: " + path)
+                    continue
+                if path in {ffi_info["manifest"], ffi_info["prefix"] + "Cargo.lock"}:
+                    scopes.add("rust")
+                    changed.add(ffi_info["owner"])
+                    reasons.append("excluded FFI/SHM crate config: include owning adapter and manifest tests: " + path)
+                    continue
             scopes.add("full")
             reasons.append("high-risk or unknown input: " + path)
     path_consumers = set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in paths))
@@ -420,7 +457,7 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
     "src/editor/midi_origin_view.rs": ("editor::midi_origin_view::tests::",),
     "src/editor/midi_loop_notes.rs": ("editor::midi_loop_notes::tests::",),
-    "src/editor/waveform_geometry.rs": ("editor::waveform_geometry::tests::",),
+    "src/editor/waveform_geometry/tests.rs": ("editor::waveform_geometry::tests::",),
     "src/editor/waveform_stretch.rs": ("editor::waveform_stretch::tests::",),
 }
 UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
@@ -1692,9 +1729,15 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
         package = next(p for p in inventory if p["name"] == "hex-ui")
         standalone = ui_standalone_unit_targets(root, executable, package)
     module_filters = {} if narrow or standalone else module_test_filters(root, paths, inventory, tested)
+    excluded_ffi = sorted(
+        key for key, info in EXCLUDED_FFI_CRATES.items()
+        if (not narrow and info["owner"] in tested)
+        or any(p.startswith(info["prefix"]) for p in executable)
+    )
     return {"kind": "compressor" if narrow else "packages", "tests": tests,
             "module_filters": module_filters,
             **({"ui_standalone_unit_targets": standalone} if standalone else {}),
+            **({"excluded_ffi_crates": excluded_ffi} if excluded_ffi else {}),
             "doc_example_owners": doc_example_owners(root, paths, inventory),
             "test_packages": [] if narrow else tested,
             "single_run": single_run,
@@ -1720,6 +1763,11 @@ def owner_test_packages(paths: list[str], inventory: list[dict], affected: list[
     if any(p.endswith(("Cargo.toml", "/build.rs")) for p in executable):
         return sorted(affected)
     owners = {owner for p in executable if (owner := owner_package(p, inventory))}
+    owners |= {
+        info["owner"] for p in executable
+        for info in EXCLUDED_FFI_CRATES.values()
+        if p.startswith(info["prefix"])
+    }
     owners |= {consumer for owner in set(owners) for consumer in RUNTIME_CONSUMERS.get(owner, set())}
     owners |= set().union(*(PATH_RUNTIME_CONSUMERS.get(path, set()) for path in executable))
     tested = sorted(owners & set(affected))

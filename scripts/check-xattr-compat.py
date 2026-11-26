@@ -48,8 +48,15 @@ def verify():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--target", help="installed target; defaults to rustc host")
+    parser.add_argument(
+        "--provenance-only",
+        action="store_true",
+        help="verify xattr provenance and dependency boundaries without compiling",
+    )
     args = parser.parse_args()
     verify()
+    if args.provenance_only:
+        return
     host = next(line.split(": ", 1)[1] for line in subprocess.check_output(
         ["rustc", "-vV"], text=True).splitlines() if line.startswith("host: "))
     target = args.target or host

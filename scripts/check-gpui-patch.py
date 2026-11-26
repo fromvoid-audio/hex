@@ -104,7 +104,6 @@ def main():
         "src/taffy.rs",
         "src/gpui.rs",
         "src/elements/div.rs",
-        "src/view.rs",
         "src/text_system.rs",
         "src/text_system/line.rs",
     }

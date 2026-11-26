@@ -209,6 +209,8 @@ QUICK_STEPS = (
     Step("changelog", ("python3", "scripts/changelog.py", "validate", "--if-present")),
     Step("architecture", ("python3", "scripts/check-architecture.py")),
     Step("gpui-patch", ("python3", "scripts/check-gpui-patch.py")),
+    Step("cpal-patch", ("python3", "scripts/check-cpal-patch.py")),
+    Step("xattr-patch", ("python3", "scripts/check-xattr-compat.py", "--provenance-only")),
     Step("dependency-patches", ("python3", "scripts/check-dependency-patches.py")),
     Step("ui-style", ("python3", "scripts/check-ui-style.py")),
     Step("device-layout", ("python3", "scripts/check-device-layout.py")),
@@ -248,6 +250,8 @@ FULL_STEPS = (
     ),
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
+    Step("mts-esp-master-tests", ("cargo", "test", "--manifest-path", "third_party/mts-esp-master/Cargo.toml", "--locked"), requires_tests=True),
+    Step("hex-shm-ring-tests", ("cargo", "test", "--manifest-path", "third_party/hex-shm-ring/Cargo.toml", "--locked"), requires_tests=True),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
     Step("ui-feature-tests", ("cargo", "test", "-p", "hex-ui", "--lib", "--features", "ui-test-support", "--locked")),
     *UI_FEATURE_TARGET_STEPS,
@@ -428,13 +432,39 @@ MERGE_TOTAL_BUDGET_SECONDS = 180.0
 UNIT_TEST_BUDGET_SECONDS = 1.0
 
 
+# Pure unit-tier workspace crates whose default `affected-tests` suite must
+# remain under the < 1.0s unit budget even when a crate root edit triggers a
+# whole-package run instead of `module-tests-<pkg>`.
+PURE_UNIT_CRATES = frozenset({
+    "hex-diagnostics",
+    "hex-dsp",
+    "hex-lattice-contract",
+    "hex-library",
+    "hex-midi",
+    "hex-mts",
+    "hex-plugin-state",
+    "hex-preferences",
+    "hex-project",
+    "hex-text",
+    "hex-tuning",
+    "hex-ui-kit",
+    "hex-ui-model",
+})
+
+
 def _is_unit_tier_step(step_id: str, argv: tuple[str, ...]) -> bool:
     """True for pure unit-tier test steps subject to the < 1.0s execution budget."""
     if (step_id.startswith("ui-unit-") or step_id in UI_UNIT_STEP_IDS
             or step_id in {"ui-default-lib-unit-tests", "ui-default-standalone-tests", "sandbox-unit-tests"}
             or step_id.startswith("module-tests-")):
         return True
-    return runs_rust_tests(argv) and any(
+    if not runs_rust_tests(argv):
+        return False
+    if step_id == "affected-tests" and "--doc" not in argv:
+        packages = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-p"]
+        if packages and all(pkg in PURE_UNIT_CRATES for pkg in packages):
+            return True
+    return any(
         argv[i + 1].startswith("unit_") for i, arg in enumerate(argv[:-1]) if arg == "--test"
     )
 
@@ -927,6 +957,9 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
                               ("cargo", "clippy", *(a for p in consumer_feat_packages for a in ("-p", p)),
                                "--lib", "--bins", "--locked", "--features", ",".join(consumer_lint_features),
                                "--", "-D", "warnings")))
+    for crate_key in boundary.get("excluded_ffi_crates", ()):
+        step_id = ci_plan.EXCLUDED_FFI_CRATES[crate_key]["step_id"]
+        steps.append(next(s for s in FULL_STEPS if s.step_id == step_id))
     desktop_compiled = any(
         runs_rust_tests(step.argv)
         and not ({"--doc", "--lib", "--test", "--example", "--bench"} & set(step.argv))
