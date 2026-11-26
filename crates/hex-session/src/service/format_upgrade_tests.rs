@@ -652,9 +652,17 @@ fn silent_repeat_gap_requires_format_upgrade_consent_before_overwrite() {
         },
     );
     assert!(saved.error.is_none(), "{:?}", saved.error);
+    let written = fs::read(&path).unwrap();
+    let document: serde_json::Value = serde_json::from_slice(&written).unwrap();
     assert_eq!(
-        hex_storage::schema_version_for(&saved.state.project),
-        hex_storage::SILENT_REPEAT_SCHEMA_VERSION
+        document["version"],
+        hex_storage::CAPABILITY_MANIFEST_SCHEMA_VERSION
+    );
+    assert!(
+        document["capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("silent_repeat"))
     );
     assert_eq!(hex_storage::load(&path).unwrap(), *saved.state.project);
 }
