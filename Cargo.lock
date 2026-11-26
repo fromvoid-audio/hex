@@ -2604,6 +2604,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "signal-hook",
 ]
 
 [[package]]

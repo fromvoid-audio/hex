@@ -15,7 +15,49 @@ mod recovery;
 mod wav;
 use hex_project::{Command, Created, Editor, Project};
 use std::collections::BTreeMap;
-use std::{error::Error, path::Path};
+use std::{error::Error, fmt, path::Path};
+
+pub(crate) const EXIT_RUNTIME: i32 = 1;
+pub(crate) const EXIT_USAGE: i32 = 2;
+
+#[derive(Debug)]
+pub(crate) struct UsageError(pub String);
+
+impl fmt::Display for UsageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Error for UsageError {}
+
+#[derive(Debug)]
+pub(crate) struct SignalAbortError {
+    pub signal: i32,
+    pub message: String,
+}
+
+impl fmt::Display for SignalAbortError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for SignalAbortError {}
+
+pub(crate) fn usage_error(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(UsageError(message.into()))
+}
+
+fn exit_code_for_error(error: &(dyn Error + 'static)) -> i32 {
+    if error.is::<UsageError>() {
+        EXIT_USAGE
+    } else if let Some(signal) = error.downcast_ref::<SignalAbortError>() {
+        128 + signal.signal
+    } else {
+        EXIT_RUNTIME
+    }
+}
 
 const USAGE: &str = "\
 usage: hex-cli <command> [args...]
@@ -48,7 +90,7 @@ fn main() {
     if let Err(error) = run() {
         // Error text carries case-sensitive paths; never lowercase it.
         eprintln!("{}", hex_storage::text::plain(&error.to_string()));
-        std::process::exit(1);
+        std::process::exit(exit_code_for_error(error.as_ref()));
     }
 }
 fn run() -> Result<(), Box<dyn Error>> {
@@ -59,13 +101,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if args.first().is_some_and(|a| a == "recover-project") {
         if args.len() != 3 {
-            return Err("usage: hex-cli recover-project <target.hex> <new-project.hex>".into());
+            return Err(usage_error(
+                "usage: hex-cli recover-project <target.hex> <new-project.hex>",
+            ));
         }
         return recovery::recover_project(Path::new(&args[1]), Path::new(&args[2]));
     }
     if args.first().is_some_and(|a| a == "import-project") {
         if args.len() != 3 {
-            return Err("usage: hex-cli import-project <input.wav> <new-project.hex>".into());
+            return Err(usage_error(
+                "usage: hex-cli import-project <input.wav> <new-project.hex>",
+            ));
         }
         return projects::import_project(Path::new(&args[1]), Path::new(&args[2]));
     }
@@ -74,13 +120,17 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if args.first().is_some_and(|a| a == "render-project") {
         if args.len() != 3 {
-            return Err("usage: hex-cli render-project <project.hex> <new-output.wav>".into());
+            return Err(usage_error(
+                "usage: hex-cli render-project <project.hex> <new-output.wav>",
+            ));
         }
         return projects::render_project(Path::new(&args[1]), Path::new(&args[2]));
     }
     if args.first().is_some_and(|a| a == "render-wav") {
         if args.len() != 3 {
-            return Err("usage: hex-cli render-wav <input.wav> <new-output.wav>".into());
+            return Err(usage_error(
+                "usage: hex-cli render-wav <input.wav> <new-output.wav>",
+            ));
         }
         return import::render(Path::new(&args[1]), Path::new(&args[2]));
     }
@@ -89,10 +139,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         .is_some_and(|a| a == "demo" || a == "edit-demo")
     {
         if args.len() != 2 {
-            return Err("usage: hex-cli <demo|edit-demo> <new-output.wav>".into());
+            return Err(usage_error(
+                "usage: hex-cli <demo|edit-demo> <new-output.wav>",
+            ));
         }
     } else {
-        return Err(unknown_command_usage(args.first().map(|a| a.as_os_str())).into());
+        return Err(usage_error(unknown_command_usage(
+            args.first().map(|a| a.as_os_str()),
+        )));
     }
     let rate = 48_000;
     let tempo = Tempo::new(120.0)?;
@@ -151,4 +205,30 @@ fn run() -> Result<(), Box<dyn Error>> {
     wav::render(Path::new(&args[1]), &project, beat * 8)?;
     println!("rendered {} stereo frames at {} hz", beat * 8, rate);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exit_code_distinguishes_usage_runtime_and_signal_errors() {
+        let usage = usage_error("bad flag");
+        assert_eq!(exit_code_for_error(usage.as_ref()), EXIT_USAGE);
+
+        let runtime: Box<dyn Error> = "render failed".into();
+        assert_eq!(exit_code_for_error(runtime.as_ref()), EXIT_RUNTIME);
+
+        let sigint: Box<dyn Error> = Box::new(SignalAbortError {
+            signal: 2,
+            message: "export cancelled by signal".into(),
+        });
+        assert_eq!(exit_code_for_error(sigint.as_ref()), 130);
+
+        let sigterm: Box<dyn Error> = Box::new(SignalAbortError {
+            signal: 15,
+            message: "export cancelled by signal".into(),
+        });
+        assert_eq!(exit_code_for_error(sigterm.as_ref()), 143);
+    }
 }
