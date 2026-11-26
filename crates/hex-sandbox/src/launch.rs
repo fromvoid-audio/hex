@@ -1,9 +1,10 @@
 //! Shared startup for the native sandbox entry points.
-use crate::{sandbox, theme};
+use crate::sandbox;
 use gpui::{App, AppContext, Application, Bounds, WindowBounds, WindowOptions, px, size};
+use hex_ui_kit::{assets, theme};
 
 pub(super) fn run() {
-    let application = Application::new().with_assets(crate::assets::HexAssets);
+    let application = Application::new().with_assets(assets::HexAssets);
     application.run(|cx: &mut App| {
         hex_widgets::bind_numeric_control_keys(cx);
         hex_widgets::bind_selector_keys(cx);

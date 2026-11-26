@@ -3,6 +3,9 @@ use hex_project::{
     ArrangementSection, BeatTime, Command, Created, Editor, ElementColor, Invalid, Project,
     SectionId, TrimEdge,
 };
+#[cfg(test)]
+use hex_ui_kit::section_hit;
+use hex_ui_model::{musical_time, section_reorder, section_resize, seek, viewport};
 use hex_widgets::RectanglePart;
 
 const VIEW_QUARTERS: u64 = 10;
@@ -13,7 +16,6 @@ pub(super) struct Fixture {
 
 pub(super) struct Plan {
     pub(super) command: Command,
-    pub(super) feedback: Option<crate::section_reorder::DropFeedback>,
     pub(super) display: Vec<[f32; 2]>,
     pub(super) sections: Vec<ArrangementSection>,
 }
@@ -80,15 +82,13 @@ impl Fixture {
             return Err(Invalid("arrangement section no longer exists"));
         };
         match part {
-            RectanglePart::Body => Ok(crate::section_reorder::preview(
-                project, section, beat, copy,
-            )?
-            .map(|preview| Plan {
-                display: display(preview.sections()),
-                sections: preview.sections().to_vec(),
-                feedback: None,
-                command: preview.command,
-            })),
+            RectanglePart::Body => Ok(section_reorder::preview(project, section, beat, copy)?.map(
+                |preview| Plan {
+                    display: display(preview.sections()),
+                    sections: preview.sections().to_vec(),
+                    command: preview.command,
+                },
+            )),
             RectanglePart::Leading | RectanglePart::Trailing => {
                 let edge = if part == RectanglePart::Leading {
                     TrimEdge::Left
@@ -96,31 +96,30 @@ impl Fixture {
                     TrimEdge::Right
                 };
                 let edit = if marker_only {
-                    crate::section_resize::Edit::Marker {
+                    section_resize::Edit::Marker {
                         section,
                         edge,
                         boundary: beat,
                     }
                 } else {
-                    crate::section_resize::Edit::Content {
+                    section_resize::Edit::Content {
                         section,
                         edge,
                         boundary: beat,
                     }
                 };
-                let preview = crate::section_resize::preview(project, edit)?;
+                let preview = section_resize::preview(project, edit)?;
                 Ok(Some(Plan {
                     display: display(preview.sections()),
                     sections: preview.sections().to_vec(),
-                    feedback: None,
                     command: preview.command,
                 }))
             }
             RectanglePart::Seam => {
                 if marker_only {
-                    let preview = crate::section_resize::preview(
+                    let preview = section_resize::preview(
                         project,
-                        crate::section_resize::Edit::Marker {
+                        section_resize::Edit::Marker {
                             section,
                             edge: TrimEdge::Right,
                             boundary: beat,
@@ -129,16 +128,15 @@ impl Fixture {
                     return Ok(Some(Plan {
                         display: display(preview.sections()),
                         sections: preview.sections().to_vec(),
-                        feedback: None,
                         command: preview.command,
                     }));
                 }
                 let Some(right) = project.arrangement_sections().get(index + 1) else {
                     return Err(Invalid("section boundary no longer exists"));
                 };
-                let preview = crate::section_resize::preview(
+                let preview = section_resize::preview(
                     project,
-                    crate::section_resize::Edit::Shared {
+                    section_resize::Edit::Shared {
                         left: section,
                         right: right.id(),
                         boundary: beat,
@@ -148,37 +146,10 @@ impl Fixture {
                 Ok(Some(Plan {
                     display: display(preview.sections()),
                     sections: preview.sections().to_vec(),
-                    feedback: None,
                     command: preview.command,
                 }))
             }
         }
-    }
-
-    pub(super) fn plan_drag(
-        &self,
-        section: SectionId,
-        raw: BeatTime,
-        snapped: BeatTime,
-        copy: bool,
-        width: f32,
-        gap_appearance: &mut Option<(String, ElementColor)>,
-    ) -> Result<Option<Plan>, Invalid> {
-        Ok(crate::section_reorder::drop_preview(
-            self.project(),
-            section,
-            raw,
-            snapped,
-            copy,
-            crate::section_hit::drop_edge_frames(self.grid_viewport()?.length, width)?,
-            gap_appearance,
-        )?
-        .map(|preview| Plan {
-            display: display(preview.sections()),
-            sections: preview.sections().to_vec(),
-            feedback: preview.feedback(),
-            command: preview.command,
-        }))
     }
 
     /// Resolve this audio-free, fixed-tempo fixture's lane pointer to the
@@ -195,19 +166,19 @@ impl Fixture {
         }
         let project = self.project();
         let viewport = self.grid_viewport()?;
-        let frame = crate::seek::pointer_to_frame(pointer, left, width, viewport)
+        let frame = seek::pointer_to_frame(pointer, left, width, viewport)
             .ok_or(Invalid("section grid position unavailable"))?;
         let beat = project
             .tempo_map()
             .frame_to_beat(frame)
             .map_err(|_| Invalid("section grid position unavailable"))?;
-        crate::musical_time::SnapGrid::Adaptive
+        musical_time::SnapGrid::Adaptive
             .with_platform_modifier(free)
             .snap_beat(project, beat, viewport, width)
             .ok_or(Invalid("section grid position unavailable"))
     }
 
-    fn grid_viewport(&self) -> Result<crate::viewport::Viewport, Invalid> {
+    fn grid_viewport(&self) -> Result<viewport::Viewport, Invalid> {
         let project = self.project();
         let span = BeatTime::from_raw(view_span(project.arrangement_sections()));
         let length = project
@@ -217,9 +188,10 @@ impl Fixture {
         if length == 0 {
             return Err(Invalid("section grid viewport unavailable"));
         }
-        Ok(crate::viewport::Viewport::fit(length))
+        Ok(viewport::Viewport::fit(length))
     }
 
+    #[cfg(test)]
     pub(super) fn paint_point_end(
         &self,
         anchor: BeatTime,
@@ -230,7 +202,7 @@ impl Fixture {
             return Err(Invalid("invalid section grid position"));
         }
         let viewport = self.grid_viewport()?;
-        crate::musical_time::SnapGrid::Adaptive
+        musical_time::SnapGrid::Adaptive
             .with_platform_modifier(free)
             .adjacent_beat(self.project(), anchor, viewport, width, true)
             .or_else(|| {
@@ -246,6 +218,7 @@ impl Fixture {
         self.editor.execute(command)
     }
 
+    #[cfg(test)]
     pub(super) fn plan_paint(
         &self,
         anchor: BeatTime,
@@ -275,10 +248,10 @@ impl Fixture {
             display: display(&sections),
             sections,
             command,
-            feedback: None,
         })
     }
 
+    #[cfg(test)]
     pub(super) fn plan_marker_move(
         &self,
         section: SectionId,
@@ -303,7 +276,6 @@ impl Fixture {
             display: display(preview.sections()),
             sections: preview.sections().to_vec(),
             command,
-            feedback: None,
         }))
     }
 }
@@ -406,11 +378,11 @@ mod tests {
         let id = project.arrangement_sections()[0].id();
         let span = BeatTime::from_raw(view_span(project.arrangement_sections()));
         let frames = project.tempo_map().beat_to_frame(span).unwrap();
-        let viewport = crate::viewport::Viewport::fit(frames);
+        let viewport = viewport::Viewport::fit(frames);
         let raw_frame = (0.4375_f64 * frames as f64).round() as u64;
         let raw = project.tempo_map().frame_to_beat(raw_frame).unwrap();
         for width in [160.0, 640.0, 1200.0] {
-            let expected = crate::musical_time::SnapGrid::Adaptive
+            let expected = musical_time::SnapGrid::Adaptive
                 .snap_beat(project, raw, viewport, width)
                 .unwrap();
             let beat = fixture
@@ -512,7 +484,7 @@ mod tests {
                 let anchor = fixture
                     .snapped_beat(0.92 * width, 0.0, width, free)
                     .unwrap();
-                let expected = crate::musical_time::SnapGrid::Adaptive
+                let expected = musical_time::SnapGrid::Adaptive
                     .with_platform_modifier(free)
                     .adjacent_beat(project, anchor, viewport, width, true)
                     .unwrap_or_else(|| BeatTime::from_raw(anchor.raw() + BeatTime::ONE.raw()));
@@ -550,7 +522,7 @@ mod tests {
             fixture.position(sections[0].end()),
             fixture.position(sections[1].start())
         );
-        let hit = crate::section_hit::hit(
+        let hit = section_hit::hit(
             sections
                 .iter()
                 .enumerate()
@@ -558,7 +530,7 @@ mod tests {
             fixture.position(sections[0].end()),
             |beat| Some(fixture.position(beat)),
         );
-        assert!(!matches!(hit, Some(crate::section_hit::Hit::Seam(_, _))));
+        assert!(!matches!(hit, Some(section_hit::Hit::Seam(_, _))));
     }
 
     #[test]

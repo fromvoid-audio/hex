@@ -9,11 +9,11 @@ mod eq_spectrum;
 #[path = "tests.rs"]
 mod tests;
 
-use crate::{device_composition, theme};
 use gpui::{
     Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, Render, Window, div, prelude::*,
     px, rgb,
 };
+use hex_ui_kit::{device_composition, theme};
 use hex_widgets::{
     NumericControl, NumericControlConfig, NumericControlPresentation, NumericScale, NumericSpec,
     ResponseGraph, ResponseGraphModel, Selector, SelectorAppearance, SelectorConfig, Toggle,
@@ -502,22 +502,11 @@ impl Gallery {
                     }
                 }
             }
-            if self.entry == Entry::Eq && !eq::can_finish_numeric(fixture, prepared.len()) {
-                self.error = Some("too many pending eq edits; try again".into());
-                return false;
-            }
             for (index, entity, value) in prepared {
                 if self.entry == Entry::Eq
                     && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
                 {
-                    eq::finish_numeric(
-                        fixture,
-                        index,
-                        value.previous,
-                        value.value,
-                        value.gesture.clone(),
-                        cx,
-                    );
+                    eq::apply_numeric(fixture, index, value.value);
                 }
                 entity.update(cx, |control, cx| {
                     control.accept_finish_edit_for_owner(value, cx)
@@ -561,24 +550,6 @@ impl Gallery {
         cx.notify();
     }
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.entry == Entry::Eq
-            && !self.disabled
-            && event.keystroke.key == "z"
-            && event.keystroke.modifiers.platform
-            && !event.keystroke.modifiers.alt
-            && !event.keystroke.modifiers.control
-        {
-            if self.finish_drafts(cx)
-                && let Some(fixture) = self.fixtures.get_mut(&Entry::Eq)
-                && !eq::defer_history(fixture, event.keystroke.modifiers.shift)
-                && let Err(error) = eq::history(fixture, event.keystroke.modifiers.shift, cx)
-            {
-                self.error = Some(error);
-            }
-            cx.stop_propagation();
-            cx.notify();
-            return;
-        }
         match event.keystroke.key.as_str() {
             "tab" => {
                 if self.finish_drafts(cx) {

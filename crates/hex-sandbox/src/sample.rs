@@ -7,10 +7,10 @@ mod response_demo;
 mod waveform_demo;
 use super::catalog::{Demo, Item};
 use super::workspace::{self, Workspace};
-use crate::theme;
 use gpui::{
     Context, Div, Entity, Focusable, Render, Subscription, Window, div, prelude::*, px, rgb,
 };
+use hex_ui_kit::theme;
 use hex_widgets::*;
 use rectangle_demo::RectangleDemo;
 use response_demo::ResponseDemo;

@@ -1697,7 +1697,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
         name: set(ADDITIVE_TEST_FEATURES.get(name, ())) | set(SINGLE_RUN_COMPANION_FEATURES.get(name, ()))
         for name in known_consumers
     }
-    reviewed_features["hex-sandbox"] |= {"ui-test-support", "ui-unit-tier"}
+    reviewed_features["hex-sandbox"] |= {"ui-test-support"}
     reviewed_features["hex-ui-kit"] |= {"ui-test-support"}
     narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
     narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
