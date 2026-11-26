@@ -927,7 +927,7 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
         let result = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", NAME, "--ignored"])
             .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "115")
+            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "145")
             .env("HEX_ORIGINAL_EVENT_TRACE", &trace_path)
             .output()
             .unwrap();
@@ -944,7 +944,7 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
             .map(|c| i64::from_le_bytes(c.try_into().unwrap()))
             .collect();
         let count = words[0] as usize;
-        assert_eq!(count, 9, "expected 9 recorded SDK note events: {words:?}");
+        assert_eq!(count, 11, "SDK gates, live pressure and authored expression: {words:?}");
         let ev = |idx: usize| -> (i64, i64, i64, i64, i64) {
             let b = 1 + idx * 6;
             (words[b], words[b + 1], words[b + 2], words[b + 3], words[b + 4])
@@ -959,9 +959,11 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
         // Quantum 2: overlapping sequenced clip notes sharing pitch 60 leave kIsLive clear
         // and retain matching note IDs and exact sample offsets.
         assert_eq!(ev(5), (K_NOTE_ON, 1, 60, 301, 0));
-        assert_eq!(ev(6), (K_NOTE_ON, 3, 60, 302, 0));
-        assert_eq!(ev(7), (K_NOTE_OFF, 5, 60, 301, 0));
-        assert_eq!(ev(8), (K_NOTE_OFF, 7, 60, 302, 0));
+        assert_eq!(ev(6), (4, 2, 0.7_f64.to_bits() as i64, 301, 0));
+        assert_eq!(ev(7), (K_NOTE_ON, 3, 60, 302, 0));
+        assert_eq!(ev(8), (4, 3, (96.0_f64 / 127.0).to_bits() as i64, 302, 0));
+        assert_eq!(ev(9), (K_NOTE_OFF, 5, 60, 301, 0));
+        assert_eq!(ev(10), (K_NOTE_OFF, 7, 60, 302, 0));
         return;
     }
 
@@ -1007,16 +1009,18 @@ fn actual_vst3_live_notes_set_k_is_live_and_sequenced_notes_leave_it_clear() {
                 &[
                     note(0, true, 201, true),
                     ForeignNote { frame: 2, kind: ForeignNoteKind::PolyPressure, value: 64, ..note(0, true, 201, true) },
-                    ForeignNote::control_change(2, 2, 74, 96, std::num::NonZeroU32::new(201), true),
-                    ForeignNote::pitch_bend(2, 2, 2048, std::num::NonZeroU32::new(201), true),
+                    ForeignNote::control_change(2, 2, 74, 96, None, true),
+                    ForeignNote::pitch_bend(2, 2, 2048, None, true),
                     ForeignNote::channel_pressure(2, 2, 72, None, true),
                     note(3, false, 201, true),
                 ],
                 &[note(1, true, 202, true), note(5, false, 202, true)],
                 &[
-                    note(1, true, 301, false),
+                    ForeignNote { channel: 1, ..note(1, true, 301, false) },
+                    ForeignNote::pitch_bend(2, 1, 8191, std::num::NonZeroU32::new(301), false),
                     note(3, true, 302, false),
-                    note(5, false, 301, false),
+                    ForeignNote::control_change(3, 2, 74, 96, std::num::NonZeroU32::new(302), false),
+                    ForeignNote { channel: 1, ..note(5, false, 301, false) },
                     note(7, false, 302, false),
                 ],
             ];

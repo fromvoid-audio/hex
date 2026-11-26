@@ -765,6 +765,16 @@ fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_
     };
     block.events.push(cc).unwrap();
     block.events.push(sequenced_cc).unwrap();
+    let authored_cc = MidiEvent {
+        note_id: pressure.note_id,
+        ..sequenced_cc
+    };
+    let authored_bend = MidiEvent {
+        bytes: [0xe2, 0, 0],
+        ..authored_cc
+    };
+    block.events.push(authored_cc).unwrap();
+    block.events.push(authored_bend).unwrap();
     instrument.validate_block(&block, 0).unwrap();
     block.pcm[0] = [0.25, -0.125];
     effect.validate_block(&block, 0).unwrap();
@@ -775,7 +785,15 @@ fn effect_and_instrument_expression_preserve_message_width_and_note_identity_on_
         .unwrap();
     assert_eq!(
         decoded.events.as_slice(),
-        &[pressure, channel_pressure, bend, cc, sequenced_cc]
+        &[
+            pressure,
+            channel_pressure,
+            bend,
+            cc,
+            sequenced_cc,
+            authored_cc,
+            authored_bend
+        ]
     );
 
     for invalid in [

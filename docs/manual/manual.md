@@ -836,8 +836,14 @@ visible until the edit finishes; undo restores the whole stretch in one step.
 
 stretching also scales retained source offsets, loop markers and clip-volume
 points. extremely small intervals that cannot retain a positive duration are
-refused with the original clip preserved. per-note expression is not currently
-stored by hex.
+refused with the original clip preserved.
+
+hex stores pitch, timbre and pressure with each authored note. on a hosted
+vst3 instrument, the note’s initial pitch and timbre target that particular
+note when the instrument declares tuning or brightness on its midi channel.
+an instrument that lacks either type still plays the note. the audio diagnostic
+log lists the supported channel masks at insertion. bit zero represents midi
+channel one.
 
 load a sample into the sampler on a selected midi track. sample loading requires
 the supported project/track state. replacing the current instrument is currently

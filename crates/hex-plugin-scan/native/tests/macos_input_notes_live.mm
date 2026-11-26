@@ -52,7 +52,8 @@ int main() {
         staged[0] = {0, 0, 64, 100, InputNoteKind::On, 31, true};
         staged[1] = {1, 0, 67, 100, InputNoteKind::On, 32, false};
         HeldInputNotes held;
-        assert(held.stage(staged, 2));
+        size_t count=2;
+        assert(held.stage(staged, count, 0, 0));
         std::array<InputNote, INPUT_NOTE_COUNT> released{};
         assert(held.release_into(released) == 2);
         assert(released[0].kind == InputNoteKind::Off && released[0].note_id == 31 && released[0].is_live);

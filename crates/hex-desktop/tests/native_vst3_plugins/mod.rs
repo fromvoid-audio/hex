@@ -677,6 +677,7 @@ fn native_effect_coordinator_waits_for_actual_endpoint_then_commits_track_return
                 .unwrap();
             assert!(elapsed > 0, "missing duration for {field}");
         }
+        assert!(stages[1].contains("tuning_channels=0x0000 brightness_channels=0x0000 unreadable_expression_channels=0x0000"));
         assert!(stages[3].contains("committed=true"));
     }
 }

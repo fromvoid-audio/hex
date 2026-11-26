@@ -1,6 +1,7 @@
 // A borrowed read-only SDK event list on the isolated processing lane.
 #pragma once
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstnoteexpression.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <algorithm>
 #include <array>
@@ -18,7 +19,7 @@ inline constexpr size_t LEGACY_INPUT_NOTE_COUNT=64;
 // Matches the copied identified-note limit in hex-plugin-host. Keep room for
 // the corresponding release set on stopped worker renewal.
 inline constexpr size_t INPUT_NOTE_COUNT=160;
-enum class InputNoteKind : uint8 { Off, On, PolyPressure };
+enum class InputNoteKind : uint8 { Off, On, PolyPressure, Tuning, Brightness };
 struct InputNote {
     int32 offset=0;
     int16 channel=0,pitch=0;
@@ -26,6 +27,7 @@ struct InputNote {
     InputNoteKind kind=InputNoteKind::Off;
     int32 note_id=-1;
     bool is_live=false;
+    double normalized=0;
 };
 
 // Owned by the serialized processing lane. The host's authored and live
@@ -34,12 +36,24 @@ class HeldInputNotes {
     std::array<InputNote,INPUT_NOTE_COUNT> held{};
     size_t count=0;
 public:
-    bool stage(const std::array<InputNote,INPUT_NOTE_COUNT>& notes,size_t length) {
+    bool stage(std::array<InputNote,INPUT_NOTE_COUNT>& notes,size_t& length,
+               uint16_t tuning,uint16_t brightness) {
         if(length>notes.size()) return false;
+        size_t retained=0;
         for(size_t index=0;index<length;++index) {
             const auto note=notes[index];
-            if(note.kind==InputNoteKind::PolyPressure) continue;
             const auto end=held.begin()+count;
+            if(note.kind==InputNoteKind::Tuning || note.kind==InputNoteKind::Brightness) {
+                const auto voice=std::find_if(held.begin(),end,[&](const InputNote& active) {
+                    return active.note_id==note.note_id && active.channel==note.channel;
+                });
+                if(voice==end) return false;
+                const auto mask=note.kind==InputNoteKind::Tuning?tuning:brightness;
+                if(mask & (uint16_t{1}<<note.channel)) notes[retained++]=note;
+                continue;
+            }
+            notes[retained++]=note;
+            if(note.kind==InputNoteKind::PolyPressure) continue;
             const auto match=std::find_if(held.begin(),end,[&](const InputNote& active) {
                 return active.note_id==note.note_id && active.channel==note.channel && active.pitch==note.pitch;
             });
@@ -52,6 +66,7 @@ public:
                 --count;
             }
         }
+        length=retained;
         return true;
     }
     size_t release_into(std::array<InputNote,INPUT_NOTE_COUNT>& notes) {
@@ -117,6 +132,11 @@ public:
             if(note.kind==InputNoteKind::On) {
                 event.type=Event::kNoteOnEvent;
                 event.noteOn={note.channel,note.pitch,0,value,0,note.note_id};
+            } else if(note.kind==InputNoteKind::Tuning || note.kind==InputNoteKind::Brightness) {
+                event.type=Event::kNoteExpressionValueEvent;
+                event.noteExpressionValue.typeId=note.kind==InputNoteKind::Tuning?kTuningTypeID:kBrightnessTypeID;
+                event.noteExpressionValue.noteId=note.note_id;
+                event.noteExpressionValue.value=note.normalized;
             } else if(note.kind==InputNoteKind::PolyPressure) {
                 event.type=Event::kPolyPressureEvent;
                 event.polyPressure={note.channel,note.pitch,value,note.note_id};
