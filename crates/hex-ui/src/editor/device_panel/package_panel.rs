@@ -34,9 +34,10 @@ use hex_engine::{NativeDeviceParameterView, NativeDeviceView};
 use hex_lattice_contract::package_ui::{
     MAX_PACKAGE_UI_FRAME_WIDTH, MAX_PACKAGE_UI_JSON_BYTES, MIN_PACKAGE_UI_FRAME_WIDTH,
     PACKAGE_UI_VERSION_V1, PackageNumericFormat, PackagePresentationSnapshot, PackageUiControl,
-    PackageUiItem, PackageUiMeter, PackageUiSchema, PackageUiSection, PackageUiWidgetKind,
-    PackageVisibilityRule, UI_CAP_CONDITIONAL_VISIBILITY, UI_CAP_METER, UI_CAP_SCALAR,
-    UI_CAP_SECTIONS, UI_CAP_SELECTOR, UI_CAP_TOGGLE,
+    PackageUiCurveNodeBinding, PackageUiCurvePlot, PackageUiItem, PackageUiMeter, PackageUiSchema,
+    PackageUiSection, PackageUiWidgetKind, PackageVisibilityRule, UI_CAP_CONDITIONAL_VISIBILITY,
+    UI_CAP_CURVE_PLOT, UI_CAP_METER, UI_CAP_SCALAR, UI_CAP_SECTIONS, UI_CAP_SELECTOR,
+    UI_CAP_SPECTRUM_OVERLAY, UI_CAP_TOGGLE,
 };
 use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
 use hex_project::DeviceId;
@@ -87,6 +88,8 @@ pub fn parse_package_ui_json(raw: &str) -> Result<PackageUiSchema, String> {
             "meter" => UI_CAP_METER,
             "sections" => UI_CAP_SECTIONS,
             "conditional_visibility" => UI_CAP_CONDITIONAL_VISIBILITY,
+            "curve_plot" => UI_CAP_CURVE_PLOT,
+            "spectrum_overlay" => UI_CAP_SPECTRUM_OVERLAY,
             unknown => {
                 return Err(format!("unsupported package ui capability '{unknown}'"));
             }
@@ -268,6 +271,98 @@ fn parse_item(value: &Value) -> Result<PackageUiItem, String> {
                 meter_id,
                 label,
                 stereo,
+            }))
+        }
+        "curve_plot" => {
+            for key in obj.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "kind"
+                        | "plot_id"
+                        | "label"
+                        | "min_freq_hz"
+                        | "max_freq_hz"
+                        | "min_db"
+                        | "max_db"
+                        | "spectrum_overlay"
+                        | "nodes"
+                ) {
+                    return Err(format!("unknown package ui curve_plot field '{key}'"));
+                }
+            }
+            let plot_id = obj
+                .get("plot_id")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| "curve_plot missing valid plot_id".to_owned())?;
+            let label = obj
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "curve_plot missing label".to_owned())?
+                .to_owned();
+            let f32_field = |name: &str| -> Result<f32, String> {
+                obj.get(name)
+                    .and_then(Value::as_f64)
+                    .map(|v| v as f32)
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| format!("curve_plot missing valid {name}"))
+            };
+            let min_freq_hz = f32_field("min_freq_hz")?;
+            let max_freq_hz = f32_field("max_freq_hz")?;
+            let min_db = f32_field("min_db")?;
+            let max_db = f32_field("max_db")?;
+            let spectrum_overlay = obj
+                .get("spectrum_overlay")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let raw_nodes = obj
+                .get("nodes")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "curve_plot missing nodes array".to_owned())?;
+            let mut nodes = Vec::with_capacity(raw_nodes.len());
+            for raw_node in raw_nodes {
+                let nobj = raw_node
+                    .as_object()
+                    .ok_or_else(|| "curve_plot node must be an object".to_owned())?;
+                let u32_id = |name: &str| -> Result<u32, String> {
+                    nobj.get(name)
+                        .and_then(Value::as_u64)
+                        .and_then(|v| u32::try_from(v).ok())
+                        .ok_or_else(|| format!("curve_plot node missing valid {name}"))
+                };
+                let opt_param = |name: &str| -> Result<Option<ParameterId>, String> {
+                    match nobj.get(name) {
+                        None | Some(Value::Null) => Ok(None),
+                        Some(v) => {
+                            let id = v
+                                .as_u64()
+                                .and_then(|raw| u32::try_from(raw).ok())
+                                .ok_or_else(|| format!("invalid {name}"))?;
+                            ParameterId::new(id)
+                                .map(Some)
+                                .map_err(|_| format!("invalid {name} {id}"))
+                        }
+                    }
+                };
+                nodes.push(PackageUiCurveNodeBinding {
+                    node_id: u32_id("node_id")?,
+                    freq_parameter: ParameterId::new(u32_id("freq_parameter")?)
+                        .map_err(|_| "invalid freq_parameter".to_owned())?,
+                    gain_parameter: ParameterId::new(u32_id("gain_parameter")?)
+                        .map_err(|_| "invalid gain_parameter".to_owned())?,
+                    q_parameter: opt_param("q_parameter")?,
+                    enable_parameter: opt_param("enable_parameter")?,
+                });
+            }
+            Ok(PackageUiItem::CurvePlot(PackageUiCurvePlot {
+                plot_id,
+                label,
+                min_freq_hz,
+                max_freq_hz,
+                min_db,
+                max_db,
+                spectrum_overlay,
+                nodes,
             }))
         }
         unknown => Err(format!("unknown package ui item kind '{unknown}'")),
@@ -475,6 +570,9 @@ pub(in crate::editor) fn render_body(
                 PackageUiItem::Meter(meter) => {
                     grid = grid.child(render_readonly_meter(meter, snapshot));
                 }
+                PackageUiItem::CurvePlot(plot) => {
+                    grid = grid.child(render_readonly_curve_plot(plot, snapshot));
+                }
             }
         }
         column = column.child(grid);
@@ -587,6 +685,36 @@ fn render_readonly_meter(
         container = container.child(bar(peaks.1));
     }
     container
+}
+
+fn render_readonly_curve_plot(
+    plot: &PackageUiCurvePlot,
+    snapshot: Option<&PackagePresentationSnapshot>,
+) -> Div {
+    let valid_snap = snapshot.filter(|snap| snap.validate().is_ok());
+    let bins = valid_snap.map_or(0, |snap| snap.response_db.len());
+    let spectrum_bins = if plot.spectrum_overlay {
+        valid_snap.map_or(0, |snap| snap.spectrum_db.len())
+    } else {
+        0
+    };
+    div()
+        .w(px(160.0))
+        .h(px(64.0))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .p(px(4.0))
+        .border_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .text_size(px(9.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(plot.label.as_str()))
+        .child(theme::text(format!(
+            "{} bands · {bins} pts · {spectrum_bins} fft",
+            plot.nodes.len()
+        )))
 }
 
 #[cfg(all(test, not(feature = "ui-test-support")))]
@@ -1430,6 +1558,8 @@ mod tests {
             }],
             active_voices: Some(4),
             status: Some("active".into()),
+            response_db: vec![],
+            spectrum_db: vec![],
         };
         assert_eq!(snap.validate(), Ok(()));
         harness.presentation.insert(sine_id, snap);

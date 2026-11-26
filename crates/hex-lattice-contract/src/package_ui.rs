@@ -30,6 +30,12 @@ pub const MAX_PACKAGE_UI_SECTIONS: usize = 8;
 pub const MAX_PACKAGE_UI_ITEMS: usize = 64;
 /// Maximum read-only meter widgets in one panel.
 pub const MAX_PACKAGE_UI_METERS: usize = 8;
+/// Maximum interactive curve/band nodes bound to one reusable curve plot (`#3000`).
+pub const MAX_PACKAGE_UI_CURVE_NODES: usize = 16;
+/// Maximum control-computed frequency-response points in a presentation snapshot.
+pub const MAX_PACKAGE_RESPONSE_BINS: usize = 128;
+/// Maximum FFT spectrum bins in a read-only presentation snapshot.
+pub const MAX_PACKAGE_SPECTRUM_BINS: usize = 128;
 /// Maximum UTF-8 bytes in a section heading or control label.
 pub const MAX_PACKAGE_UI_LABEL_BYTES: usize = 64;
 /// Maximum UTF-8 bytes in a control tooltip.
@@ -48,13 +54,19 @@ pub const UI_CAP_SELECTOR: u64 = 1 << 2;
 pub const UI_CAP_METER: u64 = 1 << 3;
 pub const UI_CAP_SECTIONS: u64 = 1 << 4;
 pub const UI_CAP_CONDITIONAL_VISIBILITY: u64 = 1 << 5;
+/// Reusable bounded curve/node/plot capability (`#3000`).
+pub const UI_CAP_CURVE_PLOT: u64 = 1 << 6;
+/// Reusable bounded read-only spectrum overlay capability (`#3000`).
+pub const UI_CAP_SPECTRUM_OVERLAY: u64 = 1 << 7;
 /// Bitmask of all UI capabilities supported by v1 generic native hosts.
 pub const UI_CAP_KNOWN_MASK_V1: u64 = UI_CAP_SCALAR
     | UI_CAP_TOGGLE
     | UI_CAP_SELECTOR
     | UI_CAP_METER
     | UI_CAP_SECTIONS
-    | UI_CAP_CONDITIONAL_VISIBILITY;
+    | UI_CAP_CONDITIONAL_VISIBILITY
+    | UI_CAP_CURVE_PLOT
+    | UI_CAP_SPECTRUM_OVERLAY;
 
 /// Explicit refusal reasons for malformed or unsupported package UI schemas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -194,11 +206,38 @@ pub struct PackageUiMeter {
     pub stereo: bool,
 }
 
+/// Stable band/node parameter binding inside a reusable [`PackageUiCurvePlot`].
+/// `node_id` identifies the dynamic band identity so removed bands can never
+/// retarget another parameter when stale UI gestures arrive.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PackageUiCurveNodeBinding {
+    pub node_id: u32,
+    pub freq_parameter: ParameterId,
+    pub gain_parameter: ParameterId,
+    pub q_parameter: Option<ParameterId>,
+    pub enable_parameter: Option<ParameterId>,
+}
+
+/// Reusable bounded curve/node/plot/spectrum primitive (`#3000`) consumed
+/// generically by EQ/EQ8/filter packages without per-type-ID GPUI switches.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PackageUiCurvePlot {
+    pub plot_id: u32,
+    pub label: String,
+    pub min_freq_hz: f32,
+    pub max_freq_hz: f32,
+    pub min_db: f32,
+    pub max_db: f32,
+    pub spectrum_overlay: bool,
+    pub nodes: Vec<PackageUiCurveNodeBinding>,
+}
+
 /// One item inside a [`PackageUiSection`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PackageUiItem {
     Control(PackageUiControl),
     Meter(PackageUiMeter),
+    CurvePlot(PackageUiCurvePlot),
 }
 
 /// Compact vertical/grid section inside a [`PackageUiSchema`].
@@ -333,6 +372,71 @@ impl PackageUiSchema {
                         }
                         seen_meters.push(meter.meter_id);
                     }
+                    PackageUiItem::CurvePlot(plot) => {
+                        if (self.required_capabilities & UI_CAP_CURVE_PLOT) == 0 {
+                            return Err(PackageUiError::MissingCapability);
+                        }
+                        if plot.spectrum_overlay
+                            && (self.required_capabilities & UI_CAP_SPECTRUM_OVERLAY) == 0
+                        {
+                            return Err(PackageUiError::MissingCapability);
+                        }
+                        if plot.plot_id == 0
+                            || !plot.min_freq_hz.is_finite()
+                            || !plot.max_freq_hz.is_finite()
+                            || plot.min_freq_hz < 10.0
+                            || plot.min_freq_hz >= plot.max_freq_hz
+                            || plot.max_freq_hz > 48_000.0
+                            || !plot.min_db.is_finite()
+                            || !plot.max_db.is_finite()
+                            || plot.min_db < -48.0
+                            || plot.min_db >= plot.max_db
+                            || plot.max_db > 48.0
+                            || plot.nodes.len() > MAX_PACKAGE_UI_CURVE_NODES
+                        {
+                            return Err(PackageUiError::InvalidBounds);
+                        }
+                        if !valid_ui_text(&plot.label, MAX_PACKAGE_UI_LABEL_BYTES) {
+                            return Err(PackageUiError::InvalidText);
+                        }
+                        let mut seen_nodes = Vec::with_capacity(plot.nodes.len());
+                        for node in &plot.nodes {
+                            if node.node_id == 0 || seen_nodes.contains(&node.node_id) {
+                                return Err(PackageUiError::InvalidBounds);
+                            }
+                            seen_nodes.push(node.node_id);
+                            for required_float in [node.freq_parameter, node.gain_parameter] {
+                                let desc = descriptors
+                                    .iter()
+                                    .find(|candidate| candidate.id == required_float)
+                                    .ok_or(PackageUiError::UnknownParameter)?;
+                                if !matches!(desc.kind, ParameterKind::Float { .. }) {
+                                    return Err(PackageUiError::IncompatibleWidgetKind);
+                                }
+                            }
+                            if let Some(q_id) = node.q_parameter {
+                                let desc = descriptors
+                                    .iter()
+                                    .find(|candidate| candidate.id == q_id)
+                                    .ok_or(PackageUiError::UnknownParameter)?;
+                                if !matches!(desc.kind, ParameterKind::Float { .. }) {
+                                    return Err(PackageUiError::IncompatibleWidgetKind);
+                                }
+                            }
+                            if let Some(en_id) = node.enable_parameter {
+                                let desc = descriptors
+                                    .iter()
+                                    .find(|candidate| candidate.id == en_id)
+                                    .ok_or(PackageUiError::UnknownParameter)?;
+                                if !matches!(
+                                    desc.kind,
+                                    ParameterKind::Bool | ParameterKind::Float { .. }
+                                ) {
+                                    return Err(PackageUiError::IncompatibleWidgetKind);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -356,11 +460,18 @@ pub struct PackagePresentationSnapshot {
     pub meters: Vec<PackageMeterSample>,
     pub active_voices: Option<u16>,
     pub status: Option<String>,
+    /// Bounded control-computed frequency-response curve in dB (`#3000`).
+    pub response_db: Vec<f32>,
+    /// Bounded off-callback FFT spectrum snapshot in dB (`#3000`).
+    pub spectrum_db: Vec<f32>,
 }
 
 impl PackagePresentationSnapshot {
     pub fn validate(&self) -> Result<(), PackageUiError> {
-        if self.meters.len() > MAX_PACKAGE_UI_METERS {
+        if self.meters.len() > MAX_PACKAGE_UI_METERS
+            || self.response_db.len() > MAX_PACKAGE_RESPONSE_BINS
+            || self.spectrum_db.len() > MAX_PACKAGE_SPECTRUM_BINS
+        {
             return Err(PackageUiError::InvalidSnapshot);
         }
         for sample in &self.meters {
@@ -372,6 +483,11 @@ impl PackagePresentationSnapshot {
             {
                 return Err(PackageUiError::InvalidSnapshot);
             }
+        }
+        if self.response_db.iter().any(|v| !v.is_finite())
+            || self.spectrum_db.iter().any(|v| !v.is_finite())
+        {
+            return Err(PackageUiError::InvalidSnapshot);
         }
         if let Some(status) = self.status.as_deref()
             && !valid_ui_text(status, MAX_PACKAGE_UI_STATUS_BYTES)
@@ -538,6 +654,8 @@ mod tests {
             }],
             active_voices: Some(3),
             status: Some("ready".into()),
+            response_db: vec![0.0, 1.5, -2.0],
+            spectrum_db: vec![-60.0, -32.0, -18.0],
         };
         assert_eq!(snap.validate(), Ok(()));
 
@@ -549,7 +667,42 @@ mod tests {
             }],
             active_voices: None,
             status: None,
+            response_db: vec![],
+            spectrum_db: vec![],
         };
         assert_eq!(bad_snap.validate(), Err(PackageUiError::InvalidSnapshot));
+
+        // CurvePlot requires explicit UI_CAP_CURVE_PLOT and UI_CAP_SPECTRUM_OVERLAY when enabled.
+        let mut curve_schema = PackageUiSchema {
+            ui_version: PACKAGE_UI_VERSION_V1,
+            required_capabilities: UI_CAP_CURVE_PLOT | UI_CAP_SPECTRUM_OVERLAY,
+            frame_width: 320.0,
+            sections: vec![PackageUiSection {
+                heading: "response".into(),
+                columns: 1,
+                items: vec![PackageUiItem::CurvePlot(PackageUiCurvePlot {
+                    plot_id: 1,
+                    label: "eq curve".into(),
+                    min_freq_hz: 20.0,
+                    max_freq_hz: 20_000.0,
+                    min_db: -24.0,
+                    max_db: 24.0,
+                    spectrum_overlay: true,
+                    nodes: vec![PackageUiCurveNodeBinding {
+                        node_id: 1,
+                        freq_parameter: ParameterId::from_static(1),
+                        gain_parameter: ParameterId::from_static(1),
+                        q_parameter: None,
+                        enable_parameter: Some(ParameterId::from_static(2)),
+                    }],
+                })],
+            }],
+        };
+        assert_eq!(curve_schema.validate(&descriptors), Ok(()));
+        curve_schema.required_capabilities &= !UI_CAP_SPECTRUM_OVERLAY;
+        assert_eq!(
+            curve_schema.validate(&descriptors),
+            Err(PackageUiError::MissingCapability)
+        );
     }
 }
