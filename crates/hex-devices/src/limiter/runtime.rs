@@ -20,14 +20,13 @@
 //! True peak detects signed, normalized 32-tap Blackman-windowed sinc
 //! reconstruction at thirty-two phases. Thirty-one extra declared frames make every
 //! detector window covering an outgoing sample available. Anticipated attack
-//! avoids an instantaneous gain discontinuity before the transient. Independent
-//! dense reconstructed-output tests cover modulation and intersample peaks;
-//! this finite model does not prove every DAC's continuous-time behavior.
-//! The detector reconstructs the pre-gain input, so gain that moves inside the
-//! detector window can create untracked intersample peaks. On gated-burst
-//! fixtures the standard BS.1770-4 4x meter reads up to about +0.25 dB above
-//! the ceiling (tests bound it at +0.3 dB) and ideal reconstruction reads
-//! higher; an output-aware gain path is required to remove this.
+//! avoids an instantaneous gain discontinuity before the transient. In addition,
+//! an inline 12-tap ITU-R BS.1770-4 4x output-aware post-guard (11 extra declared
+//! frames) inspects the post-gain output and trims any modulation-induced
+//! intersample overshoot so BS.1770-4 4x readings stay at or below the ceiling.
+//! Independent dense reconstructed-output and BS.1770-4 tests cover modulation
+//! and intersample peaks; finite models do not prove every DAC's continuous-time
+//! behavior.
 //!
 //! M/s uses one independently linked encoded stage followed by a fully linked
 //! l/r safety stage after decoding, so arbitrary stereo signals respect the
@@ -59,8 +58,10 @@ use hex_lattice::{
 use hex_lattice_contract::DeviceContractError;
 use std::any::Any;
 
+mod output_guard;
 mod process;
 mod stage;
+use output_guard::{GUARD_DELAY, OutputGuard};
 use process::BlockStats;
 use stage::{PHASES, Peak, Sample, Stage, StageDirty, TAPS, allocate, copy_cyclic};
 
@@ -190,7 +191,8 @@ impl Config {
         }
     }
     fn latency(self) -> u32 {
-        (self.delay * if self.mid_side { 2 } else { 1 }) as u32
+        (self.delay * if self.mid_side { 2 } else { 1 }
+            + if self.true_peak { GUARD_DELAY } else { 0 }) as u32
     }
 }
 /// Fixed-layout factory for the existing owned Limiter transaction.
@@ -280,6 +282,7 @@ struct History {
     parameters: Parameters,
     first: Stage,
     final_stage: Option<Stage>,
+    output_guard: OutputGuard,
     meter: DynamicsMeter,
     gain: f64,
     output: f64,
@@ -322,6 +325,7 @@ impl History {
             } else {
                 None
             },
+            output_guard: OutputGuard::default(),
             meter: DynamicsMeter::default(),
             gain: config.parameters.gain,
             output: config.parameters.output,
@@ -353,6 +357,7 @@ impl History {
             target.sync_from(source, &final_dirty, window);
             source.dirty = StageDirty::default();
         }
+        self.output_guard = scratch.output_guard;
         self.meter = scratch.meter;
         self.gain = scratch.gain;
         self.output = scratch.output;
@@ -366,6 +371,7 @@ impl History {
             let final_dirty = target.dirty;
             target.sync_from(source, &final_dirty, window);
         }
+        self.output_guard = committed.output_guard;
         self.meter = committed.meter;
         self.gain = committed.gain;
         self.output = committed.output;
@@ -377,12 +383,15 @@ impl History {
         if let (Some(target), Some(source)) = (&mut self.final_stage, &old.final_stage) {
             target.copy_from(source);
         }
+        self.output_guard = old.output_guard;
         self.meter = old.meter;
         self.gain = old.gain;
         self.output = old.output;
     }
     fn quiet(&self) -> bool {
-        self.first.quiet() && self.final_stage.as_ref().is_none_or(Stage::quiet)
+        self.first.quiet()
+            && self.final_stage.as_ref().is_none_or(Stage::quiet)
+            && self.output_guard.quiet()
     }
     fn clear_attack(&mut self) {
         self.first.scalar.attack_step = [0.0; 2];
@@ -395,6 +404,7 @@ impl History {
         if let Some(stage) = &mut self.final_stage {
             stage.reset();
         }
+        self.output_guard.reset();
         self.meter = DynamicsMeter::default();
         self.controls.reset();
         self.parameters = config.parameters;
