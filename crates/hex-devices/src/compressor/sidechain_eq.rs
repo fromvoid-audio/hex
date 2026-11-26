@@ -3,7 +3,7 @@ use hex_lattice_contract::DeviceContractError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
-pub(super) enum SidechainEqMode {
+pub(crate) enum SidechainEqMode {
     Off = 0,
     HighPass = 1,
     BandPass = 2,
@@ -13,7 +13,7 @@ pub(super) enum SidechainEqMode {
 }
 
 impl SidechainEqMode {
-    pub(super) fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+    pub(crate) fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
         match value {
             0 => Ok(Self::Off),
             1 => Ok(Self::HighPass),
@@ -114,14 +114,14 @@ impl BiquadCoeffs {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(super) struct SidechainEq {
+pub(crate) struct SidechainEq {
     coeffs: BiquadCoeffs,
     z1: [f64; 2],
     z2: [f64; 2],
 }
 
 impl SidechainEq {
-    pub(super) fn new(mode: SidechainEqMode, freq_hz: f32, q: f32, sample_rate: u32) -> Self {
+    pub(crate) fn new(mode: SidechainEqMode, freq_hz: f32, q: f32, sample_rate: u32) -> Self {
         Self {
             coeffs: BiquadCoeffs::design(mode, freq_hz, q, sample_rate),
             z1: [0.0; 2],
@@ -129,16 +129,16 @@ impl SidechainEq {
         }
     }
 
-    pub(super) fn update(&mut self, mode: SidechainEqMode, freq_hz: f32, q: f32, sample_rate: u32) {
+    pub(crate) fn update(&mut self, mode: SidechainEqMode, freq_hz: f32, q: f32, sample_rate: u32) {
         self.coeffs = BiquadCoeffs::design(mode, freq_hz, q, sample_rate);
     }
 
-    pub(super) fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.z1 = [0.0; 2];
         self.z2 = [0.0; 2];
     }
 
-    pub(super) fn process(&mut self, input: [f64; 2]) -> [f64; 2] {
+    pub(crate) fn process(&mut self, input: [f64; 2]) -> [f64; 2] {
         let c = self.coeffs;
         let mut out = [0.0; 2];
         for ch in 0..2 {

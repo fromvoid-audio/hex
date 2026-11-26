@@ -67,7 +67,7 @@ fn gate_compact_panel_fits_track_and_return_and_keeps_edits_undoable(cx: &mut Te
                 + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
-        for parameter in 1..=6 {
+        for parameter in 1..=13 {
             let control = visual
                 .debug_bounds(Box::leak(
                     format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),

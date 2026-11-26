@@ -30,6 +30,7 @@ impl Project {
             .ok_or(Invalid("device no longer exists"))?;
         let device_type = effect.state().type_id();
         if device_type != DeviceTypeId::from_static("hex.compressor")
+            && device_type != DeviceTypeId::from_static("hex.gate")
             && device_type != hex_lattice_contract::VST3_DEVICE_TYPE_ID
         {
             return Err(Invalid("device does not support a sidechain"));

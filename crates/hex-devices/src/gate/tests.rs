@@ -46,6 +46,7 @@ fn state_with(
         attack_ms: attack,
         hold_ms: hold,
         release_ms: release,
+        ..GateSettings::default()
     })
     .expect("valid settings")
 }
@@ -58,7 +59,7 @@ fn db_gain(db: f64) -> f64 {
 fn defaults_and_generic_codec_roundtrip_six_controls() {
     let registry = registry();
     let state = registry.default_state(GATE_TYPE_ID).expect("gate defaults");
-    assert_eq!(state.state_version(), 1);
+    assert_eq!(state.state_version(), GATE_STATE_VERSION);
     assert_eq!(state.payload().len(), STATE_BYTES);
     assert_eq!(registry.migrate_state(&state).expect("migration"), state);
     for (id, expected) in [
@@ -119,14 +120,18 @@ fn malformed_state_parameter_cross_control_and_rate_values_are_rejected() {
         GATE_DEFINITION.migrate_state(&wrong_type),
         Err(DeviceContractError::WrongDeviceType)
     );
-    let future =
-        NativeDeviceState::new(GATE_TYPE_ID, 2, state.payload().to_vec()).expect("future version");
+    let future = NativeDeviceState::new(
+        GATE_TYPE_ID,
+        GATE_STATE_VERSION + 1,
+        state.payload().to_vec(),
+    )
+    .expect("future version");
     assert_eq!(
         GATE_DEFINITION.migrate_state(&future),
         Err(DeviceContractError::UnsupportedStateVersion)
     );
     for length in [STATE_BYTES - 1, STATE_BYTES + 1] {
-        let malformed = NativeDeviceState::new(GATE_TYPE_ID, 1, vec![0; length])
+        let malformed = NativeDeviceState::new(GATE_TYPE_ID, GATE_STATE_VERSION, vec![0; length])
             .expect("bounded malformed state");
         assert_eq!(
             GATE_DEFINITION.migrate_state(&malformed),
@@ -135,8 +140,8 @@ fn malformed_state_parameter_cross_control_and_rate_values_are_rejected() {
     }
     let mut invalid_number = state.payload().to_vec();
     invalid_number[0..4].copy_from_slice(&f32::INFINITY.to_le_bytes());
-    let malformed =
-        NativeDeviceState::new(GATE_TYPE_ID, 1, invalid_number).expect("bounded non-finite state");
+    let malformed = NativeDeviceState::new(GATE_TYPE_ID, GATE_STATE_VERSION, invalid_number)
+        .expect("bounded non-finite state");
     assert_eq!(
         GATE_DEFINITION.migrate_state(&malformed),
         Err(DeviceContractError::InvalidParameterValue)
@@ -487,4 +492,204 @@ fn hold_zero_rides_through_low_frequency_zero_crossings() {
             }
         }
     }
+}
+
+#[test]
+fn v1_state_migrates_losslessly_to_v2_with_bit_exact_pcm() {
+    let mut v1_bytes = Vec::with_capacity(24);
+    for value in [-30.0_f32, -36.0, -24.0, 2.0, 20.0, 50.0] {
+        v1_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    let v1 = NativeDeviceState::new(GATE_TYPE_ID, 1, v1_bytes).unwrap();
+    let migrated = GATE_DEFINITION.migrate_state(&v1).unwrap();
+    assert_eq!(migrated.state_version(), GATE_STATE_VERSION);
+    assert_eq!(migrated.payload().len(), STATE_BYTES);
+    assert_eq!(
+        GATE_DEFINITION.read_parameter(&migrated, parameter::FLIP),
+        Ok(ParameterValue::Bool(false))
+    );
+    assert_eq!(
+        GATE_DEFINITION.read_parameter(&migrated, parameter::LOOKAHEAD),
+        Ok(ParameterValue::Choice(0))
+    );
+    assert_eq!(
+        GATE_DEFINITION.read_parameter(&migrated, parameter::SIDECHAIN_GAIN),
+        Ok(ParameterValue::Float(0.0))
+    );
+    assert_eq!(
+        GATE_DEFINITION.read_parameter(&migrated, parameter::SIDECHAIN_MIX),
+        Ok(ParameterValue::Float(1.0))
+    );
+    assert_eq!(
+        GATE_DEFINITION.read_parameter(&migrated, parameter::SIDECHAIN_EQ_MODE),
+        Ok(ParameterValue::Choice(0))
+    );
+    let mut a = [[0.5, -0.25]; 256];
+    let mut b = a;
+    runtime(&v1, 48_000).process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    runtime(&migrated, 48_000).process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn flip_mode_inverts_gate_into_ducker_and_reports_dynamics_meter() {
+    let state = GATE_DEFINITION
+        .patch_parameter(
+            &state_with(-12.0, -18.0, -20.0, 0.25, 5.0, 1.0),
+            parameter::FLIP,
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    let mut gate = runtime(&state, 8_000);
+    // Below threshold: flipped gate passes audio at unity (0 dB reduction).
+    let mut quiet = [[0.1, -0.1]; 8];
+    gate.process_block(&mut quiet, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(quiet[7], [0.1, -0.1]);
+    let quiet_meter = gate.take_dynamics_meter().unwrap();
+    assert!(quiet_meter.reduction_db[0] < 0.01);
+    assert!((quiet_meter.post_input_peak - 0.1).abs() < 1e-5);
+
+    // Above threshold: flipped gate ducks down to floor (-20 dB = 0.1 linear).
+    let mut loud = [[0.5, -0.5]; 16];
+    gate.process_block(&mut loud, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let floor = db_gain(-20.0) as f32;
+    assert!((loud[15][0] - 0.5 * floor).abs() < 1e-5);
+    let loud_meter = gate.take_dynamics_meter().unwrap();
+    assert!((loud_meter.reduction_db[0] - 20.0).abs() < 0.05);
+}
+
+#[test]
+fn lookahead_declares_exact_latency_anticipates_opening_and_aligns_bypass() {
+    let base = state_with(-12.0, -18.0, -60.0, 1.0, 10.0, 10.0);
+    let la_1_5 = GATE_DEFINITION
+        .patch_parameter(&base, parameter::LOOKAHEAD, ParameterValue::Choice(1))
+        .unwrap();
+    let la_10 = GATE_DEFINITION
+        .patch_parameter(&base, parameter::LOOKAHEAD, ParameterValue::Choice(2))
+        .unwrap();
+    assert_eq!(
+        prepared(&base, 48_000).algorithmic_latency_frames(),
+        Some(0)
+    );
+    assert_eq!(
+        prepared(&la_1_5, 48_000).algorithmic_latency_frames(),
+        Some(72)
+    );
+    assert_eq!(
+        prepared(&la_10, 48_000).algorithmic_latency_frames(),
+        Some(480)
+    );
+    assert_eq!(
+        prepared(&la_10, 192_000).algorithmic_latency_frames(),
+        Some(1920)
+    );
+    assert_eq!(
+        prepared(&la_10, 48_000).output_tail(),
+        OutputTail::Finite {
+            max_tail_frames: 480
+        }
+    );
+
+    // 10 ms lookahead opens the gate BEFORE the delayed transient arrives -> full leading edge!
+    let mut no_la = runtime(&base, 48_000);
+    let mut with_la = runtime(&la_10, 48_000);
+    let mut out_no_la = vec![[0.0; 2]; 1024];
+    for frame in &mut out_no_la[100..] {
+        *frame = [0.8, 0.8];
+    }
+    let mut out_la = out_no_la.clone();
+    no_la.process_block(&mut out_no_la, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    with_la.process_block(&mut out_la, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(!with_la.is_quiescent());
+    // Without lookahead, frame 100 is still ramping up from floor.
+    assert!(out_no_la[100][0] < 0.1);
+    // With 10 ms lookahead (480 frames), frame 100 + 480 = 580 arrives with gate already wide open!
+    assert_eq!(out_la[579], [0.0, 0.0]);
+    assert!((out_la[580][0] - 0.8).abs() < 1e-5);
+
+    // Bypass preserves exact lookahead delay alignment.
+    let mut bypassed = runtime(&la_1_5, 48_000);
+    let mut impulse = vec![[0.0; 2]; 128];
+    impulse[10] = [0.5, -0.25];
+    bypassed.process_bypassed_block(&mut impulse, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(impulse[10], [0.0, 0.0]);
+    assert_eq!(impulse[82], [0.5, -0.25]);
+
+    assert!(with_la.can_copy_history_from(runtime(&la_10, 48_000).as_ref()));
+    assert!(!with_la.can_copy_history_from(no_la.as_ref()));
+}
+
+#[test]
+fn sidechain_auxiliary_gain_mix_and_eq_filter_drive_gate_detector() {
+    assert_eq!(GATE_DEFINITION.auxiliary_input(), AuxiliaryInput::Stereo);
+    let base = state_with(-12.0, -18.0, -40.0, 0.25, 5.0, 5.0);
+
+    // 1. External loud key opens gate for a quiet main signal; sidechain mix = 0 keeps it closed.
+    let sc_internal = patch(&base, parameter::SIDECHAIN_MIX, 0.0);
+    let mut rt_ext = runtime(&base, 48_000);
+    let mut rt_int = runtime(&sc_internal, 48_000);
+    let mut main_ext = [[0.05; 2]; 512];
+    let mut main_int = main_ext;
+    let key = [[0.8; 2]; 512];
+    let mut scratch = [];
+    rt_ext
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut main_ext, Some(&key), &mut scratch, 512).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    rt_int
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut main_int, Some(&key), &mut scratch, 512).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    assert!((main_ext[511][0] - 0.05).abs() < 1e-5);
+    assert!(main_int[511][0] < 0.001);
+
+    // 2. Sidechain HP filter at 1000 Hz prevents a 60 Hz sub sine key from opening the gate.
+    let mut sc_hp = GATE_DEFINITION
+        .patch_parameter(
+            &base,
+            parameter::SIDECHAIN_EQ_MODE,
+            ParameterValue::Choice(1),
+        )
+        .unwrap();
+    sc_hp = patch(&sc_hp, parameter::SIDECHAIN_EQ_FREQ, 1_000.0);
+    let mut rt_no_eq = runtime(&base, 48_000);
+    let mut rt_hp = runtime(&sc_hp, 48_000);
+    let sub_sine: Vec<StereoFrame> = (0..4096)
+        .map(|i| {
+            let s = (2.0 * std::f32::consts::PI * 60.0 * i as f32 / 48_000.0).sin() * 0.8;
+            [s, s]
+        })
+        .collect();
+    let mut out_no_eq = vec![[0.05; 2]; 4096];
+    let mut out_hp = out_no_eq.clone();
+    rt_no_eq
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut out_no_eq, Some(&sub_sine), &mut scratch, 4096).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    rt_hp
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut out_hp, Some(&sub_sine), &mut scratch, 4096).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    assert!((out_no_eq[4095][0] - 0.05).abs() < 1e-5);
+    assert!(out_hp[4095][0] < 0.001);
 }

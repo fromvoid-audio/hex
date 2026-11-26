@@ -12,15 +12,29 @@ impl GateSettings {
             attack_ms,
             hold_ms,
             release_ms,
+            flip,
+            lookahead,
+            sidechain_gain_db,
+            sidechain_mix,
+            sidechain_eq_mode,
+            sidechain_eq_freq_hz,
+            sidechain_eq_q,
         } = self;
-        let _: [&f32; 6] = [
+        let _: [&f32; 10] = [
             threshold_db,
             return_db,
             floor_db,
             attack_ms,
             hold_ms,
             release_ms,
+            sidechain_gain_db,
+            sidechain_mix,
+            sidechain_eq_freq_hz,
+            sidechain_eq_q,
         ];
+        let _: &bool = flip;
+        let _: &GateLookahead = lookahead;
+        let _: &SidechainEqMode = sidechain_eq_mode;
     }
 }
 
@@ -36,10 +50,13 @@ impl PreparedGate {
         {
             return Err(DeviceContractError::InvalidParameterValue);
         }
-        let mut admitted = [false; 6];
+        let mut admitted = [false; PARAM_COUNT];
         for &id in parameters {
             let binding = crate::parameter_binding::binding(&BINDINGS, id)?;
             binding.semantics.validate(binding.descriptor)?;
+            if !binding.declares_arrangement_automation() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let index = BINDINGS
                 .iter()
                 .position(|b| b.descriptor.id == id)
@@ -47,6 +64,11 @@ impl PreparedGate {
             admitted[index] = true;
         }
         let settings = decode(state)?;
+        let sidechain_gain_linear = if settings.sidechain_gain_db == 0.0 {
+            1.0
+        } else {
+            db_to_gain(settings.sidechain_gain_db)?
+        };
         let prepared = Self {
             admitted,
             settings,
@@ -57,6 +79,8 @@ impl PreparedGate {
             attack_frames: checked_frames(settings.attack_ms, sample_rate)?,
             hold_frames: checked_frames(settings.hold_ms.max(MIN_HOLD_MS), sample_rate)?,
             release_frames: checked_frames(settings.release_ms, sample_rate)?,
+            sidechain_gain_linear,
+            lookahead_frames: settings.lookahead.frames(sample_rate),
         };
         prepared.check_inline();
         Ok(prepared)
@@ -73,11 +97,19 @@ impl PreparedGate {
             attack_frames,
             hold_frames,
             release_frames,
+            sidechain_gain_linear,
+            lookahead_frames,
         } = self;
         settings.check_inline();
-        let _: &[bool; 6] = admitted;
-        let _: [&f64; 3] = [threshold, return_level, floor_gain];
-        let _: [&u32; 4] = [sample_rate, attack_frames, hold_frames, release_frames];
+        let _: &[bool; PARAM_COUNT] = admitted;
+        let _: [&f64; 4] = [threshold, return_level, floor_gain, sidechain_gain_linear];
+        let _: [&u32; 5] = [
+            sample_rate,
+            attack_frames,
+            hold_frames,
+            release_frames,
+            lookahead_frames,
+        ];
     }
 
     pub(super) fn supports(&self, id: ParameterId) -> bool {
@@ -101,23 +133,34 @@ impl GateRuntime {
             attack_frames,
             hold_frames,
             release_frames,
+            sidechain_gain_linear,
+            lookahead_frames,
             open,
             hold_elapsed,
             gain_ramp,
+            meter,
+            sidechain_eq,
+            lookahead_pos,
+            lookahead_buf,
         } = self;
         base.check_inline();
         controls.check_inline(GateSettings::check_inline);
         settings.check_inline();
         let _: &bool = open;
-        let _: [&f64; 3] = [threshold, return_level, floor_gain];
-        let _: [&u32; 5] = [
+        let _: [&f64; 4] = [threshold, return_level, floor_gain, sidechain_gain_linear];
+        let _: [&u32; 6] = [
             sample_rate,
             attack_frames,
             hold_frames,
             release_frames,
+            lookahead_frames,
             hold_elapsed,
         ];
         let _: &hex_dsp::LinearRamp = gain_ramp;
+        let _: &DynamicsMeter = meter;
+        let _: &SidechainEq = sidechain_eq;
+        let _: &usize = lookahead_pos;
+        let _: &[StereoFrame; MAX_LOOKAHEAD_FRAMES] = lookahead_buf;
     }
 
     pub(super) fn install_settings(&mut self, settings: GateSettings) {
@@ -130,15 +173,108 @@ impl GateRuntime {
         let attack_changed = self.settings.attack_ms != previous.attack_ms;
         let release_changed = self.settings.release_ms != previous.release_ms;
         let floor_changed = self.settings.floor_db != previous.floor_db;
-        if self.open
-            && attack_changed
-            && self.gain_ramp.is_active()
-            && self.gain_ramp.target() == 1.0
-        {
-            self.start_ramp(1.0, self.attack_frames);
-        } else if !self.open && (floor_changed || (release_changed && self.gain_ramp.is_active())) {
-            self.start_ramp(self.floor_gain, self.release_frames);
+        let flip_changed = self.settings.flip != previous.flip;
+        let target = self.target_gain(self.open);
+        if flip_changed {
+            let frames = if self.open {
+                self.attack_frames
+            } else {
+                self.release_frames
+            };
+            self.start_ramp(target, frames);
+            return;
         }
+        if self.open
+            && (floor_changed && self.settings.flip
+                || (attack_changed
+                    && self.gain_ramp.is_active()
+                    && self.gain_ramp.target() == target))
+        {
+            self.start_ramp(target, self.attack_frames);
+        } else if !self.open
+            && ((floor_changed && !self.settings.flip)
+                || (release_changed && self.gain_ramp.is_active()))
+        {
+            self.start_ramp(target, self.release_frames);
+        }
+    }
+
+    pub(super) fn apply_values(
+        &mut self,
+        values: &dyn hex_lattice::NativeParameterAutomation,
+        resolved: &mut crate::parameter_binding::Resolved<PARAM_COUNT>,
+        offset: usize,
+        modulates_threshold: bool,
+        modulates_return: bool,
+    ) -> Result<(), DeviceContractError> {
+        let next = self.controls.sample(&BINDINGS, resolved, values, offset)?;
+        let mut settings = next
+            .as_ref()
+            .map_or_else(|| self.controls.effective(), |next| next.effective());
+        // Keep the unmodulated detector level authoritative. When both
+        // levels are modulated, the opening threshold governs the return.
+        if settings.return_db > settings.threshold_db {
+            if modulates_return {
+                settings.return_db = settings.threshold_db;
+            } else if modulates_threshold {
+                settings.threshold_db = settings.return_db;
+            } else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            }
+        }
+        if settings != self.settings {
+            validate(settings)?;
+            // Stage every fallible conversion before installing the candidate.
+            let threshold = if settings.threshold_db == self.settings.threshold_db {
+                self.threshold
+            } else {
+                db_to_gain(settings.threshold_db)?
+            };
+            let return_level = if settings.return_db == self.settings.return_db {
+                self.return_level
+            } else {
+                db_to_gain(settings.return_db)?
+            };
+            let floor_gain = if settings.floor_db == self.settings.floor_db {
+                self.floor_gain
+            } else {
+                db_to_gain(settings.floor_db)?
+            };
+            let sidechain_gain_linear =
+                if settings.sidechain_gain_db == self.settings.sidechain_gain_db {
+                    self.sidechain_gain_linear
+                } else if settings.sidechain_gain_db == 0.0 {
+                    1.0
+                } else {
+                    db_to_gain(settings.sidechain_gain_db)?
+                };
+            let attack = checked_frames(settings.attack_ms, self.sample_rate)?;
+            let hold = checked_frames(settings.hold_ms.max(MIN_HOLD_MS), self.sample_rate)?;
+            let release = checked_frames(settings.release_ms, self.sample_rate)?;
+            let eq_changed = settings.sidechain_eq_mode != self.settings.sidechain_eq_mode
+                || settings.sidechain_eq_freq_hz != self.settings.sidechain_eq_freq_hz
+                || settings.sidechain_eq_q != self.settings.sidechain_eq_q;
+            self.threshold = threshold;
+            self.return_level = return_level;
+            self.floor_gain = floor_gain;
+            self.sidechain_gain_linear = sidechain_gain_linear;
+            self.attack_frames = attack;
+            self.hold_frames = hold;
+            self.release_frames = release;
+            if eq_changed {
+                self.sidechain_eq.update(
+                    settings.sidechain_eq_mode,
+                    settings.sidechain_eq_freq_hz,
+                    settings.sidechain_eq_q,
+                    self.sample_rate,
+                );
+            }
+            self.install_settings(settings);
+        }
+        if let Some(next) = next {
+            self.controls.install(next);
+        }
+        Ok(())
     }
 
     pub(super) fn process_automated(
@@ -151,60 +287,14 @@ impl GateRuntime {
         let modulates_threshold = values.has_sample_rate_modulation(parameter::THRESHOLD);
         let modulates_return = values.has_sample_rate_modulation(parameter::RETURN);
         for (offset, frame) in frames.iter_mut().enumerate() {
-            let next = self
-                .controls
-                .sample(&BINDINGS, &mut resolved, values, offset)?;
-            let mut settings = next
-                .as_ref()
-                .map_or_else(|| self.controls.effective(), |next| next.effective());
-            // Keep the unmodulated detector level authoritative. When both
-            // levels are modulated, the opening threshold governs the return.
-            if settings.return_db > settings.threshold_db {
-                if modulates_return {
-                    settings.return_db = settings.threshold_db;
-                } else if modulates_threshold {
-                    settings.threshold_db = settings.return_db;
-                } else {
-                    return Err(DeviceContractError::InvalidParameterValue);
-                }
-            }
-            if settings != self.settings {
-                validate(settings)?;
-                // Stage every fallible conversion before installing the candidate.
-                let threshold = if settings.threshold_db == self.settings.threshold_db {
-                    self.threshold
-                } else {
-                    db_to_gain(settings.threshold_db)?
-                };
-                let return_level = if settings.return_db == self.settings.return_db {
-                    self.return_level
-                } else {
-                    db_to_gain(settings.return_db)?
-                };
-                let floor_gain = if settings.floor_db == self.settings.floor_db {
-                    self.floor_gain
-                } else {
-                    db_to_gain(settings.floor_db)?
-                };
-                let attack = checked_frames(settings.attack_ms, self.sample_rate)?;
-                let hold = checked_frames(settings.hold_ms.max(MIN_HOLD_MS), self.sample_rate)?;
-                let release = checked_frames(settings.release_ms, self.sample_rate)?;
-                self.threshold = threshold;
-                self.return_level = return_level;
-                self.floor_gain = floor_gain;
-                self.attack_frames = attack;
-                self.hold_frames = hold;
-                self.release_frames = release;
-                self.install_settings(settings);
-            }
-            if let Some(next) = next {
-                self.controls.install(next);
-            }
-            let original = *frame;
-            self.process_frame(frame);
-            if bypassed {
-                *frame = original;
-            }
+            self.apply_values(
+                values,
+                &mut resolved,
+                offset,
+                modulates_threshold,
+                modulates_return,
+            )?;
+            self.process_frame(frame, *frame, bypassed);
         }
         Ok(())
     }
@@ -230,9 +320,13 @@ mod tests {
         }
     }
     fn values(settings: GateSettings) -> Values {
+        let bindings: Vec<_> = BINDINGS
+            .iter()
+            .filter(|b| b.declares_arrangement_automation())
+            .collect();
         Values {
-            ids: BINDINGS.iter().map(|b| b.descriptor.id).collect(),
-            values: BINDINGS.iter().map(|b| Some(b.read(&settings))).collect(),
+            ids: bindings.iter().map(|b| b.descriptor.id).collect(),
+            values: bindings.iter().map(|b| Some(b.read(&settings))).collect(),
         }
     }
     #[test]
@@ -240,12 +334,15 @@ mod tests {
         let state = GATE_DEFINITION.default_state().unwrap();
         for binding in &BINDINGS {
             binding.semantics.validate(binding.descriptor).unwrap();
-            assert!(
+            let expected = binding.descriptor.id != parameter::LOOKAHEAD;
+            assert_eq!(
                 GATE_DEFINITION
                     .supports_parameter_automation(&state, binding.descriptor.id)
-                    .unwrap()
+                    .unwrap(),
+                expected
             );
         }
+        assert!(PreparedGate::new(&state, 8000, &[parameter::LOOKAHEAD]).is_err());
         let attack = &BINDINGS[3];
         let midpoint = attack
             .semantics
@@ -271,6 +368,7 @@ mod tests {
             attack_ms: 2.0,
             hold_ms: 7.0,
             release_ms: 3.0,
+            ..GateSettings::default()
         };
         let input = values(settings);
         let mut actual = PreparedGate::new(&base, 8000, &input.ids)
@@ -348,7 +446,7 @@ mod tests {
             .unwrap();
         assert_eq!(output, expected);
         assert!(PreparedGate::new(&base, 8000, &[parameter::HOLD, parameter::THRESHOLD]).is_err());
-        assert!(PreparedGate::new(&base, 8000, &[ParameterId::from_static(7)]).is_err());
+        assert!(PreparedGate::new(&base, 8000, &[ParameterId::from_static(99)]).is_err());
     }
     #[test]
     fn copied_automated_history_and_bypass_keep_the_same_envelope() {
