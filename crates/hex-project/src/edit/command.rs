@@ -1173,6 +1173,11 @@ pub enum Command {
         scene: crate::SceneId,
         name: String,
     },
+    /// Configure a bounded deterministic next-scene follow action on a Console scene.
+    SetSceneFollowAction {
+        scene: crate::SceneId,
+        action: crate::SceneFollowAction,
+    },
     RemoveScene(crate::SceneId),
     CreateSessionMidiClip {
         track: TrackId,

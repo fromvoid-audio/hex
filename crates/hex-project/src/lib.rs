@@ -234,8 +234,9 @@ mod session;
 mod snapshot;
 mod split_tracks;
 pub use session::{
-    Scene, SessionAudioClip, SessionAudioLoop, SessionCell, SessionCellContent, SessionGrid,
-    SessionMidiClip, SessionSceneTarget, session_audio_source_frame,
+    MAX_SCENE_FOLLOW_BARS, Scene, SceneFollowAction, SceneFollowActionSnapshot, SessionAudioClip,
+    SessionAudioLoop, SessionCell, SessionCellContent, SessionGrid, SessionMidiClip,
+    SessionSceneTarget, session_audio_source_frame,
 };
 pub mod timebase;
 pub use edit::{

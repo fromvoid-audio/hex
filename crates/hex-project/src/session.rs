@@ -31,10 +31,45 @@ impl SessionSceneTarget {
     }
 }
 
+/// Bounded bar ceiling for deterministic next-scene Session follow actions.
+pub const MAX_SCENE_FOLLOW_BARS: u16 = 64;
+
+/// Bounded deterministic follow action evaluated on a launched Console scene.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SceneFollowAction {
+    #[default]
+    None,
+    /// Launch the next scene in grid order after `after_bars` bars (`1..=64`)
+    /// from the scene's launch boundary. Stops cleanly at the end of the grid.
+    NextScene { after_bars: u16 },
+}
+
+impl SceneFollowAction {
+    pub fn validate(self) -> Result<(), Invalid> {
+        match self {
+            Self::None => Ok(()),
+            Self::NextScene { after_bars } => {
+                if after_bars == 0 || after_bars > MAX_SCENE_FOLLOW_BARS {
+                    return Err(Invalid("scene follow action bars must be in 1..=64"));
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Sparse persisted representation of a non-default scene follow action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SceneFollowActionSnapshot {
+    pub scene: u64,
+    pub after_bars: u16,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scene {
     pub(crate) id: SceneId,
     pub(crate) name: String,
+    pub(crate) follow_action: SceneFollowAction,
 }
 impl Scene {
     pub fn id(&self) -> SceneId {
@@ -42,6 +77,9 @@ impl Scene {
     }
     pub fn name(&self) -> &str {
         &self.name
+    }
+    pub fn follow_action(&self) -> SceneFollowAction {
+        self.follow_action
     }
 }
 
@@ -251,7 +289,14 @@ pub(crate) fn apply(
                 .try_reserve(1)
                 .map_err(|_| Invalid("could not reserve scene storage"))?;
             let id = SceneId(project.allocate_id()?);
-            project.session.scenes.insert(index, Scene { id, name });
+            project.session.scenes.insert(
+                index,
+                Scene {
+                    id,
+                    name,
+                    follow_action: SceneFollowAction::None,
+                },
+            );
             Ok(Created::Scene(id))
         }
         Command::DuplicateScene(scene) => duplicate_scene(project, scene),
@@ -265,6 +310,17 @@ pub(crate) fn apply(
                 .find(|item| item.id == scene)
                 .ok_or(Invalid("scene no longer exists"))?;
             target.name = name;
+            Ok(Created::None)
+        }
+        Command::SetSceneFollowAction { scene, action } => {
+            action.validate()?;
+            let target = project
+                .session
+                .scenes
+                .iter_mut()
+                .find(|item| item.id == scene)
+                .ok_or(Invalid("scene no longer exists"))?;
+            target.follow_action = action;
             Ok(Created::None)
         }
         Command::RemoveScene(scene) => {
@@ -798,12 +854,14 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                 .ok_or(Invalid("project id space exhausted"))?;
         }
     }
+    let follow_action = project.session.scenes[source_index].follow_action;
     let duplicate_index = source_index + 1;
     project.session.scenes.insert(
         duplicate_index,
         Scene {
             id: duplicate_id,
             name: duplicate_name,
+            follow_action,
         },
     );
     project.session.cells.extend(duplicated_cells);
@@ -1186,12 +1244,14 @@ mod scene_command_tests {
         let extra = Scene {
             id: SceneId(project.next_id),
             name: "second".into(),
+            follow_action: SceneFollowAction::None,
         };
         project.next_id += 1;
         project.session.scenes.push(extra.clone());
         let last = Scene {
             id: SceneId(project.next_id),
             name: "third".into(),
+            follow_action: SceneFollowAction::None,
         };
         project.next_id += 1;
         project.session.scenes.push(last.clone());
@@ -1220,5 +1280,86 @@ mod scene_command_tests {
         );
         assert_eq!(project.session.cells, cells);
         assert_eq!(project.next_id, next_id);
+    }
+
+    #[test]
+    fn set_scene_follow_action_validates_bounds_undoes_and_duplicates() {
+        let mut editor = crate::Editor::new(crate::Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Scene(s1) = editor
+            .execute(Command::AddScene {
+                name: "intro".into(),
+            })
+            .unwrap()
+        else {
+            panic!("scene");
+        };
+        assert_eq!(
+            editor.project().scenes()[0].follow_action(),
+            SceneFollowAction::None
+        );
+
+        assert!(
+            editor
+                .execute(Command::SetSceneFollowAction {
+                    scene: s1,
+                    action: SceneFollowAction::NextScene { after_bars: 0 },
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::SetSceneFollowAction {
+                    scene: s1,
+                    action: SceneFollowAction::NextScene {
+                        after_bars: MAX_SCENE_FOLLOW_BARS + 1,
+                    },
+                })
+                .is_err()
+        );
+        assert!(
+            editor
+                .execute(Command::SetSceneFollowAction {
+                    scene: SceneId(999),
+                    action: SceneFollowAction::NextScene { after_bars: 2 },
+                })
+                .is_err()
+        );
+
+        editor
+            .execute(Command::SetSceneFollowAction {
+                scene: s1,
+                action: SceneFollowAction::NextScene { after_bars: 4 },
+            })
+            .unwrap();
+        assert_eq!(
+            editor.project().scenes()[0].follow_action(),
+            SceneFollowAction::NextScene { after_bars: 4 }
+        );
+
+        let Created::Scene(s2) = editor.execute(Command::DuplicateScene(s1)).unwrap() else {
+            panic!("dup");
+        };
+        assert_eq!(
+            editor
+                .project()
+                .scenes()
+                .iter()
+                .find(|s| s.id() == s2)
+                .unwrap()
+                .follow_action(),
+            SceneFollowAction::NextScene { after_bars: 4 }
+        );
+
+        assert!(editor.undo());
+        assert!(editor.undo());
+        assert_eq!(
+            editor.project().scenes()[0].follow_action(),
+            SceneFollowAction::None
+        );
+        assert!(editor.redo());
+        assert_eq!(
+            editor.project().scenes()[0].follow_action(),
+            SceneFollowAction::NextScene { after_bars: 4 }
+        );
     }
 }

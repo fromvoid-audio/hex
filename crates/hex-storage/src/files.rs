@@ -84,6 +84,7 @@ impl FileToken {
                 | crate::MIDI_EXPRESSION_SCHEMA_VERSION
                 | crate::AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
                 | crate::TRACK_IO_ROUTING_SCHEMA_VERSION
+                | crate::SESSION_FOLLOW_ACTION_SCHEMA_VERSION
         ) {
             let Some(existing) = self.2.as_deref() else {
                 return true;

@@ -39,6 +39,8 @@ mod midi_capture;
 mod mutable_checkpoint;
 mod render_work;
 pub mod route_transitions;
+#[cfg(test)]
+mod scene_follow_tests;
 mod track_fader;
 mod track_route;
 mod transport_loop_admission;
@@ -376,6 +378,16 @@ struct PendingRoute {
     current_reservation: Option<CurrentRouteReservation>,
 }
 
+/// Bounded inline next-scene follow trigger scheduled on the performance clock.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PendingSceneFollow {
+    pub(super) source_scene: SceneId,
+    pub(super) next_scene: SceneId,
+    pub(super) trigger_frame: u64,
+    pub(super) trigger_beat: BeatTime,
+    pub(super) note_chase: crate::NoteChase,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TrackRoute {
     id: TrackId,
@@ -593,6 +605,8 @@ pub struct SessionPlayback {
     interactive_onset_floor: Option<crate::midi_compile::InteractiveOnsetFloor>,
     // One exact muted-onset chase, retained until a successful render.
     pending_shared_chase: Option<PendingSharedChase>,
+    /// Bounded inline next-scene follow action scheduled on the performance clock.
+    pending_scene_follow: Option<PendingSceneFollow>,
     pending_shared_live: Option<PendingSharedLive>,
     historical_floor: Option<BeatTime>,
     route_historical_floors: [Option<BeatTime>; MAX_TRACKS],
@@ -1120,6 +1134,7 @@ impl SessionPlayback {
             main_pass_delay: _,
             return_fade: _,
             return_fade_scratch: _,
+            pending_scene_follow: _,
         } = self;
         // Fresh Main metadata must match before any location is emitted.
         // A real owning transfer can later leave an allocation-free empty
@@ -2427,6 +2442,65 @@ impl SessionPlayback {
             main_pass_delay: None,
             return_fade: None,
             return_fade_scratch: None,
+            pending_scene_follow: None,
+        })
+    }
+
+    /// Pending deterministic next-scene follow trigger `(source_scene, next_scene, trigger_frame)`, if armed.
+    pub fn pending_scene_follow(&self) -> Option<(SceneId, SceneId, u64)> {
+        self.pending_scene_follow
+            .map(|follow| (follow.source_scene, follow.next_scene, follow.trigger_frame))
+    }
+
+    /// Compute the exact sample-accurate next-scene follow trigger from `launch_beat`
+    /// using the prepared meter and tempo clocks (zero heap allocations).
+    pub(super) fn plan_scene_follow(
+        &self,
+        scene: SceneId,
+        launch_beat: BeatTime,
+        note_chase: crate::NoteChase,
+    ) -> Option<PendingSceneFollow> {
+        let hex_project::SceneFollowAction::NextScene { after_bars } =
+            self.revision.session().scene_follow_action(scene)?
+        else {
+            return None;
+        };
+        if after_bars == 0 {
+            return None;
+        }
+        let next_scene = self.revision.session().next_scene_after(scene)?;
+        let meter = self.revision.session().meter_map();
+        let start_pos = meter.position(launch_beat).ok()?;
+        let offset_in_bar = launch_beat
+            .raw()
+            .saturating_sub(start_pos.bar_start().raw());
+        let mut target_bar_start = start_pos.bar_start();
+        for _ in 0..after_bars {
+            target_bar_start = meter.position(target_bar_start).ok()?.bar_end()?;
+        }
+        let target_pos = meter.position(target_bar_start).ok()?;
+        let target_beat = if offset_in_bar == 0 {
+            target_bar_start
+        } else {
+            let max_end = target_pos
+                .bar_end()
+                .map_or(u64::MAX, BeatTime::raw)
+                .saturating_sub(1);
+            BeatTime::from_raw(
+                target_bar_start
+                    .raw()
+                    .saturating_add(offset_in_bar)
+                    .min(max_end),
+            )
+        };
+        let trigger_frame =
+            crate::MidiTiming::beat_to_frame(&self.timing_view(), target_beat).ok()?;
+        Some(PendingSceneFollow {
+            source_scene: scene,
+            next_scene,
+            trigger_frame,
+            trigger_beat: target_beat,
+            note_chase,
         })
     }
 

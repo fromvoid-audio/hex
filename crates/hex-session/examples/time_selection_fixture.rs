@@ -116,6 +116,7 @@ fn project(count: usize, wav: &Path, audio_only: bool) -> Result<Project, Box<dy
         mixer_automation: Vec::new(),
         frozen_tracks: Vec::new(),
         track_io: Vec::new(),
+        scene_follow_actions: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),

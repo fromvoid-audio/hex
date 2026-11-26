@@ -331,6 +331,7 @@ impl SessionStructureConstruction {
                 value: crate::PreparedSessionScene {
                     id: scene.id(),
                     name: String::new(),
+                    follow_action: scene.follow_action(),
                 },
                 disposal: Disposal::Unstarted,
                 #[cfg(test)]

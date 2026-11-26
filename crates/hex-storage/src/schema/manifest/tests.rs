@@ -923,6 +923,61 @@ fn schema129_track_io_routing_round_trips_and_rejects_downgrade() {
 }
 
 #[test]
+fn schema_130_round_trips_scene_follow_actions_and_refuses_older_schema_downgrade() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Scene(s1) = editor
+        .execute(Command::AddScene {
+            name: "intro".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene 1");
+    };
+    let Created::Scene(s2) = editor
+        .execute(Command::AddScene {
+            name: "verse".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene 2");
+    };
+    editor
+        .execute(Command::SetSceneFollowAction {
+            scene: s1,
+            action: hex_project::SceneFollowAction::NextScene { after_bars: 2 },
+        })
+        .unwrap();
+
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::SESSION_FOLLOW_ACTION_SCHEMA_VERSION
+    );
+    let encoded = crate::encode(project).unwrap();
+    let mut json: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(json["version"], crate::SESSION_FOLLOW_ACTION_SCHEMA_VERSION);
+    let caps = json["capabilities"].as_array().unwrap();
+    assert!(caps.iter().any(|c| c == "session_follow_action"));
+
+    let decoded = crate::decode(&encoded).unwrap();
+    assert_eq!(&decoded, project);
+    assert_eq!(
+        decoded.scenes()[0].follow_action(),
+        hex_project::SceneFollowAction::NextScene { after_bars: 2 }
+    );
+    assert_eq!(
+        decoded.scenes()[1].follow_action(),
+        hex_project::SceneFollowAction::None
+    );
+
+    // Schema 129 must refuse schema 130 capability / scene_follow_actions payloads cleanly.
+    json["version"] = serde_json::json!(crate::TRACK_IO_ROUTING_SCHEMA_VERSION);
+    let downgraded = serde_json::to_vec(&json).unwrap();
+    assert!(crate::decode(&downgraded).is_err());
+    let _ = s2;
+}
+
+#[test]
 fn unified_schema_feature_table_is_sorted_complete_and_blocks_legacy_encoders() {
     // 1. SCHEMA_FEATURES is strictly sorted and matches SUPPORTED_CAPABILITIES 1:1.
     let table_caps: Vec<&str> = super::SCHEMA_FEATURES

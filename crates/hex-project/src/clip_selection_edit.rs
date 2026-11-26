@@ -718,6 +718,7 @@ impl Command {
             | Self::DuplicateScene(..)
             | Self::MoveScene { .. }
             | Self::RenameScene { .. }
+            | Self::SetSceneFollowAction { .. }
             | Self::RemoveScene(..)
             | Self::CreateSessionMidiClip { .. }
             | Self::CreateSessionAudioClip { .. }

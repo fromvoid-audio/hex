@@ -109,7 +109,10 @@ impl SessionPlayback {
         // Pending route frames only change when apply_due_routes consumes them.
         // Keep the next deadline for this render transaction so compensated
         // graphs do not rescan every track several times for every sample.
-        let mut next_route = next_pending_frame(&self.route_scratch);
+        let mut next_route = next_pending_frame(&self.route_scratch)
+            .into_iter()
+            .chain(self.pending_scene_follow.map(|f| f.trigger_frame))
+            .min();
         let mut resident_source_index = 0;
         let mut resident_source_end = 0;
         let mut resident_source_eligible = [false; MAX_TRACKS];
@@ -165,6 +168,7 @@ impl SessionPlayback {
             let (captured_release, applied_route) = if self.current_sampler_console
                 || next_route.is_some_and(|next| next <= performance_frame)
             {
+                self.stage_due_scene_follow(performance_frame);
                 let result = self.apply_due_routes(
                     performance_frame,
                     arrangement_frame,
@@ -173,7 +177,10 @@ impl SessionPlayback {
                         .then_some(self.interactive_onset_floor)
                         .flatten(),
                 )?;
-                next_route = next_pending_frame(&self.route_scratch);
+                next_route = next_pending_frame(&self.route_scratch)
+                    .into_iter()
+                    .chain(self.pending_scene_follow.map(|f| f.trigger_frame))
+                    .min();
                 result
             } else {
                 (false, false)
@@ -735,6 +742,79 @@ impl SessionPlayback {
             self.advance_route_state_generation();
         }
         Ok(())
+    }
+
+    /// Stage a due deterministic next-scene follow action into `self.route_scratch`
+    /// right before `apply_due_routes` executes, performing zero heap allocations.
+    fn stage_due_scene_follow(&mut self, performance_frame: u64) {
+        let Some(follow) = self.pending_scene_follow else {
+            return;
+        };
+        if follow.trigger_frame > performance_frame {
+            return;
+        }
+        self.pending_scene_follow = None;
+        let Some((start, end)) = self.revision.session().scene_cell_range(follow.next_scene) else {
+            return;
+        };
+        for scene_position in start..end {
+            let Some(cell_index) = self.revision.session().scene_cell_index(scene_position) else {
+                continue;
+            };
+            let Some(cell) = self.revision.session().cells().get(cell_index).copied() else {
+                continue;
+            };
+            let target = match cell.content {
+                crate::PreparedSessionCellContent::Stop => RouteTarget::Silence,
+                crate::PreparedSessionCellContent::Midi(clip) => {
+                    if crate::session_inventory::EffectiveSessionMidi::new(
+                        self.revision.session(),
+                        self.midi_admission.as_ref(),
+                    )
+                    .midi_clip(clip)
+                    .is_some_and(|prepared| prepared.track == cell.track)
+                    {
+                        RouteTarget::Session(clip)
+                    } else {
+                        continue;
+                    }
+                }
+                crate::PreparedSessionCellContent::Audio(clip) => {
+                    if self
+                        .revision
+                        .session()
+                        .audio_clip(clip)
+                        .is_some_and(|prepared| prepared.track == cell.track)
+                    {
+                        RouteTarget::Session(clip)
+                    } else {
+                        continue;
+                    }
+                }
+            };
+            let Some(track_index) = self
+                .route_scratch
+                .iter()
+                .position(|route| route.id == cell.track)
+            else {
+                continue;
+            };
+            if self.route_scratch[track_index]
+                .pending
+                .is_none_or(|existing| existing.frame > performance_frame)
+            {
+                self.route_scratch[track_index].pending = Some(PendingRoute {
+                    note_chase: follow.note_chase,
+                    frame: performance_frame,
+                    beat: follow.trigger_beat,
+                    target,
+                    scene: Some(follow.next_scene),
+                    current_reservation: None,
+                });
+            }
+        }
+        self.pending_scene_follow =
+            self.plan_scene_follow(follow.next_scene, follow.trigger_beat, follow.note_chase);
     }
 
     fn apply_due_routes(
