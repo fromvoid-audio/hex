@@ -62,6 +62,7 @@ pub mod compensation;
 pub mod foreign_automation;
 
 pub mod midi_capture;
+pub mod multi_output_routing;
 mod source_routing;
 pub use source_routing::PreparedSourceRouting;
 
