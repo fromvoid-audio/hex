@@ -172,7 +172,7 @@ pub(crate) fn set_range(
     let mut notes = crate::midi::note_count(&candidate);
     let (left_beat, right_beat) = activation_beats(candidate.tempo_map(), range)?;
     for index in first..first + range.tracks().len() {
-        let original = candidate.tracks[index].content.clone();
+        let original = (*candidate.tracks[index].content).clone();
         let mut audio = Vec::new();
         let mut midi = Vec::new();
         audio

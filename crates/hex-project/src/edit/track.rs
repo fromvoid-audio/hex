@@ -70,7 +70,7 @@ pub(crate) fn new_track(
     }
     let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
-    Ok(Track {
+    Ok(Track::from_data(crate::TrackData {
         group_output_mutes: Default::default(),
         tags: Vec::new(),
         kind,
@@ -94,9 +94,9 @@ pub(crate) fn new_track(
         instrument: None,
         retained_source_path: false,
         instrument_position: None,
-        content: TrackContent::default(),
+        content: TrackContent::default().into(),
         sends: Vec::new(),
-    })
+    }))
 }
 
 impl Project {

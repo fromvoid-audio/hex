@@ -593,8 +593,40 @@ impl Clip {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CowTrackContent(Arc<TrackContent>);
+
+impl From<TrackContent> for CowTrackContent {
+    fn from(content: TrackContent) -> Self {
+        Self(Arc::new(content))
+    }
+}
+
+impl PartialEq for CowTrackContent {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0
+    }
+}
+
+impl std::ops::Deref for CowTrackContent {
+    type Target = TrackContent;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for CowTrackContent {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+/// Internal copy-on-write payload for [`Track`]. All fields are crate-private;
+/// external callers interact solely through [`Track`] methods.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq)]
-pub struct Track {
+pub struct TrackData {
     pub(crate) group_output_mutes: Arc<[GroupOutputMuteRange]>,
     pub(crate) tags: Vec<TrackTag>,
     pub(crate) kind: TrackKind,
@@ -623,10 +655,46 @@ pub struct Track {
     /// Number of serial effects that precede the optional instrument.
     /// `None` exactly when `instrument` is absent.
     pub(crate) instrument_position: Option<usize>,
-    pub(crate) content: TrackContent,
+    pub(crate) content: CowTrackContent,
     pub(crate) sends: Vec<SendLevel>,
 }
+
+/// Copy-on-write track handle inside [`Project`]. Cloning a `Project` shares
+/// untouched tracks by `Arc` refcount; mutating a single track clones only that
+/// track's payload (and shares its clip content when clips are untouched).
+#[derive(Debug, Clone)]
+pub struct Track(pub(crate) Arc<TrackData>);
+
+impl PartialEq for Track {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0) || *self.0 == *other.0
+    }
+}
+
+impl std::ops::Deref for Track {
+    type Target = TrackData;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Track {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
 impl Track {
+    pub(crate) fn from_data(data: TrackData) -> Self {
+        Self(Arc::new(data))
+    }
+
+    /// True when both track handles share the exact same underlying `Arc` allocation.
+    pub(crate) fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     pub fn kind(&self) -> TrackKind {
         self.kind
     }

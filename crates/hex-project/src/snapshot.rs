@@ -1369,7 +1369,7 @@ impl Project {
                         crate::InputMonitoring::Auto,
                     )
                 };
-            tracks.push(Track {
+            tracks.push(Track::from_data(crate::TrackData {
                 group_output_mutes: crate::group_output_mute::snapshot_ranges(
                     track.kind,
                     track.group_output_mutes,
@@ -1400,9 +1400,9 @@ impl Project {
                 instrument,
                 retained_source_path: retained_source_paths.remove(&track.id),
                 instrument_position: track.instrument_position,
-                content,
+                content: content.into(),
                 sends,
-            });
+            }));
         }
 
         if !automatic_track_names.is_empty() {

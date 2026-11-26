@@ -16,14 +16,21 @@ struct HistoryEntry {
 }
 
 /// Validation and diff scope for a single canonical command.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandValidationScope {
     /// Pure scalar mixer / mute / solo / send-level edit that cannot alter tracks,
     /// clips, devices, routing topology, or occupancy invariants.
     PureMixer,
+    /// Single-track mixer automation lane edit (balance/mute/send) already
+    /// validated by `set_track_mixer_automation`; cannot alter clips, devices,
+    /// routing topology, or occupancy invariants.
+    TrackMixerAutomation(crate::TrackId),
     /// Arrangement MIDI note edit that cannot alter audio clips, devices, routing,
     /// or track hierarchy invariants (when clip aliases did not expand).
     MidiNotesOnly,
+    /// MIDI expression lane or per-note expression edit validated in place by
+    /// `apply`; cannot alter note timing occupancy, audio clips, devices, or routing.
+    MidiExpressionOnly,
     /// General command requiring full project validation and structural diff.
     Full,
 }
@@ -57,6 +64,12 @@ fn command_validation_scope(project: &Project, command: &Command) -> CommandVali
             }) =>
         {
             CommandValidationScope::PureMixer
+        }
+        Command::SetTrackMixerAutomation { track, .. } => {
+            CommandValidationScope::TrackMixerAutomation(*track)
+        }
+        Command::SetMidiExpressionLane { .. } | Command::SetMidiNoteExpression { .. } => {
+            CommandValidationScope::MidiExpressionOnly
         }
         Command::AddMidiNote { .. }
         | Command::AddMidiNotes { .. }
@@ -118,11 +131,12 @@ fn pure_mixer_changed(before: &Project, after: &Project) -> bool {
         return true;
     }
     if before.tracks().iter().zip(after.tracks()).any(|(a, b)| {
-        a.gain() != b.gain()
-            || a.balance() != b.balance()
-            || a.muted() != b.muted()
-            || a.soloed() != b.soloed()
-            || a.sends() != b.sends()
+        !a.ptr_eq(b)
+            && (a.gain() != b.gain()
+                || a.balance() != b.balance()
+                || a.muted() != b.muted()
+                || a.soloed() != b.soloed()
+                || a.sends() != b.sends())
     }) {
         return true;
     }
@@ -133,7 +147,22 @@ fn pure_mixer_changed(before: &Project, after: &Project) -> bool {
         .any(|(a, b)| a.gain() != b.gain() || a.muted() != b.muted())
 }
 
-/// Scoped diff for `MidiNotesOnly` commands without alias expansion.
+/// Scoped diff for `TrackMixerAutomation` commands, comparing only the target track's lanes.
+fn track_mixer_automation_changed(
+    before: &Project,
+    after: &Project,
+    track: crate::TrackId,
+) -> bool {
+    let (Some(a), Some(b)) = (before.track(track), after.track(track)) else {
+        return true;
+    };
+    !a.ptr_eq(b)
+        && (a.balance_lane() != b.balance_lane()
+            || a.mute_lane() != b.mute_lane()
+            || a.send_lanes() != b.send_lanes())
+}
+
+/// Scoped diff for `MidiNotesOnly` / `MidiExpressionOnly` commands.
 fn midi_notes_changed(before: &Project, after: &Project) -> bool {
     before.next_id != after.next_id
         || before.tracks().len() != after.tracks().len()
@@ -142,15 +171,16 @@ fn midi_notes_changed(before: &Project, after: &Project) -> bool {
             .tracks()
             .iter()
             .zip(after.tracks())
-            .any(|(a, b)| a.midi_clips() != b.midi_clips())
+            .any(|(a, b)| !a.ptr_eq(b) && a.midi_clips() != b.midi_clips())
 }
 
 fn needs_history_normalization(target: &Project, current: &Project) -> bool {
     target.next_id < current.next_id
         || target.tracks.iter().any(|track| {
-            current
-                .track(track.id)
-                .is_some_and(|old| track.gain_lane.recording_epoch < old.gain_lane.recording_epoch)
+            current.track(track.id).is_some_and(|old| {
+                !track.ptr_eq(old)
+                    && track.gain_lane.recording_epoch < old.gain_lane.recording_epoch
+            })
         })
 }
 
@@ -540,6 +570,16 @@ impl Editor {
         let alias_changed = alias_plan.finish(&mut candidate)?;
         let changed = match scope {
             CommandValidationScope::PureMixer => pure_mixer_changed(&self.project, &candidate),
+            CommandValidationScope::TrackMixerAutomation(track) => {
+                track_mixer_automation_changed(&self.project, &candidate, track)
+            }
+            CommandValidationScope::MidiExpressionOnly => {
+                if alias_changed {
+                    candidate.validate_aliases()?;
+                }
+                candidate.aliases != self.project.aliases
+                    || midi_notes_changed(&self.project, &candidate)
+            }
             CommandValidationScope::MidiNotesOnly if !alias_changed => {
                 candidate.validate_changed_midi_occupancy(&self.project)?;
                 candidate.validate_midi_volumes()?;
@@ -548,7 +588,7 @@ impl Editor {
             _ => {
                 candidate.prune_deleted_sidechains();
                 if alias_changed {
-                    Project::from_snapshot(candidate.snapshot())?;
+                    candidate.validate_aliases()?;
                 }
                 candidate.validate_serial_units()?;
                 candidate.validate_source_bindings()?;
@@ -614,6 +654,16 @@ impl Editor {
         let alias_changed = alias_plan.finish(&mut candidate)?;
         let changed = match scope {
             CommandValidationScope::PureMixer => pure_mixer_changed(&self.project, &candidate),
+            CommandValidationScope::TrackMixerAutomation(track) => {
+                track_mixer_automation_changed(&self.project, &candidate, track)
+            }
+            CommandValidationScope::MidiExpressionOnly => {
+                if alias_changed {
+                    candidate.validate_aliases()?;
+                }
+                candidate.aliases != self.project.aliases
+                    || midi_notes_changed(&self.project, &candidate)
+            }
             CommandValidationScope::MidiNotesOnly if !alias_changed => {
                 candidate.validate_changed_midi_occupancy(&self.project)?;
                 candidate.validate_midi_volumes()?;
@@ -622,7 +672,7 @@ impl Editor {
             _ => {
                 candidate.prune_deleted_sidechains();
                 if alias_changed {
-                    Project::from_snapshot(candidate.snapshot())?;
+                    candidate.validate_aliases()?;
                 }
                 candidate.validate_serial_units()?;
                 candidate.validate_source_bindings()?;
@@ -785,7 +835,7 @@ impl Editor {
                 alias_changed |= alias_plan.finish(&mut candidate)?;
             }
             if alias_changed {
-                Project::from_snapshot(candidate.snapshot())?;
+                candidate.validate_aliases()?;
             }
         }
         candidate.validate_serial_units()?;
@@ -1976,5 +2026,146 @@ mod section_history_tests {
             editor.project().midi_source(session_clip).unwrap().notes()[0].pitch(),
             67
         );
+    }
+
+    #[test]
+    fn track_cow_shares_untouched_tracks_and_m9_commands_use_scoped_validation() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let mut track_ids = Vec::new();
+        for index in 0..8 {
+            let Created::Track(id) = editor
+                .execute(Command::AddTrack {
+                    name: format!("track {index}"),
+                })
+                .unwrap()
+            else {
+                panic!("track expected");
+            };
+            track_ids.push(id);
+        }
+        let Created::Clip(midi_clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: track_ids[0],
+                start: crate::BeatTime::ZERO,
+                length: crate::BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("midi clip expected");
+        };
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip: midi_clip,
+                start: crate::BeatTime::ZERO,
+                duration: crate::BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap()
+        else {
+            panic!("note expected");
+        };
+
+        // 1. Single-track gain edit clones only the mutated track and shares Arc<TrackData> for all peers.
+        let before_gain = editor.project_arc();
+        let preview = editor
+            .stage_preview(Command::Gain {
+                track: track_ids[0],
+                gain: 0.5,
+            })
+            .unwrap();
+        assert!(!before_gain.tracks()[0].ptr_eq(&preview.tracks()[0]));
+        assert!(Arc::ptr_eq(
+            &before_gain.tracks()[0].content.0,
+            &preview.tracks()[0].content.0,
+        ));
+        for index in 1..track_ids.len() {
+            assert!(before_gain.tracks()[index].ptr_eq(&preview.tracks()[index]));
+        }
+
+        // 2. SetTrackMixerAutomation uses TrackMixerAutomation scope, detects changes/no-ops,
+        //    and shares untouched tracks.
+        let points = vec![crate::MixerAutomationPoint {
+            beat: crate::BeatTime::ZERO,
+            value: -0.25,
+            outgoing: crate::AutomationInterpolation::Linear,
+        }];
+        let cmd = Command::SetTrackMixerAutomation {
+            track: track_ids[1],
+            target: crate::MixerLaneTarget::Balance,
+            points: points.clone(),
+        };
+        assert_eq!(
+            command_validation_scope(editor.project(), &cmd),
+            CommandValidationScope::TrackMixerAutomation(track_ids[1])
+        );
+        let before_auto = editor.project_arc();
+        editor.execute(cmd).unwrap();
+        let after_auto = editor.project_arc();
+        assert!(!before_auto.tracks()[1].ptr_eq(&after_auto.tracks()[1]));
+        assert!(before_auto.tracks()[0].ptr_eq(&after_auto.tracks()[0]));
+        assert!(before_auto.tracks()[2].ptr_eq(&after_auto.tracks()[2]));
+        let noop_auto = editor
+            .stage_edit(Command::SetTrackMixerAutomation {
+                track: track_ids[1],
+                target: crate::MixerLaneTarget::Balance,
+                points,
+            })
+            .unwrap();
+        assert!(!noop_auto.changed());
+
+        // 3. SetMidiExpressionLane and SetMidiNoteExpression use MidiExpressionOnly scope,
+        //    propagate through aliases via direct validate_aliases(), and share untouched tracks.
+        editor
+            .execute(Command::DuplicateAliasClips(vec![midi_clip]))
+            .unwrap();
+        let expr_lane_cmd = Command::SetMidiExpressionLane {
+            clip: midi_clip,
+            kind: crate::MidiLaneKind::ControlChange(1),
+            points: vec![crate::MidiLanePoint {
+                beat: crate::BeatTime::ZERO,
+                channel: 0,
+                value: 96,
+            }],
+        };
+        assert_eq!(
+            command_validation_scope(editor.project(), &expr_lane_cmd),
+            CommandValidationScope::MidiExpressionOnly
+        );
+        let before_expr = editor.project_arc();
+        editor.execute(expr_lane_cmd.clone()).unwrap();
+        let after_expr = editor.project_arc();
+        assert!(before_expr.tracks()[1].ptr_eq(&after_expr.tracks()[1]));
+        let noop_expr = editor.stage_edit(expr_lane_cmd).unwrap();
+        assert!(!noop_expr.changed());
+
+        let note_expr_cmd = Command::SetMidiNoteExpression {
+            clip: midi_clip,
+            note,
+            expression: crate::NoteExpression {
+                pitch_offset_cents: 200,
+                timbre: 90,
+                pressure: 75,
+            },
+            points: vec![crate::NoteExpressionPoint {
+                offset: crate::BeatTime::ZERO,
+                pitch_offset_cents: 200,
+                timbre: 90,
+                pressure: 75,
+            }],
+        };
+        assert_eq!(
+            command_validation_scope(editor.project(), &note_expr_cmd),
+            CommandValidationScope::MidiExpressionOnly
+        );
+        editor.execute(note_expr_cmd.clone()).unwrap();
+        let noop_note_expr = editor.stage_edit(note_expr_cmd).unwrap();
+        assert!(!noop_note_expr.changed());
+
+        // 4. Direct validate_aliases() still rejects orphan/corrupt alias sources.
+        let mut corrupt = (*editor.project_arc()).clone();
+        corrupt.aliases.members.clear();
+        assert!(corrupt.validate_aliases().is_err());
     }
 }
