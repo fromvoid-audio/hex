@@ -315,20 +315,31 @@ fn operator_preset_is_one_canonical_edit_with_exact_undo_redo() {
         .state()
         .clone();
     assert_ne!(selected, original);
-    assert_eq!(selected.state_version(), 17);
-    assert_eq!(selected.payload().len(), 1760);
-    for (id, enabled) in [(513, false), (514, true), (515, true), (516, true)] {
-        assert_eq!(
-            hex_engine::native_device_parameter_for_class(
-                NativeDeviceClass::Instrument,
-                &selected,
-                ParameterId::from_static(id),
-            )
-            .expect("preserved oscillator enable"),
-            ParameterValue::Bool(enabled)
-        );
-    }
-    assert_eq!(&selected.payload()[288..], &original.payload()[288..]);
+    assert_eq!(selected.state_version(), original.state_version());
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &selected,
+            preset
+        )
+        .expect("selected routing preset"),
+        ParameterValue::Choice(3)
+    );
+    // The matrix, carrier levels and their two derived selectors are the only
+    // values a routing preset can change. Compare the other authored controls
+    // through the instrument's current descriptors across codec versions.
+    let unrelated_controls = |state| {
+        hex_engine::native_device_view_for_class(NativeDeviceClass::Instrument, state)
+            .expect("operator view")
+            .parameters
+            .into_iter()
+            .filter_map(|parameter| {
+                let id = parameter.descriptor.id;
+                (!matches!(id.value(), 13..=32 | 61 | 600)).then_some((id, parameter.value))
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(unrelated_controls(&selected), unrelated_controls(&original));
     let undone = session
         .undo_prepared_revision(Some(&changed))
         .expect("undo")

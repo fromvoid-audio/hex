@@ -629,6 +629,11 @@ fn version_one_migration_preserves_all_original_bytes_and_defaults_to_sine() {
         .copy_from_slice(&(-0.0_f32).to_le_bytes());
     let legacy = NativeDeviceState::new(OPERATOR_TYPE_ID, LEGACY_STATE_VERSION, legacy_payload)
         .expect("legacy state");
+    let registry = crate::native_instrument_registry().expect("instrument registry");
+    let vector = registry
+        .definition(OPERATOR_TYPE_ID)
+        .expect("registered vector");
+    hex_lattice::conformance::check_metadata(vector, &legacy).expect("historical v1 conformance");
     let migrated = OPERATOR_METADATA
         .migrate_state(&legacy)
         .expect("v1 migration");
