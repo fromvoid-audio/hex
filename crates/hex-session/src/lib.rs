@@ -55,6 +55,8 @@ mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
 mod export_error;
+pub mod export_recovery;
+pub use export_recovery::{ExportRecoveryJournal, ExportRecoveryKind, ExportRecoveryNotice};
 pub mod import_batch;
 pub mod import_batch_decode;
 mod import_reuse;

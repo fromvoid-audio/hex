@@ -868,6 +868,7 @@ fn export_reservation_rolls_back_when_request_admission_fails() {
         track_switch_views,
         arrangement_edit_views,
         export_events,
+        export_recovery: crate::ExportRecoveryJournal::new(None),
         export_drain_signal: Arc::new(WakeSignal::default()),
         outcome_drain_signal: Arc::new(WakeSignal::default()),
         worker_wake_signal: Arc::new(WakeSignal::default()),
