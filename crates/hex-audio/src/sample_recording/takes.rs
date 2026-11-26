@@ -129,7 +129,13 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
             .ok_or_else(|| io::Error::other("invalid sample recording WAV size"))?;
         file.set_len(len)?;
         file.seek(SeekFrom::Start(0))?;
+        #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+        write_fault::finalize_header(&mut file, rate, written)?;
+        #[cfg(not(all(test, target_os = "macos", target_arch = "aarch64")))]
         write_header(&mut file, rate, written)?;
+        #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+        write_fault::finalize_sync(&file)?;
+        #[cfg(not(all(test, target_os = "macos", target_arch = "aarch64")))]
         file.sync_all()?;
         if written != 0 {
             takes.push(Take {
@@ -151,16 +157,29 @@ pub fn write_takes(mut reader: Reader, directory: &Path) -> io::Result<Takes> {
 // The fault is armed on the recording worker, never on the audio callback.
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
 pub(super) mod write_fault {
+    use super::write_header;
     use std::{
         cell::Cell,
         fs::File,
         io::{self, Write},
     };
 
-    thread_local! { static ARMED: Cell<bool> = const { Cell::new(false) }; }
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(in crate::sample_recording) enum Mode {
+        None,
+        PacketOnce,
+        PacketThenHeaderEnospc,
+        PacketThenSyncEnospc,
+    }
+
+    thread_local! { static MODE: Cell<Mode> = const { Cell::new(Mode::None) }; }
 
     pub(in crate::sample_recording) fn arm() {
-        ARMED.with(|armed| armed.set(true));
+        MODE.with(|mode| mode.set(Mode::PacketOnce));
+    }
+
+    pub(in crate::sample_recording) fn arm_mode(next: Mode) {
+        MODE.with(|mode| mode.set(next));
     }
 
     pub(super) fn packet(
@@ -169,13 +188,37 @@ pub(super) mod write_fault {
         written: u64,
         bytes: &[u8],
     ) -> io::Result<()> {
-        if layer == 1 && written == 64 && ARMED.with(|armed| armed.replace(false)) {
+        let current = MODE.with(Cell::get);
+        if layer == 1 && written == 64 && current != Mode::None {
+            if current == Mode::PacketOnce {
+                MODE.with(|mode| mode.set(Mode::None));
+            }
             file.write_all(&bytes[..bytes.len() / 2])?;
             return Err(io::Error::from_raw_os_error(
                 rustix::io::Errno::NOSPC.raw_os_error(),
             ));
         }
         file.write_all(bytes)
+    }
+
+    pub(super) fn finalize_header(file: &mut File, rate: u32, frames: u64) -> io::Result<()> {
+        if MODE.with(Cell::get) == Mode::PacketThenHeaderEnospc {
+            MODE.with(|mode| mode.set(Mode::None));
+            return Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::NOSPC.raw_os_error(),
+            ));
+        }
+        write_header(file, rate, frames)
+    }
+
+    pub(super) fn finalize_sync(file: &File) -> io::Result<()> {
+        if MODE.with(Cell::get) == Mode::PacketThenSyncEnospc {
+            MODE.with(|mode| mode.set(Mode::None));
+            return Err(io::Error::from_raw_os_error(
+                rustix::io::Errno::NOSPC.raw_os_error(),
+            ));
+        }
+        file.sync_all()
     }
 }
 

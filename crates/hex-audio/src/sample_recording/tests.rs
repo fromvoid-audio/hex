@@ -530,6 +530,72 @@ fn full_disk_mid_packet_preserves_the_common_recorded_prefix() {
 }
 
 #[test]
+fn persistent_full_disk_header_or_sync_failure_preserves_existing_project_and_recovery_dir() {
+    for mode in [
+        takes::write_fault::Mode::PacketThenHeaderEnospc,
+        takes::write_fault::Mode::PacketThenSyncEnospc,
+    ] {
+        let parent = Directory(std::env::temp_dir().join(format!(
+            "hex-sample-persist-enospc-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+        )));
+        std::fs::create_dir(&parent.0).unwrap();
+        let project_path = parent.0.join("project.hex");
+        let media_path = parent.0.join("original.wav");
+        let prior_take = parent.0.join("earlier-take.wav");
+        std::fs::write(&project_path, b"original project").unwrap();
+        std::fs::write(&media_path, b"original media").unwrap();
+        std::fs::write(&prior_take, b"earlier good take").unwrap();
+        let (_, outputs) = two_tracks();
+        let (mut control, mut callback) = channel(48_000);
+        let reader = control.start(1, &outputs, false).unwrap();
+        let state = reader.state.clone();
+        let destination = parent.0.join("new-takes");
+        let dest_for_worker = destination.clone();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            takes::write_fault::arm_mode(mode);
+            let _ = result_tx.send(write_takes(reader, &dest_for_worker));
+        });
+        let deadline = Instant::now() + Duration::from_millis(500);
+        while state.load(Acquire) == PENDING {
+            assert!(Instant::now() < deadline, "take writer did not prepare");
+            std::thread::yield_now();
+        }
+        for _ in 0..2 {
+            callback.begin(64);
+            let (layout, stage) = callback.observation().unwrap();
+            for (output, value) in outputs.iter().zip([[0.25, 0.0], [0.0, -0.5]]) {
+                let OutputCaptureId::Track(id) = output else {
+                    panic!("expected track")
+                };
+                stage.observe(layout, ProjectSignal::Track(id.value()), 0, &[value; 64]);
+            }
+            stage.observe(layout, ProjectSignal::Master, 0, &[[0.0; 2]; 64]);
+            callback.finish(true);
+        }
+        let result = result_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("recording worker must finish on persistent ENOSPC");
+        worker.join().unwrap();
+        let err = result.expect_err("persistent finalization ENOSPC must propagate error");
+        assert_eq!(
+            err.raw_os_error(),
+            Some(rustix::io::Errno::NOSPC.raw_os_error())
+        );
+        // Earlier project, media, and prior takes are completely untouched; new directory stays for recovery.
+        assert!(destination.is_dir());
+        assert_eq!(std::fs::read(&project_path).unwrap(), b"original project");
+        assert_eq!(std::fs::read(&media_path).unwrap(), b"original media");
+        assert_eq!(std::fs::read(&prior_take).unwrap(), b"earlier good take");
+    }
+}
+
+#[test]
 fn bound_recording_publishes_timing_without_pcm_only_after_output_acceptance() {
     let source = prepared::AppliedAudioSource {
         context: hex_engine::AudioSourceContext {
