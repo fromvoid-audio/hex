@@ -1,13 +1,15 @@
 //! # Purpose
-//! Own optional control-side MIDI controller input and bounded scalar delivery.
+//! Own optional control-side MIDI controller input, bounded scalar delivery,
+//! and bounded selected hardware MIDI output handoff with deterministic note cleanup.
 //!
 //! # Dependencies
 //! Uses the standard library and the configured platform MIDI dependency on supported targets.
 //!
 //! # Does not own
-//! Does not schedule musical notes, mutate project state or perform audio callback work. Hardware
-//! note hosting is outside this input-capture boundary. Physical held snapshots
-//! support control-side step entry without scheduling or monitoring sound.
+//! Does not schedule musical notes, mutate project state, own external-instrument UI,
+//! or perform audio callback DSP. Physical held snapshots support control-side step
+//! entry without scheduling or monitoring sound; hardware output calibration and
+//! cross-platform drivers remain outside this macOS-first boundary.
 
 mod aggregator;
 mod framing;
@@ -15,6 +17,8 @@ mod held_notes;
 mod mpe;
 mod native;
 mod note_events;
+mod output;
+mod output_native;
 mod timebase;
 mod worker;
 
@@ -34,6 +38,13 @@ pub use mpe::{
     MpeActiveNote, MpeConfig, MpeDecoder, MpeExpressionEvent, MpeZone,
 };
 pub use note_events::{ControlChange, NoteEvent};
+pub use output::{
+    EncodedMidiMessage, MAX_OUTPUT_PORT_NAME_BYTES, MAX_OUTPUT_PORTS, OUTPUT_MAX_EVENTS_PER_DRAIN,
+    OUTPUT_NORMAL_CAPACITY, OUTPUT_PRIORITY_CAPACITY, OutputBackend, OutputCommand,
+    OutputConnectionState, OutputEnqueueResult, OutputError, OutputEvent, OutputHandle,
+    OutputMessage, OutputPort, OutputProducer, OutputSendError, OutputWorker,
+    TimestampedOutputMessage,
+};
 pub use timebase::{MachTimebase, MonotonicTimestampClock, TimedPacket, TimestampedNoteEvent};
 pub use worker::{Command, Event, Handle, Port, Sink, Worker};
 
