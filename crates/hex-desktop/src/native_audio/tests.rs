@@ -1572,22 +1572,50 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .control
         .command_with_ticket(PlaybackCommand::Seek(12288))
         .unwrap();
+    // Fade the current position over two 64-frame callbacks. The seek may
+    // be acknowledged at the exact fade end or after its cold page arrives.
+    const FADE_FRAMES: usize = 128;
+    for block in 0..2 {
+        let output = h.render();
+        let status = h.audio.as_ref().unwrap().status().unwrap();
+        assert_eq!(status.applied_audio_source(), Some(actual));
+        assert!(!status.render_fault.load(Acquire));
+        for (index, frame) in output.iter().enumerate() {
+            let elapsed = block * output.len() + index + 1;
+            let expected = 0.25 * (FADE_FRAMES - elapsed) as f32 / FADE_FRAMES as f32;
+            assert!(frame.iter().all(|s| (*s - expected).abs() < 0.0001));
+        }
+        let position = status.position.load(Acquire);
+        if status.stream_applied_command_prefix.load(Acquire) == seek {
+            assert_eq!(block, 1);
+            assert_eq!(position, 12288);
+        } else {
+            assert_eq!(position, before_seek + (block as u64 + 1) * 64);
+        }
+    }
     let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
+    let mut target_frames = 0;
+    while target_frames < FADE_FRAMES {
         let output = h.render();
         let status = h.audio.as_ref().unwrap().status().unwrap();
         assert_eq!(status.applied_audio_source(), Some(actual));
         assert!(!status.render_fault.load(Acquire));
         if status.stream_applied_command_prefix.load(Acquire) == seek {
-            assert_eq!(status.position.load(Acquire), 12288 + 64);
-            assert!(output.iter().flatten().all(|s| (*s - 0.5).abs() < 0.0001));
-            break;
+            for (index, frame) in output.iter().enumerate() {
+                let expected = 0.5 * (target_frames + index + 1) as f32 / FADE_FRAMES as f32;
+                assert!(frame.iter().all(|s| (*s - expected).abs() < 0.0001));
+            }
+            target_frames += output.len();
+            assert_eq!(status.position.load(Acquire), 12288 + target_frames as u64);
+        } else {
+            assert_eq!(
+                status.position.load(Acquire),
+                before_seek + FADE_FRAMES as u64
+            );
+            assert_eq!(output, [[0.0; 2]; 64]);
+            assert!(Instant::now() < deadline, "verified seek did not commit");
+            std::thread::yield_now();
         }
-        // A missing exact target may buffer, but cannot partially seek or ACK.
-        assert_eq!(status.position.load(Acquire), before_seek);
-        assert_eq!(output, [[0.0; 2]; 64]);
-        assert!(Instant::now() < deadline, "verified seek did not commit");
-        std::thread::sleep(Duration::from_millis(1));
     }
     assert_eq!(h.domain(context), domain);
     let pause = h
@@ -1609,7 +1637,7 @@ fn verified_adapter_seek_pause_and_priority_stop_preserve_applied_source_and_dom
         .unwrap()
         .position
         .load(Acquire);
-    assert!(paused > 12288 + 64 && paused <= 12288 + 64 + 256);
+    assert_eq!(paused, 12288 + 2 * FADE_FRAMES as u64);
     for _ in 0..2 {
         assert_eq!(h.render(), [[0.0; 2]; 64]);
         let status = h.audio.as_ref().unwrap().status().unwrap();
