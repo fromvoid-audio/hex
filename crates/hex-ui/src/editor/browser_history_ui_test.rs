@@ -452,6 +452,8 @@ fn browser_history_removed_or_hidden_source_fallback_does_not_push_or_clear_forw
         assert_eq!(view.browser.section, BrowserSection::Instruments)
     });
     click(visual, "browser-control-⚙");
+    // Keep the configured fallback distinct from the removed place's All history entry.
+    click(visual, "browser-section-move-up-0");
     click(visual, "browser-section-visibility-1");
     editor.read_with(visual, |view, _| {
         assert_eq!(view.browser.section, BrowserSection::Samples)

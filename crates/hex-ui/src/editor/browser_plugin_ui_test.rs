@@ -1187,8 +1187,8 @@ fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_hist
     editor.read_with(&visual, |view, cx| {
         assert_eq!(
             view.browser.section,
-            BrowserSection::Samples,
-            "hiding active vst3 selects the existing visible fallback"
+            BrowserSection::All,
+            "hiding active vst3 selects the first visible section in the default order"
         );
         assert_eq!(view.browser.search.read(cx).text(), "vendor");
     });
