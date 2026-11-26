@@ -10,6 +10,8 @@ mod compressor;
 mod cursor_loop;
 #[path = "callback_allocations/device_track.rs"]
 mod device_track;
+#[path = "callback_allocations/external_audio_effect.rs"]
+mod external_audio_effect;
 mod filter;
 #[path = "callback_allocations/finite_bounce.rs"]
 mod finite_bounce;
