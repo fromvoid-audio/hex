@@ -18,6 +18,20 @@ const MAX_RECEIPT_BYTES: u64 = 8 * 1024 * 1024;
 // not extend this process's custody beyond the lifetime of its lease.
 pub(super) struct UpdateLease(File);
 
+#[cfg(test)]
+impl UpdateLease {
+    pub(super) fn acquire_lock_file_for_test(path: &Path) -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        fs2::FileExt::try_lock_shared(&file)?;
+        Ok(Self(file))
+    }
+}
+
 impl Drop for UpdateLease {
     fn drop(&mut self) {
         let _ = fs2::FileExt::unlock(&self.0);
