@@ -204,6 +204,8 @@ editor_components = {
         'dial_row(', 'main_caption)', 'amount)', 'mod_mode)', 'stereo_rail)', 'main_rail)',
     ),
     'device_panel/compressor_panel.rs': ('ctrl)', 'row(', 'extras)', 'mode_col)', 'sc_col)'),
+    'device_panel/operator_panel.rs': ('performance_column(',),
+    'device_panel/operator_panel/global.rs': ('voices)', 'glide_enabled)', 'glide_time)'),
     'device_panel/overdrive_panel.rs': ('entity)', 'top_dials)', 'bottom_dials)'),
     'device_panel/saturator_panel.rs': (
         'soft_clip)', 'dc_filter)', 'switches)', 'main_dials)', 'a)', 'b)',
