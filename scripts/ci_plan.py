@@ -356,8 +356,9 @@ ADDITIVE_TEST_FEATURES: dict[str, tuple[str, ...]] = {
 # (such as allocation-probe or ui-unit-tier) without disqualifying the package's
 # reviewed additive features from folding default+feature into a single run.
 SINGLE_RUN_COMPANION_FEATURES: dict[str, frozenset[str]] = {
-    "hex-ui": frozenset({"ui-unit-tier"}),
-    "hex-desktop": frozenset({"allocation-probe", "ui-test-support"}),
+    # The optional profiler is tested and linted as its own extra configuration.
+    "hex-ui": frozenset({"ui-unit-tier", "profiling-tools"}),
+    "hex-desktop": frozenset({"allocation-probe", "ui-test-support", "profiling-tools"}),
     "hex-audio": frozenset({"allocation-probe", "vst3-sdk-tests"}),
     "hex-stream": frozenset({"allocation-probe"}),
     "hex-plugin-host": frozenset({"allocation-probe", "vst3-sdk-tests"}),
@@ -465,6 +466,8 @@ UI_DEFAULT_LIB_UNIT_CFG = '#[cfg(all(test, not(feature = "ui-test-support")))]'
 # These reviewed gates are test-only fallbacks or None-hook equivalents whose
 # default cfg(not(feature)) branch remains compiled and linted by default Clippy.
 REVIEWED_EQUIVALENT_FEATURE_CFGS: dict[tuple[str, str], str] = {
+    # Only the lint level changes; the method exists in both configurations.
+    ("hex-ui", "src/editor/browser/samples.rs"): '#[cfg_attr(not(all(test, feature = "ui-test-support")), allow(dead_code))]',
     ("hex-ui", "src/editor/clip_boundary.rs"): '#[cfg(not(any(test, feature = "ui-test-support")))]',
     ("hex-ui", "src/editor/trim/geometry.rs"): '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
     ("hex-ui", "src/vertical_scrollbar/geometry.rs"): '#[cfg(all(test, any(feature = "ui-unit-tier", not(feature = "ui-test-support"))))]',
