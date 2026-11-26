@@ -111,10 +111,18 @@ impl EffectTransport {
         }
     }
 
-    pub(super) fn finish(&mut self, accepted: bool) -> Result<(), Fault> {
+    pub(super) fn finish_with_publish_timestamp(
+        &mut self,
+        accepted: bool,
+        published_at_ns: Option<u64>,
+    ) -> Result<(), Fault> {
         match self {
-            Self::Ordinary(callback) => callback.finish(accepted),
-            Self::Dense(callback) => callback.finish(accepted),
+            Self::Ordinary(callback) => {
+                callback.finish_with_publish_timestamp(accepted, published_at_ns)
+            }
+            Self::Dense(callback) => {
+                callback.finish_with_publish_timestamp(accepted, published_at_ns)
+            }
         }
     }
 

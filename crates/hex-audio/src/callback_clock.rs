@@ -33,7 +33,13 @@
 //!   eliminate kernel commpage retry/trap paths on arbitrary hardware; physical
 //!   device deadline qualification remains separate.
 
+use std::sync::OnceLock;
 use std::time::Instant;
+
+/// Process-wide control-prewarmed monotonic origin so callbacks and paired
+/// native plugin workers started on control share the exact same monotonic
+/// epoch without touching `OnceLock` inside the audio callback.
+static SHARED_MONOTONIC_ORIGIN: OnceLock<Instant> = OnceLock::new();
 
 /// Admitted timing policy for a callback/worker clock pair.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,11 +62,12 @@ impl CallbackClock {
     ///
     /// Performs the initial `CLOCK_UPTIME_RAW` / `mach_timebase_info` read on
     /// control so first-use timebase caching never occurs inside an audio
-    /// callback. The returned value is `Copy` and shares the exact same origin
-    /// when passed to a callback and its paired worker.
+    /// callback. All control-prewarmed handles share the same monotonic origin
+    /// by value (`Copy`), so callback reads never touch synchronization state.
     pub fn prewarm_monotonic() -> Self {
+        let origin = *SHARED_MONOTONIC_ORIGIN.get_or_init(Instant::now);
         Self {
-            origin: Some(Instant::now()),
+            origin: Some(origin),
         }
     }
 
@@ -126,10 +133,12 @@ mod tests {
     #[test]
     fn prewarmed_clock_is_monotonic_and_unavailable_clock_never_fabricates_timing() {
         let clock = CallbackClock::prewarm_monotonic();
+        let peer_clock = CallbackClock::prewarm_monotonic();
+        assert_eq!(clock, peer_clock);
         assert_eq!(clock.policy(), CallbackClockPolicy::MonotonicUptimeRaw);
         assert!(clock.is_available());
         let first = clock.try_now_ns().expect("prewarmed clock returns ns");
-        let second = clock.try_now_ns().expect("second read returns ns");
+        let second = peer_clock.try_now_ns().expect("second read returns ns");
         assert!(second >= first);
         assert_eq!(
             checked_elapsed_ns(Some(first), Some(second)),
