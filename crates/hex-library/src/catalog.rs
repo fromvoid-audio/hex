@@ -16,6 +16,8 @@ mod fingerprint;
 mod header;
 mod lookup;
 #[cfg(test)]
+mod taxonomy_tests;
+#[cfg(test)]
 mod tests;
 
 pub use fingerprint::{FINGERPRINT_BLOCK, Fingerprint};
@@ -49,6 +51,8 @@ pub struct SampleCatalog {
     records: HashMap<PathBuf, SampleRecord>,
     /// Persistent lowercase user tags keyed by original sample path.
     tags: HashMap<PathBuf, BTreeSet<String>>,
+    /// Persistent bounded hierarchical taxonomy (`tag -> optional parent tag`).
+    tag_taxonomy: BTreeMap<String, Option<String>>,
     /// Persistent named collections of original sample paths.
     collections: BTreeMap<String, BTreeSet<PathBuf>>,
 }
@@ -58,6 +62,7 @@ impl PartialEq for SampleCatalog {
         self.entries == other.entries
             && self.records == other.records
             && self.tags == other.tags
+            && self.tag_taxonomy == other.tag_taxonomy
             && self.collections == other.collections
     }
 }
@@ -100,6 +105,9 @@ pub struct CatalogQuery<'a> {
     pub text: &'a str,
     pub source: Option<&'a Path>,
     pub tag: Option<&'a str>,
+    /// Optional multi-group tag filter: OR within each non-empty group (expanding
+    /// hierarchical descendants), AND across groups.
+    pub tag_groups: &'a [Vec<String>],
     pub collection: Option<&'a str>,
     pub codec: Option<AudioCodec>,
     pub sample_rate: Option<u32>,
@@ -194,15 +202,183 @@ impl SampleCatalog {
         self.tags.get(path)
     }
 
-    /// All distinct tags currently present in the catalog, sorted lexicographically.
+    /// All distinct tags currently defined in the taxonomy or attached to samples,
+    /// sorted lexicographically.
     pub fn all_tags(&self) -> Vec<String> {
-        let mut all = BTreeSet::new();
+        let mut all: BTreeSet<String> = self.tag_taxonomy.keys().cloned().collect();
         for set in self.tags.values() {
             for tag in set {
                 all.insert(tag.clone());
             }
         }
         all.into_iter().collect()
+    }
+
+    /// Persistent hierarchical tag taxonomy (`tag_name -> Option<parent_tag_name>`).
+    pub fn tag_taxonomy(&self) -> &BTreeMap<String, Option<String>> {
+        &self.tag_taxonomy
+    }
+
+    /// Expand `tag` to include itself plus all descendant tags in the hierarchy.
+    pub fn tag_descendants(&self, tag: &str) -> BTreeSet<String> {
+        let Ok(root) = normalize_label(tag) else {
+            return BTreeSet::new();
+        };
+        let mut out = BTreeSet::from([root.clone()]);
+        let mut frontier = vec![root];
+        while let Some(current) = frontier.pop() {
+            for (child, parent) in &self.tag_taxonomy {
+                if parent.as_deref() == Some(current.as_str()) && out.insert(child.clone()) {
+                    frontier.push(child.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Define or re-parent a tag in the persistent hierarchical taxonomy.
+    /// Rejects empty/oversized labels, missing parents, cycles, and depth > 8.
+    pub fn define_tag(&mut self, name: &str, parent: Option<&str>) -> Result<bool, &'static str> {
+        let normalized = normalize_label(name)?;
+        let normalized_parent = match parent {
+            Some(p) => Some(normalize_label(p)?),
+            None => None,
+        };
+        if let Some(ref parent_name) = normalized_parent {
+            if parent_name == &normalized {
+                return Err("tag cannot be its own parent");
+            }
+            if !self.tag_taxonomy.contains_key(parent_name) {
+                return Err("parent tag does not exist");
+            }
+            // Check ancestry for cycles and depth ceiling.
+            let mut cursor = Some(parent_name.as_str());
+            let mut depth = 1_usize;
+            let mut seen = BTreeSet::from([normalized.as_str()]);
+            while let Some(node) = cursor {
+                if !seen.insert(node) {
+                    return Err("tag hierarchy cannot contain a cycle");
+                }
+                if depth > crate::boundary::MAX_TAXONOMY_DEPTH {
+                    return Err("tag hierarchy depth limit reached");
+                }
+                cursor = self.tag_taxonomy.get(node).and_then(|p| p.as_deref());
+                depth += 1;
+            }
+        }
+        if !self.tag_taxonomy.contains_key(&normalized)
+            && self.tag_taxonomy.len() >= crate::boundary::MAX_TAXONOMY_TAGS
+        {
+            return Err("taxonomy tag limit reached");
+        }
+        let changed = self.tag_taxonomy.get(&normalized) != Some(&normalized_parent);
+        self.tag_taxonomy.insert(normalized, normalized_parent);
+        Ok(changed)
+    }
+
+    /// Rename a tag across the taxonomy, child parent links, and all sample assignments.
+    pub fn rename_tag(&mut self, old: &str, new: &str) -> Result<bool, &'static str> {
+        let old_norm = normalize_label(old)?;
+        let new_norm = normalize_label(new)?;
+        if old_norm == new_norm {
+            return Ok(false);
+        }
+        let in_taxonomy = self.tag_taxonomy.contains_key(&old_norm);
+        let in_samples = self.tags.values().any(|set| set.contains(&old_norm));
+        if !in_taxonomy && !in_samples {
+            return Err("tag does not exist");
+        }
+        if self.tag_taxonomy.contains_key(&new_norm) {
+            return Err("destination tag already exists");
+        }
+        if let Some(parent) = self.tag_taxonomy.remove(&old_norm) {
+            self.tag_taxonomy.insert(new_norm.clone(), parent);
+            for p in self.tag_taxonomy.values_mut() {
+                if p.as_deref() == Some(old_norm.as_str()) {
+                    *p = Some(new_norm.clone());
+                }
+            }
+        }
+        for set in self.tags.values_mut() {
+            if set.remove(&old_norm) {
+                set.insert(new_norm.clone());
+            }
+        }
+        Ok(true)
+    }
+
+    /// Merge `source` tag into `target`, moving sample assignments and re-parenting
+    /// children while rejecting cycles into descendants.
+    pub fn merge_tag(&mut self, source: &str, target: &str) -> Result<bool, &'static str> {
+        let src = normalize_label(source)?;
+        let dst = normalize_label(target)?;
+        if src == dst {
+            return Err("cannot merge a tag into itself");
+        }
+        if self.tag_descendants(&src).contains(&dst) {
+            return Err("cannot merge a tag into its own descendant");
+        }
+        if !self.tag_taxonomy.contains_key(&dst)
+            && self.tag_taxonomy.len() >= crate::boundary::MAX_TAXONOMY_TAGS
+        {
+            return Err("taxonomy tag limit reached");
+        }
+        self.tag_taxonomy.entry(dst.clone()).or_insert(None);
+        self.tag_taxonomy.remove(&src);
+        for parent in self.tag_taxonomy.values_mut() {
+            if parent.as_deref() == Some(src.as_str()) {
+                *parent = Some(dst.clone());
+            }
+        }
+        for set in self.tags.values_mut() {
+            if set.remove(&src) && set.len() < MAX_TAGS_PER_SAMPLE {
+                set.insert(dst.clone());
+            }
+        }
+        Ok(true)
+    }
+
+    /// Delete `name` from the taxonomy (promoting children to grandparent) and
+    /// remove it from every sample assignment.
+    pub fn delete_tag(&mut self, name: &str) -> bool {
+        let Ok(norm) = normalize_label(name) else {
+            return false;
+        };
+        let mut removed = false;
+        if let Some(grandparent) = self.tag_taxonomy.remove(&norm) {
+            removed = true;
+            for parent in self.tag_taxonomy.values_mut() {
+                if parent.as_deref() == Some(norm.as_str()) {
+                    *parent = grandparent.clone();
+                }
+            }
+        }
+        self.tags.retain(|_, set| {
+            if set.remove(&norm) {
+                removed = true;
+            }
+            !set.is_empty()
+        });
+        removed
+    }
+
+    /// Rename a persistent collection without losing its members.
+    pub fn rename_collection(&mut self, old: &str, new: &str) -> Result<bool, &'static str> {
+        let old_norm = normalize_label(old)?;
+        let new_norm = normalize_label(new)?;
+        if old_norm == new_norm {
+            return Ok(false);
+        }
+        if !self.collections.contains_key(&old_norm) {
+            return Err("collection does not exist");
+        }
+        if self.collections.contains_key(&new_norm) {
+            return Err("collection name already exists");
+        }
+        if let Some(members) = self.collections.remove(&old_norm) {
+            self.collections.insert(new_norm, members);
+        }
+        Ok(true)
     }
 
     /// Create an empty named user collection. Returns `Ok(true)` if newly created.
@@ -499,13 +675,32 @@ impl SampleCatalog {
     }
 
     fn query_parsed(&self, q: &CatalogQuery<'_>, parsed: &ParsedQuery<'_>) -> Vec<LibraryEntry> {
-        let required_tag = match q.tag {
+        let required_tag_set = match q.tag {
             Some(tag) => match normalize_label(tag) {
-                Ok(normalized) => Some(normalized),
+                Ok(normalized) => Some(self.tag_descendants(&normalized)),
                 Err(_) => return Vec::new(),
             },
             None => None,
         };
+        let mut required_groups: Vec<BTreeSet<String>> = Vec::new();
+        for group in q.tag_groups {
+            if group.is_empty() {
+                continue;
+            }
+            let mut expanded = BTreeSet::new();
+            for raw in group {
+                let Ok(norm) = normalize_label(raw) else {
+                    return Vec::new();
+                };
+                expanded.extend(self.tag_descendants(&norm));
+            }
+            required_groups.push(expanded);
+        }
+        let inline_tag_sets: Vec<BTreeSet<String>> = parsed
+            .inline_tags
+            .iter()
+            .map(|tag| self.tag_descendants(tag))
+            .collect();
         let explicit_collection = match q.collection {
             Some(collection) => match normalize_label(collection) {
                 Ok(normalized) => Some(normalized),
@@ -532,13 +727,14 @@ impl SampleCatalog {
         let required_channels = q.channels.or(parsed.inline_channels);
         let required_codec = q.codec.or(parsed.inline_codec);
 
-        if self.tags.is_empty() && (required_tag.is_some() || !parsed.inline_tags.is_empty()) {
+        let has_tag_predicates = required_tag_set.is_some()
+            || !required_groups.is_empty()
+            || !inline_tag_sets.is_empty();
+        if self.tags.is_empty() && has_tag_predicates {
             return Vec::new();
         }
-        let need_tags = !self.tags.is_empty()
-            && (required_tag.is_some()
-                || !parsed.inline_tags.is_empty()
-                || !parsed.text_terms.is_empty());
+        let need_tags =
+            !self.tags.is_empty() && (has_tag_predicates || !parsed.text_terms.is_empty());
         let need_audio_filter = required_codec.is_some()
             || required_rate.is_some()
             || required_channels.is_some()
@@ -564,16 +760,19 @@ impl SampleCatalog {
                 } else {
                     None
                 };
-                if let Some(tag) = required_tag.as_deref()
-                    && !entry_tags.is_some_and(|set| set.contains(tag))
+                if let Some(ref allowed) = required_tag_set
+                    && !entry_tags.is_some_and(|set| set.iter().any(|t| allowed.contains(t)))
                 {
                     continue;
                 }
-                if parsed
-                    .inline_tags
-                    .iter()
-                    .any(|tag| !entry_tags.is_some_and(|set| set.contains(*tag)))
-                {
+                if required_groups.iter().any(|group| {
+                    !entry_tags.is_some_and(|set| set.iter().any(|t| group.contains(t)))
+                }) {
+                    continue;
+                }
+                if inline_tag_sets.iter().any(|allowed| {
+                    !entry_tags.is_some_and(|set| set.iter().any(|t| allowed.contains(t)))
+                }) {
                     continue;
                 }
                 if !parsed.text_terms.is_empty() {
@@ -633,16 +832,20 @@ impl SampleCatalog {
             } else {
                 None
             };
-            if let Some(tag) = required_tag.as_deref()
-                && !entry_tags.is_some_and(|set| set.contains(tag))
+            if let Some(ref allowed) = required_tag_set
+                && !entry_tags.is_some_and(|set| set.iter().any(|t| allowed.contains(t)))
             {
                 continue;
             }
-            if parsed
-                .inline_tags
+            if required_groups
                 .iter()
-                .any(|tag| !entry_tags.is_some_and(|set| set.contains(*tag)))
+                .any(|group| !entry_tags.is_some_and(|set| set.iter().any(|t| group.contains(t))))
             {
+                continue;
+            }
+            if inline_tag_sets.iter().any(|allowed| {
+                !entry_tags.is_some_and(|set| set.iter().any(|t| allowed.contains(t)))
+            }) {
                 continue;
             }
             if !parsed.text_terms.is_empty() {
@@ -976,6 +1179,7 @@ pub fn scan_samples_with(roots: &[PathBuf], control: ScanControl<'_>) -> Catalog
     let mut result = walk.result;
     if let Some(previous) = control.previous {
         result.catalog.tags = previous.tags.clone();
+        result.catalog.tag_taxonomy = previous.tag_taxonomy.clone();
         result.catalog.collections = previous.collections.clone();
     }
     sort_entries(&mut result.catalog.entries, true);

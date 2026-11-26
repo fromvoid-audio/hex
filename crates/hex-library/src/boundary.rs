@@ -251,17 +251,34 @@ impl CatalogLibraryAdapter {
             adapter.item_revisions.insert(id, adapter.revision);
         }
         let existing_tags = adapter.catalog.all_tags();
-        for name in existing_tags {
+        for name in &existing_tags {
             let id = TagId(adapter.allocate_id());
             adapter.tag_name_to_id.insert(name.clone(), id);
             adapter.tags.insert(
                 id,
                 TagDefinition {
                     id,
-                    name,
+                    name: name.clone(),
                     parent: None,
                 },
             );
+        }
+        let parent_links: Vec<(TagId, TagId)> = adapter
+            .catalog
+            .tag_taxonomy()
+            .iter()
+            .filter_map(|(name, parent)| {
+                let child_id = *adapter.tag_name_to_id.get(name)?;
+                let parent_id = parent
+                    .as_deref()
+                    .and_then(|p| adapter.tag_name_to_id.get(p).copied())?;
+                Some((child_id, parent_id))
+            })
+            .collect();
+        for (child_id, parent_id) in parent_links {
+            if let Some(def) = adapter.tags.get_mut(&child_id) {
+                def.parent = Some(parent_id);
+            }
         }
         adapter
     }
@@ -508,6 +525,12 @@ impl LibraryBoundary for CatalogLibraryAdapter {
                         return Err(LibraryBoundaryError::DuplicateTag(normalized));
                     }
                     self.tag_depth(parent)?;
+                    let parent_name = parent
+                        .and_then(|pid| self.tags.get(&pid))
+                        .map(|p| p.name.clone());
+                    self.catalog
+                        .define_tag(&normalized, parent_name.as_deref())
+                        .map_err(LibraryBoundaryError::InvalidLabel)?;
                     let id = TagId(self.allocate_id());
                     self.tag_name_to_id.insert(normalized.clone(), id);
                     self.tags.insert(
@@ -531,29 +554,24 @@ impl LibraryBoundary for CatalogLibraryAdapter {
                     if self.tag_name_to_id.contains_key(&normalized) {
                         return Err(LibraryBoundaryError::DuplicateTag(normalized));
                     }
-                    self.tag_name_to_id.remove(&old_name);
-                    self.tag_name_to_id.insert(normalized.clone(), tag);
-                    if let Some(def) = self.tags.get_mut(&tag) {
-                        def.name = normalized.clone();
-                    }
-                    let affected: Vec<PathBuf> = self
+                    let affected: Vec<LibraryItemId> = self
                         .item_to_path
-                        .values()
-                        .filter(|p| {
+                        .iter()
+                        .filter(|(_, p)| {
                             self.catalog
                                 .tags_for(p)
                                 .is_some_and(|s| s.contains(&old_name))
                         })
-                        .cloned()
+                        .map(|(id, _)| *id)
                         .collect();
-                    for path in affected {
-                        self.catalog.remove_tag(&path, &old_name);
-                        self.catalog
-                            .add_tag(&path, &normalized)
-                            .map_err(LibraryBoundaryError::LimitReached)?;
-                        if let Some(&item_id) = self.path_to_item.get(&path) {
-                            self.item_revisions.insert(item_id, next_rev);
-                        }
+                    let _ = self.catalog.rename_tag(&old_name, &normalized);
+                    self.tag_name_to_id.remove(&old_name);
+                    self.tag_name_to_id.insert(normalized.clone(), tag);
+                    if let Some(def) = self.tags.get_mut(&tag) {
+                        def.name = normalized;
+                    }
+                    for item_id in affected {
+                        self.item_revisions.insert(item_id, next_rev);
                     }
                     Ok((None, true))
                 }
@@ -571,24 +589,21 @@ impl LibraryBoundary for CatalogLibraryAdapter {
                     if descendants.contains(&target) {
                         return Err(LibraryBoundaryError::CycleDetected);
                     }
-                    let affected: Vec<PathBuf> = self
+                    let affected: Vec<LibraryItemId> = self
                         .item_to_path
-                        .values()
-                        .filter(|p| {
+                        .iter()
+                        .filter(|(_, p)| {
                             self.catalog
                                 .tags_for(p)
                                 .is_some_and(|s| s.contains(&source_name))
                         })
-                        .cloned()
+                        .map(|(id, _)| *id)
                         .collect();
-                    for path in affected {
-                        self.catalog.remove_tag(&path, &source_name);
-                        self.catalog
-                            .add_tag(&path, &target_name)
-                            .map_err(LibraryBoundaryError::LimitReached)?;
-                        if let Some(&item_id) = self.path_to_item.get(&path) {
-                            self.item_revisions.insert(item_id, next_rev);
-                        }
+                    self.catalog
+                        .merge_tag(&source_name, &target_name)
+                        .map_err(LibraryBoundaryError::InvalidLabel)?;
+                    for item_id in affected {
+                        self.item_revisions.insert(item_id, next_rev);
                     }
                     for def in self.tags.values_mut() {
                         if def.parent == Some(source) {
@@ -603,21 +618,19 @@ impl LibraryBoundary for CatalogLibraryAdapter {
                     let Some(def) = self.tags.get(&tag).cloned() else {
                         return Err(LibraryBoundaryError::UnknownTag(tag));
                     };
-                    let affected: Vec<PathBuf> = self
+                    let affected: Vec<LibraryItemId> = self
                         .item_to_path
-                        .values()
-                        .filter(|p| {
+                        .iter()
+                        .filter(|(_, p)| {
                             self.catalog
                                 .tags_for(p)
                                 .is_some_and(|s| s.contains(&def.name))
                         })
-                        .cloned()
+                        .map(|(id, _)| *id)
                         .collect();
-                    for path in affected {
-                        self.catalog.remove_tag(&path, &def.name);
-                        if let Some(&item_id) = self.path_to_item.get(&path) {
-                            self.item_revisions.insert(item_id, next_rev);
-                        }
+                    self.catalog.delete_tag(&def.name);
+                    for item_id in affected {
+                        self.item_revisions.insert(item_id, next_rev);
                     }
                     for child in self.tags.values_mut() {
                         if child.parent == Some(tag) {
