@@ -1,7 +1,7 @@
 //! Complete canonical install. File reading and runtime preparation stay with
 //! the caller; all authored changes take place inside the one editor candidate.
 
-use super::{apply_root, replacement, state_mut};
+use super::{ReservedUnitOriginal, UnitAssetResolution, apply_root, replacement, state_mut};
 use crate::{AssetId, Command, Created, DeviceComparison, Invalid, PortableDeviceUnit, Project};
 use hex_lattice_contract::NativeDeviceState;
 
@@ -21,7 +21,9 @@ pub(super) enum ReplacementPolicy {
 #[derive(Clone, Debug)]
 pub(super) struct CompleteUnit {
     template: PortableDeviceUnit,
-    assets: Box<[AssetId]>,
+    resolutions: Box<[UnitAssetResolution]>,
+    resolved_assets: Box<[AssetId]>,
+    reserved_originals: Box<[ReservedUnitOriginal]>,
     policy: ReplacementPolicy,
 }
 
@@ -38,9 +40,40 @@ impl CompleteUnit {
         if template.nodes()[0].state.type_id() != target.type_id() {
             return Err(Invalid("portable unit does not match the target provider"));
         }
+        let resolutions = assets
+            .iter()
+            .copied()
+            .map(UnitAssetResolution::Existing)
+            .collect();
         Ok(Self {
             template,
-            assets: assets.into_boxed_slice(),
+            resolutions,
+            resolved_assets: assets.into_boxed_slice(),
+            reserved_originals: Box::new([]),
+            policy,
+        })
+    }
+
+    pub(super) fn new_with_originals(
+        project: &Project,
+        template: PortableDeviceUnit,
+        resolutions: Vec<UnitAssetResolution>,
+        target: &NativeDeviceState,
+        policy: ReplacementPolicy,
+    ) -> Result<Self, Invalid> {
+        if template.assets().len() != resolutions.len() {
+            return Err(Invalid("portable device asset resolution is incomplete"));
+        }
+        if template.nodes()[0].state.type_id() != target.type_id() {
+            return Err(Invalid("portable unit does not match the target provider"));
+        }
+        let (resolved_assets, reserved_originals) =
+            remap::plan_resolutions(project, &template, &resolutions)?;
+        Ok(Self {
+            template,
+            resolutions: resolutions.into_boxed_slice(),
+            resolved_assets: resolved_assets.into_boxed_slice(),
+            reserved_originals: reserved_originals.into_boxed_slice(),
             policy,
         })
     }
@@ -49,12 +82,27 @@ impl CompleteUnit {
         self.template.nodes()[0].comparison.as_ref()
     }
 
+    pub(super) fn resolved_assets(&self) -> &[AssetId] {
+        &self.resolved_assets
+    }
+
+    pub(super) fn reserved_originals(&self) -> &[ReservedUnitOriginal] {
+        &self.reserved_originals
+    }
+
     pub(super) fn apply(
         self,
         project: &mut Project,
         mut command: Command,
     ) -> Result<Created, Invalid> {
-        remap::validate_assets(project, &self.template, &self.assets)?;
+        let (planned_assets, planned_reserved) =
+            remap::plan_resolutions(project, &self.template, &self.resolutions)?;
+        if planned_assets.as_slice() != self.resolved_assets.as_ref()
+            || planned_reserved.as_slice() != self.reserved_originals.as_ref()
+        {
+            return Err(Invalid("reserved original asset identity is stale"));
+        }
+
         let nodes = self.template.nodes();
         let root = &nodes[0];
         if let Some(target) = replacement(&command) {
@@ -80,7 +128,14 @@ impl CompleteUnit {
             }
         }
 
-        *state_mut(&mut command)? = remap::map_state(&root.state, &self.assets)?;
+        let destination = remap::materialize_resolutions(
+            project,
+            &self.template,
+            &self.resolutions,
+            &self.resolved_assets,
+        )?;
+
+        *state_mut(&mut command)? = remap::map_state(&root.state, &destination)?;
         let (created, root_id) = apply_root(project, command)?;
         if project
             .device_location(root_id)
@@ -95,7 +150,7 @@ impl CompleteUnit {
                 let parent = *device_ids
                     .get(parent)
                     .ok_or(Invalid("portable unit parent is missing"))?;
-                let state = remap::map_state(&node.state, &self.assets)?;
+                let state = remap::map_state(&node.state, &destination)?;
                 let Created::Device(child) =
                     project.apply(Command::InsertNestedDevice { parent, state })?
                 else {
@@ -106,7 +161,7 @@ impl CompleteUnit {
                 root_id
             };
             device_ids.push(device);
-            let comparison = remap::map_comparison(node.comparison.as_ref(), &self.assets)?;
+            let comparison = remap::map_comparison(node.comparison.as_ref(), &destination)?;
             project.edit_device(device, |entry| {
                 entry.bypassed = node.bypassed;
                 entry.comparison = comparison;
