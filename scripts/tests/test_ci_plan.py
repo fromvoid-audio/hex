@@ -5582,6 +5582,28 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(steps["ui-unit-unit_device"].requires_tests)
         self.assertFalse(steps["ui-feature-tests"].requires_tests)
 
+    def test_vector_panel_selects_default_units_and_the_rendered_owner(self):
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for module, rendered_module in (("algorithms", "operator_algorithm_ui_tests"),
+                                        ("waveform_editor", "operator_waveform_editor_tests")):
+            with self.subTest(module=module):
+                path = f"crates/hex-ui/src/editor/device_panel/operator_panel/{module}.rs"
+                prefix = f"editor::device_panel::operator_panel::{module}::"
+                rendered = f"editor::device_panel::tests::{rendered_module}::"
+                boundary = plan.boundary_selection(SCRIPTS.parent, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertEqual(default.argv[default.argv.index("--") + 1:], (prefix + "tests::",))
+                feature = steps["ui-feature-tests"]
+                self.assertEqual(feature.argv[feature.argv.index("--") + 1:], (prefix, rendered))
+
     def test_reporting_sources_keep_their_own_default_library_tests(self):
         owner = "hex-ui"
         inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",

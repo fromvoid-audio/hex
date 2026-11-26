@@ -452,9 +452,11 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/arrangement_audio_panel/controls.rs": ("editor::arrangement_audio_panel::controls::tests::",),
     "src/editor/device_gesture.rs": ("editor::device_gesture::unit_tests::",),
     "src/editor/device_panel/operator_panel.rs": ("editor::device_panel::operator_panel::tests::",),
+    "src/editor/device_panel/operator_panel/algorithms.rs": ("editor::device_panel::operator_panel::algorithms::tests::",),
     "src/editor/device_panel/operator_panel/envelope.rs": ("editor::device_panel::operator_panel::envelope::tests::",),
     "src/editor/device_panel/operator_panel/filter_response.rs": ("editor::device_panel::operator_panel::filter_response::tests::",),
     "src/editor/device_panel/operator_panel/harmonics.rs": ("editor::device_panel::operator_panel::harmonics::tests::",),
+    "src/editor/device_panel/operator_panel/waveform_editor.rs": ("editor::device_panel::operator_panel::waveform_editor::tests::",),
     "src/editor/tracks.rs": ("editor::tracks::midi_trim_unit_tests::",),
     "src/editor/pending_clip_move.rs": ("editor::pending_clip_move::tests::",),
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
@@ -778,6 +780,12 @@ UI_MODULE_TEST_DEPENDENCIES = {
     "editor::device_panel::rattle_panel::": (
         "editor::device_panel::tests::rattle_ui_tests::rattle_display_reads_authored_automation_and_manual_draft_precedence",
         "editor::device_panel::tests::rattle_ui_tests::rattle_track_return_panel_fits_and_drive_draft_commits_one_undo",
+    ),
+    "editor::device_panel::operator_panel::algorithms::": (
+        "editor::device_panel::tests::operator_algorithm_ui_tests::",
+    ),
+    "editor::device_panel::operator_panel::waveform_editor::": (
+        "editor::device_panel::tests::operator_waveform_editor_tests::",
     ),
     "editor::device_panel::operator_focus_fixture::": (
         "editor::device_panel::tests::operator_tab_tests::",
