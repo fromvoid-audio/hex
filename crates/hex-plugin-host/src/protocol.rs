@@ -746,6 +746,9 @@ pub fn resumed(
     }
     Ok(result)
 }
+/// Decode a native PCM reply for the expected instance and sequence. Counted
+/// v3 replies may carry up to the callback output limit of gate and polyphonic
+/// pressure events with block-relative offsets and optional note identities.
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
     // An event-bearing reply uses the bounded native v3 layout. Older
     // event-free packets retain the copied decoder's original admission.

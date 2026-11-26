@@ -405,8 +405,13 @@ mod tests {
         );
         #[cfg(unix)]
         assert!(maximum_extent <= crate::channel::PCM_BYTES);
-        plain[..4].copy_from_slice(b"HXVE");
-        assert!(pcm_packet_extent(&plain[..HEADER_BYTES]).is_err());
+        let mut terminal = [0_u8; HEADER_BYTES];
+        terminal[..4].copy_from_slice(b"HXVE");
+        terminal[4] = 1;
+        assert_eq!(pcm_packet_extent(&terminal).unwrap(), HEADER_BYTES);
+        terminal[4] = 3;
+        terminal[8] = 1;
+        assert!(pcm_packet_extent(&terminal).is_err());
     }
 
     #[test]
