@@ -8,6 +8,7 @@ pub(crate) const FIRST: u32 = 20_001;
 pub(crate) const COUNT: usize = 8;
 pub(crate) const BYTES: usize = (COUNT + 1) * 4;
 pub(crate) const MODES: &[&str] = &["low-pass", "high-pass", "band-pass", "notch", "morph"];
+pub(crate) const CIRCUITS: &[&str] = &["clean", "osr", "ms2", "smp", "prd"];
 pub(crate) const fn descriptors() -> [ParameterDescriptor; COUNT - 1] {
     let mut d = [ParameterDescriptor {
         id: ParameterId::from_static(FIRST),
@@ -37,7 +38,7 @@ pub(crate) const fn descriptors() -> [ParameterDescriptor; COUNT - 1] {
         labels: &["12", "24"],
     };
     d[2].default = ParameterValue::Choice(1);
-    d[3].kind = ParameterKind::Choice { labels: &["clean"] };
+    d[3].kind = ParameterKind::Choice { labels: CIRCUITS };
     d[3].default = ParameterValue::Choice(0);
     d[4].kind = ParameterKind::Float {
         min: 20.0,
@@ -76,6 +77,12 @@ impl Default for Settings {
     }
 }
 impl Settings {
+    pub(crate) fn enabled(self) -> bool {
+        self.words[0] != 0
+    }
+    pub(crate) fn circuit(self) -> u32 {
+        self.words[3]
+    }
     pub(crate) fn read(self, id: ParameterId) -> Option<ParameterValue> {
         let i = id.value().checked_sub(FIRST)? as usize;
         if i >= COUNT - 1 {

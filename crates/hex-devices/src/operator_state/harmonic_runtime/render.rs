@@ -29,6 +29,9 @@ struct SubBlockSample {
     glide_decay: f64,
     pitch_env_amount_pct: f64,
     filter_env_amount_st: f64,
+    shaper_drive_pct: f64,
+    shaper_wet_pct: f64,
+    filter_drive_db: f64,
     base_filter_triplet: [f32; 3],
 }
 
@@ -54,6 +57,9 @@ impl Default for SubBlockSample {
             glide_decay: 0.0,
             pitch_env_amount_pct: 0.0,
             filter_env_amount_st: 0.0,
+            shaper_drive_pct: 0.0,
+            shaper_wet_pct: 100.0,
+            filter_drive_db: 0.0,
             base_filter_triplet: [1000.0, 0.0, 0.0],
         }
     }
@@ -102,11 +108,11 @@ fn voice_is_finished(
 impl Runtime {
     pub(super) fn read_target(
         values: Option<&dyn NativeParameterAutomation>,
-        mask: u32,
+        mask: u64,
         index: usize,
         offset: usize,
     ) -> Option<f32> {
-        if (mask & (1_u32 << index)) == 0 {
+        if (mask & (1_u64 << index)) == 0 {
             return None;
         }
         match values?.value_at(automation::TARGET_IDS[index], offset) {
@@ -122,11 +128,11 @@ impl Runtime {
         clock: Option<&dyn NativeInstrumentClock>,
         gains: &[hex_lattice::NativeInstrumentOccurrenceGain],
         values: Option<&dyn NativeParameterAutomation>,
-        mask: u32,
+        mask: u64,
     ) {
-        const LEVEL_MASK: u32 = (1 << 1) | (1 << 3) | (1 << 5) | (1 << 7);
-        const FEEDBACK_MASK: u32 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
-        const PITCH_MASK: u32 = (1 << 0)
+        const LEVEL_MASK: u64 = (1 << 1) | (1 << 3) | (1 << 5) | (1 << 7);
+        const FEEDBACK_MASK: u64 = (1 << 8) | (1 << 9) | (1 << 10) | (1 << 11);
+        const PITCH_MASK: u64 = (1 << 0)
             | (1 << 2)
             | (1 << 4)
             | (1 << 6)
@@ -134,17 +140,20 @@ impl Runtime {
             | (1 << 15)
             | (1 << 16)
             | (1 << 17);
-        const FILTER_MASK: u32 = (1 << automation::FILTER_FREQ_IDX)
+        const FILTER_MASK: u64 = (1 << automation::FILTER_FREQ_IDX)
             | (1 << automation::FILTER_RES_IDX)
             | (1 << automation::FILTER_MORPH_IDX);
-        const TIME_MASK: u32 = 1 << automation::TIME_IDX;
-        const TONE_MASK: u32 = 1 << automation::TONE_IDX;
-        const VOLUME_MASK: u32 = 1 << automation::VOLUME_IDX;
-        const TRANSPOSE_MASK: u32 = 1 << automation::TRANSPOSE_IDX;
-        const SPREAD_MASK: u32 = 1 << automation::SPREAD_IDX;
-        const GLIDE_TIME_MASK: u32 = 1 << automation::GLIDE_TIME_IDX;
-        const PITCH_ENV_AMOUNT_MASK: u32 = 1 << automation::PITCH_ENV_AMOUNT_IDX;
-        const FILTER_ENV_AMOUNT_MASK: u32 = 1 << automation::FILTER_ENV_AMOUNT_IDX;
+        const TIME_MASK: u64 = 1 << automation::TIME_IDX;
+        const TONE_MASK: u64 = 1 << automation::TONE_IDX;
+        const VOLUME_MASK: u64 = 1 << automation::VOLUME_IDX;
+        const TRANSPOSE_MASK: u64 = 1 << automation::TRANSPOSE_IDX;
+        const SPREAD_MASK: u64 = 1 << automation::SPREAD_IDX;
+        const GLIDE_TIME_MASK: u64 = 1 << automation::GLIDE_TIME_IDX;
+        const PITCH_ENV_AMOUNT_MASK: u64 = 1 << automation::PITCH_ENV_AMOUNT_IDX;
+        const FILTER_ENV_AMOUNT_MASK: u64 = 1 << automation::FILTER_ENV_AMOUNT_IDX;
+        const SHAPER_DRIVE_MASK: u64 = 1 << automation::SHAPER_DRIVE_IDX;
+        const SHAPER_DRY_WET_MASK: u64 = 1 << automation::SHAPER_DRY_WET_IDX;
+        const FILTER_DRIVE_MASK: u64 = 1 << automation::FILTER_DRIVE_IDX;
         let base_time_scale = self.factory.settings.performance.time_rate();
         let base_tone_alpha = performance::tone_alpha_for(
             f64::from(self.factory.settings.performance.tone),
@@ -160,6 +169,9 @@ impl Runtime {
         );
         let base_pitch_env_amount_pct = f64::from(self.factory.settings.pitch_env.amount());
         let base_filter_env_amount_st = f64::from(self.factory.settings.filter_env.amount());
+        let base_shaper_drive_pct = f64::from(self.factory.settings.filter_shaper.shaper_drive);
+        let base_shaper_wet_pct = f64::from(self.factory.settings.filter_shaper.shaper_dry_wet);
+        let base_filter_drive_db = f64::from(self.factory.settings.filter_shaper.filter_drive);
         let pitch_env_active = self.factory.settings.pitch_env.enabled();
         let filter_env_active =
             self.factory.settings.filter.armed && self.factory.settings.filter_env.amount() != 0.0;
@@ -459,6 +471,24 @@ impl Runtime {
                 } else {
                     base_filter_env_amount_st
                 };
+                let shaper_drive_pct = if (mask & SHAPER_DRIVE_MASK) != 0 {
+                    Self::read_target(values, mask, automation::SHAPER_DRIVE_IDX, offset)
+                        .map_or(base_shaper_drive_pct, |v| f64::from(v).clamp(0.0, 100.0))
+                } else {
+                    base_shaper_drive_pct
+                };
+                let shaper_wet_pct = if (mask & SHAPER_DRY_WET_MASK) != 0 {
+                    Self::read_target(values, mask, automation::SHAPER_DRY_WET_IDX, offset)
+                        .map_or(base_shaper_wet_pct, |v| f64::from(v).clamp(0.0, 100.0))
+                } else {
+                    base_shaper_wet_pct
+                };
+                let filter_drive_db = if (mask & FILTER_DRIVE_MASK) != 0 {
+                    Self::read_target(values, mask, automation::FILTER_DRIVE_IDX, offset)
+                        .map_or(base_filter_drive_db, |v| f64::from(v).clamp(0.0, 24.0))
+                } else {
+                    base_filter_drive_db
+                };
                 let base_filter_triplet = [
                     base_targets[automation::FILTER_FREQ_IDX],
                     base_targets[automation::FILTER_RES_IDX],
@@ -484,6 +514,9 @@ impl Runtime {
                     glide_decay,
                     pitch_env_amount_pct,
                     filter_env_amount_st,
+                    shaper_drive_pct,
+                    shaper_wet_pct,
+                    filter_drive_db,
                     base_filter_triplet,
                 };
                 if law.active() {
@@ -930,8 +963,12 @@ fn render_voice_sample(
         ctx.filter_frame
     };
     let mut rendered = 0.0;
+    let filter_enabled = factory.settings.filter.enabled();
+    let filter_circuit = factory.settings.filter.circuit();
+    let shaper_type = factory.settings.filter_shaper.shaper_type;
+    let nonlinear_active = (filter_enabled && filter_circuit != 0) || shaper_type != 0;
     for subframe in 0..if quality { 2 } else { 1 } {
-        let (sample, previous) = factory.configuration.sample_with_waveform_sampler(
+        let (mut sample, previous) = factory.configuration.sample_with_waveform_sampler(
             &voice.note,
             amplitudes,
             &voice.phases,
@@ -970,6 +1007,17 @@ fn render_voice_sample(
                 )
             },
         );
+        if nonlinear_active {
+            sample = filter_shaper::process_subframe(
+                sample,
+                filter_enabled,
+                filter_circuit,
+                ctx.filter_drive_db,
+                shaper_type,
+                ctx.shaper_drive_pct,
+                ctx.shaper_wet_pct,
+            );
+        }
         let filtered = if quality {
             voice.decimator.sample(sample)
         } else {

@@ -808,10 +808,10 @@ impl InstrumentParameterRuntime for Runtime {
         if frames.len() > MAX_INSTRUMENT_AUTOMATION_FRAMES {
             return;
         }
-        let mut present_mask: u32 = 0;
+        let mut present_mask: u64 = 0;
         for &id in values.parameter_ids() {
             if let Some(index) = automation::target_index(id) {
-                present_mask |= 1_u32 << index;
+                present_mask |= 1_u64 << index;
             }
         }
         self.process_inner(events, frames, clock, gains, Some(values), present_mask);
