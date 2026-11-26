@@ -264,23 +264,25 @@ fn registry_shared_automation_requires_explicit_factory_and_current_parameter_su
     let compressor = crate::compressor::COMPRESSOR_DEFINITION
         .default_state()
         .unwrap();
-    let threshold = crate::compressor::parameter::THRESHOLD;
+    let supported = [
+        crate::compressor::parameter::THRESHOLD,
+        crate::compressor::parameter::AUTO_MAKEUP,
+    ];
     let prepared = registry
-        .prepare_runtime_instance_with_automation(identity, &compressor, &context, &[threshold])
+        .prepare_runtime_instance_with_automation(identity, &compressor, &context, &supported)
         .unwrap();
-    assert!(
-        prepared
-            .processor
-            .unwrap()
-            .supports_parameter_automation(threshold)
-    );
+    let factory = prepared.processor.unwrap();
+    for id in supported {
+        assert!(factory.supports_parameter_automation(id));
+        assert_eq!(factory.parameter_automation_descriptor(id).unwrap().id, id);
+    }
     assert!(
         registry
             .prepare_runtime_instance_with_automation(
                 identity,
                 &compressor,
                 &context,
-                &[parameter::BASS_MONO]
+                &[crate::compressor::parameter::LOOKAHEAD]
             )
             .is_err()
     );
