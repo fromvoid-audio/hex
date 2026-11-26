@@ -931,6 +931,10 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
             let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<Opened, Retirement>>(3);
             thread::Builder::new()
                 .name("hex-audio-lifecycle".into())
+                // Retirement can synchronously collect a bounded controller
+                // page through the native host. Reserve this control thread's
+                // stack independently of the process default and audio callback.
+                .stack_size(8 * 1024 * 1024)
                 .spawn(move || {
                     run_lifecycle_observed_with_selection(
                         receiver,
