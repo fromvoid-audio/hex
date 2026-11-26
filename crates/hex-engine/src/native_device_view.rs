@@ -705,7 +705,23 @@ mod tests {
         assert!(effects.iter().any(|entry| entry.name == "overdrive"));
         assert!(effects.iter().any(|entry| entry.name == "delay"));
         assert!(effects.iter().any(|entry| entry.name == "limiter"));
-        assert_eq!(instruments.len(), 4);
+        let registry = hex_devices::native_instrument_registry().unwrap();
+        assert!(
+            instruments.iter().map(|entry| entry.type_id).eq(registry
+                .definitions()
+                .iter()
+                .map(|definition| definition.type_id()))
+        );
+        let subtractive = hex_devices::subtractive::SUBTRACTIVE_TYPE_ID;
+        let state = crate::default_native_device_state_for_class(
+            NativeDeviceClass::Instrument,
+            subtractive,
+        )
+        .unwrap();
+        let view = native_device_view_for_class(NativeDeviceClass::Instrument, &state).unwrap();
+        assert_eq!(view.type_id, subtractive);
+        assert_eq!(view.name, "subtractive");
+        assert!(native_device_view_for_class(NativeDeviceClass::Effect, &state).is_err());
         assert!(instruments.iter().any(|entry| entry.name == "sampler"));
         let sine = instruments
             .iter()
