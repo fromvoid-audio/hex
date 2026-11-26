@@ -40,7 +40,7 @@ fn activation_c_and_slash_toggle_mixed_clips_atomically_with_history(cx: &mut Te
         });
         let pending = headers.map(|(selector, before)| {
             let after = visual.rendered_background(selector).unwrap();
-            assert_ne!(after, before);
+            assert_ne!(after, before, "{key} should repaint {selector}");
             (selector, after)
         });
         pump(&editor, &mut visual);
