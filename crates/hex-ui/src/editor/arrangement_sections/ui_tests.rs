@@ -1395,5 +1395,7 @@ mod creation_and_selection_tests;
 mod drag_and_copy_tests;
 #[path = "ui_tests/edit_and_menu_tests.rs"]
 mod edit_and_menu_tests;
+#[path = "ui_tests/linked_scene_ui_tests.rs"]
+mod linked_scene_ui_tests;
 #[path = "ui_tests/playback_and_loop_tests.rs"]
 mod playback_and_loop_tests;

@@ -262,6 +262,7 @@ pub(super) struct MenuAction {
 }
 #[derive(Clone)]
 enum MenuKind {
+    EditSceneInConsole(hex_project::SceneId),
     Rename,
     Color(ElementColor),
     Remove,

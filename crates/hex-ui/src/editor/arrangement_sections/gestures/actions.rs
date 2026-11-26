@@ -464,6 +464,13 @@ impl EditorView {
         };
         let generation = self.project_generation;
         let revision = state.revision;
+        let linked_scene = section.linked_scene().filter(|scene_id| {
+            state
+                .project
+                .scenes()
+                .iter()
+                .any(|scene| scene.id() == *scene_id)
+        });
         let color = section.color();
         let make = |kind| {
             crate::editor::context_menu::EditorContextAction::Section(MenuAction {
@@ -517,6 +524,17 @@ impl EditorView {
                 action: make(MenuKind::Remove),
             },
         ];
+        if let Some(scene_id) = linked_scene {
+            items.insert(
+                0,
+                MenuItem {
+                    label: "edit scene in console",
+                    swatch: None,
+                    checked: false,
+                    action: make(MenuKind::EditSceneInConsole(scene_id)),
+                },
+            );
+        }
         if self.sections.selection.len() >= 2 {
             items.insert(
                 0,
@@ -627,12 +645,43 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         if self.section_menu_stale(&a) {
+            if matches!(a.kind, MenuKind::EditSceneInConsole(_)) {
+                self.error = Some("linked console scene is no longer available".into());
+                cx.notify();
+            }
+            return;
+        }
+        if let MenuKind::EditSceneInConsole(scene_id) = a.kind {
+            let valid = a.section.is_some_and(|section_id| {
+                self.state.as_ref().is_some_and(|state| {
+                    state
+                        .project
+                        .arrangement_section(section_id)
+                        .and_then(|section| section.linked_scene())
+                        == Some(scene_id)
+                        && state
+                            .project
+                            .scenes()
+                            .iter()
+                            .any(|scene| scene.id() == scene_id)
+                })
+            });
+            if !valid {
+                self.error = Some("linked console scene no longer exists".into());
+                cx.notify();
+                return;
+            }
+            self.error = None;
+            self.focus.focus(window);
+            self.select_session_scene(scene_id);
+            cx.notify();
             return;
         }
         if let Some(id) = a.section {
             self.sections.selected = Some(id);
         }
         match a.kind {
+            MenuKind::EditSceneInConsole(_) => {}
             MenuKind::Rename => {
                 self.focus.focus(window);
                 self.section_name_begin(window, cx);
