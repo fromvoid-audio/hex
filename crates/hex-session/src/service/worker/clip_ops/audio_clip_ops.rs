@@ -441,7 +441,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     options,
                 )
                 .and_then(|job| {
-                    if ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                    if (ctx.worker.session.uses_ordinary_worker_publication()
+                        || ctx.worker.resident_snapshot.is_some())
                         && let Some(sink) = ctx.worker.events.resident_audio()
                     {
                         let admission = ctx.worker.export_lane.admission_with_resident_owners(ctx.worker.compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: ctx.worker.current_sources.as_ref(), prepared: Some(prepared) }), ctx.worker.resident_seek.as_ref(), ctx.worker.resident_preview.as_ref());
@@ -502,7 +503,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
         | Request::ImportToNewTrackWithGain { .. }
         | Request::ImportToSession { .. })
             if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident =>
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some()) =>
         {
             let result = (|| {
                 let (path, destination, overwrite, gain) = match request {
@@ -808,7 +810,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.outcome.error =
                     Some("gain recording arm refused · device edit is still applying".into());
             } else if ctx.worker.events.resident_publication_enabled()
-                && ctx.worker.session.audio_mode() == DocumentAudioMode::Resident
+                && (ctx.worker.session.uses_ordinary_worker_publication()
+                    || ctx.worker.resident_snapshot.is_some())
             {
                 let result = (|| {
                     let current = ctx

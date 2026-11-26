@@ -599,6 +599,27 @@ impl NativeAudioSink {
                 section_loop: None,
             }));
         }
+        if let Some(verified) = self
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .filter(|control| control.needs_ordinary_handoff_from_verified())
+            .and_then(|control| control.status.applied_audio_source())
+            .filter(|applied| {
+                applied.output_identity == output
+                    && applied.audio_revision == revision
+                    && applied.context.project_generation == context.project_generation
+                    && applied.context.editor_revision <= context.editor_revision
+            })
+        {
+            return Ok(Some(ResidentRuntimeLoop {
+                output_identity: output,
+                audio_revision: revision,
+                source_context: Some(verified.context),
+                source_origin: hex_session::service::ResidentSourceOrigin::Unknown,
+                section_loop: None,
+            }));
+        }
         let applied = self
             .resident
             .applied_loop

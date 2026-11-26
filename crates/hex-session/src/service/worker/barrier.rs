@@ -44,6 +44,7 @@ impl WorkerLoop {
             document_intent,
             revision,
             project_generation,
+            resident_snapshot,
             resident_preview,
             device_gesture,
             pending_sampler_parameter,
@@ -96,7 +97,7 @@ impl WorkerLoop {
         // earlier graph is applied. Keep their FIFO place and bound the wait
         // before native preparation tries to borrow the preceding graph's sources.
         let queued = if events.resident_publication_enabled()
-            && session.audio_mode() == DocumentAudioMode::Resident
+            && (session.uses_ordinary_worker_publication() || resident_snapshot.is_some())
             && (clip_audition_release
                 || (matches!(&queued.request, Request::ContinuePluginEffect)
                     && pending_plugin_effect.as_ref().is_some_and(|pending| {
