@@ -22,17 +22,21 @@
 
 use hex_device_abi::{PackageInstance, PackageModule};
 use hex_lattice::{
-    DevicePreparationContext, DeviceResources, MutableInstrumentRuntime, NativeDeviceDefinition,
-    NativeInstrumentDefinition, NativeInstrumentEvent, NativeInstrumentRuntimeError, OutputTail,
-    OwnedProcessorRuntime, PreparedAnalyticNote, PreparedMutableInstrumentRuntime,
+    DevicePreparationContext, DeviceResources, InstrumentParameterRuntime,
+    MutableInstrumentRuntime, NativeDeviceDefinition, NativeInstrumentClock,
+    NativeInstrumentDefinition, NativeInstrumentEvent, NativeInstrumentExpression,
+    NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError, NativeParameterAutomation,
+    OutputTail, OwnedProcessorRuntime, PreparedAnalyticNote, PreparedMutableInstrumentRuntime,
     PreparedNativeInstrument, PreparedOwnedProcessorRuntime, PreparedProcessorFactory, StereoFrame,
     StereoMatrix,
 };
 use hex_lattice_contract::package_abi::{
-    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, CAP_STATE_PERSISTENCE,
-    DEVICE_KIND_AUDIO_EFFECT, DEVICE_KIND_INSTRUMENT, NOTE_EVENT_OFF, NOTE_EVENT_ON,
-    PACKAGE_ABI_MAX_FRAMES, PACKAGE_ABI_MAX_NOTE_EVENTS, PACKAGE_ABI_MAX_STATE_BYTES,
-    PackageIdentityEnvelope,
+    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, CAP_CHANNEL_EXPRESSION,
+    CAP_NOTE_EXPRESSION, CAP_PARAMETER_EVENTS, CAP_STATE_PERSISTENCE, DEVICE_KIND_AUDIO_EFFECT,
+    DEVICE_KIND_INSTRUMENT, NOTE_EVENT_ALL_NOTES_OFF, NOTE_EVENT_CC, NOTE_EVENT_OFF, NOTE_EVENT_ON,
+    NOTE_EVENT_PITCH_BEND, NOTE_EVENT_PRESSURE, PACKAGE_ABI_MAX_FRAMES,
+    PACKAGE_ABI_MAX_NOTE_EVENTS, PACKAGE_ABI_MAX_PARAM_EVENTS, PACKAGE_ABI_MAX_PARAMS,
+    PACKAGE_ABI_MAX_STATE_BYTES, PackageIdentityEnvelope,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -484,12 +488,33 @@ impl NativeDeviceDefinition for InstalledPackageEffect {
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
-        let (_, raw_state) = self.shared.validate_and_decode(state)?;
+        let (params, raw_state) = self.shared.validate_and_decode(state)?;
+        let mut base_values = [0.0f32; PACKAGE_ABI_MAX_PARAMS as usize];
+        for (idx, desc) in self.shared.parameters.iter().enumerate() {
+            let val = params
+                .iter()
+                .find(|&&(id, _)| id == desc.id.value())
+                .map(|&(_, v)| v)
+                .unwrap_or(match desc.default {
+                    ParameterValue::Float(v) => v,
+                    ParameterValue::Bool(b) => {
+                        if b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    ParameterValue::Choice(c) => c as f32,
+                });
+            base_values[idx] = val;
+        }
         let factory = PreparedInstalledEffect {
             module: self.shared.module.clone(),
             descriptor: self.shared.descriptor,
             sample_rate: context.sample_rate,
             initial_raw_state: raw_state.to_vec(),
+            parameters: self.shared.parameters.clone(),
+            base_values,
         };
         Ok(Some(PreparedProcessorFactory::Owned(Arc::new(factory))))
     }
@@ -500,11 +525,30 @@ struct PreparedInstalledEffect {
     descriptor: AbiDescriptor,
     sample_rate: u32,
     initial_raw_state: Vec<u8>,
+    parameters: Vec<ParameterDescriptor>,
+    base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
 }
 
 impl PreparedOwnedProcessorRuntime for PreparedInstalledEffect {
     fn supports_smoothed_bypass(&self) -> bool {
         self.descriptor.reported_latency_frames == 0
+    }
+
+    fn parameter_automation_descriptor(
+        &self,
+        parameter: ParameterId,
+    ) -> Option<ParameterDescriptor> {
+        if (self.descriptor.capabilities & CAP_PARAMETER_EVENTS) == 0 {
+            return None;
+        }
+        self.parameters
+            .iter()
+            .copied()
+            .find(|desc| desc.id == parameter)
+    }
+
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.parameter_automation_descriptor(parameter).is_some()
     }
 
     fn runtime_version(&self) -> u32 {
@@ -537,13 +581,38 @@ impl PreparedOwnedProcessorRuntime for PreparedInstalledEffect {
         let mut baseline_state = [0u8; PACKAGE_ABI_MAX_STATE_BYTES as usize];
         let baseline_len = self.initial_raw_state.len().min(baseline_state.len());
         baseline_state[..baseline_len].copy_from_slice(&self.initial_raw_state[..baseline_len]);
+        let mut param_descriptors = [ParameterDescriptor {
+            id: ParameterId::from_static(1),
+            label: "param",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
+        }; PACKAGE_ABI_MAX_PARAMS as usize];
+        let param_count = self.parameters.len().min(param_descriptors.len());
+        param_descriptors[..param_count].copy_from_slice(&self.parameters[..param_count]);
         Ok(Box::new(InstalledEffectRuntime {
             committed,
             speculative,
             has_state_persistence: (self.descriptor.capabilities & CAP_STATE_PERSISTENCE) != 0,
+            supports_param_events: (self.descriptor.capabilities & CAP_PARAMETER_EVENTS) != 0,
+            param_count,
+            param_descriptors,
+            base_values: self.base_values,
+            committed_values: self.base_values,
+            speculative_values: self.base_values,
             baseline_state,
             baseline_len,
             state_scratch: [0u8; PACKAGE_ABI_MAX_STATE_BYTES as usize],
+            param_scratch: [AbiParamEvent {
+                sample_offset: 0,
+                parameter_id: 0,
+                value: 0.0,
+                reserved: 0,
+            }; PACKAGE_ABI_MAX_PARAM_EVENTS as usize],
             audio_scratch: [[0.0; 2]; PACKAGE_ABI_MAX_FRAMES as usize],
             faulted: false,
         }))
@@ -564,9 +633,16 @@ struct InstalledEffectRuntime {
     committed: PackageInstance,
     speculative: PackageInstance,
     has_state_persistence: bool,
+    supports_param_events: bool,
+    param_count: usize,
+    param_descriptors: [ParameterDescriptor; PACKAGE_ABI_MAX_PARAMS as usize],
+    base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
+    committed_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
+    speculative_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
     baseline_state: [u8; PACKAGE_ABI_MAX_STATE_BYTES as usize],
     baseline_len: usize,
     state_scratch: [u8; PACKAGE_ABI_MAX_STATE_BYTES as usize],
+    param_scratch: [AbiParamEvent; PACKAGE_ABI_MAX_PARAM_EVENTS as usize],
     audio_scratch: [StereoFrame; PACKAGE_ABI_MAX_FRAMES as usize],
     faulted: bool,
 }
@@ -582,14 +658,163 @@ impl InstalledEffectRuntime {
             let _ = dst.set_state(&scratch[..len]);
         }
     }
+
+    fn param_index(&self, id: ParameterId) -> Option<usize> {
+        self.param_descriptors[..self.param_count]
+            .iter()
+            .position(|desc| desc.id == id)
+    }
+
+    fn param_value_to_f32(
+        desc: ParameterDescriptor,
+        value: ParameterValue,
+    ) -> Result<f32, DeviceContractError> {
+        desc.validate(value)?;
+        Ok(match value {
+            ParameterValue::Float(v) => v,
+            ParameterValue::Bool(b) => {
+                if b {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            ParameterValue::Choice(c) => c as f32,
+        })
+    }
 }
 
 impl OwnedProcessorRuntime for InstalledEffectRuntime {
+    fn supports_parameter_automation(&self, parameter: ParameterId) -> bool {
+        self.supports_param_events && self.param_index(parameter).is_some()
+    }
+
+    fn process_block_with_automation(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+        automation: &dyn NativeParameterAutomation,
+        _resources: &dyn DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        if !self.supports_param_events {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        // Validate all declared lane IDs before mutating any state or audio.
+        let lane_ids = automation.parameter_ids();
+        for &id in lane_ids {
+            if self.param_index(id).is_none() {
+                return Err(DeviceContractError::UnknownParameter);
+            }
+        }
+        if frames.is_empty() {
+            return Ok(());
+        }
+        // Pre-validate every automated sample value so errors never partially mutate PCM.
+        for sample_offset in 0..frames.len() {
+            for &id in lane_ids {
+                if let Some(val) = automation.value_at(id, sample_offset)
+                    && let Some(slot) = self.param_index(id)
+                {
+                    let _ = Self::param_value_to_f32(self.param_descriptors[slot], val)?;
+                }
+            }
+        }
+        if self.faulted {
+            frames.fill([0.0; 2]);
+            return Ok(());
+        }
+
+        let max_chunk = PACKAGE_ABI_MAX_FRAMES as usize;
+        let mut seg_start = 0usize;
+        let mut pending_count = 0usize;
+        for sample_offset in 0..frames.len() {
+            // Count how many parameter changes occur at this sample offset.
+            let mut changes_at_sample = 0usize;
+            for slot in 0..self.param_count {
+                let desc = self.param_descriptors[slot];
+                let target = match automation.value_at(desc.id, sample_offset) {
+                    Some(val) => Self::param_value_to_f32(desc, val)?,
+                    None => self.base_values[slot],
+                };
+                if target.to_bits() != self.speculative_values[slot].to_bits() {
+                    changes_at_sample += 1;
+                }
+            }
+            // Split sub-block cleanly whenever adding events would exceed the fixed
+            // C ABI event queue or frame bound — zero drops, zero allocations.
+            let chunk_len = sample_offset - seg_start;
+            if chunk_len > 0
+                && (chunk_len >= max_chunk
+                    || pending_count + changes_at_sample > self.param_scratch.len())
+            {
+                let chunk = &mut frames[seg_start..sample_offset];
+                if self
+                    .speculative
+                    .process(
+                        chunk,
+                        &mut self.audio_scratch[..chunk.len()],
+                        &self.param_scratch[..pending_count],
+                        &[],
+                    )
+                    .is_err()
+                {
+                    self.faulted = true;
+                    frames[seg_start..].fill([0.0; 2]);
+                    return Ok(());
+                }
+                chunk.copy_from_slice(&self.audio_scratch[..chunk.len()]);
+                seg_start = sample_offset;
+                pending_count = 0;
+            }
+            let local_offset = (sample_offset - seg_start) as u32;
+            for slot in 0..self.param_count {
+                let desc = self.param_descriptors[slot];
+                let target = match automation.value_at(desc.id, sample_offset) {
+                    Some(val) => Self::param_value_to_f32(desc, val)?,
+                    None => self.base_values[slot],
+                };
+                if target.to_bits() != self.speculative_values[slot].to_bits() {
+                    self.speculative_values[slot] = target;
+                    if pending_count < self.param_scratch.len() {
+                        self.param_scratch[pending_count] = AbiParamEvent {
+                            sample_offset: local_offset,
+                            parameter_id: desc.id.value(),
+                            value: target,
+                            reserved: 0,
+                        };
+                        pending_count += 1;
+                    }
+                }
+            }
+        }
+        // Flush trailing segment.
+        if seg_start < frames.len() {
+            let chunk = &mut frames[seg_start..];
+            if self
+                .speculative
+                .process(
+                    chunk,
+                    &mut self.audio_scratch[..chunk.len()],
+                    &self.param_scratch[..pending_count],
+                    &[],
+                )
+                .is_err()
+            {
+                self.faulted = true;
+                chunk.fill([0.0; 2]);
+                return Ok(());
+            }
+            chunk.copy_from_slice(&self.audio_scratch[..chunk.len()]);
+        }
+        Ok(())
+    }
+
     fn fixed_storage_pair_bytes(&self) -> Option<usize> {
         Some(std::mem::size_of::<Self>())
     }
 
     fn begin_block(&mut self) {
+        self.speculative_values = self.committed_values;
         Self::sync_instance(
             self.has_state_persistence,
             &self.committed,
@@ -603,12 +828,33 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
             frames.fill([0.0; 2]);
             return;
         }
+        // Restore authored base parameters if a prior automated block left a different effective value.
+        let mut pending_count = 0usize;
+        for slot in 0..self.param_count {
+            if self.speculative_values[slot].to_bits() != self.base_values[slot].to_bits() {
+                self.speculative_values[slot] = self.base_values[slot];
+                if pending_count < self.param_scratch.len() {
+                    self.param_scratch[pending_count] = AbiParamEvent {
+                        sample_offset: 0,
+                        parameter_id: self.param_descriptors[slot].id.value(),
+                        value: self.base_values[slot],
+                        reserved: 0,
+                    };
+                    pending_count += 1;
+                }
+            }
+        }
         let max_chunk = PACKAGE_ABI_MAX_FRAMES as usize;
-        for chunk in frames.chunks_mut(max_chunk) {
+        for (chunk_idx, chunk) in frames.chunks_mut(max_chunk).enumerate() {
             let len = chunk.len();
+            let events = if chunk_idx == 0 {
+                &self.param_scratch[..pending_count]
+            } else {
+                &[]
+            };
             if self
                 .speculative
-                .process(chunk, &mut self.audio_scratch[..len], &[], &[])
+                .process(chunk, &mut self.audio_scratch[..len], events, &[])
                 .is_err()
             {
                 self.faulted = true;
@@ -620,6 +866,7 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
     }
 
     fn commit_block(&mut self) {
+        self.committed_values = self.speculative_values;
         Self::sync_instance(
             self.has_state_persistence,
             &self.speculative,
@@ -629,6 +876,7 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
     }
 
     fn rollback_block(&mut self) {
+        self.speculative_values = self.committed_values;
         Self::sync_instance(
             self.has_state_persistence,
             &self.committed,
@@ -639,6 +887,8 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
 
     fn reset(&mut self) {
         self.faulted = false;
+        self.committed_values = self.base_values;
+        self.speculative_values = self.base_values;
         if self.has_state_persistence && self.baseline_len > 0 {
             let _ = self
                 .committed
@@ -754,13 +1004,51 @@ impl NativeInstrumentDefinition for InstalledPackageInstrument {
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        let (_, raw_state) = self.shared.validate_and_decode(state)?;
+        let (params, raw_state) = self.shared.validate_and_decode(state)?;
+        let mut sorted_params = self.shared.parameters.clone();
+        sorted_params.sort_by_key(|desc| desc.id);
+        let mut base_values = [0.0f32; PACKAGE_ABI_MAX_PARAMS as usize];
+        for (idx, desc) in sorted_params.iter().enumerate() {
+            let val = params
+                .iter()
+                .find(|&&(id, _)| id == desc.id.value())
+                .map(|&(_, v)| v)
+                .unwrap_or(match desc.default {
+                    ParameterValue::Float(v) => v,
+                    ParameterValue::Bool(b) => {
+                        if b {
+                            1.0
+                        } else {
+                            0.0
+                        }
+                    }
+                    ParameterValue::Choice(c) => c as f32,
+                });
+            base_values[idx] = val;
+        }
+        // Precompute exact per-MIDI-note detune cents from the host TuningTable on control
+        // so the audio callback performs zero transcendental tuning math.
+        let mut note_detune_cents = [0.0f32; 128];
+        let freqs = context.tuning.frequencies();
+        for (pitch, slot) in note_detune_cents.iter_mut().enumerate() {
+            let standard_hz = 440.0 * 2.0_f64.powf((pitch as f64 - 69.0) / 12.0);
+            let tuned_hz = freqs[pitch];
+            let cents = if tuned_hz.is_finite() && tuned_hz > 0.0 {
+                (1200.0 * (tuned_hz / standard_hz).log2()) as f32
+            } else {
+                0.0
+            };
+            *slot = if cents.abs() < 1e-4 { 0.0 } else { cents };
+        }
         Ok(Box::new(PreparedInstalledInstrument {
             module: self.shared.module.clone(),
             descriptor: self.shared.descriptor,
             sample_rate: context.sample_rate,
             initial_raw_state: raw_state.to_vec(),
             identity_digest: self.shared.identity.package_sha256,
+            parameters: sorted_params,
+            base_values,
+            note_detune_cents,
         }))
     }
 }
@@ -771,6 +1059,9 @@ struct PreparedInstalledInstrument {
     sample_rate: u32,
     initial_raw_state: Vec<u8>,
     identity_digest: [u8; 32],
+    parameters: Vec<ParameterDescriptor>,
+    base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
+    note_detune_cents: [f32; 128],
 }
 
 impl PreparedNativeInstrument for PreparedInstalledInstrument {
@@ -795,6 +1086,9 @@ impl PreparedNativeInstrument for PreparedInstalledInstrument {
             sample_rate: self.sample_rate,
             initial_raw_state: self.initial_raw_state.clone(),
             identity_digest: self.identity_digest,
+            parameters: self.parameters.clone(),
+            base_values: self.base_values,
+            note_detune_cents: self.note_detune_cents,
         })))
     }
 }
@@ -805,9 +1099,24 @@ struct PreparedInstalledInstrumentFactory {
     sample_rate: u32,
     initial_raw_state: Vec<u8>,
     identity_digest: [u8; 32],
+    parameters: Vec<ParameterDescriptor>,
+    base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
+    note_detune_cents: [f32; 128],
 }
 
 impl PreparedMutableInstrumentRuntime for PreparedInstalledInstrumentFactory {
+    fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
+        if (self.descriptor.capabilities & CAP_PARAMETER_EVENTS) != 0 {
+            &self.parameters
+        } else {
+            &[]
+        }
+    }
+
+    fn supports_note_pressure(&self) -> bool {
+        (self.descriptor.capabilities & CAP_NOTE_EXPRESSION) != 0
+    }
+
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(self.descriptor.reported_latency_frames)
     }
@@ -843,14 +1152,39 @@ impl PreparedMutableInstrumentRuntime for PreparedInstalledInstrumentFactory {
         let mut baseline_state = [0u8; PACKAGE_ABI_MAX_STATE_BYTES as usize];
         let baseline_len = self.initial_raw_state.len().min(baseline_state.len());
         baseline_state[..baseline_len].copy_from_slice(&self.initial_raw_state[..baseline_len]);
+        let mut param_descriptors = [ParameterDescriptor {
+            id: ParameterId::from_static(1),
+            label: "param",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
+        }; PACKAGE_ABI_MAX_PARAMS as usize];
+        let param_count = self.parameters.len().min(param_descriptors.len());
+        param_descriptors[..param_count].copy_from_slice(&self.parameters[..param_count]);
         Box::new(InstalledInstrumentRuntime {
             instance,
             sample_rate: self.sample_rate,
+            capabilities: self.descriptor.capabilities,
             identity_digest: self.identity_digest,
             has_state_persistence: (self.descriptor.capabilities & CAP_STATE_PERSISTENCE) != 0,
+            param_count,
+            param_descriptors,
+            base_values: self.base_values,
+            current_values: self.base_values,
+            note_detune_cents: self.note_detune_cents,
             baseline_state,
             baseline_len,
             active_occurrences: [None; MAX_PACKAGE_VOICES],
+            param_scratch: [AbiParamEvent {
+                sample_offset: 0,
+                parameter_id: 0,
+                value: 0.0,
+                reserved: 0,
+            }; PACKAGE_ABI_MAX_PARAM_EVENTS as usize],
             note_scratch: [AbiNoteEvent {
                 sample_offset: 0,
                 kind: 0,
@@ -876,11 +1210,18 @@ impl PreparedMutableInstrumentRuntime for PreparedInstalledInstrumentFactory {
 struct InstalledInstrumentRuntime {
     instance: Option<PackageInstance>,
     sample_rate: u32,
+    capabilities: u64,
     identity_digest: [u8; 32],
     has_state_persistence: bool,
+    param_count: usize,
+    param_descriptors: [ParameterDescriptor; PACKAGE_ABI_MAX_PARAMS as usize],
+    base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
+    current_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
+    note_detune_cents: [f32; 128],
     baseline_state: [u8; PACKAGE_ABI_MAX_STATE_BYTES as usize],
     baseline_len: usize,
     active_occurrences: [Option<(u64, u8)>; MAX_PACKAGE_VOICES],
+    param_scratch: [AbiParamEvent; PACKAGE_ABI_MAX_PARAM_EVENTS as usize],
     note_scratch: [AbiNoteEvent; PACKAGE_ABI_MAX_NOTE_EVENTS as usize],
     silence_in: [StereoFrame; PACKAGE_ABI_MAX_FRAMES as usize],
     audio_scratch: [StereoFrame; PACKAGE_ABI_MAX_FRAMES as usize],
@@ -888,7 +1229,398 @@ struct InstalledInstrumentRuntime {
     faulted: bool,
 }
 
+impl InstalledInstrumentRuntime {
+    fn supports_param_events(&self) -> bool {
+        (self.capabilities & CAP_PARAMETER_EVENTS) != 0 && self.param_count > 0
+    }
+
+    fn supports_note_expression(&self) -> bool {
+        (self.capabilities & CAP_NOTE_EXPRESSION) != 0
+    }
+
+    fn supports_channel_expression(&self) -> bool {
+        (self.capabilities & CAP_CHANNEL_EXPRESSION) != 0
+    }
+
+    fn param_index(&self, id: ParameterId) -> Option<usize> {
+        self.param_descriptors[..self.param_count]
+            .iter()
+            .position(|desc| desc.id == id)
+    }
+
+    fn translate_event(
+        &mut self,
+        ev: NativeInstrumentEvent,
+        local_offset: u32,
+    ) -> Option<AbiNoteEvent> {
+        match ev {
+            NativeInstrumentEvent::NoteOn {
+                occurrence_id,
+                pitch,
+                velocity,
+                ..
+            } => {
+                if let Some(slot) = self.active_occurrences.iter_mut().find(|s| s.is_none()) {
+                    *slot = Some((occurrence_id, pitch));
+                }
+                let detune_cents = self.note_detune_cents[usize::from(pitch.min(127))];
+                Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_ON,
+                    note: pitch,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: f32::from(velocity) / 127.0,
+                    detune_cents,
+                    reserved1: 0,
+                })
+            }
+            NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
+                let slot = self
+                    .active_occurrences
+                    .iter_mut()
+                    .find(|s| matches!(s, Some((id, _)) if *id == occurrence_id))?;
+                let pitch = slot.map(|(_, p)| p).unwrap_or(0);
+                *slot = None;
+                Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_OFF,
+                    note: pitch,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: 0.0,
+                    detune_cents: 0.0,
+                    reserved1: 0,
+                })
+            }
+            NativeInstrumentEvent::NotePressure {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                let pitch = self.active_occurrences.iter().find_map(|s| {
+                    s.filter(|(id, _)| *id == occurrence_id.get())
+                        .map(|(_, p)| p)
+                })?;
+                Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_PRESSURE,
+                    note: pitch,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: f32::from(value) / 127.0,
+                    detune_cents: 0.0,
+                    reserved1: 0,
+                })
+            }
+            NativeInstrumentEvent::NotePitchBend {
+                occurrence_id,
+                cents,
+                ..
+            } => {
+                let pitch = self.active_occurrences.iter().find_map(|s| {
+                    s.filter(|(id, _)| *id == occurrence_id.get())
+                        .map(|(_, p)| p)
+                })?;
+                Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_PITCH_BEND,
+                    note: pitch,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: 0.0,
+                    detune_cents: f32::from(cents),
+                    reserved1: 0,
+                })
+            }
+            NativeInstrumentEvent::NoteTimbre {
+                occurrence_id,
+                value,
+                ..
+            } => {
+                let pitch = self.active_occurrences.iter().find_map(|s| {
+                    s.filter(|(id, _)| *id == occurrence_id.get())
+                        .map(|(_, p)| p)
+                })?;
+                Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_CC,
+                    note: 74,
+                    channel: pitch,
+                    reserved0: 0,
+                    velocity: f32::from(value) / 127.0,
+                    detune_cents: 0.0,
+                    reserved1: 0,
+                })
+            }
+            NativeInstrumentEvent::PitchBend { value, .. } => {
+                let norm = NativeInstrumentExpression::PitchBend(value).normalized();
+                Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_PITCH_BEND,
+                    note: 0xFF,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: 0.0,
+                    detune_cents: norm * 200.0,
+                    reserved1: 0,
+                })
+            }
+            NativeInstrumentEvent::ControlChange { cc, value, .. } => Some(AbiNoteEvent {
+                sample_offset: local_offset,
+                kind: NOTE_EVENT_CC,
+                note: cc,
+                channel: 0,
+                reserved0: 0,
+                velocity: f32::from(value) / 127.0,
+                detune_cents: 0.0,
+                reserved1: 0,
+            }),
+            NativeInstrumentEvent::Expression { expression, .. } => match expression {
+                NativeInstrumentExpression::PitchBend(_) => Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_PITCH_BEND,
+                    note: 0xFF,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: 0.0,
+                    detune_cents: expression.normalized() * 200.0,
+                    reserved1: 0,
+                }),
+                NativeInstrumentExpression::ChannelPressure(_) => Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_PRESSURE,
+                    note: 0xFF,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: expression.normalized(),
+                    detune_cents: 0.0,
+                    reserved1: 0,
+                }),
+                NativeInstrumentExpression::ModWheel(_) => Some(AbiNoteEvent {
+                    sample_offset: local_offset,
+                    kind: NOTE_EVENT_CC,
+                    note: 1,
+                    channel: 0,
+                    reserved0: 0,
+                    velocity: expression.normalized(),
+                    detune_cents: 0.0,
+                    reserved1: 0,
+                }),
+            },
+        }
+    }
+
+    fn process_with_optional_automation(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        values: Option<&dyn NativeParameterAutomation>,
+    ) {
+        if self.faulted || frames.is_empty() || self.instance.is_none() {
+            return;
+        }
+        let max_chunk = PACKAGE_ABI_MAX_FRAMES as usize;
+        let mut seg_start = 0usize;
+        let mut ev_cursor = 0usize;
+        let mut param_count = 0usize;
+        let mut note_count = 0usize;
+
+        for sample_offset in 0..frames.len() {
+            // Count parameter changes and MIDI events arriving at `sample_offset`.
+            let mut param_changes = 0usize;
+            if self.supports_param_events() {
+                for slot in 0..self.param_count {
+                    let desc = self.param_descriptors[slot];
+                    let target = values
+                        .and_then(|auto| auto.value_at(desc.id, sample_offset))
+                        .and_then(|v| InstalledEffectRuntime::param_value_to_f32(desc, v).ok())
+                        .unwrap_or(self.base_values[slot]);
+                    if target.to_bits() != self.current_values[slot].to_bits() {
+                        param_changes += 1;
+                    }
+                }
+            }
+            let mut midi_at_sample = 0usize;
+            while ev_cursor + midi_at_sample < events.len()
+                && events[ev_cursor + midi_at_sample].frame_offset() == sample_offset
+            {
+                midi_at_sample += 1;
+            }
+
+            let chunk_len = sample_offset - seg_start;
+            if chunk_len > 0
+                && (chunk_len >= max_chunk
+                    || param_count + param_changes > self.param_scratch.len()
+                    || note_count + midi_at_sample > self.note_scratch.len())
+            {
+                let Some(inst) = self.instance.as_mut() else {
+                    return;
+                };
+                if inst
+                    .process(
+                        &self.silence_in[..chunk_len],
+                        &mut self.audio_scratch[..chunk_len],
+                        &self.param_scratch[..param_count],
+                        &self.note_scratch[..note_count],
+                    )
+                    .is_err()
+                {
+                    self.faulted = true;
+                    return;
+                }
+                for i in 0..chunk_len {
+                    frames[seg_start + i][0] += self.audio_scratch[i][0];
+                    frames[seg_start + i][1] += self.audio_scratch[i][1];
+                }
+                seg_start = sample_offset;
+                param_count = 0;
+                note_count = 0;
+            }
+
+            let local_offset = (sample_offset - seg_start) as u32;
+            // Parameter values apply BEFORE MIDI events at the same sample offset.
+            if self.supports_param_events() {
+                for slot in 0..self.param_count {
+                    let desc = self.param_descriptors[slot];
+                    let target = values
+                        .and_then(|auto| auto.value_at(desc.id, sample_offset))
+                        .and_then(|v| InstalledEffectRuntime::param_value_to_f32(desc, v).ok())
+                        .unwrap_or(self.base_values[slot]);
+                    if target.to_bits() != self.current_values[slot].to_bits() {
+                        self.current_values[slot] = target;
+                        if param_count < self.param_scratch.len() {
+                            self.param_scratch[param_count] = AbiParamEvent {
+                                sample_offset: local_offset,
+                                parameter_id: desc.id.value(),
+                                value: target,
+                                reserved: 0,
+                            };
+                            param_count += 1;
+                        }
+                    }
+                }
+            }
+            for _ in 0..midi_at_sample {
+                let ev = events[ev_cursor];
+                ev_cursor += 1;
+                if let Some(abi_ev) = self.translate_event(ev, local_offset)
+                    && note_count < self.note_scratch.len()
+                {
+                    self.note_scratch[note_count] = abi_ev;
+                    note_count += 1;
+                }
+            }
+        }
+
+        if seg_start < frames.len() {
+            let chunk_len = frames.len() - seg_start;
+            let Some(inst) = self.instance.as_mut() else {
+                return;
+            };
+            if inst
+                .process(
+                    &self.silence_in[..chunk_len],
+                    &mut self.audio_scratch[..chunk_len],
+                    &self.param_scratch[..param_count],
+                    &self.note_scratch[..note_count],
+                )
+                .is_err()
+            {
+                self.faulted = true;
+                return;
+            }
+            for i in 0..chunk_len {
+                frames[seg_start + i][0] += self.audio_scratch[i][0];
+                frames[seg_start + i][1] += self.audio_scratch[i][1];
+            }
+        }
+    }
+}
+
+impl InstrumentParameterRuntime for InstalledInstrumentRuntime {
+    fn descriptors(&self) -> &[ParameterDescriptor] {
+        &self.param_descriptors[..self.param_count]
+    }
+
+    fn copy_targets(
+        &self,
+        output: &mut [Option<ParameterValue>],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.supports_param_events() {
+            return Err(NativeInstrumentRuntimeError::UnsupportedParameterAutomation);
+        }
+        if output.len() != self.param_count {
+            return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+        }
+        for (idx, slot) in output.iter_mut().enumerate() {
+            *slot = Some(ParameterValue::Float(self.current_values[idx]));
+        }
+        Ok(())
+    }
+
+    fn preflight(
+        &self,
+        events: &[NativeInstrumentEvent],
+        frame_count: usize,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[NativeInstrumentOccurrenceGain],
+        values: &dyn NativeParameterAutomation,
+        resources: &dyn DeviceResources,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if !self.supports_param_events() {
+            return Err(NativeInstrumentRuntimeError::UnsupportedParameterAutomation);
+        }
+        if !gains.is_empty() {
+            return Err(NativeInstrumentRuntimeError::UnsupportedOccurrenceGain);
+        }
+        self.preflight_events(events, frame_count, resources)?;
+        for &id in values.parameter_ids() {
+            if self.param_index(id).is_none() {
+                return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+            }
+        }
+        for sample_offset in 0..frame_count {
+            for &id in values.parameter_ids() {
+                if let Some(val) = values.value_at(id, sample_offset)
+                    && let Some(slot) = self.param_index(id)
+                    && self.param_descriptors[slot].validate(val).is_err()
+                {
+                    return Err(NativeInstrumentRuntimeError::InvalidParameterAutomation);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn process(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn NativeInstrumentClock>,
+        _gains: &[NativeInstrumentOccurrenceGain],
+        values: &dyn NativeParameterAutomation,
+        _resources: &dyn DeviceResources,
+    ) {
+        self.process_with_optional_automation(events, frames, Some(values));
+    }
+}
+
 impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
+    fn parameter_automation(&mut self) -> Option<&mut dyn InstrumentParameterRuntime> {
+        self.supports_param_events()
+            .then_some(self as &mut dyn InstrumentParameterRuntime)
+    }
+
+    fn parameter_automation_readonly(&self) -> Option<&dyn InstrumentParameterRuntime> {
+        self.supports_param_events()
+            .then_some(self as &dyn InstrumentParameterRuntime)
+    }
+
+    fn supports_note_pressure(&self) -> bool {
+        self.supports_note_expression()
+    }
+
     fn preflight_events(
         &self,
         events: &[NativeInstrumentEvent],
@@ -939,7 +1671,78 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
                     };
                     *slot = None;
                 }
-                _ => {}
+                NativeInstrumentEvent::NotePressure {
+                    occurrence_id,
+                    value,
+                    ..
+                } => {
+                    if !self.supports_note_expression() {
+                        return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+                    }
+                    if value > 127
+                        || !active
+                            .iter()
+                            .any(|s| matches!(s, Some((id, _)) if *id == occurrence_id.get()))
+                    {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
+                NativeInstrumentEvent::NotePitchBend {
+                    occurrence_id,
+                    cents,
+                    ..
+                } => {
+                    if !self.supports_note_expression() {
+                        return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+                    }
+                    if !(-4800..=4800).contains(&cents)
+                        || !active
+                            .iter()
+                            .any(|s| matches!(s, Some((id, _)) if *id == occurrence_id.get()))
+                    {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
+                NativeInstrumentEvent::NoteTimbre {
+                    occurrence_id,
+                    value,
+                    ..
+                } => {
+                    if !self.supports_note_expression() {
+                        return Err(NativeInstrumentRuntimeError::UnsupportedNotePressure);
+                    }
+                    if value > 127
+                        || !active
+                            .iter()
+                            .any(|s| matches!(s, Some((id, _)) if *id == occurrence_id.get()))
+                    {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
+                NativeInstrumentEvent::Expression { expression, .. } => {
+                    if !self.supports_channel_expression() {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                    if !expression.is_valid() {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
+                NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                    if !self.supports_channel_expression() {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                    if cc > 127 || value > 127 {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
+                NativeInstrumentEvent::PitchBend { value, .. } => {
+                    if !self.supports_channel_expression() {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                    if !(-8192..=8191).contains(&value) {
+                        return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+                    }
+                }
             }
         }
         Ok(())
@@ -951,99 +1754,13 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
         frames: &mut [StereoFrame],
         _resources: &dyn DeviceResources,
     ) {
-        if self.faulted || frames.is_empty() {
-            return;
-        }
-        let Some(inst) = self.instance.as_mut() else {
-            return;
-        };
-        let max_chunk = PACKAGE_ABI_MAX_FRAMES as usize;
-        let mut block_start = 0usize;
-        while block_start < frames.len() {
-            let chunk_len = (frames.len() - block_start).min(max_chunk);
-            let block_end = block_start + chunk_len;
-            let mut note_count = 0usize;
-            for &ev in events {
-                let offset = ev.frame_offset();
-                if offset < block_start || offset >= block_end {
-                    continue;
-                }
-                let local_offset = (offset - block_start) as u32;
-                match ev {
-                    NativeInstrumentEvent::NoteOn {
-                        occurrence_id,
-                        pitch,
-                        velocity,
-                        ..
-                    } => {
-                        if let Some(slot) = self.active_occurrences.iter_mut().find(|s| s.is_none())
-                        {
-                            *slot = Some((occurrence_id, pitch));
-                        }
-                        if note_count < self.note_scratch.len() {
-                            self.note_scratch[note_count] = AbiNoteEvent {
-                                sample_offset: local_offset,
-                                kind: NOTE_EVENT_ON,
-                                note: pitch,
-                                channel: 0,
-                                reserved0: 0,
-                                velocity: f32::from(velocity) / 127.0,
-                                detune_cents: 0.0,
-                                reserved1: 0,
-                            };
-                            note_count += 1;
-                        }
-                    }
-                    NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
-                        if let Some(slot) = self
-                            .active_occurrences
-                            .iter_mut()
-                            .find(|s| matches!(s, Some((id, _)) if *id == occurrence_id))
-                        {
-                            let pitch = slot.map(|(_, p)| p).unwrap_or(0);
-                            *slot = None;
-                            if note_count < self.note_scratch.len() {
-                                self.note_scratch[note_count] = AbiNoteEvent {
-                                    sample_offset: local_offset,
-                                    kind: NOTE_EVENT_OFF,
-                                    note: pitch,
-                                    channel: 0,
-                                    reserved0: 0,
-                                    velocity: 0.0,
-                                    detune_cents: 0.0,
-                                    reserved1: 0,
-                                };
-                                note_count += 1;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            if inst
-                .process(
-                    &self.silence_in[..chunk_len],
-                    &mut self.audio_scratch[..chunk_len],
-                    &[],
-                    &self.note_scratch[..note_count],
-                )
-                .is_err()
-            {
-                self.faulted = true;
-                return;
-            }
-            for i in 0..chunk_len {
-                frames[block_start + i][0] += self.audio_scratch[i][0];
-                frames[block_start + i][1] += self.audio_scratch[i][1];
-            }
-            block_start = block_end;
-        }
+        self.process_with_optional_automation(events, frames, None);
     }
 
     fn reset(&mut self) {
         self.faulted = false;
-        // Emit note-off for every active note so C module clears voices without reallocating.
+        self.current_values = self.base_values;
+        // Emit note-off / all-notes-off for every active note so C module clears voices cleanly.
         let mut count = 0usize;
         for slot in &mut self.active_occurrences {
             if let Some((_, pitch)) = slot.take()
@@ -1061,6 +1778,19 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
                 };
                 count += 1;
             }
+        }
+        if self.supports_channel_expression() && count < self.note_scratch.len() {
+            self.note_scratch[count] = AbiNoteEvent {
+                sample_offset: 0,
+                kind: NOTE_EVENT_ALL_NOTES_OFF,
+                note: 0xFF,
+                channel: 0,
+                reserved0: 0,
+                velocity: 0.0,
+                detune_cents: 0.0,
+                reserved1: 0,
+            };
+            count += 1;
         }
         if let Some(inst) = self.instance.as_mut() {
             if count > 0 {
@@ -1090,6 +1820,7 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(src) = previous.as_any().downcast_ref::<Self>() {
             self.active_occurrences = src.active_occurrences;
+            self.current_values = src.current_values;
             self.faulted = src.faulted;
             if self.has_state_persistence
                 && let (Some(src_inst), Some(dst_inst)) = (&src.instance, &mut self.instance)

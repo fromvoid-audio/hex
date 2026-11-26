@@ -27,9 +27,15 @@ extern "C" {
 #define HEX_CAP_NOTE_EVENTS (1ull << 3)
 #define HEX_CAP_ZERO_LATENCY (1ull << 4)
 #define HEX_CAP_STATE_PERSISTENCE (1ull << 5)
+#define HEX_CAP_NOTE_EXPRESSION (1ull << 6)
+#define HEX_CAP_CHANNEL_EXPRESSION (1ull << 7)
 
 #define HEX_NOTE_EVENT_ON 1u
 #define HEX_NOTE_EVENT_OFF 2u
+#define HEX_NOTE_EVENT_PITCH_BEND 3u
+#define HEX_NOTE_EVENT_PRESSURE 4u
+#define HEX_NOTE_EVENT_CC 5u
+#define HEX_NOTE_EVENT_ALL_NOTES_OFF 6u
 
 enum {
     HEX_ABI_OK = 0,

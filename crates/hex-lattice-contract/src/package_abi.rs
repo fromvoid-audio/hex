@@ -123,17 +123,25 @@ pub const CAP_PARAMETER_EVENTS: u64 = 1 << 2;
 pub const CAP_NOTE_EVENTS: u64 = 1 << 3;
 pub const CAP_ZERO_LATENCY: u64 = 1 << 4;
 pub const CAP_STATE_PERSISTENCE: u64 = 1 << 5;
+pub const CAP_NOTE_EXPRESSION: u64 = 1 << 6;
+pub const CAP_CHANNEL_EXPRESSION: u64 = 1 << 7;
 /// Bitmask of all capability bits defined in ABI v1.
 pub const CAP_KNOWN_MASK_V1: u64 = CAP_AUDIO_EFFECT
     | CAP_INSTRUMENT
     | CAP_PARAMETER_EVENTS
     | CAP_NOTE_EVENTS
     | CAP_ZERO_LATENCY
-    | CAP_STATE_PERSISTENCE;
+    | CAP_STATE_PERSISTENCE
+    | CAP_NOTE_EXPRESSION
+    | CAP_CHANNEL_EXPRESSION;
 
-/// Note event kinds in [`AbiNoteEvent::kind`].
+/// Note & expressive event kinds in [`AbiNoteEvent::kind`].
 pub const NOTE_EVENT_ON: u32 = 1;
 pub const NOTE_EVENT_OFF: u32 = 2;
+pub const NOTE_EVENT_PITCH_BEND: u32 = 3;
+pub const NOTE_EVENT_PRESSURE: u32 = 4;
+pub const NOTE_EVENT_CC: u32 = 5;
+pub const NOTE_EVENT_ALL_NOTES_OFF: u32 = 6;
 
 /// Wire command opcodes for contained-runner IPC transport.
 pub const WIRE_OP_DESCRIBE: u32 = 1;
