@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = PITCH_ENV_STATE_VERSION;
+pub const OPERATOR_STATE_VERSION: u32 = FILTER_ENV_STATE_VERSION;
+const FILTER_ENV_STATE_VERSION: u32 = 22;
 const PITCH_ENV_STATE_VERSION: u32 = 21;
 const PITCH_PERF_STATE_VERSION: u32 = 20;
 const PERFORMANCE_STATE_VERSION: u32 = 19;
@@ -42,8 +43,10 @@ pub mod algorithms;
 mod automation;
 mod companion;
 mod enable;
+mod filter_env;
 mod filter_response;
 mod fine;
+pub use filter_env::filter_envelope_destination_hz;
 pub use filter_response::operator_filter_frequency_response;
 mod global;
 mod harmonic_runtime;
@@ -93,7 +96,8 @@ const PARAMETER_COUNT: usize = STORED_PARAMETER_COUNT
     + keytrack::COUNT
     + performance::COUNT
     + pitch_perf::COUNT
-    + pitch_env::COUNT;
+    + pitch_env::COUNT
+    + filter_env::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -264,6 +268,34 @@ pub mod parameter {
     pub const PITCH_ENV_DEST_D: ParameterId = ParameterId::from_static(super::pitch_env::DEST_D_ID);
     pub const PITCH_ENV_DEST_LFO: ParameterId =
         ParameterId::from_static(super::pitch_env::DEST_LFO_ID);
+
+    pub const FILTER_ENV_AMOUNT: ParameterId =
+        ParameterId::from_static(super::filter_env::AMOUNT_ID);
+    pub const FILTER_ENV_INITIAL: ParameterId =
+        ParameterId::from_static(super::filter_env::INITIAL_ID);
+    pub const FILTER_ENV_PEAK: ParameterId = ParameterId::from_static(super::filter_env::PEAK_ID);
+    pub const FILTER_ENV_SUSTAIN: ParameterId =
+        ParameterId::from_static(super::filter_env::SUSTAIN_ID);
+    pub const FILTER_ENV_END: ParameterId = ParameterId::from_static(super::filter_env::END_ID);
+    pub const FILTER_ENV_ATTACK: ParameterId =
+        ParameterId::from_static(super::filter_env::ATTACK_ID);
+    pub const FILTER_ENV_DECAY: ParameterId = ParameterId::from_static(super::filter_env::DECAY_ID);
+    pub const FILTER_ENV_RELEASE: ParameterId =
+        ParameterId::from_static(super::filter_env::RELEASE_ID);
+    pub const FILTER_ENV_ATTACK_SLOPE: ParameterId =
+        ParameterId::from_static(super::filter_env::ATTACK_SLOPE_ID);
+    pub const FILTER_ENV_DECAY_SLOPE: ParameterId =
+        ParameterId::from_static(super::filter_env::DECAY_SLOPE_ID);
+    pub const FILTER_ENV_RELEASE_SLOPE: ParameterId =
+        ParameterId::from_static(super::filter_env::RELEASE_SLOPE_ID);
+    pub const FILTER_ENV_LOOP: ParameterId = ParameterId::from_static(super::filter_env::LOOP_ID);
+    pub const FILTER_ENV_LOOP_TIME: ParameterId =
+        ParameterId::from_static(super::filter_env::LOOP_TIME_ID);
+    pub const FILTER_ENV_BEAT: ParameterId = ParameterId::from_static(super::filter_env::BEAT_ID);
+    pub const FILTER_FREQ_VEL: ParameterId =
+        ParameterId::from_static(super::filter_env::FREQ_VEL_ID);
+    pub const FILTER_FREQ_KEY: ParameterId =
+        ParameterId::from_static(super::filter_env::FREQ_KEY_ID);
 
     /// Derived eleven-algorithm selector; zero preserves custom legacy routing.
     pub const ALGORITHM: ParameterId = ParameterId::from_static(600);
@@ -534,6 +566,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < fine::COUNT {
         result[PARAMETER_COUNT
+            - filter_env::COUNT
             - pitch_env::COUNT
             - pitch_perf::COUNT
             - performance::COUNT
@@ -546,6 +579,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < keytrack::COUNT {
         result[PARAMETER_COUNT
+            - filter_env::COUNT
             - pitch_env::COUNT
             - pitch_perf::COUNT
             - performance::COUNT
@@ -556,21 +590,32 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let performance = performance::descriptors();
     let mut offset = 0;
     while offset < performance::COUNT {
-        result[PARAMETER_COUNT - pitch_env::COUNT - pitch_perf::COUNT - performance::COUNT
+        result[PARAMETER_COUNT
+            - filter_env::COUNT
+            - pitch_env::COUNT
+            - pitch_perf::COUNT
+            - performance::COUNT
             + offset] = performance[offset];
         offset += 1;
     }
     let pitch_perf = pitch_perf::descriptors();
     let mut offset = 0;
     while offset < pitch_perf::COUNT {
-        result[PARAMETER_COUNT - pitch_env::COUNT - pitch_perf::COUNT + offset] =
+        result
+            [PARAMETER_COUNT - filter_env::COUNT - pitch_env::COUNT - pitch_perf::COUNT + offset] =
             pitch_perf[offset];
         offset += 1;
     }
     let pitch_env = pitch_env::descriptors();
     let mut offset = 0;
     while offset < pitch_env::COUNT {
-        result[PARAMETER_COUNT - pitch_env::COUNT + offset] = pitch_env[offset];
+        result[PARAMETER_COUNT - filter_env::COUNT - pitch_env::COUNT + offset] = pitch_env[offset];
+        offset += 1;
+    }
+    let filter_env = filter_env::descriptors();
+    let mut offset = 0;
+    while offset < filter_env::COUNT {
+        result[PARAMETER_COUNT - filter_env::COUNT + offset] = filter_env[offset];
         offset += 1;
     }
     result
@@ -598,6 +643,7 @@ pub struct OperatorSettings {
     performance: performance::Settings,
     pitch_perf: pitch_perf::Settings,
     pitch_env: pitch_env::Settings,
+    filter_env: filter_env::Settings,
 }
 
 impl OperatorSettings {
@@ -628,6 +674,7 @@ impl OperatorSettings {
             performance: performance::Settings::default(),
             pitch_perf: pitch_perf::Settings::default(),
             pitch_env: pitch_env::Settings::default(),
+            filter_env: filter_env::Settings::default(),
         }
     }
 
@@ -647,6 +694,7 @@ impl OperatorSettings {
                 | PERFORMANCE_STATE_VERSION
                 | PITCH_PERF_STATE_VERSION
                 | PITCH_ENV_STATE_VERSION
+                | FILTER_ENV_STATE_VERSION
         ) {
             return tlv_codec::decode(state.payload(), state.state_version());
         }
@@ -808,6 +856,7 @@ impl OperatorSettings {
             return Err(DeviceContractError::MalformedState);
         }
         let result = Self {
+            filter_env: filter_env::Settings::default(),
             pitch_env: pitch_env::Settings::default(),
             pitch_perf: pitch_perf::Settings::default(),
             performance: performance::Settings::default(),
@@ -944,6 +993,7 @@ impl OperatorSettings {
         self.performance.validate()?;
         self.pitch_perf.validate()?;
         self.pitch_env.validate()?;
+        self.filter_env.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -1153,6 +1203,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.filter_env.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.pitch_env.read(parameter) {
             return Ok(value);
         }
@@ -1271,6 +1324,10 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.filter_env.patch(parameter, value)? {
+            settings.global.active = true;
+            return settings.to_state();
+        }
         if settings.pitch_env.patch(parameter, value)? {
             settings.global.active = true;
             return settings.to_state();
@@ -1451,6 +1508,7 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
             || !self.harmonic_runtime.settings.performance.is_neutral()
             || !self.harmonic_runtime.settings.pitch_perf.is_neutral()
             || self.harmonic_runtime.settings.pitch_env.enabled()
+            || !self.harmonic_runtime.settings.filter_env.is_neutral()
             || self.harmonic_runtime.settings.fine.values() != [0.0; OPERATORS]
             || self
                 .harmonic_runtime

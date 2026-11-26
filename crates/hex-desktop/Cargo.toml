@@ -27,6 +27,7 @@ sha2 = "=0.11.0"
 hex-mts = { path = "../hex-mts" }
 hex-midi = { path = "../hex-midi" }
 hex-diagnostics = { path = "../hex-diagnostics" }
+hex-report = { path = "../hex-report" }
 hex-ui = { path = "../hex-ui" }
 hex-audio = { path = "../hex-audio" }
 hex-engine = { path = "../hex-engine" }

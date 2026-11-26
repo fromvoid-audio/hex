@@ -8,7 +8,7 @@
 use super::{
     PendingSceneDuplicate, arrangement_audio_panel, audio_event_editor, changelog,
     clip_detail_resize, clip_loop, clip_view, console_returns, detail_context, dialogs,
-    midi_audition, midi_created_selection, midi_creation, midi_drag, midi_group_drag,
+    issue_report, midi_audition, midi_created_selection, midi_creation, midi_drag, midi_group_drag,
     midi_loop_notes, midi_origin_view, midi_pan, midi_pending_drag,
     midi_pitch_viewport::PitchViewport, midi_pitch_zoom, midi_recording, midi_ruler, midi_scene,
     midi_selection, midi_step, midi_stroke, midi_velocity_randomize, midi_velocity_ui,
@@ -195,11 +195,12 @@ impl Default for SessionGridState {
     }
 }
 
-/// Preferences, tuning, changelog, and missing-media dialog state.
+/// Preferences, tuning, changelog, issue reporting, and missing-media dialog state.
 pub(in crate::editor) struct SettingsState {
     pub(in crate::editor) recent_projects: recent_projects::RecentProjectsState,
     pub(in crate::editor) project_directory: project_directory::State,
     pub(in crate::editor) changelog: changelog::State,
+    pub(in crate::editor) issue_report: issue_report::State,
     pub(in crate::editor) missing_media: Option<missing_media::Panel>,
     pub(in crate::editor) theme: theme_settings::ThemeSettingsState,
     pub(in crate::editor) audio_device: super::audio_device_settings::State,

@@ -45,6 +45,7 @@ impl BuildIdentity {
 }
 
 struct ResolvedBuildInfo {
+    identity: BuildIdentity,
     label: String,
     diagnostic: String,
 }
@@ -52,6 +53,7 @@ struct ResolvedBuildInfo {
 impl ResolvedBuildInfo {
     fn from_identity(identity: BuildIdentity) -> Self {
         Self {
+            identity,
             label: identity.display_label(),
             diagnostic: identity.diagnostic_string(),
         }
@@ -69,6 +71,10 @@ pub fn install_build_identity(identity: BuildIdentity) {
 
 fn resolved() -> &'static ResolvedBuildInfo {
     BUILD_INFO.get_or_init(|| ResolvedBuildInfo::from_identity(BuildIdentity::fallback()))
+}
+
+pub(crate) fn current_identity() -> BuildIdentity {
+    resolved().identity
 }
 
 pub(crate) fn label_text() -> &'static str {

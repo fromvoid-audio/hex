@@ -4,7 +4,7 @@
 //!
 //! # Dependencies
 //! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
-//! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
+//! preferences, tuning, MIDI, MTS, diagnostics, report and plugin-catalog services.
 //! fastrand supplies transient browser result ranks on the UI thread.
 //! Test-only storage access verifies complete control-side EQ upgrade round trips.
 //!
@@ -15,6 +15,11 @@
 pub use hex_ui_kit::{
     assets, context_menu, device_composition, output_meter, section_hit, section_input,
     section_surface, theme,
+};
+mod report;
+pub use report::{
+    ReportClient, ReportCommand, ReportPreview, ReportPreviewRequest, ReportRequest, ReportStatus,
+    ReportWorker, channel as report_channel, install_report_client,
 };
 mod update;
 pub use update::{

@@ -2,10 +2,11 @@
 //! Own bounded asynchronous per-session diagnostic logging and recent retention.
 //!
 //! # Dependencies
-//! Standard library only. Desktop owns startup and shutdown; control producers
-//! enqueue bounded records. Producers may wait for another producer's bounded,
-//! allocation-free enqueue critical section, so they must never be called from
-//! a realtime/audio thread.
+//! Standard library plus pinned `flate2` for bounded report-bundle gzip
+//! compression. No GPUI or realtime audio dependencies. Desktop owns startup
+//! and shutdown; control producers enqueue bounded records. Producers may wait
+//! for another producer's bounded, allocation-free enqueue critical section, so
+//! they must never be called from a realtime/audio thread.
 //!
 //! # Does not own
 //! No audio/project authority, action replay, source admission or musical ACK.
@@ -26,6 +27,7 @@
 
 mod event;
 pub mod reader;
+pub mod report;
 mod rolling;
 
 use event::{Context, Record};

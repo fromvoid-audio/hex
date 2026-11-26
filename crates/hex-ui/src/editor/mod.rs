@@ -142,6 +142,7 @@ mod gain_lane;
 mod gain_recording;
 mod header;
 mod input_quantization;
+pub(crate) mod issue_report;
 mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
@@ -542,6 +543,7 @@ const ARRANGEMENT_BOUNCE_KEY_CONTEXT: &str =
 fn bind_editor_keys(cx: &mut App) {
     crate::tooltips::bind_keys(cx);
     changelog::bind_keys(cx);
+    issue_report::bind_keys(cx);
     hex_widgets::bind_response_graph_keys(cx);
     device_panel::bind_operator_keys(cx);
     device_panel::bind_picker_keys(cx);
@@ -963,6 +965,7 @@ pub(super) enum ActiveOverlayKind {
     ThemeSettings,
     TuningSettings,
     Changelog,
+    IssueReport,
     MissingMedia,
     DevicePicker,
     SourceNaming,
@@ -989,6 +992,8 @@ impl EditorView {
             Some(ActiveOverlayKind::TuningSettings)
         } else if self.settings.changelog.is_open() {
             Some(ActiveOverlayKind::Changelog)
+        } else if self.settings.issue_report.is_open() {
+            Some(ActiveOverlayKind::IssueReport)
         } else if self.settings.missing_media.is_some() {
             Some(ActiveOverlayKind::MissingMedia)
         } else if device_panel::picker_is_open(self) {
@@ -1626,6 +1631,7 @@ impl EditorView {
                 recent_projects,
                 project_directory,
                 changelog: changelog::State::new(cx),
+                issue_report: issue_report::State::new(cx),
                 missing_media: None,
                 theme: theme_settings,
                 audio_device: audio_device_settings,
@@ -1703,6 +1709,8 @@ impl EditorView {
             test_environment,
             context_menu: None,
         };
+        let view_entity = cx.entity().downgrade();
+        issue_report::register_opener(cx, view_entity, window.window_handle());
         #[cfg(test)]
         if let Some(directory) = test_directory {
             view.browser.directory = directory.clone();

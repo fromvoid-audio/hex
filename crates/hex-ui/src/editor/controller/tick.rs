@@ -124,6 +124,7 @@ impl EditorView {
             visible_change |= self.retire_audio_preserving_gain_take();
         }
         visible_change |= self.poll_update(cx);
+        visible_change |= self.poll_report(cx);
         visible_change |= self.sync_held_clip_move_audition();
         self.sync_held_stretch_audition();
         self.sync_held_play_start_audition();

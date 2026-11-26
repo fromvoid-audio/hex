@@ -96,6 +96,57 @@ impl Drop for UpdateSupervisorHandle {
     }
 }
 
+/// Outcome of the pre-audio next-launch pending update handoff check.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum StartupHandoffOutcome {
+    SkippedByFlag,
+    OtherInstanceRunning,
+    NoPendingUpdate,
+    HandedOff,
+    Failed(String),
+}
+
+/// Pre-audio startup gate for next-launch pending updates.
+///
+/// When launched fresh without `--skip-pending-update` and no other Hex
+/// instance holds the update lease, checks whether a verified pending update
+/// receipt is staged for `target`. If so, prepares and approves the existing
+/// signed update helper with `Action::Restart` so the new build opens
+/// automatically once this process exits and releases its shared custody lease.
+/// Any refusal falls through to normal startup without discarding user data.
+pub(super) fn try_startup_pending_handoff(
+    target: &Path,
+    sole_instance: bool,
+    skip_flag: bool,
+) -> StartupHandoffOutcome {
+    try_startup_pending_handoff_with(target, sole_instance, skip_flag, |target, selected| {
+        let stop = AtomicBool::new(false);
+        let prepared = prepare_with_stop(target, Action::Restart, selected, &stop)?;
+        prepared.approve()
+    })
+}
+
+fn try_startup_pending_handoff_with(
+    target: &Path,
+    sole_instance: bool,
+    skip_flag: bool,
+    handoff: impl FnOnce(&Path, &str) -> io::Result<()>,
+) -> StartupHandoffOutcome {
+    if skip_flag {
+        return StartupHandoffOutcome::SkippedByFlag;
+    }
+    if !sole_instance {
+        return StartupHandoffOutcome::OtherInstanceRunning;
+    }
+    let Ok(selected) = select_available_receipt(target) else {
+        return StartupHandoffOutcome::NoPendingUpdate;
+    };
+    match handoff(target, &selected) {
+        Ok(()) => StartupHandoffOutcome::HandedOff,
+        Err(error) => StartupHandoffOutcome::Failed(error.to_string()),
+    }
+}
+
 /// Start one desktop-owned worker for a bundle whose startup lease is held.
 pub(super) fn start(
     target: PathBuf,
@@ -1178,6 +1229,71 @@ mod tests {
         assert!(
             remaining.contains(&newest_name),
             "pruning must retain the newest session directory"
+        );
+    }
+
+    #[test]
+    fn startup_handoff_gate_respects_flag_sole_instance_and_receipt_state() {
+        let fixture = Fixture::new();
+        let target = fixture.0.join("hex.app");
+        let (pending, installed) = receipt_paths(&target).unwrap();
+        fs::create_dir_all(pending.parent().unwrap()).unwrap();
+        fs::create_dir_all(installed.parent().unwrap()).unwrap();
+        fs::write(&installed, b"installed-v1").unwrap();
+
+        // No staged pending candidate yet -> NoPendingUpdate.
+        assert_eq!(
+            try_startup_pending_handoff_with(&target, true, false, |_, _| {
+                panic!("handoff must not run without pending update");
+            }),
+            StartupHandoffOutcome::NoPendingUpdate
+        );
+
+        // Stage a newer candidate.
+        fs::write(&pending, b"pending-v2").unwrap();
+        let expected_digest = receipt_digest(&pending).unwrap();
+
+        // --skip-pending-update opt-out skips handoff.
+        assert_eq!(
+            try_startup_pending_handoff_with(&target, true, true, |_, _| {
+                panic!("handoff must not run when skipped by flag");
+            }),
+            StartupHandoffOutcome::SkippedByFlag
+        );
+
+        // Another Hex instance holds the shared lease -> refuse handoff.
+        assert_eq!(
+            try_startup_pending_handoff_with(&target, false, false, |_, _| {
+                panic!("handoff must not run while another instance holds lease");
+            }),
+            StartupHandoffOutcome::OtherInstanceRunning
+        );
+
+        // Sole instance + newer pending candidate -> invokes handoff with exact digest.
+        let mut seen = None;
+        let outcome = try_startup_pending_handoff_with(&target, true, false, |t, digest| {
+            seen = Some((t.to_path_buf(), digest.to_owned()));
+            Ok(())
+        });
+        assert_eq!(outcome, StartupHandoffOutcome::HandedOff);
+        assert_eq!(seen, Some((target.clone(), expected_digest)));
+
+        // Helper error falls back cleanly without panicking.
+        let failed = try_startup_pending_handoff_with(&target, true, false, |_, _| {
+            Err(invalid("helper verification refused"))
+        });
+        assert_eq!(
+            failed,
+            StartupHandoffOutcome::Failed("helper verification refused".into())
+        );
+
+        // Once installed receipt matches pending receipt -> NoPendingUpdate (no loop).
+        fs::write(&installed, b"pending-v2").unwrap();
+        assert_eq!(
+            try_startup_pending_handoff_with(&target, true, false, |_, _| {
+                panic!("already-installed candidate must not loop");
+            }),
+            StartupHandoffOutcome::NoPendingUpdate
         );
     }
 }
