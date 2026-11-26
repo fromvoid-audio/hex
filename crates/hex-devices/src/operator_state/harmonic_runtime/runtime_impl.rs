@@ -129,6 +129,9 @@ impl Runtime {
                 for machine in voice.machines.iter_mut().flatten() {
                     machine.note_off(voice.age);
                 }
+                if let Some(pe) = &mut voice.pitch_env {
+                    pe.note_off(voice.age);
+                }
                 self.expire();
             }
         }
@@ -453,8 +456,9 @@ impl MutableInstrumentRuntime for Runtime {
     ) -> Result<(), Error> {
         let companion = self.factory.settings.companion;
         let beat_required = companion.needs_clock()
+            || self.factory.settings.pitch_env.needs_clock()
             || (self.factory.settings.lfo.active() && self.factory.settings.lfo.sync());
-        if companion.needs_running()
+        if (companion.needs_running() || self.factory.settings.pitch_env.needs_running())
             && clock
                 .and_then(|clock| clock.transport_is_running())
                 .is_none()
