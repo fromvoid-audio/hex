@@ -15,6 +15,8 @@ mod filter;
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
 mod gate;
+#[path = "callback_allocations/hardware_send_return.rs"]
+mod hardware_send_return;
 #[path = "callback_allocations/instrument_rack.rs"]
 mod instrument_rack;
 #[path = "callback_allocations/midi_processor.rs"]
