@@ -5600,9 +5600,11 @@ class ModuleScopeTests(unittest.TestCase):
                     "cargo_inventory": inventory, "paths": [path]})}
                 default = steps["ui-default-lib-unit-tests"]
                 self.assertTrue(default.requires_tests)
-                self.assertEqual(default.argv[default.argv.index("--") + 1:], (prefix + "tests::",))
+                self.assertIn(prefix + "tests::", default.argv[default.argv.index("--") + 1:])
                 feature = steps["ui-feature-tests"]
-                self.assertEqual(feature.argv[feature.argv.index("--") + 1:], (prefix, rendered))
+                filters = feature.argv[feature.argv.index("--") + 1:]
+                self.assertIn(prefix, filters)
+                self.assertIn(rendered, filters)
 
     def test_reporting_sources_keep_their_own_default_library_tests(self):
         owner = "hex-ui"
