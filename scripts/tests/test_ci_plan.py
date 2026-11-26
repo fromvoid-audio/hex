@@ -5582,6 +5582,25 @@ class ModuleScopeTests(unittest.TestCase):
         self.assertTrue(steps["ui-unit-unit_device"].requires_tests)
         self.assertFalse(steps["ui-feature-tests"].requires_tests)
 
+    def test_reporting_sources_keep_their_own_default_library_tests(self):
+        owner = "hex-ui"
+        inventory = [{"name": owner, "manifest": "crates/hex-ui/Cargo.toml",
+                      "features": {"ui-test-support": [], "ui-unit-tier": []}, "dependencies": [],
+                      "targets": [{"kind": ["lib"]}]}]
+        for source, module in (("report.rs", "report::"), ("editor/issue_report.rs", "editor::issue_report::")):
+            with self.subTest(source=source):
+                path = "crates/hex-ui/src/" + source
+                boundary = plan.boundary_selection(SCRIPTS.parent, [path], inventory, [owner])
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertEqual(default.argv[default.argv.index("--") + 1:], (module + "tests::",))
+                feature = steps["ui-feature-tests"]
+                self.assertEqual(feature.argv[feature.argv.index("--") + 1:], (module,))
+                self.assertFalse(feature.requires_tests)
+
     def test_update_ready_custody_is_default_unit_only(self):
         root = SCRIPTS.parent
         owner, native = "hex-ui", "hex-desktop"
