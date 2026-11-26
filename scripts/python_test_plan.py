@@ -152,7 +152,9 @@ def select(profile: str, paths: list[str], inventory: list[dict],
 
 # Scripts whose tests live in another module than test_<stem>.
 OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan",
-                      "scripts/python_shards.py": "test_python_test_plan"}
+                      "scripts/python_shards.py": "test_python_test_plan",
+                      "scripts/check-cpal-patch.py": "test_dependency_patches",
+                      "scripts/check-xattr-compat.py": "test_dependency_patches"}
 
 
 def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:

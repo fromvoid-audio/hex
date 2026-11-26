@@ -87,7 +87,7 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'hex-shm-ring': {'hex-plugi
               'fs2': {'hex-storage', 'hex-plugin-catalog', 'hex-desktop'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does
 # not permit cryptography or a new dependency on the stream runtime path.
-BUILD_BOUNDARIES = {'coremidi': {'hex-midi'}, 'sha2': {'hex-stream'}}
+BUILD_BOUNDARIES = {'sha2': {'hex-stream'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}

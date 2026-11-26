@@ -4323,6 +4323,28 @@ class MergeBudgetAndPreflightTests(unittest.TestCase):
             {"step_id": "sandbox-unit-tests", "seconds": 1.0},
         ])
 
+    def test_unit_tier_budget_classifies_pure_unit_crate_affected_tests(self):
+        steps = [
+            self._entry("affected-tests",
+                        ("cargo", "test", "-p", "hex-project", "--locked"),
+                        1.8, build=1.4, rust=0.35),
+            self._entry("affected-tests",
+                        ("cargo", "test", "-p", "hex-dsp", "-p", "hex-tuning", "--locked"),
+                        2.6, build=1.5, rust=1.12),
+            self._entry("affected-tests",
+                        ("cargo", "test", "-p", "hex-engine", "--locked"),
+                        10.0, build=2.0, rust=7.5),
+            self._entry("affected-tests",
+                        ("cargo", "test", "-p", "hex-project", "-p", "hex-desktop", "--locked"),
+                        8.0, build=2.0, rust=5.5),
+        ]
+        budget = local_ci.merge_test_budget(steps, None, total_wall_seconds=25.0)
+        self.assertEqual(budget["unit_budget"]["checked_steps"], 2)
+        self.assertTrue(budget["unit_budget"]["exceeded"])
+        self.assertEqual(budget["unit_budget"]["violations"], [
+            {"step_id": "affected-tests", "seconds": 1.12},
+        ])
+
     def test_quick_steps_scope_rustfmt_to_changed_packages_with_all_fallback(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
