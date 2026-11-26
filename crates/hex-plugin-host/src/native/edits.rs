@@ -1,6 +1,8 @@
 //! Receipts from the original native Host's bounded callback FIFO. The same
 //! serialized reader interleaves these control exchanges with PCM/capture.
+use super::exchange::{self, EditSequenceMode, ExchangeChannel};
 use super::*;
+
 impl Prepared {
     /// Consume at most eight ordered receipts. Perform means actual successful
     /// SDK processing/flush; Begin/End need no invented audio samples. Pending
@@ -53,47 +55,23 @@ impl Prepared {
                 .edit_query_sequence
                 .checked_add(1)
                 .ok_or(Error::Protocol("parameter edit operation exhausted"))?;
-            let request = if flush_idle {
-                protocol::idle_editor_edit_request(&self.config, self.sequence, operation)?
-            } else if recovery {
-                protocol::recovery_edit_request(&self.config, self.sequence, operation)?
-            } else {
-                protocol::edit_request(&self.config, self.sequence, operation)?
-            };
-            let until = end_after(self.limits.exchange)?;
-            let token = self.lease.cancellation.clone();
-            self.lease
-                .channel
-                .send(&request, until, &mut || token.check())?;
-            self.lease
-                .channel
-                .read(&mut self.packet, until, &mut || token.check())?;
-            if self.packet.magic() == b"HXVIER01" {
-                return Err(Error::Worker(protocol::error(
-                    self.packet.body()?,
-                    self.config.binding,
-                )?));
-            }
-            let magic = if recovery { b"HXVIGE02" } else { b"HXVIGE01" };
-            if self.packet.magic() != magic {
-                return Err(Error::Protocol("missing parameter edit acknowledgement"));
-            }
-            let body = self.packet.body()?;
+            let sequence = self.sequence;
             let previous = (self.last_edit_sequence, self.last_edit_frame);
-            let result = if recovery {
-                protocol::recovery_edits(body, &self.config, self.sequence, operation, previous)?
-            } else {
-                protocol::RecoveryEdits {
-                    edits: protocol::parameter_edits(
-                        body,
-                        &self.config,
-                        self.sequence,
-                        operation,
-                        previous,
-                    )?,
-                    pending_latency_restart: None,
-                }
+            let mut io = ExchangeChannel {
+                channel: &mut self.lease.channel,
+                packet: &mut self.packet,
+                config: &self.config,
+                cancellation: &self.lease.cancellation,
+                exchange_limit: self.limits.exchange,
             };
+            let (result, _) = exchange::poll_edits_exchange(
+                &mut io,
+                EditSequenceMode::Exact(sequence),
+                operation,
+                previous,
+                recovery,
+                flush_idle,
+            )?;
             self.require_live_epoch()?;
             self.edit_query_sequence = operation;
             if let Some(last) = result.edits.as_slice().last() {
@@ -109,6 +87,7 @@ impl Prepared {
         result
     }
 }
+
 impl Quiescent {
     /// Observe uncovered restart intent before planning this stopped epoch's
     /// resume. A new ordinal can arrive during SDK activation.
