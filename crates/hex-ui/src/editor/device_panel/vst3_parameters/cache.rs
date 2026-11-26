@@ -3,6 +3,7 @@
 //! A cache hit is only a placeholder for the current controller query. Saved
 //! values, editability, automation eligibility and revisions never cross this
 //! boundary.
+use hex_audio::plugin_worker::PARAMETER_PAGE_SIZE as PAGE_SIZE;
 use hex_session::service::PluginParameterRow;
 use serde_json::{Value, json};
 use std::{
@@ -13,11 +14,11 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-const VERSION: u64 = 2;
+// Version 2 persisted page offsets for the former four-row controller pages.
+const VERSION: u64 = 3;
 const MAX_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ROWS: usize = 8_192;
 const NAME_UTF16_UNITS: usize = 127;
-const PAGE_SIZE: usize = 4;
 const MAX_KEY_BYTES: usize = 256;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -335,10 +336,11 @@ mod tests {
     #[test]
     fn round_trip_restores_display_metadata_without_live_authority() {
         let directory = TestDir::new();
-        let rows = vec![row(7, "gain", 0)];
+        let rows: Vec<_> = (0..6).map(|id| row(id, "gain", 0)).collect();
         save(&directory.file(), "binary-class-v1", &[4; 32], &rows).unwrap();
         let cached = load(&directory.file(), "binary-class-v1").unwrap().unwrap();
         assert_eq!(cached.descriptor_signature, [4; 32]);
+        assert_eq!(cached.rows.len(), rows.len());
         assert_eq!(cached.rows[0].name, "gain");
         assert_eq!(cached.rows[0].default_normalized, 0.25);
         assert_eq!(cached.rows[0].normalized, 0.25);
@@ -383,7 +385,7 @@ mod tests {
         assert_eq!(load(&directory.file(), "key"), Ok(None));
         save(&directory.file(), "one", &[4; 32], &[row(1, "gain", 0)]).unwrap();
         assert_eq!(load(&directory.file(), "two"), Ok(None));
-        fs::write(directory.file(), br#"{"version":1,"key":"one","rows":[]}"#).unwrap();
+        fs::write(directory.file(), br#"{"version":2,"key":"one","rows":[]}"#).unwrap();
         assert_eq!(load(&directory.file(), "one"), Ok(None));
     }
 
