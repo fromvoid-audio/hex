@@ -44,6 +44,7 @@ pub(crate) use include_vst3_sdk_tests;
 #[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
 mod channel;
 mod error;
+pub mod midi_translation;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod native;
 pub mod protocol;
