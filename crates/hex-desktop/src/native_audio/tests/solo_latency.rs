@@ -65,6 +65,10 @@ fn solo_publication_reaches_callback_at_the_audible_cut() {
                 .applied_revision
                 .load(Acquire);
             if revision == next {
+                assert!(
+                    !expected || (block + 1) * 64 >= FADE,
+                    "solo cut before fade end"
+                );
                 installed_at.get_or_insert_with(|| started.elapsed().as_micros());
             } else {
                 assert_eq!(revision, applied);
