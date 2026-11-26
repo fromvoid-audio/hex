@@ -427,7 +427,10 @@ impl MidiEvent {
                     && carries_note_identity
                     && (id.get() == u32::MAX || (-10_000..=-1_000).contains(&(id.get() as i32)))
             })
-            && (!self.is_live || carries_note_identity || matches!(status, 0xb0 | 0xd0 | 0xe0))
+            && (!self.is_live
+                || carries_note_identity
+                || matches!(status, 0xb0 | 0xd0 | 0xe0)
+                || (direction == EventDirection::Output && status == 0xc0))
     }
 }
 

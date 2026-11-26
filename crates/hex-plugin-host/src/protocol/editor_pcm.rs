@@ -415,6 +415,17 @@ mod tests {
             malformed[index] = value;
             assert!(pcm(&malformed, &config, 4).is_err());
         }
+        // Identified input bends and CC74 are valid in their own direction.
+        // A legacy controller in a processor reply cannot claim a note ID.
+        for (status, data) in [(0xe2, 2), (0xb2, 74)] {
+            let mut forged = plain.clone();
+            forged[event_start + 3] = status;
+            forged[event_start + 4] = data;
+            assert!(pcm(&forged, &config, 4).is_err());
+            forged[event_start + 8..event_start + 12].fill(0);
+            let decoded = pcm(&forged, &config, 4).unwrap();
+            assert_eq!(decoded.events.as_slice()[0].bytes, [status, data, 103]);
+        }
         for count in [0, crate::transport::MAX_EVENTS as u16 + 1] {
             plain[8..10].copy_from_slice(&count.to_le_bytes());
             assert!(pcm_packet_extent(&plain[..HEADER_BYTES]).is_err());
