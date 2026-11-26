@@ -141,6 +141,7 @@ impl WaveformGeometryCache {
             bounds,
             mask,
             ordinates: observations.map(|(lo, hi, _)| (lo, hi)),
+            lane_count: geometry.display.channels().len(),
             envelope_points: geometry
                 .channels
                 .iter()
@@ -186,16 +187,19 @@ impl WaveformGeometryCache {
                     }
                     _ => None,
                 },
-                spans: std::array::from_fn(|channel| {
-                    let (low, high) = entry.geometry.channels[channel]
-                        .outline
-                        .iter()
-                        .map(|point| f32::from(point.y))
-                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
-                            (low.min(y), high.max(y))
-                        });
-                    high - low
-                }),
+                spans: entry.geometry.channels[..entry.geometry.display.channels().len()]
+                    .iter()
+                    .map(|channel| {
+                        let (low, high) = channel
+                            .outline
+                            .iter()
+                            .map(|point| f32::from(point.y))
+                            .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                                (low.min(y), high.max(y))
+                            });
+                        high - low
+                    })
+                    .collect(),
             })
             .collect()
     }
