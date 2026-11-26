@@ -11,6 +11,7 @@ const ROW_HEIGHT: f32 = 40.0;
 #[derive(Default)]
 pub(in crate::editor::device_panel) struct State {
     pub(in crate::editor::device_panel) filter_response: Option<super::filter_response::Control>,
+    pub(in crate::editor::device_panel) pitch_envelope: Option<super::pitch_page::GraphControl>,
     pub(in crate::editor::device_panel) routing_focus: Option<gpui::FocusHandle>,
     pub(in crate::editor::device_panel) routing_popup: Option<usize>,
     pub(super) routing_blur: Option<gpui::Subscription>,
@@ -117,6 +118,9 @@ pub(in crate::editor::device_panel) fn cancel_interactions(
         if let Some(control) = state.filter_response.as_ref() {
             control.release_pointer_capture(cx);
         }
+        if let Some(control) = state.pitch_envelope.as_ref() {
+            control.release_pointer_capture(cx);
+        }
     }
 }
 
@@ -130,6 +134,7 @@ pub(in crate::editor::device_panel) fn cancel_hidden(
         if !visible.contains(device) {
             state.routing_popup = None;
             state.filter_response = None;
+            state.pitch_envelope = None;
         }
     }
 }
@@ -141,6 +146,9 @@ pub(in crate::editor::device_panel) fn cancel_all(
     let previews = std::mem::take(&mut view.device_panel.operator_previews);
     for (_, state) in previews {
         if let Some(control) = state.filter_response {
+            control.release_pointer_capture(cx);
+        }
+        if let Some(control) = state.pitch_envelope {
             control.release_pointer_capture(cx);
         }
     }
