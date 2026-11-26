@@ -1162,7 +1162,7 @@ mod tests {
     fn held_gain_point_prevents_new_sampler_text_draft(cx: &mut TestAppContext) {
         let source = TestWave::new();
         let (mut visual, editor, _, track, _) =
-            window_with_gain(cx, "hex.utility", Slot::Track, false, Some(&source.0));
+            window_with_gain(cx, "hex.utility", Slot::Track, true, Some(&source.0));
         let sampler = editor.read_with(&visual, |view, _| {
             view.state
                 .as_ref()
@@ -1189,10 +1189,22 @@ mod tests {
         let sampler_selector =
             Box::leak(format!("sampler-attack-{}-value", sampler.value()).into_boxed_str());
         let sampler_at = visual.debug_bounds(sampler_selector).unwrap().center();
-        let plot_selector =
-            Box::leak(format!("arrangement-automation-plot-{}", track.value()).into_boxed_str());
-        let plot = visual.debug_bounds(plot_selector).unwrap();
-        let at = gpui::point(plot.center().x, plot.top() + plot.size.height * 0.25);
+        let beat = editor.read_with(&visual, |view, _| {
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .track(track)
+                .unwrap()
+                .gain_envelope()[0]
+                .beat
+        });
+        let marker =
+            Box::leak(format!("gain-point-{}-{}", track.value(), beat.raw()).into_boxed_str());
+        let at = visual
+            .debug_bounds(marker)
+            .expect("authored gain point")
+            .center();
         visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
         editor.read_with(&visual, |view, _| assert!(view.gain_lane.draft.is_some()));
         visual.simulate_click(sampler_at, Modifiers::default());
