@@ -9,6 +9,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+hex-device-abi = { path = "../../third_party/hex-device-abi" }
 hex-dsp = { path = "../hex-dsp" }
 hex-lattice = { path = "../hex-lattice" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }

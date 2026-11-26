@@ -35,6 +35,7 @@ pub use eq8::flexible as eq;
 pub mod filter;
 pub mod fm4;
 pub mod gate;
+pub mod installed_package;
 pub mod limiter;
 pub mod modulation;
 pub mod multisample;
