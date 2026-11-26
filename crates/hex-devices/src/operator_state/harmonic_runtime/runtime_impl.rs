@@ -516,6 +516,7 @@ impl MutableInstrumentRuntime for Runtime {
     }
     fn reset(&mut self) {
         self.voices.fill(Voice::default());
+        self.fading.fill(StealFade::default());
         self.source = self.factory.target;
         self.elapsed = 1;
         self.frames = 1;
@@ -531,6 +532,7 @@ impl MutableInstrumentRuntime for Runtime {
     }
     fn is_quiescent(&self) -> bool {
         self.voices.iter().all(|v| v.id == 0)
+            && self.fading.iter().all(|f| f.remaining == 0)
             && (!self.factory.settings.global.active || self.ledger.held.iter().all(|h| h.id == 0))
     }
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
@@ -556,6 +558,11 @@ impl MutableInstrumentRuntime for Runtime {
                     *target = *source;
                 }
             }
+            for (target, source) in self.fading.iter_mut().zip(&p.fading) {
+                if target.remaining != 0 || source.remaining != 0 {
+                    *target = *source;
+                }
+            }
             self.source = p.source;
             self.elapsed = p.elapsed;
             self.frames = p.frames;
@@ -565,6 +572,8 @@ impl MutableInstrumentRuntime for Runtime {
             self.local_frame = p.local_frame;
             self.ledger = p.ledger;
             self.expression = p.expression;
+            self.channel_pitch_bend = p.channel_pitch_bend;
+            self.cc_timbre = p.cc_timbre;
             self.last_targets = p.last_targets;
         }
     }
@@ -637,22 +646,40 @@ impl MutableInstrumentRuntime for Runtime {
             && let Some(p) = Legacy::read(previous)
         {
             self.voices.fill(Voice::default());
+            self.fading.fill(StealFade::default());
+            let retune = p.tuning != self.factory.tuning.as_ref()
+                || p.fine_offsets != self.factory.settings.fine.values()
+                || p.pitch_keytrack != self.factory.settings.pitch_keytrack.values();
             for (target, source) in self
                 .voices
                 .iter_mut()
                 .zip(p.voices().filter(|voice| voice.id != 0))
             {
                 *target = source;
-                if p.tuning != self.factory.tuning.as_ref()
-                    || p.fine_offsets != self.factory.settings.fine.values()
-                    || p.pitch_keytrack != self.factory.settings.pitch_keytrack.values()
-                {
+                if retune {
                     let Ok(note) = self.factory.retuned_note(source.note) else {
                         return;
                     };
                     // Phase accumulators, envelopes, feedback, filters and expression
                     // remain at the actual applied boundary; only future increments change.
                     target.note = note;
+                }
+            }
+            if let Some(old) = previous.as_any().downcast_ref::<Self>() {
+                self.channel_pitch_bend = old.channel_pitch_bend;
+                self.cc_timbre = old.cc_timbre;
+                for (target, source) in self.fading.iter_mut().zip(&old.fading) {
+                    if source.remaining != 0 {
+                        let mut copied = *source;
+                        if retune {
+                            if let Ok(note) = self.factory.retuned_note(copied.voice.note) {
+                                copied.voice.note = note;
+                            } else {
+                                continue;
+                            }
+                        }
+                        *target = copied;
+                    }
                 }
             }
             if self.factory.settings.global.active {
@@ -671,6 +698,11 @@ impl MutableInstrumentRuntime for Runtime {
                 for voice in &mut self.voices {
                     if voice.id != 0 {
                         let _ = voice.update_effective(&self.factory, self.expression);
+                    }
+                }
+                for fade in &mut self.fading {
+                    if fade.remaining != 0 {
+                        let _ = fade.voice.update_effective(&self.factory, self.expression);
                     }
                 }
             }

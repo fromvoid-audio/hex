@@ -320,9 +320,28 @@ impl ParameterRamp {
         })
     }
 }
+/// Fixed inline pool for stolen voices undergoing a ~1 ms linear de-click fade.
+pub(super) const STEAL_FADE_SLOTS: usize = 8;
+
+/// Stolen voice fading linearly to silence over ~1 ms so polyphony saturation
+/// does not introduce an audible step discontinuity.
+#[derive(Clone, Copy, Default)]
+pub(super) struct StealFade {
+    pub voice: Voice,
+    pub remaining: u16,
+    pub total: u16,
+}
+
+pub(super) fn steal_fade_frames(rate: u32) -> u16 {
+    hex_dsp::ramp_frames_for_ms(rate, 1.0)
+        .unwrap_or(1)
+        .clamp(1, u32::from(u16::MAX)) as u16
+}
+
 pub(super) struct Runtime {
     factory: Factory,
     voices: [Voice; VOICES],
+    fading: [StealFade; STEAL_FADE_SLOTS],
     source: Spectrum,
     elapsed: u32,
     frames: u32,
@@ -438,6 +457,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
         Box::new(Runtime {
             factory: self.clone(),
             voices: [Voice::default(); VOICES],
+            fading: [StealFade::default(); STEAL_FADE_SLOTS],
             source: self.target,
             elapsed: 0,
             frames: 1,

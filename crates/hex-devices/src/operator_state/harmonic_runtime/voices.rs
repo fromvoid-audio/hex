@@ -76,10 +76,11 @@ fn slot(voices: &[EventVoice; VOICES], settings: global::Settings, pitch: u8) ->
         .iter()
         .position(|v| v.id == 0)
         .unwrap_or_else(|| {
+            // Prefer stealing the oldest already-releasing voice before a held voice.
             voices[..capacity]
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, v)| v.sequence)
+                .min_by_key(|(_, v)| (v.gate.is_none(), v.sequence))
                 .map_or(0, |(i, _)| i)
         })
 }
@@ -304,17 +305,21 @@ impl Runtime {
                 let views =
                     std::array::from_fn(|i| EventVoice::read(&self.voices[i], &self.factory));
                 let index = slot(&views, self.factory.settings.global, pitch);
-                let voice = &mut self.voices[index];
                 let legato = self.factory.settings.global.capacity() == 1
-                    && voice.id != 0
-                    && voice.gate.is_none()
+                    && self.voices[index].id != 0
+                    && self.voices[index].gate.is_none()
                     && (!self.factory.settings.global.retrigger
-                        || voice.note.midi_origin().0 != pitch);
+                        || self.voices[index].note.midi_origin().0 != pitch);
                 if legato {
-                    voice.note = prepared.note;
+                    self.voices[index].note = prepared.note;
                 } else {
-                    *voice = prepared;
+                    if self.voices[index].id != 0 {
+                        let stolen = self.voices[index];
+                        self.enqueue_steal_fade(stolen);
+                    }
+                    self.voices[index] = prepared;
                 }
+                let voice = &mut self.voices[index];
                 voice.id = held.id;
                 voice.sequence = held.sequence;
                 voice.update_effective(&self.factory, self.expression)?;
@@ -365,6 +370,31 @@ impl Runtime {
         }
         Ok(())
     }
+    /// Move a displaced sounding voice into the bounded ~1 ms linear de-click
+    /// fade pool so voice stealing does not introduce a step discontinuity.
+    pub(super) fn enqueue_steal_fade(&mut self, stolen: Voice) {
+        if stolen.id == 0 {
+            return;
+        }
+        let total = steal_fade_frames(self.factory.rate);
+        let slot_index = self
+            .fading
+            .iter()
+            .position(|slot| slot.remaining == 0)
+            .unwrap_or_else(|| {
+                self.fading
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, slot)| slot.remaining)
+                    .map_or(0, |(i, _)| i)
+            });
+        self.fading[slot_index] = StealFade {
+            voice: stolen,
+            remaining: total,
+            total,
+        };
+    }
+
     /// Preserve the latest voices, retiring stolen occurrences only on their note-off.
     pub(super) fn enforce_polyphony(&mut self) {
         let capacity = self.factory.settings.global.capacity();
@@ -374,7 +404,7 @@ impl Runtime {
                 .iter()
                 .enumerate()
                 .filter(|(_, v)| v.id != 0)
-                .min_by_key(|(_, v)| v.sequence)
+                .min_by_key(|(_, v)| (v.gate.is_none(), v.sequence))
                 .map(|(i, _)| i)
             {
                 self.voices[index] = Voice::default();
