@@ -493,7 +493,14 @@ mod tests {
     #[test]
     fn catalog_and_batched_values_use_registered_metadata_and_current_state() {
         let catalog = native_device_catalog().unwrap();
-        assert_eq!(catalog.len(), 12);
+        let registry = hex_devices::native_registry().unwrap();
+        // Legacy EQ8 remains restorable but is deliberately absent from the add menu.
+        let visible_ids = registry
+            .definitions()
+            .iter()
+            .map(|device| device.type_id())
+            .filter(|id| id.as_str() != Ok("hex.eq8"));
+        assert!(catalog.iter().map(|entry| entry.type_id).eq(visible_ids));
         let utility = catalog.iter().find(|entry| entry.name == "mix").unwrap();
         let original = crate::default_native_device_state(utility.type_id).unwrap();
         let first = utility.parameters[0];
@@ -548,7 +555,17 @@ mod tests {
         let state = crate::default_native_device_state(auto_pan.type_id).unwrap();
         let view = native_device_view(&state).unwrap();
         assert_eq!(view.name, "pan");
-        assert_eq!(view.parameters.len(), 4);
+        assert!(
+            view.parameters
+                .iter()
+                .map(|p| (p.descriptor.id, p.value))
+                .eq(auto_pan.parameters.iter().map(|p| (p.id, p.default)))
+        );
+        assert!(
+            view.parameters
+                .iter()
+                .any(|p| p.descriptor.id == hex_devices::auto_pan::parameter::MOD_MODE)
+        );
         assert_eq!(
             view.parameters[3].descriptor.id,
             hex_lattice_contract::ParameterId::from_static(4)
@@ -661,7 +678,17 @@ mod tests {
     fn instrument_facades_resolve_only_the_instrument_registry() {
         let effects = native_device_catalog_for_class(NativeDeviceClass::Effect).unwrap();
         let instruments = native_device_catalog_for_class(NativeDeviceClass::Instrument).unwrap();
-        assert_eq!(effects.len(), 12);
+        assert!(effects.iter().all(|effect| {
+            instruments
+                .iter()
+                .all(|instrument| effect.type_id != instrument.type_id)
+        }));
+        assert!(
+            effects
+                .iter()
+                .any(|entry| entry.type_id == hex_devices::chorus::CHORUS_TYPE_ID
+                    && entry.name == "chorus")
+        );
         assert!(
             effects.iter().any(
                 |entry| entry.type_id == hex_devices::filter::TYPE_ID && entry.name == "filter"
