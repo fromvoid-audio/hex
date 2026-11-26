@@ -50,9 +50,7 @@ impl EditorView {
                     Some(places_error("could not load browser places", &error));
             }
             Ok(loaded) => {
-                self.browser
-                    .layout
-                    .set_samples_visible(!loaded.builtin_hidden(BrowserBuiltin::Samples));
+                self.browser.layout.apply_preferences(&loaded);
                 self.browser.source_preferences = loaded.clone();
                 self.browser.place_icons = loaded
                     .icon_assignments()
@@ -66,6 +64,10 @@ impl EditorView {
                     || [BrowserBuiltin::Home, BrowserBuiltin::Music]
                         .into_iter()
                         .filter_map(|source| loaded.builtin_icon(source))
+                        .any(|id| !place_icons::known(id))
+                    || hex_preferences::BrowserSidebarSection::ALL
+                        .into_iter()
+                        .filter_map(|section| loaded.sidebar_section_icon(section))
                         .any(|id| !place_icons::known(id))
                 {
                     self.browser.places_status =
@@ -146,6 +148,7 @@ impl EditorView {
                     places.set_icon(path, Some(id))?;
                 }
             }
+            self.browser.layout.write_preferences(&mut places)?;
             Ok(places)
         });
         match places {
@@ -160,6 +163,16 @@ impl EditorView {
                     Some(places_error("could not save browser places", &error));
             }
         }
+    }
+
+    pub(super) fn sync_sidebar_preferences_and_save(&mut self, cx: &mut Context<Self>) {
+        if self.browser.preferences_loading
+            || !self.browser.preferences_writable
+            || self.browser.preferences_path.is_none()
+        {
+            return;
+        }
+        self.queue_browser_places_save(cx);
     }
 
     pub(super) fn start_browser_places_save(&mut self, cx: &mut Context<Self>) {

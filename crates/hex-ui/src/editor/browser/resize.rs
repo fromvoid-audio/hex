@@ -115,6 +115,10 @@ impl EditorView {
                         // Existing browser policy uses the last movement value;
                         // release ends input without another width adjustment.
                         divider.clear(view);
+                        if matches!(divider, Divider::Sidebar) {
+                            view.browser.layout.sidebar_width_customized = true;
+                            view.sync_sidebar_preferences_and_save(cx);
+                        }
                     }
                     cx.notify();
                 });

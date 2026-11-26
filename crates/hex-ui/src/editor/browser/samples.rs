@@ -362,6 +362,204 @@ impl EditorView {
         Ok(any_changed)
     }
 
+    pub(super) fn toggle_sample_collection(
+        &mut self,
+        path: &std::path::Path,
+        collection: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, &'static str> {
+        let assigned = self
+            .browser
+            .samples
+            .catalog
+            .collection_members(collection)
+            .is_some_and(|members| members.contains(path));
+        let changed = if assigned {
+            self.browser
+                .samples
+                .catalog
+                .remove_from_collection(collection, path)
+        } else {
+            self.browser
+                .samples
+                .catalog
+                .add_to_collection(collection, path)?
+        };
+        if changed {
+            self.browser.samples.invalidate_visible();
+            self.browser.samples.status = None;
+            self.persist_sample_catalog(cx);
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn create_browser_collection(
+        &mut self,
+        name: &str,
+        color: hex_project::ElementColor,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, &'static str> {
+        let normalized = name.trim().to_lowercase();
+        if normalized.is_empty()
+            || normalized.len() > hex_preferences::MAX_COLLECTION_NAME_BYTES
+            || normalized.chars().any(char::is_control)
+        {
+            return Err("invalid collection name");
+        }
+        if self
+            .browser
+            .layout
+            .collections
+            .iter()
+            .any(|item| item.name == normalized)
+        {
+            return Err("collection already exists");
+        }
+        if self.browser.layout.collections.len() >= hex_preferences::MAX_BROWSER_COLLECTIONS {
+            return Err("collection limit reached");
+        }
+        self.browser
+            .samples
+            .catalog
+            .create_collection(&normalized)?;
+        self.browser
+            .layout
+            .collections
+            .push(layout::CollectionItem {
+                name: normalized,
+                color,
+            });
+        let index = self.browser.layout.collections.len() - 1;
+        self.browser.samples.invalidate_visible();
+        self.persist_sample_catalog(cx);
+        self.sync_sidebar_preferences_and_save(cx);
+        Ok(index)
+    }
+
+    pub(super) fn rename_browser_collection(
+        &mut self,
+        index: usize,
+        new_name: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        let Some(current) = self.browser.layout.collections.get(index) else {
+            return Err("collection not found");
+        };
+        let old_name = current.name.clone();
+        let normalized = new_name.trim().to_lowercase();
+        if normalized.is_empty()
+            || normalized.len() > hex_preferences::MAX_COLLECTION_NAME_BYTES
+            || normalized.chars().any(char::is_control)
+        {
+            return Err("invalid collection name");
+        }
+        if normalized == old_name {
+            return Ok(());
+        }
+        if self
+            .browser
+            .layout
+            .collections
+            .iter()
+            .enumerate()
+            .any(|(i, item)| i != index && item.name == normalized)
+        {
+            return Err("collection already exists");
+        }
+        if self
+            .browser
+            .samples
+            .catalog
+            .collection_members(&old_name)
+            .is_some()
+        {
+            self.browser
+                .samples
+                .catalog
+                .rename_collection(&old_name, &normalized)?;
+        }
+        if let Some(item) = self.browser.layout.collections.get_mut(index) {
+            item.name = normalized;
+        }
+        self.browser.samples.invalidate_visible();
+        self.persist_sample_catalog(cx);
+        self.sync_sidebar_preferences_and_save(cx);
+        Ok(())
+    }
+
+    pub(super) fn recolor_browser_collection(
+        &mut self,
+        index: usize,
+        color: hex_project::ElementColor,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(item) = self.browser.layout.collections.get_mut(index) else {
+            return false;
+        };
+        if item.color == color {
+            return false;
+        }
+        item.color = color;
+        self.sync_sidebar_preferences_and_save(cx);
+        true
+    }
+
+    pub(super) fn reorder_browser_collection(
+        &mut self,
+        from: usize,
+        to: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let len = self.browser.layout.collections.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let item = self.browser.layout.collections.remove(from);
+        self.browser.layout.collections.insert(to, item);
+        if let BrowserSection::Collection(active) = self.browser.section {
+            let next_active = if active == from {
+                to
+            } else if from < active && active <= to {
+                active - 1
+            } else if to <= active && active < from {
+                active + 1
+            } else {
+                active
+            };
+            self.browser.section = BrowserSection::Collection(next_active);
+        }
+        self.sync_sidebar_preferences_and_save(cx);
+        true
+    }
+
+    pub(super) fn delete_browser_collection(
+        &mut self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if index >= self.browser.layout.collections.len() {
+            return false;
+        }
+        let removed = self.browser.layout.collections.remove(index);
+        self.browser
+            .samples
+            .catalog
+            .delete_collection(&removed.name);
+        if let BrowserSection::Collection(active) = self.browser.section {
+            if active == index {
+                self.cancel_browser_sample_playback();
+                let fallback = self.browser.layout.first_visible_section();
+                self.select_browser_source(fallback, cx);
+            } else if active > index {
+                self.browser.section = BrowserSection::Collection(active - 1);
+            }
+        }
+        self.browser.samples.invalidate_visible();
+        self.persist_sample_catalog(cx);
+        self.sync_sidebar_preferences_and_save(cx);
+        true
+    }
+
     pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
         let noun = ResultsMode::for_query(self.browser.search.read(cx).text()).count_noun();

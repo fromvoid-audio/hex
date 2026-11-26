@@ -8,6 +8,69 @@ const SECTIONS: [(BrowserSection, &str); 5] = [
     (BrowserSection::All, "all"),
     (BrowserSection::Plugins, "vst3"),
 ];
+const SECTION_PREFS: [hex_preferences::BrowserSidebarSection; 5] = [
+    hex_preferences::BrowserSidebarSection::Samples,
+    hex_preferences::BrowserSidebarSection::Devices,
+    hex_preferences::BrowserSidebarSection::Projects,
+    hex_preferences::BrowserSidebarSection::All,
+    hex_preferences::BrowserSidebarSection::Plugins,
+];
+const DEFAULT_SECTION_ORDER: [usize; 5] = [3, 0, 1, 2, 4];
+const DEFAULT_SECTION_ICONS: [usize; 5] = [0, 1, 2, 6, 3];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CollectionItem {
+    pub(super) name: String,
+    pub(super) color: hex_project::ElementColor,
+}
+
+fn default_collections() -> Vec<CollectionItem> {
+    vec![
+        CollectionItem {
+            name: "favorites".into(),
+            color: hex_project::ElementColor::Red,
+        },
+        CollectionItem {
+            name: "inspiration".into(),
+            color: hex_project::ElementColor::Cyan,
+        },
+        CollectionItem {
+            name: "recent finds".into(),
+            color: hex_project::ElementColor::Rose,
+        },
+    ]
+}
+
+fn element_color_name(color: hex_project::ElementColor) -> &'static str {
+    match color {
+        hex_project::ElementColor::Gray => "gray",
+        hex_project::ElementColor::Red => "red",
+        hex_project::ElementColor::Orange => "orange",
+        hex_project::ElementColor::Amber => "amber",
+        hex_project::ElementColor::Olive => "olive",
+        hex_project::ElementColor::Green => "green",
+        hex_project::ElementColor::Cyan => "cyan",
+        hex_project::ElementColor::Blue => "blue",
+        hex_project::ElementColor::Violet => "violet",
+        hex_project::ElementColor::Rose => "rose",
+    }
+}
+
+fn element_color_from_name(name: &str) -> hex_project::ElementColor {
+    match name {
+        "gray" => hex_project::ElementColor::Gray,
+        "red" => hex_project::ElementColor::Red,
+        "orange" => hex_project::ElementColor::Orange,
+        "amber" => hex_project::ElementColor::Amber,
+        "olive" => hex_project::ElementColor::Olive,
+        "green" => hex_project::ElementColor::Green,
+        "cyan" => hex_project::ElementColor::Cyan,
+        "blue" => hex_project::ElementColor::Blue,
+        "violet" => hex_project::ElementColor::Violet,
+        "rose" => hex_project::ElementColor::Rose,
+        _ => hex_project::ElementColor::Gray,
+    }
+}
 // Retain the 22px control-column width plus the sidebar's one-pixel border.
 // Compact row height is independent of that existing resize minimum.
 const PICKER_CONTROL_SIZE: f32 = 22.0;
@@ -47,36 +110,50 @@ const MINI_TAGS_MAX_HEIGHT: f32 = 140.0;
 
 pub(super) struct BrowserLayout {
     sidebar_width: f32,
+    pub(super) sidebar_width_customized: bool,
     pub(super) sidebar_drag: Option<(f32, f32, bool)>,
     pub(super) mini_tags_height: f32,
     pub(super) mini_tags_drag: Option<(f32, f32)>,
     tags_visible: bool,
+    pub(super) tags_visible_customized: bool,
     editor_visible: bool,
     settings_visible: bool,
     group_open: [bool; 6],
     editor_group_open: [bool; 6],
     mini_tag_input: Option<gpui::Entity<TextInput>>,
     mini_tag_error: Option<String>,
+    pub(super) collection_add_input: Option<gpui::Entity<TextInput>>,
+    pub(super) collection_rename_input: Option<(usize, gpui::Entity<TextInput>)>,
     visible: [bool; 5],
     icons: [usize; 5],
+    section_icon_ids: [Option<String>; 5],
+    section_order: [usize; 5],
+    pub(super) collections: Vec<CollectionItem>,
 }
 
 impl Default for BrowserLayout {
     fn default() -> Self {
         Self {
             sidebar_width: 124.0,
+            sidebar_width_customized: false,
             sidebar_drag: None,
             mini_tags_height: MINI_TAGS_DEFAULT_HEIGHT,
             mini_tags_drag: None,
             tags_visible: true,
+            tags_visible_customized: false,
             editor_visible: false,
             settings_visible: false,
             group_open: [true, true, false, false, false, false],
             editor_group_open: [true; 6],
             mini_tag_input: None,
             mini_tag_error: None,
+            collection_add_input: None,
+            collection_rename_input: None,
             visible: [true; 5],
-            icons: [0, 1, 2, 6, 3],
+            icons: DEFAULT_SECTION_ICONS,
+            section_icon_ids: Default::default(),
+            section_order: DEFAULT_SECTION_ORDER,
+            collections: default_collections(),
         }
     }
 }
@@ -126,6 +203,161 @@ impl BrowserLayout {
     }
     pub(super) fn set_samples_visible(&mut self, visible: bool) {
         self.visible[0] = visible;
+    }
+    pub(super) fn can_hide_section(&self, index: usize) -> bool {
+        index < self.visible.len()
+            && (!self.visible[index] || self.visible.iter().filter(|v| **v).count() > 1)
+    }
+    pub(super) fn first_visible_section(&self) -> BrowserSection {
+        for index in self.section_order {
+            if self.visible[index] {
+                return SECTIONS[index].0.clone();
+            }
+        }
+        BrowserSection::All
+    }
+    pub(super) fn collection_name(&self, index: usize) -> Option<&str> {
+        self.collections.get(index).map(|item| item.name.as_str())
+    }
+    pub(super) fn section_icon_id(&self, index: usize) -> Option<&str> {
+        self.section_icon_ids.get(index)?.as_deref()
+    }
+    pub(super) fn section_icon_path(&self, index: usize) -> &'static str {
+        if let Some(id) = self.section_icon_id(index) {
+            place_icons::path_for_id(id).unwrap_or(ICONS[5])
+        } else {
+            ICONS[self.icons[index]]
+        }
+    }
+    pub(super) fn set_section_icon_id(&mut self, index: usize, id: Option<&'static str>) {
+        if index >= self.icons.len() {
+            return;
+        }
+        self.section_icon_ids[index] = id.map(str::to_owned);
+        if let Some(path) = id.and_then(place_icons::path_for_id)
+            && let Some(pos) = ICONS.iter().position(|candidate| *candidate == path)
+        {
+            self.icons[index] = pos;
+        } else {
+            self.icons[index] = DEFAULT_SECTION_ICONS[index];
+        }
+    }
+    pub(super) fn move_section_in_order(&mut self, order_pos: usize, delta: isize) -> bool {
+        let target = order_pos as isize + delta;
+        if order_pos >= self.section_order.len()
+            || target < 0
+            || (target as usize) >= self.section_order.len()
+        {
+            return false;
+        }
+        self.section_order.swap(order_pos, target as usize);
+        true
+    }
+    pub(super) fn apply_preferences(&mut self, prefs: &BrowserPlaces) {
+        for (index, section) in SECTION_PREFS.into_iter().enumerate() {
+            self.visible[index] = !prefs.sidebar_section_hidden(section);
+            let saved_icon = prefs.sidebar_section_icon(section).map(str::to_owned);
+            self.section_icon_ids[index] = saved_icon.clone();
+            if let Some(id) = saved_icon.as_deref() {
+                if let Some(path) = place_icons::path_for_id(id)
+                    && let Some(pos) = ICONS.iter().position(|candidate| *candidate == path)
+                {
+                    self.icons[index] = pos;
+                } else {
+                    self.icons[index] = 5;
+                }
+            } else {
+                self.icons[index] = DEFAULT_SECTION_ICONS[index];
+            }
+        }
+        if !self.visible.iter().any(|v| *v) {
+            self.visible[3] = true;
+        }
+        let saved_order = prefs.sidebar_order();
+        if saved_order.len() == SECTION_PREFS.len() {
+            let mut next = DEFAULT_SECTION_ORDER;
+            let mut ok = true;
+            for (slot, section) in saved_order.iter().enumerate() {
+                if let Some(idx) = SECTION_PREFS.iter().position(|s| s == section) {
+                    next[slot] = idx;
+                } else {
+                    ok = false;
+                }
+            }
+            if ok {
+                self.section_order = next;
+            }
+        }
+        if let Some(saved_collections) = prefs.collections() {
+            self.collections = saved_collections
+                .iter()
+                .map(|item| CollectionItem {
+                    name: item.name.clone(),
+                    color: element_color_from_name(&item.color),
+                })
+                .collect();
+        }
+        if let Some(width) = prefs.sidebar_width() {
+            self.sidebar_width = width as f32;
+            self.sidebar_width_customized = true;
+        }
+        if let Some(tags_visible) = prefs.tags_visible() {
+            self.tags_visible = tags_visible;
+            self.tags_visible_customized = true;
+        }
+    }
+    pub(super) fn write_preferences(
+        &self,
+        places: &mut BrowserPlaces,
+    ) -> Result<(), hex_preferences::PreferencesError> {
+        // First clear hidden flags so re-enabling sections never hits the
+        // last-visible-section check mid-update, then apply hidden flags.
+        for (index, section) in SECTION_PREFS.into_iter().enumerate() {
+            if self.visible[index] {
+                places.set_sidebar_section_hidden(section, false)?;
+            }
+        }
+        for (index, section) in SECTION_PREFS.into_iter().enumerate() {
+            if !self.visible[index] {
+                places.set_sidebar_section_hidden(section, true)?;
+            }
+            places.set_sidebar_section_icon(section, self.section_icon_ids[index].as_deref())?;
+        }
+        if self.section_order != DEFAULT_SECTION_ORDER {
+            let order = self
+                .section_order
+                .into_iter()
+                .map(|idx| SECTION_PREFS[idx])
+                .collect();
+            places.set_sidebar_order(order)?;
+        } else {
+            places.set_sidebar_order(Vec::new())?;
+        }
+        let defaults = default_collections();
+        if self.collections != defaults {
+            let stored = self
+                .collections
+                .iter()
+                .map(|item| hex_preferences::BrowserCollectionPreference {
+                    name: item.name.clone(),
+                    color: element_color_name(item.color).to_owned(),
+                })
+                .collect();
+            places.set_collections(Some(stored))?;
+        } else {
+            places.set_collections(None)?;
+        }
+        if self.sidebar_width_customized {
+            let clamped = (self.sidebar_width.round() as u32).clamp(
+                hex_preferences::MIN_SIDEBAR_WIDTH,
+                hex_preferences::MAX_SIDEBAR_WIDTH,
+            );
+            places.set_sidebar_width(Some(clamped))?;
+        }
+        if self.tags_visible_customized {
+            places.set_tags_visible(Some(self.tags_visible));
+        }
+        Ok(())
     }
     pub(super) fn reveal_all(&mut self) {
         if let Some(index) = SECTIONS
@@ -486,6 +718,8 @@ impl EditorView {
                 "show or hide tag filters",
                 |view, _, cx| {
                     view.browser.layout.tags_visible = !view.browser.layout.tags_visible;
+                    view.browser.layout.tags_visible_customized = true;
+                    view.sync_sidebar_preferences_and_save(cx);
                     cx.notify();
                 },
                 cx,
@@ -551,29 +785,74 @@ impl EditorView {
             .flex()
             .flex_col()
             .child(picker_group_heading("collections", compact));
-        for (index, name) in ["favorites", "inspiration", "recent finds"]
-            .into_iter()
-            .enumerate()
-        {
+        for (index, item) in self.browser.layout.collections.iter().enumerate() {
             let active = self.browser.section == BrowserSection::Collection(index);
-            let color = [
-                hex_project::ElementColor::Red,
-                hex_project::ElementColor::Cyan,
-                hex_project::ElementColor::Rose,
-            ][index];
+            let color = item.color;
+            let name = item.name.clone();
+            let (available, missing) = self.browser.samples.collection_counts(&name);
+            let tooltip = if missing > 0 {
+                format!("{name} · {available} items · {missing} missing")
+            } else if available == 0 {
+                format!("{name} · empty")
+            } else if available == 1 {
+                format!("{name} · 1 item")
+            } else {
+                format!("{name} · {available} items")
+            };
             let icon = picker_icon(
                 div()
                     .size(px(8.0))
                     .bg(rgb(theme::element_colors(color).accent))
                     .debug_selector(move || format!("browser-picker-glyph-collection-{index}")),
             );
+            if let Some((renaming_idx, input)) = self.browser.layout.collection_rename_input.clone()
+                && renaming_idx == index
+            {
+                let input_for_keys = input.clone();
+                collections = collections.child(
+                    picker_row(active, false)
+                        .id(("browser-collection", index))
+                        .debug_selector(move || format!("browser-collection-{index}"))
+                        .child(icon)
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .on_key_down(cx.listener(
+                                    move |view, event: &gpui::KeyDownEvent, _, cx| {
+                                        match event.keystroke.key.as_str() {
+                                            "enter" => {
+                                                let raw = input_for_keys.read(cx).text().to_owned();
+                                                if let Err(err) =
+                                                    view.rename_browser_collection(index, &raw, cx)
+                                                {
+                                                    view.browser.places_status = Some(err.into());
+                                                } else {
+                                                    view.browser.layout.collection_rename_input =
+                                                        None;
+                                                }
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }
+                                            "escape" => {
+                                                view.browser.layout.collection_rename_input = None;
+                                                cx.stop_propagation();
+                                                cx.notify();
+                                            }
+                                            _ => {}
+                                        }
+                                    },
+                                ))
+                                .child(input),
+                        ),
+                );
+                continue;
+            }
             collections = collections.child(
                 picker_row(active, false)
                     .id(("browser-collection", index))
                     .debug_selector(move || format!("browser-collection-{index}"))
-                    .tooltip(move |_, cx| {
-                        browser_label_tooltip(format!("{name} · collections pending"), cx)
-                    })
+                    .tooltip(move |_, cx| browser_label_tooltip(&tooltip, cx))
                     .cursor_pointer()
                     .on_mouse_down(
                         MouseButton::Left,
@@ -582,6 +861,14 @@ impl EditorView {
                             view.browser.results_focus.focus(window);
                             window.prevent_default();
                             cx.notify();
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                            view.open_browser_collection_menu(index, event.position, window, cx);
+                            window.prevent_default();
+                            cx.stop_propagation();
                         }),
                     )
                     .child(icon)
@@ -610,7 +897,7 @@ impl EditorView {
             .flex()
             .flex_col()
             .child(picker_group_heading("library", compact));
-        for index in [3, 0, 1, 2, 4] {
+        for index in self.browser.layout.section_order {
             let (section, name) = SECTIONS[index].clone();
             if !self.browser.layout.visible[index] {
                 continue;
@@ -618,7 +905,7 @@ impl EditorView {
             let active = self.browser.section == section;
             let icon = picker_icon(
                 browser_vector_icon_colored(
-                    ICONS[self.browser.layout.icons[index]],
+                    self.browser.layout.section_icon_path(index),
                     picker_ink(active, false),
                 )
                 .debug_selector(move || format!("browser-picker-glyph-section-{index}")),
@@ -670,9 +957,13 @@ impl EditorView {
         ));
         if self.browser.layout.settings_visible {
             sidebar = sidebar.children([self.plugin_scan_settings(cx)]);
-            sidebar = sidebar.child(picker_group_heading("sections · session", compact));
-            for (index, (_, name)) in SECTIONS.into_iter().enumerate() {
+            sidebar = sidebar.child(picker_group_heading("sections", compact));
+            let section_order = self.browser.layout.section_order;
+            for (order_pos, index) in section_order.into_iter().enumerate() {
+                let (_, name) = SECTIONS[index];
                 let visible = self.browser.layout.visible[index];
+                let can_up = order_pos > 0;
+                let can_down = order_pos + 1 < section_order.len();
                 sidebar = sidebar.child(
                     div()
                         .h(px(PICKER_CONTROL_SIZE))
@@ -681,7 +972,7 @@ impl EditorView {
                         .overflow_hidden()
                         .flex()
                         .items_center()
-                        .gap_1()
+                        .gap(px(2.0))
                         .child(
                             div()
                                 .id(("browser-section-visibility", index))
@@ -703,23 +994,20 @@ impl EditorView {
                                             );
                                             return;
                                         }
-                                        let layout = &mut view.browser.layout;
-                                        if layout.visible[index]
-                                            && layout.visible.iter().filter(|v| **v).count() == 1
+                                        if view.browser.layout.visible[index]
+                                            && !view.browser.layout.can_hide_section(index)
                                         {
+                                            view.browser.places_status = Some(
+                                                "at least one browser section must stay visible"
+                                                    .into(),
+                                            );
+                                            cx.notify();
                                             return;
                                         }
-                                        layout.visible[index] = !layout.visible[index];
-                                        if !layout.visible[index]
-                                            && view.browser.section == SECTIONS[index].0
-                                            && let Some(next) =
-                                                layout.visible.iter().position(|v| *v)
-                                        {
-                                            view.select_browser_source(
-                                                SECTIONS[next].0.clone(),
-                                                cx,
-                                            );
-                                        }
+                                        view.browser.layout.visible[index] =
+                                            !view.browser.layout.visible[index];
+                                        view.reconcile_browser_source_visibility(cx);
+                                        view.sync_sidebar_preferences_and_save(cx);
                                         cx.notify();
                                     }),
                                 )
@@ -730,20 +1018,80 @@ impl EditorView {
                         )
                         .child(
                             div()
+                                .id(("browser-section-move-up", order_pos))
+                                .debug_selector(move || format!("browser-section-move-up-{index}"))
+                                .w(px(14.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_xs()
+                                .when(can_up, |el| el.cursor_pointer())
+                                .when(!can_up, |el| el.opacity(0.3))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                        if view.browser.layout.move_section_in_order(order_pos, -1)
+                                        {
+                                            view.sync_sidebar_preferences_and_save(cx);
+                                            cx.notify();
+                                        }
+                                    }),
+                                )
+                                .child(theme::text("↑")),
+                        )
+                        .child(
+                            div()
+                                .id(("browser-section-move-down", order_pos))
+                                .debug_selector(move || {
+                                    format!("browser-section-move-down-{index}")
+                                })
+                                .w(px(14.0))
+                                .flex_shrink_0()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_xs()
+                                .when(can_down, |el| el.cursor_pointer())
+                                .when(!can_down, |el| el.opacity(0.3))
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |view, _, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                        if view.browser.layout.move_section_in_order(order_pos, 1) {
+                                            view.sync_sidebar_preferences_and_save(cx);
+                                            cx.notify();
+                                        }
+                                    }),
+                                )
+                                .child(theme::text("↓")),
+                        )
+                        .child(
+                            div()
                                 .id(("browser-section-icon", index))
+                                .debug_selector(move || format!("browser-section-icon-{index}"))
                                 .w(px(PICKER_CONTROL_SIZE))
                                 .flex_shrink_0()
                                 .cursor_pointer()
+                                .tooltip(|_, cx| browser_label_tooltip("choose section icon", cx))
                                 .on_mouse_down(
                                     MouseButton::Left,
-                                    cx.listener(move |view, _, _, cx| {
-                                        let icon = &mut view.browser.layout.icons[index];
-                                        *icon = (*icon + 1) % ICONS.len();
-                                        cx.notify();
+                                    cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                                        view.open_browser_section_icons(
+                                            index,
+                                            event.position,
+                                            window,
+                                            cx,
+                                        );
+                                        window.prevent_default();
+                                        cx.stop_propagation();
                                     }),
                                 )
                                 .child(browser_vector_icon(
-                                    ICONS[self.browser.layout.icons[index]],
+                                    self.browser.layout.section_icon_path(index),
                                 )),
                         ),
                 );
@@ -1218,6 +1566,129 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .overflow_y_scroll();
+        if !self.browser.layout.collections.is_empty() {
+            let mut col_section = browser_divider().child(browser_heading("collections"));
+            for (idx, item) in self.browser.layout.collections.iter().enumerate() {
+                let col_name = item.name.clone();
+                let col_color = item.color;
+                let assigned = target_path.as_deref().is_some_and(|path| {
+                    self.browser
+                        .samples
+                        .catalog
+                        .collection_members(&col_name)
+                        .is_some_and(|members| members.contains(path))
+                });
+                let path_for_click = target_path.clone();
+                let enabled = path_for_click.is_some();
+                let label = format!("{} {col_name}", if assigned { "☑" } else { "☐" });
+                col_section = col_section.child(
+                    div()
+                        .id(("browser-collection-assign", idx))
+                        .debug_selector(move || format!("browser-collection-assign-{idx}"))
+                        .px_2()
+                        .py(px(2.0))
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .when(enabled, |row| {
+                            row.cursor_pointer()
+                                .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+                        })
+                        .text_xs()
+                        .text_color(rgb(theme::color(if assigned {
+                            theme::PaletteRole::Secondary
+                        } else if enabled {
+                            theme::PaletteRole::Text
+                        } else {
+                            theme::PaletteRole::Muted
+                        })))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                if let Some(ref path) = path_for_click
+                                    && let Err(err) =
+                                        view.toggle_sample_collection(path, &col_name, cx)
+                                {
+                                    view.browser.layout.mini_tag_error = Some(err.into());
+                                }
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            div()
+                                .size(px(6.0))
+                                .flex_shrink_0()
+                                .bg(rgb(theme::element_colors(col_color).accent)),
+                        )
+                        .child(theme::text(label)),
+                );
+            }
+            if let Some(input) = self.browser.layout.collection_add_input.clone() {
+                let input_for_keys = input.clone();
+                col_section = col_section.child(
+                    div()
+                        .id("browser-collection-add-input")
+                        .debug_selector(|| "browser-collection-add-input".to_owned())
+                        .px_2()
+                        .py(px(2.0))
+                        .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, _, cx| {
+                            match event.keystroke.key.as_str() {
+                                "enter" => {
+                                    let raw = input_for_keys.read(cx).text().to_owned();
+                                    match view.create_browser_collection(
+                                        &raw,
+                                        hex_project::ElementColor::Amber,
+                                        cx,
+                                    ) {
+                                        Ok(_) => {
+                                            view.browser.layout.collection_add_input = None;
+                                        }
+                                        Err(err) => {
+                                            view.browser.layout.mini_tag_error = Some(err.into());
+                                        }
+                                    }
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                                "escape" => {
+                                    view.browser.layout.collection_add_input = None;
+                                    cx.stop_propagation();
+                                    cx.notify();
+                                }
+                                _ => {}
+                            }
+                        }))
+                        .child(input),
+                );
+            } else {
+                col_section = col_section.child(
+                    div()
+                        .id("browser-collection-add")
+                        .debug_selector(|| "browser-collection-add".to_owned())
+                        .px_2()
+                        .py(px(2.0))
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|view, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                let input = cx.new(browser_input::tag_input);
+                                let focus = input.read(cx).focus_handle().clone();
+                                view.browser.layout.collection_add_input = Some(input);
+                                focus.focus(window);
+                                cx.notify();
+                            }),
+                        )
+                        .child(theme::text("+ new collection…")),
+                );
+            }
+            groups = groups.child(col_section);
+        }
         for (group_idx, (name, values)) in TAG_GROUPS.into_iter().enumerate() {
             let open = self.browser.layout.editor_group_open[group_idx];
             let mut section = browser_divider().child(

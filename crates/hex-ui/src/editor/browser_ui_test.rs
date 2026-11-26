@@ -1944,6 +1944,8 @@ fn browser_tree_refresh_updates_expanded_branch_hidden_by_indexed_query(cx: &mut
 
 #[path = "browser_ui_test/collections_and_layout_tests.rs"]
 mod collections_and_layout_tests;
+#[path = "browser_ui_test/collections_persistence_tests.rs"]
+mod collections_persistence_tests;
 #[path = "browser_ui_test/device_and_drop_tests.rs"]
 mod device_and_drop_tests;
 #[path = "browser_ui_test/preview_and_import_tests.rs"]

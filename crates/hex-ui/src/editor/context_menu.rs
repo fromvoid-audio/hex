@@ -93,6 +93,11 @@ pub(super) enum EditorContextAction {
         path: std::path::PathBuf,
         id: Option<&'static str>,
     },
+    SectionIcon {
+        index: usize,
+        id: Option<&'static str>,
+    },
+    BrowserCollection(super::browser::CollectionMenuAction),
     InsertTrack(InsertTrackAction),
     InsertReturn {
         generation: u64,
@@ -758,6 +763,12 @@ impl EditorView {
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
             }
+            EditorContextAction::SectionIcon { index, id } => {
+                self.set_browser_section_icon(index, id, cx)
+            }
+            EditorContextAction::BrowserCollection(action) => {
+                self.perform_browser_collection_action(action, cx)
+            }
             EditorContextAction::RenameTrackName {
                 generation,
                 revision,
@@ -985,6 +996,12 @@ impl EditorView {
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
+                }
+                EditorContextAction::SectionIcon { index, .. } => {
+                    !self.browser_section_icon_assignable(*index)
+                }
+                EditorContextAction::BrowserCollection(action) => {
+                    !self.browser_collection_action_valid(*action)
                 }
                 EditorContextAction::RemoveBrowserSource(source) => {
                     !self.browser_source_removable(source)

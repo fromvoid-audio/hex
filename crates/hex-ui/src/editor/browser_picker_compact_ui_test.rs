@@ -204,7 +204,7 @@ fn browser_picker_compact_heading_paint_retains_every_source_row_and_settings_sl
         let before_rows = rows.map(|name| visual.debug_bounds(name).unwrap());
         let before_glyphs = glyphs.map(|name| visual.debug_bounds(name).unwrap());
         let names = if settings {
-            vec!["collections", "library", "sections · session", "places"]
+            vec!["collections", "library", "sections", "places"]
         } else {
             vec!["collections", "library", "places"]
         };

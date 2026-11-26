@@ -513,7 +513,12 @@ impl EditorView {
                 .samples
                 .visible_with_listing(&query, Some(root), listing),
             BrowserSection::Place(_) => self.browser.samples.folder(&query, listing, false),
-            BrowserSection::Collection(_) => Arc::new(Vec::new()),
+            BrowserSection::Collection(index) => self
+                .browser
+                .layout
+                .collection_name(*index)
+                .map(|name| self.browser.samples.visible_collection(&query, name))
+                .unwrap_or_else(|| Arc::new(Vec::new())),
             BrowserSection::All if query.is_empty() && !has_tag_filters => {
                 let mut roots = self.sample_roots();
                 roots.push(self.browser.directory.clone());

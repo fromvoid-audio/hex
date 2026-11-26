@@ -460,15 +460,61 @@ impl EditorView {
                     .child(controls)
                     .child(self.browser_results(rows, row_count, cx));
             }
-            BrowserSection::Collection(_) => {
+            BrowserSection::Collection(index) => {
+                let (col_name, available, missing) = self
+                    .browser
+                    .layout
+                    .collection_name(index)
+                    .map(|name| {
+                        let (avail, miss) = self.browser.samples.collection_counts(name);
+                        (name.to_owned(), avail, miss)
+                    })
+                    .unwrap_or_else(|| ("collection".to_owned(), 0, 0));
+                let summary = if missing > 0 {
+                    format!("{col_name} · {available} items · {missing} missing")
+                } else if available == 1 {
+                    format!("{col_name} · 1 item")
+                } else {
+                    format!("{col_name} · {available} items")
+                };
                 panel = panel.child(
                     div()
-                        .flex_1()
+                        .h(px(20.0))
+                        .flex_shrink_0()
                         .px_2()
-                        .pt_2()
+                        .flex()
+                        .items_center()
                         .text_xs()
-                        .child(theme::text("collection assignments pending")),
+                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                        .debug_selector(|| "browser-collection-summary".to_owned())
+                        .child(theme::text(summary)),
                 );
+                if row_count == 0 {
+                    let query_non_empty = !self.browser.search.read(cx).text().is_empty()
+                        || self.browser.samples.has_active_tags();
+                    let empty_text = if missing > 0 && available == 0 {
+                        format!(
+                            "no available items · {missing} missing from library · relocate folder"
+                        )
+                    } else if query_non_empty {
+                        format!("no matching items in {col_name}")
+                    } else {
+                        format!("no items in {col_name} · assign samples in the tag editor")
+                    };
+                    panel = panel.child(
+                        div()
+                            .flex_1()
+                            .min_h_0()
+                            .px_2()
+                            .pt_2()
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                            .debug_selector(|| "browser-collection-empty".to_owned())
+                            .child(theme::text(empty_text)),
+                    );
+                } else {
+                    panel = panel.child(self.browser_results(rows, row_count, cx));
+                }
             }
             BrowserSection::Instruments => {
                 let catalog_error = self
