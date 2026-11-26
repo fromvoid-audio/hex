@@ -2241,9 +2241,15 @@ fn pending_replacement_case(
         // Keep old A0/A1 and new B1 resident, with B2 already decoded but
         // still queued. Old A0/A1 pins must be released at the actual swap so
         // the new graph can consume B2 in the same callback.
-        control.command(PlaybackCommand::Seek(5996)).unwrap();
+        // Arrive at the split after the 128-frame target fade. The prefix
+        // then measures only the loop seam before the new graph takes over.
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(5869))
+            .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-        while control.status.position.load(Acquire) != 5997 {
+        while control.status.stream_applied_command_prefix.load(Acquire) != seek
+            || control.status.position.load(Acquire) != 5997
+        {
             measured_render(&mut data, &mut output[..1]);
             assert!(
                 std::time::Instant::now() < deadline,
@@ -2427,10 +2433,26 @@ fn pending_replacement_case(
             }
         });
         assert_eq!(cached, [true; 2], "A0 and A1 must be resident before seek");
-        control.command(PlaybackCommand::Seek(6208)).unwrap();
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(6208))
+            .unwrap();
+        measured_render(&mut data, &mut output[..128]);
+        assert!(!control.status.stream_buffering.load(Acquire));
+        for (index, frame) in output[..128].iter().enumerate() {
+            assert_eq!(*frame, [0.25 * (127 - index) as f32 / 128.0; 2]);
+        }
         measured_render(&mut data, &mut output[..32]);
+        assert_eq!(
+            control.status.stream_applied_command_prefix.load(Acquire),
+            seek
+        );
         assert!(!control.status.stream_buffering.load(Acquire));
         assert_eq!(control.status.position.load(Acquire), 6240);
+        for (index, frame) in output[..32].iter().enumerate() {
+            let seam = (63 - index) as f32 / 127.0;
+            let seek_gain = (index + 1) as f32 / 128.0;
+            assert_eq!(*frame, [0.25 * seam * seek_gain; 2]);
+        }
         if long_source {
             let (entered, release) = prefetch_gate.expect("prefetch gate");
             entered
@@ -2475,7 +2497,9 @@ fn pending_replacement_case(
             } else {
                 0.25
             };
-            assert_eq!(*frame, [expected; 2], "loop PCM at {index}");
+            // The target fade continues through the loop wrap.
+            let seek_gain = (index + 33).min(128) as f32 / 128.0;
+            assert_eq!(*frame, [expected * seek_gain; 2], "loop PCM at {index}");
         }
         for _ in 0..12 {
             let before = control.status.position.load(Acquire);
@@ -2537,8 +2561,12 @@ fn pending_replacement_case(
         assert!(!control.status.stream_buffering.load(Acquire));
         assert_eq!(control.status.position.load(Acquire), 4032);
         let baseline = output;
-        control.command(PlaybackCommand::Seek(4096)).unwrap();
-        while control.status.position.load(Acquire) != 4160 {
+        let seek = control
+            .command_with_ticket(PlaybackCommand::Seek(4032))
+            .unwrap();
+        while control.status.stream_applied_command_prefix.load(Acquire) != seek
+            || control.status.position.load(Acquire) != 4160
+        {
             measured_render(&mut data, &mut output[..64]);
             assert!(std::time::Instant::now() < deadline, "restore A1 boundary");
             std::thread::yield_now();
@@ -2548,8 +2576,12 @@ fn pending_replacement_case(
             measured_render(&mut data, &mut long);
             assert!(!control.status.stream_buffering.load(Acquire));
             assert_eq!(control.status.position.load(Acquire), 3904);
-            control.command(PlaybackCommand::Seek(4096)).unwrap();
-            while control.status.position.load(Acquire) != 4160 {
+            let seek = control
+                .command_with_ticket(PlaybackCommand::Seek(4032))
+                .unwrap();
+            while control.status.stream_applied_command_prefix.load(Acquire) != seek
+                || control.status.position.load(Acquire) != 4160
+            {
                 measured_render(&mut data, &mut output[..64]);
                 assert!(
                     std::time::Instant::now() < deadline,
