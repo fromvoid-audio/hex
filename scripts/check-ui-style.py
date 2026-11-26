@@ -186,8 +186,32 @@ widgets = (
     'pitch)', 'palette)', 'plots::lattice(', 'tuning_name_input.clone())',
     'tuning_nodes)', 'tuning_slots)', 'tuning_reference)', 'settings)', 'right)',
 )
+# Renderer-local bindings are GPUI elements, bound controls or canvases. Keep
+# their short names local to the owning module. Nested text children are still
+# checked individually, including the captions of row and dial constructors.
+editor_components = {
+    'session_grid.rs': ('super::clip_boundary::backdrop_shell(',),
+    'playback_subviews.rs': ('batched_canvas)', 'slot.view.clone())'),
+    'arrangement_audio_panel.rs': ('gpui::canvas(',),
+    'session_audio_panel.rs': ('gpui::canvas(',),
+    'browser/layout.rs': ('tags)', 'col_section)', 'section)', 'custom)', 'resize_handle)', 'chips)'),
+    'device_panel/device_meter.rs': ('view.device_overlay_slot_or_inline(meter_entity))',),
+    'device_panel/eq8_panel/graph.rs': ('view.device_overlay_slot_or_inline(graph_entity))',),
+    'device_panel/gate_panel.rs': ('ctrl)', 'row(', 'extras)'),
+    'device_panel/compressor_panel.rs': ('ctrl)', 'row(', 'extras)', 'mode_col)', 'sc_col)'),
+    'device_panel/overdrive_panel.rs': ('entity)', 'top_dials)', 'bottom_dials)'),
+    'device_panel/saturator_panel.rs': (
+        'soft_clip)', 'dc_filter)', 'switches)', 'main_dials)', 'a)', 'b)',
+        'color_toggle)', 'dial_row(', 'ws_caption)', 'color_rail)', 'waveshaper_rail)',
+    ),
+    'device_panel/return_view.rs': ('rendered.flex_1())',),
+}
+editor_root = ROOT / 'crates/hex-ui/src/editor'
 for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/hex-ui-kit/src').rglob('*.rs'))):
     source = path.read_text()
+    local_components = ()
+    if path.is_relative_to(editor_root):
+        local_components = editor_components.get(path.relative_to(editor_root).as_posix(), ())
     for match in re.finditer(r'\.child\(\s*', source):
         suffix = source[match.end():]
         # These two typed error components share fragment-normalized text. Keep
@@ -275,7 +299,7 @@ for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/he
         )
         # Console column and reorder boundaries return text-free surfaces or canvases.
         console_column_component = (
-            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid.rs'
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/session_grid/paint.rs'
             and suffix.startswith(('self.console_column_edge(',
                                    'self.console_column_surface(', 'self.console_reorder_layer(',
                                    'self.track_reorder_events(', 'self.console_mixer_row(', 'self.console_main_header(', 'body)', 'tail)', 'session_clip_backdrop(',
@@ -371,7 +395,7 @@ for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/he
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators/source_card.rs'
             and suffix.startswith(('parameter_control_with_presentation(', 'control_row)'))
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not modulator_parameter_control:
+        if not suffix.startswith(widgets) and not suffix.startswith(local_components) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not modulator_parameter_control:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

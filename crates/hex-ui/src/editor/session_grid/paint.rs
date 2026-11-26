@@ -1187,6 +1187,17 @@ impl EditorView {
             ));
             row = row.child(cell);
         }
+        let scene_drag_entity = cx.entity();
+        let drag_color = hex_project::ElementColor::TRACK_CHOICES
+            [index % hex_project::ElementColor::TRACK_CHOICES.len()];
+        let scene_drag_payload = crate::editor::arrangement_sections::ConsoleSceneDrag {
+            project_generation: generation,
+            revision,
+            scene: scene_id,
+            name: scene.name().to_owned(),
+            duration: state.project.default_scene_placement_length(scene_id),
+            color: drag_color,
+        };
         let scene_column = div()
             .id(("session-scene", scene_id.value()))
             .on_mouse_down(
@@ -1233,18 +1244,7 @@ impl EditorView {
                 )
                 .debug_selector(move || format!("console-launch-scene-{}", scene_id.value())),
             )
-            .child({
-                let scene_drag_entity = cx.entity();
-                let drag_color = hex_project::ElementColor::TRACK_CHOICES
-                    [index % hex_project::ElementColor::TRACK_CHOICES.len()];
-                let scene_drag_payload = crate::editor::arrangement_sections::ConsoleSceneDrag {
-                    project_generation: generation,
-                    revision,
-                    scene: scene_id,
-                    name: scene.name().to_owned(),
-                    duration: state.project.default_scene_placement_length(scene_id),
-                    color: drag_color,
-                };
+            .child(
                 div()
                     .id(("session-scene-select", scene_id.value()))
                     .debug_selector(move || format!("console-scene-menu-{}", scene_id.value()))
@@ -1277,8 +1277,8 @@ impl EditorView {
                             view.select_session_scene(scene_id);
                         }
                         cx.notify();
-                    }))
-            });
+                    })),
+            );
         #[cfg(feature = "ui-test-support")]
         let scene_column = scene_column.debug_selector(|| "session-scene-column".into());
         let tail = self.console_column_surface(
