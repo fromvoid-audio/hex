@@ -10,6 +10,7 @@
 mod biquad;
 mod denormal;
 mod envelope_follower;
+mod frequency_shifter;
 mod gain;
 mod halfband;
 mod modulation_lfo;
@@ -26,6 +27,9 @@ pub use denormal::{
     flush_quiet_pair, flush_subnormal,
 };
 pub use envelope_follower::{EnvelopeFollower, InvalidEnvelopeFollower};
+pub use frequency_shifter::{
+    FrequencyShiftParameters, FrequencyShifter, InvalidFrequencyShifter, ShiftMode,
+};
 pub use gain::{Decibels, InvalidGain, LinearAmplitude};
 pub use halfband::{HALFBAND_BLOCK_CHUNK, Halfband2x, Halfband2xKernel, Halfband2xStereo};
 pub use modulation_lfo::{InvalidLfo, LfoRate, LfoWaveform, ModulationLfo};
