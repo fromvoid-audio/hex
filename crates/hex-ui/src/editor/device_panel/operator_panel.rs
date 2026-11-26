@@ -18,6 +18,7 @@ mod global;
 pub(super) mod harmonics;
 mod lfo_editor;
 pub(super) mod oscillator_options;
+mod pitch_page;
 pub(super) mod preview;
 pub(super) mod routing_picker;
 pub(super) mod waveform_editor;
@@ -28,7 +29,10 @@ const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
 
 pub(super) fn detail_width(page: OperatorPage) -> f32 {
-    if matches!(page, OperatorPage::Routing | OperatorPage::Lfo) {
+    if matches!(
+        page,
+        OperatorPage::Routing | OperatorPage::Lfo | OperatorPage::Pitch
+    ) {
         crate::device_composition::VECTOR_ADVANCED_DETAIL_WIDTH
     } else {
         crate::device_composition::VECTOR_DETAIL_WIDTH
@@ -99,6 +103,7 @@ pub(super) enum OperatorPage {
     Oscillator,
     #[default]
     Envelope,
+    Pitch,
     Routing,
     Lfo,
     Filter,
@@ -145,6 +150,9 @@ pub(super) fn render_body(
     let state = *view.device_panel.operator_pages.entry(device).or_default();
     if state.page != OperatorPage::Filter {
         filter_response::hide(view, device);
+    }
+    if state.page != OperatorPage::Pitch {
+        pitch_page::hide(view, device);
     }
     let owner = context::Owner::capture(view, device);
     let parameters = &device_view.parameters;
@@ -212,6 +220,7 @@ pub(super) fn render_body(
             state.selected_operator,
             state.page,
         ),
+        OperatorPage::Pitch => pitch_page::render(view, cx, device, identity, parameters),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
         OperatorPage::Lfo => lfo_editor::render(view, cx, device, identity, parameters),
         OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
@@ -330,6 +339,12 @@ fn page_tabs(
         device,
         NavigationTarget::Page(OperatorPage::Envelope),
     );
+    let pitch_focus = navigation_focus(
+        view,
+        cx,
+        device,
+        NavigationTarget::Page(OperatorPage::Pitch),
+    );
     let oscillator_focus = navigation_focus(
         view,
         cx,
@@ -353,6 +368,18 @@ fn page_tabs(
                 envelope_focus,
             )
             .flex_1(),
+        )
+        .child(
+            page_tab(
+                cx,
+                device,
+                owner,
+                OperatorPage::Pitch,
+                "pitch",
+                state.page,
+                pitch_focus,
+            )
+            .w(px(40.0)),
         )
         .child(
             page_tab(
