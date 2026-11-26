@@ -387,6 +387,9 @@ impl Runtime {
                         for machine in voice.machines.iter_mut().flatten() {
                             machine.note_off(voice.envelope_age as u64);
                         }
+                        if let Some(pe) = &mut voice.pitch_env {
+                            pe.note_off(voice.envelope_age as u64);
+                        }
                         self.expire();
                     }
                 }

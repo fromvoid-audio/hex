@@ -177,10 +177,21 @@ impl Factory {
                 0
             }
         });
+        let pitch_env = if settings.pitch_env.enabled() {
+            Some(mod_env::Machine::prepare(
+                settings.pitch_env.spec(),
+                self.rate,
+                beat,
+                running,
+            )?)
+        } else {
+            None
+        };
         Ok(Voice {
             note,
             phases,
             machines,
+            pitch_env,
             ..Voice::default()
         })
     }
@@ -312,6 +323,7 @@ pub(super) struct Voice {
     pub timbre: u8,
     pub glide_semitones: f64,
     pub glide_target_pitch: f64,
+    pub pitch_env: Option<mod_env::Machine>,
 }
 #[derive(Clone, Copy)]
 pub(super) struct ParameterRamp {

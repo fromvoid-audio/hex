@@ -27,6 +27,7 @@ struct SubBlockSample {
     transpose_st: f64,
     spread_pct: f64,
     glide_decay: f64,
+    pitch_env_amount_pct: f64,
 }
 
 impl Default for SubBlockSample {
@@ -49,6 +50,7 @@ impl Default for SubBlockSample {
             transpose_st: 0.0,
             spread_pct: 0.0,
             glide_decay: 0.0,
+            pitch_env_amount_pct: 0.0,
         }
     }
 }
@@ -137,6 +139,7 @@ impl Runtime {
         const TRANSPOSE_MASK: u32 = 1 << automation::TRANSPOSE_IDX;
         const SPREAD_MASK: u32 = 1 << automation::SPREAD_IDX;
         const GLIDE_TIME_MASK: u32 = 1 << automation::GLIDE_TIME_IDX;
+        const PITCH_ENV_AMOUNT_MASK: u32 = 1 << automation::PITCH_ENV_AMOUNT_IDX;
         let base_time_scale = self.factory.settings.performance.time_rate();
         let base_tone_alpha = performance::tone_alpha_for(
             f64::from(self.factory.settings.performance.tone),
@@ -150,6 +153,8 @@ impl Runtime {
             f64::from(self.factory.settings.pitch_perf.glide_time),
             self.factory.rate,
         );
+        let base_pitch_env_amount_pct = f64::from(self.factory.settings.pitch_env.amount());
+        let pitch_env_active = self.factory.settings.pitch_env.enabled();
         let output_stage_active = base_tone_alpha.is_some()
             || base_volume_gain != 1.0
             || base_spread_pct > 0.0
@@ -164,9 +169,11 @@ impl Runtime {
         let mut has_fading = self.fading.iter().any(|fade| fade.remaining > 0);
         let companion = self.factory.settings.companion;
         let companion_active = self.factory.companion_active;
-        let needs_companion_beat = companion.needs_clock();
+        let needs_companion_beat =
+            companion.needs_clock() || self.factory.settings.pitch_env.needs_clock();
         let has_modulation = self.factory.configuration.has_modulation();
-        let needs_companion_transport = companion.needs_running();
+        let needs_companion_transport =
+            companion.needs_running() || self.factory.settings.pitch_env.needs_running();
         let base_targets = automation::base_target_values(&self.factory.settings);
         let rate_f64 = f64::from(self.factory.rate);
         let step_per_hz = (u64::MAX as f64 + 1.0) / rate_f64;
@@ -199,19 +206,21 @@ impl Runtime {
                 } else {
                     None
                 };
-                if companion_active {
+                if companion_active || pitch_env_active {
                     for voice in self.voices.iter_mut().take(voice_end) {
                         if voice.id != 0 {
-                            for machine in voice.machines.iter_mut().flatten() {
-                                let _ = machine.observe(
-                                    if quality {
-                                        voice.envelope_age as u64
-                                    } else {
-                                        voice.age
-                                    },
-                                    beat,
-                                    running,
-                                );
+                            let obs_age = if quality {
+                                voice.envelope_age as u64
+                            } else {
+                                voice.age
+                            };
+                            if companion_active {
+                                for machine in voice.machines.iter_mut().flatten() {
+                                    let _ = machine.observe(obs_age, beat, running);
+                                }
+                            }
+                            if let Some(pe) = &mut voice.pitch_env {
+                                let _ = pe.observe(obs_age, beat, running);
                             }
                         }
                     }
@@ -413,6 +422,14 @@ impl Runtime {
                 } else {
                     base_glide_decay
                 };
+                let pitch_env_amount_pct = if (mask & PITCH_ENV_AMOUNT_MASK) != 0 {
+                    Self::read_target(values, mask, automation::PITCH_ENV_AMOUNT_IDX, offset)
+                        .map_or(base_pitch_env_amount_pct, |v| {
+                            f64::from(v).clamp(-100.0, 100.0)
+                        })
+                } else {
+                    base_pitch_env_amount_pct
+                };
                 *slot = SubBlockSample {
                     beat,
                     running,
@@ -431,6 +448,7 @@ impl Runtime {
                     transpose_st,
                     spread_pct,
                     glide_decay,
+                    pitch_env_amount_pct,
                 };
                 if law.active() {
                     let next = self.phase.0 + delta;
@@ -507,17 +525,20 @@ impl Runtime {
                 for (local, (frame, sample_ctx)) in
                     sub_frames.iter_mut().zip(sub_slice.iter()).enumerate()
                 {
-                    if companion_active && !(local == 0 && voices_changed) {
-                        for machine in voice.machines.iter_mut().flatten() {
-                            let _ = machine.observe(
-                                if quality {
-                                    voice.envelope_age as u64
-                                } else {
-                                    voice.age
-                                },
-                                sample_ctx.beat,
-                                sample_ctx.running,
-                            );
+                    if (companion_active || pitch_env_active) && !(local == 0 && voices_changed) {
+                        let obs_age = if quality {
+                            voice.envelope_age as u64
+                        } else {
+                            voice.age
+                        };
+                        if companion_active {
+                            for machine in voice.machines.iter_mut().flatten() {
+                                let _ =
+                                    machine.observe(obs_age, sample_ctx.beat, sample_ctx.running);
+                            }
+                        }
+                        if let Some(pe) = &mut voice.pitch_env {
+                            let _ = pe.observe(obs_age, sample_ctx.beat, sample_ctx.running);
                         }
                     }
                     let [left, right] = render_voice_sample(
@@ -717,20 +738,46 @@ fn render_voice_sample(
     } else {
         static_steps
     };
-    let pitch_perf_st = ctx.transpose_st + voice.glide_semitones;
-    let steps = if pitch_perf_st != 0.0 {
-        pitch_perf::scale_steps_by_semitones(
-            steps,
-            pitch_perf_st,
-            factory.settings.pitch_keytrack.values(),
-        )
-    } else {
-        steps
-    };
     let age = if quality {
         voice.envelope_frame()
     } else {
         voice.age
+    };
+    let pitch_env_st = voice.pitch_env.as_ref().map_or(0.0, |pe| {
+        factory.settings.pitch_env.semitone_offset(
+            pe,
+            age,
+            voice.note.midi_origin().1,
+            ctx.pitch_env_amount_pct,
+        )
+    });
+    let pitch_perf_st = ctx.transpose_st + voice.glide_semitones;
+    let steps = if pitch_perf_st != 0.0 || pitch_env_st != 0.0 {
+        let keytrack = factory.settings.pitch_keytrack.values();
+        let base_scaled = if pitch_perf_st != 0.0 {
+            pitch_perf::scale_steps_by_semitones(steps, pitch_perf_st, keytrack)
+        } else {
+            steps
+        };
+        if pitch_env_st != 0.0 {
+            let pe_settings = factory.settings.pitch_env;
+            std::array::from_fn(|op| {
+                if !pe_settings.dest_operator(op) {
+                    return base_scaled[op];
+                }
+                let kt = f64::from(keytrack[op]);
+                if kt <= 0.0 {
+                    base_scaled[op]
+                } else {
+                    let ratio = (pitch_env_st * (kt / 100.0) / 12.0).exp2();
+                    (((base_scaled[op] as f64) * ratio).round() as u64).clamp(1, (1_u64 << 63) - 1)
+                }
+            })
+        } else {
+            base_scaled
+        }
+    } else {
+        steps
     };
     let gate = if quality {
         voice.envelope_gate.unwrap_or(u64::MAX)
@@ -890,8 +937,14 @@ fn render_voice_sample(
     let left = rendered * pan_gains[0] * gain_scale;
     let right = rendered * pan_gains[1] * gain_scale;
     if law.active() {
+        let pe_lfo_mult = if pitch_env_st != 0.0 && factory.settings.pitch_env.dest_lfo() {
+            (pitch_env_st / 12.0).exp2().clamp(0.0625, 16.0)
+        } else {
+            1.0
+        };
         let next = voice.lfo_fraction
             + ctx.delta
+                * pe_lfo_mult
                 * if quality {
                     voice.lfo_rate_multiplier
                 } else {
