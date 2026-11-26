@@ -71,7 +71,7 @@ fn unknown_command_and_missing_args_exit_nonzero_with_complete_usage() {
         .arg("not-a-command")
         .output()
         .expect("run hex-cli unknown");
-    assert!(!unknown.status.success());
+    assert_eq!(unknown.status.code(), Some(2));
     let stderr = String::from_utf8_lossy(&unknown.stderr);
     assert!(stderr.contains("not-a-command"), "stderr: {stderr}");
     for command in ALL_COMMANDS {
@@ -85,7 +85,7 @@ fn unknown_command_and_missing_args_exit_nonzero_with_complete_usage() {
         .current_dir(&dir.0)
         .output()
         .expect("run hex-cli with no args");
-    assert!(!empty.status.success());
+    assert_eq!(empty.status.code(), Some(2));
     let empty_stderr = String::from_utf8_lossy(&empty.stderr);
     for command in ALL_COMMANDS {
         assert!(
@@ -99,7 +99,7 @@ fn unknown_command_and_missing_args_exit_nonzero_with_complete_usage() {
         .arg("render-project")
         .output()
         .expect("run hex-cli render-project without args");
-    assert!(!bad_arity.status.success());
+    assert_eq!(bad_arity.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&bad_arity.stderr)
             .contains("usage: hex-cli render-project <project.hex> <new-output.wav>")
@@ -110,11 +110,25 @@ fn unknown_command_and_missing_args_exit_nonzero_with_complete_usage() {
         .arg("demo")
         .output()
         .expect("run hex-cli demo without output");
-    assert!(!bad_demo.status.success());
+    assert_eq!(bad_demo.status.code(), Some(2));
     assert!(
         String::from_utf8_lossy(&bad_demo.stderr)
             .contains("usage: hex-cli <demo|edit-demo> <new-output.wav>")
     );
+
+    let bad_export_flag = ProcessCommand::new(env!("CARGO_BIN_EXE_hex-cli"))
+        .current_dir(&dir.0)
+        .args(["export-project", "a.hex", "b.wav", "0", "10", "--bogus"])
+        .output()
+        .expect("run hex-cli export-project with bogus flag");
+    assert_eq!(bad_export_flag.status.code(), Some(2));
+
+    let missing_project = ProcessCommand::new(env!("CARGO_BIN_EXE_hex-cli"))
+        .current_dir(&dir.0)
+        .args(["render-project", "does-not-exist.hex", "out.wav"])
+        .output()
+        .expect("run hex-cli render-project with missing project");
+    assert_eq!(missing_project.status.code(), Some(1));
 
     assert!(fs::read_dir(&dir.0).unwrap().next().is_none());
 }

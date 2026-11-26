@@ -22,11 +22,16 @@ use hex_media::{
 };
 use hex_project::{AssetId, Command, Created, Editor, Project};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     error::Error,
     io,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicBool},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::Duration,
 };
 
 /// Upper bounds for content-verified streamed timeline sources (supports > 2h at 192 kHz).
@@ -35,7 +40,8 @@ const STREAM_MAX_SOURCE_FRAMES: u64 = 2 * 60 * 60 * 192_000;
 const STREAM_MAX_HEADER_COUNT: usize = 1024;
 const STREAM_MAX_WINDOW_FRAMES: usize = 65_536;
 const STREAM_MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
-const CLI_PAGE_CACHE_CAPACITY: usize = 64;
+const CLI_PAGE_CACHE_BASE_CAPACITY: usize = 64;
+const CLI_PAGE_CACHE_MAX_CAPACITY: usize = 2048;
 
 /// Bounded limits for resident device assets (e.g. Sampler) and transformed clips.
 const MAX_RESIDENT_MEDIA_FILE_BYTES: usize = 256 * 1024 * 1024;
@@ -213,23 +219,45 @@ struct CachedPage {
 struct CliExportPages {
     sources: Vec<CliStreamSource>,
     cache: Vec<CachedPage>,
+    index: HashMap<(StreamSourceKey, u64), usize>,
     capacity: usize,
+    max_capacity: usize,
     requested: Vec<(StreamSourceKey, u64)>,
+    requested_set: HashSet<(StreamSourceKey, u64)>,
     clock: u64,
     missed: bool,
 }
 
 impl CliExportPages {
     fn new(sources: Vec<CliStreamSource>) -> Self {
-        Self::with_capacity(sources, CLI_PAGE_CACHE_CAPACITY)
-    }
-
-    fn with_capacity(sources: Vec<CliStreamSource>, capacity: usize) -> Self {
+        let capacity = sources
+            .len()
+            .saturating_mul(2)
+            .clamp(CLI_PAGE_CACHE_BASE_CAPACITY, CLI_PAGE_CACHE_MAX_CAPACITY);
         Self {
             sources,
             cache: Vec::new(),
-            capacity: capacity.max(1),
+            index: HashMap::new(),
+            capacity,
+            max_capacity: CLI_PAGE_CACHE_MAX_CAPACITY,
             requested: Vec::new(),
+            requested_set: HashSet::new(),
+            clock: 0,
+            missed: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_capacity(sources: Vec<CliStreamSource>, capacity: usize) -> Self {
+        let cap = capacity.max(1);
+        Self {
+            sources,
+            cache: Vec::new(),
+            index: HashMap::new(),
+            capacity: cap,
+            max_capacity: cap,
+            requested: Vec::new(),
+            requested_set: HashSet::new(),
             clock: 0,
             missed: false,
         }
@@ -242,11 +270,8 @@ impl CliExportPages {
     fn load_and_pin(&mut self, key: StreamSourceKey, page_index: u64) -> Result<(), ExportError> {
         self.clock = self.clock.wrapping_add(1);
         let stamp = self.clock;
-        if let Some(entry) = self
-            .cache
-            .iter_mut()
-            .find(|entry| entry.key == key && entry.page_index == page_index)
-        {
+        if let Some(&slot_index) = self.index.get(&(key, page_index)) {
+            let entry = &mut self.cache[slot_index];
             entry.pinned = true;
             entry.last_used = stamp;
             return Ok(());
@@ -268,16 +293,32 @@ impl CliExportPages {
                 frames: Box::new([[0.0; 2]; STREAM_PAGE_FRAMES]),
             });
             self.cache.len() - 1
+        } else if let Some(evict_index) = self
+            .cache
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !entry.pinned)
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(index, _)| index)
+        {
+            let evicted = &self.cache[evict_index];
+            self.index.remove(&(evicted.key, evicted.page_index));
+            evict_index
+        } else if self.cache.len() < self.max_capacity {
+            self.cache.push(CachedPage {
+                key,
+                page_index,
+                valid_len: 0,
+                pinned: false,
+                last_used: 0,
+                frames: Box::new([[0.0; 2]; STREAM_PAGE_FRAMES]),
+            });
+            self.capacity = self.cache.len();
+            self.cache.len() - 1
         } else {
-            self.cache
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| !entry.pinned)
-                .min_by_key(|(_, entry)| entry.last_used)
-                .map(|(index, _)| index)
-                .ok_or(ExportError::Invalid(
-                    "cli export page demand exceeds bounded page cache",
-                ))?
+            return Err(ExportError::Invalid(
+                "cli export page demand exceeds bounded page cache",
+            ));
         };
         let slot = &mut self.cache[slot_index];
         let valid_len = source.decode_page(page_index, slot.frames.as_mut_slice())?;
@@ -287,6 +328,7 @@ impl CliExportPages {
         slot.valid_len = valid_len;
         slot.pinned = true;
         slot.last_used = stamp;
+        self.index.insert((key, page_index), slot_index);
         Ok(())
     }
 }
@@ -294,9 +336,11 @@ impl CliExportPages {
 impl MediaPages for CliExportPages {
     fn page(&mut self, key: StreamSourceKey, page_index: u64) -> Option<BorrowedMediaPage<'_>> {
         let found = self
-            .cache
-            .iter()
-            .find(|entry| entry.key == key && entry.page_index == page_index && entry.pinned);
+            .index
+            .get(&(key, page_index))
+            .copied()
+            .and_then(|slot_index| self.cache.get(slot_index))
+            .filter(|entry| entry.pinned);
         match found {
             Some(entry) => Some(BorrowedMediaPage {
                 page_index: entry.page_index,
@@ -328,8 +372,10 @@ impl hex_export::PreparedExportPages for CliExportPages {
             entry.pinned = false;
         }
         self.requested.clear();
+        self.requested_set.clear();
         self.missed = false;
         let requested = &mut self.requested;
+        let requested_set = &mut self.requested_set;
         let mut visit = |extent: StreamResourceExtent| {
             let StreamResourceKey::Audio(source) = extent.source else {
                 return Err(hex_engine::Invalid(
@@ -340,7 +386,7 @@ impl hex_export::PreparedExportPages for CliExportPages {
                 return Err(hex_engine::Invalid("export cancelled"));
             }
             let pair = (source, extent.page_index);
-            if !requested.contains(&pair) {
+            if requested_set.insert(pair) {
                 requested.push(pair);
             }
             Ok(())
@@ -768,14 +814,24 @@ struct ParsedExportArgs<'a> {
 
 fn parse_export_args(args: &[std::ffi::OsString]) -> Result<ParsedExportArgs<'_>, Box<dyn Error>> {
     if !(5..=12).contains(&args.len()) {
-        return Err("usage: hex-cli export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32|flac16|flac24|flac] [--sample-rate=<hz>] [--normalize-peak=<dbfs>|--normalize-lufs=<lufs>] [--true-peak-ceiling=<dbfs>] [--overwrite]".into());
+        return Err(crate::usage_error(
+            "usage: hex-cli export-project <project.hex> <destination> <start-frame> <end-frame> [--tracks=ids|--returns=ids|--stems=track-ids] [--format=pcm16|pcm24|float32|flac16|flac24|flac] [--sample-rate=<hz>] [--normalize-peak=<dbfs>|--normalize-lufs=<lufs>] [--true-peak-ceiling=<dbfs>] [--overwrite]",
+        ));
     }
-    let start: u64 = args[3].to_str().ok_or("invalid start frame")?.parse()?;
-    let end: u64 = args[4].to_str().ok_or("invalid end frame")?.parse()?;
+    let start: u64 = args[3]
+        .to_str()
+        .ok_or_else(|| crate::usage_error("invalid start frame"))?
+        .parse()
+        .map_err(|e| crate::usage_error(format!("invalid start frame: {e}")))?;
+    let end: u64 = args[4]
+        .to_str()
+        .ok_or_else(|| crate::usage_error("invalid end frame"))?
+        .parse()
+        .map_err(|e| crate::usage_error(format!("invalid end frame: {e}")))?;
     let frames = end
         .checked_sub(start)
         .filter(|frames| *frames > 0)
-        .ok_or("export range must be nonempty and ordered")?;
+        .ok_or_else(|| crate::usage_error("export range must be nonempty and ordered"))?;
     let mut scope = None;
     let mut overwrite = false;
     let mut format = None;
@@ -784,31 +840,46 @@ fn parse_export_args(args: &[std::ffi::OsString]) -> Result<ParsedExportArgs<'_>
     let mut normalize_lufs: Option<f64> = None;
     let mut true_peak_ceiling: Option<f64> = None;
     for arg in &args[5..] {
-        let text = arg.to_str().ok_or("invalid export option")?;
+        let text = arg
+            .to_str()
+            .ok_or_else(|| crate::usage_error("invalid export option"))?;
         if text == "--overwrite" && !overwrite {
             overwrite = true;
         } else if let Some(name) = text.strip_prefix("--format=").filter(|_| format.is_none()) {
-            format = Some(parse_format(name)?);
+            format = Some(parse_format(name).map_err(|e| crate::usage_error(e.to_string()))?);
         } else if let Some(rate) = text
             .strip_prefix("--sample-rate=")
             .filter(|_| target_sample_rate.is_none())
         {
-            target_sample_rate = Some(rate.parse::<u32>()?);
+            target_sample_rate = Some(
+                rate.parse::<u32>()
+                    .map_err(|e| crate::usage_error(format!("invalid sample rate: {e}")))?,
+            );
         } else if let Some(db) = text
             .strip_prefix("--normalize-peak=")
             .filter(|_| normalize_peak.is_none() && normalize_lufs.is_none())
         {
-            normalize_peak = Some(db.parse::<f64>()?);
+            normalize_peak = Some(
+                db.parse::<f64>()
+                    .map_err(|e| crate::usage_error(format!("invalid peak target: {e}")))?,
+            );
         } else if let Some(lufs) = text
             .strip_prefix("--normalize-lufs=")
             .filter(|_| normalize_lufs.is_none() && normalize_peak.is_none())
         {
-            normalize_lufs = Some(lufs.parse::<f64>()?);
+            normalize_lufs = Some(
+                lufs.parse::<f64>()
+                    .map_err(|e| crate::usage_error(format!("invalid loudness target: {e}")))?,
+            );
         } else if let Some(ceiling) = text
             .strip_prefix("--true-peak-ceiling=")
             .filter(|_| true_peak_ceiling.is_none())
         {
-            true_peak_ceiling = Some(ceiling.parse::<f64>()?);
+            true_peak_ceiling = Some(
+                ceiling
+                    .parse::<f64>()
+                    .map_err(|e| crate::usage_error(format!("invalid true-peak ceiling: {e}")))?,
+            );
         } else if scope.is_none()
             && (text.starts_with("--tracks=")
                 || text.starts_with("--returns=")
@@ -816,11 +887,13 @@ fn parse_export_args(args: &[std::ffi::OsString]) -> Result<ParsedExportArgs<'_>
         {
             scope = Some(text);
         } else {
-            return Err("unknown or repeated export option".into());
+            return Err(crate::usage_error("unknown or repeated export option"));
         }
     }
     if true_peak_ceiling.is_some() && normalize_lufs.is_none() {
-        return Err("--true-peak-ceiling requires --normalize-lufs".into());
+        return Err(crate::usage_error(
+            "--true-peak-ceiling requires --normalize-lufs",
+        ));
     }
     let normalization = if let Some(target_dbfs) = normalize_peak {
         ExportNormalization::Peak { target_dbfs }
@@ -836,7 +909,9 @@ fn parse_export_args(args: &[std::ffi::OsString]) -> Result<ParsedExportArgs<'_>
         target_sample_rate,
         normalization,
     };
-    options.validate()?;
+    options
+        .validate()
+        .map_err(|e| crate::usage_error(e.to_string()))?;
     Ok(ParsedExportArgs {
         start,
         end,
@@ -846,6 +921,113 @@ fn parse_export_args(args: &[std::ffi::OsString]) -> Result<ParsedExportArgs<'_>
         format: format.unwrap_or_default(),
         options,
     })
+}
+
+/// Continue reading lines across blank lines, whitespace, and stray input until
+/// `cancel` is entered or stdin reaches EOF.
+fn listen_for_stdin_cancel(mut reader: impl io::BufRead, control: &ExportControl) {
+    const MAX_LINE_BYTES: u64 = 256;
+    const MAX_LINES: usize = 1024;
+    let mut line = String::new();
+    for _ in 0..MAX_LINES {
+        if control.is_cancelled() {
+            break;
+        }
+        line.clear();
+        let mut limited = io::Read::take(&mut reader, MAX_LINE_BYTES);
+        match io::BufRead::read_line(&mut limited, &mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                if line.trim().eq_ignore_ascii_case("cancel") {
+                    control.cancel();
+                    break;
+                }
+                // Discard the rest of any overlong line so it cannot split into a
+                // spurious `cancel` token on the next iteration.
+                if !line.ends_with('\n') {
+                    loop {
+                        match reader.fill_buf() {
+                            Ok([]) => return,
+                            Ok(buf) => {
+                                if let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                                    reader.consume(pos + 1);
+                                    break;
+                                }
+                                let len = buf.len();
+                                reader.consume(len);
+                            }
+                            Err(_) => return,
+                        }
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(unix)]
+struct ExportSignalGuard {
+    ids: Vec<signal_hook::SigId>,
+    sigint: Arc<AtomicBool>,
+    sigterm: Arc<AtomicBool>,
+}
+
+#[cfg(unix)]
+impl ExportSignalGuard {
+    fn install() -> Self {
+        let sigint = Arc::new(AtomicBool::new(false));
+        let sigterm = Arc::new(AtomicBool::new(false));
+        let mut ids = Vec::with_capacity(2);
+        if let Ok(id) =
+            signal_hook::flag::register(signal_hook::consts::SIGINT, Arc::clone(&sigint))
+        {
+            ids.push(id);
+        }
+        if let Ok(id) =
+            signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&sigterm))
+        {
+            ids.push(id);
+        }
+        Self {
+            ids,
+            sigint,
+            sigterm,
+        }
+    }
+
+    fn received_signal(&self) -> Option<i32> {
+        if self.sigint.load(Ordering::Acquire) {
+            Some(signal_hook::consts::SIGINT)
+        } else if self.sigterm.load(Ordering::Acquire) {
+            Some(signal_hook::consts::SIGTERM)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ExportSignalGuard {
+    fn drop(&mut self) {
+        for id in self.ids.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+struct ExportSignalGuard;
+
+#[cfg(not(unix))]
+impl ExportSignalGuard {
+    fn install() -> Self {
+        Self
+    }
+
+    fn received_signal(&self) -> Option<i32> {
+        None
+    }
 }
 
 /// Explicit offline range/scope adapter supporting streamed timeline media,
@@ -935,26 +1117,19 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
         hex_export::Publication::CreateNew
     };
     let control = ExportControl::default();
+    let signals = ExportSignalGuard::install();
     // Stdin cancellation is handled away from rendering. EOF is harmless; this
     // detached reader never delays completion or joins while waiting for input.
     let cancellation = control.clone();
     std::thread::Builder::new()
         .name("hex-export-cancel".into())
         .spawn(move || {
-            let mut line = String::new();
-            if std::io::BufRead::read_line(
-                &mut std::io::Read::take(std::io::stdin().lock(), 16),
-                &mut line,
-            )
-            .is_ok()
-                && line.trim() == "cancel"
-            {
-                cancellation.cancel();
-            }
+            listen_for_stdin_cancel(io::stdin().lock(), &cancellation);
         })?;
-    eprintln!("exporting frames {start}..{end}; type cancel and press enter to cancel");
+    eprintln!("exporting frames {start}..{end}; type cancel and press enter (or ctrl-c) to cancel");
     let destination = path.to_owned();
     let render_control = control.clone();
+    let (done_tx, done_rx) = mpsc::channel();
     let worker = std::thread::Builder::new()
         .name("hex-export".into())
         .stack_size(EXPORT_STACK_BYTES)
@@ -965,7 +1140,7 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
                 } else {
                     Some(&mut prepared.pages)
                 };
-            hex_export::render_prepared_with_options(
+            let result = hex_export::render_prepared_with_options(
                 hex_export::ExportJobSpec {
                     path: &destination,
                     revision: prepared.revision,
@@ -979,21 +1154,47 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
                 },
                 options,
                 pages,
-            )
+            );
+            let _ = done_tx.send(result);
         })?;
     let mut previous = None;
-    while !worker.is_finished() {
-        let progress = control.progress();
-        if previous != Some(progress) {
-            eprintln!(
-                "export {} / {} frames",
-                progress.processed_frames, progress.total_frames
-            );
-            previous = Some(progress);
+    let export_result = loop {
+        if signals.received_signal().is_some() {
+            control.cancel();
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    let report = worker.join().map_err(|_| "export worker stopped")??;
+        match done_rx.recv_timeout(Duration::from_millis(50)) {
+            Ok(result) => break Some(result),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if signals.received_signal().is_some() {
+                    control.cancel();
+                }
+                let progress = control.progress();
+                if previous != Some(progress) {
+                    eprintln!(
+                        "export {} / {} frames",
+                        progress.processed_frames, progress.total_frames
+                    );
+                    previous = Some(progress);
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break None,
+        }
+    };
+    let _ = worker.join();
+    let result = export_result.ok_or("export worker stopped")?;
+    let report = match result {
+        Ok(report) => report,
+        Err(ExportError::Cancelled) => {
+            if let Some(signal) = signals.received_signal() {
+                return Err(Box::new(crate::SignalAbortError {
+                    signal,
+                    message: format!("export cancelled by signal {signal}"),
+                }));
+            }
+            return Err(Box::new(ExportError::Cancelled));
+        }
+        Err(error) => return Err(Box::new(error)),
+    };
     println!(
         "exported {} frames ({} hz) to {}",
         report.frames,
@@ -1242,6 +1443,79 @@ mod tests {
             refuse_protected_destination(&project_path, editor.project(), &safe_output).is_ok()
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stdin_cancel_listener_continues_across_blank_and_stray_lines() {
+        let control = super::ExportControl::default();
+        let input = std::io::Cursor::new(b"\n   \nhello\ntypo\ncancel\nignored\n");
+        super::listen_for_stdin_cancel(input, &control);
+        assert!(control.is_cancelled());
+
+        let no_cancel = super::ExportControl::default();
+        super::listen_for_stdin_cancel(std::io::Cursor::new(b"\nfoo\nbar\n"), &no_cancel);
+        assert!(!no_cancel.is_cancelled());
+
+        // Overlong stray line (> 256 bytes) must not split into a fake cancel,
+        // and a real cancel on the following line still cancels cleanly.
+        let mut long_input = vec![b'a'; 300];
+        long_input.extend_from_slice(b"cancel\n");
+        let split_guard = super::ExportControl::default();
+        super::listen_for_stdin_cancel(std::io::Cursor::new(long_input.clone()), &split_guard);
+        assert!(!split_guard.is_cancelled());
+
+        long_input.extend_from_slice(b"cancel\n");
+        let after_long = super::ExportControl::default();
+        super::listen_for_stdin_cancel(std::io::Cursor::new(long_input), &after_long);
+        assert!(after_long.is_cancelled());
+    }
+
+    #[test]
+    fn cli_export_pages_scales_past_64_simultaneous_pages_for_dense_projects() {
+        let dir = temp_dir("dense-pages");
+        let wav_path = dir.join("dense.wav");
+        let samples = vec![4_096_i16; STREAM_PAGE_FRAMES];
+        fs::write(&wav_path, mono_wav_bytes(&samples, 48_000)).unwrap();
+
+        let track_count = 80_usize;
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), track_count + 1).unwrap();
+        let mut sources = Vec::with_capacity(track_count);
+        let mut keys = Vec::with_capacity(track_count);
+        for index in 0..track_count {
+            let hex_project::Created::Imported { asset, .. } = editor
+                .execute(Command::ImportAudioTrack {
+                    name: format!("track-{index}"),
+                    path: wav_path.clone(),
+                    sample_rate: 48_000,
+                    frames: STREAM_PAGE_FRAMES as u64,
+                })
+                .unwrap()
+            else {
+                panic!("imported fixture");
+            };
+            let key = StreamSourceKey::new(1, asset);
+            let reader = VerifiedWavReader::open(&wav_path, stream_reader_limits()).unwrap();
+            sources.push(CliStreamSource {
+                key,
+                reader,
+                plan: None,
+                playback_frames: STREAM_PAGE_FRAMES as u64,
+                source_scratch: Vec::new(),
+            });
+            keys.push(key);
+        }
+        let mut pages = CliExportPages::new(sources);
+        for &key in &keys {
+            pages.load_and_pin(key, 0).unwrap();
+        }
+        for &key in &keys {
+            let page = pages
+                .page(key, 0)
+                .expect("pinned dense page must be present");
+            assert_eq!(page.frames[0][0], 4_096.0 / 32_768.0);
+        }
+        pages.complete_chunk().unwrap();
         let _ = fs::remove_dir_all(&dir);
     }
 }
