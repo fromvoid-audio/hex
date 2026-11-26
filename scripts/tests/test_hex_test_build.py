@@ -163,6 +163,102 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(checks, [True, True, "pending", True])
         self.assertIsNone(lock.file)
 
+    def test_existing_release_delivery_reserves_before_build_and_retains_custody(self):
+        fixture = test_local_ci.LocalCiRunnerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        # Seed a genuine populated release target with empty-target-v1 lineage via fresh reservation.
+        runner, fresh_reservation, target = fixture._reserved_release_runner("delivery-existing-seed")
+        runner.env["CARGO_CACHE_RUSTC_INFO"] = "0"
+        runner.output_dir.mkdir(parents=True)
+        tree = runner.summary["start_tree"]
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        dependencies = {"fixture": "matching input identity"}
+        report = fixture.base / "ci-report.json"
+        delivery.write_json(report, {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+            "exit_code": 0, "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
+            "plan": plan, "target_cache": {"dependency_inputs": dependencies},
+            "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                       "test_results": {"python_executions": [1]}} for step in delivery.ci.planned_steps(plan)]})
+        actual_run = subprocess.run
+
+        def fake_build(argv, **kwargs):
+            if argv[:2] == ["cargo", "build"]:
+                artifact = target / "release" / "hex-desktop"
+                artifact.parent.mkdir(parents=True, exist_ok=True)
+                artifact.write_bytes(b"optimized existing fixture")
+                event = {"reason": "compiler-artifact", "executable": str(artifact),
+                         "target": {"name": "hex-desktop"}, "profile": {"opt_level": "3"}}
+                return subprocess.CompletedProcess(argv, 0, json.dumps(event) + "\n")
+            return actual_run(argv, **kwargs)
+
+        with patch.object(subprocess, "run", side_effect=fake_build), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan), \
+                patch.object(runner, "_dependency_context", return_value=dependencies):
+            with delivery.optimized_artifact(runner, reservation=fresh_reservation) as (binary, _owner):
+                self.assertEqual(binary.read_bytes(), b"optimized existing fixture")
+
+        # Now acquire ExistingReleaseTargetReservation on the populated target and run optimized_artifact.
+        reuse_env = dict(fixture.env, CARGO_TARGET_DIR=str(target), FAKE_METADATA_TARGET=str(target))
+        reuse_runner = fixture.runner("delivery-existing-reuse", env=reuse_env)
+        reuse_runner.output_dir.mkdir(parents=True)
+        existing_reservation = delivery.ci.ExistingReleaseTargetReservation.acquire(
+            reuse_runner.root, str(target), {"run_id": "delivery-existing-reuse"},
+            state_dir=fixture.target_state_dir,
+        )
+        self.addCleanup(existing_reservation.close)
+        lock = existing_reservation._lock
+        checks = []
+
+        def verify():
+            if reuse_runner.target_lock is not None:
+                self.assertIs(reuse_runner.target_lock, lock)
+            delivery.validate_ci(report, reuse_runner, tree["commit"], allow_dev_profile=True,
+                                 reservation=existing_reservation)
+            checks.append(True)
+
+        def admit(owner):
+            checks.append(owner["state"])
+
+        with patch.object(subprocess, "run", side_effect=fake_build), \
+                patch.object(delivery, "run", self.mock.temp_original), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan), \
+                patch.object(reuse_runner, "_dependency_context", return_value=dependencies):
+            verify()
+            with delivery.optimized_artifact(
+                reuse_runner, reservation=existing_reservation, verification_check=verify, on_admission=admit
+            ) as (binary, owner):
+                self.assertEqual(binary.read_bytes(), b"optimized existing fixture")
+                self.assertIs(reuse_runner.target_lock, lock)
+                self.assertEqual(owner["state"], "pending")
+                existing_reservation.revalidate(str(target))
+        self.assertEqual(checks, [True, True, "pending", True])
+        self.assertIsNone(lock.file)
+
+        # CLI wrapper build() validates flags and acquires ExistingReleaseTargetReservation before _build.
+        state_paths = delivery.ci.target_state_paths
+        with patch.object(delivery, "ROOT", reuse_runner.root), \
+                patch.object(delivery, "require_delivery_source"), \
+                patch.object(delivery.ci, "target_state_paths",
+                             side_effect=lambda path, state=None: state_paths(path, state or fixture.target_state_dir)), \
+                patch.dict(os.environ, {"CARGO_TARGET_DIR": str(target)}), \
+                patch.object(delivery, "_build") as mocked_build:
+            def observe(_args, *, reservation):
+                self.assertIsInstance(reservation, delivery.ci.ExistingReleaseTargetReservation)
+                reservation.revalidate(str(target))
+                self.assertIsNotNone(reservation._lock.file)
+                return "built-existing"
+
+            mocked_build.side_effect = observe
+            self.assertEqual(delivery.build(SimpleNamespace(existing_release_target=True)), "built-existing")
+            self.assertIsNone(mocked_build.call_args.kwargs["reservation"]._lock.file)
+            with self.assertRaisesRegex(delivery.DeliveryError, "cannot combine"):
+                delivery.build(SimpleNamespace(fresh_release_target=True, existing_release_target=True))
+            with self.assertRaisesRegex(delivery.DeliveryError, "recreated-target recovery"):
+                delivery.build(SimpleNamespace(existing_release_target=True, expected_recreated_target_device=1))
+
     def test_direct_delivery_compiles_witnessed_bytes_before_qualifying_source(self):
         scripts = self.root / "scripts"
         path = scripts / "hex-test-build.py"

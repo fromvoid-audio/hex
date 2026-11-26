@@ -477,15 +477,21 @@ def reserve_fresh_release_target(target, env):
     return ci.FreshTargetReservation.acquire(ROOT, target, {"operation": "fresh-distribution-release"})
 
 
+def reserve_existing_release_target(target, env):
+    require_separate_ci_target(target, env)
+    return ci.ExistingReleaseTargetReservation.acquire(ROOT, target, {"operation": "existing-distribution-release"})
+
+
 def package(candidate, *, adopt_release_target=False, reservation=None):
-    if reservation is not None and adopt_release_target:
+    is_existing = getattr(reservation, "_RESERVATION_KIND", None) == "existing_release"
+    if reservation is not None and not is_existing and adopt_release_target:
         raise Refusal("fresh release target cannot adopt an existing owner")
     delivery.require_delivery_source(ROOT)
     with locked(candidate):
         plan = validate_plan(candidate)
         app = candidate / "hex.app"
         if reservation is not None and (app.exists() or (candidate / "release.json").exists()):
-            raise Refusal("fresh release target requires an unfinished optimized bundle")
+            raise Refusal("reserved release target requires an unfinished optimized bundle")
         if (candidate / "release.json").exists():
             completed = verify_release(candidate / "release.json")
             publish_channel(candidate / "release.json")
@@ -520,9 +526,11 @@ def package(candidate, *, adopt_release_target=False, reservation=None):
             def revalidate():
                 validate_plan(candidate)
                 delivery.validate_ci(ci_report, runner, plan["source"],
-                                     **({"reservation": reservation} if reservation is not None and ownership is None else {}))
+                                     **({"reservation": reservation} if reservation is not None and (ownership is None or is_existing) else {}))
                 if reservation is not None and ownership is not None:
                     runner.validate_release_inputs(ownership)
+                    if is_existing:
+                        reservation.revalidate(reservation._target)
 
             revalidate()
             with delivery.optimized_artifact(runner, adopt=adopt_release_target, verification_check=revalidate,
@@ -709,8 +717,14 @@ def main(argv=None):
         elif args.operation == "install":
             result = install(args.path.resolve())
         else:
-            target = (reserve_fresh_release_target(args.fresh_release_target, os.environ)
-                      if args.fresh_release_target is not None else nullcontext())
+            if args.fresh_release_target is not None and args.adopt_release_target:
+                raise Refusal("fresh release target cannot adopt an existing owner")
+            if args.fresh_release_target is not None:
+                target = reserve_fresh_release_target(args.fresh_release_target, os.environ)
+            elif args.existing_release_target is not None:
+                target = reserve_existing_release_target(args.existing_release_target, os.environ)
+            else:
+                target = nullcontext()
             with target as reservation:
                 candidate = args.path.resolve() if args.operation == "resume" else cut(args, store)
                 resume = ["./release", "resume", str(candidate)]
@@ -718,6 +732,8 @@ def main(argv=None):
                     resume.append("--adopt-release-target")
                 if args.fresh_release_target is not None:
                     resume.extend(("--fresh-release-target", args.fresh_release_target))
+                if args.existing_release_target is not None:
+                    resume.extend(("--existing-release-target", args.existing_release_target))
                 print(f"frozen release: {candidate}\nresume: {shlex.join(resume)}", flush=True)
                 result = package(candidate, adopt_release_target=args.adopt_release_target,
                                  **({"reservation": reservation} if reservation is not None else {}))
@@ -730,11 +746,13 @@ def main(argv=None):
 
 
 def release_target_options(parser):
-    target = parser.add_mutually_exclusive_group()
-    target.add_argument("--adopt-release-target", action="store_true",
+    parser.add_argument("--adopt-release-target", action="store_true",
                         help="recover a pending release target with verified empty origin and identical inputs")
+    target = parser.add_mutually_exclusive_group()
     target.add_argument("--fresh-release-target", metavar="PATH",
                         help="reserve a separate existing empty optimized Cargo target before metadata")
+    target.add_argument("--existing-release-target", metavar="PATH",
+                        help="reserve a separate existing owned optimized Cargo target and release owner before metadata")
 
 
 if __name__ == "__main__":

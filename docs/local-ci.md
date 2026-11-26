@@ -575,6 +575,24 @@ inferred only from Cargo configuration does not meet this API's proof contract.
 The dev publisher uses the existing owner schema for pre-existing empty targets.
 Identity-bound creation for absent targets remains unsupported.
 
+For an explicit existing populated release target that already has a valid
+release owner marker (ready or pending recovery), callers can opt into
+`ExistingReleaseTargetReservation` (`--existing-release-target` in
+`scripts/hex-test-build.py` and `scripts/hex-release.py`). It acquires the
+cooperative target lock before probing the target or running Cargo metadata,
+pins every ancestor directory descriptor, the target directory descriptor, the
+state directory descriptor, the lock inode, and the release owner inode and
+exact bytes, and retains that custody through Cargo metadata, atomic pending
+publication, optional recovery (`--adopt-release-target`), artifact
+identification/consumption, and atomic ready publication. Absent targets,
+symlinked targets or ancestors, unowned/malformed targets, replaced target,
+ancestor, lock or owner entries, metadata target mismatches, and concurrent lock
+holders are refused before cleanup or ownership mutation, preserving unknown
+data. This custody boundary does not certify that previously built dependency
+outputs are fresh; cache-lineage validation and absent target creation remain
+separate contracts, and ordinary non-opt-in and empty-target paths retain their
+existing behavior.
+
 The summary records the identified filesystem, probe duration and dev cleanup
 duration (including failed cleanup). A target
 preparation failure names that phase and the next unstarted stage; a failed
