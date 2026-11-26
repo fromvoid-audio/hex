@@ -1144,6 +1144,9 @@ impl SessionPlayback {
         let audition_before = self.browser_audition.voices;
         let track_count = self.routes.len();
         self.track_fader_scratch[..track_count].copy_from_slice(&self.track_faders[..track_count]);
+        for fader in &mut self.track_fader_scratch[..track_count] {
+            fader.reset_mute_touched();
+        }
         self.return_fade_scratch = self.return_fade;
         self.live_gain_scratch = self.live_gain;
         let result = if self.playing {
@@ -1224,6 +1227,14 @@ impl SessionPlayback {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
             self.foreign_arrangement.commit();
+            if self.playing {
+                for fader in &mut self.track_fader_scratch[..track_count] {
+                    if fader.mute_active() && !fader.mute_touched() {
+                        fader.advance_mute_silent(output.len());
+                    }
+                    fader.reset_mute_touched();
+                }
+            }
             self.track_faders[..track_count]
                 .copy_from_slice(&self.track_fader_scratch[..track_count]);
             self.return_fade = self.return_fade_scratch.filter(|fade| fade.fader.active());

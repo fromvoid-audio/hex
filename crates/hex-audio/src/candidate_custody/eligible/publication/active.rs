@@ -318,6 +318,25 @@ impl Queued {
                 Err(error) => return InstallDecision::Refused(Rejection::from_error(error)),
             }
         }
+        if !confirmed_insert
+            && !local_removal
+            && tempo.is_none()
+            && next.policy == crate::prepared::PublicationPolicy::InheritRuntime
+            && let Some(old) = previous.as_deref_mut()
+            && !old.stream_view().has_pending_render_window()
+            && let Some(old_runtime) = old.state.runtime.as_mut()
+            && let Some(runtime) = next.runtime.as_mut()
+        {
+            use hex_engine::PlaybackHandoffRejection as Rejection;
+            use hex_engine::session_playback::NativeRemovalProgress;
+            match runtime.advance_mute_fade_from(old_runtime) {
+                Ok(NativeRemovalProgress::Fading) => {
+                    return InstallDecision::Retry(PublicationWaitReason::NativeRemovalFade);
+                }
+                Ok(NativeRemovalProgress::Ready | NativeRemovalProgress::NotApplicable) => {}
+                Err(error) => return InstallDecision::Refused(Rejection::from_error(error)),
+            }
+        }
         let promotions = if streamed {
             let Some(request) = stream else {
                 return InstallDecision::Retry(PublicationWaitReason::StreamPages);

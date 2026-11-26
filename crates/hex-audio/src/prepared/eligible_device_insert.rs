@@ -162,6 +162,12 @@ impl Callback {
         rejection: Option<PlaybackHandoffRejection>,
     ) {
         let Some(receipt) = next.receipt() else {
+            if next.native_removal_started()
+                && !self.status.closing.load(Acquire)
+                && let Some(ActivePublication::Eligible(active)) = self.active.as_mut()
+            {
+                next.restore_native_removal(active);
+            }
             return;
         };
         let basis = receipt.0.device_insert_basis();

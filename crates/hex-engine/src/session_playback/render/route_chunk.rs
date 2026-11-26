@@ -1092,7 +1092,13 @@ impl SessionPlayback {
                         };
                         let mix = if track.has_gain_automation() || recording_override.is_some() {
                             self.track_fader_scratch[index].follow(mix.channel_gain());
-                            mix
+                            if self.track_fader_scratch[index].mute_active() {
+                                let scale = self.track_fader_scratch[index].next_mute_scale();
+                                let gain = mix.channel_gain();
+                                mix.with_channel_gain([gain[0] * scale, gain[1] * scale])
+                            } else {
+                                mix
+                            }
                         } else if smoothing {
                             mix.with_channel_gain(self.track_fader_scratch[index].next())
                         } else {
@@ -1652,7 +1658,13 @@ impl SessionPlayback {
                         };
                         let mix = if track.has_gain_automation() || recording_override.is_some() {
                             self.track_fader_scratch[index].follow(mix.channel_gain());
-                            mix
+                            if self.track_fader_scratch[index].mute_active() {
+                                let scale = self.track_fader_scratch[index].next_mute_scale();
+                                let gain = mix.channel_gain();
+                                mix.with_channel_gain([gain[0] * scale, gain[1] * scale])
+                            } else {
+                                mix
+                            }
                         } else if smoothing {
                             mix.with_channel_gain(self.track_fader_scratch[index].next())
                         } else {
@@ -1664,10 +1676,16 @@ impl SessionPlayback {
                             mix
                         };
                         let contribution = if already_mixed {
+                            let scaled = if self.track_fader_scratch[index].mute_active() {
+                                let scale = self.track_fader_scratch[index].next_mute_scale();
+                                [source[0] * scale, source[1] * scale]
+                            } else {
+                                *source
+                            };
                             // Preserve the analytic per-voice fader summation order.
-                            output[frame_index][0] += source[0];
-                            output[frame_index][1] += source[1];
-                            *source
+                            output[frame_index][0] += scaled[0];
+                            output[frame_index][1] += scaled[1];
+                            scaled
                         } else if track.sends().is_empty() {
                             mix.add_frame(&mut output[frame_index], *source);
                             mix.apply_frame(*source)

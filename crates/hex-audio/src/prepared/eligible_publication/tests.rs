@@ -23,6 +23,8 @@ mod eq;
 mod fanout;
 mod granular;
 #[cfg(feature = "allocation-probe")]
+mod mute_fade;
+#[cfg(feature = "allocation-probe")]
 mod native_resources;
 #[cfg(feature = "allocation-probe")]
 mod pages;

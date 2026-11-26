@@ -633,10 +633,24 @@ impl SessionPlayback {
                     continue;
                 }
                 self.track_faders[index] = previous.track_faders[old_index];
+                let old_track = &previous.revision.arrangement().tracks()[old_index];
                 let track = &self.revision.arrangement().tracks()[index];
+                let rate = self.revision.arrangement().sample_rate();
+                let ordinary_track = old_track.source_id.is_none() && track.source_id.is_none();
+                if track.mix().muted() {
+                    self.track_faders[index].clear_mute();
+                } else if previous.playing && ordinary_track {
+                    if old_track.mix().muted() {
+                        // Ramp newly unmuted tracks smoothly from silence over 5 ms.
+                        self.track_faders[index].begin_unmute(rate);
+                    } else {
+                        self.track_faders[index].cancel_mute(rate);
+                    }
+                } else {
+                    self.track_faders[index].clear_mute();
+                }
                 if !track.has_gain_automation() {
                     let gain = track.mix().channel_gain();
-                    let rate = self.revision.arrangement().sample_rate();
                     if self
                         .native_removal
                         .is_some_and(|pending| pending.faded_track(previous, route.id))

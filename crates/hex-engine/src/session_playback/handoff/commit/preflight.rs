@@ -100,7 +100,10 @@ impl SessionPlayback {
             .native_removal
             .and_then(|pending| pending.return_pass_latency());
         let keeps_pass_clock = main_pass_cut.is_some() || return_pass_latency.is_some();
-        let tail_policy = if let Some(removal) = self.native_removal {
+        let tail_policy = if let Some(removal) = self
+            .native_removal
+            .filter(|pending| !pending.is_mute_fade())
+        {
             if !continuous_insert || !removal.matches(previous) {
                 return Err(SessionPlaybackError::InvalidCommand);
             }
@@ -120,17 +123,27 @@ impl SessionPlayback {
                         DeviceEditTailPolicy::FadedNative(identity)
                     })
             }
-        } else if continuous_insert {
-            DeviceEditTailPolicy::RequireConfirmation
-        } else if confirmed_insert
-            || (self.require_continuous_insert && previous.renders_no_device_chains())
-        {
-            // A fenced device edit on a silent predecessor can cut the
-            // obsolete chain immediately. A frozen chain cannot drain and
-            // must not claim an endpoint needed by a surviving device.
-            DeviceEditTailPolicy::Cut
         } else {
-            DeviceEditTailPolicy::Preserve
+            if let Some(removal) = self.native_removal.filter(|pending| pending.is_mute_fade()) {
+                if !removal.matches(previous) {
+                    return Err(SessionPlaybackError::InvalidCommand);
+                }
+                if demand.is_none() && !removal.ready_on(previous) {
+                    return Err(SessionPlaybackError::DeviceTransitionBusy);
+                }
+            }
+            if continuous_insert {
+                DeviceEditTailPolicy::RequireConfirmation
+            } else if confirmed_insert
+                || (self.require_continuous_insert && previous.renders_no_device_chains())
+            {
+                // A fenced device edit on a silent predecessor can cut the
+                // obsolete chain immediately. A frozen chain cannot drain and
+                // must not claim an endpoint needed by a surviving device.
+                DeviceEditTailPolicy::Cut
+            } else {
+                DeviceEditTailPolicy::Preserve
+            }
         };
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
