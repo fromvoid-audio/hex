@@ -98,10 +98,10 @@ inline Reader configuration(int fd) {
 inline bool send(int fd,const char* magic,const Bytes& body) {
     size_t limit=8192;
     if(!std::memcmp(magic,"HXVIMD03",8)) limit=131072;
-    if(!std::memcmp(magic,"HXVIQF03",8)) limit=156+hex_instance::StateStream::envelope_capacity;
-    if(!std::memcmp(magic,"HXVIAR02",8)) limit=164+hex_instance::StateStream::envelope_capacity;
-    if(!std::memcmp(magic,"HXVIRR03",8)) limit=166+hex_instance::StateStream::envelope_capacity;
-    if(!std::memcmp(magic,"HXVIFA04",8)) limit=140+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIQF04",8)) limit=162+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIAR03",8)) limit=170+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIRR04",8)) limit=172+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIFA05",8)) limit=146+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIRD06",8)) limit=87+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVICS02",8)) limit=62+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVLCA02",8)) limit=63+hex_instance::StateStream::envelope_capacity;

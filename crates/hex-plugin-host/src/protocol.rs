@@ -54,10 +54,10 @@ pub(crate) fn control_limit(magic: &[u8]) -> usize {
         b"HXVICF03" => return CONFIG_LIMIT,
         b"HXVIMD03" => return PARAMETER_PAGE_LIMIT,
         b"HXVIST02" => 39,
-        b"HXVIFA04" => 140,
-        b"HXVIQF03" => 156,
-        b"HXVIAR02" => 164,
-        b"HXVIRR03" => 166,
+        b"HXVIFA05" => 146,
+        b"HXVIQF04" => 162,
+        b"HXVIAR03" => 170,
+        b"HXVIRR04" => 172,
         b"HXVIRD06" => 87,
         b"HXVICS02" => 62,
         b"HXVLCA02" => 63,
@@ -295,10 +295,21 @@ pub fn presentation_request(
     }
     finish_control(out)
 }
+/// Bus-zero numeric note-expression declarations observed on the original
+/// controller while stopped. Bit n identifies MIDI channel n. An unreadable
+/// channel may support either type and has neither advertised bit set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NoteExpressionCapabilities {
+    pub tuning_channels: u16,
+    pub brightness_channels: u16,
+    pub unreadable_channels: u16,
+}
+
 /// Raw source-bound preparation facts. No state capture, processing start,
 /// canonical/graph admission or audio application is acknowledged by this type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Facts {
+    pub note_expression: NoteExpressionCapabilities,
     pub algorithmic_latency_frames: u32,
     /// Source-reported residual tail in SDK sample frames. u32::MAX is the SDK
     /// infinite-tail sentinel. This raw report is not a quiescence proof or a
@@ -331,9 +342,23 @@ impl Facts {
             1 => true,
             _ => return Err(Error::Protocol("invalid presentation interface fact")),
         };
+        let note_expression = NoteExpressionCapabilities {
+            tuning_channels: u16::from_le_bytes(r.array()?),
+            brightness_channels: u16::from_le_bytes(r.array()?),
+            unreadable_channels: u16::from_le_bytes(r.array()?),
+        };
+        if note_expression.unreadable_channels
+            & (note_expression.tuning_channels | note_expression.brightness_channels)
+            != 0
+        {
+            return Err(Error::Protocol(
+                "conflicting note-expression capability facts",
+            ));
+        }
         let restored = config.check_restore_ack(&mut r)?;
         r.end()?;
         Ok(Self {
+            note_expression,
             algorithmic_latency_frames,
             tail_frames,
             presentation_available,
@@ -649,7 +674,7 @@ fn epoch_facts<'a>(
 ) -> Result<(Facts, Reader<'a>)> {
     // Current fixed facts plus the exact optional original startup envelope.
     config.validate()?;
-    let size = 140_usize
+    let size = 146_usize
         .checked_add(
             config
                 .restore
