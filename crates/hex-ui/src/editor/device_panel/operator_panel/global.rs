@@ -1,28 +1,53 @@
 //! Canonical controller assignments and global instrument settings.
 use super::*;
 
-/// Keep the canonical voice selector mounted once, independently of the
-/// currently selected envelope/detail page. Loaded counts are not rewritten.
+/// Keep the canonical voice selector and glide controls mounted once along the
+/// bottom of the right-hand block, independently of the selected detail page.
+/// Loaded voice counts and configured glide times are never silently rewritten.
 pub(super) fn voices(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
     device_view: &NativeDeviceView,
 ) -> Stateful<Div> {
-    let control = compact_control(
+    let identity = DeviceControlIdentity {
+        class: NativeDeviceClass::Instrument,
+        type_id: device_view.type_id,
+    };
+    let voices = compact_control(
         view,
         cx,
         device,
-        DeviceControlIdentity {
-            class: NativeDeviceClass::Instrument,
-            type_id: device_view.type_id,
-        },
+        identity,
         &device_view.parameters,
         id(601),
         ControlPresentation::CompactConfirmSelector,
         Some("voices"),
     )
-    .w(px(52.0));
+    .w(px(46.0));
+    let glide_enabled = compact_control(
+        view,
+        cx,
+        device,
+        identity,
+        &device_view.parameters,
+        id(642),
+        ControlPresentation::CompactButton,
+        Some("glide"),
+    )
+    .w(px(44.0));
+    let glide_time = compact_control_with_codec(
+        view,
+        cx,
+        device,
+        identity,
+        &device_view.parameters,
+        id(643),
+        ControlPresentation::InlineValue,
+        Some(""),
+        Some(super::super::numeric_display::NumericDisplayCodec::Seconds),
+    )
+    .w(px(56.0));
     div()
         .id(ElementId::Name(
             format!("operator-voices-{}", device.value()).into(),
@@ -33,9 +58,11 @@ pub(super) fn voices(
         .flex_shrink_0()
         .flex()
         .items_center()
-        .gap(px(2.0))
-        .child(detail_caption("voices").w(px(44.0)))
-        .child(control)
+        .gap(px(3.0))
+        .child(detail_caption("voices").w(px(36.0)))
+        .child(voices)
+        .child(glide_enabled)
+        .child(glide_time)
 }
 
 pub(super) fn controls(

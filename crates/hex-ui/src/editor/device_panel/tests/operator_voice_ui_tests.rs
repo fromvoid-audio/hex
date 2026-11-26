@@ -304,3 +304,133 @@ fn performance_dial_column_binds_time_tone_volume_and_pan_within_body_height(
         });
     }
 }
+
+#[gpui::test]
+fn compact_glide_controls_dispatch_canonical_edits_preserve_time_context_and_undo(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(2000.0), px(540.0)));
+    visual.run_until_parked();
+
+    let preview = visual
+        .debug_bounds(selector(format!("operator-preview-{}", device.value())))
+        .unwrap();
+    let voicing_row = visual
+        .debug_bounds(selector(format!("operator-voices-{}", device.value())))
+        .unwrap();
+    let voices = visual
+        .debug_bounds(selector(format!("device-{}-parameter-601", device.value())))
+        .unwrap();
+    let glide_toggle = visual
+        .debug_bounds(selector(format!("device-{}-parameter-642", device.value())))
+        .expect("compact glide toggle");
+    let glide_time = visual
+        .debug_bounds(selector(format!("device-{}-parameter-643", device.value())))
+        .expect("compact glide time");
+    assert!(voicing_row.contains(&glide_toggle.center()));
+    assert!(voicing_row.contains(&glide_time.center()));
+    assert!(glide_toggle.left() >= voices.right());
+    assert!(glide_time.left() >= glide_toggle.right());
+    assert!(glide_time.right() <= preview.right());
+    assert!(glide_time.bottom() <= preview.bottom());
+
+    // Toggle glide on -> single canonical history step, envelope context preserved.
+    visual.simulate_click(glide_toggle.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 642) == ParameterValue::Bool(true)
+            })
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, initial_revision + 1);
+        assert_eq!(
+            view.device_panel.operator_pages[&device].page,
+            operator_panel::OperatorPage::Envelope
+        );
+        assert_eq!(
+            view.device_panel.operator_pages[&device].selected_operator,
+            0
+        );
+    });
+
+    // Edit glide time to 120 ms -> single canonical step.
+    let time_value = visual
+        .debug_bounds(selector(format!(
+            "device-{}-parameter-643-value",
+            device.value()
+        )))
+        .expect("glide time readout");
+    visual.simulate_click(time_value.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("120 ms");
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                matches!(
+                    operator_parameter_value(state, track, device, 643),
+                    ParameterValue::Float(seconds) if (seconds - 0.12).abs() < 1e-4
+                )
+            })
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().revision, initial_revision + 2);
+    });
+
+    // Toggle glide off -> configured glide time is retained intact.
+    visual.simulate_click(glide_toggle.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 642) == ParameterValue::Bool(false)
+            })
+    });
+    editor.read_with(cx, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(state.revision, initial_revision + 3);
+        assert!(matches!(
+            operator_parameter_value(state, track, device, 643),
+            ParameterValue::Float(seconds) if (seconds - 0.12).abs() < 1e-4
+        ));
+    });
+
+    // Single-step Undo/Redo restores glide state cleanly.
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 642) == ParameterValue::Bool(true)
+            })
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 642) == ParameterValue::Bool(false)
+            })
+    });
+
+    // Invalid draft in glide time blocks subsequent edits without mutating project state.
+    let before_invalid =
+        editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+    visual.simulate_click(time_value.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("not-a-time");
+    visual.simulate_click(glide_toggle.center(), Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| {
+        assert_eq!(view.state.as_ref().unwrap().project, before_invalid);
+        assert_eq!(
+            operator_parameter_value(view.state.as_ref().unwrap(), track, device, 642),
+            ParameterValue::Bool(false)
+        );
+        assert!(view.error.is_some());
+    });
+}
