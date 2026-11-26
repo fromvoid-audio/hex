@@ -602,6 +602,7 @@ impl EditorView {
                                 || view.settings.theme.open
                                 || view.settings.tuning.open
                                 || super::device_panel::picker_is_open(view)
+                                || view.pointer_hits_review_handle(event.position)
                                 || view.pointer_hits_bottom_play_start_marker(
                                     event.position,
                                     event.modifiers,
@@ -1020,7 +1021,7 @@ impl EditorView {
     }
 
     fn arrangement_surface(
-        &self,
+        &mut self,
         upper: Div,
         returns: impl IntoElement,
         main: Div,
@@ -1044,9 +1045,6 @@ impl EditorView {
             } else {
                 theme::PaletteRole::Border
             })));
-        let upper = upper
-            .relative()
-            .children(self.review_marker_layer(viewport, cx));
         let timeline_column = div()
             .id("arrangement-timeline-column")
             .relative()
@@ -1061,7 +1059,8 @@ impl EditorView {
             .child(self.arrangement_playback_layer(cx))
             .children(clip_move_guide)
             .child(self.track_resize_events(cx))
-            .children([self.track_reorder_events(cx)]);
+            .children([self.track_reorder_events(cx)])
+            .children(self.review_marker_layer(viewport, cx));
         div()
             .debug_selector(|| "arrangement-surface".into())
             .relative()
