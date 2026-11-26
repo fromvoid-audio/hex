@@ -94,7 +94,7 @@ fn reverb_compact_controls_fit_track_and_return_and_share_edit_lifecycle(cx: &mu
             );
             assert!(
                 text.left() >= slot.left() && text.right() <= slot.right(),
-                "{label} stays on one unclipped line"
+                "{label} must fit one line: text {text:?}, slot {slot:?}, body {body:?}, frame {frame:?}"
             );
         }
         for kind in ["input", "decay"] {
