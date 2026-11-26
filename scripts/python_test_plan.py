@@ -13,9 +13,8 @@ REVIEWED_MODULES = frozenset({
     "test_eq8_response_compare", "test_gpui_patch", "test_dependency_patches",
     "test_hex_test_build",
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
-    # Update entry and process-observer fixtures exercise standalone tooling;
-    # updater script and test edits still take comprehensive discovery.
-    "test_hex_update_entry", "test_pending_update_exit",
+    # Update staging, entry and exit observers each have an owning tooling suite.
+    "test_hex_auto_stage", "test_hex_update_entry", "test_pending_update_exit",
     "test_local_ci", "test_pcm_build_gate", "test_python_test_plan",
     # Read-only target-volume probes depend on CI tooling and mocked OS metadata,
     # not app Rust; changes to the helper/tests retain comprehensive discovery.
