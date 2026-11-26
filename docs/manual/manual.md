@@ -9,7 +9,7 @@ build; it does not mean every workflow or device has completed native testing.
    existing work while evaluating a beta.
 2. check the audio status in the toolbar. hex uses your system's default audio
    output. choose the desired output in macos before opening hex.
-3. press **command+i** to import audio, or open the browser with
+3. choose **file → import audio…**, or open the browser with
    **command+option+b**. choose an audio file and place it in an audio track.
 4. press **space** to play or pause. press **escape** to stop. adjust track level
    carefully when trying unfamiliar source material or devices.
@@ -654,6 +654,14 @@ that move, copy, or delete music carry locators with it. marker-only edits
 change the section bounds around the locators. locators are saved with the
 project and support undo and redo.
 
+## temporary review markers
+
+while listening in arrangement, press **command+i** when you hear something
+to revisit. a review marker appears at the audible playhead, between grid
+lines if needed. its warm line has a small hollow handle at the top and bottom
+of the timeline. click either handle after fixing the spot to remove the marker.
+review markers last for the current open project and clear when you reopen it.
+
 ## create fades from a time selection
 
 select a positive time range at the beginning or end of an audio clip and press
@@ -780,7 +788,7 @@ item. the action depends on the result type and the current destination: check
 the selected track and arrange cursor before inserting audio or loading a device.
 do not assume double-clicking a sample inserts it into a track.
 
-**command+i** opens audio import. imported material retains its own sample rate
+**file → import audio…** opens audio import. imported material retains its own sample rate
 and channel information; check duration, placement and playback after importing.
 keep source recordings available with the project.
 
@@ -1190,7 +1198,7 @@ the complete edit.
 | previous / next arrangement locator | command+option+left / command+option+right |
 | set scope from selection / toggle matching scope | l / w |
 | toggle active transport looping | command+l |
-| import audio | command+i |
+| temporary review marker at the playhead | command+i |
 | add track | t |
 | add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |

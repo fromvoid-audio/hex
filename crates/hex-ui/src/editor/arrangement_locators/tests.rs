@@ -1262,7 +1262,9 @@ fn refused_and_replaced_locator_adds_release_their_previews(cx: &mut TestAppCont
         });
         view.pending_requests
             .push_back(Request::Edit(Command::AddArrangementLocator { frame }));
+        view.locators.review_frames.insert(frame);
         view.receive(replacement);
+        assert!(view.locators.review_frames.is_empty());
         assert!(view.locators.adds.is_empty());
         assert!(view.pending_requests.is_empty());
         assert!(
@@ -1820,4 +1822,92 @@ fn rendered_locator_add_play_move_rename_delete_and_cull(cx: &mut TestAppContext
                 .is_none()
         )
     });
+}
+
+#[gpui::test]
+fn review_markers_follow_the_audible_playhead_and_either_handle_removes_only_its_mark(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    cx.update(super::super::bind_editor_keys);
+    let fixture = super::super::worker_ui_fixture::open(
+        cx,
+        vec![
+            Command::AddTrack {
+                name: "audio".into(),
+            },
+            Command::AddArrangementLocator { frame: 24_000 },
+        ],
+    );
+    let editor = &fixture.editor;
+    let mut visual = VisualTestContext::from_window(fixture.handle, cx);
+    visual.update(|window, cx| {
+        editor.update(cx, |view, cx| {
+            window.focus(&view.focus);
+            view.viewport = Some(Viewport {
+                start: 0,
+                length: 96_000,
+            });
+            view.place_locator_play_start(4_000);
+            let status = view.audio_status().unwrap();
+            status.playing.store(true, Relaxed);
+            status.position.store(24_512, Relaxed);
+            status.audible_position.store(24_000, Relaxed);
+            cx.notify();
+        })
+    });
+    visual.run_until_parked();
+    let original = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().clone());
+    visual.simulate_keystrokes("cmd-i cmd-i");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.locators
+                .review_frames
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            [24_000]
+        );
+        view.audio_status()
+            .unwrap()
+            .audible_position
+            .store(48_000, Relaxed);
+    });
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("cmd-i").unwrap(),
+        is_held: true,
+    });
+    assert_eq!(
+        editor.read_with(&visual, |view, _| view.locators.review_frames.len()),
+        1
+    );
+    visual.simulate_keystrokes("cmd-i");
+    visual.run_until_parked();
+    let top = visual.debug_bounds("review-marker-top-24000").unwrap();
+    let bottom = visual.debug_bounds("review-marker-bottom-24000").unwrap();
+    let permanent = original.project.arrangement_locators()[0].id();
+    let line = bounds(&mut visual, "locator-line", permanent);
+    assert!((top.center().x - line.center().x).abs() <= px(1.0));
+    assert_eq!(top.center().x, bottom.center().x);
+    assert!(top.bottom() < bottom.top());
+    visual.simulate_click(top.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("review-marker-bottom-24000").is_none());
+    let second = visual
+        .debug_bounds("review-marker-bottom-48000")
+        .unwrap()
+        .center();
+    visual.simulate_click(second, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.locators.review_frames.is_empty());
+        assert_eq!(view.state.as_ref().unwrap().revision, original.revision);
+        assert_eq!(view.state.as_ref().unwrap().project, original.project);
+        assert!(view.pending_requests.is_empty());
+        assert!(view.audio_status().unwrap().playing.load(Relaxed));
+        assert_eq!(view.playback_start_frame(), 4_000);
+    });
+    drop(visual);
+    fixture.finish(cx);
 }
