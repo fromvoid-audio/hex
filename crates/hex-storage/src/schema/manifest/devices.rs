@@ -1733,6 +1733,8 @@ pub(super) struct SectionSer<'a> {
     color: &'static str,
     start_raw: u64,
     end_raw: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linked_scene_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -1745,6 +1747,8 @@ pub(super) struct SectionDe<'a> {
     color: Cow<'a, str>,
     start_raw: u64,
     end_raw: u64,
+    #[serde(default)]
+    pub(super) linked_scene_id: Option<u64>,
 }
 
 impl<'a> From<&'a ArrangementSection> for SectionSer<'a> {
@@ -1755,6 +1759,7 @@ impl<'a> From<&'a ArrangementSection> for SectionSer<'a> {
             color: s.color().key(),
             start_raw: s.start().raw(),
             end_raw: s.end().raw(),
+            linked_scene_id: s.linked_scene().map(hex_project::SceneId::value),
         }
     }
 }
@@ -1767,6 +1772,7 @@ impl SectionDe<'_> {
             color: ElementColor::from_key(self.color.as_ref()).map_err(invalid)?,
             start: BeatTime::from_raw(self.start_raw),
             end: BeatTime::from_raw(self.end_raw),
+            linked_scene: self.linked_scene_id,
         })
     }
 }

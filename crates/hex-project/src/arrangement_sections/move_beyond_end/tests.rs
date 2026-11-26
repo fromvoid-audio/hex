@@ -177,6 +177,7 @@ fn capacity_reserves_only_one_new_gap_marker() {
                 color: ElementColor::Blue,
                 start: beat(i as u64),
                 end: beat(i as u64 + 1),
+                linked_scene: None,
             })
             .collect();
         project.next_id = count as u64 + 1;

@@ -11,8 +11,9 @@
 //! schema identifier `126`.
 use crate::{
     AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION, CAPABILITY_MANIFEST_SCHEMA_VERSION,
-    MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION, Project,
-    SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError, TRACK_IO_ROUTING_SCHEMA_VERSION,
+    LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION, MAX_PROJECT_DOCUMENT_BYTES,
+    MIDI_EXPRESSION_SCHEMA_VERSION, Project, SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError,
+    TRACK_IO_ROUTING_SCHEMA_VERSION,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -240,6 +241,13 @@ pub(crate) const SCHEMA_FEATURES: &[SchemaFeature] = &[
         post_112_wrapper: false,
         legacy_refusal: "older schema cannot save newer lfo shapes",
         present: super::device_modulation::contains_newer_lfo,
+    },
+    SchemaFeature {
+        capability: "linked_scene_placements",
+        schema_version: crate::LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save linked arrangement scene placements",
+        present: contains_linked_scene_placements,
     },
     SchemaFeature {
         capability: "long_granular",
@@ -520,6 +528,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "large_vst3_state",
     "leading_audio_once",
     "lfo_shape",
+    "linked_scene_placements",
     "long_granular",
     "long_inactive_warp",
     "long_pitch",
@@ -645,12 +654,22 @@ pub(crate) fn contains_track_io_routing(project: &Project) -> bool {
     project.has_custom_track_io()
 }
 
-/// True when `project` should be saved directly as unified schema 126..=129
+/// True when any Arrangement section carries a Console scene link, requiring
+/// schema 131 (`linked_scene_placements`).
+pub(crate) fn contains_linked_scene_placements(project: &Project) -> bool {
+    project
+        .arrangement_sections()
+        .iter()
+        .any(|section| section.linked_scene().is_some())
+}
+
+/// True when `project` should be saved directly as unified schema 126..=131
 /// rather than stacking historical post-112 `RawValue` wrappers.
 /// Projects with zero post-112 features retain their oldest compatible format;
 /// historical schemas `1..=125` remain readable via explicit versioned decoders.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    contains_session_follow_action(project)
+    contains_linked_scene_placements(project)
+        || contains_session_follow_action(project)
         || contains_track_io_routing(project)
         || contains_automation_curves_and_freeze(project)
         || contains_midi_expression(project)
@@ -977,7 +996,9 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             entries
         },
     };
-    let version = if contains_session_follow_action(project) {
+    let version = if contains_linked_scene_placements(project) {
+        LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
+    } else if contains_session_follow_action(project) {
         SESSION_FOLLOW_ACTION_SCHEMA_VERSION
     } else if contains_track_io_routing(project) {
         TRACK_IO_ROUTING_SCHEMA_VERSION
@@ -1015,6 +1036,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 | AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION
                 | TRACK_IO_ROUTING_SCHEMA_VERSION
                 | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
+                | LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
         )
     {
         return Err(StorageError::Invalid(
@@ -1062,6 +1084,21 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid(
             "schemas before 130 cannot carry session_follow_action",
+        ));
+    }
+    if document.version < LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
+        && (document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "linked_scene_placements")
+            || document
+                .project
+                .arrangement_sections
+                .iter()
+                .any(|section| section.linked_scene_id.is_some()))
+    {
+        return Err(StorageError::Invalid(
+            "schemas before 131 cannot carry linked_scene_placements",
         ));
     }
 

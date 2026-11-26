@@ -24,6 +24,8 @@ impl Project {
             | Command::RenameNativeSource { .. }
             | Command::RemoveNativeSource(_)) => crate::native_sources::apply(self, source_command),
             command @ (Command::AddArrangementSection { .. }
+            | Command::PlaceLinkedScene { .. }
+            | Command::UnlinkSectionScene(_)
             | Command::SetArrangementSectionRange { .. }
             | Command::MoveArrangementSectionMarker { .. }
             | Command::ResizeArrangementSectionMarker { .. }

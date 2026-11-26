@@ -577,6 +577,8 @@ impl Command {
             | Self::RenameArrangementLocator { .. }
             | Self::RemoveArrangementLocator(_)
             | Self::AddArrangementSection { .. }
+            | Self::PlaceLinkedScene { .. }
+            | Self::UnlinkSectionScene(_)
             | Self::SetArrangementSectionRange { .. }
             | Self::MoveArrangementSectionMarker { .. }
             | Self::ResizeArrangementSectionMarker { .. }

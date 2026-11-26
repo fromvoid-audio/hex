@@ -978,6 +978,108 @@ fn schema_130_round_trips_scene_follow_actions_and_refuses_older_schema_downgrad
 }
 
 #[test]
+fn schema_131_round_trips_linked_scene_placements_migrates_legacy_and_refuses_downgrade() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Scene(chorus) = editor
+        .execute(Command::AddScene {
+            name: "chorus".into(),
+        })
+        .unwrap()
+    else {
+        panic!("scene");
+    };
+    editor
+        .execute(Command::AddArrangementSection {
+            name: "intro".into(),
+            color: hex_project::ElementColor::Gray,
+            start: hex_project::BeatTime::ZERO,
+            end: hex_project::BeatTime::from_quarters(8).unwrap(),
+        })
+        .unwrap();
+    // Save historical project without linked scenes -> stays below schema 131 and decodes with linked_scene = None.
+    let historical_bytes = crate::encode(editor.project()).unwrap();
+    let historical_version = crate::schema_version_for(editor.project());
+    assert!(historical_version < crate::LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION);
+    let migrated = crate::decode(&historical_bytes).unwrap();
+    assert_eq!(migrated.arrangement_sections()[0].linked_scene(), None);
+
+    // Add two linked placements of `chorus`.
+    let Created::ArrangementSection(first) = editor
+        .execute(Command::PlaceLinkedScene {
+            scene: chorus,
+            start: hex_project::BeatTime::from_quarters(8).unwrap(),
+            end: hex_project::BeatTime::from_quarters(16).unwrap(),
+            color: hex_project::ElementColor::Blue,
+        })
+        .unwrap()
+    else {
+        panic!("first linked");
+    };
+    let Created::ArrangementSection(second) = editor
+        .execute(Command::PlaceLinkedScene {
+            scene: chorus,
+            start: hex_project::BeatTime::from_quarters(24).unwrap(),
+            end: hex_project::BeatTime::from_quarters(32).unwrap(),
+            color: hex_project::ElementColor::Rose,
+        })
+        .unwrap()
+    else {
+        panic!("second linked");
+    };
+
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
+    );
+    let encoded = crate::encode(project).unwrap();
+    let mut json: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(
+        json["version"],
+        crate::LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
+    );
+    assert!(
+        json["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c == "linked_scene_placements")
+    );
+
+    let decoded = crate::decode(&encoded).unwrap();
+    assert_eq!(&decoded, project);
+    assert_eq!(
+        decoded.arrangement_section(first).unwrap().linked_scene(),
+        Some(chorus)
+    );
+    assert_eq!(
+        decoded.arrangement_section(second).unwrap().linked_scene(),
+        Some(chorus)
+    );
+
+    // Overwriting historical file requires explicit schema-upgrade consent; original bytes stay untouched.
+    let dir = std::env::temp_dir().join(format!("hex-schema131-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let old_path = dir.join("legacy.hex");
+    std::fs::write(&old_path, &historical_bytes).unwrap();
+    let (loaded_old, old_token) = crate::load_with_token(&old_path).unwrap();
+    assert_eq!(loaded_old.arrangement_sections()[0].linked_scene(), None);
+    assert!(old_token.requires_schema_upgrade_for(project));
+    assert!(old_token.requires_save_confirmation(project).unwrap());
+    assert_eq!(std::fs::read(&old_path).unwrap(), historical_bytes);
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // Schema 130 must refuse schema 131 capability / linked_scene_id payloads cleanly.
+    let mut downgraded = json.clone();
+    downgraded["version"] = serde_json::json!(crate::SESSION_FOLLOW_ACTION_SCHEMA_VERSION);
+    assert!(crate::decode(&serde_json::to_vec(&downgraded).unwrap()).is_err());
+
+    // Dangling linked_scene_id must be rejected cleanly on decode.
+    json["project"]["arrangement_sections"][1]["linked_scene_id"] = serde_json::json!(99_999);
+    assert!(crate::decode(&serde_json::to_vec(&json).unwrap()).is_err());
+}
+
+#[test]
 fn unified_schema_feature_table_is_sorted_complete_and_blocks_legacy_encoders() {
     // 1. SCHEMA_FEATURES is strictly sorted and matches SUPPORTED_CAPABILITIES 1:1.
     let table_caps: Vec<&str> = super::SCHEMA_FEATURES

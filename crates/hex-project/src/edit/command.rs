@@ -156,6 +156,15 @@ pub enum Command {
         start: crate::BeatTime,
         end: crate::BeatTime,
     },
+    /// Place a linked Arrangement section referencing a canonical Console scene.
+    PlaceLinkedScene {
+        scene: crate::SceneId,
+        start: crate::BeatTime,
+        end: crate::BeatTime,
+        color: crate::ElementColor,
+    },
+    /// Clear the Console scene link on one Arrangement section without altering its range or content.
+    UnlinkSectionScene(crate::SectionId),
     /// Isolated marker range edit; overlaps are refused and music stays fixed.
     SetArrangementSectionRange {
         section: crate::SectionId,

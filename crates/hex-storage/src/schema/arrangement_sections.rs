@@ -40,6 +40,7 @@ impl Manifest {
                         .map_err(|e| StorageError::Invalid(e.0))?,
                     start: BeatTime::from_raw(s.start_raw),
                     end: BeatTime::from_raw(s.end_raw),
+                    linked_scene: None,
                 })
             })
             .collect()
