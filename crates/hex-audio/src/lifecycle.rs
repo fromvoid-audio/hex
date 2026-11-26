@@ -55,8 +55,10 @@ use std::{
 ///
 /// Recoverable conditions are not lifecycle failures and never set this
 /// status. These are device-open errors (including the typed rate mismatch),
-/// a busy or full queue, and a stream pause the backend refused, which the
-/// lane retries. They use the ordinary bounded restart/recovery open.
+/// a busy or full queue (including bounded retirement enqueue retries), a
+/// stream pause the backend transiently refused, and auxiliary post-disposal
+/// spectrum worker panics after callback custody is already retired. They use
+/// the ordinary bounded restart/recovery open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum AudioLifecycleFailure {
@@ -130,9 +132,56 @@ static OCCUPIED: AtomicBool = AtomicBool::new(false);
 static OPEN_STATE: OnceLock<Arc<OpenState>> = OnceLock::new();
 static SERVICE: OnceLock<Result<SyncSender<LifecycleMessage<Opened, Retirement>>, String>> =
     OnceLock::new();
-// Defensive fallback if the service unexpectedly exits. Static storage retains
-// at most the one leased stream until process exit; reopening stays disabled.
-static QUARANTINE: Mutex<Option<Retirement>> = Mutex::new(None);
+// Defensive fallback if the service unexpectedly exits or a genuine callback
+// custody violation occurs. Static storage retains fenced retirements until
+// process exit so their exclusive lease stays held and no second stream can
+// UAF an orphaned callback.
+static QUARANTINE: Mutex<Vec<Retirement>> = Mutex::new(Vec::new());
+// Auxiliary spectrum shutdown errors observed after stream and native callback
+// custody were already proved disposed. Recoverable: never bricks audio.
+static SPECTRUM_SHUTDOWN_FAILURES: AtomicU64 = AtomicU64::new(0);
+const RETIRE_ENQUEUE_TIMEOUT: Duration = Duration::from_millis(500);
+
+fn quarantine_retirement(retirement: Retirement) {
+    let mut quarantine = match QUARANTINE.lock() {
+        Ok(guard) => guard,
+        Err(poison) => poison.into_inner(),
+    };
+    quarantine.push(retirement);
+}
+
+fn try_send_retirement_bounded<T, R>(
+    sender: &SyncSender<LifecycleMessage<T, R>>,
+    mut retirement: R,
+    mut cleanup: Option<crate::candidate_custody::CandidateRoot>,
+    timeout: Duration,
+) -> Result<(), R> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut backoff = Duration::from_millis(1);
+    loop {
+        match sender.try_send(LifecycleMessage::Retire(retirement, cleanup)) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Full(LifecycleMessage::Retire(value, root))) => {
+                if std::time::Instant::now() >= deadline {
+                    return Err(value);
+                }
+                retirement = value;
+                cleanup = root;
+                thread::sleep(backoff);
+                backoff = (backoff * 2).min(Duration::from_millis(20));
+            }
+            Err(TrySendError::Disconnected(LifecycleMessage::Retire(value, _))) => {
+                return Err(value);
+            }
+            Err(
+                TrySendError::Full(LifecycleMessage::Open(_) | LifecycleMessage::Cleanup(_))
+                | TrySendError::Disconnected(
+                    LifecycleMessage::Open(_) | LifecycleMessage::Cleanup(_),
+                ),
+            ) => return Ok(()),
+        }
+    }
+}
 
 pub(crate) struct Lease;
 impl Lease {
@@ -286,16 +335,20 @@ impl Drop for StreamOwner {
         }
         // Capacity three: one Open, one coalesced Cleanup, one leased Retire.
         // Cleanup send and retirement announcement serialize on the root bank.
+        // Retry transient QueueFull briefly on control so momentary contention
+        // never quarantines a healthy stream or bricks audio for the process.
         let retirement = match service() {
-            Ok(sender) => match sender.try_send(LifecycleMessage::Retire(retirement, cleanup)) {
-                Ok(()) => return,
-                Err(TrySendError::Full(LifecycleMessage::Retire(value, _)))
-                | Err(TrySendError::Disconnected(LifecycleMessage::Retire(value, _))) => value,
-                Err(TrySendError::Full(LifecycleMessage::Open(_)))
-                | Err(TrySendError::Disconnected(LifecycleMessage::Open(_)))
-                | Err(TrySendError::Full(LifecycleMessage::Cleanup(_)))
-                | Err(TrySendError::Disconnected(LifecycleMessage::Cleanup(_))) => return,
-            },
+            Ok(sender) => {
+                match try_send_retirement_bounded(
+                    sender,
+                    retirement,
+                    cleanup,
+                    RETIRE_ENQUEUE_TIMEOUT,
+                ) {
+                    Ok(()) => return,
+                    Err(value) => value,
+                }
+            }
             Err(_) => retirement,
         };
         if let Some(reaper) = retirement.spectrum_reaper.as_ref() {
@@ -304,12 +357,7 @@ impl Drop for StreamOwner {
         if let Some(native) = retirement.native.as_ref() {
             native.fail_retained_receipts();
         }
-        let mut quarantine = match QUARANTINE.lock() {
-            Ok(guard) => guard,
-            Err(poison) => poison.into_inner(),
-        };
-        // The exclusive lease ensures no prior retirement can occupy this slot.
-        *quarantine = Some(retirement);
+        quarantine_retirement(retirement);
         LIFECYCLE_STATUS.fail(AudioLifecycleFailure::Retirement);
     }
 }
@@ -725,12 +773,48 @@ fn run_lifecycle_observed_with_selection<T: Send + 'static, R: Send + 'static>(
     let mut active: Option<Active<T>> = None;
     let mut cleanup: Option<crate::candidate_custody::CandidateRoot> = None;
     // On an impossible mismatched-root dispatch, retain all owning messages
-    // instead of releasing a lease or replacing the pending root.
+    // instead of releasing a lease or replacing the pending root, and block on
+    // channel receive instead of spinning in a 250 ms sleep loop.
     let mut failed_retirement: Option<R> = None;
+    let mut extra_failed_retirements: Vec<R> = Vec::new();
     let mut failed_cleanup: Option<crate::candidate_custody::CandidateRoot> = None;
     loop {
         if failed_retirement.is_some() || failed_cleanup.is_some() {
-            thread::sleep(Duration::from_millis(250));
+            if let Some(current) = active.take() {
+                current.request.abandoned.store(true, Release);
+                finish_request(&current.request);
+                let _ = current
+                    .request
+                    .completion
+                    .try_send(Err("audio lifecycle ownership mismatch".into()));
+            }
+            match receiver.recv() {
+                Ok(LifecycleMessage::Open(request)) => {
+                    request.abandoned.store(true, Release);
+                    finish_request(&request);
+                    let _ = request
+                        .completion
+                        .try_send(Err("audio lifecycle ownership mismatch".into()));
+                }
+                Ok(LifecycleMessage::Retire(value, root)) => {
+                    if failed_retirement.is_none() {
+                        failed_retirement = Some(value);
+                    } else {
+                        extra_failed_retirements.push(value);
+                    }
+                    if let Some(root) = root
+                        && failed_cleanup.is_none()
+                    {
+                        failed_cleanup = Some(root);
+                    }
+                }
+                Ok(LifecycleMessage::Cleanup(root)) => {
+                    if failed_cleanup.is_none() {
+                        failed_cleanup = Some(root);
+                    }
+                }
+                Err(_) => return,
+            }
             continue;
         }
         if let Some(root) = cleanup.as_ref() {
@@ -916,27 +1000,31 @@ fn retire_prepared_output(mut retirement: Retirement) {
     // The existing execution slot retains all owners and the first panic. No
     // new worker, registry or destructor retry is introduced by observation.
     let mut progress = RetirementProgress::default();
+    let mut retry_delay = Duration::from_millis(5);
     loop {
-        let was_failed = progress.failed;
         if progress.advance(&LIFECYCLE_STATUS, || retirement_tick(&mut retirement)) {
             return;
         }
-        if !was_failed
-            && progress.failed
-            && let Some(native) = retirement.native.as_ref()
-        {
-            native.fail_retained_receipts();
+        if progress.failed {
+            if let Some(native) = retirement.native.as_ref() {
+                native.fail_retained_receipts();
+            }
+            // Genuine callback-custody violation: retain custody and its
+            // exclusive lease in QUARANTINE to prevent UAF, then return so the
+            // lifecycle lane does not spin in an infinite 250 ms sleep loop.
+            quarantine_retirement(retirement);
+            return;
         }
-        // Headless worker-test-support fixtures still use the real custody and
-        // quiescence protocol, but need not inherit the native backend's
-        // coarse retirement retry interval. Failed custody stays quarantined.
+        // Transient backend pause refusal or pending quiescence: retry with
+        // bounded backoff without latching a permanent lifecycle failure.
         #[allow(unused_mut)]
-        let mut delay = Duration::from_millis(250);
+        let mut delay = retry_delay;
         #[cfg(feature = "worker-test-support")]
-        if retirement.headless && !progress.failed {
+        if retirement.headless {
             delay = Duration::from_millis(5);
         }
         thread::sleep(delay);
+        retry_delay = (retry_delay * 2).min(Duration::from_millis(250));
     }
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
@@ -961,10 +1049,13 @@ fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
     )? {
         return Ok(false);
     }
+    // Stream and native callback custody are now proved disposed (no UAF
+    // hazard remains). An auxiliary spectrum worker panic is recoverable and
+    // must not latch a process-lifetime audio lockout or hold the lease.
     if let Some(reaper) = retirement.spectrum_reaper.as_mut()
         && reaper.advance_shutdown_on_control().is_err()
     {
-        return Err(());
+        SPECTRUM_SHUTDOWN_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     drop(retirement.spectrum_reaper.take());
     Ok(true)
@@ -1971,5 +2062,130 @@ mod tests {
         drop(waiter);
         drop(sender);
         lane.join().unwrap();
+    }
+
+    #[test]
+    fn transient_queue_full_retirement_recovers_without_latching_lifecycle_failure() {
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), u32>>(1);
+        let root = crate::candidate_custody::CandidateRoot::new(2).unwrap();
+        // Saturate the 1-slot queue temporarily with a Cleanup message.
+        sender.try_send(LifecycleMessage::Cleanup(root)).unwrap();
+        let drain_handle = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(10));
+            let first = receiver.recv().unwrap();
+            assert!(matches!(first, LifecycleMessage::Cleanup(_)));
+            let second = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+            match second {
+                LifecycleMessage::Retire(id, None) => id,
+                _ => panic!("expected retired payload"),
+            }
+        });
+        let result = try_send_retirement_bounded(&sender, 42_u32, None, Duration::from_millis(250));
+        assert!(
+            result.is_ok(),
+            "transient queue pressure must recover without quarantining"
+        );
+        assert_eq!(drain_handle.join().unwrap(), 42);
+
+        // A genuinely disconnected worker still returns Err(retirement) immediately.
+        let (dead_tx, dead_rx) = mpsc::sync_channel::<LifecycleMessage<(), u32>>(1);
+        drop(dead_rx);
+        assert_eq!(
+            try_send_retirement_bounded(&dead_tx, 99_u32, None, Duration::from_millis(250)),
+            Err(99)
+        );
+    }
+
+    #[test]
+    fn mismatched_owner_fence_rejects_opens_and_exits_on_disconnect_without_250ms_spin() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let Some(owner) = crate::prepared::candidate_tests::candidate() else {
+            return;
+        };
+        let (mut control, data, errors, mut native) = crate::prepared::candidate_tests::anchored();
+        let first = control.native_candidate_root();
+        let _ticket = control.stage_audio_candidate(owner, vec![]).ok().unwrap();
+        // Dropping control marks `first` abandoned while the callback guards
+        // remain live, keeping `first.job_idle() == false` so `Cleanup(other)`
+        // reliably hits the mismatched-owner fence.
+        drop(control);
+        let other = crate::candidate_custody::CandidateRoot::new(2).unwrap();
+
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(3);
+        let state = Arc::new(OpenState::new());
+        let status = Arc::new(LifecycleStatus::new());
+        let worker_status = Arc::clone(&status);
+        let lane = thread::spawn(move || {
+            run_lifecycle_observed(
+                receiver,
+                || false,
+                |_, _| Some(Ok(())),
+                |()| {},
+                &worker_status,
+            );
+        });
+        sender.try_send(LifecycleMessage::Cleanup(first)).unwrap();
+        sender.try_send(LifecycleMessage::Cleanup(other)).unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while status.failure() != Some(AudioLifecycleFailure::MismatchedOwner) {
+            assert!(Instant::now() < deadline, "mismatch fence never latched");
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        // Subsequent opens receive an immediate explicit error rather than hanging.
+        let mut waiter = enqueue_open(&sender, &state, Some(48_000)).unwrap();
+        let reply = loop {
+            if let Some(result) = waiter.try_take().unwrap() {
+                break result;
+            }
+            assert!(Instant::now() < deadline, "fenced open hung indefinitely");
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert!(reply.is_err());
+        drop(waiter);
+
+        // Dropping the sender exits the fenced worker promptly (no 250 ms sleep loop).
+        let disconnect_at = Instant::now();
+        drop(sender);
+        lane.join().unwrap();
+        assert!(
+            disconnect_at.elapsed() < Duration::from_millis(150),
+            "fenced lifecycle thread lingered after channel disconnect"
+        );
+        drop(data);
+        drop(errors);
+        crate::prepared::candidate_tests::finish(&mut native);
+    }
+
+    #[test]
+    fn auxiliary_spectrum_failure_after_stream_disposal_does_not_brick_audio_lease() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let before_failures = SPECTRUM_SHUTDOWN_FAILURES.load(Acquire);
+        let before_status = audio_lifecycle_failure();
+
+        let lease = Lease::acquire().expect("exclusive lease must be free");
+        let reaper = SpectrumReaper::failed_for_test();
+        let mut retirement = Retirement {
+            stream: None,
+            #[cfg(feature = "worker-test-support")]
+            headless_backend: None,
+            #[cfg(feature = "worker-test-support")]
+            headless: false,
+            spectrum_reaper: Some(reaper),
+            _lease: lease,
+            native: None,
+            backend_exposed: false,
+            stream_drop_pending: false,
+            stream_disposed: true,
+        };
+        assert_eq!(retirement_tick(&mut retirement), Ok(true));
+        assert!(retirement.spectrum_reaper.is_none());
+        assert_eq!(audio_lifecycle_failure(), before_status);
+        assert!(SPECTRUM_SHUTDOWN_FAILURES.load(Acquire) > before_failures);
+        drop(retirement);
+        // Exclusive lease was released cleanly and can be re-acquired immediately.
+        let reacquired = Lease::acquire().expect("lease must be re-acquirable");
+        drop(reacquired);
     }
 }

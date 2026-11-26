@@ -89,7 +89,11 @@ struct Signal {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     controller_requested: std::sync::atomic::AtomicBool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    failure_diagnostic: std::sync::Mutex<Option<String>>,
+    failure_diagnostics: crossbeam_queue::ArrayQueue<String>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    failure_diagnostics_dropped: AtomicU64,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    deadline_leave_failures: AtomicU64,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     slow_exchange: std::sync::Mutex<Option<SlowPluginExchange>>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -112,6 +116,8 @@ const OFFLINE_IDLE: Duration = Duration::from_millis(10);
 const LIVE_POLL: Duration = Duration::from_micros(50);
 const QUIET_TRANSPORT: Duration = Duration::from_millis(40);
 const LIVE_EVENT_IDLE_PARK: Duration = Duration::from_millis(50);
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const FAILURE_DIAGNOSTIC_CAPACITY: usize = 4;
 
 impl Signal {
     fn new(offline: bool) -> Self {
@@ -130,7 +136,11 @@ impl Signal {
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             controller_requested: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-            failure_diagnostic: std::sync::Mutex::new(None),
+            failure_diagnostics: crossbeam_queue::ArrayQueue::new(FAILURE_DIAGNOSTIC_CAPACITY),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            failure_diagnostics_dropped: AtomicU64::new(0),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            deadline_leave_failures: AtomicU64::new(0),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             slow_exchange: std::sync::Mutex::new(None),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -178,6 +188,40 @@ impl Signal {
             .slow_exchange_dropped
             .swap(0, std::sync::atomic::Ordering::Relaxed);
         Some(sample)
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn push_failure_diagnostic(&self, message: String) {
+        if self.failure_diagnostics.push(message).is_err() {
+            self.failure_diagnostics_dropped
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn take_failure_diagnostic(&self) -> Option<String> {
+        self.failure_diagnostics.pop()
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    pub(super) fn record_deadline_leave_failure(&self, error: &str) {
+        self.deadline_leave_failures
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.push_failure_diagnostic(format!(
+            "vst3 worker warning: native transport deadline leave failed: {error}"
+        ));
+    }
+
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    fn deadline_leave_failures(&self) -> u64 {
+        self.deadline_leave_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+    fn failure_diagnostics_dropped(&self) -> u64 {
+        self.failure_diagnostics_dropped
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -370,8 +414,6 @@ impl State {
         exchange: &str,
         error: &hex_plugin_host::Error,
     ) {
-        use std::io::Write as _;
-
         let Some(Processor::Native(instance)) = self.processor.as_ref() else {
             return;
         };
@@ -385,10 +427,9 @@ impl State {
             instance.child_id_on_control(),
             instance.completed_blocks_on_control(),
         );
-        if let Ok(mut diagnostic) = signal.failure_diagnostic.lock() {
-            *diagnostic = Some(message.clone());
-        }
-        let _ = writeln!(std::io::stderr().lock(), "{message}");
+        // Never acquire global stderr locks or perform blocking I/O on the
+        // high-QoS/Mach-RT plugin transport worker; drain on control instead.
+        signal.push_failure_diagnostic(message);
     }
 
     fn prepare_transport(&mut self) -> Result<(), Fault> {
@@ -714,7 +755,7 @@ fn transport_runner_with_setup(
         let mut deadline = if published.offline.is_none() {
             guard
                 .owner_mut()
-                .and_then(|state| deadline::Deadline::for_native_pcm(state))
+                .and_then(|state| deadline::Deadline::for_native_pcm(state, Arc::clone(&published)))
         } else {
             None
         };
@@ -1025,10 +1066,8 @@ impl NativeWorker {
             "vst3 worker failed: exchange=control bundle={bundle:?} binding={:?} cause={error}",
             self.binding
         );
-        if let Ok(mut diagnostic) = self.reaper.completed.failure_diagnostic.lock()
-            && diagnostic.is_none()
-        {
-            *diagnostic = Some(message);
+        if self.reaper.completed.failure_diagnostics.is_empty() {
+            self.reaper.completed.push_failure_diagnostic(message);
         }
         if self.control_error.is_none() {
             self.control_error = Some(error);
@@ -1164,14 +1203,7 @@ impl NativeWorker {
     }
 
     pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
-        if let Some(diagnostic) = self
-            .reaper
-            .completed
-            .failure_diagnostic
-            .try_lock()
-            .ok()?
-            .take()
-        {
+        if let Some(diagnostic) = self.reaper.completed.take_failure_diagnostic() {
             return Some(diagnostic);
         }
         self.reaper.control.take_callback_fault().map(|fault| {
