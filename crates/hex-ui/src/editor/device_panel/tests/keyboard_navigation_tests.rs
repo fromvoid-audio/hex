@@ -431,8 +431,8 @@ fn device_d_transfers_focus_to_new_copy_for_delete_bypass_fold_compare_and_prese
     );
     assert!(!rail_focused, "focus must not remain trapped on the rail");
 
-    // Bypass (`0` and `c`) act on the new copy immediately.
-    visual.simulate_keystrokes("0");
+    // Bypass (`/` and `c`) act on the new copy immediately.
+    visual.simulate_keystrokes("/");
     pump_until(&editor, cx, |view| {
         settled(view)
             && view
