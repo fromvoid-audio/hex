@@ -3,7 +3,11 @@ use super::*;
 
 #[test]
 fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing() {
-    for kind in ["hex.instrument.fm4", "hex.instrument.operator"] {
+    for kind in [
+        "hex.instrument.fm4",
+        "hex.instrument.operator",
+        "hex.instrument.subtractive",
+    ] {
         let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
         let Created::Track(track) = editor
             .execute(Command::InsertTrackWithDevice {
