@@ -247,7 +247,8 @@ fn declared_latency_storage_and_impulse_are_exact_for_all_configurations() {
                     let expected = (([1.5, 3.0, 6.0][lookahead as usize] * f64::from(rate) / 1000.0)
                         .ceil() as usize
                         + if mode == 2 { 31 } else { 0 })
-                        * if routing == 1 { 2 } else { 1 };
+                        * if routing == 1 { 2 } else { 1 }
+                        + if mode == 2 { 11 } else { 0 };
                     assert_eq!(f.algorithmic_latency_frames(), Some(expected as u32));
                     let mut runtime = f.create_runtime().unwrap();
                     assert_eq!(
@@ -721,19 +722,14 @@ fn bs1770_meter_recovers_intersample_peaks_of_a_known_signal() {
     assert!(true_peak_oracle::bs1770_true_peak(&[[f32::NAN, 0.0]]).is_none());
 }
 
-/// Render a gated-burst fixture through True Peak mode at 48 and 192 kHz in
-/// both routings, returning the largest BS.1770-4 meter reading.
-///
-/// Gated bursts make the gain move inside the 32-tap detector window. The
-/// detector reconstructs the pre-gain input, so modulation-induced
-/// intersample peaks are not tracked (Pulse #3379). The 0.1 criterion is the
-/// standard BS.1770-4 4x meter with a recorded +0.3 dB bound; ideal
-/// reconstruction reads higher and remains a documented limitation.
+/// Render a gated-burst fixture through True Peak mode at 44.1, 48, and 192 kHz
+/// in both routings, verifying that the output-aware guard keeps the standard
+/// BS.1770-4 4x meter at or below the ceiling (Pulse #3713).
 fn gated_burst_bs1770_peak(high: f32, low: f32) -> f64 {
     let ceiling = 10.0_f64.powf(-1.0 / 20.0);
-    let bound = ceiling * 10.0_f64.powf(0.3 / 20.0);
+    let bound = ceiling + 1e-4;
     let mut worst = 0.0_f64;
-    for rate in [48_000, 192_000] {
+    for rate in [44_100, 48_000, 192_000] {
         for routing in [0, 1] {
             let factory = factory(
                 rate,
@@ -784,6 +780,57 @@ fn true_peak_mode_stays_within_bs1770_bound_on_near_nyquist_bursts() {
 #[test]
 fn true_peak_mode_stays_within_bs1770_bound_on_mid_band_bursts() {
     gated_burst_bs1770_peak(0.8, 0.6);
+}
+
+#[test]
+fn true_peak_output_guard_bounds_program_material_and_ideal_reconstruction() {
+    let ceiling = 10.0_f64.powf(-1.0 / 20.0);
+    // Representative stereo program-like mix: bass fundamental + mid chord +
+    // sharp percussive bursts + stereo side decorrelation.
+    let mut program: Vec<StereoFrame> = (0..4096)
+        .map(|i| {
+            let t = i as f64 / 48_000.0;
+            let burst = if i % 193 < 19 { 6.0 } else { 0.8 };
+            let kick = (2.0 * std::f64::consts::PI * 65.0 * t).sin();
+            let chord = 0.6 * (2.0 * std::f64::consts::PI * 440.0 * t).sin()
+                + 0.4 * (2.0 * std::f64::consts::PI * 1318.5 * t + 0.4).sin();
+            let hat = (i as f64 * 2.3 + 0.1).sin() * if i % 193 < 19 { 1.0 } else { 0.1 };
+            let left = (burst * (0.5 * kick + 0.35 * chord + 0.4 * hat)) as f32;
+            let right = (burst * (0.5 * kick - 0.3 * chord + 0.45 * hat)) as f32;
+            [left, right]
+        })
+        .collect();
+    program.extend(vec![[0.0; 2]; 512]);
+    for routing in [0, 1] {
+        let f = factory(
+            48_000,
+            &[
+                (MODE, ParameterValue::Choice(2)),
+                (ROUTING, ParameterValue::Choice(routing)),
+                (LINK, ParameterValue::Float(0.0)),
+                (RELEASE, ParameterValue::Float(0.01)),
+                (CEILING, ParameterValue::Float(-1.0)),
+            ],
+        );
+        let mut runtime = f.create_runtime().unwrap();
+        let output = render(runtime.as_mut(), &program, &[1, 63, 257]);
+        let bs1770 = true_peak_oracle::bs1770_true_peak(&output).unwrap();
+        assert!(
+            bs1770 <= ceiling + 1e-4,
+            "program routing={routing}: bs1770 {:+.4} dB",
+            20.0 * (bs1770 / ceiling).log10()
+        );
+        // Check ideal finite-record cardinal reconstruction on an active
+        // transient slice (explicitly bounded, separate from BS.1770-4).
+        let ideal =
+            true_peak_oracle::grid_peak(&output[256..768], std::num::NonZeroUsize::new(8).unwrap())
+                .unwrap();
+        assert!(
+            ideal.value <= ceiling * 10.0_f64.powf(0.5 / 20.0),
+            "program routing={routing}: ideal {:+.4} dB",
+            20.0 * (ideal.value / ceiling).log10()
+        );
+    }
 }
 
 #[test]
@@ -913,8 +960,11 @@ fn measured_soft_clip_and_true_peak_families_keep_the_reference_operating_shape(
             .iter()
             .map(|v| v[0].abs())
             .fold(0.0f32, f32::max);
+        // At fs/4 (11025 Hz), the ITU-R BS.1770-4 12-tap 4x filter has ~+0.042 dB
+        // passband gain, so holding BS.1770-4 <= ceiling trims the sample peak
+        // by ~0.042 dB compared to the pre-guard 32-tap Blackman-sinc target.
         assert!(
-            (20.0 * (peak / target).log10()).abs() < 0.02,
+            (20.0 * (peak / target).log10()).abs() < 0.05,
             "freq={frequency} peak={peak}"
         );
     }
@@ -1179,8 +1229,8 @@ fn reduction_meter_matches_original_factor_oracle_across_routing_and_rollback() 
                 ([400.2112_f32, 399.8473_f32], false),
             ],
             [
-                ([402.8987_f32, 398.1146_f32], false),
-                ([401.1973_f32, 400.0852_f32], false),
+                ([402.8987_f32, 398.11337_f32], false),
+                ([397.26932_f32, 398.9224_f32], false),
             ],
         ],
         [
@@ -1202,7 +1252,7 @@ fn reduction_meter_matches_original_factor_oracle_across_routing_and_rollback() 
             ],
             [
                 ([600_f32, 600_f32], false),
-                ([600_f32, 18.90832_f32], false),
+                ([600.0558_f32, 18.679237_f32], false),
             ],
             [
                 ([606.0029_f32, 606.0029_f32], false),

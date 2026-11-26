@@ -63,6 +63,7 @@ impl Runtime {
                 .final_stage
                 .as_ref()
                 .is_none_or(|stage| stage.is_idle_unity(&self.config))
+            && (!self.config.true_peak || self.scratch.output_guard.is_idle_unity())
             && frames
                 .iter()
                 .all(|f| (f[0].to_bits() | f[1].to_bits()) == 0)
@@ -71,6 +72,9 @@ impl Runtime {
             self.scratch.first.advance_silent(frames.len(), window);
             if let Some(final_stage) = &mut self.scratch.final_stage {
                 final_stage.advance_silent(frames.len(), window);
+            }
+            if self.config.true_peak {
+                self.scratch.output_guard.advance_silent(frames.len());
             }
             return;
         }
@@ -205,6 +209,22 @@ impl Runtime {
                     f64::from(sample.attenuation[lane])
                 }) * meter_factor(final_gain[lane])
             });
+        }
+        if config.true_peak {
+            let guard_link = if config.mid_side {
+                1.0
+            } else {
+                parameters.link
+            };
+            let (guarded_signal, guarded_attenuation) = history.output_guard.process(
+                sample.signal,
+                attenuation,
+                config,
+                parameters,
+                guard_link,
+            );
+            sample.signal = guarded_signal;
+            attenuation = guarded_attenuation;
         }
         if config.soft_clip {
             let ratios = sample.signal.map(|v| {
