@@ -474,7 +474,11 @@ fn first_play(
             std::thread::yield_now();
         }
         if !limiter {
-            assert_eq!(output, [[0.125; 2]; 8]);
+            // The acknowledged seek restarted the grouped signal at frame
+            // zero under the 128-frame transport fade-in.
+            let replay = std::array::from_fn(|i| [0.125 * (i + 1) as f32 / 128.0; 2]);
+            assert_eq!(output, replay);
+            assert_eq!(control.status.position.load(Acquire), 8);
         }
     }
     let mut retirement = std::thread::spawn(move || {
