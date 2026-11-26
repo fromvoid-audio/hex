@@ -68,10 +68,10 @@ impl Session {
     /// publication belong to the worker-owned ordinary resource owner rather
     /// than the closed verified constructor. Always true for `Resident`
     /// documents, and true for `VerifiedStreaming` documents containing private
-    /// sampler sources.
+    /// sampler sources, MIDI clips, or instruments.
     pub fn uses_ordinary_worker_publication(&self) -> bool {
         self.audio_mode == DocumentAudioMode::Resident
-            || hex_engine::native_device_resources::requires_private_sampler_sources(self.project())
+            || project_uses_ordinary_verified_playback(self.project())
     }
     pub fn source_plan_reservation(&self) -> Option<SourcePlanReservation> {
         self.source_reservation
@@ -554,4 +554,12 @@ fn verified_import_command(
             }
         }
     }
+}
+
+pub(crate) fn project_uses_ordinary_verified_playback(project: &Project) -> bool {
+    hex_engine::native_device_resources::requires_private_sampler_sources(project)
+        || project
+            .tracks()
+            .iter()
+            .any(|track| track.instrument().is_some() || !track.midi_clips().is_empty())
 }

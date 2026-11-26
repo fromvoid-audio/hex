@@ -860,6 +860,7 @@ impl VerifiedLane {
         let canonical = state.canonical_audio_source.as_ref().filter(|source| {
             available
                 && source.audio_mode() == DocumentAudioMode::VerifiedStreaming
+                && !source.uses_ordinary_worker_publication()
                 && state.project.as_ref() == project
                 && state.audio_authoring_revision(context) == Some(state.revision)
                 && context.editor_revision == state.revision
@@ -964,6 +965,7 @@ impl Lane {
         &mut self,
         mailbox: &Mailbox,
         session: &Session,
+        canonical_source: Option<&Arc<CanonicalAudioSourceSnapshot>>,
         context: hex_engine::AudioSourceContext,
         current: &mut Option<resident_audio::Snapshot>,
         preview: &mut Option<resident_preview::Preview>,
@@ -993,7 +995,7 @@ impl Lane {
             return false;
         }
         if preview.is_some() && audition.is_none()
-            || session.audio_mode() != DocumentAudioMode::Resident
+            || (!session.uses_ordinary_worker_publication() && current.is_none())
             || !sink.resident_publication_enabled()
         {
             return false;
@@ -1032,7 +1034,14 @@ impl Lane {
             let kind = target.kind();
             self.attempted = Some(target.clone());
             let result = resident_preview::clip_audition(
-                session, target, current, preview, sink, admission, &cancel,
+                session,
+                canonical_source,
+                target,
+                current,
+                preview,
+                sink,
+                admission,
+                &cancel,
             );
             let cancelled = cancel.load(Ordering::Acquire);
             self.next_attempt = Some(started + attempt_interval(kind, result.is_err(), cancelled));
