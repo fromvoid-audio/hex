@@ -180,9 +180,11 @@ impl LogWriter for SessionWriter {
             ));
         }
         self.writer.write_all(value.as_bytes())?;
-        self.writer.flush()?;
         self.bytes += size;
         Ok(())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
     }
 }
 /// Reserve the entire family, including crash-left archives/staging. A missing
@@ -321,6 +323,7 @@ mod tests {
         while writer.bytes + 4096 <= writer.limit {
             writer.line(&"x".repeat(4096)).unwrap();
         }
+        writer.flush().unwrap();
         let prior = fs::read(&active).unwrap();
         writer.fail_staged_publish = true;
         let (sender, receiver) = std::sync::mpsc::sync_channel(2);
@@ -377,6 +380,7 @@ mod tests {
             let line = format!("event sequence={sequence} {}\n", "x".repeat(4096));
             writer.line(&line).unwrap();
         }
+        writer.flush().unwrap();
         assert_eq!(writer.path(), path);
         let files: Vec<_> = fs::read_dir(&directory)
             .unwrap()

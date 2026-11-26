@@ -30,6 +30,9 @@ impl LogWriter for MemoryWriter {
         self.0.lock().unwrap().push_str(value);
         Ok(())
     }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 fn memory_worker(
     handle: &DiagnosticsHandle,
@@ -293,6 +296,9 @@ impl LogWriter for BlockedWriter {
         }
         self.output.line(value)
     }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 #[test]
 fn stalled_disk_writer_does_not_hold_shutdown_forever_and_reports_incompleteness() {
@@ -332,6 +338,9 @@ fn failed_writer_stops_admission_and_exposes_unwritten_queue_records() {
     impl LogWriter for FailingWriter {
         fn line(&mut self, _: &str) -> io::Result<()> {
             Err(io::Error::other("fixture write failure"))
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
         }
     }
     let (handle, receiver) = pair();
@@ -427,37 +436,188 @@ fn stalled_startup_returns_failure_and_closes_admission_without_waiting_for_disk
 }
 
 #[test]
-fn default_directory_prefers_nonempty_home_and_uses_userprofile_on_windows() {
+fn default_directory_aligns_macos_windows_and_linux_conventions() {
     use std::ffi::OsString;
-    let explicit = default_directory_from(
-        Some(OsString::from("/explicit-home")),
-        Some(OsString::from("C:\\Users\\profile")),
+    // macOS
+    let mac = default_directory_for_platform(
+        PlatformPaths::MacOs,
+        Some(OsString::from("/Users/hex")),
+        None,
+        None,
+        None,
     )
     .unwrap();
-    assert!(explicit.starts_with("/explicit-home"));
-    assert!(default_directory_from(None, None).is_err());
-    assert!(default_directory_from(Some(OsString::new()), Some(OsString::new())).is_err());
+    assert_eq!(mac, PathBuf::from("/Users/hex/Library/Logs/hex"));
+    assert!(default_directory_for_platform(PlatformPaths::MacOs, None, None, None, None).is_err());
 
-    let from_profile = default_directory_from(
+    // Windows: APPDATA > USERPROFILE/AppData/Roaming > HOME/AppData/Roaming
+    let win_appdata = default_directory_for_platform(
+        PlatformPaths::Windows,
+        Some(OsString::from("C:\\ignored")),
+        Some(OsString::from("C:\\Users\\profile")),
+        Some(OsString::from("C:\\Users\\profile\\AppData\\Roaming")),
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        win_appdata,
+        PathBuf::from("C:\\Users\\profile\\AppData\\Roaming")
+            .join("hex")
+            .join("logs")
+    );
+    let win_profile = default_directory_for_platform(
+        PlatformPaths::Windows,
         Some(OsString::new()),
         Some(OsString::from("C:\\Users\\hex")),
+        None,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        win_profile,
+        PathBuf::from("C:\\Users\\hex")
+            .join("AppData")
+            .join("Roaming")
+            .join("hex")
+            .join("logs")
     );
-    if cfg!(windows) {
-        let path = from_profile.unwrap();
-        assert_eq!(
-            path,
-            PathBuf::from("C:\\Users\\hex")
-                .join(".local")
-                .join("state")
-                .join("hex")
-                .join("logs")
+    assert!(
+        default_directory_for_platform(PlatformPaths::Windows, None, None, None, None).is_err()
+    );
+
+    // Linux / other Unix: absolute XDG_STATE_HOME > HOME/.local/state/hex/logs
+    let linux_xdg = default_directory_for_platform(
+        PlatformPaths::OtherUnix,
+        Some(OsString::from("/home/hex")),
+        None,
+        None,
+        Some(OsString::from("/var/state/custom")),
+    )
+    .unwrap();
+    assert_eq!(linux_xdg, PathBuf::from("/var/state/custom/hex/logs"));
+    let linux_relative_xdg = default_directory_for_platform(
+        PlatformPaths::OtherUnix,
+        Some(OsString::from("/home/hex")),
+        None,
+        None,
+        Some(OsString::from("relative/state")),
+    )
+    .unwrap();
+    assert_eq!(
+        linux_relative_xdg,
+        PathBuf::from("/home/hex/.local/state/hex/logs")
+    );
+
+    // Current platform helper rejects empty env
+    assert!(default_directory_from(None, None, None, None).is_err());
+    assert!(
+        default_directory_from(
+            Some(OsString::new()),
+            Some(OsString::new()),
+            Some(OsString::new()),
+            Some(OsString::new()),
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn prune_failure_during_startup_records_warning_and_keeps_logging_active() {
+    let directory = fixture();
+    let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+    let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
+    let (done_sender, completed) = mpsc::sync_channel(1);
+    let shared = Arc::new(Shared::new());
+    let worker_shared = Arc::clone(&shared);
+    let dir_clone = directory.clone();
+    let worker = thread::spawn(move || {
+        run_worker_with_pruner(
+            dir_clone,
+            Context::new("prune-regression"),
+            receiver,
+            startup_sender,
+            worker_shared,
+            |_, _| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected retention denial",
+                ))
+            },
         );
-        if env::var_os("USERPROFILE").is_some_and(|value| !value.is_empty()) {
-            let live = default_directory().expect("windows user profile resolves log directory");
-            assert!(live.ends_with("logs"));
-        }
-    } else {
-        assert!(from_profile.is_err());
-        assert!(default_directory_from(None, Some(OsString::from("C:\\Users\\hex"))).is_err());
+        let _ = done_sender.try_send(());
+    });
+    let (path, worker) =
+        await_startup(startup_receiver, worker, &shared, SHUTDOWN_TIMEOUT).unwrap();
+    let mut log = SessionLog {
+        handle: DiagnosticsHandle {
+            sender,
+            shared,
+            path: Arc::new(path.clone()),
+        },
+        worker: Some(worker),
+        completed,
+    };
+    let handle = log.handle();
+    assert!(!handle.shared.closing.load(Ordering::Acquire));
+    assert!(handle.failure().is_none());
+    handle
+        .record_typed(
+            Level::Info,
+            Category::Startup,
+            "still logging after prune failure",
+        )
+        .unwrap();
+    handle
+        .record_typed(Level::Warn, Category::Audio, "second record lands")
+        .unwrap();
+    log.shutdown().unwrap();
+
+    let contents = fs::read_to_string(&path).unwrap();
+    assert!(contents.contains("diagnostics_retention_warning"));
+    assert!(contents.contains("injected retention denial"));
+    assert!(contents.contains("still logging after prune failure"));
+    assert!(contents.contains("second record lands"));
+    assert_eq!(handle.statistics().written, 2);
+    assert_eq!(handle.statistics().closed, 0);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn run_records_batches_ready_burst_flushes_instead_of_flushing_every_line() {
+    struct CountingWriter {
+        lines: Arc<AtomicU64>,
+        flushes: Arc<AtomicU64>,
     }
+    impl LogWriter for CountingWriter {
+        fn line(&mut self, _: &str) -> io::Result<()> {
+            self.lines.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+    let (handle, receiver) = pair();
+    for index in 0..96 {
+        handle.record(&format!("burst-{index}")).unwrap();
+    }
+    let lines = Arc::new(AtomicU64::new(0));
+    let flushes = Arc::new(AtomicU64::new(0));
+    let mut log = memory_worker(
+        &handle,
+        receiver,
+        CountingWriter {
+            lines: Arc::clone(&lines),
+            flushes: Arc::clone(&flushes),
+        },
+    );
+    log.shutdown().unwrap();
+    assert_eq!(handle.statistics().written, 96);
+    assert!(lines.load(Ordering::Relaxed) >= 97); // 96 events + session_finished
+    let flush_count = flushes.load(Ordering::Relaxed);
+    assert!(
+        (1..=6).contains(&flush_count),
+        "expected batched flushes (1..=6) for 96 pre-queued records, got {flush_count}"
+    );
 }
