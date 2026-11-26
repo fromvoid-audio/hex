@@ -66,7 +66,7 @@ pub(in crate::editor) fn device_card_width(
         (NativeDeviceClass::Effect, Some("hex.chorus")) => chorus_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.overdrive")) => overdrive_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.rattle")) => rattle_panel::FRAME_WIDTH,
-        _ => DEVICE_FRAME_WIDTH,
+        _ => package_panel::frame_width(view.device_panel.package_schemas.get(&device.id())),
     };
     frame_width + hex_widgets::DEVICE_FRAME_HEADER_WIDTH + device_meter::WIDTH
 }

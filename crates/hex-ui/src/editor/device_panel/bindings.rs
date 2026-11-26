@@ -25,10 +25,11 @@ pub(super) type BindingPolicyFactory = fn(
     ControlPresentation,
     ControlText,
 ) -> BindingPolicy;
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct BindingPresentation {
     pub(super) kind: ControlPresentation,
     pub(super) text: ControlText,
+    pub(super) label_override: Option<gpui::SharedString>,
     pub(super) policy: BindingPolicyFactory,
     pub(super) compact_toggle_width: f32,
 }
@@ -40,6 +41,28 @@ pub(super) struct CapturedBinding {
     key: ParameterKey,
     identity: DeviceControlIdentity,
     descriptor: ParameterDescriptor,
+    package_sha256: Option<[u8; 32]>,
+}
+
+fn device_package_sha256(state: &NativeDeviceState) -> Option<[u8; 32]> {
+    hex_lattice_contract::package_abi::PackageIdentityEnvelope::decode_with_raw_state(
+        state.payload(),
+    )
+    .ok()
+    .map(|(env, _)| env.package_sha256)
+}
+
+fn current_device_package_sha256(
+    view: &EditorView,
+    key: ParameterKey,
+    identity: DeviceControlIdentity,
+) -> Option<[u8; 32]> {
+    let state = view.state.as_ref()?;
+    let device = view
+        .device_panel
+        .owner
+        .and_then(|owner| device_in_panel(owner, &state.project, key.device, identity.class))?;
+    device_package_sha256(device.state())
 }
 
 impl CapturedBinding {
@@ -64,6 +87,9 @@ impl CapturedBinding {
             return false;
         };
         if device.state().type_id() != self.identity.type_id {
+            return false;
+        }
+        if device_package_sha256(device.state()) != self.package_sha256 {
             return false;
         }
         // Reserved trims are owned by the host and are absent from the
@@ -270,10 +296,11 @@ pub(super) fn render_parameter(
     parameter: &NativeDeviceParameterView,
     rendering: BindingPresentation,
 ) -> Div {
-    let configuration = rendering;
+    let configuration = rendering.clone();
     let BindingPresentation {
         kind: presentation,
         text: _,
+        label_override: _,
         policy: _,
         compact_toggle_width,
     } = rendering;
@@ -315,6 +342,7 @@ pub(super) fn render_parameter(
         }
         return unsupported_parameter(descriptor.label);
     }
+    let current_package_sha256 = current_device_package_sha256(view, key, identity);
     let matching = view.device_panel.controls.get(&key).is_some_and(|control| {
         let binding = control.binding();
         binding.generation == view.project_generation
@@ -322,6 +350,7 @@ pub(super) fn render_parameter(
             && binding.identity.class == identity.class
             && binding.identity.type_id == identity.type_id
             && binding.descriptor == descriptor
+            && binding.package_sha256 == current_package_sha256
     });
     if !matching {
         if let Some(mut old) = view.device_panel.controls.remove(&key) {
@@ -553,6 +582,7 @@ pub(super) fn render_parameter(
         key,
         identity,
         descriptor,
+        package_sha256: current_package_sha256,
     };
     rendered
         .when(automated, super::automation_tint::mark)
@@ -603,6 +633,7 @@ fn create_parameter_control(
     let BindingPresentation {
         kind: presentation,
         text: display,
+        label_override,
         policy,
         ..
     } = rendering;
@@ -614,6 +645,7 @@ fn create_parameter_control(
         key,
         identity,
         descriptor,
+        package_sha256: current_device_package_sha256(view, key, identity),
     };
     let value = parameter.value;
     let BindingPolicy {
@@ -626,6 +658,11 @@ fn create_parameter_control(
         label: display_label,
         codec: display_codec,
     } = display;
+    let resolved_label = || {
+        label_override
+            .clone()
+            .unwrap_or_else(|| theme::text(display_label.unwrap_or(descriptor.label)))
+    };
     let id = format!(
         "device-{}-parameter-{}",
         key.device.value(),
@@ -676,7 +713,7 @@ fn create_parameter_control(
             };
             let config = NumericControlConfig::new(
                 id,
-                theme::text(display_label.unwrap_or(descriptor.label)),
+                resolved_label(),
                 appearance,
                 spec,
                 f64::from(value),
@@ -772,14 +809,9 @@ fn create_parameter_control(
         }
         (ParameterKind::Bool, ParameterValue::Bool(value)) => {
             let appearance = toggle_appearance;
-            let config = ToggleConfig::new(
-                id,
-                theme::text(display_label.unwrap_or(descriptor.label)),
-                value,
-                style,
-            )
-            .ok()?
-            .with_appearance(appearance);
+            let config = ToggleConfig::new(id, resolved_label(), value, style)
+                .ok()?
+                .with_appearance(appearance);
             let entity = cx.new(|control_cx| Toggle::from_config(control_cx, config));
             let target = key;
             let subscription = cx.subscribe(&entity, move |view, emitter, event: &ToggleChanged, cx| {
@@ -894,7 +926,7 @@ fn create_parameter_control(
             };
             let config = SelectorConfig::new(id, choices, selected, style)
                 .ok()?
-                .with_accessibility_name(theme::text(display_label.unwrap_or(descriptor.label)))
+                .with_accessibility_name(resolved_label())
                 .with_appearance(appearance);
             let config = if let ControlPresentation::CompactSegments { columns } = presentation {
                 config.with_segment_columns(columns).ok()?

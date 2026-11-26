@@ -54,6 +54,10 @@ pub(in crate::editor) struct DevicePanelState {
     pub(super) source_picker: source_picker::State,
     pub(super) source_manager: source_manager::State,
     pub(super) parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
+    pub(in crate::editor) package_schemas:
+        HashMap<DeviceId, Result<hex_lattice_contract::package_ui::PackageUiSchema, String>>,
+    pub(in crate::editor) package_snapshots:
+        HashMap<DeviceId, hex_lattice_contract::package_ui::PackagePresentationSnapshot>,
     pub(in crate::editor) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     pub(super) modulation_target_drag: modulators::TargetDragState,
     pub(super) host_gain_mapping_availability: Option<modulators::HostGainMappingAvailability>,
@@ -738,6 +742,8 @@ pub(in crate::editor) fn clear_owner_state(
     view.device_panel.spectrum_results.clear();
     view.device_panel.chain_window = Default::default();
     view.device_panel.parameter_rows.clear();
+    view.device_panel.package_schemas.clear();
+    view.device_panel.package_snapshots.clear();
     view.device_panel.owner = next_owner;
     view.device_panel.reconciled_track_chain = None;
     view.device_panel.drag_selection = None;
