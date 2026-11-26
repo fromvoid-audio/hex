@@ -11,15 +11,20 @@ use hex_engine::{NativeDeviceClass, NativeDeviceView};
 use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
 use hex_project::Device;
 
-pub(super) const FRAME_WIDTH: f32 = 458.0;
+pub(super) const FRAME_WIDTH: f32 = 540.0;
 const DIAL_GAP: f32 = 3.0;
 const DIAL_PAIR_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + DIAL_GAP;
-const MORPH_MODE: ParameterValue = ParameterValue::Choice(4);
-const STATIC_CONTROLS: [u32; 5] = [1, 2, 3, 4, 5];
+const MORPH_MODES: [ParameterValue; 4] = [
+    ParameterValue::Choice(4), // morph
+    ParameterValue::Choice(5), // dj
+    ParameterValue::Choice(6), // notch + lp
+    ParameterValue::Choice(9), // vowel
+];
+const STATIC_CONTROLS: [u32; 7] = [1, 2, 3, 4, 5, 14, 15];
 
 pub(super) struct Preview {
     state: NativeDeviceState,
-    values: [ParameterValue; 5],
+    values: [ParameterValue; 7],
     sample_rate: u32,
     points: Option<[[f32; 2]; 129]>,
 }
@@ -30,7 +35,7 @@ fn response(
     metadata: &NativeDeviceView,
     sample_rate: u32,
 ) -> Option<[[f32; 2]; 129]> {
-    let mut values = [ParameterValue::Float(0.0); 5];
+    let mut values = [ParameterValue::Float(0.0); 7];
     for (number, value) in STATIC_CONTROLS.into_iter().zip(&mut values) {
         let parameter = ParameterId::from_static(number);
         let descriptor = metadata
@@ -100,10 +105,25 @@ pub(super) fn render_body(
         .as_ref()
         .map_or(48_000, |state| state.project.sample_rate());
     let points = response(view, device, metadata, sample_rate);
-    let is_morph = metadata
+    let uses_morph = metadata
         .parameters
         .iter()
         .find(|p| p.descriptor.id.value() == 1)
+        .is_some_and(|p| {
+            let val = effective_parameter_value(
+                view,
+                ParameterKey {
+                    device: id,
+                    parameter: p.descriptor.id,
+                },
+                p.value,
+            );
+            MORPH_MODES.contains(&val)
+        });
+    let lfo_synced = metadata
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.id.value() == 16)
         .is_some_and(|p| {
             effective_parameter_value(
                 view,
@@ -112,7 +132,21 @@ pub(super) fn render_body(
                     parameter: p.descriptor.id,
                 },
                 p.value,
-            ) == MORPH_MODE
+            ) == ParameterValue::Choice(1)
+        });
+    let lfo_spin = metadata
+        .parameters
+        .iter()
+        .find(|p| p.descriptor.id.value() == 18)
+        .is_some_and(|p| {
+            effective_parameter_value(
+                view,
+                ParameterKey {
+                    device: id,
+                    parameter: p.descriptor.id,
+                },
+                p.value,
+            ) == ParameterValue::Choice(1)
         });
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Effect,
@@ -145,7 +179,13 @@ pub(super) fn render_body(
     use ControlPresentation::{CompactSelector, MicroDial};
     let filter = device_composition::rail_column()
         .child(control(1, CompactSelector, None))
-        .child(control(2, CompactSelector, None))
+        .child(
+            div()
+                .flex()
+                .gap(px(DIAL_GAP))
+                .child(control(2, CompactSelector, None))
+                .child(control(14, CompactSelector, Some("ckt"))),
+        )
         .child(
             div()
                 .flex()
@@ -157,25 +197,58 @@ pub(super) fn render_body(
             div()
                 .flex()
                 .gap(px(DIAL_GAP))
-                .child(control(6, MicroDial, Some("mix")))
-                .when(is_morph, |row| row.child(control(5, MicroDial, None))),
-        );
+                .child(control(15, MicroDial, Some("drive")))
+                .child(control(6, MicroDial, Some("mix"))),
+        )
+        .when(uses_morph, |col| col.child(control(5, MicroDial, None)));
     let lfo = device_composition::rail_column()
         .child(theme::text("lfo"))
-        .child(control(9, CompactSelector, Some("shape")))
         .child(
             div()
                 .flex()
                 .gap(px(DIAL_GAP))
-                .child(control(8, MicroDial, Some("rate")))
+                .child(control(9, CompactSelector, Some("shape")))
+                .child(control(16, CompactSelector, Some("sync"))),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(DIAL_GAP))
+                .child(if lfo_synced {
+                    control(17, CompactSelector, Some("div"))
+                } else {
+                    control(8, MicroDial, Some("rate"))
+                })
                 .child(control(7, MicroDial, Some("amount"))),
         )
-        .child(control(10, MicroDial, Some("phase")));
+        .child(
+            div()
+                .flex()
+                .gap(px(DIAL_GAP))
+                .child(control(18, CompactSelector, Some("st")))
+                .child(if lfo_spin {
+                    control(19, MicroDial, Some("spin"))
+                } else {
+                    control(10, MicroDial, Some("phase"))
+                }),
+        );
     let envelope = device_composition::rail_column()
         .child(theme::text("envelope"))
-        .child(control(11, MicroDial, Some("amount")))
-        .child(control(13, MicroDial, Some("attack")))
-        .child(control(12, MicroDial, Some("release")));
+        .child(control(21, CompactSelector, Some("key")))
+        .child(
+            div()
+                .flex()
+                .gap(px(DIAL_GAP))
+                .child(control(11, MicroDial, Some("amount")))
+                .child(control(20, MicroDial, Some("hold"))),
+        )
+        .child(
+            div()
+                .flex()
+                .gap(px(DIAL_GAP))
+                .child(control(13, MicroDial, Some("attack")))
+                .child(control(12, MicroDial, Some("release"))),
+        );
     let style = theme::device_style(theme::DeviceStyleRole::Display);
     let preview = points
         .and_then(|points| {
@@ -209,11 +282,7 @@ pub(super) fn render_body(
         .child(dense_rail(filter).w(px(DIAL_PAIR_WIDTH)).flex_shrink_0())
         .child(main)
         .child(dense_rail(lfo).w(px(DIAL_PAIR_WIDTH)).flex_shrink_0())
-        .child(
-            dense_rail(envelope)
-                .w(px(hex_widgets::MICRO_DIAL_WIDTH))
-                .flex_shrink_0(),
-        )
+        .child(dense_rail(envelope).w(px(DIAL_PAIR_WIDTH)).flex_shrink_0())
         .id(ElementId::Name(
             format!("device-body-{}", id.value()).into(),
         ))
