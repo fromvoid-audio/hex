@@ -656,7 +656,7 @@ impl SessionPlayback {
                             )
                     }
                     RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
-                };
+                } && new_runtime.midi_processor_matches(old_runtime);
                 let retarget_proof = self
                     .revision
                     .session()
@@ -689,7 +689,7 @@ impl SessionPlayback {
                             })
                     }
                     RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
-                };
+                } && new_runtime.midi_processor_matches(old_runtime);
                 let retarget_source_matches =
                     !exact_source_matches && retarget_proof.is_some() && retarget_owner_matches;
                 let requires_quiescence = self

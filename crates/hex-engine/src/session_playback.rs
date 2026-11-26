@@ -2452,6 +2452,37 @@ impl SessionPlayback {
             .map(|follow| (follow.source_scene, follow.next_scene, follow.trigger_frame))
     }
 
+    /// Admit one bounded native MIDI processor before `track`'s mutable
+    /// instrument on control before playback begins or is handed off.
+    ///
+    /// Construction, limit validation, and output scratch preallocation occur
+    /// exclusively here on the control side. Callback rendering transforms the
+    /// existing route event batch without a second scheduler or any callback
+    /// allocation, lock, I/O, or final drop.
+    pub fn install_track_midi_processor_on_control(
+        &mut self,
+        track: TrackId,
+        identity: NonZeroU64,
+        prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
+    ) -> Result<(), SessionPlaybackError> {
+        if self.playing || self.performance_frame != 0 {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        let index = self
+            .routes
+            .iter()
+            .position(|route| route.id == track)
+            .ok_or(SessionPlaybackError::UnknownTrack)?;
+        let runtime = self
+            .mutable_instruments
+            .get_mut(index)
+            .and_then(Option::as_mut)
+            .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?;
+        runtime
+            .install_midi_processor(identity, prepared)
+            .map_err(SessionPlaybackError::from)
+    }
+
     /// Compute the exact sample-accurate next-scene follow trigger from `launch_beat`
     /// using the prepared meter and tempo clocks (zero heap allocations).
     pub(super) fn plan_scene_follow(
@@ -3202,3 +3233,6 @@ mod routing_tests;
 
 #[cfg(test)]
 mod live_expression_tests;
+
+#[cfg(test)]
+mod midi_processor_tests;
