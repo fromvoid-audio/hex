@@ -43,11 +43,13 @@ HEX_RELEASE_LABEL = "{version}"
 name = "hex.app"
 binary = "target/release/hex-desktop"
 executable_name = "hex"
-bundle_id = "org.portalsurfer.hex.dev"
+bundle_id = "audio.fromvoid.hex"
 display_name = "hex"
 
 [macos.app.info_plist]
+LSApplicationCategoryType = "public.app-category.music"
 NSHighResolutionCapable = true
+NSHumanReadableCopyright = "fromvoid"
 NSMicrophoneUsageDescription = "hex uses audio input to record audio into your project."
 
 [[macos.app.resources]]
@@ -72,8 +74,8 @@ team_id = "DKTKQ8U5T8"
 entitlements = "scripts/hex-release.entitlements.plist"
 hardened_runtime = true
 timestamp = true
-# Set to true once the Apple Developer agreement is renewed (uses macOS Keychain profile).
-notarize = false
+# Uses macOS Keychain profile for Apple notarization and stapling.
+notarize = true
 notary_profile = "capture-release"
 notary_profile_env = "SHIP_NOTARY_PROFILE"
 
