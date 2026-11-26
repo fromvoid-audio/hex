@@ -544,7 +544,7 @@ impl OnsetScanner {
                 };
                 *value = Complex::new(x * self.window[i], 0.0);
             }
-            fft::transform(&mut self.fft_buf, false).map_err(S::Error::from)?;
+            fft::transform_real_forward(&mut self.fft_buf).map_err(S::Error::from)?;
             for bin in 0..self.bins {
                 let hz = bin as f64 * f64::from(self.sample_rate) / self.n as f64;
                 let band = if hz < 200.0 {
@@ -593,7 +593,7 @@ impl OnsetScanner {
             && self.spec_last_score > 0.0
             && self.spec_last_score >= self.spec_before_score
             && self.spec_last_score > score
-            && let Some(at) = self.refine(source, center - self.hop as u64, cancel)?
+            && let Some(at) = self.refine(source, scratch, center - self.hop as u64, cancel)?
         {
             self.insert_spectral(at).map_err(S::Error::from)?;
         }
@@ -610,15 +610,56 @@ impl OnsetScanner {
     fn refine<S: GranularSource>(
         &self,
         source: &mut S,
+        scratch: &mut [[f64; 2]],
         center: u64,
         cancel: &mut dyn FnMut() -> bool,
     ) -> Result<Option<u64>, S::Error> {
         let half = self.half as u64;
         let start = center.saturating_sub(half);
         let end = center.saturating_add(half).min(self.region_length);
+        if end <= start {
+            return Ok(None);
+        }
         let block = u64::from((self.sample_rate / 1000).max(1));
+        let span = (end - start) as usize;
+        let needed = span + 1;
         let mut maximum = 0.0_f64;
         let mut sum = 0.0;
+        if needed <= scratch.len() {
+            let win = &mut scratch[..needed];
+            source.window(i128::from(start) - 1, win)?;
+            for i in 0..span {
+                if (i as u64).is_multiple_of(block) && cancel() {
+                    return Err(Error::Cancelled.into());
+                }
+                let previous = win[i];
+                let now = win[i + 1];
+                let d0 = now[0] - previous[0];
+                let d1 = now[1] - previous[1];
+                let x = d0 * d0 + d1 * d1;
+                maximum = maximum.max(x);
+                sum += x;
+            }
+            let floor = sum / (end - start).max(1) as f64 * 4.0;
+            if maximum <= floor.max(1e-14) {
+                return Ok(None);
+            }
+            let threshold = (maximum * 0.10).max(floor).max(1e-14);
+            for i in 0..span {
+                if (i as u64).is_multiple_of(block) && cancel() {
+                    return Err(Error::Cancelled.into());
+                }
+                let previous = win[i];
+                let now = win[i + 1];
+                let d0 = now[0] - previous[0];
+                let d1 = now[1] - previous[1];
+                let x = d0 * d0 + d1 * d1;
+                if x >= threshold {
+                    return Ok(Some(start + i as u64));
+                }
+            }
+            return Ok(None);
+        }
         for at in start..end {
             if (at - start).is_multiple_of(block) && cancel() {
                 return Err(Error::Cancelled.into());

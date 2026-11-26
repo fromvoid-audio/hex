@@ -161,6 +161,42 @@ impl SequentialBeats {
                 };
                 let last = self.physical_anchors.len() - 1;
                 let chunk_end = (age + FIRST_PASS_CHUNK_FRAMES).min(sounding);
+                let has_join = join > 0 && age < chunk_end && duration - (chunk_end - 1) <= join;
+                let (main_scratch, join_scratch) = if has_join {
+                    scratch.split_at_mut(scratch.len() / 2)
+                } else {
+                    (scratch, &mut [][..])
+                };
+                let main_window = if age < chunk_end {
+                    let pos_start = a.source + age as f64 * self.pitch;
+                    if pos_start < b.source {
+                        let pos_end =
+                            (a.source + (chunk_end - 1) as f64 * self.pitch).min(b.source);
+                        let min_bound = self.physical_anchors[native_prev].source.floor() as i128;
+                        let max_bound =
+                            (self.physical_anchors[last].source.ceil() as i128 - 1).max(min_bound);
+                        let win_start = (pos_start.floor() as i128 - TAP_WINDOW_PAD).max(min_bound);
+                        let win_end = (pos_end.ceil() as i128 + TAP_WINDOW_PAD).min(max_bound) + 1;
+                        ScratchWindow::load(source, main_scratch, win_start, win_end)?
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let join_window = if has_join {
+                    let first_join_age = age.max(duration.saturating_sub(join));
+                    let jpos_start = b.source - (duration - first_join_age) as f64 * self.pitch;
+                    let jpos_end = b.source - (duration - (chunk_end - 1)) as f64 * self.pitch;
+                    let min_bound = self.physical_anchors[join_prev].source.floor() as i128;
+                    let max_bound =
+                        (self.physical_anchors[last].source.ceil() as i128 - 1).max(min_bound);
+                    let win_start = (jpos_start.floor() as i128 - TAP_WINDOW_PAD).max(min_bound);
+                    let win_end = (jpos_end.ceil() as i128 + TAP_WINDOW_PAD).min(max_bound) + 1;
+                    ScratchWindow::load(source, join_scratch, win_start, win_end)?
+                } else {
+                    None
+                };
                 while age < chunk_end {
                     if age.is_multiple_of(256) && cancel() {
                         return Err(Error::Cancelled.into());
@@ -179,7 +215,10 @@ impl SequentialBeats {
                         let upper = self.physical_anchors[native_next].source.ceil() as i128 - 1;
                         let mut sample =
                             bank.try_sample_segment(position, lower, upper.max(lower), |at| {
-                                source.frame(at)
+                                match &main_window {
+                                    Some(win) => win.frame(at, source),
+                                    None => source.frame(at),
+                                }
                             })?;
                         let restart = if onset >= 2 && age < onset {
                             1.0 - smooth_quintic(age as f64 / (onset - 1) as f64)
@@ -211,7 +250,10 @@ impl SequentialBeats {
                             let jupper = self.physical_anchors[join_next].source.ceil() as i128 - 1;
                             let incoming =
                                 bank.try_sample_segment(jpos, jlower, jupper.max(jlower), |at| {
-                                    source.frame(at)
+                                    match &join_window {
+                                        Some(win) => win.frame(at, source),
+                                        None => source.frame(at),
+                                    }
                                 })?;
                             let weight =
                                 smooth_quintic((join - until_next + 1) as f64 / join as f64);

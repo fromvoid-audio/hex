@@ -554,6 +554,21 @@ impl SequentialBeats {
                     return Err(Error::Invalid("beats filter bank missing").into());
                 };
                 let chunk_end = (frame + FIRST_PASS_CHUNK_FRAMES).min(end);
+                let window = if frame < chunk_end {
+                    let pos_start =
+                        anchor.source + (frame as f64 - anchor.output as f64) * self.pitch;
+                    let pos_end = anchor.source
+                        + ((chunk_end - 1) as f64 - anchor.output as f64) * self.pitch;
+                    let min_clamp = prev_src.floor() as i128;
+                    let max_clamp = (next_src.ceil() as i128 - 1)
+                        .max(anchor.source.floor() as i128)
+                        .max(min_clamp);
+                    let win_start = (pos_start.floor() as i128 - TAP_WINDOW_PAD).max(min_clamp);
+                    let win_end = (pos_end.ceil() as i128 + TAP_WINDOW_PAD).min(max_clamp) + 1;
+                    ScratchWindow::load(source, scratch, win_start, win_end)?
+                } else {
+                    None
+                };
                 while frame < chunk_end {
                     if frame.is_multiple_of(256) && cancel() {
                         return Err(Error::Cancelled.into());
@@ -567,7 +582,10 @@ impl SequentialBeats {
                     };
                     let sample =
                         bank.try_sample_segment(position, lower, upper.max(lower), |at| {
-                            source.frame(at)
+                            match &window {
+                                Some(win) => win.frame(at, source),
+                                None => source.frame(at),
+                            }
                         })?;
                     self.overlap
                         .add(i128::from(frame), sample, 1.0)
