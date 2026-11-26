@@ -1,28 +1,26 @@
-//! Control-side observation of the default output route (#4131).
+//! Control-side observation of the default output route (#4131, #13524).
 //!
-//! CPAL 0.17.3 exposes no public CoreAudio listener for the default output
-//! device or its nominal rate. Its property-listener type is private and only
-//! watches `DeviceIsAlive`, reporting a disconnected stream to the error
-//! callback as `StreamError::DeviceNotAvailable`. Hex therefore samples the
-//! default route on one dedicated control thread at a bounded cadence: each
-//! sample is one default-device lookup, one device UID read and one default
-//! config read through CPAL's safe API. The pinned CPAL dependency reads the
-//! macOS buffer range directly from the device, without constructing an Audio
-//! Unit for each probe; see `third_party/cpal/HEX-PATCHES.md`. Hex adds no
+//! On macOS, Hex subscribes on control to CoreAudio HAL property notifications
+//! (`kAudioHardwarePropertyDefaultOutputDevice` on the system object plus
+//! `kAudioDevicePropertyNominalSampleRate` and `kAudioDevicePropertyDeviceIsAlive`
+//! on the active default device) through the pinned CPAL dependency's safe
+//! `CoreAudioOutputRouteListener`; see `third_party/cpal/HEX-PATCHES.md`. The
+//! dedicated control thread blocks at zero polling cost until a HAL
+//! notification arrives (with a conservative long fallback interval), probes
+//! the current route, and confirms changes across a brief settle delay so a
+//! transient default while macOS switches devices is not followed. Hex adds no
 //! workspace unsafe code or competing audio-device owner.
 //!
-//! A different route is published only after two consecutive equal samples,
-//! so a transient default while macOS switches devices is not followed. A
-//! sample without a default device is ignored. The thread never touches an
+//! A sample without a default device is ignored. The thread never touches an
 //! output stream, callback or lifecycle lease. A consumer compares
 //! [`OutputRouteWatch::latest_if_newer`] with the route an output opened on
 //! ([`crate::WorkerPreparedOutput::route`]) and requests the existing bounded
 //! recovery open.
 //!
 //! The watch thread shares only this state. Dropping the watch requests stop,
-//! wakes the thread, and joins it within a short bounded wait so normal
-//! teardown leaves no detached thread while a blocked OS device query can never
-//! stall the owner indefinitely.
+//! wakes the HAL waiter and thread, and joins it within a short bounded wait so
+//! normal teardown leaves no detached thread while a blocked OS device query
+//! can never stall the owner indefinitely.
 use cpal::traits::{DeviceTrait, HostTrait};
 use std::{
     sync::{
@@ -36,9 +34,13 @@ use std::{
     time::Duration,
 };
 
-/// Interval between default-route samples. A change is followed after two
-/// equal samples, so between one and two intervals after it settles.
-pub const ROUTE_SAMPLE_INTERVAL: Duration = Duration::from_millis(500);
+/// Short confirmation delay after a route change is observed so transient
+/// intermediate defaults during OS device switches are not published.
+pub const ROUTE_SETTLE_DELAY: Duration = Duration::from_millis(25);
+
+/// Idle safety fallback interval between CoreAudio HAL notifications. Normal
+/// default-output and nominal-rate changes wake immediately via HAL listeners.
+pub const ROUTE_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 /// The default output device and its nominal rate, as CPAL reports them.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -93,6 +95,10 @@ impl Debounce {
         self.published = Some(sample.clone());
         Some(sample)
     }
+
+    fn has_pending_candidate(&self) -> bool {
+        self.candidate.is_some()
+    }
 }
 
 const DROP_JOIN_BOUND: Duration = Duration::from_millis(50);
@@ -107,20 +113,55 @@ struct Shared {
     exited_signal: Condvar,
 }
 
-/// Owner of the default-route sampling thread.
+/// Owner of the default-route observation thread.
 pub struct OutputRouteWatch {
     shared: Arc<Shared>,
+    wake: Option<Box<dyn Fn() + Send + Sync>>,
     handle: Option<JoinHandle<()>>,
 }
 impl OutputRouteWatch {
-    /// Starts sampling the actual default output route.
+    /// Starts observing the actual default output route. On macOS, reacts
+    /// immediately to CoreAudio HAL default-device and sample-rate property
+    /// notifications instead of 500 ms polling.
     pub fn spawn() -> Result<Self, String> {
-        Self::spawn_with(ROUTE_SAMPLE_INTERVAL, OutputRoute::probe_default_on_control)
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(mut listener) = cpal::platform::CoreAudioOutputRouteListener::new() {
+                let mut seen_gen = listener.generation();
+                return Self::spawn_event_driven(
+                    ROUTE_SETTLE_DELAY,
+                    ROUTE_SAMPLE_INTERVAL,
+                    OutputRoute::probe_default_on_control,
+                    move |timeout| {
+                        listener.sync_default_device();
+                        let _ = listener.wait_for_change(&mut seen_gen, timeout);
+                        listener.sync_default_device();
+                    },
+                    Some(Box::new(
+                        cpal::platform::CoreAudioOutputRouteListener::wake_waiters,
+                    )),
+                );
+            }
+        }
+        Self::spawn_with(
+            Duration::from_millis(500),
+            OutputRoute::probe_default_on_control,
+        )
     }
 
     pub(crate) fn spawn_with(
         interval: Duration,
+        probe: impl FnMut() -> Option<OutputRoute> + Send + 'static,
+    ) -> Result<Self, String> {
+        Self::spawn_event_driven(interval, interval, probe, std::thread::park_timeout, None)
+    }
+
+    fn spawn_event_driven(
+        settle_delay: Duration,
+        fallback_interval: Duration,
         mut probe: impl FnMut() -> Option<OutputRoute> + Send + 'static,
+        mut wait_for_event: impl FnMut(Duration) + Send + 'static,
+        wake: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, String> {
         let shared = Arc::new(Shared::default());
         let watched = Arc::clone(&shared);
@@ -139,7 +180,11 @@ impl OutputRouteWatch {
                     if watched.stop.load(Acquire) {
                         break;
                     }
-                    std::thread::park_timeout(interval);
+                    if debounce.has_pending_candidate() {
+                        std::thread::park_timeout(settle_delay);
+                    } else {
+                        wait_for_event(fallback_interval);
+                    }
                 }
                 let mut exited = watched
                     .exited
@@ -151,6 +196,7 @@ impl OutputRouteWatch {
             .map_err(|error| format!("could not start output route watch: {error}"))?;
         Ok(Self {
             shared,
+            wake,
             handle: Some(handle),
         })
     }
@@ -173,6 +219,9 @@ impl OutputRouteWatch {
 impl Drop for OutputRouteWatch {
     fn drop(&mut self) {
         self.shared.stop.store(true, Release);
+        if let Some(wake) = &self.wake {
+            wake();
+        }
         if let Some(handle) = self.handle.take() {
             handle.thread().unpark();
             let guard = self
@@ -296,5 +345,104 @@ mod tests {
             "drop stalled on blocked probe"
         );
         let _ = release.send(());
+    }
+
+    #[test]
+    fn event_driven_signal_publishes_route_without_polling_delay() {
+        let current = Arc::new(Mutex::new(route("speakers", 48_000)));
+        let probes = Arc::new(AtomicU64::new(0));
+        let signal = Arc::new((Mutex::new(0u64), Condvar::new()));
+
+        let probe_current = Arc::clone(&current);
+        let probe_count = Arc::clone(&probes);
+        let wait_signal = Arc::clone(&signal);
+        let wake_signal = Arc::clone(&signal);
+        let mut seen_event = 0u64;
+
+        let watch = OutputRouteWatch::spawn_event_driven(
+            Duration::from_millis(2),
+            Duration::from_secs(60),
+            move || {
+                probe_count.fetch_add(1, Release);
+                probe_current
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone()
+            },
+            move |timeout| {
+                let (lock, cv) = &*wait_signal;
+                let guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                let (guard, _) = cv
+                    .wait_timeout_while(guard, timeout, |generation| *generation == seen_event)
+                    .unwrap_or_else(PoisonError::into_inner);
+                seen_event = *guard;
+            },
+            Some(Box::new(move || {
+                let (lock, cv) = &*wake_signal;
+                let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                *guard += 1;
+                cv.notify_all();
+            })),
+        )
+        .unwrap();
+
+        let mut seen = 0;
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let initial = loop {
+            if let Some(r) = watch.latest_if_newer(&mut seen) {
+                break r;
+            }
+            assert!(Instant::now() < deadline, "initial route never published");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(Some(initial), route("speakers", 48_000));
+
+        // While idle, the watch stays blocked on the event signal rather than polling.
+        std::thread::sleep(Duration::from_millis(20));
+        let idle_probes = probes.load(Acquire);
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(
+            probes.load(Acquire),
+            idle_probes,
+            "idle event-driven watch must not poll"
+        );
+
+        // Switch sample rate and trigger the HAL-style signal; publication must happen
+        // promptly (~2 ms settle) despite the 60 s fallback interval.
+        *current.lock().unwrap_or_else(PoisonError::into_inner) = route("speakers", 96_000);
+        let signaled_at = Instant::now();
+        {
+            let (lock, cv) = &*signal;
+            let mut guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            *guard += 1;
+            cv.notify_all();
+        }
+        let deadline = Instant::now() + Duration::from_millis(250);
+        let updated = loop {
+            if let Some(r) = watch.latest_if_newer(&mut seen) {
+                break r;
+            }
+            assert!(Instant::now() < deadline, "rate change never published");
+            std::thread::sleep(Duration::from_millis(1));
+        };
+        assert_eq!(Some(updated), route("speakers", 96_000));
+        assert!(
+            signaled_at.elapsed() < Duration::from_millis(200),
+            "event-driven update exceeded reaction bound"
+        );
+        drop(watch);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn repeated_route_listener_retire_and_reregister_exceeds_sixteen_cycles() {
+        for _ in 0..24 {
+            let mut listener = cpal::platform::CoreAudioOutputRouteListener::new()
+                .expect("CoreAudio HAL route listener must not exhaust slots");
+            listener.sync_default_device();
+            drop(listener);
+        }
+        let watch = OutputRouteWatch::spawn().expect("spawn event-driven OutputRouteWatch");
+        drop(watch);
     }
 }
