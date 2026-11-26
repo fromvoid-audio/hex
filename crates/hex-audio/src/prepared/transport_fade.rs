@@ -3,8 +3,9 @@
 //!
 //! `hex_engine::Playback` owns the fade itself: a Pause/Stop/Seek admitted
 //! while playing is reported Applied when consumed and takes effect F frames
-//! later; a Seek then ramps in at its target. Streamed seeks still jump
-//! immediately when their target pages are ready.
+//! later; a Seek then ramps in at its target. Streamed seeks while playing
+//! share the same F-frame ramp law through `candidate_custody`'s bounded
+//! fade-out, silent target-page wait, post-fade target commit, and ramp-in.
 //! This module owns only the callback effects that must follow the audible
 //! end rather than the command: the output transport revocation and transport
 //! epoch advance, the sampler keyboard revocation for Stop, and, for streamed

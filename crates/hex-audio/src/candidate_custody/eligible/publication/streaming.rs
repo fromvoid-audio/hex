@@ -30,6 +30,14 @@ pub(crate) use demand::{StreamInstall, StreamOutcome, StreamProgress, TempoStrea
 struct PendingAction {
     prepared: hex_engine::PreparedStreamAction,
     ticket: u64,
+    fade_in: bool,
+}
+#[derive(Clone, Copy)]
+struct PendingSeekFade {
+    action: hex_engine::PlaybackAction,
+    ticket: u64,
+    elapsed: u32,
+    total: u32,
 }
 pub(super) struct Workspace {
     page_fade: page_fade::PageFade,
@@ -48,6 +56,7 @@ pub(super) struct Workspace {
     pub(super) role: Option<hex_stream::ProtectionRole>,
     pub(super) predecessor: Option<hex_stream::ReadinessArtifact>,
     pending_action: Option<PendingAction>,
+    pending_seek_fade: Option<PendingSeekFade>,
     scheduled: Option<ScheduledAction>,
     prewarm_stamps: [Option<hex_stream::ReadinessStamp>; 2],
     candidate_role: CandidateRole,
@@ -86,6 +95,7 @@ impl Workspace {
             role: None,
             predecessor: None,
             pending_action: None,
+            pending_seek_fade: None,
             scheduled: None,
             prewarm_stamps: [None; 2],
             candidate_role: CandidateRole::None,
@@ -129,9 +139,14 @@ impl Workspace {
         self.role = None;
         self.predecessor = None;
         self.pending_action = None;
+        self.pending_seek_fade = None;
         self.scheduled = None;
         self.prewarm_stamps = [None; 2];
         self.candidate_role = CandidateRole::None;
+    }
+
+    pub(super) fn has_action(&self) -> bool {
+        self.pending_action.is_some() || self.pending_seek_fade.is_some()
     }
 
     /// Retry a bounded number of current-window capacity conflicts before

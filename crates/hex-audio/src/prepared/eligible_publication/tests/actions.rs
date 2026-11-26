@@ -567,7 +567,13 @@ fn split_client_stream_case(case: StreamCase) {
                 c.render(&mut output).unwrap();
             })
         }));
-        assert_eq!(output, [[0.0; 2]; 8]);
+        // Playing streamed seek fades out the old position over F = 128 frames
+        // before switching to the target pages (#7533).
+        let expected_fade: [[f32; 2]; 8] = std::array::from_fn(|i| {
+            let gain = (128 - (i as u32 + 1)) as f32 / 128.0;
+            [0.25 * gain; 2]
+        });
+        assert_eq!(output, expected_fade);
         let busy = client
             .command_with_ticket(PlaybackCommand::PlayFrom(0))
             .unwrap();
@@ -803,8 +809,12 @@ fn changed_source_rejects_streamed_seek_with_recovery_guidance() {
             c.render(&mut output).unwrap();
         })
     }));
-    assert_eq!(output, [[0.0; 2]; 8]);
-    assert_eq!(control.status.position.load(Acquire), 8);
+    let expected_fade: [[f32; 2]; 8] = std::array::from_fn(|i| {
+        let gain = (128 - (i as u32 + 1)) as f32 / 128.0;
+        [0.25 * gain; 2]
+    });
+    assert_eq!(output, expected_fade);
+    assert_eq!(control.status.position.load(Acquire), 16);
     let rejection = loop {
         zero(allocation_counter::measure(|| {
             data.owner_mut().unwrap().run(|c, _| {
@@ -812,7 +822,12 @@ fn changed_source_rejects_streamed_seek_with_recovery_guidance() {
                 c.render(&mut output).unwrap();
             })
         }));
-        assert!(output == [[0.0; 2]; 8] || output == [[0.25; 2]; 8]);
+        assert!(
+            output
+                .iter()
+                .flatten()
+                .all(|&sample| (-1e-6..=0.25 + 1e-6).contains(&sample))
+        );
         if let Some((observed, reason)) = control.status.rejected_action()
             && observed == seek
         {
@@ -954,9 +969,14 @@ fn seek_pause_stop_case(grouped: bool) {
             c.render(&mut output).unwrap();
         })
     }));
-    assert_eq!(output, [[0.0; 2]; 8]);
-    assert_eq!(control.status.position.load(Acquire), 8);
-    assert_eq!(control.status.performance_frame.load(Acquire), 8);
+    let base = if grouped { 0.125 } else { 0.25 };
+    let expected_fade: [[f32; 2]; 8] = std::array::from_fn(|i| {
+        let gain = (128 - (i as u32 + 1)) as f32 / 128.0;
+        [base * gain; 2]
+    });
+    assert_eq!(output, expected_fade);
+    assert_eq!(control.status.position.load(Acquire), 16);
+    assert_eq!(control.status.performance_frame.load(Acquire), 16);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         play
@@ -984,7 +1004,9 @@ fn seek_pause_stop_case(grouped: bool) {
         control.status.rejected_action(),
         Some((seek, PlaybackActionRejection::StreamActionCancelled))
     );
-    assert_eq!(control.status.position.load(Acquire), 8);
+    // Pause cancelled the playing seek fade-out and started its own declicked
+    // Pause fade, advancing one 8-frame block from 16 to 24.
+    assert_eq!(control.status.position.load(Acquire), 24);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         pause
@@ -1003,7 +1025,14 @@ fn seek_pause_stop_case(grouped: bool) {
         assert!(std::time::Instant::now() < deadline);
         std::thread::yield_now();
     }
-    assert_eq!(output, [[if grouped { 0.25 } else { 0.5 }; 2]; 8]);
+    // PlayFrom settled the in-flight Pause fade before starting at 4096, so
+    // the first 8 target frames ramp in linearly from silence over F = 128.
+    let target_base = if grouped { 0.25 } else { 0.5 };
+    let expected_ramp_in: [[f32; 2]; 8] = std::array::from_fn(|i| {
+        let gain = (i as u32 + 1) as f32 / 128.0;
+        [target_base * gain; 2]
+    });
+    assert_eq!(output, expected_ramp_in);
     assert_eq!(
         control.status.stream_applied_command_prefix.load(Acquire),
         from
@@ -1016,7 +1045,8 @@ fn seek_pause_stop_case(grouped: bool) {
             c.render(&mut output).unwrap();
         })
     }));
-    assert_eq!(control.status.position.load(Acquire), 4104);
+    // Playing seek fades out 8 frames at the old position without jumping yet.
+    assert_eq!(control.status.position.load(Acquire), 4112);
     for _ in 0..COMMANDS {
         control.command(PlaybackCommand::Seek(1)).unwrap();
     }
@@ -1944,4 +1974,626 @@ fn prewarm_pool_pressure(abandon: bool) {
     drop(ready);
     drop(control);
     finish(&mut retirement);
+}
+
+fn max_adjacent_step(samples: &[hex_engine::Frame]) -> f32 {
+    samples
+        .windows(2)
+        .flat_map(|pair| [0, 1].map(|ch| (pair[1][ch] - pair[0][ch]).abs()))
+        .fold(0.0_f32, f32::max)
+}
+
+#[test]
+fn streamed_playing_seeks_declick_across_block_sizes_and_actions() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    const F: f32 = 128.0;
+    let project = readiness::project_with_frames(12_288);
+    let asset = project.assets().next().unwrap().id();
+    // Opposite full-scale polarity across the 4096-frame page boundary so any
+    // un-faded jump produces a 2.0 step instead of <= 1/F.
+    let wav =
+        stream_fixture::Wav::with_samples(
+            12_288,
+            |frame| {
+                if frame < 4096 { 32_767 } else { -32_768 }
+            },
+        );
+    let actions = [
+        PlaybackAction::Transport(PlaybackCommand::Seek(4096)),
+        PlaybackAction::Transport(PlaybackCommand::PlayFrom(4096)),
+        PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Seek(4096)),
+    ];
+    for block in [1usize, 64, 100, 512] {
+        for action in actions {
+            let definition = wav.definition(asset, 11);
+            let mut owner = stream_fixture::owner_with_context(
+                &project,
+                definition.metadata.clone(),
+                Some(hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 1,
+                }),
+            );
+            let limits = reservation(&mut owner);
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let mut reader = control
+                .enable_action_outcomes_on_control(&mut callback)
+                .unwrap();
+            let root = control.native_candidate_root();
+            let (mut data, errors, terminals, mut client, mut publication) =
+                crate::native_callback_owner::reserve_native_worker(control, callback, None);
+            let mut retirement =
+                crate::native_callback_owner::NativeRetirement::new(terminals, root.clone());
+            let control = publication.control().unwrap();
+            control.enable_native_custody().unwrap();
+            control
+                .configure_audio_candidate_publication(limits)
+                .unwrap();
+            control.configure_audio_candidate_streaming(3).unwrap();
+            let domain = control
+                .register_audio_candidate_domain_with_readiness(
+                    stream_fixture::pair(definition),
+                    hex_stream::StreamReadinessReservation {
+                        extents_per_role: 3,
+                    },
+                )
+                .ok()
+                .unwrap();
+            data.owner_mut().unwrap().run(|c, _| c.begin_block());
+            let _ticket = control
+                .stage_eligible_audio_candidate(
+                    owner,
+                    vec![domain],
+                    PublicationPolicy::InheritRuntime,
+                    0,
+                )
+                .ok()
+                .unwrap();
+            client.activate();
+            let play = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+            let mut chunk = vec![[0.0; 2]; block];
+            let mut history = Vec::new();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while client.status().unwrap().applied_revision.load(Acquire) == 0 {
+                zero(allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| {
+                        c.begin_block();
+                        c.render(&mut chunk).unwrap();
+                    })
+                }));
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            history.extend_from_slice(&chunk);
+            assert_eq!(
+                reader.try_take(),
+                Some(ActionOutcomeReceipt {
+                    ticket: play,
+                    outcome: ActionOutcome::Applied,
+                })
+            );
+            // Render a short steady-state prefix at +1.0 before seeking across
+            // the page boundary to -1.0.
+            let mut prefix_frames = history.len();
+            while prefix_frames < 32 {
+                zero(allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| {
+                        c.begin_block();
+                        c.render(&mut chunk).unwrap();
+                    })
+                }));
+                history.extend_from_slice(&chunk);
+                prefix_frames += block;
+            }
+            assert!(
+                (history.last().unwrap()[0] - 1.0).abs() < 1e-3,
+                "expected steady +1.0 before seek (block={block})"
+            );
+            let seek_ticket = match action {
+                PlaybackAction::Transport(cmd) => client.command_with_ticket(cmd).unwrap(),
+                PlaybackAction::Session(cmd) => client.session_command_with_ticket(cmd).unwrap(),
+                _ => unreachable!(),
+            };
+            let mut applied = false;
+            let mut post_apply_frames = 0usize;
+            while !applied || post_apply_frames < 256 {
+                zero(allocation_counter::measure(|| {
+                    data.owner_mut().unwrap().run(|c, _| {
+                        c.begin_block();
+                        c.render(&mut chunk).unwrap();
+                    })
+                }));
+                history.extend_from_slice(&chunk);
+                if !applied {
+                    if let Some(receipt) = reader.try_take() {
+                        assert_eq!(
+                            receipt,
+                            ActionOutcomeReceipt {
+                                ticket: seek_ticket,
+                                outcome: ActionOutcome::Applied,
+                            }
+                        );
+                        applied = true;
+                    }
+                } else {
+                    post_apply_frames += block;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert!(
+                client.status().unwrap().position.load(Acquire) >= 4096 + 128,
+                "seek must advance into target page (block={block})"
+            );
+            assert!(
+                (history.last().unwrap()[0] + 1.0).abs() < 1e-3,
+                "expected settled -1.0 after ramp-in (block={block})"
+            );
+            let step = max_adjacent_step(&history);
+            assert!(
+                step <= 1.0 / F + 1e-4,
+                "streamed seek step {step} exceeded 1/F ({}) for block={block}, action={action:?}",
+                1.0 / F
+            );
+            assert_eq!(
+                client
+                    .status()
+                    .unwrap()
+                    .stream_starved_callbacks
+                    .load(Acquire),
+                0
+            );
+            client.stop();
+            zero(allocation_counter::measure(|| {
+                data.owner_mut().unwrap().run(|c, _| {
+                    c.begin_block();
+                    c.render(&mut chunk).unwrap();
+                })
+            }));
+            let mut backend = Some(());
+            let mut dispose_pending = false;
+            let mut disposed = false;
+            crate::lifecycle::test_dispose_backend(
+                &mut backend,
+                &mut dispose_pending,
+                &mut disposed,
+                &mut retirement,
+                |_| Ok(()),
+            )
+            .unwrap();
+            drop(data);
+            drop(errors);
+            drop(client);
+            drop(publication);
+            finish(&mut retirement);
+            while !root.test_eligible_complete() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+        }
+    }
+}
+
+#[test]
+fn streamed_seek_refusal_and_priority_stop_preserve_smooth_recovery_and_custody() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    const F: f32 = 128.0;
+    let project = readiness::project_with_frames(12_288);
+    let asset = project.assets().next().unwrap().id();
+    let wav = stream_fixture::Wav::with_samples(12_288, |_| 32_767);
+    let definition = wav.definition(asset, 11);
+    let source_path = definition.path.clone();
+    let mut owner = stream_fixture::owner_with_context(
+        &project,
+        definition.metadata.clone(),
+        Some(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 1,
+        }),
+    );
+    let limits = reservation(&mut owner);
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    let mut reader = control
+        .enable_action_outcomes_on_control(&mut callback)
+        .unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement =
+        crate::native_callback_owner::NativeRetirement::new(terminals, root.clone());
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let _ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    client.activate();
+    let play = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let mut chunk = [[0.0; 2]; 32];
+    let mut history = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while client.status().unwrap().applied_revision.load(Acquire) == 0 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut chunk).unwrap();
+            })
+        }));
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    history.extend_from_slice(&chunk);
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: play,
+            outcome: ActionOutcome::Applied,
+        })
+    );
+    // Corrupt source on disk so the target page (frame 4096) fails with
+    // StreamSourceChanged after the F-frame fade-out; resumed old playback
+    // must ramp back in with step <= 1/F.
+    std::fs::write(&source_path, b"corrupted").unwrap();
+    let seek = client
+        .command_with_ticket(PlaybackCommand::Seek(4096))
+        .unwrap();
+    let mut rejected = false;
+    let mut recovery_frames = 0usize;
+    while !rejected || recovery_frames < 192 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut chunk).unwrap();
+            })
+        }));
+        history.extend_from_slice(&chunk);
+        if !rejected {
+            if let Some(receipt) = reader.try_take() {
+                assert_eq!(
+                    receipt,
+                    ActionOutcomeReceipt {
+                        ticket: seek,
+                        outcome: ActionOutcome::Rejected(
+                            PlaybackActionRejection::StreamSourceChanged,
+                        ),
+                    }
+                );
+                rejected = true;
+            }
+        } else {
+            recovery_frames += chunk.len();
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let step = max_adjacent_step(&history);
+    assert!(
+        step <= 1.0 / F + 1e-4,
+        "resumed playback after refused streamed seek stepped {step} > 1/F"
+    );
+    assert!((history.last().unwrap()[0] - 1.0).abs() < 1e-3);
+
+    // Issue another seek, render one partial fade-out block, then assert
+    // Priority Stop supersedes it immediately without waiting for fade end.
+    let seek2 = client
+        .command_with_ticket(PlaybackCommand::Seek(2048))
+        .unwrap();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut chunk).unwrap();
+        })
+    }));
+    assert_eq!(reader.try_take(), None);
+    client.stop();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut chunk).unwrap();
+        })
+    }));
+    assert!(!client.status().unwrap().playing.load(Acquire));
+    assert_eq!(client.status().unwrap().position.load(Acquire), 0);
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: seek2,
+            outcome: ActionOutcome::Superseded,
+        })
+    );
+    let mut backend = Some(());
+    let mut dispose_pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut dispose_pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
+    while !root.test_eligible_complete() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn streamed_to_resident_and_resident_to_streamed_seeks_declick() {
+    let _serial = serial();
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    const F: f32 = 128.0;
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+    let hex_project::Created::Track(track) = editor
+        .execute(hex_project::Command::AddTrack {
+            name: "mixed".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let hex_project::Created::Asset(resident_asset) = editor
+        .execute(hex_project::Command::AddAsset {
+            path: "resident.wav".into(),
+            sample_rate: 48_000,
+            frames: 4096,
+        })
+        .unwrap()
+    else {
+        panic!("resident asset")
+    };
+    let hex_project::Created::Asset(streamed_asset) = editor
+        .execute(hex_project::Command::AddAsset {
+            path: "streamed.wav".into(),
+            sample_rate: 48_000,
+            frames: 8192,
+        })
+        .unwrap()
+    else {
+        panic!("streamed asset")
+    };
+    editor
+        .execute(hex_project::Command::PlaceClip {
+            track,
+            asset: resident_asset,
+            start: 0,
+            duration: 4096,
+            source_offset: 0,
+            source_length: 4096,
+            looping: false,
+        })
+        .unwrap();
+    editor
+        .execute(hex_project::Command::PlaceClip {
+            track,
+            asset: streamed_asset,
+            start: 4096,
+            duration: 8192,
+            source_offset: 0,
+            source_length: 8192,
+            looping: false,
+        })
+        .unwrap();
+    let project = editor.project().clone();
+    let wav = stream_fixture::Wav::with_samples(8192, |_| -32_768);
+    let definition = wav.definition(streamed_asset, 79);
+    let sources = vec![
+        (
+            resident_asset,
+            hex_engine::OwnedAudioSource::try_resident(48_000, vec![[1.0, 1.0]; 4096])
+                .ok()
+                .unwrap(),
+        ),
+        (
+            streamed_asset,
+            hex_engine::OwnedAudioSource::try_streamed(definition.metadata.clone())
+                .ok()
+                .unwrap(),
+        ),
+    ];
+    let bank = hex_engine::OwnedAudioInputs::try_new(
+        sources,
+        hex_engine::AudioStorageReservation {
+            allocation_items: 64,
+            handle_obligations: 256,
+            max_prepared_data_bytes: 96 * 1024 * 1024,
+            max_construction_data_bytes: 96 * 1024 * 1024,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap();
+    let mut custody = hex_engine::AudioPreparationCustody::try_new_on_control().unwrap();
+    let input = hex_engine::AudioArrangementInput::new(&project, 79, bank)
+        .with_audio_prepared_revision()
+        .with_source_context(hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 1,
+        });
+    let prep_token = custody.begin_input_on_control(input).ok().unwrap();
+    let mut owner = hex_engine::AudioCandidateOwner::try_new_on_control(custody, prep_token)
+        .ok()
+        .unwrap();
+    let limits = reservation(&mut owner);
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    let mut reader = control
+        .enable_action_outcomes_on_control(&mut callback)
+        .unwrap();
+    let root = control.native_candidate_root();
+    let (mut data, errors, terminals, mut client, mut publication) =
+        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+    let mut retirement =
+        crate::native_callback_owner::NativeRetirement::new(terminals, root.clone());
+    let control = publication.control().unwrap();
+    control.enable_native_custody().unwrap();
+    control
+        .configure_audio_candidate_publication(limits)
+        .unwrap();
+    control.configure_audio_candidate_streaming(3).unwrap();
+    let domain = control
+        .register_audio_candidate_domain_with_readiness(
+            stream_fixture::pair(definition),
+            hex_stream::StreamReadinessReservation {
+                extents_per_role: 3,
+            },
+        )
+        .ok()
+        .unwrap();
+    data.owner_mut().unwrap().run(|c, _| c.begin_block());
+    let _ticket = control
+        .stage_eligible_audio_candidate(owner, vec![domain], PublicationPolicy::InheritRuntime, 0)
+        .ok()
+        .unwrap();
+    client.activate();
+    let play = client.command_with_ticket(PlaybackCommand::Play).unwrap();
+    let mut chunk = [[0.0; 2]; 100];
+    let mut history = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while client.status().unwrap().applied_revision.load(Acquire) == 0 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut chunk).unwrap();
+            })
+        }));
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    history.extend_from_slice(&chunk);
+    assert_eq!(
+        reader.try_take(),
+        Some(ActionOutcomeReceipt {
+            ticket: play,
+            outcome: ActionOutcome::Applied,
+        })
+    );
+    assert!((history.last().unwrap()[0] - 1.0).abs() < 1e-3);
+
+    // 1. Resident (+1.0) -> Streamed (-1.0)
+    let to_streamed = client
+        .command_with_ticket(PlaybackCommand::Seek(4096))
+        .unwrap();
+    let mut applied = false;
+    let mut post = 0usize;
+    while !applied || post < 256 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut chunk).unwrap();
+            })
+        }));
+        history.extend_from_slice(&chunk);
+        if !applied {
+            if let Some(receipt) = reader.try_take() {
+                assert_eq!(
+                    receipt,
+                    ActionOutcomeReceipt {
+                        ticket: to_streamed,
+                        outcome: ActionOutcome::Applied,
+                    }
+                );
+                applied = true;
+            }
+        } else {
+            post += chunk.len();
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!((history.last().unwrap()[0] + 1.0).abs() < 1e-3);
+
+    // 2. Streamed (-1.0) -> Resident (+1.0)
+    let to_resident = client
+        .command_with_ticket(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    let mut applied = false;
+    let mut post = 0usize;
+    while !applied || post < 256 {
+        zero(allocation_counter::measure(|| {
+            data.owner_mut().unwrap().run(|c, _| {
+                c.begin_block();
+                c.render(&mut chunk).unwrap();
+            })
+        }));
+        history.extend_from_slice(&chunk);
+        if !applied {
+            if let Some(receipt) = reader.try_take() {
+                assert_eq!(
+                    receipt,
+                    ActionOutcomeReceipt {
+                        ticket: to_resident,
+                        outcome: ActionOutcome::Applied,
+                    }
+                );
+                applied = true;
+            }
+        } else {
+            post += chunk.len();
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    assert!((history.last().unwrap()[0] - 1.0).abs() < 1e-3);
+    let step = max_adjacent_step(&history);
+    assert!(
+        step <= 1.0 / F + 1e-4,
+        "resident<->streamed seek step {step} exceeded 1/F"
+    );
+
+    client.stop();
+    zero(allocation_counter::measure(|| {
+        data.owner_mut().unwrap().run(|c, _| {
+            c.begin_block();
+            c.render(&mut chunk).unwrap();
+        })
+    }));
+    let mut backend = Some(());
+    let mut dispose_pending = false;
+    let mut disposed = false;
+    crate::lifecycle::test_dispose_backend(
+        &mut backend,
+        &mut dispose_pending,
+        &mut disposed,
+        &mut retirement,
+        |_| Ok(()),
+    )
+    .unwrap();
+    drop(data);
+    drop(errors);
+    drop(client);
+    drop(publication);
+    finish(&mut retirement);
+    while !root.test_eligible_complete() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
 }

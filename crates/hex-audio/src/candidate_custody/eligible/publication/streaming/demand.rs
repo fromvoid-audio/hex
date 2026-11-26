@@ -915,7 +915,9 @@ impl ActiveView<'_> {
             confirmed_fade: None,
             tempo_cut: None,
         };
-        let (action_applied, action_rejection) = match self.resolve_stream_action(&mut request) {
+        let (mut action_applied, mut action_rejection) = match self
+            .resolve_stream_action(&mut request)
+        {
             super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => (Some(ticket), None),
             super::actions::ActionResolution::Ready(Some((ticket, Err(reason)))) => {
                 (None, Some((ticket, reason)))
@@ -944,11 +946,23 @@ impl ActiveView<'_> {
         let mut activated = None;
         self.service_launch_prewarm(domains, command_prefix, output.len());
         while committed < output.len() {
+            let seek_fade_remaining = self
+                .state
+                .streaming
+                .as_ref()
+                .and_then(|workspace| workspace.pending_seek_fade)
+                .map(|fade| {
+                    usize::try_from(fade.total.saturating_sub(fade.elapsed)).unwrap_or(usize::MAX)
+                });
+            let chunk_frames = match seek_fade_remaining {
+                Some(remaining) => (output.len() - committed).min(remaining.max(1)),
+                None => output.len() - committed,
+            };
             let mut request = StreamInstall {
                 domains,
                 pending_play: pending_play && !play_applied,
                 command_prefix,
-                frames: output.len() - committed,
+                frames: chunk_frames,
                 fenced_restart: false,
                 foreign_continuation: false,
                 confirmed_fade: None,
@@ -1013,6 +1027,27 @@ impl ActiveView<'_> {
                         &mut output[committed..],
                         !pending_play && (source_changed || (!refused && !read_failed)),
                     );
+                    let capacity_conflict = self
+                        .state
+                        .streaming
+                        .as_ref()
+                        .is_some_and(|workspace| workspace.capacity_conflict);
+                    if refused
+                        && !capacity_conflict
+                        && self
+                            .state
+                            .streaming
+                            .as_ref()
+                            .is_some_and(|workspace| workspace.pending_seek_fade.is_some())
+                    {
+                        match self.complete_pending_seek_fade() {
+                            Some(Ok(Some(ticket))) => action_applied = Some(ticket),
+                            Some(Err((ticket, reason))) => {
+                                action_rejection = Some((ticket, reason));
+                            }
+                            _ => {}
+                        }
+                    }
                     return StreamOutcome {
                         progress: StreamProgress::Buffering {
                             committed_frames: committed,
@@ -1163,12 +1198,26 @@ impl ActiveView<'_> {
                     };
                 }
                 if let Some(workspace) = self.state.streaming.as_mut() {
+                    let rendered_slice = &mut output[committed..committed + rendered_frames];
                     if window.frames != 0 {
-                        workspace
-                            .page_fade
-                            .apply(&mut output[committed..committed + rendered_frames], false);
+                        workspace.page_fade.apply(rendered_slice, false);
                     } else {
                         workspace.page_fade = Default::default();
+                    }
+                    if let Some(fade) = workspace.pending_seek_fade.as_mut() {
+                        let total = fade.total.max(1);
+                        let scale = 1.0 / total as f32;
+                        for frame in rendered_slice.iter_mut() {
+                            fade.elapsed = fade.elapsed.saturating_add(1).min(total);
+                            let gain = (total - fade.elapsed) as f32 * scale;
+                            frame[0] *= gain;
+                            frame[1] *= gain;
+                        }
+                        if fade.elapsed >= total {
+                            workspace.page_fade = Default::default();
+                        } else if let Some(&last) = rendered_slice.last() {
+                            workspace.page_fade.sync_last(last);
+                        }
                     }
                 }
                 committed += rendered_frames;
@@ -1187,6 +1236,59 @@ impl ActiveView<'_> {
                     scheduled.pressure_blocked = false;
                 }
                 activated = self.observe_launch_activation(domains).or(activated);
+            }
+            if self
+                .state
+                .streaming
+                .as_ref()
+                .and_then(|workspace| workspace.pending_seek_fade)
+                .is_some_and(|fade| fade.elapsed >= fade.total)
+            {
+                match self.complete_pending_seek_fade() {
+                    Some(Ok(Some(ticket))) => action_applied = Some(ticket),
+                    Some(Err((ticket, reason))) => action_rejection = Some((ticket, reason)),
+                    Some(Ok(None)) if committed < output.len() => {
+                        let mut resolve_request = StreamInstall {
+                            domains,
+                            pending_play: false,
+                            command_prefix,
+                            frames: output.len() - committed,
+                            fenced_restart: false,
+                            foreign_continuation: false,
+                            confirmed_fade: None,
+                            tempo_cut: None,
+                        };
+                        match self.resolve_stream_action(&mut resolve_request) {
+                            super::actions::ActionResolution::Ready(Some((ticket, Ok(())))) => {
+                                action_applied = Some(ticket);
+                            }
+                            super::actions::ActionResolution::Ready(Some((
+                                ticket,
+                                Err(reason),
+                            ))) => {
+                                action_rejection = Some((ticket, reason));
+                            }
+                            super::actions::ActionResolution::Ready(None) => {}
+                            super::actions::ActionResolution::Pending => {
+                                self.silence_stream_suffix(&mut output[committed..], false);
+                                return StreamOutcome {
+                                    progress: StreamProgress::Buffering {
+                                        committed_frames: committed,
+                                    },
+                                    play_applied,
+                                    readiness_refused: false,
+                                    source_changed: false,
+                                    read_failed,
+                                    fault: None,
+                                    action_rejection,
+                                    action_applied,
+                                    activated,
+                                };
+                            }
+                        }
+                    }
+                    _ => {}
+                }
             }
             if window.frames == 0 {
                 break;

@@ -11,12 +11,23 @@ pub(super) enum ActionResolution {
     Ready(Option<(u64, Result<(), PlaybackActionRejection>)>),
     Pending,
 }
+fn is_stream_seek(action: PlaybackAction) -> bool {
+    matches!(
+        action,
+        PlaybackAction::Transport(
+            hex_engine::PlaybackCommand::Seek(_)
+                | hex_engine::PlaybackCommand::PlayFrom(_)
+                | hex_engine::PlaybackCommand::PlayFromWithNoteChase { .. }
+        ) | PlaybackAction::Session(hex_engine::SessionPlaybackCommand::Seek(_))
+    )
+}
+
 impl ActiveView<'_> {
     pub(crate) fn has_stream_action(&self) -> bool {
         self.state
             .streaming
             .as_ref()
-            .is_some_and(|w| w.pending_action.is_some())
+            .is_some_and(Workspace::has_action)
     }
     pub(crate) fn stage_stream_action(
         &mut self,
@@ -35,6 +46,7 @@ impl ActiveView<'_> {
         let Some(runtime) = self.state.runtime.as_mut() else {
             return StageAction::Refused(PlaybackActionRejection::SessionNotPrepared);
         };
+        let playing = runtime.status().is_some_and(|status| status.playing);
         let prepared = match runtime.prepare_stream_action(action) {
             Ok(prepared) => prepared,
             Err(error) => return StageAction::Refused(error.telemetry_rejection()),
@@ -75,19 +87,105 @@ impl ActiveView<'_> {
                 Err(error) => StageAction::Refused(error.telemetry_rejection()),
             };
         }
+        let total = runtime.transport_fade_frames().unwrap_or(1).max(1);
         let Some(workspace) = self.state.streaming.as_mut() else {
             return StageAction::Refused(PlaybackActionRejection::SessionNotPrepared);
         };
-        workspace.pending_action = Some(PendingAction { prepared, ticket });
+        if playing && is_stream_seek(action) {
+            // Render F frames of the old position fading smoothly to zero
+            // before preparing the target action against the post-fade clock.
+            let _ = prepared;
+            workspace.pending_seek_fade = Some(PendingSeekFade {
+                action,
+                ticket,
+                elapsed: 0,
+                total,
+            });
+            return StageAction::Pending;
+        }
+        workspace.pending_action = Some(PendingAction {
+            prepared,
+            ticket,
+            fade_in: false,
+        });
         StageAction::Pending
     }
     pub(crate) fn cancel_stream_action(
         &mut self,
         domains: &mut [Option<DomainEnvelope>; 2],
     ) -> Option<u64> {
+        if let Some(fade) = self
+            .state
+            .streaming
+            .as_mut()
+            .and_then(|w| w.pending_seek_fade.take())
+        {
+            self.state.cancel_stream_pending(domains);
+            if fade.elapsed > 0
+                && let Some(runtime) = self.state.runtime.as_mut()
+            {
+                runtime.begin_transport_fade_in(fade.elapsed);
+            }
+            return Some(fade.ticket);
+        }
         let pending = self.state.streaming.as_mut()?.pending_action.take()?;
         self.state.cancel_stream_pending(domains);
+        if pending.fade_in
+            && let Some(runtime) = self.state.runtime.as_mut()
+        {
+            let total = runtime.transport_fade_frames().unwrap_or(1);
+            runtime.begin_transport_fade_in(total);
+        }
         Some(pending.ticket)
+    }
+    pub(super) fn complete_pending_seek_fade(
+        &mut self,
+    ) -> Option<Result<Option<u64>, (u64, PlaybackActionRejection)>> {
+        let fade = self.state.streaming.as_mut()?.pending_seek_fade.take()?;
+        let resume_frames = fade.elapsed.min(fade.total);
+        let Some(runtime) = self.state.runtime.as_mut() else {
+            return Some(Err((
+                fade.ticket,
+                PlaybackActionRejection::SessionNotPrepared,
+            )));
+        };
+        let prepared = match runtime.prepare_stream_action(fade.action) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                if resume_frames > 0 {
+                    runtime.begin_transport_fade_in(resume_frames);
+                }
+                return Some(Err((fade.ticket, error.telemetry_rejection())));
+            }
+        };
+        if !prepared.playing_after_commit() {
+            return match runtime.commit_stream_action(prepared) {
+                Ok(()) => {
+                    if resume_frames > 0 && runtime.status().is_some_and(|status| status.playing) {
+                        runtime.begin_transport_fade_in(resume_frames);
+                    }
+                    Some(Ok(Some(fade.ticket)))
+                }
+                Err(error) => {
+                    if resume_frames > 0 {
+                        runtime.begin_transport_fade_in(resume_frames);
+                    }
+                    Some(Err((fade.ticket, error.telemetry_rejection())))
+                }
+            };
+        }
+        let Some(workspace) = self.state.streaming.as_mut() else {
+            return Some(Err((
+                fade.ticket,
+                PlaybackActionRejection::SessionNotPrepared,
+            )));
+        };
+        workspace.pending_action = Some(PendingAction {
+            prepared,
+            ticket: fade.ticket,
+            fade_in: true,
+        });
+        Some(Ok(None))
     }
     pub(crate) fn cancel_pending_routes(
         &mut self,
@@ -129,7 +227,12 @@ impl ActiveView<'_> {
         &mut self,
         request: &mut StreamInstall<'_>,
     ) -> ActionResolution {
-        if !self.has_stream_action() {
+        if self
+            .state
+            .streaming
+            .as_ref()
+            .is_none_or(|w| w.pending_action.is_none())
+        {
             return ActionResolution::Ready(None);
         }
         match self.state.prepare_stream_window(
@@ -181,10 +284,22 @@ impl ActiveView<'_> {
             .and_then(|runtime| runtime.commit_stream_action(pending.prepared));
         if let Err(error) = result {
             self.state.cancel_stream_pending(request.domains);
+            if pending.fade_in
+                && let Some(runtime) = self.state.runtime.as_mut()
+            {
+                let total = runtime.transport_fade_frames().unwrap_or(1);
+                runtime.begin_transport_fade_in(total);
+            }
             return ActionResolution::Ready(Some((
                 pending.ticket,
                 Err(error.telemetry_rejection()),
             )));
+        }
+        if pending.fade_in
+            && let Some(runtime) = self.state.runtime.as_mut()
+        {
+            let total = runtime.transport_fade_frames().unwrap_or(1);
+            runtime.begin_transport_fade_in(total);
         }
         for promotion in promotions.into_iter().flatten() {
             promotion.commit();

@@ -39,6 +39,13 @@ impl PageFade {
             self.last = output.last().copied();
         }
     }
+
+    /// Keep the last emitted sample aligned after an outer seek fade-out
+    /// scales the committed slice, so an unexpected mid-fade hold bridges
+    /// smoothly from the faded level.
+    pub(super) fn sync_last(&mut self, frame: Frame) {
+        self.last = Some(frame);
+    }
 }
 
 #[cfg(test)]
