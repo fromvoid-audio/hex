@@ -329,7 +329,8 @@ impl SharedSourceHandoff {
             let exact = (!timing_changed || retimed)
                 && previous
                     .revision
-                    .retained_source_configuration_matches(revision, source);
+                    .retained_source_configuration_matches(revision, source)
+                && new_runtime.midi_processor_matches(old_runtime);
             let new_receiver = routes[new_index].id;
             let tuning_continuity = previous
                 .revision

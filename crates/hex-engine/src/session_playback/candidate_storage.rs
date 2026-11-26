@@ -124,10 +124,11 @@ impl SessionPlayback {
             || *linear_arrangement_export
             || !candidate_admission_open
             || foreign_continuation.is_some()
-            || mutable_instruments
-                .iter()
-                .flatten()
-                .any(|r| revision.resource_scope.is_none() || !r.is_concrete_current_sampler())
+            || mutable_instruments.iter().flatten().any(|r| {
+                revision.resource_scope.is_none()
+                    || !r.is_concrete_current_sampler()
+                    || r.has_midi_processor()
+            })
             || tail_groups.iter().any(Option::is_some)
             || tail_mutable_instruments.iter().any(Option::is_some)
             || retained_contexts.iter().any(Option::is_some)
