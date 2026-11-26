@@ -639,7 +639,7 @@ impl PreparedRevision {
         self.gain_recording_track
     }
 
-    pub(crate) fn prepare_with_instrument_registry(
+    pub fn prepare_with_instrument_registry(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
         sine_table: Arc<SineTable>,

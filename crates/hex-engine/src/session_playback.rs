@@ -3236,3 +3236,6 @@ mod live_expression_tests;
 
 #[cfg(test)]
 mod midi_processor_tests;
+
+#[cfg(test)]
+mod instrument_rack_tests;
