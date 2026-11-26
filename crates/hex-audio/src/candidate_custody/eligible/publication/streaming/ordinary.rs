@@ -307,9 +307,7 @@ impl OrdinaryStreams {
         .record_stream_commit();
     }
     pub(crate) fn has_action(&self) -> bool {
-        self.workspace
-            .as_ref()
-            .is_some_and(|w| w.pending_action.is_some())
+        self.workspace.as_ref().is_some_and(Workspace::has_action)
     }
 
     /// The source-free ordinary workspace has no page loans or action stages
@@ -318,7 +316,7 @@ impl OrdinaryStreams {
         self.refs.iter().all(Option::is_none)
             && self.workspace.as_ref().is_some_and(|workspace| {
                 workspace.valid()
-                    && workspace.pending_action.is_none()
+                    && !workspace.has_action()
                     && workspace.scheduled.is_none()
                     && !workspace.source_changed
                     && !workspace.read_failed

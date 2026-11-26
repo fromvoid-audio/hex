@@ -135,7 +135,7 @@ impl ActiveView<'_> {
             .as_mut()
             .filter(|workspace| workspace.valid())
             .ok_or(QuantumFailure::Invalid)?;
-        if workspace.pending_action.is_some() {
+        if workspace.has_action() {
             return Err(QuantumFailure::PendingAction);
         }
         for rows in &mut workspace.quantum_extents {
@@ -297,7 +297,7 @@ impl Active {
         self.state
             .streaming
             .as_ref()
-            .is_some_and(|w| w.pending_action.is_some())
+            .is_some_and(Workspace::has_action)
     }
     pub(crate) fn clear_stream_roles(&mut self, domains: &mut [Option<DomainEnvelope>; 2]) {
         self.stream_view().clear_stream_roles(domains);

@@ -1617,6 +1617,18 @@ impl Playback {
         transport_fade::fade_frames(self.sample_rate())
     }
 
+    /// Rate-scaled transport declick ramp length `F` in frames.
+    pub fn transport_fade_frames(&self) -> u32 {
+        transport_fade::fade_frames(self.sample_rate())
+    }
+
+    /// Ramp the project mix up over `frames` (clamped to `F`) so a streamed
+    /// seek transition resumes smoothly after its fade-out or cancellation.
+    pub fn begin_transport_fade_in(&mut self, frames: u32) {
+        let limit = transport_fade::fade_frames(self.sample_rate());
+        self.transport_fade.begin_in(frames.min(limit));
+    }
+
     pub(crate) fn preview_stream_device_insert(
         &mut self,
         previous: &mut Self,

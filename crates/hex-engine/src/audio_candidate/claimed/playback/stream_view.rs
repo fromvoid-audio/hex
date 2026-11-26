@@ -53,6 +53,18 @@ impl StreamPlayback<'_> {
             Runtime::Ordinary(r, _) => Some(r.sample_rate()),
         }
     }
+    pub fn transport_fade_frames(&self) -> Option<u32> {
+        match &self.runtime {
+            Runtime::Constructor(r) => r.transport_fade_frames(),
+            Runtime::Ordinary(r, _) => Some(r.transport_fade_frames()),
+        }
+    }
+    pub fn begin_transport_fade_in(&mut self, frames: u32) {
+        match &mut self.runtime {
+            Runtime::Constructor(r) => r.begin_transport_fade_in(frames),
+            Runtime::Ordinary(r, _) => r.begin_transport_fade_in(frames),
+        }
+    }
     pub fn status(&self) -> Option<AudioCandidateRuntimeStatus> {
         match &self.runtime {
             Runtime::Constructor(r) => r.status(),

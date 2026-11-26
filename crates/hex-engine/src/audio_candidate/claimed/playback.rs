@@ -108,6 +108,14 @@ impl ClaimedAudioCandidateRuntime {
         self.current_playback()
             .map(Playback::device_insert_fade_frames)
     }
+    pub fn transport_fade_frames(&self) -> Option<u32> {
+        self.current_playback().map(Playback::transport_fade_frames)
+    }
+    pub fn begin_transport_fade_in(&mut self, frames: u32) {
+        if let Some(playback) = self.current_playback_mut() {
+            playback.begin_transport_fade_in(frames);
+        }
+    }
     fn device_insert_runtime(&mut self) -> Option<&mut Playback> {
         self.current_runtime_mut()
             .filter(|runtime| runtime.sampler_sources.is_none())
