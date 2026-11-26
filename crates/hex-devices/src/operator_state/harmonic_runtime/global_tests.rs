@@ -95,6 +95,8 @@ fn runtime(settings: OperatorSettings) -> Runtime {
         channel_pitch_bend: 0,
         cc_timbre: 0,
         tone_filter: performance::ToneFilter::default(),
+        last_note_pitch: None,
+        spread_stage: pitch_perf::SpreadStage::default(),
     }
 }
 fn on(id: u64, pitch: u8) -> NativeInstrumentEvent {

@@ -27,17 +27,23 @@ pub(super) const TAG_MODULATION: u16 = 12;
 pub(super) const TAG_FINE: u16 = 13;
 pub(super) const TAG_KEYTRACK: u16 = 14;
 pub(super) const TAG_PERFORMANCE: u16 = 15;
+pub(super) const TAG_PITCH_PERF: u16 = 16;
 const V18_SECTION_COUNT: u16 = 14;
-const SECTION_COUNT: u16 = 15;
+const V19_SECTION_COUNT: u16 = 15;
+const SECTION_COUNT: u16 = 16;
 #[cfg(test)]
-pub(super) const CANONICAL_BYTES: usize =
-    HEADER_BYTES + SECTION_COUNT as usize * ENTRY_HEADER_BYTES + PAYLOAD_BYTES + performance::BYTES;
+pub(super) const CANONICAL_BYTES: usize = HEADER_BYTES
+    + SECTION_COUNT as usize * ENTRY_HEADER_BYTES
+    + PAYLOAD_BYTES
+    + performance::BYTES
+    + pitch_perf::BYTES;
 
 pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
     let total_bytes = HEADER_BYTES
         + usize::from(SECTION_COUNT) * ENTRY_HEADER_BYTES
         + PAYLOAD_BYTES
-        + performance::BYTES;
+        + performance::BYTES
+        + pitch_perf::BYTES;
     if total_bytes > MAX_TLV_BYTES {
         return Err(DeviceContractError::StateTooLarge);
     }
@@ -47,6 +53,29 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&SECTION_COUNT.to_le_bytes());
+    write_v18_sections(&mut out, settings);
+    write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
+        settings.performance.append(buf);
+    });
+    write_section(&mut out, TAG_PITCH_PERF, pitch_perf::BYTES, |buf| {
+        settings.pitch_perf.append(buf);
+    });
+    debug_assert_eq!(out.len(), total_bytes);
+    Ok(out)
+}
+
+#[cfg(test)]
+pub(super) fn encode_v19(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
+    let total_bytes = HEADER_BYTES
+        + usize::from(V19_SECTION_COUNT) * ENTRY_HEADER_BYTES
+        + PAYLOAD_BYTES
+        + performance::BYTES;
+    let mut out = Vec::new();
+    out.try_reserve_exact(total_bytes)
+        .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&V19_SECTION_COUNT.to_le_bytes());
     write_v18_sections(&mut out, settings);
     write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
         settings.performance.append(buf);
@@ -157,7 +186,8 @@ pub(super) fn decode(
 ) -> Result<OperatorSettings, DeviceContractError> {
     let max_sections = match state_version {
         TLV_STATE_VERSION => V18_SECTION_COUNT,
-        PERFORMANCE_STATE_VERSION => SECTION_COUNT,
+        PERFORMANCE_STATE_VERSION => V19_SECTION_COUNT,
+        PITCH_PERF_STATE_VERSION => SECTION_COUNT,
         _ => return Err(DeviceContractError::UnsupportedStateVersion),
     };
     if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TLV_BYTES {
@@ -195,6 +225,7 @@ pub(super) fn decode(
     let mut fine = fine::Settings::default();
     let mut pitch_keytrack = keytrack::Settings::default();
     let mut performance = performance::Settings::default();
+    let mut pitch_perf = pitch_perf::Settings::default();
 
     for _ in 0..section_count {
         let header = bytes
@@ -310,6 +341,9 @@ pub(super) fn decode(
             TAG_PERFORMANCE if state_version >= PERFORMANCE_STATE_VERSION => {
                 performance = performance::Settings::decode(section)?;
             }
+            TAG_PITCH_PERF if state_version >= PITCH_PERF_STATE_VERSION => {
+                pitch_perf = pitch_perf::Settings::decode(section)?;
+            }
             _ => return Err(DeviceContractError::MalformedState),
         }
     }
@@ -339,6 +373,7 @@ pub(super) fn decode(
         fine,
         pitch_keytrack,
         performance,
+        pitch_perf,
     };
     result.kernel_parts()?;
     Ok(result)

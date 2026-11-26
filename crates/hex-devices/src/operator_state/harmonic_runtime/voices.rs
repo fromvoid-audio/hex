@@ -312,6 +312,12 @@ impl Runtime {
                     && self.voices[index].gate.is_none()
                     && (!self.factory.settings.global.retrigger
                         || self.voices[index].note.midi_origin().0 != pitch);
+                let target_pitch = f64::from(pitch);
+                let prev_sounding_pitch = if legato {
+                    Some(self.voices[index].glide_target_pitch + self.voices[index].glide_semitones)
+                } else {
+                    self.last_note_pitch
+                };
                 if legato {
                     self.voices[index].note = prepared.note;
                 } else {
@@ -324,6 +330,13 @@ impl Runtime {
                 let voice = &mut self.voices[index];
                 voice.id = held.id;
                 voice.sequence = held.sequence;
+                voice.glide_target_pitch = target_pitch;
+                voice.glide_semitones = if self.factory.settings.pitch_perf.glide_enabled {
+                    prev_sounding_pitch.map_or(0.0, |prev| prev - target_pitch)
+                } else {
+                    0.0
+                };
+                self.last_note_pitch = Some(target_pitch);
                 voice.update_effective(&self.factory, self.expression)?;
                 if !legato && !self.factory.settings.lfo.retrigger() {
                     voice.lfo_fraction = self.phase.0;
@@ -348,6 +361,8 @@ impl Runtime {
                             running,
                         )?;
                         let voice = &mut self.voices[index];
+                        let prev_sounding_pitch = voice.glide_target_pitch + voice.glide_semitones;
+                        let target_pitch = f64::from(held.pitch);
                         if self.factory.settings.global.retrigger
                             && voice.note.midi_origin().0 == held.pitch
                         {
@@ -357,6 +372,13 @@ impl Runtime {
                         }
                         voice.id = held.id;
                         voice.sequence = held.sequence;
+                        voice.glide_target_pitch = target_pitch;
+                        voice.glide_semitones = if self.factory.settings.pitch_perf.glide_enabled {
+                            prev_sounding_pitch - target_pitch
+                        } else {
+                            0.0
+                        };
+                        self.last_note_pitch = Some(target_pitch);
                         voice.update_effective(&self.factory, self.expression)?;
                     } else {
                         let voice = &mut self.voices[index];

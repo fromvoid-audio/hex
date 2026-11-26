@@ -623,16 +623,19 @@ fn global_time_tone_volume_history_and_disk_reopen_round_trip() {
         .instrument()
         .unwrap()
         .id();
-    let edits = [(617_u32, -35.0_f32), (618, 42.5), (619, -9.0)];
-    for (id, value) in edits {
+    let edits: &[(u32, ParameterValue)] = &[
+        (617, ParameterValue::Float(-35.0)),
+        (618, ParameterValue::Float(42.5)),
+        (619, ParameterValue::Float(-9.0)),
+        (640, ParameterValue::Float(7.0)),
+        (641, ParameterValue::Float(55.0)),
+        (642, ParameterValue::Bool(true)),
+        (643, ParameterValue::Float(0.12)),
+    ];
+    for &(id, value) in edits {
         let before = session.project().device(device).unwrap().state().clone();
         graph = session
-            .commit_device_parameter(
-                device,
-                ParameterId::from_static(id),
-                ParameterValue::Float(value),
-                Some(&graph),
-            )
+            .commit_device_parameter(device, ParameterId::from_static(id), value, Some(&graph))
             .unwrap();
         let after = session.project().device(device).unwrap().state().clone();
         let undone = session
@@ -665,7 +668,7 @@ fn global_time_tone_volume_history_and_disk_reopen_round_trip() {
     let loaded = hex_storage::load(&path).unwrap();
     assert_eq!(&loaded, session.project());
     let reopened = Session::from_prepared(loaded, 16, 0, vec![]).unwrap();
-    for (id, value) in edits {
+    for &(id, value) in edits {
         let state = reopened.project().device(device).unwrap().state();
         assert_eq!(
             hex_engine::native_device_parameter_for_class(
@@ -674,7 +677,7 @@ fn global_time_tone_volume_history_and_disk_reopen_round_trip() {
                 ParameterId::from_static(id),
             )
             .unwrap(),
-            ParameterValue::Float(value)
+            value
         );
     }
 }

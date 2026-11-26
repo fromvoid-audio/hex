@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = PERFORMANCE_STATE_VERSION;
+pub const OPERATOR_STATE_VERSION: u32 = PITCH_PERF_STATE_VERSION;
+const PITCH_PERF_STATE_VERSION: u32 = 20;
 const PERFORMANCE_STATE_VERSION: u32 = 19;
 const TLV_STATE_VERSION: u32 = 18;
 const KEYTRACK_STATE_VERSION: u32 = 17;
@@ -49,6 +50,7 @@ mod harmonics;
 mod keytrack;
 mod modulation;
 mod performance;
+mod pitch_perf;
 mod tlv_codec;
 pub use harmonics::{
     partial as harmonic_parameter, range as harmonic_range_parameter,
@@ -86,7 +88,8 @@ const PARAMETER_COUNT: usize = STORED_PARAMETER_COUNT
     + 1
     + fine::COUNT
     + keytrack::COUNT
-    + performance::COUNT;
+    + performance::COUNT
+    + pitch_perf::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -216,6 +219,15 @@ pub mod parameter {
     pub const TONE: ParameterId = ParameterId::from_static(super::performance::TONE_ID);
     /// Global output volume (-72..+6 dB, default 0 dB).
     pub const VOLUME: ParameterId = ParameterId::from_static(super::performance::VOLUME_ID);
+    /// Global pitch transpose (-48..+48 st, default 0 st).
+    pub const TRANSPOSE: ParameterId = ParameterId::from_static(super::pitch_perf::TRANSPOSE_ID);
+    /// Global stereo detune spread (0..100%, default 0%).
+    pub const SPREAD: ParameterId = ParameterId::from_static(super::pitch_perf::SPREAD_ID);
+    /// Global portamento glide enable switch (default false).
+    pub const GLIDE_ENABLED: ParameterId =
+        ParameterId::from_static(super::pitch_perf::GLIDE_ENABLED_ID);
+    /// Global portamento glide duration (0.001..5.0 s, default 0.05 s).
+    pub const GLIDE_TIME: ParameterId = ParameterId::from_static(super::pitch_perf::GLIDE_TIME_ID);
 
     /// Derived eleven-algorithm selector; zero preserves custom legacy routing.
     pub const ALGORITHM: ParameterId = ParameterId::from_static(600);
@@ -485,20 +497,33 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let fine = fine::descriptors();
     let mut offset = 0;
     while offset < fine::COUNT {
-        result[PARAMETER_COUNT - performance::COUNT - keytrack::COUNT - fine::COUNT + offset] =
-            fine[offset];
+        result[PARAMETER_COUNT
+            - pitch_perf::COUNT
+            - performance::COUNT
+            - keytrack::COUNT
+            - fine::COUNT
+            + offset] = fine[offset];
         offset += 1;
     }
     let keytrack = keytrack::descriptors();
     let mut offset = 0;
     while offset < keytrack::COUNT {
-        result[PARAMETER_COUNT - performance::COUNT - keytrack::COUNT + offset] = keytrack[offset];
+        result
+            [PARAMETER_COUNT - pitch_perf::COUNT - performance::COUNT - keytrack::COUNT + offset] =
+            keytrack[offset];
         offset += 1;
     }
     let performance = performance::descriptors();
     let mut offset = 0;
     while offset < performance::COUNT {
-        result[PARAMETER_COUNT - performance::COUNT + offset] = performance[offset];
+        result[PARAMETER_COUNT - pitch_perf::COUNT - performance::COUNT + offset] =
+            performance[offset];
+        offset += 1;
+    }
+    let pitch_perf = pitch_perf::descriptors();
+    let mut offset = 0;
+    while offset < pitch_perf::COUNT {
+        result[PARAMETER_COUNT - pitch_perf::COUNT + offset] = pitch_perf[offset];
         offset += 1;
     }
     result
@@ -524,6 +549,7 @@ pub struct OperatorSettings {
     fine: fine::Settings,
     pitch_keytrack: keytrack::Settings,
     performance: performance::Settings,
+    pitch_perf: pitch_perf::Settings,
 }
 
 impl OperatorSettings {
@@ -552,6 +578,7 @@ impl OperatorSettings {
             fine: fine::Settings::default(),
             pitch_keytrack: keytrack::Settings::default(),
             performance: performance::Settings::default(),
+            pitch_perf: pitch_perf::Settings::default(),
         }
     }
 
@@ -567,7 +594,7 @@ impl OperatorSettings {
         }
         if matches!(
             state.state_version(),
-            TLV_STATE_VERSION | PERFORMANCE_STATE_VERSION
+            TLV_STATE_VERSION | PERFORMANCE_STATE_VERSION | PITCH_PERF_STATE_VERSION
         ) {
             return tlv_codec::decode(state.payload(), state.state_version());
         }
@@ -729,6 +756,7 @@ impl OperatorSettings {
             return Err(DeviceContractError::MalformedState);
         }
         let result = Self {
+            pitch_perf: pitch_perf::Settings::default(),
             performance: performance::Settings::default(),
             pitch_keytrack,
             fine,
@@ -861,6 +889,7 @@ impl OperatorSettings {
         self.global.validate()?;
         self.modulation.validate()?;
         self.performance.validate()?;
+        self.pitch_perf.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -1070,6 +1099,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.pitch_perf.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.performance.read(parameter) {
             return Ok(value);
         }
@@ -1182,6 +1214,10 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.pitch_perf.patch(parameter, value)? {
+            settings.global.active = true;
+            return settings.to_state();
+        }
         if settings.performance.patch(parameter, value)? {
             settings.global.active = true;
             return settings.to_state();
@@ -1352,6 +1388,7 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
     fn prefers_mutable_continuation(&self) -> bool {
         self.harmonic_runtime.tuning.is_some()
             || !self.harmonic_runtime.settings.performance.is_neutral()
+            || !self.harmonic_runtime.settings.pitch_perf.is_neutral()
             || self.harmonic_runtime.settings.fine.values() != [0.0; OPERATORS]
             || self
                 .harmonic_runtime
