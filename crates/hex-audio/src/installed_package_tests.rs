@@ -2085,3 +2085,419 @@ fn installed_package_borrowed_resources_leases_tails_and_zero_alloc() {
     assert_eq!(res_def.active_module_leases(), 1);
     assert_eq!(sine_def.active_module_leases(), 1);
 }
+
+#[test]
+fn sampler_native_package_empty_loaded_ab_replacement_save_reopen_and_zero_alloc() {
+    use hex_engine::native_device_resources::{
+        DeviceResourcePublication, DeviceResourcePublishError, PreparedDeviceResources,
+        ResidentDeviceAssets, ResourcePreparationError,
+    };
+    use hex_engine::playback::{Playback, PlaybackCommand};
+    use hex_engine::{
+        AudioStorageLedgerReservation, OwnedAudioSource, PreparedRevision, SessionPlayback,
+        SessionPlaybackCommand, SineTable,
+    };
+    use hex_lattice_contract::package_abi::CAP_BORROWED_RESOURCES;
+    use hex_lattice_contract::{
+        DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceContractError,
+    };
+    use hex_project::{BeatTime, Command, Created, Editor, Project};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let tmp = TempDir::new("sampler_pkg_3003");
+    let token = "reviewed-sampler-token-v1";
+    let mut policy = AdmissionPolicy::host_default();
+    policy.allow_reviewed_test("hex.factory", sha256_hex(token.as_bytes()));
+
+    let sampler_pkg = build_package(
+        &tmp,
+        "sampler_v1.c",
+        "hex.pkg.sampler",
+        "sampler",
+        DEVICE_KIND_INSTRUMENT,
+        CAP_INSTRUMENT
+            | CAP_PARAMETER_EVENTS
+            | CAP_NOTE_EVENTS
+            | CAP_ZERO_LATENCY
+            | CAP_STATE_PERSISTENCE
+            | CAP_BORROWED_RESOURCES,
+        token,
+    );
+    let lib_dir = tmp.path().join("library");
+    let catalog = DevicePackageCatalog::open_and_recover(&lib_dir).unwrap();
+    let rec = match catalog.install_file(&sampler_pkg, &policy, None).unwrap() {
+        InstallOutcome::Installed(rec) => rec,
+        other => panic!("expected Installed, got {other:?}"),
+    };
+    let sampler_def = InstalledPackageInstrument::load_on_control(
+        &lib_dir
+            .join(&rec.generation_rel_dir)
+            .join(&rec.native_module_rel_path),
+        rec.publisher_id.clone(),
+        hex_to_bytes32(&rec.package_sha256),
+    )
+    .unwrap();
+    assert!(sampler_def.supports_asset_resources());
+
+    let effects = hex_devices::native_registry().unwrap();
+    let instruments_slice: [&dyn NativeInstrumentDefinition; 1] = [&sampler_def];
+    let instruments = NativeInstrumentRegistry::new(&instruments_slice).unwrap();
+    let transforms = hex_engine::audio_transform::AudioTransformPreparation::default();
+    let sine_table = Arc::new(SineTable::new());
+    let cancel = AtomicBool::new(false);
+    let media = BTreeMap::new();
+    let limits = AudioStorageLedgerReservation {
+        data_rows: 512,
+        handle_rows: 512,
+        root_rows: 64,
+        max_retained_bytes: 4_000_000,
+        max_construction_peak_bytes: 4_000_000,
+    };
+
+    // 1. Default empty sampler creation: renders exact silence with 0 asset references.
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("midi track");
+    };
+    let empty_state = sampler_def.default_state().unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: empty_state.clone(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("midi clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+
+    let mut store = ResidentDeviceAssets::default();
+    let empty_res = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        limits.max_retained_bytes,
+        &cancel,
+    )
+    .unwrap();
+    let empty_rev = Arc::new(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &empty_res,
+            4096,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .unwrap(),
+    );
+    let mut empty_pb =
+        Playback::try_from_prepared_with_device_resources(empty_rev, &empty_res).unwrap();
+    empty_pb.apply(PlaybackCommand::Play);
+    let mut silence = [[0.0f32; 2]; 32];
+    empty_pb.render(&mut silence).unwrap();
+    assert_eq!(silence, [[0.0; 2]; 32], "empty sampler must render silence");
+
+    // 2. First load (Sample A at 48 kHz) with trim start=0.25 (frame 16), loop enabled, gain=0.5.
+    let Created::Asset(asset_a) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "kick_a.wav".into(),
+            sample_rate: 48_000,
+            frames: 64,
+        })
+        .unwrap()
+    else {
+        panic!("asset a");
+    };
+    let Created::Asset(asset_b) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "snare_b.wav".into(),
+            sample_rate: 48_000,
+            frames: 64,
+        })
+        .unwrap()
+    else {
+        panic!("asset b");
+    };
+    let pcm_a: Vec<[f32; 2]> = (0..64)
+        .map(|i| [0.20 + (i as f32) * 0.01, -0.20 - (i as f32) * 0.005])
+        .collect();
+    let pcm_b: Vec<[f32; 2]> = (0..64)
+        .map(|i| [-0.70 + (i as f32) * 0.005, 0.50 - (i as f32) * 0.004])
+        .collect();
+    for (asset, pcm) in [(asset_a, pcm_a.clone()), (asset_b, pcm_b.clone())] {
+        store
+            .insert_on_control(
+                (
+                    asset,
+                    OwnedAudioSource::try_resident(48_000, pcm).ok().unwrap(),
+                ),
+                0,
+                limits,
+                256,
+                &cancel,
+                || Ok::<_, ResourcePreparationError>(()),
+            )
+            .unwrap();
+    }
+
+    let mut state_a = sampler_def
+        .patch_parameter(
+            &empty_state,
+            ParameterId::from_static(1),
+            ParameterValue::Float(0.5),
+        )
+        .unwrap();
+    state_a = sampler_def
+        .patch_parameter(
+            &state_a,
+            ParameterId::from_static(2),
+            ParameterValue::Float(0.25),
+        )
+        .unwrap();
+    state_a = sampler_def
+        .patch_parameter(
+            &state_a,
+            ParameterId::from_static(5),
+            ParameterValue::Float(1.0),
+        )
+        .unwrap();
+    state_a = state_a
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset_a.value()).unwrap(),
+        }])
+        .unwrap();
+
+    // Missing resource inventory refuses cleanly on control.
+    let tuning = TuningTable::default();
+    let missing_ctx = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    assert_eq!(
+        sampler_def.prepare_instrument(&state_a, &missing_ctx).err(),
+        Some(DeviceContractError::AssetResourcesUnavailable)
+    );
+
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: state_a.clone(),
+        })
+        .unwrap();
+
+    // Save/reopen round-trip preserving exact PackageIdentityEnvelope + asset_references!
+    let proj_path = tmp.path().join("sampler-pkg.hexproj");
+    hex_storage::save_new(&proj_path, editor.project()).unwrap();
+    let reopened = hex_storage::load(&proj_path).unwrap();
+    let reopened_state = reopened.track(track).unwrap().instrument().unwrap().state();
+    assert_eq!(reopened_state.payload(), state_a.payload());
+    assert_eq!(
+        reopened_state.asset_references(),
+        state_a.asset_references()
+    );
+
+    let res_a = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        limits.max_retained_bytes,
+        &cancel,
+    )
+    .unwrap();
+    let rev_a = Arc::new(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &res_a,
+            4096,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .unwrap(),
+    );
+
+    // Offline export oracle matches trimmed Sample A starting at frame 16 * gain 0.5!
+    let mut export_a = SessionPlayback::new_linear_arrangement_export_with_device_resources(
+        Arc::clone(&rev_a),
+        &res_a,
+    )
+    .unwrap();
+    export_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut out_a = [[0.0f32; 2]; 32];
+    export_a.render(&mut out_a).unwrap();
+    for (f, actual) in out_a.iter().enumerate() {
+        let src_idx = 16 + f;
+        let exp_l = pcm_a[src_idx][0] * 0.5;
+        let exp_r = pcm_a[src_idx][1] * 0.5;
+        assert!(
+            (actual[0] - exp_l).abs() < 1e-5 && (actual[1] - exp_r).abs() < 1e-5,
+            "sampler A frame {f}: actual={actual:?} expected=[{exp_l}, {exp_r}]"
+        );
+    }
+
+    // 3. Sample A -> B replacement + Undo/Redo + real DeviceResourcePublication lease retention!
+    let state_b = sampler_def
+        .default_state()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset_b.value()).unwrap(),
+        }])
+        .unwrap();
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: state_b.clone(),
+        })
+        .unwrap();
+    let res_b = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        limits.max_retained_bytes,
+        &cancel,
+    )
+    .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare_with_device_resources_and_registries(
+            editor.project(),
+            &media,
+            Arc::clone(&sine_table),
+            None,
+            &transforms,
+            &res_b,
+            4096,
+            &cancel,
+            &effects,
+            &instruments,
+            None,
+        )
+        .unwrap(),
+    );
+
+    // Undo restores Sample A; Redo restores Sample B.
+    assert!(editor.undo());
+    assert!(editor.undo());
+    assert_eq!(
+        editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .state()
+            .asset_references(),
+        state_a.asset_references()
+    );
+    assert!(editor.redo());
+    assert!(editor.redo());
+    assert_eq!(
+        editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .state()
+            .asset_references(),
+        state_b.asset_references()
+    );
+
+    let mut book = DeviceResourcePublication::reserve_on_control(limits, 16, 16).unwrap();
+    let mut pb_a = match book.publish_on_control(
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&rev_a), &res_a).unwrap(),
+        Ok::<_, ()>,
+    ) {
+        Ok(pb) => pb,
+        Err(DeviceResourcePublishError::Resources { reason, .. }) => panic!("{reason:?}"),
+        Err(DeviceResourcePublishError::Publication(())) => panic!("queue refusal"),
+    };
+    let mut pb_b = match book.publish_on_control(
+        Playback::try_from_prepared_with_device_resources(Arc::clone(&rev_b), &res_b).unwrap(),
+        Ok::<_, ()>,
+    ) {
+        Ok(pb) => pb,
+        Err(DeviceResourcePublishError::Resources { reason, .. }) => panic!("{reason:?}"),
+        Err(DeviceResourcePublishError::Publication(())) => panic!("queue refusal"),
+    };
+    assert_eq!(book.outstanding_leases(), 2);
+
+    pb_a.apply(PlaybackCommand::Play);
+    pb_b.apply(PlaybackCommand::Play);
+    let mut live_a = [[0.0f32; 2]; 16];
+    let mut live_b = [[0.0f32; 2]; 16];
+    pb_a.render(&mut live_a).unwrap();
+    pb_b.render(&mut live_b).unwrap();
+    assert!((live_a[0][0] - pcm_a[16][0] * 0.5).abs() < 1e-5);
+    assert!((live_b[0][0] - pcm_b[0][0]).abs() < 1e-5);
+
+    #[cfg(feature = "allocation-probe")]
+    {
+        let mut probe_buf = [[0.0f32; 2]; 32];
+        let measured = allocation_counter::measure(|| {
+            for _ in 0..16 {
+                probe_buf.fill([0.0; 2]);
+                let _ = pb_a.render(&mut probe_buf);
+                probe_buf.fill([0.0; 2]);
+                let _ = pb_b.render(&mut probe_buf);
+            }
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "sampler native package callback must allocate/free zero bytes"
+        );
+    }
+
+    assert!(book.retire_on_control(Box::new(pb_a)).is_ok());
+    assert!(book.retire_on_control(Box::new(pb_b)).is_ok());
+    assert_eq!(book.outstanding_leases(), 0);
+    drop(empty_pb);
+    drop(export_a);
+    drop(rev_a);
+    drop(rev_b);
+    assert_eq!(sampler_def.active_module_leases(), 1);
+}

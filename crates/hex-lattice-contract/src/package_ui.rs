@@ -38,6 +38,8 @@ pub const MAX_PACKAGE_UI_HARMONICS: usize = 16;
 pub const MAX_PACKAGE_RESPONSE_BINS: usize = 128;
 /// Maximum FFT spectrum bins in a read-only presentation snapshot.
 pub const MAX_PACKAGE_SPECTRUM_BINS: usize = 128;
+/// Maximum waveform peak overview bins in a read-only presentation snapshot (`#3003`).
+pub const MAX_PACKAGE_WAVEFORM_PEAKS: usize = 128;
 /// Maximum UTF-8 bytes in a section heading or control label.
 pub const MAX_PACKAGE_UI_LABEL_BYTES: usize = 64;
 /// Maximum UTF-8 bytes in a control tooltip.
@@ -64,6 +66,8 @@ pub const UI_CAP_SPECTRUM_OVERLAY: u64 = 1 << 7;
 pub const UI_CAP_ENVELOPE_PLOT: u64 = 1 << 8;
 /// Reusable bounded harmonic bar-graph editor capability (`#3001`).
 pub const UI_CAP_HARMONIC_EDITOR: u64 = 1 << 9;
+/// Reusable bounded waveform and source-region editor capability (`#3003`).
+pub const UI_CAP_WAVEFORM_REGION: u64 = 1 << 10;
 /// Bitmask of all UI capabilities supported by v1 generic native hosts.
 pub const UI_CAP_KNOWN_MASK_V1: u64 = UI_CAP_SCALAR
     | UI_CAP_TOGGLE
@@ -74,7 +78,8 @@ pub const UI_CAP_KNOWN_MASK_V1: u64 = UI_CAP_SCALAR
     | UI_CAP_CURVE_PLOT
     | UI_CAP_SPECTRUM_OVERLAY
     | UI_CAP_ENVELOPE_PLOT
-    | UI_CAP_HARMONIC_EDITOR;
+    | UI_CAP_HARMONIC_EDITOR
+    | UI_CAP_WAVEFORM_REGION;
 
 /// Explicit refusal reasons for malformed or unsupported package UI schemas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +265,21 @@ pub struct PackageUiHarmonicBarGraph {
     pub harmonic_parameters: Vec<ParameterId>,
 }
 
+/// Reusable bounded waveform and source-region editor primitive (`#3003`)
+/// consumed generically by sampler/granular packages without per-type-ID GPUI
+/// switches or private state decoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageUiWaveformRegion {
+    pub region_id: u32,
+    pub asset_slot: u32,
+    pub label: String,
+    pub start_parameter: ParameterId,
+    pub end_parameter: ParameterId,
+    pub loop_start_parameter: Option<ParameterId>,
+    pub loop_end_parameter: Option<ParameterId>,
+    pub loop_enable_parameter: Option<ParameterId>,
+}
+
 /// One item inside a [`PackageUiSection`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PackageUiItem {
@@ -268,6 +288,7 @@ pub enum PackageUiItem {
     CurvePlot(PackageUiCurvePlot),
     EnvelopePlot(PackageUiEnvelopePlot),
     HarmonicBarGraph(PackageUiHarmonicBarGraph),
+    WaveformRegion(PackageUiWaveformRegion),
 }
 
 /// Compact vertical/grid section inside a [`PackageUiSchema`].
@@ -515,6 +536,53 @@ impl PackageUiSchema {
                             }
                         }
                     }
+                    PackageUiItem::WaveformRegion(region) => {
+                        if (self.required_capabilities & UI_CAP_WAVEFORM_REGION) == 0 {
+                            return Err(PackageUiError::MissingCapability);
+                        }
+                        if region.region_id == 0
+                            || region.asset_slot == 0
+                            || (region.asset_slot as usize) > crate::MAX_DEVICE_ASSET_REFERENCES
+                        {
+                            return Err(PackageUiError::InvalidBounds);
+                        }
+                        if !valid_ui_text(&region.label, MAX_PACKAGE_UI_LABEL_BYTES) {
+                            return Err(PackageUiError::InvalidText);
+                        }
+                        for param_id in [region.start_parameter, region.end_parameter] {
+                            let desc = descriptors
+                                .iter()
+                                .find(|candidate| candidate.id == param_id)
+                                .ok_or(PackageUiError::UnknownParameter)?;
+                            if !matches!(desc.kind, ParameterKind::Float { .. }) {
+                                return Err(PackageUiError::IncompatibleWidgetKind);
+                            }
+                        }
+                        for param_id in [region.loop_start_parameter, region.loop_end_parameter]
+                            .into_iter()
+                            .flatten()
+                        {
+                            let desc = descriptors
+                                .iter()
+                                .find(|candidate| candidate.id == param_id)
+                                .ok_or(PackageUiError::UnknownParameter)?;
+                            if !matches!(desc.kind, ParameterKind::Float { .. }) {
+                                return Err(PackageUiError::IncompatibleWidgetKind);
+                            }
+                        }
+                        if let Some(loop_en) = region.loop_enable_parameter {
+                            let desc = descriptors
+                                .iter()
+                                .find(|candidate| candidate.id == loop_en)
+                                .ok_or(PackageUiError::UnknownParameter)?;
+                            if !matches!(
+                                desc.kind,
+                                ParameterKind::Bool | ParameterKind::Float { .. }
+                            ) {
+                                return Err(PackageUiError::IncompatibleWidgetKind);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -542,6 +610,10 @@ pub struct PackagePresentationSnapshot {
     pub response_db: Vec<f32>,
     /// Bounded off-callback FFT spectrum snapshot in dB (`#3000`).
     pub spectrum_db: Vec<f32>,
+    /// Bounded control-computed normalized peak overview (`0.0..=1.0`, `#3003`).
+    pub waveform_peaks: Vec<f32>,
+    /// Preserved user sample display name/path stem (`#3003`), never mutating state.
+    pub sample_name: Option<String>,
 }
 
 impl PackagePresentationSnapshot {
@@ -549,6 +621,7 @@ impl PackagePresentationSnapshot {
         if self.meters.len() > MAX_PACKAGE_UI_METERS
             || self.response_db.len() > MAX_PACKAGE_RESPONSE_BINS
             || self.spectrum_db.len() > MAX_PACKAGE_SPECTRUM_BINS
+            || self.waveform_peaks.len() > MAX_PACKAGE_WAVEFORM_PEAKS
         {
             return Err(PackageUiError::InvalidSnapshot);
         }
@@ -564,11 +637,20 @@ impl PackagePresentationSnapshot {
         }
         if self.response_db.iter().any(|v| !v.is_finite())
             || self.spectrum_db.iter().any(|v| !v.is_finite())
+            || self
+                .waveform_peaks
+                .iter()
+                .any(|v| !v.is_finite() || *v < 0.0 || *v > 1.0)
         {
             return Err(PackageUiError::InvalidSnapshot);
         }
         if let Some(status) = self.status.as_deref()
             && !valid_ui_text(status, MAX_PACKAGE_UI_STATUS_BYTES)
+        {
+            return Err(PackageUiError::InvalidSnapshot);
+        }
+        if let Some(name) = self.sample_name.as_deref()
+            && !valid_ui_text(name, MAX_PACKAGE_UI_STATUS_BYTES)
         {
             return Err(PackageUiError::InvalidSnapshot);
         }
@@ -734,6 +816,8 @@ mod tests {
             status: Some("ready".into()),
             response_db: vec![0.0, 1.5, -2.0],
             spectrum_db: vec![-60.0, -32.0, -18.0],
+            waveform_peaks: vec![0.1, 0.8, 0.45],
+            sample_name: Some("kick_01.wav".into()),
         };
         assert_eq!(snap.validate(), Ok(()));
 
@@ -747,8 +831,37 @@ mod tests {
             status: None,
             response_db: vec![],
             spectrum_db: vec![],
+            waveform_peaks: vec![],
+            sample_name: None,
         };
         assert_eq!(bad_snap.validate(), Err(PackageUiError::InvalidSnapshot));
+
+        // WaveformRegion requires explicit UI_CAP_WAVEFORM_REGION and valid asset_slot.
+        let mut wf_schema = PackageUiSchema {
+            ui_version: PACKAGE_UI_VERSION_V1,
+            required_capabilities: UI_CAP_WAVEFORM_REGION,
+            frame_width: 320.0,
+            sections: vec![PackageUiSection {
+                heading: "sample".into(),
+                columns: 1,
+                items: vec![PackageUiItem::WaveformRegion(PackageUiWaveformRegion {
+                    region_id: 1,
+                    asset_slot: 1,
+                    label: "waveform".into(),
+                    start_parameter: ParameterId::from_static(1),
+                    end_parameter: ParameterId::from_static(1),
+                    loop_start_parameter: None,
+                    loop_end_parameter: None,
+                    loop_enable_parameter: Some(ParameterId::from_static(2)),
+                })],
+            }],
+        };
+        assert_eq!(wf_schema.validate(&descriptors), Ok(()));
+        wf_schema.required_capabilities &= !UI_CAP_WAVEFORM_REGION;
+        assert_eq!(
+            wf_schema.validate(&descriptors),
+            Err(PackageUiError::MissingCapability)
+        );
 
         // CurvePlot requires explicit UI_CAP_CURVE_PLOT and UI_CAP_SPECTRUM_OVERLAY when enabled.
         let mut curve_schema = PackageUiSchema {

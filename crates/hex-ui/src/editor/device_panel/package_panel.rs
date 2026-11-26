@@ -36,9 +36,10 @@ use hex_lattice_contract::package_ui::{
     PACKAGE_UI_VERSION_V1, PackageNumericFormat, PackagePresentationSnapshot, PackageUiControl,
     PackageUiCurveNodeBinding, PackageUiCurvePlot, PackageUiEnvelopePlot,
     PackageUiHarmonicBarGraph, PackageUiItem, PackageUiMeter, PackageUiSchema, PackageUiSection,
-    PackageUiWidgetKind, PackageVisibilityRule, UI_CAP_CONDITIONAL_VISIBILITY, UI_CAP_CURVE_PLOT,
-    UI_CAP_ENVELOPE_PLOT, UI_CAP_HARMONIC_EDITOR, UI_CAP_METER, UI_CAP_SCALAR, UI_CAP_SECTIONS,
-    UI_CAP_SELECTOR, UI_CAP_SPECTRUM_OVERLAY, UI_CAP_TOGGLE,
+    PackageUiWaveformRegion, PackageUiWidgetKind, PackageVisibilityRule,
+    UI_CAP_CONDITIONAL_VISIBILITY, UI_CAP_CURVE_PLOT, UI_CAP_ENVELOPE_PLOT, UI_CAP_HARMONIC_EDITOR,
+    UI_CAP_METER, UI_CAP_SCALAR, UI_CAP_SECTIONS, UI_CAP_SELECTOR, UI_CAP_SPECTRUM_OVERLAY,
+    UI_CAP_TOGGLE, UI_CAP_WAVEFORM_REGION,
 };
 use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
 use hex_project::DeviceId;
@@ -93,6 +94,7 @@ pub fn parse_package_ui_json(raw: &str) -> Result<PackageUiSchema, String> {
             "spectrum_overlay" => UI_CAP_SPECTRUM_OVERLAY,
             "envelope_plot" => UI_CAP_ENVELOPE_PLOT,
             "harmonic_editor" => UI_CAP_HARMONIC_EDITOR,
+            "waveform_region" => UI_CAP_WAVEFORM_REGION,
             unknown => {
                 return Err(format!("unsupported package ui capability '{unknown}'"));
             }
@@ -448,6 +450,65 @@ fn parse_item(value: &Value) -> Result<PackageUiItem, String> {
                 harmonic_parameters,
             }))
         }
+        "waveform_region" => {
+            for key in obj.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "kind"
+                        | "region_id"
+                        | "asset_slot"
+                        | "label"
+                        | "start_parameter"
+                        | "end_parameter"
+                        | "loop_start_parameter"
+                        | "loop_end_parameter"
+                        | "loop_enable_parameter"
+                ) {
+                    return Err(format!("unknown package ui waveform_region field '{key}'"));
+                }
+            }
+            let u32_req = |name: &str| -> Result<u32, String> {
+                obj.get(name)
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or_else(|| format!("waveform_region missing valid {name}"))
+            };
+            let opt_pid = |name: &str| -> Result<Option<ParameterId>, String> {
+                match obj.get(name) {
+                    None | Some(Value::Null) => Ok(None),
+                    Some(v) => {
+                        let raw = v
+                            .as_u64()
+                            .and_then(|n| u32::try_from(n).ok())
+                            .ok_or_else(|| format!("invalid {name}"))?;
+                        ParameterId::new(raw)
+                            .map(Some)
+                            .map_err(|_| format!("invalid {name} {raw}"))
+                    }
+                }
+            };
+            let region_id = u32_req("region_id")?;
+            let asset_slot = u32_req("asset_slot")?;
+            let label = obj
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "waveform_region missing label".to_owned())?
+                .to_owned();
+            let start_parameter = ParameterId::new(u32_req("start_parameter")?)
+                .map_err(|_| "invalid start_parameter".to_owned())?;
+            let end_parameter = ParameterId::new(u32_req("end_parameter")?)
+                .map_err(|_| "invalid end_parameter".to_owned())?;
+            Ok(PackageUiItem::WaveformRegion(PackageUiWaveformRegion {
+                region_id,
+                asset_slot,
+                label,
+                start_parameter,
+                end_parameter,
+                loop_start_parameter: opt_pid("loop_start_parameter")?,
+                loop_end_parameter: opt_pid("loop_end_parameter")?,
+                loop_enable_parameter: opt_pid("loop_enable_parameter")?,
+            }))
+        }
         unknown => Err(format!("unknown package ui item kind '{unknown}'")),
     }
 }
@@ -662,6 +723,9 @@ pub(in crate::editor) fn render_body(
                 PackageUiItem::HarmonicBarGraph(harm) => {
                     grid = grid.child(render_readonly_harmonic_bars(harm));
                 }
+                PackageUiItem::WaveformRegion(region) => {
+                    grid = grid.child(render_readonly_waveform_region(region, snapshot));
+                }
             }
         }
         column = column.child(grid);
@@ -840,6 +904,36 @@ fn render_readonly_harmonic_bars(harm: &PackageUiHarmonicBarGraph) -> Div {
         .child(theme::text(format!(
             "{} partials",
             harm.harmonic_parameters.len()
+        )))
+}
+
+fn render_readonly_waveform_region(
+    region: &PackageUiWaveformRegion,
+    snapshot: Option<&PackagePresentationSnapshot>,
+) -> Div {
+    let valid_snap = snapshot.filter(|snap| snap.validate().is_ok());
+    let sample_caption = valid_snap
+        .and_then(|snap| snap.sample_name.as_deref())
+        .map(theme::text)
+        .unwrap_or_else(|| theme::text("drop sample"));
+    let peak_count = valid_snap.map_or(0, |snap| snap.waveform_peaks.len());
+    div()
+        .w(px(184.0))
+        .h(px(64.0))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .p(px(4.0))
+        .border_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .text_size(px(9.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(region.label.as_str()))
+        .child(sample_caption)
+        .child(theme::text(format!(
+            "slot {} · {peak_count} peaks",
+            region.asset_slot
         )))
 }
 
@@ -1686,6 +1780,8 @@ mod tests {
             status: Some("active".into()),
             response_db: vec![],
             spectrum_db: vec![],
+            waveform_peaks: vec![0.2, 0.9, 0.5],
+            sample_name: Some("snare.wav".into()),
         };
         assert_eq!(snap.validate(), Ok(()));
         harness.presentation.insert(sine_id, snap);
@@ -1693,5 +1789,60 @@ mod tests {
             harness.editor.project().device(sine_id).unwrap().state(),
             &before_snap_state
         );
+
+        // 8. Reusable waveform_region schema parses and validates cleanly for Sampler packages (#3003).
+        let sampler_ui_json = r#"{
+            "ui_version": 1,
+            "capabilities": ["scalar", "sections", "envelope_plot", "waveform_region"],
+            "frame_width": 420,
+            "sections": [
+                {
+                    "heading": "Sample",
+                    "columns": 1,
+                    "items": [
+                        {
+                            "kind": "waveform_region",
+                            "region_id": 1,
+                            "asset_slot": 1,
+                            "label": "waveform",
+                            "start_parameter": 2,
+                            "end_parameter": 3,
+                            "loop_enable_parameter": 5
+                        },
+                        { "kind": "control", "parameter_id": 1, "widget": "dial", "label": "Gain" }
+                    ]
+                },
+                {
+                    "heading": "Envelope",
+                    "columns": 1,
+                    "items": [
+                        {
+                            "kind": "envelope_plot",
+                            "plot_id": 1,
+                            "label": "amp",
+                            "attack_parameter": 7,
+                            "decay_parameter": 8,
+                            "sustain_parameter": 9,
+                            "release_parameter": 10
+                        }
+                    ]
+                }
+            ]
+        }"#;
+        let sampler_schema = parse_package_ui_json(sampler_ui_json).unwrap();
+        let sampler_descs: Vec<ParameterDescriptor> = (1..=10u32)
+            .map(|id| ParameterDescriptor {
+                id: ParameterId::new(id).unwrap(),
+                label: "p",
+                kind: ParameterKind::Float {
+                    min: 0.0,
+                    max: 2.0,
+                    unit: None,
+                },
+                default: ParameterValue::Float(0.0),
+                presentation: ParameterPresentation::Linear,
+            })
+            .collect();
+        assert_eq!(sampler_schema.validate(&sampler_descs), Ok(()));
     }
 }
