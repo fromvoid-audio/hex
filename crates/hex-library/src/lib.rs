@@ -9,6 +9,7 @@
 //! Does not decode audio, mutate projects, navigate UI or perform callback work. Catalog records
 //! do not establish media readiness or source custody.
 
+pub mod boundary;
 pub mod catalog;
 
 use std::{
