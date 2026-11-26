@@ -32,7 +32,8 @@ use objc2_core_audio::{
 };
 use objc2_core_audio::{
     kAudioDevicePropertyDeviceIsAlive, kAudioDevicePropertyLatency,
-    kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreams,
+    kAudioDevicePropertySafetyOffset, kAudioDevicePropertyStreams, kAudioHardwareBadDeviceError,
+    kAudioHardwareBadObjectError, kAudioHardwareBadStreamError,
     kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectSystemObject,
     kAudioStreamPropertyLatency, AudioObjectAddPropertyListener, AudioObjectRemovePropertyListener,
 };
@@ -47,9 +48,9 @@ use std::ffi::c_void;
 use std::fmt;
 use std::mem::{self, size_of};
 use std::ptr::{null, NonNull};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use super::invoke_error_callback;
@@ -1375,6 +1376,13 @@ fn timing_address(selector: u32, scope: AudioObjectPropertyScope) -> AudioObject
     }
 }
 
+fn hal_listener_retired(status: OSStatus) -> bool {
+    status == 0
+        || status == kAudioHardwareBadObjectError
+        || status == kAudioHardwareBadDeviceError
+        || status == kAudioHardwareBadStreamError
+}
+
 pub(super) struct OutputTimingWatch {
     receipt: OutputTimingReceipt,
     snapshot: OutputTimingSnapshot,
@@ -1522,10 +1530,192 @@ impl OutputTimingWatch {
                     self.receipt.user_data(),
                 )
             };
-            removed &= status == 0;
+            removed &= hal_listener_retired(status);
         }
         if removed {
             self.receipt.release();
+        }
+    }
+}
+
+static ROUTE_CHANGE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static ROUTE_CHANGE_SEMAPHORE: OnceLock<super::WorkerSemaphore> = OnceLock::new();
+static ROUTE_LISTENER_TOKEN: AtomicUsize = AtomicUsize::new(1);
+
+unsafe extern "C-unwind" fn notify_route_hal_change(
+    _: AudioObjectID,
+    _: u32,
+    _: NonNull<AudioObjectPropertyAddress>,
+    _: *mut c_void,
+) -> i32 {
+    ROUTE_CHANGE_GENERATION.fetch_add(1, Ordering::SeqCst);
+    if let Some(sem) = ROUTE_CHANGE_SEMAPHORE.get() {
+        sem.signal_all();
+        sem.signal();
+    }
+    0
+}
+
+const ROUTE_DEVICE_PROPERTIES: [u32; 2] = [
+    kAudioDevicePropertyNominalSampleRate,
+    kAudioDevicePropertyDeviceIsAlive,
+];
+
+/// Control-side CoreAudio HAL property listener for default output device and
+/// active nominal sample rate changes.
+///
+/// The HAL callback touches only `'static` atomic and Mach semaphore state,
+/// never dereferencing listener memory, so late notifications after removal or
+/// hot-unplug are always memory-safe and never quarantine slots.
+pub struct OutputRouteListener {
+    token: usize,
+    system_registered: bool,
+    watched_device: Option<AudioDeviceID>,
+    device_props: [bool; 2],
+}
+
+impl OutputRouteListener {
+    /// Register HAL listeners for default output changes and the current
+    /// default device's nominal sample rate and liveness.
+    pub fn new() -> Result<Self, BackendSpecificError> {
+        if ROUTE_CHANGE_SEMAPHORE.get().is_none() {
+            let sem = super::WorkerSemaphore::new()?;
+            let _ = ROUTE_CHANGE_SEMAPHORE.set(sem);
+        }
+        let token = loop {
+            let candidate = ROUTE_LISTENER_TOKEN.fetch_add(1, Ordering::Relaxed);
+            if candidate != 0 {
+                break candidate;
+            }
+        };
+        let address = timing_address(
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioObjectPropertyScopeGlobal,
+        );
+        // SAFETY: `address` lives for the synchronous registration call; the
+        // callback ignores `user_data` and only updates `'static` state.
+        let status = unsafe {
+            AudioObjectAddPropertyListener(
+                kAudioObjectSystemObject as AudioObjectID,
+                NonNull::from(&address),
+                Some(notify_route_hal_change),
+                token as *mut c_void,
+            )
+        };
+        check_os_status(status)?;
+        let mut listener = Self {
+            token,
+            system_registered: true,
+            watched_device: None,
+            device_props: [false; 2],
+        };
+        listener.sync_default_device();
+        Ok(listener)
+    }
+
+    /// Rebind device-level listeners (`NominalSampleRate` and `DeviceIsAlive`)
+    /// whenever the system default output device changes.
+    pub fn sync_default_device(&mut self) {
+        let current = default_output_device().map(|d| d.audio_device_id);
+        if current == self.watched_device {
+            return;
+        }
+        self.clear_device_listeners();
+        if let Some(device_id) = current {
+            for (index, &selector) in ROUTE_DEVICE_PROPERTIES.iter().enumerate() {
+                let address = timing_address(selector, kAudioObjectPropertyScopeGlobal);
+                // SAFETY: `address` is valid for this synchronous registration;
+                // callback touches only `'static` globals.
+                let status = unsafe {
+                    AudioObjectAddPropertyListener(
+                        device_id,
+                        NonNull::from(&address),
+                        Some(notify_route_hal_change),
+                        self.token as *mut c_void,
+                    )
+                };
+                self.device_props[index] = status == 0;
+            }
+            self.watched_device = Some(device_id);
+        }
+    }
+
+    /// Current HAL route-change generation counter.
+    pub fn generation(&self) -> u64 {
+        ROUTE_CHANGE_GENERATION.load(Ordering::Acquire)
+    }
+
+    /// Wait until the HAL route-change generation advances past `seen`,
+    /// `wake_waiters()` is called, or `timeout` elapses. Returns `true` when
+    /// `seen` advanced.
+    pub fn wait_for_change(&self, seen: &mut u64, timeout: Duration) -> bool {
+        let current = ROUTE_CHANGE_GENERATION.load(Ordering::SeqCst);
+        if current != *seen {
+            *seen = current;
+            return true;
+        }
+        if let Some(sem) = ROUTE_CHANGE_SEMAPHORE.get() {
+            let _ = sem.wait_timeout(timeout);
+        }
+        let after = ROUTE_CHANGE_GENERATION.load(Ordering::SeqCst);
+        if after != *seen {
+            *seen = after;
+            return true;
+        }
+        false
+    }
+
+    /// Wake any control threads blocked in [`Self::wait_for_change`] (for
+    /// example during watch teardown).
+    pub fn wake_waiters() {
+        if let Some(sem) = ROUTE_CHANGE_SEMAPHORE.get() {
+            sem.signal_all();
+            sem.signal();
+        }
+    }
+
+    fn clear_device_listeners(&mut self) {
+        if let Some(device_id) = self.watched_device.take() {
+            for (index, &selector) in ROUTE_DEVICE_PROPERTIES.iter().enumerate() {
+                if self.device_props[index] {
+                    let address = timing_address(selector, kAudioObjectPropertyScopeGlobal);
+                    // SAFETY: Matches the exact `(device_id, address, proc, token)`
+                    // tuple registered in `sync_default_device`.
+                    let status = unsafe {
+                        AudioObjectRemovePropertyListener(
+                            device_id,
+                            NonNull::from(&address),
+                            Some(notify_route_hal_change),
+                            self.token as *mut c_void,
+                        )
+                    };
+                    let _ = hal_listener_retired(status);
+                    self.device_props[index] = false;
+                }
+            }
+        }
+    }
+}
+
+impl Drop for OutputRouteListener {
+    fn drop(&mut self) {
+        self.clear_device_listeners();
+        if self.system_registered {
+            let address = timing_address(
+                kAudioHardwarePropertyDefaultOutputDevice,
+                kAudioObjectPropertyScopeGlobal,
+            );
+            // SAFETY: Matches the exact registration tuple created in `new`.
+            let status = unsafe {
+                AudioObjectRemovePropertyListener(
+                    kAudioObjectSystemObject as AudioObjectID,
+                    NonNull::from(&address),
+                    Some(notify_route_hal_change),
+                    self.token as *mut c_void,
+                )
+            };
+            let _ = hal_listener_retired(status);
+            self.system_registered = false;
         }
     }
 }
@@ -2209,6 +2399,82 @@ mod output_timing_regression {
         );
         drop(stream);
         assert!(!fresh.current());
+    }
+
+    #[test]
+    fn hal_listener_retired_accepts_only_ok_and_dead_object_errors() {
+        assert!(hal_listener_retired(0));
+        assert!(hal_listener_retired(kAudioHardwareBadObjectError));
+        assert!(hal_listener_retired(kAudioHardwareBadDeviceError));
+        assert!(hal_listener_retired(kAudioHardwareBadStreamError));
+        assert!(!hal_listener_retired(-1));
+        assert!(!hal_listener_retired(1));
+    }
+
+    #[test]
+    fn disappeared_device_retirement_releases_watch_slots_past_capacity() {
+        let device = default_output_device().expect("native timing probe needs an output device");
+        let unit = audio_unit_on_device(&device, false, true).unwrap();
+        let snapshot = output_timing_snapshot(&unit, device.audio_device_id).unwrap();
+        // Use a nonexistent AudioObjectID so CoreAudio returns
+        // kAudioHardwareBadObjectError / kAudioHardwareBadDeviceError on removal,
+        // matching a hot-unplugged USB/Bluetooth device.
+        let disappeared_id: AudioObjectID = AudioObjectID::MAX - 1;
+        let dead_address = timing_address(
+            kAudioDevicePropertyNominalSampleRate,
+            kAudioObjectPropertyScopeGlobal,
+        );
+        for _ in 0..(WATCH_SLOTS + 8) {
+            let receipt = OutputTimingReceipt::reserve().expect("watch slot must not leak");
+            let watch = OutputTimingWatch {
+                receipt,
+                snapshot,
+                hal: vec![(disappeared_id, dead_address)],
+                unit_count: 0,
+            };
+            watch.retire(&unit);
+            assert!(!receipt.current());
+        }
+        // Verify we can still reserve after >WATCH_SLOTS disappeared-device retirements.
+        let final_receipt = OutputTimingReceipt::reserve().expect("slot still available");
+        final_receipt.invalidate();
+        final_receipt.release();
+    }
+
+    #[test]
+    fn output_route_listener_wakes_immediately_on_hal_notification_and_retires_cleanly() {
+        let listener = OutputRouteListener::new().expect("register route listener");
+        let mut seen = listener.generation();
+        let handle = std::thread::spawn(move || {
+            let start = Instant::now();
+            let changed = listener.wait_for_change(&mut seen, Duration::from_secs(5));
+            (changed, start.elapsed(), seen)
+        });
+        std::thread::sleep(Duration::from_millis(5));
+        let notify_at = Instant::now();
+        let addr = timing_address(
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioObjectPropertyScopeGlobal,
+        );
+        // SAFETY: Invokes the `'static` notification callback with a valid address.
+        unsafe {
+            notify_route_hal_change(
+                kAudioObjectSystemObject as AudioObjectID,
+                1,
+                NonNull::from(&addr),
+                std::ptr::null_mut(),
+            );
+        }
+        let (changed, _waited, after_gen) = handle.join().unwrap();
+        assert!(changed);
+        assert!(after_gen > 0);
+        assert!(notify_at.elapsed() < Duration::from_millis(250));
+
+        for _ in 0..(WATCH_SLOTS + 8) {
+            let mut l = OutputRouteListener::new().expect("re-register route listener");
+            l.sync_default_device();
+            drop(l);
+        }
     }
 }
 

@@ -22,7 +22,7 @@ pub mod enumerate;
 mod loopback;
 mod property_listener;
 use device::OutputTimingWatch;
-pub use device::{Device, OutputTiming, OutputTimingReceipt};
+pub use device::{Device, OutputRouteListener, OutputTiming, OutputTimingReceipt};
 
 /// Coreaudio host, the default host on macOS.
 #[derive(Debug)]

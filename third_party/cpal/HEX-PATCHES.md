@@ -119,12 +119,16 @@ a persistent presentation plan.
 Each of sixteen process slots supports one native watch. Listener userdata is
 an opaque serial and slot index, never a Rust pointer to storage. Notifications
 use one matching atomic compare-exchange with no lock, allocation or property
-read. Retirement invalidates before unregistering. A failed unregister
-quarantines its already-invalid slot. Late callbacks cannot affect a newer
-receipt or access a disposed Stream. The native regression registers on an
-actual unstarted output and injects a delivered signal through the registered
-shim. Hardware property-notification delivery and physical timing still need
-native acceptance.
+read. Retirement invalidates before unregistering. Dead-device Core Audio status
+codes (`kAudioHardwareBadObjectError`, `kAudioHardwareBadDeviceError`,
+`kAudioHardwareBadStreamError`) are treated as cleanly retired so hot-unplugging
+USB/Bluetooth audio devices never leaks or quarantines `WATCH_SLOTS`; other
+unexpected unregister failures still quarantine their already-invalid slot. Late
+callbacks cannot affect a newer receipt or access a disposed Stream. The native
+regression registers on an actual unstarted output, injects a delivered signal
+through the registered shim, and verifies >16 disappeared-device retirement
+cycles never exhaust `WATCH_SLOTS`. Hardware property-notification delivery and
+physical timing still need native acceptance.
 
 The ignored `pinned_auhal_callback_clock_includes_one_device_buffer` test
 pins a silent output to the selected device while keeping its current buffer
@@ -157,3 +161,13 @@ by-value `semaphore_t` FFI bindings. `signal` and `signal_all` are single
 non-blocking Mach traps with zero allocation and zero user-space mutexes so
 audio callbacks can wake idle DSP wave workers in microseconds without busy
 spinning across Mach time-constraint computation budgets.
+
+## Control-side default output route HAL listener
+
+`platform::CoreAudioOutputRouteListener` subscribes on control to
+`kAudioHardwarePropertyDefaultOutputDevice` on `kAudioObjectSystemObject` and
+to `kAudioDevicePropertyNominalSampleRate` and `kAudioDevicePropertyDeviceIsAlive`
+on the current default output device. Its HAL callback updates only a `'static`
+generation counter and signals a `'static` `WorkerSemaphore`, avoiding raw
+pointer userdata and eliminating 500 ms route-polling lag while remaining safe
+across hot-unplugs and repeated retire/re-register cycles.

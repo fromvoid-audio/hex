@@ -734,7 +734,8 @@ mod platform_impl {
     pub use crate::host::coreaudio::Host as CoreAudioHost;
     #[cfg(target_os = "macos")]
     pub use crate::host::coreaudio::{
-        OutputTiming as CoreAudioOutputTiming, OutputTimingReceipt as CoreAudioOutputTimingReceipt,
+        OutputRouteListener as CoreAudioOutputRouteListener, OutputTiming as CoreAudioOutputTiming,
+        OutputTimingReceipt as CoreAudioOutputTimingReceipt,
         WorkerSemaphore as CoreAudioWorkerSemaphore,
         WorkerTimeConstraint as CoreAudioWorkerTimeConstraint,
     };

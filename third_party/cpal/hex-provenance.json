@@ -178,7 +178,7 @@
       "original": "e64c7f14f833251c8a884f5d379b03395723833f4ebc0a57999590dd2c456043"
     },
     "src/host/coreaudio/macos/device.rs": {
-      "current": "815ab16723e83a91d1c673a3405f8e4c8dfc4e2918ca5355094c62389532df23",
+      "current": "8831f3b50f486e68d1a32a7c2b0ccf92582f399c04f7aef5ec6f601e421cb0ed",
       "original": "d5ccdc81b1c2fabb138d60362b3175bbd134b96897856db37231118dcf9ab70b"
     },
     "src/host/coreaudio/macos/enumerate.rs": {
@@ -190,7 +190,7 @@
       "original": "dfe0ec57041759e4f41e56f85426716e7d8ce49c127d9f07f95873e5fef5fe80"
     },
     "src/host/coreaudio/macos/mod.rs": {
-      "current": "58ff945320c6ffd12a1f1a113484858881a34ca3fb66991445874664a146d688",
+      "current": "54a9a7d5ca4f85a07cead215fe15bba886eaf4a6e2ac853b103b3045c05c028c",
       "original": "70cc0279ecfbef07bc5f26b64e700845deb8f38f6d0fee6baf3461f6c0063699"
     },
     "src/host/coreaudio/macos/property_listener.rs": {
@@ -198,7 +198,7 @@
       "original": "5f469b72e20ec808d038b31ef731eb49882eac69bef42f461859524401d49e30"
     },
     "src/host/coreaudio/mod.rs": {
-      "current": "0141b0b9787c4ddb6f4ab66bf0d7502f5c773363edee8e73ee237fb17749e712",
+      "current": "72d8f6d8a3cbfe3eacf13b7de0a61eaad9f228d317a60d6ec62ed3547b0fb13a",
       "original": "3aaa9a3ce18a676e545419cbfd88c097a23a3671cbf090a2edf529f3f3861903"
     },
     "src/host/custom/mod.rs": {
@@ -254,7 +254,7 @@
       "original": "69d27906578940be1652b310c4b1d314549095d461502ac80a53de1803b3e491"
     },
     "src/platform/mod.rs": {
-      "current": "cec4f093ee17b8811b5da62a11a1a4a04ca6e727569b691c104930307b244182",
+      "current": "827e49a1eedcf232b8d2816e0b4cda903592b8608fc5d8bdf1050a42fd329037",
       "original": "5c122a047d4a31a1606a066323aa2d483cd35b9fe348078e9e3678f645a86991"
     },
     "src/samples_formats.rs": {
@@ -267,7 +267,7 @@
     }
   },
   "package": "cpal",
-  "patch_sha256": "eb6c15d201d4bde419e507f3af3decdaecd8fbb17a4d8a7a0dbcbed790d331af",
+  "patch_sha256": "4a8a01d0ddf94f0111d396bff5db3d0e96000941ecb99c426e64bc2a32cf670f",
   "upstream_vcs": "fd3b945bffcaa493fa7cb5ceddf9db1f9330fd30",
   "version": "0.17.3"
 }
