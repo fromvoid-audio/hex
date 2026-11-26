@@ -1,7 +1,7 @@
 //! Ordered hardware MIDI at one event per rendered sample. A quantum carries
 //! at most 32 hardware events, in addition to its authored and physical keys.
 //! The render transaction advances only the prefix that it staged.
-use super::{Input, next_note_id};
+use super::{Input, next_note_id, note_pitch_bend};
 use crate::computer_keyboard::{LiveNoteActivation, LiveNoteBatch, LiveNoteEvent};
 use crate::mutable_instrument::MutableInstrumentRuntimeError;
 use hex_lattice::{ForeignNote, ForeignNoteKind};
@@ -116,6 +116,30 @@ impl Gates {
         true
     }
 
+    fn stage_expression(
+        &mut self,
+        channel: u8,
+        pitch: u8,
+        batch: &mut Batch,
+        events: &mut Vec<ForeignNote>,
+        event: impl FnOnce(Gate) -> ForeignNote,
+    ) {
+        if let Some(gate) = self
+            .notes
+            .iter()
+            .flatten()
+            .find(|gate| gate.channel == channel && gate.pitch == pitch)
+        {
+            if self.remaining == 0 {
+                return;
+            }
+            events.push(event(*gate));
+            self.remaining -= 1;
+        }
+        // Orphan expression belongs to no active occurrence on this input.
+        batch.consumed += 1;
+    }
+
     pub(super) fn stage(
         &mut self,
         input: Option<&Input>,
@@ -156,7 +180,12 @@ impl Gates {
                 channel,
                 pitch,
                 value,
-            } => (channel, pitch, value, ForeignNoteKind::PolyPressure),
+            } => {
+                self.stage_expression(channel, pitch, batch, events, |gate| {
+                    gate.event(ForeignNoteKind::PolyPressure, value)
+                });
+                return Ok(());
+            }
             LiveNoteEvent::ControlChange { channel, cc, value } => {
                 if cc == 64 && value >= 64 {
                     self.sustain_channels |= 1_u16 << channel;
@@ -196,8 +225,24 @@ impl Gates {
                 batch.consumed += 1;
                 return Ok(());
             }
-            LiveNoteEvent::NotePitchBend { .. } | LiveNoteEvent::NoteTimbre { .. } => {
-                batch.consumed += 1;
+            LiveNoteEvent::NotePitchBend {
+                channel,
+                pitch,
+                cents,
+            } => {
+                self.stage_expression(channel, pitch, batch, events, |gate| {
+                    ForeignNote::pitch_bend(0, channel, note_pitch_bend(cents), Some(gate.id), true)
+                });
+                return Ok(());
+            }
+            LiveNoteEvent::NoteTimbre {
+                channel,
+                pitch,
+                value,
+            } => {
+                self.stage_expression(channel, pitch, batch, events, |gate| {
+                    ForeignNote::control_change(0, channel, 74, value, Some(gate.id), true)
+                });
                 return Ok(());
             }
             LiveNoteEvent::AllNotesOff => {
@@ -210,17 +255,6 @@ impl Gates {
         let previous = self.notes.iter().position(|gate| {
             gate.is_some_and(|gate| gate.channel == channel && gate.pitch == pitch)
         });
-        if kind == ForeignNoteKind::PolyPressure {
-            if let Some(gate) = previous.and_then(|index| self.notes[index]) {
-                if self.remaining == 0 {
-                    return Ok(());
-                }
-                events.push(gate.event(kind, value));
-                self.remaining -= 1;
-            }
-            batch.consumed += 1;
-            return Ok(());
-        }
         let on = kind == ForeignNoteKind::On;
         if !on && (self.sustain_channels & (1_u16 << channel)) != 0 {
             if let Some(gate) = previous.and_then(|index| self.notes[index].as_mut()) {
@@ -308,7 +342,19 @@ mod tests {
             pitch: 0,
             value: 37,
         };
+        let bend = LiveNoteEvent::NotePitchBend {
+            channel: 0,
+            pitch: 0,
+            cents: -4800,
+        };
+        let slide = LiveNoteEvent::NoteTimbre {
+            channel: 0,
+            pitch: 0,
+            value: 64,
+        };
+        queue.publish(activation, bend).unwrap();
         queue.publish(activation, pressure).unwrap();
+        queue.publish(activation, slide).unwrap();
         queue.publish(activation, off).unwrap();
         queue
             .publish(activation, LiveNoteEvent::AllNotesOff)
@@ -332,14 +378,14 @@ mod tests {
         );
         assert_eq!(
             queue.snapshot().unwrap().events(),
-            &[pressure, off, LiveNoteEvent::AllNotesOff]
+            &[bend, pressure, slide, off, LiveNoteEvent::AllNotesOff]
         );
 
         let expected = events.iter().map(|event| event.note_id).collect::<Vec<_>>();
         events.clear();
         gates.reset_budget();
         batch.begin(Some(&input));
-        for _ in 0..3 {
+        for _ in 0..5 {
             gates
                 .stage(Some(&input), &mut batch, &mut id, &mut events)
                 .unwrap();
@@ -349,12 +395,20 @@ mod tests {
             queue.snapshot().unwrap().events(),
             &[LiveNoteEvent::AllNotesOff]
         );
-        let [pressed, released] = events.as_slice() else {
-            panic!("expected pressure and release");
+        let [tuned, pressed, bright, released] = events.as_slice() else {
+            panic!("expected the three expressions and release");
         };
         assert_eq!(
             (pressed.kind, pressed.value, pressed.note_id),
             (ForeignNoteKind::PolyPressure, 37, expected[0])
+        );
+        assert_eq!(
+            *tuned,
+            ForeignNote::pitch_bend(0, 0, -8192, expected[0], true)
+        );
+        assert_eq!(
+            *bright,
+            ForeignNote::control_change(0, 0, 74, 64, expected[0], true)
         );
         assert!(pressed.is_live);
         assert_eq!(

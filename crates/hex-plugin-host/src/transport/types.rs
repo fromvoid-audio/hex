@@ -374,7 +374,7 @@ pub struct MidiEvent {
     pub bytes: [u8; 3],
     pub len: u8,
     /// An optional scheduled note identity, bound to one native epoch.
-    /// Authored identified pitch bend spans ±4800 cents. Identified CC74
+    /// Identified input pitch bend spans ±4800 cents. Identified CC74
     /// carries brightness. Both target the preceding onset on this channel.
     pub note_id: Option<std::num::NonZeroU32>,
     /// True for monitored live input (VST3 `Event::kIsLive`); false for sequenced playback.
@@ -405,8 +405,8 @@ impl MidiEvent {
     fn valid_for(self, frames: usize, direction: EventDirection) -> bool {
         let status = self.bytes[0] & 0xf0;
         let carries_note_identity = matches!(status, 0x80 | 0x90 | 0xa0);
-        let authored_expression =
-            !self.is_live && (status == 0xe0 || (status == 0xb0 && self.bytes[1] == 74));
+        let identified_expression = (direction == EventDirection::Input || !self.is_live)
+            && (status == 0xe0 || (status == 0xb0 && self.bytes[1] == 74));
         let expected = match status {
             0x80 | 0x90 | 0xa0 | 0xb0 | 0xe0 => 3,
             0xc0 | 0xd0 => 2,
@@ -420,7 +420,7 @@ impl MidiEvent {
             && (self.len == 3 || self.bytes[2] == 0)
             && self.note_id.is_none_or(|id| {
                 if i32::try_from(id.get()).is_ok() {
-                    return carries_note_identity || authored_expression;
+                    return carries_note_identity || identified_expression;
                 }
                 // Steinberg ivstevents.h reserves this range for the plug-in.
                 direction == EventDirection::Output

@@ -866,7 +866,14 @@ hardware notes play the selected instrument with their original note-on velocity
 computer-keyboard notes use the same selected track and keep separate ownership.
 selection audition waits while hardware input is selected. pressure, pitch bend,
 modulation and held-note piano-roll step entry remain available. live input timing
-is currently resolved at audio-block boundaries; sustain and mpe are not included.
+is resolved at audio-block boundaries.
+
+to monitor an mpe controller, match the lower or upper zone, member channels and
+pitch bend range in midi input settings to your controller. on a hosted vst3
+instrument, bending a held note changes its pitch when the instrument supports
+per-note tuning on that channel. slide (cc74) changes its timbre when the
+instrument supports per-note brightness. notes held on other member channels
+keep their own expression.
 
 ## input quantization
 

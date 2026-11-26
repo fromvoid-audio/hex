@@ -8,6 +8,30 @@ const BINDING: Binding = Binding {
 };
 
 #[test]
+fn identified_live_pitch_and_brightness_are_input_expressions() {
+    for (bytes, len, supported) in [
+        ([0xe1, 127, 127], 3, true),
+        ([0xb2, 74, 96], 3, true),
+        ([0xb2, 71, 96], 3, false),
+        ([0xd1, 36, 0], 2, false),
+    ] {
+        let mut block = Block::empty(BINDING, 8);
+        block
+            .events
+            .push(MidiEvent {
+                frame: 1,
+                bytes,
+                len,
+                note_id: std::num::NonZeroU32::new(52),
+                is_live: true,
+            })
+            .unwrap();
+        assert_eq!(block.valid(BINDING, 8, 0).is_ok(), supported);
+        assert_eq!(block.valid_reply(BINDING, 8, 0), Err(Fault::InvalidEvents));
+    }
+}
+
+#[test]
 fn accepted_concealment_reports_exact_pair_and_bounded_overflow() {
     let (control, mut callback, mut worker) =
         native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();

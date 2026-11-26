@@ -1562,9 +1562,12 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
             ("120", "notes"),
             ("145", "automation"),
             ("145", "loop-seek"),
+            ("145", "monitored-expression"),
         ] {
             let result = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", NAME, "--ignored"])
+                // Debug playback construction uses the native fixture test stack.
+                .env("RUST_MIN_STACK", "16777216")
                 .env(CHILD, scenario)
                 .env("HEX_ORIGINAL_INSTANCE_VARIANT", variant)
                 .output()
@@ -1698,9 +1701,77 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     };
     let latency = revision.arrangement().main_latency_frames() as usize;
     assert_eq!(latency, effect.prepared().total_latency_frames() as usize);
+    if scenario == "monitored-expression" {
+        use hex_engine::computer_keyboard::{ComputerKeyboardInput, LiveNoteEvent::*};
+        let input = Arc::new(ComputerKeyboardInput::default().with_live_notes().unwrap());
+        let mut playback = hex_engine::playback::Playback::from_prepared(Arc::new(revision));
+        playback
+            .prepare_computer_keyboard(&project, track, Arc::clone(&input))
+            .unwrap();
+        let activation = input.begin_live_notes_activation_on_control().unwrap();
+        let queue = input.live_notes().unwrap();
+        let on = |channel| NoteOn {
+            channel,
+            pitch: 60,
+            velocity: 127,
+        };
+        let off = |channel| NoteOff {
+            channel,
+            pitch: 60,
+            velocity: 0,
+        };
+        let bend = |channel, cents| NotePitchBend {
+            channel,
+            pitch: 60,
+            cents,
+        };
+        let slide = |channel, value| NoteTimbre {
+            channel,
+            pitch: 60,
+            value,
+        };
+        for event in [
+            on(1),
+            bend(1, 4800),
+            on(2),
+            slide(2, 32),
+            bend(2, -4800), // no tuning capability on channel two
+            slide(3, 127),  // no held onset
+            slide(1, 127),  // no brightness capability on channel one
+            off(1),
+            slide(2, 64), // the same channel-two occurrence in the next SDK block
+            off(2),
+            slide(2, 100), // released occurrence
+        ] {
+            queue.publish(activation, event).unwrap();
+        }
+        let output = render_signed_note_blocks(effect, |block, endpoints| {
+            playback
+                .render_with_foreign_processors(block, None, None, None, endpoints)
+                .unwrap();
+        });
+        let bright = 0.5 * 32.0 / 127.0;
+        let mut expected = [0.0; 48];
+        expected[latency..latency + 9].copy_from_slice(&[
+            0.5,
+            0.35,
+            0.85,
+            0.35 + bright,
+            0.35 + bright,
+            0.35 + bright,
+            0.35 + bright,
+            bright,
+            0.625 * 64.0 / 127.0,
+        ]);
+        for (frame, (actual, expected)) in output.iter().zip(expected).enumerate() {
+            assert!(
+                actual.iter().all(|sample| (sample - expected).abs() < 1e-6),
+                "monitored frame {frame}: expected {expected}, got {actual:?}"
+            );
+        }
+        return;
+    }
     let mut runtime = hex_engine::SessionPlayback::new(Arc::new(revision)).unwrap();
-    let (mut workers, mut endpoints) =
-        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
     if loop_seek {
         runtime
             .apply(hex_engine::SessionPlaybackCommand::Seek(304))
@@ -1709,23 +1780,11 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
     runtime
         .apply(hex_engine::SessionPlaybackCommand::Play)
         .unwrap();
-    let mut output = [[0.0; 2]; 48];
-    for (index, block) in output.chunks_exact_mut(8).enumerate() {
-        let measured = allocation_counter::measure(|| {
-            endpoints.begin_host_callback(block.len()).unwrap();
-            runtime
-                .render_with_foreign_processors(block, None, None, None, &mut endpoints)
-                .unwrap();
-            endpoints.finish_host_callback(true).unwrap();
-        });
-        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
-        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while workers[0].published_blocks_on_control() <= index as u64 {
-            assert!(Instant::now() < deadline, "native pcm completion");
-            std::thread::yield_now();
-        }
-    }
+    let output = render_signed_note_blocks(effect, |block, endpoints| {
+        runtime
+            .render_with_foreign_processors(block, None, None, None, endpoints)
+            .unwrap();
+    });
     let mut expected = [[0.0; 2]; 48];
     let onset = latency + if loop_seek { 17 } else { 1 };
     // The fixture adds 0.125 per SDK call. Seeking near the wrap starts
@@ -1736,9 +1795,34 @@ fn actual_arrangement_instrument_renders_authored_notes_at_compensated_offsets()
         expected[onset + 1] = [unity * 2.0; 2];
     }
     assert_eq!(output, expected);
+}
+
+#[cfg(feature = "allocation-probe")]
+fn render_signed_note_blocks(
+    effect: NativeEffect,
+    mut render: impl FnMut(&mut [[f32; 2]], &mut NativeEffectCallbacks),
+) -> [[f32; 2]; 48] {
+    let (mut workers, mut endpoints) =
+        NativeEffectCallbacks::from_effects_on_control(vec![effect]).unwrap();
+    let mut output = [[0.0; 2]; 48];
+    for (index, block) in output.chunks_exact_mut(8).enumerate() {
+        let measured = allocation_counter::measure(|| {
+            endpoints.begin_host_callback(block.len()).unwrap();
+            render(block, &mut endpoints);
+            endpoints.finish_host_callback(true).unwrap();
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        assert_eq!((measured.count_current, measured.bytes_current), (0, 0));
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while workers[0].published_blocks_on_control() <= index as u64 {
+            assert!(Instant::now() < deadline, "native pcm completion");
+            std::thread::yield_now();
+        }
+    }
     let retired = workers[0].retire_on_control().unwrap();
     assert!(retired.failure.is_none() && retired.native.status.success());
     assert_eq!(retired.native.terminal.unwrap().blocks, 6);
+    output
 }
 
 #[test]
