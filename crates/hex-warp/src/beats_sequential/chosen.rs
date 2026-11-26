@@ -99,7 +99,7 @@ impl SequentialBeats {
                 previous_aligned,
                 previous_source_cut,
                 previous_gap,
-                bounds_prev,
+                mut bounds_prev,
                 mut bounds_next,
                 mut future_idx,
                 mut last_attack,
@@ -109,6 +109,23 @@ impl SequentialBeats {
                     let drop = group_index - 1;
                     self.chosen_boundaries.drain(..drop);
                     group_index -= drop;
+                }
+                // Prune old physical anchors strictly before all active indices and any
+                // pending previous_source_cut lookup window so long streams stay bounded.
+                let mut keep_from = bounds_prev
+                    .min(bounds_next)
+                    .min(future_idx)
+                    .min(last_attack.unwrap_or(future_idx));
+                if let Some(cut) = previous_source_cut {
+                    let cut_idx = self.physical_anchors.partition_point(|x| x.source < cut);
+                    keep_from = keep_from.min(cut_idx);
+                }
+                let dropped = self.prune_physical_anchors(keep_from);
+                bounds_prev -= dropped;
+                bounds_next -= dropped;
+                future_idx -= dropped;
+                if let Some(idx) = last_attack.as_mut() {
+                    *idx -= dropped;
                 }
                 self.ensure_chosen_boundary(group_index + 2)
                     .map_err(S::Error::from)?;
@@ -693,5 +710,102 @@ mod tests {
             }
         }
         assert_eq!(total, 3_072);
+    }
+
+    struct PeriodicImpulseLoop {
+        region: usize,
+        period: usize,
+    }
+
+    impl GranularSource for PeriodicImpulseLoop {
+        type Error = Error;
+
+        fn window(&mut self, start: i128, output: &mut [[f64; 2]]) -> Result<(), Self::Error> {
+            for (offset, slot) in output.iter_mut().enumerate() {
+                *slot = self.frame(start + offset as i128)?;
+            }
+            Ok(())
+        }
+
+        fn frame(&mut self, index: i128) -> Result<[f64; 2], Self::Error> {
+            let local = index.rem_euclid(self.region as i128) as usize;
+            let phase = local % self.period;
+            let v = if phase < 6 {
+                0.85
+            } else {
+                0.02 * ((local as f64) * 0.07).sin()
+            };
+            Ok([v, v])
+        }
+    }
+
+    #[test]
+    fn chosen_phase_prunes_physical_anchors_over_long_stream() {
+        let region = 2_048u64;
+        let source_end = 40_960u64; // 20 cycles, ~80 detected attacks
+        let output_end = 49_152u64;
+        let map = TimeMap::new(
+            vec![crate::MapSegment {
+                output_start: 0,
+                output_end,
+                source_start_q32: 0,
+                source_end_q32: i128::from(source_end) * Q32,
+            }],
+            output_end as usize,
+        )
+        .unwrap();
+        let mut cancel = || false;
+        let mut beats = SequentialBeats::new(
+            SequentialBeatsConfig {
+                map,
+                sample_rate: 48_000,
+                mode: Mode::Beats {
+                    tail: Tail::Forward,
+                    decay: 75,
+                    division_frames: Some(512),
+                },
+                region_length: region,
+                looping: true,
+                attacks: Vec::new(),
+                pitch_cents: 0,
+                resampler: Resampler::V2,
+            },
+            &mut cancel,
+        )
+        .unwrap();
+        let mut source = PeriodicImpulseLoop {
+            region: region as usize,
+            period: 512,
+        };
+        let mut scratch = vec![[0.0; 2]; beats.max_source_frames()];
+        let mut buf = vec![[0.0; 2]; 8_192];
+        let mut total = 0usize;
+        let mut max_physical_anchors = 0usize;
+        let mut max_chosen_boundaries = 0usize;
+        let mut max_backing_bytes = 0usize;
+        while !beats.is_complete() {
+            beats
+                .advance(&mut source, &mut scratch, &mut cancel)
+                .unwrap();
+            max_physical_anchors = max_physical_anchors.max(beats.physical_anchors.len());
+            max_chosen_boundaries = max_chosen_boundaries.max(beats.chosen_boundaries.len());
+            max_backing_bytes = max_backing_bytes.max(beats.backing_bytes().unwrap());
+            let avail = beats.available();
+            if avail > 0 {
+                beats.drain(&mut buf[..avail]).unwrap();
+                total += avail;
+            }
+        }
+        assert_eq!(total, output_end as usize);
+        assert!(max_backing_bytes <= MAX_SCRATCH_BYTES);
+        // Without pruning, ~80 physical anchors would accumulate; pruning keeps the window tiny.
+        assert!(
+            max_physical_anchors <= 32,
+            "expected pruned physical_anchors <= 32, got {max_physical_anchors}"
+        );
+        assert!(
+            max_chosen_boundaries <= 24,
+            "expected pruned chosen_boundaries <= 24, got {max_chosen_boundaries}"
+        );
     }
 }

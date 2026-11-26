@@ -34,6 +34,7 @@ pub(super) struct OnsetScannerCheckpoint {
     pub(super) spec_count: u64,
     pub(super) onsets: Vec<u64>,
     pub(super) region_complete: bool,
+    pub(super) evicted: bool,
 }
 
 impl OnsetScannerCheckpoint {
@@ -77,6 +78,7 @@ pub(super) struct OnsetScanner {
     spec_count: u64,
     onsets: Vec<u64>,
     region_complete: bool,
+    evicted: bool,
 }
 
 impl OnsetScanner {
@@ -121,6 +123,7 @@ impl OnsetScanner {
             spec_count: 0,
             onsets,
             region_complete: false,
+            evicted: false,
         })
     }
 
@@ -184,6 +187,7 @@ impl OnsetScanner {
             spec_count: self.spec_count,
             onsets,
             region_complete: self.region_complete,
+            evicted: self.evicted,
         };
         if cp.backing_bytes().is_none_or(|b| b > budget) {
             return Err(Error::ScratchLimit);
@@ -241,6 +245,7 @@ impl OnsetScanner {
             }
         }
         cp.region_complete = self.region_complete;
+        cp.evicted = self.evicted;
     }
 
     pub(super) fn restore(&mut self, cp: &OnsetScannerCheckpoint) -> Result<(), Error> {
@@ -262,6 +267,7 @@ impl OnsetScanner {
         self.spec_center = cp.spec_center;
         self.spec_count = cp.spec_count;
         self.region_complete = cp.region_complete;
+        self.evicted = cp.evicted;
         Ok(())
     }
 
@@ -273,9 +279,32 @@ impl OnsetScanner {
         &self.onsets
     }
 
-    /// Prune onsets strictly below `floor` when scanning a non-cached long region.
+    pub(super) fn needs_rescan_on_wrap(&self) -> bool {
+        self.evicted
+    }
+
+    pub(super) fn reset_for_next_cycle(&mut self) {
+        self.energy_warmup_done = false;
+        self.energy_slow = 0.0;
+        self.energy_last = None;
+        self.energy_pos = 0;
+        self.spec_previous.fill([Complex::default(); 2]);
+        self.spec_older.fill([Complex::default(); 2]);
+        self.spec_mean = [0.0; 4];
+        self.spec_deviation = [0.0; 4];
+        self.spec_last_score = 0.0;
+        self.spec_before_score = 0.0;
+        self.spec_center = 0;
+        self.spec_count = 0;
+        self.onsets.clear();
+        self.onsets.push(0);
+        self.region_complete = false;
+        self.evicted = false;
+    }
+
+    /// Prune onsets strictly below `floor` when scanning a non-looping long region.
     pub(super) fn prune_before(&mut self, floor: u64) {
-        if self.looping && self.region_length <= MAX_CACHED_LOOP_REGION {
+        if self.looping {
             return;
         }
         let keep_from = floor.saturating_sub(self.separation + self.n as u64);
@@ -451,6 +480,7 @@ impl OnsetScanner {
             self.onsets.remove(0);
             let new_idx = self.onsets.partition_point(|&x| x < at);
             self.onsets.insert(new_idx, at);
+            self.evicted = true;
             return Ok(());
         }
         self.onsets.try_reserve(1).map_err(|_| Error::Allocation)?;
