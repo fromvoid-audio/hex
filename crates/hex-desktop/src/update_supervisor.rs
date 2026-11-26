@@ -260,14 +260,16 @@ pub(super) struct Prepared {
 impl Prepared {
     /// Send only after the ordinary close path has irrevocably accepted quit.
     /// The helper additionally requires a normal exit and exclusive custody.
+    /// Keeps `self.input` intact until both `write_all` and `flush` succeed so
+    /// a write failure lets `Drop` signal and reap the helper process group.
     pub(super) fn approve(mut self) -> io::Result<()> {
-        let mut input = self
+        let input = self
             .input
-            .take()
+            .as_mut()
             .ok_or_else(|| invalid("update approval unavailable"))?;
         input.write_all(APPROVAL)?;
         input.flush()?;
-        drop(input);
+        drop(self.input.take());
         Ok(())
     }
 }
@@ -317,7 +319,81 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
 
-/// Surface the newest bounded helper result without deleting any custody.
+/// Number of newest session directories retained under `.hex-update-runtime/`.
+#[cfg(unix)]
+const RETAINED_RUNTIME_SESSIONS: usize = 16;
+
+/// Upper bound when scanning unpruned `.hex-update-runtime/` directories.
+#[cfg(unix)]
+const MAX_SCAN_RUNTIME_SESSIONS: usize = 4096;
+
+#[cfg(unix)]
+fn is_valid_session_dir_name(name: &str) -> bool {
+    name.len() == 32
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+/// Prune stale helper session directories in `.hex-update-runtime/`, retaining
+/// the `retain` newest valid directories owned by `uid`.
+#[cfg(unix)]
+fn prune_runtime_sessions(root: &Path, uid: u32, retain: usize) {
+    use std::os::unix::fs::MetadataExt;
+    if plain_path(root).is_err() {
+        return;
+    }
+    let Ok(root_meta) = fs::symlink_metadata(root) else {
+        return;
+    };
+    if !root_meta.is_dir()
+        || root_meta.file_type().is_symlink()
+        || root_meta.uid() != uid
+        || root_meta.mode() & 0o7777 != 0o700
+    {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    let mut sessions: Vec<(std::time::SystemTime, String, PathBuf)> = Vec::new();
+    for entry in entries.take(MAX_SCAN_RUNTIME_SESSIONS).flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !is_valid_session_dir_name(name) {
+            continue;
+        }
+        let session = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&session) else {
+            continue;
+        };
+        if !metadata.is_dir()
+            || metadata.file_type().is_symlink()
+            || metadata.uid() != uid
+            || metadata.mode() & 0o7777 != 0o700
+        {
+            continue;
+        }
+        let stamp = fs::symlink_metadata(session.join("result.json"))
+            .ok()
+            .and_then(|meta| meta.modified().ok())
+            .or_else(|| metadata.modified().ok())
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+        sessions.push((stamp, name.to_owned(), session));
+    }
+    if sessions.len() <= retain {
+        return;
+    }
+    sessions.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
+    for (_, _, stale) in sessions.into_iter().skip(retain) {
+        let _ = fs::remove_dir_all(stale);
+    }
+}
+
+/// Surface the newest bounded helper result and prune stale runtime sessions
+/// beyond [`RETAINED_RUNTIME_SESSIONS`] so results are never missed after 256 runs.
 #[cfg(unix)]
 fn last_result(target: &Path) -> Option<(&'static str, bool)> {
     use std::os::unix::fs::MetadataExt;
@@ -331,16 +407,17 @@ fn last_result(target: &Path) -> Option<(&'static str, bool)> {
         return None;
     }
     let mut newest = None;
-    for entry in fs::read_dir(&root).ok()?.take(256).flatten() {
+    let mut valid_dirs = 0usize;
+    for entry in fs::read_dir(&root)
+        .ok()?
+        .take(MAX_SCAN_RUNTIME_SESSIONS)
+        .flatten()
+    {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
         };
-        if name.len() != 32
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
+        if !is_valid_session_dir_name(name) {
             continue;
         }
         let session = entry.path();
@@ -355,6 +432,7 @@ fn last_result(target: &Path) -> Option<(&'static str, bool)> {
         {
             continue;
         }
+        valid_dirs += 1;
         let path = session.join("result.json");
         let metadata = match fs::symlink_metadata(&path) {
             Ok(value) => value,
@@ -408,6 +486,9 @@ fn last_result(target: &Path) -> Option<(&'static str, bool)> {
         {
             newest = Some((modified, value));
         }
+    }
+    if valid_dirs > RETAINED_RUNTIME_SESSIONS {
+        prune_runtime_sessions(&root, root_meta.uid(), RETAINED_RUNTIME_SESSIONS);
     }
     newest.map(|(_, result)| result)
 }
@@ -684,6 +765,7 @@ fn prepare_with_stop(
     let uid = current_uid();
     let root = parent.join(".hex-update-runtime");
     private_directory(&root, uid)?;
+    prune_runtime_sessions(&root, uid, RETAINED_RUNTIME_SESSIONS.saturating_sub(1));
     let mut random = [0_u8; 16];
     File::open("/dev/urandom")?.read_exact(&mut random)?;
     let session = root.join(
@@ -1021,5 +1103,81 @@ mod tests {
         );
         assert!(started.elapsed() < Duration::from_millis(400));
         let _ = release_tx.send(());
+    }
+
+    #[test]
+    fn prepared_approve_write_failure_kills_and_reaps_helper_child() {
+        use std::os::unix::process::CommandExt;
+        // Close stdin in the child immediately, then sleep so the child stays alive
+        // unless Prepared's Drop signals and reaps it on approve() write failure.
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", "exec 0<&-; echo closed; sleep 30"])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().unwrap();
+        let pid = nix::unistd::Pid::from_raw(i32::try_from(child.id()).unwrap());
+        let input = child.stdin.take().unwrap();
+        let output = child.stdout.take().unwrap();
+        let mut line = String::new();
+        BufReader::new(output).read_line(&mut line).unwrap();
+        assert_eq!(line, "closed\n");
+
+        let prepared = Prepared {
+            child: Some(child),
+            input: Some(input),
+        };
+        let err = prepared.approve().unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+
+        // Drop must have signaled the child group and reaped the child promptly.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while nix::sys::signal::kill(pid, None).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "helper child {pid} leaked alive after approve() write failure"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn runtime_sessions_pruned_and_last_result_finds_newest_beyond_256_dirs() {
+        let fixture = Fixture::new();
+        let target = fixture.0.join("hex.app");
+        fs::create_dir(&target).unwrap();
+        let root = fixture.0.join(".hex-update-runtime");
+        fs::create_dir(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+
+        let total = 270usize;
+        for index in 0..total {
+            let name = format!("{index:032x}");
+            let session = root.join(&name);
+            fs::create_dir(&session).unwrap();
+            fs::set_permissions(&session, fs::Permissions::from_mode(0o700)).unwrap();
+            if index + 1 == total {
+                // Ensure the newest directory has a strictly newer mtime.
+                std::thread::sleep(Duration::from_millis(15));
+                let result_path = session.join("result.json");
+                fs::write(&result_path, r#"{"version":1,"status":"installed"}"#).unwrap();
+            }
+        }
+
+        // Must find the newest result even with >256 session dirs, and prune stale dirs.
+        assert_eq!(last_result(&target), Some(("update installed", false)));
+        let remaining: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(remaining.len(), RETAINED_RUNTIME_SESSIONS);
+        let newest_name = format!("{:032x}", total - 1);
+        assert!(
+            remaining.contains(&newest_name),
+            "pruning must retain the newest session directory"
+        );
     }
 }

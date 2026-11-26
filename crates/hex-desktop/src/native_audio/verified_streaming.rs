@@ -121,8 +121,32 @@ impl VerifiedStreamingHost {
         self.blocked = None;
     }
 
+    #[cfg(test)]
     pub(super) fn is_quiescent(&self) -> bool {
-        self.preparation.is_none()
+        self.is_quiescent_for(None)
+    }
+
+    pub(super) fn is_quiescent_for(
+        &self,
+        desired: Option<&Arc<CanonicalAudioSourceSnapshot>>,
+    ) -> bool {
+        let desired_settled = desired
+            .filter(|source| {
+                source.audio_mode() == hex_session::DocumentAudioMode::VerifiedStreaming
+            })
+            .is_none_or(|source| {
+                let key = VerifiedSource::Canonical(Arc::clone(source)).key();
+                self.last.as_ref() == Some(&key) || self.blocked.as_ref() == Some(&key)
+            });
+        desired_settled
+            && self.preparation.is_none()
+            && self.edit.is_none()
+            && self.preview.is_none()
+            && self.submitted.iter().all(Option::is_none)
+            && self
+                .domains
+                .iter()
+                .all(|domain| domain.as_ref().is_none_or(|d| d.ready && !d.retiring))
     }
 }
 

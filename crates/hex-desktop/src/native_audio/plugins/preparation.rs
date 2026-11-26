@@ -42,7 +42,7 @@ impl Plugins {
                 self.reclaim_retired_sources(control, desired, true);
                 if self.sources.len() >= self.sources.capacity() {
                     if self.has_reclaimable_retiring_source() {
-                        edits::poll_control(control);
+                        edits::poll_control_nonblocking(control);
                         return Ok(PluginEffectPreparationState::Preparing);
                     }
                     return Err(
@@ -90,13 +90,13 @@ impl Plugins {
                 // or native owner. Retain the existing ordered request and retry
                 // through its normal continuation, as project reopen does.
                 Err(reason) if reason == "native preparation is busy" => {
-                    edits::poll_control(control);
+                    edits::poll_control_nonblocking(control);
                     return Ok(PluginEffectPreparationState::Preparing);
                 }
                 Err(reason) if reason == "native preparation cells are full" => {
                     let reclaimed = self.reclaim_retired_sources(control, desired, true);
                     if reclaimed > 0 || self.has_reclaimable_retiring_source() {
-                        edits::poll_control(control);
+                        edits::poll_control_nonblocking(control);
                         return Ok(PluginEffectPreparationState::Preparing);
                     }
                     return Err(reason);
