@@ -291,6 +291,7 @@ class SelectionTests(unittest.TestCase):
     def test_current_repository_inventory_retains_scoped_feedback_and_impact_fallbacks(self):
         modules = impact.available_modules(ROOT)
         self.assertIn("test_ui_style_log_viewer", modules)
+        self.assertIn("test_hex_auto_stage", modules)
         self.assertEqual(selection(["scripts/check-ui-style.py"], modules=modules)["mode"], "comprehensive")
         for path in ("crates/hex-ui/src/editor.rs", "crates/hex-engine/src/lib.rs"):
             with self.subTest(path=path):
@@ -304,6 +305,8 @@ class SelectionTests(unittest.TestCase):
             ("scripts/tests/test_cargo_slot.py", "test_cargo_slot"),
             ("scripts/check-architecture.py", "test_check_architecture"),
             ("scripts/tests/test_architecture.py", "test_architecture"),
+            ("scripts/hex-auto-stage.py", "test_hex_auto_stage"),
+            ("scripts/tests/test_hex_auto_stage.py", "test_hex_auto_stage"),
             ("scripts/hex-update-entry.py", "test_hex_update_entry"),
             ("scripts/pending_update_exit.py", "test_pending_update_exit"),
             ("scripts/tests/test_hex_update_entry.py", "test_hex_update_entry"),
