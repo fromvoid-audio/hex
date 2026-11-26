@@ -43,6 +43,7 @@ struct VisibleCache {
     source: Option<PathBuf>,
     directory: Option<PathBuf>,
     tag: Option<String>,
+    tag_groups: Vec<Vec<String>>,
     collection: Option<String>,
     sort: CatalogSort,
     entries: Arc<Vec<LibraryEntry>>,
@@ -72,6 +73,8 @@ pub(in crate::editor::browser) struct SampleBrowser {
     pub(in crate::editor::browser) status: Option<String>,
     /// Active browser tag/collection filters and sort order (evaluated purely in memory).
     pub(in crate::editor::browser) tag_filter: Option<String>,
+    /// Selected tag chips per top tag-selector group (OR within group, AND across groups).
+    pub(in crate::editor::browser) active_tag_groups: [BTreeSet<String>; 6],
     pub(in crate::editor::browser) collection_filter: Option<String>,
     pub(in crate::editor::browser) sort: CatalogSort,
     visible: RefCell<Option<VisibleCache>>,
@@ -112,6 +115,49 @@ impl RescanBackoff {
 }
 
 impl SampleBrowser {
+    pub(in crate::editor::browser) fn has_active_tags(&self) -> bool {
+        self.tag_filter.is_some() || self.active_tag_groups.iter().any(|g| !g.is_empty())
+    }
+
+    pub(in crate::editor::browser) fn active_tag_count(&self) -> usize {
+        self.active_tag_groups
+            .iter()
+            .map(BTreeSet::len)
+            .sum::<usize>()
+            + usize::from(self.tag_filter.is_some())
+    }
+
+    pub(in crate::editor::browser) fn is_group_tag_active(&self, group: usize, tag: &str) -> bool {
+        self.active_tag_groups
+            .get(group)
+            .is_some_and(|set| set.contains(tag))
+    }
+
+    pub(in crate::editor::browser) fn toggle_group_tag(&mut self, group: usize, tag: &str) {
+        if let Some(set) = self.active_tag_groups.get_mut(group) {
+            if !set.remove(tag) {
+                set.insert(tag.to_owned());
+            }
+            *self.visible.borrow_mut() = None;
+        }
+    }
+
+    pub(in crate::editor::browser) fn clear_active_tags(&mut self) {
+        self.tag_filter = None;
+        for group in &mut self.active_tag_groups {
+            group.clear();
+        }
+        *self.visible.borrow_mut() = None;
+    }
+
+    pub(in crate::editor::browser) fn tag_groups_for_query(&self) -> Vec<Vec<String>> {
+        self.active_tag_groups
+            .iter()
+            .filter(|g| !g.is_empty())
+            .map(|g| g.iter().cloned().collect())
+            .collect()
+    }
+
     pub(in crate::editor::browser) fn history_loading(&self) -> bool {
         self.in_flight || self.pending
     }
@@ -129,18 +175,21 @@ impl SampleBrowser {
         listing: Option<&DirectoryListing>,
     ) -> Arc<Vec<LibraryEntry>> {
         let directory = listing.map(|listing| listing.directory.as_path());
+        let tag_groups = self.tag_groups_for_query();
         let mut cache = self.visible.borrow_mut();
         if let Some(previous) = cache.as_ref()
             && previous.query == query
             && previous.source.as_deref() == source
             && previous.directory.as_deref() == directory
             && previous.tag == self.tag_filter
+            && previous.tag_groups == tag_groups
             && previous.collection == self.collection_filter
             && previous.sort == self.sort
         {
             return previous.entries.clone();
         }
         let has_metadata_filters = self.tag_filter.is_some()
+            || !tag_groups.is_empty()
             || self.collection_filter.is_some()
             || self.sort != CatalogSort::NameAsc;
         let entries = Arc::new(if listing.is_some() && !has_metadata_filters {
@@ -150,6 +199,7 @@ impl SampleBrowser {
                 text: query,
                 source,
                 tag: self.tag_filter.as_deref(),
+                tag_groups: &tag_groups,
                 collection: self.collection_filter.as_deref(),
                 sort: self.sort,
                 ..CatalogQuery::default()
@@ -160,6 +210,7 @@ impl SampleBrowser {
             source: source.map(PathBuf::from),
             directory: directory.map(PathBuf::from),
             tag: self.tag_filter.clone(),
+            tag_groups,
             collection: self.collection_filter.clone(),
             sort: self.sort,
             entries: entries.clone(),

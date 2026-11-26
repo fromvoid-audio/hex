@@ -1009,11 +1009,63 @@ impl EditorView {
         if !self.browser.layout.tags_visible {
             return div();
         }
+        let active_count = self.browser.samples.active_tag_count();
+        if active_count > 0 {
+            let matching = self.browser_visible_entries(cx).len();
+            tags = tags.child(
+                div()
+                    .px_2()
+                    .py(px(2.0))
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_1()
+                    .border_b_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .child(
+                        browser_caption(format!("{active_count} active · {matching} matching"))
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted))),
+                    )
+                    .child(
+                        div()
+                            .id("browser-tag-clear")
+                            .debug_selector(|| "browser-tag-clear".to_owned())
+                            .cursor_pointer()
+                            .px_1()
+                            .rounded(px(2.0))
+                            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                            .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    view.browser.samples.clear_active_tags();
+                                    view.browser.selected_index = 0;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(theme::text("clear")),
+                    ),
+            );
+        }
         for (index, (name, values)) in TAG_GROUPS.into_iter().enumerate() {
             let open = self.browser.layout.group_open[index];
+            let selected_in_group = self.browser.samples.active_tag_groups[index].len();
+            let heading = if selected_in_group > 0 {
+                format!(
+                    "{name} ({selected_in_group}) {}",
+                    if open { "▾" } else { "▸" }
+                )
+            } else {
+                format!("{name} {}", if open { "▾" } else { "▸" })
+            };
             let mut group = browser_divider().child(
                 div()
                     .id(("browser-tag-group", index))
+                    .debug_selector(move || format!("browser-tag-group-{index}"))
                     .cursor_pointer()
                     .px_2()
                     .py(px(2.0))
@@ -1025,25 +1077,58 @@ impl EditorView {
                             cx.notify();
                         }),
                     )
-                    .child(browser_caption(format!(
-                        "{name} {}",
-                        if open { "▾" } else { "▸" }
-                    ))),
+                    .child(browser_caption(heading)),
             );
             if open {
-                group = group.child(
-                    div()
-                        .px_2()
-                        .pb_1()
-                        .flex()
-                        .flex_wrap()
-                        .gap_1()
-                        .children(values.iter().map(|value| browser_pending(value))),
-                );
+                group = group.child(div().px_2().pb_1().flex().flex_wrap().gap_1().children(
+                    values.iter().enumerate().map(|(value_idx, &value)| {
+                        let active = self.browser.samples.is_group_tag_active(index, value);
+                        let chip_bg = if active {
+                            theme::color(theme::PaletteRole::Secondary)
+                        } else {
+                            theme::color(theme::PaletteRole::Background)
+                        };
+                        let chip_ink = if active {
+                            theme::readable_text(
+                                chip_bg,
+                                theme::color(theme::PaletteRole::Background),
+                            )
+                        } else {
+                            theme::color(theme::PaletteRole::Text)
+                        };
+                        div()
+                            .id(("browser-tag-chip", index * 32 + value_idx))
+                            .debug_selector(move || format!("browser-tag-chip-{index}-{value}"))
+                            .cursor_pointer()
+                            .px_1()
+                            .py(px(1.0))
+                            .rounded(px(2.0))
+                            .border_1()
+                            .border_color(rgb(theme::color(if active {
+                                theme::PaletteRole::Secondary
+                            } else {
+                                theme::PaletteRole::Border
+                            })))
+                            .bg(rgb(chip_bg))
+                            .text_xs()
+                            .text_color(rgb(chip_ink))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    view.browser.samples.toggle_group_tag(index, value);
+                                    view.browser.selected_index = 0;
+                                    cx.notify();
+                                }),
+                            )
+                            .child(theme::text(value))
+                    }),
+                ));
             }
             tags = tags.child(group);
         }
-        div().child(tags.child(browser_heading("tag filtering pending")))
+        div().child(tags)
     }
 
     pub(super) fn browser_tag_editor(&self, width: f32, cx: &mut Context<Self>) -> Option<Div> {

@@ -498,20 +498,23 @@ impl EditorView {
             .listing
             .as_ref()
             .filter(|listing| listing.directory == self.browser.directory);
+        let has_tag_filters = self.browser.samples.has_active_tags();
         let base = match &self.browser.section {
             BrowserSection::Samples
-                if samples::ResultsMode::for_query(&query) == samples::ResultsMode::Hierarchy =>
+                if !has_tag_filters
+                    && samples::ResultsMode::for_query(&query)
+                        == samples::ResultsMode::Hierarchy =>
             {
                 self.browser.tree.roots(self.sample_roots())
             }
             BrowserSection::Samples => self.browser.samples.visible(&query),
-            BrowserSection::Place(root) if !query.is_empty() => self
+            BrowserSection::Place(root) if !query.is_empty() || has_tag_filters => self
                 .browser
                 .samples
                 .visible_with_listing(&query, Some(root), listing),
             BrowserSection::Place(_) => self.browser.samples.folder(&query, listing, false),
             BrowserSection::Collection(_) => Arc::new(Vec::new()),
-            BrowserSection::All if query.is_empty() => {
+            BrowserSection::All if query.is_empty() && !has_tag_filters => {
                 let mut roots = self.sample_roots();
                 roots.push(self.browser.directory.clone());
                 self.browser.tree.roots(roots)
