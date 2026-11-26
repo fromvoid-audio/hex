@@ -674,7 +674,9 @@ pub(in crate::editor) fn render_track(
                 hex_project::TrackDeviceRef::Effect(device) => (*device, NativeDeviceClass::Effect),
             };
             let width = if is_source_effect(device.id()) {
-                modulators::SOURCE_EFFECT_CARD_WIDTH
+                view.device_panel
+                    .chain_window
+                    .source_effect_width(device.id())
             } else {
                 device_card_width(view, class, device)
             };
@@ -734,7 +736,10 @@ pub(in crate::editor) fn render_track(
         };
         let mounted = chain_window::must_mount(view, device.id(), window, cx);
         if is_source_effect(device.id()) {
-            let width = modulators::SOURCE_EFFECT_CARD_WIDTH;
+            let width = view
+                .device_panel
+                .chain_window
+                .source_effect_width(device.id());
             let card = if mounted {
                 modulators::source_effect_card(view, cx, device)
             } else {

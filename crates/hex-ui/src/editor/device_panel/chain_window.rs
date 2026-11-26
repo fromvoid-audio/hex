@@ -7,6 +7,7 @@ use std::{cell::Cell, rc::Rc};
 pub(super) struct ChainWindow {
     pub(super) scroll: ScrollHandle,
     cards: Vec<(DeviceId, f32, f32)>,
+    source_effect_widths: HashMap<DeviceId, Rc<Cell<f32>>>,
     proposed_left: Option<f32>,
     reveal_proposal: bool,
     focus: HashMap<DeviceId, FocusHandle>,
@@ -19,6 +20,20 @@ pub(super) struct ChainWindow {
 }
 
 impl ChainWindow {
+    pub(super) fn source_effect_width(&self, device: DeviceId) -> f32 {
+        self.source_effect_widths
+            .get(&device)
+            .map_or(modulators::SOURCE_EFFECT_CARD_WIDTH, |width| width.get())
+    }
+
+    /// The housing lays out its panels. Keep its measured width for rail geometry and spacers.
+    pub(super) fn measure_source_effect(&mut self, device: DeviceId) -> Rc<Cell<f32>> {
+        self.source_effect_widths
+            .entry(device)
+            .or_insert_with(|| Rc::new(Cell::new(modulators::SOURCE_EFFECT_CARD_WIDTH)))
+            .clone()
+    }
+
     pub(super) fn prepare(&mut self, devices: &[(DeviceId, f32)], proposed: Option<usize>) {
         let mut left = DEVICE_CHAIN_PADDING;
         let mut proposed_left = None;
@@ -58,6 +73,8 @@ impl ChainWindow {
                 }
                 keep
             });
+            self.source_effect_widths
+                .retain(|id, _| devices.iter().any(|device| device.0 == *id));
             self.cards = cards;
         }
         if let Some(device) = self.reveal_after_prepare.take() {
@@ -199,6 +216,8 @@ pub(super) fn must_mount(
         return true;
     };
     panel.chain_window.visible(device, Some(f32::from(window.viewport_size().width)))
+        // Keep the housing's keyed disclosure state while it is scrolled offscreen.
+        || panel.chain_window.source_effect_width(device) > modulators::SOURCE_EFFECT_CARD_WIDTH
         || panel.chain_window.focus.get(&device).is_some_and(|focus| focus.contains_focused(window, cx))
         || panel.controls.iter().any(|(key, control)| key.device == device && matches!(control,
             ParameterControl::Float { entity, .. } if entity.read_with(cx, |control, _| control.is_interacting() || control.is_editing())))

@@ -25,10 +25,21 @@ pub(in crate::editor) fn source_effect_card(
 ) -> Stateful<Div> {
     let id = device.id();
     let selector = format!("source-effect-modulation-{}", id.value());
+    let measured = view.device_panel.chain_window.measure_source_effect(id);
+    let entity = cx.entity();
     let outer = div()
+        .on_children_prepainted(move |children, _, cx| {
+            let width = children.first().map_or(SOURCE_EFFECT_CARD_WIDTH, |frame| {
+                f32::from(frame.size.width).max(SOURCE_EFFECT_CARD_WIDTH)
+            });
+            if width.is_finite() && measured.replace(width) != width {
+                let entity = entity.clone();
+                cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+            }
+        })
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(SOURCE_EFFECT_CARD_WIDTH))
+        .min_w(px(SOURCE_EFFECT_CARD_WIDTH))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
         .flex_col()
@@ -48,7 +59,9 @@ pub(in crate::editor) fn source_effect_card(
     // The housing owns scrolling; let this compact card contribute its full
     // content height so its lower mapping targets are not clipped.
     let mut body = hex_widgets::device_body(theme::device_style(theme::DeviceStyleRole::Layout))
-        .w_full()
+        .w(px(SOURCE_EFFECT_CARD_WIDTH
+            - hex_widgets::DEVICE_FRAME_HEADER_WIDTH
+            - 2.0 * hex_widgets::DEVICE_FRAME_BORDER_WIDTH))
         .flex()
         .flex_col()
         .gap(px(1.0));
