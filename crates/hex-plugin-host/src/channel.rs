@@ -569,7 +569,8 @@ mod tests {
             let flags = 2
                 | protocol::EDITOR_PCM_BIT
                 | protocol::EDITOR_GROUP_TOUCH_BIT
-                | protocol::SDK_TIMING_BIT;
+                | protocol::SDK_TIMING_BIT
+                | protocol::SDK_THREAD_CPU_BIT;
             header[4..6].copy_from_slice(&flags.to_le_bytes());
             header[6..8].copy_from_slice(&(crate::transport::MAX_FRAMES as u16).to_le_bytes());
             header[10..12]

@@ -174,21 +174,24 @@ fn slow_exchange_sample_survives_worker_retirement() {
         let release = dir.join("release");
         std::fs::write(&release, b"release").unwrap();
         let test = thread::current().name().unwrap().to_owned();
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &test, "--ignored", "--nocapture"])
-            .env(CHILD, "1")
-            .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
-            .env("HEX_ORIGINAL_SDK_TIMING_GATE", "1")
-            .env("HEX_ORIGINAL_INSTANCE_RELEASE", release)
-            .output()
-            .unwrap();
+        for mode in ["wait", "cpu"] {
+            let result = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &test, "--ignored", "--nocapture"])
+                .env(CHILD, mode)
+                .env("HEX_ORIGINAL_INSTANCE_VARIANT", "127")
+                .env("HEX_ORIGINAL_SDK_TIMING_GATE", mode)
+                .env("HEX_ORIGINAL_INSTANCE_RELEASE", &release)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success()
+                    && String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
         std::fs::remove_dir_all(dir).unwrap();
-        assert!(
-            result.status.success(),
-            "{}\n{}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
         return;
     }
     let binding = Binding {
@@ -274,6 +277,18 @@ fn slow_exchange_sample_survives_worker_retirement() {
     );
     assert!(sample.empty_poll_to_pickup_ns.is_some());
     assert!(sample.sdk_process_ns >= 4_000_000 && sample.exchange_ns >= sample.sdk_process_ns);
+    let cpu = sample
+        .sdk_thread_cpu_ns
+        .expect("signed macOS processing thread CPU time");
+    if std::env::var_os(CHILD).unwrap() == "cpu" {
+        assert!(cpu >= 4_000_000, "known on-thread work: {sample:?}");
+    } else {
+        assert!(
+            sample.sdk_process_ns.saturating_sub(cpu) >= 3_000_000,
+            "known wait: {sample:?}"
+        );
+    }
+
     assert!(worker.take_slow_exchange_on_control().is_none());
     assert!(
         callback

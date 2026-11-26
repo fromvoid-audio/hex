@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <limits>
 #include <pthread.h>
+#include <time.h>
 #include <cstdio>
 #include <cstdlib>
 #include "pluginterfaces/base/ibstream.h"
@@ -1334,7 +1335,24 @@ public:
         context_trace.record(data.numSamples,data.processContext);
         if (fault==140) fault_hang(27); // controlled in-flight host-input barrier
         if (fault==28 || (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE"))) fault_hang(9);
-        if (fault==127 && std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE")) ::usleep(5000);
+        if (fault==127) {
+            if (const auto* mode=std::getenv("HEX_ORIGINAL_SDK_TIMING_GATE")) {
+                if (std::strcmp(mode,"cpu")==0) {
+                    // Original fixture only. Spend five milliseconds on this thread.
+                    const auto start=clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+                    if (!start) return kResultFalse;
+                    uint64_t elapsed=0;
+                    for (unsigned i=0;i<1000000 && elapsed<5000000;++i) {
+                        const auto now=clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID);
+                        if (now<start) return kResultFalse;
+                        elapsed=now-start;
+                    }
+                    if (elapsed<5000000) return kResultFalse;
+                } else {
+                    ::usleep(5000);
+                }
+            }
+        }
         if (fault==31) fault_crash(9);
         if (fault==10) return kResultFalse;
         const float scale=(fault==127 || held_parameter_input(fault))?1.0f:0.5f+static_cast<float>(block)*0.125f;
