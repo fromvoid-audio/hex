@@ -104,6 +104,36 @@ fn instrument_memory_budget_aggregate_refuses_before_any_runtime_is_constructed(
 }
 
 #[test]
+fn installing_a_midi_processor_respects_the_combined_active_pair_budget() {
+    use hex_lattice::conformance::midi_transpose::{
+        PreparedTransposeMidiProcessor, TransposeOutOfRangePolicy,
+    };
+    let revision = mutable_hundred_track_preroll_revision();
+    let processor =
+        PreparedTransposeMidiProcessor::new(7, TransposeOutOfRangePolicy::Refuse).unwrap();
+    let pair_bytes = 2 * hex_lattice::PreparedNativeMidiProcessor::declared_twin_bytes(&processor);
+    // One hundred pairs leave room for exactly one transpose pair.
+    let _guard = DeclaredBytesGuard::new((MAX_GRAPH_RUNTIME_PAIR_BYTES - pair_bytes) / 200);
+    let mut playback = SessionPlayback::new(revision).unwrap();
+    let first = playback.routes[0].id;
+    let second = playback.routes[1].id;
+    let id = std::num::NonZeroU64::new(1234).unwrap();
+    playback
+        .install_track_midi_processor_on_control(first, id, &processor)
+        .unwrap();
+    let admitted = playback.accounted_runtime_storage_bytes();
+    playback
+        .install_track_midi_processor_on_control(first, id, &processor)
+        .unwrap();
+    assert_eq!(playback.accounted_runtime_storage_bytes(), admitted);
+    assert_eq!(
+        playback.install_track_midi_processor_on_control(second, id, &processor),
+        Err(SessionPlaybackError::MutableInstrumentRuntime)
+    );
+    assert_eq!(playback.accounted_runtime_storage_bytes(), admitted);
+}
+
+#[test]
 fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() {
     struct VoiceGuard(Option<usize>);
     impl Drop for VoiceGuard {
@@ -114,7 +144,7 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
     // Keep occurrence admission independent: this fixture has one active note
     // per donor and is specifically testing the aggregate byte boundary.
     let _voices = VoiceGuard(MUTABLE_VOICE_CAPACITY_OVERRIDE.with(|slot| slot.replace(Some(1))));
-    for extra in [0, 1] {
+    for (extra, with_midi_tail) in [(0, false), (1, false), (0, true)] {
         // 128 one-MiB pairs reach the declared pool. One additional byte
         // per history refuses before moving any live owner; the larger complete
         // storage cap separately includes host ledgers and checkpoints.
@@ -147,8 +177,29 @@ fn instrument_memory_budget_retained_tails_refuse_bytes_without_moving_owners() 
                 ));
             previous.tail_mixes[slot] = crate::PreparedTrackMix::identity();
         }
+        if with_midi_tail {
+            use hex_lattice::conformance::midi_transpose::{
+                PreparedTransposeMidiProcessor, TransposeOutOfRangePolicy,
+            };
+            let mut with_processor = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+            let processor =
+                PreparedTransposeMidiProcessor::new(0, TransposeOutOfRangePolicy::Refuse).unwrap();
+            with_processor
+                .install_track_midi_processor_on_control(
+                    track,
+                    std::num::NonZeroU64::new(1).unwrap(),
+                    &processor,
+                )
+                .unwrap();
+            with_processor.apply(SessionPlaybackCommand::Play).unwrap();
+            render_checkpoint_prefix(&mut with_processor, 1);
+            previous.tail_mutable_instruments[tails - 1]
+                .as_mut()
+                .unwrap()
+                .runtime = with_processor.mutable_instruments[0].take().unwrap();
+        }
         let result = candidate.try_inherit_state_from(&mut previous);
-        if extra == 0 {
+        if extra == 0 && !with_midi_tail {
             result.unwrap();
             assert_eq!(
                 candidate.tail_mutable_instruments.iter().flatten().count(),

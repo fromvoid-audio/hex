@@ -135,9 +135,53 @@ fn transpose_route_matches_shifted_pcm_oracle_across_partitions_and_same_pitch_o
 
     // Whole-block render with transpose MIDI processor matches oracle bit-for-bit.
     let mut whole = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    let before_storage = whole.accounted_runtime_storage_bytes().unwrap();
+    let before_declared = whole.mutable_instruments[0]
+        .as_ref()
+        .unwrap()
+        .declared_pair_bytes();
     whole
         .install_track_midi_processor_on_control(track, midi_proc_id(), &transpose)
         .unwrap();
+    let installed_storage = whole.accounted_runtime_storage_bytes().unwrap();
+    let processor_pair =
+        2 * hex_lattice::PreparedNativeMidiProcessor::declared_twin_bytes(&transpose);
+    let output_scratch = size_of::<hex_lattice::NativeInstrumentEvent>()
+        * crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY;
+    assert!(installed_storage > before_storage + processor_pair + output_scratch);
+    assert_eq!(
+        whole.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .declared_pair_bytes(),
+        before_declared + processor_pair
+    );
+
+    whole
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &transpose)
+        .unwrap();
+    assert_eq!(
+        whole.accounted_runtime_storage_bytes(),
+        Some(installed_storage)
+    );
+    let too_many_events = PreparedTransposeMidiProcessor::with_caps(
+        7,
+        TransposeOutOfRangePolicy::Refuse,
+        crate::mutable_instrument::MAX_MUTABLE_EVENTS_PER_QUERY + 1,
+        1,
+        1,
+        1,
+    )
+    .unwrap();
+    assert!(
+        whole
+            .install_track_midi_processor_on_control(track, midi_proc_id(), &too_many_events)
+            .is_err()
+    );
+    assert_eq!(
+        whole.accounted_runtime_storage_bytes(),
+        Some(installed_storage)
+    );
     whole.apply(SessionPlaybackCommand::Play).unwrap();
     let mut actual_whole = vec![[0.0_f32; 2]; total_frames];
     whole.render(&mut actual_whole).unwrap();
