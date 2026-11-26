@@ -22,9 +22,19 @@ const KNEE: ParameterId = ParameterId::from_static(5);
 const OUTPUT: ParameterId = ParameterId::from_static(6);
 const MIX: ParameterId = ParameterId::from_static(7);
 const DETECTOR: ParameterId = ParameterId::from_static(8);
-const PARAMETERS: [ParameterId; 5] = [THRESHOLD, RATIO, KNEE, OUTPUT, MIX];
+const MODE: ParameterId = ParameterId::from_static(9);
+const ENVELOPE: ParameterId = ParameterId::from_static(10);
+const AUTO_RELEASE: ParameterId = ParameterId::from_static(11);
+const AUTO_MAKEUP: ParameterId = ParameterId::from_static(12);
+const LOOKAHEAD: ParameterId = ParameterId::from_static(13);
+const SC_GAIN: ParameterId = ParameterId::from_static(14);
+const SC_MIX: ParameterId = ParameterId::from_static(15);
+const SC_EQ_MODE: ParameterId = ParameterId::from_static(16);
+const SC_EQ_FREQ: ParameterId = ParameterId::from_static(17);
+const SC_EQ_Q: ParameterId = ParameterId::from_static(18);
+const PARAMETERS: [ParameterId; 7] = [THRESHOLD, RATIO, KNEE, OUTPUT, MIX, MODE, AUTO_MAKEUP];
 
-pub(super) type PreviewCache = effect_preview::PreviewCache<CompressorTransferCurve, 5>;
+pub(super) type PreviewCache = effect_preview::PreviewCache<CompressorTransferCurve, 7>;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn cached_curve(
@@ -111,7 +121,7 @@ pub(super) fn render_body(
             ControlText {
                 codec: match id {
                     RATIO => Some(NumericDisplayCodec::Ratio),
-                    MIX => Some(NumericDisplayCodec::Percent),
+                    MIX | SC_MIX => Some(NumericDisplayCodec::Percent),
                     _ => None,
                 },
                 ..ControlText::default()
@@ -127,6 +137,16 @@ pub(super) fn render_body(
     let knee = control(KNEE, ControlPresentation::InlineValue);
     let mix = control(MIX, ControlPresentation::InlineValue);
     let detector = control(DETECTOR, ControlPresentation::CompactSelector);
+    let mode_ctrl = control(MODE, ControlPresentation::CompactSelector);
+    let env_ctrl = control(ENVELOPE, ControlPresentation::CompactSelector);
+    let auto_rel = control(AUTO_RELEASE, ControlPresentation::CompactSelector);
+    let auto_makeup = control(AUTO_MAKEUP, ControlPresentation::CompactSelector);
+    let lookahead = control(LOOKAHEAD, ControlPresentation::CompactSelector);
+    let sc_gain = control(SC_GAIN, ControlPresentation::InlineValue);
+    let sc_mix = control(SC_MIX, ControlPresentation::InlineValue);
+    let sc_eq_mode = control(SC_EQ_MODE, ControlPresentation::CompactSelector);
+    let sc_eq_freq = control(SC_EQ_FREQ, ControlPresentation::InlineValue);
+    let sc_eq_q = control(SC_EQ_Q, ControlPresentation::InlineValue);
     let sidechain = sidechain::control(view, cx, device);
     let curve =
         (mode == display::Mode::Curve).then(|| preview(view, device, model.state(), device_view));
@@ -213,7 +233,47 @@ pub(super) fn render_body(
         .children(sidechain)
         .child(tabs);
     let main = crate::device_composition::plot_column(toolbar, graph, footer).text_size(px(8.0));
+    let row = |label: &str, ctrl: Div| {
+        div()
+            .h(px(16.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(2.0))
+            .child(theme::text(label))
+            .child(ctrl)
+    };
+    let mode_col = crate::device_composition::rail_column()
+        .w(px(88.0))
+        .flex_shrink_0()
+        .text_size(px(8.0))
+        .child(row("mode", mode_ctrl))
+        .child(row("env", env_ctrl))
+        .child(row("auto", auto_rel))
+        .child(row("mkup", auto_makeup))
+        .child(row("look", lookahead));
+    let sc_col = crate::device_composition::rail_column()
+        .w(px(90.0))
+        .flex_shrink_0()
+        .text_size(px(8.0))
+        .child(row("sc db", sc_gain))
+        .child(row("sc %", sc_mix))
+        .child(row("eq", sc_eq_mode))
+        .child(row("freq", sc_eq_freq))
+        .child(row("q", sc_eq_q));
+    let extras = crate::device_composition::dense_rail(
+        div()
+            .flex()
+            .flex_row()
+            .gap(px(6.0))
+            .child(mode_col)
+            .child(sc_col),
+    )
+    .w(px(192.0))
+    .flex_shrink_0();
     crate::device_composition::split_body(rail, main)
+        .child(extras)
         .id(ElementId::Name(
             format!("device-body-{}", device.value()).into(),
         ))

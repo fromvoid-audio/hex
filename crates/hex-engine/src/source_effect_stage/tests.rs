@@ -1814,11 +1814,14 @@ fn source_compressor_modulates_only_generator_audio_and_preserves_history_on_rou
         true,
     );
     for descriptor in COMPRESSOR_DEFINITION.descriptors() {
-        assert!(crate::project_device_modulation_target_supported(
-            editor.project(),
-            device,
-            descriptor.id,
-        ));
+        assert_eq!(
+            crate::project_device_modulation_target_supported(
+                editor.project(),
+                device,
+                descriptor.id,
+            ),
+            descriptor.id != parameter::LOOKAHEAD,
+        );
     }
 
     let media = BTreeMap::from([(asset, Audio::new(48_000, vec![CLIP; WIDTH]).unwrap())]);

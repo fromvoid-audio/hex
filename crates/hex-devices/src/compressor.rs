@@ -1,10 +1,15 @@
-//! Original zero-lookahead, stereo-linked feed-forward dynamics processor.
+//! Stereo-linked feed-forward dynamics processor with Ableton Live 12 parity controls.
 //!
-//! All eight controls consume the shared borrowed final-value stream.
-//! Gain, detector and dry/wet histories retain their existing smoothing laws;
-//! attack/release have explicit positive-logarithmic mapping. Stepped detector
-//! choice uses the existing reversible 5ms blend with both RMS histories warm.
+//! Supports Compress and Expand modes, Peak/RMS detection, Linear and Logarithmic
+//! envelopes, program-dependent Auto Release, Auto Makeup, 0/1/10 ms Lookahead
+//! (with declared algorithmic latency), and stereo Sidechain Gain, Mix, and EQ
+//! filtering (HP/BP/LP/Notch/Bell).
+//!
+//! Seventeen controls consume the shared borrowed final-value stream; Lookahead is
+//! structural because it changes declared algorithmic latency.
 mod automation;
+mod sidechain_eq;
+use sidechain_eq::{SidechainEq, SidechainEqMode};
 
 use hex_lattice::{
     DynamicsMeter, NativeDeviceDefinition, NativeInstrumentClock, NativeParameterAutomation,
@@ -18,17 +23,23 @@ use hex_lattice_contract::{
 use std::any::Any;
 
 pub const COMPRESSOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.compressor");
-/// Current state version. Supported saved versions (Pulse #3956), each a
-/// little-endian f32 prefix of the next:
+/// Current state version. Supported saved versions (Pulse #3956, #3278), each a
+/// little-endian prefix of the next:
 /// - v1 (11 Oct 2026, 24 bytes): no dry/wet; migrates fully wet (1.0), as v1 rendered.
 /// - v2 (18 Oct 2026, 28 bytes): no detector; migrates to Peak, v2's only detector.
 /// - v3 (18 Oct 2026, 32 bytes): adds the detector choice.
-pub const COMPRESSOR_STATE_VERSION: u32 = 3;
-const STATE_BYTES: usize = 32;
+/// - v4 (26 Nov 2026, 72 bytes): adds mode, envelope, auto release, auto makeup,
+///   lookahead, sidechain gain/mix, and sidechain EQ mode/freq/Q; v3 defaults
+///   migrate losslessly to bit-exact v3 processing.
+pub const COMPRESSOR_STATE_VERSION: u32 = 4;
+const STATE_BYTES: usize = 72;
+const PARAM_COUNT: usize = 18;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
+const MAX_LOOKAHEAD_FRAMES: usize = 1_920; // 10 ms at 192 kHz
 const GAIN_SMOOTH_MS: f64 = 5.0;
 const RMS_INTEGRATION_SECONDS: f64 = 0.010;
+const AUTO_RELEASE_INTEGRATION_SECONDS: f64 = 0.250;
 const SILENCE_FLOOR_DB: f64 = -120.0;
 
 pub mod parameter {
@@ -42,6 +53,16 @@ pub mod parameter {
     pub const MAKEUP: ParameterId = ParameterId::from_static(6);
     pub const DRY_WET: ParameterId = ParameterId::from_static(7);
     pub const DETECTOR: ParameterId = ParameterId::from_static(8);
+    pub const MODE: ParameterId = ParameterId::from_static(9);
+    pub const ENVELOPE: ParameterId = ParameterId::from_static(10);
+    pub const AUTO_RELEASE: ParameterId = ParameterId::from_static(11);
+    pub const AUTO_MAKEUP: ParameterId = ParameterId::from_static(12);
+    pub const LOOKAHEAD: ParameterId = ParameterId::from_static(13);
+    pub const SIDECHAIN_GAIN: ParameterId = ParameterId::from_static(14);
+    pub const SIDECHAIN_MIX: ParameterId = ParameterId::from_static(15);
+    pub const SIDECHAIN_EQ_MODE: ParameterId = ParameterId::from_static(16);
+    pub const SIDECHAIN_EQ_FREQ: ParameterId = ParameterId::from_static(17);
+    pub const SIDECHAIN_EQ_Q: ParameterId = ParameterId::from_static(18);
 }
 
 const DESCRIPTORS: &[ParameterDescriptor] = &[
@@ -131,13 +152,107 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
         default: ParameterValue::Choice(0),
         presentation: ParameterPresentation::Linear,
     },
+    ParameterDescriptor {
+        id: parameter::MODE,
+        label: "mode",
+        kind: ParameterKind::Choice {
+            labels: &["compress", "expand"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::ENVELOPE,
+        label: "envelope",
+        kind: ParameterKind::Choice {
+            labels: &["lin", "log"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::AUTO_RELEASE,
+        label: "auto rel",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::AUTO_MAKEUP,
+        label: "auto makeup",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::LOOKAHEAD,
+        label: "lookahead",
+        kind: ParameterKind::Choice {
+            labels: &["0 ms", "1 ms", "10 ms"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_GAIN,
+        label: "sc gain",
+        kind: ParameterKind::Float {
+            min: -24.0,
+            max: 24.0,
+            unit: Some("db"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_MIX,
+        label: "sc mix",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_EQ_MODE,
+        label: "sc eq",
+        kind: ParameterKind::Choice {
+            labels: &["off", "hp", "bp", "lp", "notch", "bell"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_EQ_FREQ,
+        label: "sc freq",
+        kind: ParameterKind::Float {
+            min: 30.0,
+            max: 15_000.0,
+            unit: Some("hz"),
+        },
+        default: ParameterValue::Float(100.0),
+        presentation: ParameterPresentation::Logarithmic,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_EQ_Q,
+        label: "sc q",
+        kind: ParameterKind::Float {
+            min: 0.1,
+            max: 10.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.707),
+        presentation: ParameterPresentation::Logarithmic,
+    },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u32)]
 enum Detector {
-    Peak,
-    Rms,
+    Peak = 0,
+    Rms = 1,
 }
 impl Detector {
     fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
@@ -146,6 +261,65 @@ impl Detector {
             1 => Ok(Self::Rms),
             _ => Err(DeviceContractError::InvalidParameterValue),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum CompressorMode {
+    Compress = 0,
+    Expand = 1,
+}
+impl CompressorMode {
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        match value {
+            0 => Ok(Self::Compress),
+            1 => Ok(Self::Expand),
+            _ => Err(DeviceContractError::InvalidParameterValue),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum EnvelopeMode {
+    Linear = 0,
+    Logarithmic = 1,
+}
+impl EnvelopeMode {
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        match value {
+            0 => Ok(Self::Linear),
+            1 => Ok(Self::Logarithmic),
+            _ => Err(DeviceContractError::InvalidParameterValue),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum Lookahead {
+    Off = 0,
+    OneMs = 1,
+    TenMs = 2,
+}
+impl Lookahead {
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        match value {
+            0 => Ok(Self::Off),
+            1 => Ok(Self::OneMs),
+            2 => Ok(Self::TenMs),
+            _ => Err(DeviceContractError::InvalidParameterValue),
+        }
+    }
+    fn frames(self, sample_rate: u32) -> u32 {
+        let ms = match self {
+            Self::Off => return 0,
+            Self::OneMs => 1.0,
+            Self::TenMs => 10.0,
+        };
+        let frames = (ms * f64::from(sample_rate) / 1_000.0).ceil() as u32;
+        frames.min(MAX_LOOKAHEAD_FRAMES as u32)
     }
 }
 
@@ -159,9 +333,19 @@ struct CompressorSettings {
     makeup_db: f32,
     dry_wet: f32,
     detector: Detector,
+    mode: CompressorMode,
+    envelope: EnvelopeMode,
+    auto_release: bool,
+    auto_makeup: bool,
+    lookahead: Lookahead,
+    sidechain_gain_db: f32,
+    sidechain_mix: f32,
+    sidechain_eq_mode: SidechainEqMode,
+    sidechain_eq_freq_hz: f32,
+    sidechain_eq_q: f32,
 }
 
-const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
+const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; PARAM_COUNT] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[0],
         hex_lattice_contract::ParameterSemantics {
@@ -247,6 +431,123 @@ const BINDINGS: [crate::parameter_binding::Binding<CompressorSettings>; 8] = [
             Ok(())
         },
     ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[8],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.mode as u32,
+        |c, v| {
+            c.mode = CompressorMode::from_choice(v)?;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[9],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.envelope as u32,
+        |c, v| {
+            c.envelope = EnvelopeMode::from_choice(v)?;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::boolean(
+        DESCRIPTORS[10],
+        hex_lattice_contract::ParameterSemantics {
+            stepping: hex_lattice_contract::ParameterStepping::Boolean,
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.auto_release,
+        |c, v| c.auto_release = v,
+    ),
+    crate::parameter_binding::Binding::boolean(
+        DESCRIPTORS[11],
+        hex_lattice_contract::ParameterSemantics {
+            stepping: hex_lattice_contract::ParameterStepping::Boolean,
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.auto_makeup,
+        |c, v| c.auto_makeup = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[12],
+        hex_lattice_contract::ParameterSemantics {
+            automation: hex_lattice_contract::ParameterAutomation::Unsupported,
+            modulation: hex_lattice_contract::ParameterModulation::Unsupported,
+            change_impact: hex_lattice_contract::ParameterChangeImpact::Structural,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.lookahead as u32,
+        |c, v| {
+            c.lookahead = Lookahead::from_choice(v)?;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[13],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.sidechain_gain_db,
+        |c, v| c.sidechain_gain_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[14],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.sidechain_mix,
+        |c, v| c.sidechain_mix = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[15],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.sidechain_eq_mode as u32,
+        |c, v| {
+            c.sidechain_eq_mode = SidechainEqMode::from_choice(v)?;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[16],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.sidechain_eq_freq_hz,
+        |c, v| c.sidechain_eq_freq_hz = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[17],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..crate::parameter_binding::SCALAR_ENVELOPE
+        },
+        |c| c.sidechain_eq_q,
+        |c, v| c.sidechain_eq_q = v,
+    ),
 ];
 
 impl Default for CompressorSettings {
@@ -260,7 +561,25 @@ impl Default for CompressorSettings {
             makeup_db: 0.0,
             dry_wet: 1.0,
             detector: Detector::Peak,
+            mode: CompressorMode::Compress,
+            envelope: EnvelopeMode::Linear,
+            auto_release: false,
+            auto_makeup: false,
+            lookahead: Lookahead::Off,
+            sidechain_gain_db: 0.0,
+            sidechain_mix: 1.0,
+            sidechain_eq_mode: SidechainEqMode::Off,
+            sidechain_eq_freq_hz: 100.0,
+            sidechain_eq_q: 0.707,
         }
+    }
+}
+
+fn decode_bool_u32(value: u32) -> Result<bool, DeviceContractError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DeviceContractError::InvalidParameterValue),
     }
 }
 
@@ -271,6 +590,7 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
     let expected = match state.state_version() {
         1 => 24,
         2 => 28,
+        3 => 32,
         COMPRESSOR_STATE_VERSION => STATE_BYTES,
         _ => return Err(DeviceContractError::UnsupportedStateVersion),
     };
@@ -278,7 +598,7 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
     if bytes.len() != expected {
         return Err(DeviceContractError::MalformedState);
     }
-    let read = |offset| {
+    let read_f32 = |offset| {
         f32::from_le_bytes([
             bytes[offset],
             bytes[offset + 1],
@@ -286,22 +606,77 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
             bytes[offset + 3],
         ])
     };
+    let read_u32 = |offset| {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let defaults = CompressorSettings::default();
     let settings = CompressorSettings {
-        threshold_db: read(0),
-        ratio: read(4),
-        attack_ms: read(8),
-        release_ms: read(12),
-        knee_db: read(16),
-        makeup_db: read(20),
-        dry_wet: if expected >= 28 { read(24) } else { 1.0 },
-        detector: if expected == STATE_BYTES {
-            Detector::from_choice(u32::from_le_bytes(
-                bytes[28..32]
-                    .try_into()
-                    .map_err(|_| DeviceContractError::MalformedState)?,
-            ))?
+        threshold_db: read_f32(0),
+        ratio: read_f32(4),
+        attack_ms: read_f32(8),
+        release_ms: read_f32(12),
+        knee_db: read_f32(16),
+        makeup_db: read_f32(20),
+        dry_wet: if expected >= 28 { read_f32(24) } else { 1.0 },
+        detector: if expected >= 32 {
+            Detector::from_choice(read_u32(28))?
         } else {
             Detector::Peak
+        },
+        mode: if expected == STATE_BYTES {
+            CompressorMode::from_choice(read_u32(32))?
+        } else {
+            defaults.mode
+        },
+        envelope: if expected == STATE_BYTES {
+            EnvelopeMode::from_choice(read_u32(36))?
+        } else {
+            defaults.envelope
+        },
+        auto_release: if expected == STATE_BYTES {
+            decode_bool_u32(read_u32(40))?
+        } else {
+            defaults.auto_release
+        },
+        auto_makeup: if expected == STATE_BYTES {
+            decode_bool_u32(read_u32(44))?
+        } else {
+            defaults.auto_makeup
+        },
+        lookahead: if expected == STATE_BYTES {
+            Lookahead::from_choice(read_u32(48))?
+        } else {
+            defaults.lookahead
+        },
+        sidechain_gain_db: if expected == STATE_BYTES {
+            read_f32(52)
+        } else {
+            defaults.sidechain_gain_db
+        },
+        sidechain_mix: if expected == STATE_BYTES {
+            read_f32(56)
+        } else {
+            defaults.sidechain_mix
+        },
+        sidechain_eq_mode: if expected == STATE_BYTES {
+            SidechainEqMode::from_choice(read_u32(60))?
+        } else {
+            defaults.sidechain_eq_mode
+        },
+        sidechain_eq_freq_hz: if expected == STATE_BYTES {
+            read_f32(64)
+        } else {
+            defaults.sidechain_eq_freq_hz
+        },
+        sidechain_eq_q: if expected == STATE_BYTES {
+            read_f32(68)
+        } else {
+            defaults.sidechain_eq_q
         },
     };
     validate(settings)?;
@@ -317,6 +692,10 @@ fn validate(settings: CompressorSettings) -> Result<(), DeviceContractError> {
         (parameter::KNEE, settings.knee_db),
         (parameter::MAKEUP, settings.makeup_db),
         (parameter::DRY_WET, settings.dry_wet),
+        (parameter::SIDECHAIN_GAIN, settings.sidechain_gain_db),
+        (parameter::SIDECHAIN_MIX, settings.sidechain_mix),
+        (parameter::SIDECHAIN_EQ_FREQ, settings.sidechain_eq_freq_hz),
+        (parameter::SIDECHAIN_EQ_Q, settings.sidechain_eq_q),
     ] {
         let descriptor = DESCRIPTORS
             .iter()
@@ -341,7 +720,21 @@ fn encode(settings: CompressorSettings) -> Result<NativeDeviceState, DeviceContr
     ] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
-    payload.extend_from_slice(&(settings.detector as u32).to_le_bytes());
+    for value in [
+        settings.detector as u32,
+        settings.mode as u32,
+        settings.envelope as u32,
+        u32::from(settings.auto_release),
+        u32::from(settings.auto_makeup),
+        settings.lookahead as u32,
+    ] {
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    payload.extend_from_slice(&settings.sidechain_gain_db.to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_mix.to_le_bytes());
+    payload.extend_from_slice(&(settings.sidechain_eq_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_eq_freq_hz.to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_eq_q.to_le_bytes());
     NativeDeviceState::new(COMPRESSOR_TYPE_ID, COMPRESSOR_STATE_VERSION, payload)
 }
 
@@ -476,13 +869,16 @@ impl NativeDeviceDefinition for CompressorDefinition {
 /// Closed native Compressor factory with fixed inline settings.
 #[derive(Clone, Copy)]
 pub struct PreparedCompressor {
-    admitted: [bool; 8],
+    admitted: [bool; PARAM_COUNT],
     settings: CompressorSettings,
     sample_rate: u32,
     attack_alpha: f64,
     release_alpha: f64,
     gain_alpha: f64,
     rms_alpha: f64,
+    auto_release_alpha: f64,
+    sidechain_gain_linear: f64,
+    lookahead_frames: u32,
 }
 
 impl PreparedNativeProcessor for PreparedCompressor {
@@ -526,16 +922,19 @@ impl PreparedNativeProcessor for PreparedCompressor {
         Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
+        Some(self.lookahead_frames)
     }
     fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite { max_tail_frames: 0 }
+        OutputTail::Finite {
+            max_tail_frames: u64::from(self.lookahead_frames),
+        }
     }
 }
 
 impl crate::inline_owned::InlinePreparedProcessor for PreparedCompressor {
     type Runtime = CompressorRuntime;
     fn create_inline_runtime(&self) -> Self::Runtime {
+        let initial_makeup = f64::from(self.settings.makeup_db) + auto_makeup_db(self.settings);
         let runtime = CompressorRuntime {
             base: *self,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
@@ -545,15 +944,28 @@ impl crate::inline_owned::InlinePreparedProcessor for PreparedCompressor {
             release_alpha: self.release_alpha,
             gain_alpha: self.gain_alpha,
             rms_alpha: self.rms_alpha,
+            auto_release_alpha: self.auto_release_alpha,
+            sidechain_gain_linear: self.sidechain_gain_linear,
+            lookahead_frames: self.lookahead_frames,
             energy: [0.0; 2],
             detector_ramp: hex_dsp::LinearRamp::settled(f64::from(
                 self.settings.detector == Detector::Rms,
             )),
             envelope: 0.0,
-            gain_db: f64::from(self.settings.makeup_db),
+            log_envelope_db: SILENCE_FLOOR_DB,
+            auto_release_env_db: 0.0,
+            gain_db: initial_makeup,
             reduction_db: 0.0,
             meter: DynamicsMeter::default(),
             mix_ramp: hex_dsp::LinearRamp::settled(f64::from(self.settings.dry_wet)),
+            sidechain_eq: SidechainEq::new(
+                self.settings.sidechain_eq_mode,
+                self.settings.sidechain_eq_freq_hz,
+                self.settings.sidechain_eq_q,
+                self.sample_rate,
+            ),
+            lookahead_pos: 0,
+            lookahead_buf: [[0.0; 2]; MAX_LOOKAHEAD_FRAMES],
         };
         runtime.check_inline_ownership();
         runtime
@@ -564,21 +976,29 @@ impl crate::inline_owned::InlinePreparedProcessor for PreparedCompressor {
 #[derive(Clone, Copy)]
 pub struct CompressorRuntime {
     base: PreparedCompressor,
-    controls: crate::parameter_binding::Controls<CompressorSettings, 8>,
+    controls: crate::parameter_binding::Controls<CompressorSettings, PARAM_COUNT>,
     settings: CompressorSettings,
     sample_rate: u32,
     attack_alpha: f64,
     release_alpha: f64,
     gain_alpha: f64,
     rms_alpha: f64,
+    auto_release_alpha: f64,
+    sidechain_gain_linear: f64,
+    lookahead_frames: u32,
     energy: [f64; 2],
     detector_ramp: hex_dsp::LinearRamp,
     envelope: f64,
+    log_envelope_db: f64,
+    auto_release_env_db: f64,
     gain_db: f64,
     /// Smoothed attenuation of the wet path, excluding automated makeup gain.
     reduction_db: f64,
     meter: DynamicsMeter,
     mix_ramp: hex_dsp::LinearRamp,
+    sidechain_eq: SidechainEq,
+    lookahead_pos: usize,
+    lookahead_buf: [StereoFrame; MAX_LOOKAHEAD_FRAMES],
 }
 
 impl CompressorRuntime {
@@ -587,10 +1007,15 @@ impl CompressorRuntime {
         self.detector_ramp
             .reset(f64::from(self.settings.detector == Detector::Rms));
         self.envelope = 0.0;
-        self.gain_db = f64::from(self.settings.makeup_db);
+        self.log_envelope_db = SILENCE_FLOOR_DB;
+        self.auto_release_env_db = 0.0;
+        self.gain_db = f64::from(self.settings.makeup_db) + auto_makeup_db(self.settings);
         self.reduction_db = 0.0;
         self.meter = DynamicsMeter::default();
         self.mix_ramp.reset(f64::from(self.settings.dry_wet));
+        self.sidechain_eq.reset();
+        self.lookahead_pos = 0;
+        self.lookahead_buf[..self.lookahead_frames as usize].fill([0.0; 2]);
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame, key: StereoFrame, bypassed: bool) {
@@ -604,13 +1029,33 @@ impl CompressorRuntime {
         } else {
             0.0
         };
-        let [key_left, key_right] = key.map(|sample| {
+        let [raw_key_left, raw_key_right] = key.map(|sample| {
             if sample.is_finite() {
                 f64::from(sample)
             } else {
                 0.0
             }
         });
+        let sc_mix = f64::from(self.settings.sidechain_mix);
+        let [mut key_left, mut key_right] = if sc_mix == 1.0 {
+            [raw_key_left, raw_key_right]
+        } else if sc_mix == 0.0 {
+            [left, right]
+        } else {
+            [
+                left * (1.0 - sc_mix) + raw_key_left * sc_mix,
+                right * (1.0 - sc_mix) + raw_key_right * sc_mix,
+            ]
+        };
+        if self.sidechain_gain_linear != 1.0 {
+            key_left *= self.sidechain_gain_linear;
+            key_right *= self.sidechain_gain_linear;
+        }
+        if self.settings.sidechain_eq_mode != SidechainEqMode::Off {
+            let filtered = self.sidechain_eq.process([key_left, key_right]);
+            key_left = filtered[0];
+            key_right = filtered[1];
+        }
         let peak = key_left.abs().max(key_right.abs());
         // Independent mean-square histories stay warm even while Peak is selected.
         for (energy, input) in self.energy.iter_mut().zip([key_left, key_right]) {
@@ -631,44 +1076,95 @@ impl CompressorRuntime {
                 (1.0 - detector_mix) * peak + detector_mix * rms
             }
         };
-        let coefficient = if detector > self.envelope {
-            self.attack_alpha
+        let effective_release = if self.settings.auto_release {
+            let sustained = (self.auto_release_env_db / 12.0).clamp(0.0, 1.0);
+            let fast_ms = f64::from(self.settings.release_ms).min(50.0);
+            let slow_ms = f64::from(self.settings.release_ms).max(250.0);
+            let eff_ms = (fast_ms + (slow_ms - fast_ms) * sustained).clamp(5.0, 1_000.0);
+            hex_dsp::one_pole_pole(self.sample_rate, eff_ms * 0.001).unwrap_or(self.release_alpha)
         } else {
             self.release_alpha
         };
+        let coefficient = if detector > self.envelope {
+            self.attack_alpha
+        } else {
+            effective_release
+        };
         self.envelope =
             hex_dsp::flush_quiet(coefficient * self.envelope + (1.0 - coefficient) * detector);
-        let level_db = hex_dsp::LinearAmplitude::new(self.envelope)
+        let detector_db = hex_dsp::LinearAmplitude::new(detector)
             .ok()
             .and_then(hex_dsp::LinearAmplitude::decibels)
-            .map_or(SILENCE_FLOOR_DB, hex_dsp::Decibels::value);
-        let reduction_db = gain_reduction_db(
+            .map_or(SILENCE_FLOOR_DB, hex_dsp::Decibels::value)
+            .max(SILENCE_FLOOR_DB);
+        let log_coeff = if detector_db > self.log_envelope_db {
+            self.attack_alpha
+        } else {
+            effective_release
+        };
+        self.log_envelope_db = (log_coeff * self.log_envelope_db + (1.0 - log_coeff) * detector_db)
+            .clamp(SILENCE_FLOOR_DB, 60.0);
+        let level_db = match self.settings.envelope {
+            EnvelopeMode::Linear => hex_dsp::LinearAmplitude::new(self.envelope)
+                .ok()
+                .and_then(hex_dsp::LinearAmplitude::decibels)
+                .map_or(SILENCE_FLOOR_DB, hex_dsp::Decibels::value),
+            EnvelopeMode::Logarithmic => self.log_envelope_db,
+        };
+        let reduction_db = gain_reduction_db_for_mode(
             level_db,
             f64::from(self.settings.threshold_db),
             f64::from(self.settings.ratio),
             f64::from(self.settings.knee_db),
+            self.settings.mode,
         );
-        let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
+        self.auto_release_env_db = hex_dsp::flush_quiet(
+            self.auto_release_alpha * self.auto_release_env_db
+                + (1.0 - self.auto_release_alpha) * reduction_db.abs(),
+        );
+        let target_gain_db =
+            reduction_db + f64::from(self.settings.makeup_db) + auto_makeup_db(self.settings);
         self.gain_db = hex_dsp::flush_subnormal(
             self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db,
         );
         self.reduction_db = hex_dsp::flush_quiet(
             self.gain_alpha * self.reduction_db + (1.0 - self.gain_alpha) * reduction_db,
         );
+        let meter_detector = match self.settings.envelope {
+            EnvelopeMode::Linear => self.envelope as f32,
+            EnvelopeMode::Logarithmic => hex_dsp::Decibels::new(self.log_envelope_db)
+                .and_then(hex_dsp::Decibels::linear_amplitude)
+                .map_or(0.0, |v| v.value() as f32),
+        };
         if !bypassed {
             let peak_reduction = self.meter.reduction_db[0].max(-self.reduction_db as f32);
             self.meter.reduction_db = [peak_reduction; 2];
-            self.meter.post_input_peak = self.meter.post_input_peak.max(self.envelope as f32);
+            self.meter.post_input_peak = self.meter.post_input_peak.max(meter_detector);
         }
+        let (audio_left, audio_right) = if self.lookahead_frames > 0 {
+            let delayed = self.lookahead_buf[self.lookahead_pos];
+            self.lookahead_buf[self.lookahead_pos] = [left as f32, right as f32];
+            self.lookahead_pos += 1;
+            if self.lookahead_pos >= self.lookahead_frames as usize {
+                self.lookahead_pos = 0;
+            }
+            (f64::from(delayed[0]), f64::from(delayed[1]))
+        } else {
+            (left, right)
+        };
         // A finite 5 ms ramp reaches exact endpoints, independently of block
         // partitions. Detector/gain history advances even at fully dry output.
         let mix = self.mix_ramp.advance_by_remaining();
         if bypassed {
+            if self.lookahead_frames > 0 {
+                frame[0] = audio_left as f32;
+                frame[1] = audio_right as f32;
+            }
             return;
         }
         if mix == 0.0 {
-            frame[0] = left as f32;
-            frame[1] = right as f32;
+            frame[0] = audio_left as f32;
+            frame[1] = audio_right as f32;
             return;
         }
         let gain = hex_dsp::Decibels::new(self.gain_db)
@@ -676,11 +1172,11 @@ impl CompressorRuntime {
             .map_or(0.0, hex_dsp::LinearAmplitude::value);
         if mix == 1.0 {
             // Preserve the original fully-wet operation order and rounding.
-            frame[0] = (left * gain) as f32;
-            frame[1] = (right * gain) as f32;
+            frame[0] = (audio_left * gain) as f32;
+            frame[1] = (audio_right * gain) as f32;
         } else {
-            frame[0] = (left * (1.0 - mix) + left * gain * mix) as f32;
-            frame[1] = (right * (1.0 - mix) + right * gain * mix) as f32;
+            frame[0] = (audio_left * (1.0 - mix) + audio_left * gain * mix) as f32;
+            frame[1] = (audio_right * (1.0 - mix) + audio_right * gain * mix) as f32;
         }
     }
 }
@@ -735,10 +1231,20 @@ impl NativeProcessorRuntime for CompressorRuntime {
         self.settings = self.base.settings;
         self.attack_alpha = self.base.attack_alpha;
         self.release_alpha = self.base.release_alpha;
+        self.sidechain_gain_linear = self.base.sidechain_gain_linear;
+        self.sidechain_eq = SidechainEq::new(
+            self.settings.sidechain_eq_mode,
+            self.settings.sidechain_eq_freq_hz,
+            self.settings.sidechain_eq_q,
+            self.sample_rate,
+        );
         self.reset_history();
     }
     fn is_quiescent(&self) -> bool {
-        true
+        self.lookahead_frames == 0
+            || self.lookahead_buf[..self.lookahead_frames as usize]
+                .iter()
+                .all(|frame| frame[0] == 0.0 && frame[1] == 0.0)
     }
     fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
         Some(std::mem::take(&mut self.meter))
@@ -747,19 +1253,32 @@ impl NativeProcessorRuntime for CompressorRuntime {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+            .is_some_and(|previous| {
+                self.sample_rate == previous.sample_rate
+                    && self.lookahead_frames == previous.lookahead_frames
+            })
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
-        if let Some(previous) = previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .filter(|previous| self.sample_rate == previous.sample_rate)
-        {
+        if let Some(previous) = previous.as_any().downcast_ref::<Self>().filter(|previous| {
+            self.sample_rate == previous.sample_rate
+                && self.lookahead_frames == previous.lookahead_frames
+        }) {
             if self.base.admitted.iter().any(|&v| v) && previous.base.admitted.iter().any(|&v| v) {
                 self.controls.inherit(&previous.controls);
                 self.settings = previous.settings;
                 self.attack_alpha = previous.attack_alpha;
                 self.release_alpha = previous.release_alpha;
+                self.sidechain_gain_linear = previous.sidechain_gain_linear;
+                self.sidechain_eq = previous.sidechain_eq;
+            } else {
+                let mut eq = previous.sidechain_eq;
+                eq.update(
+                    self.settings.sidechain_eq_mode,
+                    self.settings.sidechain_eq_freq_hz,
+                    self.settings.sidechain_eq_q,
+                    self.sample_rate,
+                );
+                self.sidechain_eq = eq;
             }
             self.energy = previous.energy;
             self.detector_ramp = previous.detector_ramp;
@@ -770,6 +1289,8 @@ impl NativeProcessorRuntime for CompressorRuntime {
                 );
             }
             self.envelope = previous.envelope;
+            self.log_envelope_db = previous.log_envelope_db;
+            self.auto_release_env_db = previous.auto_release_env_db;
             self.gain_db = previous.gain_db;
             self.reduction_db = previous.reduction_db;
             // A scratch twin starts a new render transaction. Its previous
@@ -783,16 +1304,62 @@ impl NativeProcessorRuntime for CompressorRuntime {
                     hex_dsp::ramp_frames_for_ms(self.sample_rate, 5.0).unwrap_or(1),
                 );
             }
+            if self.lookahead_frames > 0 {
+                let len = self.lookahead_frames as usize;
+                self.lookahead_buf[..len].copy_from_slice(&previous.lookahead_buf[..len]);
+                self.lookahead_pos = previous.lookahead_pos % len;
+            }
         }
     }
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+            .is_some_and(|previous| {
+                self.sample_rate == previous.sample_rate
+                    && self.lookahead_frames == previous.lookahead_frames
+            })
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+fn auto_makeup_db(settings: CompressorSettings) -> f64 {
+    if !settings.auto_makeup || settings.mode != CompressorMode::Compress {
+        return 0.0;
+    }
+    (-0.5 * f64::from(settings.threshold_db) * (1.0 - 1.0 / f64::from(settings.ratio)))
+        .clamp(0.0, 24.0)
+}
+
+fn gain_reduction_db_for_mode(
+    level_db: f64,
+    threshold_db: f64,
+    ratio: f64,
+    knee_db: f64,
+    mode: CompressorMode,
+) -> f64 {
+    match mode {
+        CompressorMode::Compress => gain_reduction_db(level_db, threshold_db, ratio, knee_db),
+        CompressorMode::Expand => {
+            let under = threshold_db - level_db;
+            let slope = 1.0 - ratio;
+            let raw = if knee_db <= 0.0 {
+                if under > 0.0 { slope * under } else { 0.0 }
+            } else {
+                let knee_start = -knee_db * 0.5;
+                let knee_end = knee_db * 0.5;
+                if under <= knee_start {
+                    0.0
+                } else if under >= knee_end {
+                    slope * under
+                } else {
+                    slope * (under - knee_start).powi(2) / (2.0 * knee_db)
+                }
+            };
+            raw.max(-60.0)
+        }
     }
 }
 
@@ -824,20 +1391,22 @@ pub struct CompressorTransferCurve {
 }
 
 /// Steady detector input is -60..0 dB; output is normalized to -66..24 dB.
-/// Uses the same gain-reduction law as the runtime, including manual makeup.
+/// Uses the same gain-reduction law as the runtime, including manual and auto makeup.
 pub fn transfer_curve(
     state: &NativeDeviceState,
 ) -> Result<CompressorTransferCurve, DeviceContractError> {
     let settings = decode(state)?;
+    let makeup = f64::from(settings.makeup_db) + auto_makeup_db(settings);
     let points = std::array::from_fn(|index| {
         let x = index as f64 / 128.0;
         let input_db = -60.0 + x * 60.0;
-        let wet_gain_db = gain_reduction_db(
+        let wet_gain_db = gain_reduction_db_for_mode(
             input_db,
             f64::from(settings.threshold_db),
             f64::from(settings.ratio),
             f64::from(settings.knee_db),
-        ) + f64::from(settings.makeup_db);
+            settings.mode,
+        ) + makeup;
         let mix = f64::from(settings.dry_wet);
         let output_db = if mix == 1.0 {
             input_db + wet_gain_db

@@ -15,6 +15,14 @@ fn compressor_modulation_and_keyed_retry_do_not_allocate_or_free() {
     let ids: Vec<_> = COMPRESSOR_DEFINITION
         .descriptors()
         .iter()
+        .filter(|d| {
+            COMPRESSOR_DEFINITION
+                .parameter_semantics_for_state(&state, d.id)
+                .unwrap()
+                .is_some_and(|s| {
+                    s.modulation == hex_lattice_contract::ParameterModulation::SampleRate
+                })
+        })
         .map(|d| d.id)
         .collect();
     let factory = CompressorDefinition::prepare_owned(&state, 48_000, &ids).unwrap();

@@ -6,6 +6,16 @@ fn time_alpha(milliseconds: f32, sample_rate: u32) -> f64 {
     hex_dsp::one_pole_pole(sample_rate, f64::from(milliseconds) * 0.001).unwrap_or(0.0)
 }
 
+fn db_to_linear(db: f32) -> f64 {
+    if db == 0.0 {
+        1.0
+    } else {
+        hex_dsp::Decibels::new(f64::from(db))
+            .and_then(hex_dsp::Decibels::linear_amplitude)
+            .map_or(1.0, hex_dsp::LinearAmplitude::value)
+    }
+}
+
 impl CompressorSettings {
     fn check_inline(&self) {
         let Self {
@@ -17,8 +27,18 @@ impl CompressorSettings {
             makeup_db,
             dry_wet,
             detector,
+            mode,
+            envelope,
+            auto_release,
+            auto_makeup,
+            lookahead,
+            sidechain_gain_db,
+            sidechain_mix,
+            sidechain_eq_mode,
+            sidechain_eq_freq_hz,
+            sidechain_eq_q,
         } = self;
-        let _: [&f32; 7] = [
+        let _: [&f32; 11] = [
             threshold_db,
             ratio,
             attack_ms,
@@ -26,8 +46,17 @@ impl CompressorSettings {
             knee_db,
             makeup_db,
             dry_wet,
+            sidechain_gain_db,
+            sidechain_mix,
+            sidechain_eq_freq_hz,
+            sidechain_eq_q,
         ];
         let _: &Detector = detector;
+        let _: &CompressorMode = mode;
+        let _: &EnvelopeMode = envelope;
+        let _: [&bool; 2] = [auto_release, auto_makeup];
+        let _: &Lookahead = lookahead;
+        let _: &SidechainEqMode = sidechain_eq_mode;
     }
 }
 
@@ -43,7 +72,7 @@ impl PreparedCompressor {
         {
             return Err(DeviceContractError::InvalidParameterValue);
         }
-        let mut admitted = [false; 8];
+        let mut admitted = [false; PARAM_COUNT];
         for &id in parameters {
             let binding = crate::parameter_binding::binding(&BINDINGS, id)?;
             binding.semantics.validate(binding.descriptor)?;
@@ -67,6 +96,13 @@ impl PreparedCompressor {
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?,
             rms_alpha: hex_dsp::one_pole_pole(sample_rate, RMS_INTEGRATION_SECONDS)
                 .map_err(|_| DeviceContractError::InvalidParameterValue)?,
+            auto_release_alpha: hex_dsp::one_pole_pole(
+                sample_rate,
+                AUTO_RELEASE_INTEGRATION_SECONDS,
+            )
+            .map_err(|_| DeviceContractError::InvalidParameterValue)?,
+            sidechain_gain_linear: db_to_linear(settings.sidechain_gain_db),
+            lookahead_frames: settings.lookahead.frames(sample_rate),
         })
     }
     fn check_inline(&self) {
@@ -78,11 +114,21 @@ impl PreparedCompressor {
             release_alpha,
             gain_alpha,
             rms_alpha,
+            auto_release_alpha,
+            sidechain_gain_linear,
+            lookahead_frames,
         } = self;
         settings.check_inline();
-        let _: &[bool; 8] = admitted;
-        let _: &u32 = sample_rate;
-        let _: [&f64; 4] = [attack_alpha, release_alpha, gain_alpha, rms_alpha];
+        let _: &[bool; PARAM_COUNT] = admitted;
+        let _: [&u32; 2] = [sample_rate, lookahead_frames];
+        let _: [&f64; 6] = [
+            attack_alpha,
+            release_alpha,
+            gain_alpha,
+            rms_alpha,
+            auto_release_alpha,
+            sidechain_gain_linear,
+        ];
     }
     pub(super) fn supports(&self, id: ParameterId) -> bool {
         BINDINGS
@@ -103,27 +149,42 @@ impl CompressorRuntime {
             release_alpha,
             gain_alpha,
             rms_alpha,
+            auto_release_alpha,
+            sidechain_gain_linear,
+            lookahead_frames,
             energy,
             detector_ramp,
             envelope,
+            log_envelope_db,
+            auto_release_env_db,
             gain_db,
             reduction_db,
             meter,
             mix_ramp,
+            sidechain_eq,
+            lookahead_pos,
+            lookahead_buf,
         } = self;
         base.check_inline();
         controls.check_inline(CompressorSettings::check_inline);
         settings.check_inline();
         let _: &[f64; 2] = energy;
-        let _: &u32 = sample_rate;
+        let _: [&u32; 2] = [sample_rate, lookahead_frames];
         let _: [&hex_dsp::LinearRamp; 2] = [detector_ramp, mix_ramp];
         let _: &hex_lattice::DynamicsMeter = meter;
-        let _: [&f64; 7] = [
+        let _: &SidechainEq = sidechain_eq;
+        let _: &usize = lookahead_pos;
+        let _: &[StereoFrame; MAX_LOOKAHEAD_FRAMES] = lookahead_buf;
+        let _: [&f64; 11] = [
             attack_alpha,
             release_alpha,
             gain_alpha,
             rms_alpha,
+            auto_release_alpha,
+            sidechain_gain_linear,
             envelope,
+            log_envelope_db,
+            auto_release_env_db,
             gain_db,
             reduction_db,
         ];
@@ -132,7 +193,7 @@ impl CompressorRuntime {
     pub(super) fn apply_values(
         &mut self,
         values: &dyn NativeParameterAutomation,
-        resolved: &mut crate::parameter_binding::Resolved<8>,
+        resolved: &mut crate::parameter_binding::Resolved<PARAM_COUNT>,
         offset: usize,
     ) -> Result<(), DeviceContractError> {
         let Some(next) = self.controls.sample(&BINDINGS, resolved, values, offset)? else {
@@ -153,6 +214,20 @@ impl CompressorRuntime {
             self.detector_ramp.retarget(
                 f64::from(settings.detector == Detector::Rms),
                 self.sample_rate.div_ceil(200),
+            );
+        }
+        if settings.sidechain_gain_db != self.settings.sidechain_gain_db {
+            self.sidechain_gain_linear = db_to_linear(settings.sidechain_gain_db);
+        }
+        if settings.sidechain_eq_mode != self.settings.sidechain_eq_mode
+            || settings.sidechain_eq_freq_hz != self.settings.sidechain_eq_freq_hz
+            || settings.sidechain_eq_q != self.settings.sidechain_eq_q
+        {
+            self.sidechain_eq.update(
+                settings.sidechain_eq_mode,
+                settings.sidechain_eq_freq_hz,
+                settings.sidechain_eq_q,
+                self.sample_rate,
             );
         }
         self.controls.install(next);
@@ -252,7 +327,7 @@ mod tests {
         }
     }
     struct Dense {
-        ids: [ParameterId; 8],
+        ids: Vec<ParameterId>,
         start: usize,
         changing: bool,
     }
@@ -264,10 +339,17 @@ mod tests {
             let descriptor = BINDINGS.iter().find(|b| b.descriptor.id == id)?.descriptor;
             let frame = self.start + offset;
             match descriptor.kind {
-                ParameterKind::Choice { .. } => Some(ParameterValue::Choice(if self.changing {
-                    ((frame / 17) % 2) as u32
+                ParameterKind::Choice { labels } => {
+                    Some(ParameterValue::Choice(if self.changing {
+                        ((frame / 17) % labels.len()) as u32
+                    } else {
+                        1.min(labels.len().saturating_sub(1)) as u32
+                    }))
+                }
+                ParameterKind::Bool => Some(ParameterValue::Bool(if self.changing {
+                    (frame / 17) % 2 == 1
                 } else {
-                    1
+                    true
                 })),
                 ParameterKind::Float { min, max, .. } if self.changing => {
                     let fraction = ((frame * 7 + id.value() as usize * 3) % 65) as f32 / 64.0;
@@ -277,11 +359,19 @@ mod tests {
             }
         }
     }
+    fn automatable_ids() -> Vec<ParameterId> {
+        BINDINGS
+            .iter()
+            .filter(|b| b.declares_arrangement_automation())
+            .map(|b| b.descriptor.id)
+            .collect()
+    }
     #[test]
-    fn all_eight_dense_controls_match_canonical_pcm_at_both_rates() {
-        let ids = BINDINGS.each_ref().map(|b| b.descriptor.id);
+    fn all_automatable_dense_controls_match_canonical_pcm_at_both_rates() {
+        let ids = automatable_ids();
+        assert_eq!(ids.len(), 17);
         let mut values = Dense {
-            ids,
+            ids: ids.clone(),
             start: 0,
             changing: true,
         };
@@ -318,7 +408,7 @@ mod tests {
             values.start = 0;
             for (offset, frame) in expected.iter_mut().enumerate() {
                 let mut changed = state.clone();
-                for id in ids {
+                for &id in &ids {
                     changed = COMPRESSOR_DEFINITION
                         .patch_parameter(&changed, id, values.value_at(id, offset).unwrap())
                         .unwrap();
@@ -398,10 +488,10 @@ mod tests {
         use std::{hint::black_box, time::Instant};
         assert!(!black_box(cfg!(debug_assertions)), "run with --release");
         let state = COMPRESSOR_DEFINITION.default_state().unwrap();
-        let ids = BINDINGS.each_ref().map(|b| b.descriptor.id);
+        let ids = automatable_ids();
         for mode in 0..3 {
             let source = Dense {
-                ids,
+                ids: ids.clone(),
                 start: 0,
                 changing: mode == 2,
             };
@@ -443,12 +533,15 @@ mod tests {
         let state = COMPRESSOR_DEFINITION.default_state().unwrap();
         for binding in &BINDINGS {
             binding.semantics.validate(binding.descriptor).unwrap();
-            assert!(
+            let expected = binding.descriptor.id != parameter::LOOKAHEAD;
+            assert_eq!(
                 COMPRESSOR_DEFINITION
                     .supports_parameter_automation(&state, binding.descriptor.id)
-                    .unwrap()
+                    .unwrap(),
+                expected
             );
         }
+        assert!(PreparedCompressor::new(&state, 8000, &[parameter::LOOKAHEAD]).is_err());
         assert!(PreparedCompressor::new(&state, 8000, &[parameter::DETECTOR]).is_ok());
         assert!(
             PreparedCompressor::new(&state, 8000, &[parameter::RATIO, parameter::RATIO]).is_err()

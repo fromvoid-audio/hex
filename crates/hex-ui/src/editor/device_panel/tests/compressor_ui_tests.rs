@@ -67,7 +67,7 @@ fn compressor_shared_panel_fits_and_drag_commits_one_undoable_edit(cx: &mut Test
     );
     assert_eq!(card.size.height, px(DEVICE_FRAME_HEIGHT));
     assert!(graph.size.height >= px(50.0));
-    for parameter in 1..=8 {
+    for parameter in 1..=18 {
         let control = visual
             .debug_bounds(Box::leak(
                 format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),
@@ -627,8 +627,8 @@ fn compressor_mode_menu_track_return_cancel_commit_preview_history_and_reopen(
                 compressor_panel::cached_curve(view, device),
                 Some(&hex_engine::native_compressor_transfer_curve(changed_state).unwrap())
             );
-            assert_eq!(changed_state.state_version(), 3);
-            assert_eq!(changed_state.payload().len(), 32);
+            assert_eq!(changed_state.state_version(), 4);
+            assert_eq!(changed_state.payload().len(), 72);
         });
         editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
         pump_until(&editor, cx, |view| {

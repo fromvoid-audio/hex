@@ -955,7 +955,7 @@ fn rms_mode_history_ramps_survive_partitions_bypass_rapid_retarget_and_reset() {
 #[test]
 fn rms_state_validation_invalid_frames_and_static_detector_preview_are_truthful() {
     let base = COMPRESSOR_DEFINITION.default_state().unwrap();
-    assert_eq!(base.payload().len(), 32);
+    assert_eq!(base.payload().len(), STATE_BYTES);
     assert_eq!(
         COMPRESSOR_DEFINITION
             .read_parameter(&base, parameter::DETECTOR)
@@ -1416,7 +1416,7 @@ fn compressor_v1_and_v2_states_migrate_with_their_original_behaviour() {
         );
     }
     assert_eq!(
-        COMPRESSOR_DEFINITION.migrate_state(&state(4, &[0.0; 9])),
+        COMPRESSOR_DEFINITION.migrate_state(&state(COMPRESSOR_STATE_VERSION + 1, &[0.0; 9])),
         Err(DeviceContractError::UnsupportedStateVersion)
     );
 }
@@ -1566,4 +1566,284 @@ fn auxiliary_rejects_unprepared_automation_before_processing() {
     processor.process_block(&mut main, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     fresh.process_block(&mut expected, &hex_lattice::EMPTY_DEVICE_RESOURCES);
     assert_eq!(main, expected);
+}
+
+#[test]
+fn v3_state_migrates_losslessly_to_v4_with_bit_exact_pcm() {
+    // Construct an explicit v3 (32-byte) Compressor payload (RMS detector).
+    let mut v3_bytes = Vec::with_capacity(32);
+    for value in [-24.0_f32, 6.0, 5.0, 80.0, 4.0, 3.0, 0.75] {
+        v3_bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    v3_bytes.extend_from_slice(&1u32.to_le_bytes()); // RMS
+    let v3 = NativeDeviceState::new(COMPRESSOR_TYPE_ID, 3, v3_bytes).unwrap();
+    let migrated = COMPRESSOR_DEFINITION.migrate_state(&v3).unwrap();
+    assert_eq!(migrated.state_version(), COMPRESSOR_STATE_VERSION);
+    assert_eq!(migrated.payload().len(), STATE_BYTES);
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::MODE),
+        Ok(ParameterValue::Choice(0))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::ENVELOPE),
+        Ok(ParameterValue::Choice(0))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::AUTO_RELEASE),
+        Ok(ParameterValue::Bool(false))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::AUTO_MAKEUP),
+        Ok(ParameterValue::Bool(false))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::LOOKAHEAD),
+        Ok(ParameterValue::Choice(0))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::SIDECHAIN_GAIN),
+        Ok(ParameterValue::Float(0.0))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::SIDECHAIN_MIX),
+        Ok(ParameterValue::Float(1.0))
+    );
+    assert_eq!(
+        COMPRESSOR_DEFINITION.read_parameter(&migrated, parameter::SIDECHAIN_EQ_MODE),
+        Ok(ParameterValue::Choice(0))
+    );
+    let mut a = [[0.5, -0.25]; 256];
+    let mut b = a;
+    runtime(&v3, 48_000).process_block(&mut a, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    runtime(&migrated, 48_000).process_block(&mut b, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(a, b);
+}
+
+#[test]
+fn expand_mode_log_envelope_auto_release_and_auto_makeup_match_oracles() {
+    let base = COMPRESSOR_DEFINITION.default_state().unwrap();
+
+    // 1. Expand mode: signals above threshold stay unity, below threshold attenuate at ratio.
+    let mut exp_state = COMPRESSOR_DEFINITION
+        .patch_parameter(&base, parameter::MODE, ParameterValue::Choice(1))
+        .unwrap();
+    for (id, value) in [
+        (parameter::THRESHOLD, -12.0),
+        (parameter::RATIO, 2.0),
+        (parameter::KNEE, 0.0),
+        (parameter::ATTACK, 0.1),
+        (parameter::RELEASE, 5.0),
+    ] {
+        exp_state = patch(&exp_state, id, value);
+    }
+    let curve = transfer_curve(&exp_state).unwrap();
+    // At 0 dB input (index 128, above -12 dB threshold): output == 0 dB => (0+66)/90.
+    assert!((curve.points[128][1] - 66.0 / 90.0).abs() < 1e-4);
+    // At -24 dB input (12 dB below threshold, ratio 2 => -12 dB extra => -36 dB output).
+    // index for -24 dB: (-24 + 60) / 60 * 128 = 76.8 -> check monotonic attenuation below threshold.
+    assert!(curve.points[64][1] < (-30.0 + 66.0) / 90.0);
+    let mut exp_rt = runtime(&exp_state, 48_000);
+    let mut quiet = [[0.0625; 2]; 4096]; // ~-24 dBFS -> 12 dB below -12 dB -> -12 dB reduction
+    exp_rt.process_block(&mut quiet, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    let expected_quiet = 0.0625 * 10.0_f32.powf(-12.08 / 20.0);
+    assert!((quiet[4095][0] - expected_quiet).abs() < 0.002);
+
+    // 2. Auto makeup boosts Compress mode by -0.5 * threshold * (1 - 1/ratio) and is 0 in Expand.
+    let auto_mk = COMPRESSOR_DEFINITION
+        .patch_parameter(&base, parameter::AUTO_MAKEUP, ParameterValue::Bool(true))
+        .unwrap();
+    let expected_boost = -0.5 * (-18.0_f64) * (1.0 - 1.0 / 4.0); // 6.75 dB
+    let mk_curve = transfer_curve(&auto_mk).unwrap();
+    let base_curve = transfer_curve(&base).unwrap();
+    let delta_db = (mk_curve.points[0][1] - base_curve.points[0][1]) * 90.0;
+    assert!((f64::from(delta_db) - expected_boost).abs() < 1e-3);
+
+    // 3. Log envelope differs transiently from Linear envelope and remains finite.
+    let log_state = COMPRESSOR_DEFINITION
+        .patch_parameter(&base, parameter::ENVELOPE, ParameterValue::Choice(1))
+        .unwrap();
+    let mut lin_rt = runtime(&base, 48_000);
+    let mut log_rt = runtime(&log_state, 48_000);
+    let mut sig_lin = [[0.8; 2]; 256];
+    let mut sig_log = sig_lin;
+    lin_rt.process_block(&mut sig_lin, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    log_rt.process_block(&mut sig_log, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(sig_log.iter().flatten().all(|s| s.is_finite()));
+    assert_ne!(sig_lin[64], sig_log[64]);
+
+    // 4. Auto release slows down release after sustained heavy compression vs short transient.
+    let mut auto_rel = COMPRESSOR_DEFINITION
+        .patch_parameter(&base, parameter::AUTO_RELEASE, ParameterValue::Bool(true))
+        .unwrap();
+    auto_rel = patch(&auto_rel, parameter::THRESHOLD, -30.0);
+    auto_rel = patch(&auto_rel, parameter::RATIO, 10.0);
+    auto_rel = patch(&auto_rel, parameter::ATTACK, 0.1);
+    auto_rel = patch(&auto_rel, parameter::RELEASE, 50.0);
+    let mut short_rt = runtime(&auto_rel, 48_000);
+    let mut long_rt = runtime(&auto_rel, 48_000);
+    short_rt.process_block(&mut [[0.9; 2]; 128], &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    long_rt.process_block(
+        &mut [[0.9; 2]; 24_000],
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+    let mut rec_short = [[0.01; 2]; 2048];
+    let mut rec_long = rec_short;
+    short_rt.process_block(&mut rec_short, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    long_rt.process_block(&mut rec_long, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    // Sustained heavy compression recovers slower (stays more attenuated) than a short transient.
+    assert!(rec_long[1024][0] < rec_short[1024][0]);
+}
+
+#[test]
+fn lookahead_declares_exact_latency_anticipates_transients_and_aligns_bypass() {
+    let mut state = COMPRESSOR_DEFINITION.default_state().unwrap();
+    state = patch(&state, parameter::THRESHOLD, -24.0);
+    state = patch(&state, parameter::RATIO, 20.0);
+    state = patch(&state, parameter::ATTACK, 1.0);
+    state = patch(&state, parameter::KNEE, 0.0);
+    let la_1ms = COMPRESSOR_DEFINITION
+        .patch_parameter(&state, parameter::LOOKAHEAD, ParameterValue::Choice(1))
+        .unwrap();
+    let la_10ms = COMPRESSOR_DEFINITION
+        .patch_parameter(&state, parameter::LOOKAHEAD, ParameterValue::Choice(2))
+        .unwrap();
+
+    assert_eq!(
+        prepared(&state, 48_000).algorithmic_latency_frames(),
+        Some(0)
+    );
+    assert_eq!(
+        prepared(&la_1ms, 48_000).algorithmic_latency_frames(),
+        Some(48)
+    );
+    assert_eq!(
+        prepared(&la_10ms, 48_000).algorithmic_latency_frames(),
+        Some(480)
+    );
+    assert_eq!(
+        prepared(&la_10ms, 192_000).algorithmic_latency_frames(),
+        Some(1920)
+    );
+    assert_eq!(
+        prepared(&la_10ms, 48_000).output_tail(),
+        OutputTail::Finite {
+            max_tail_frames: 480
+        }
+    );
+
+    // 10 ms lookahead anticipates a sudden step transient so the leading edge is already compressed.
+    let mut no_la = runtime(&state, 48_000);
+    let mut with_la = runtime(&la_10ms, 48_000);
+    let mut out_no_la = vec![[0.0; 2]; 1024];
+    for frame in &mut out_no_la[100..] {
+        *frame = [1.0, 1.0];
+    }
+    let mut out_la = out_no_la.clone();
+    no_la.process_block(&mut out_no_la, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    with_la.process_block(&mut out_la, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!(!with_la.is_quiescent());
+    // Leading transient arrives at index 100 + 480 = 580 in lookahead output, already attenuated!
+    assert_eq!(out_la[579], [0.0, 0.0]);
+    assert!(out_la[580][0] < out_no_la[100][0] * 0.5);
+
+    // Bypass preserves lookahead delay alignment.
+    let mut bypassed = runtime(&la_1ms, 48_000);
+    let mut impulse = vec![[0.0; 2]; 128];
+    impulse[10] = [0.75, -0.5];
+    bypassed.process_bypassed_block(&mut impulse, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert_eq!(impulse[10], [0.0, 0.0]);
+    assert_eq!(impulse[58], [0.75, -0.5]);
+
+    // History copy matches same lookahead and rejects mismatched lookahead.
+    assert!(with_la.can_copy_history_from(runtime(&la_10ms, 48_000).as_ref()));
+    assert!(!with_la.can_copy_history_from(no_la.as_ref()));
+}
+
+#[test]
+fn sidechain_gain_mix_and_eq_filter_shape_detector_response() {
+    let mut state = COMPRESSOR_DEFINITION.default_state().unwrap();
+    state = patch(&state, parameter::THRESHOLD, -18.0);
+    state = patch(&state, parameter::RATIO, 10.0);
+    state = patch(&state, parameter::ATTACK, 0.5);
+    state = patch(&state, parameter::KNEE, 0.0);
+
+    // 1. Sidechain Mix = 0.0 ignores loud external key and uses quiet internal main.
+    let sc_internal = patch(&state, parameter::SIDECHAIN_MIX, 0.0);
+    let mut rt_ext = runtime(&state, 48_000);
+    let mut rt_int = runtime(&sc_internal, 48_000);
+    let mut main_ext = [[0.05; 2]; 2048];
+    let mut main_int = main_ext;
+    let key = [[1.0; 2]; 2048];
+    let mut scratch = [];
+    rt_ext
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut main_ext, Some(&key), &mut scratch, 2048).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    rt_int
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut main_int, Some(&key), &mut scratch, 2048).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    assert!(main_ext[2047][0] < 0.02);
+    assert!((main_int[2047][0] - 0.05).abs() < 1e-5);
+
+    // 2. Sidechain Gain +18 dB pushes a -24 dBFS key above -18 dB threshold.
+    let sc_boost = patch(&state, parameter::SIDECHAIN_GAIN, 18.0);
+    let mut rt_flat = runtime(&state, 48_000);
+    let mut rt_boost = runtime(&sc_boost, 48_000);
+    let mut flat_out = [[0.06; 2]; 2048];
+    let mut boost_out = flat_out;
+    rt_flat.process_block(&mut flat_out, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    rt_boost.process_block(&mut boost_out, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+    assert!((flat_out[2047][0] - 0.06).abs() < 1e-4);
+    assert!(boost_out[2047][0] < 0.03);
+
+    // 3. Sidechain HP filter at 1000 Hz prevents a 60 Hz sub sine key from triggering compression.
+    let mut sc_hp = COMPRESSOR_DEFINITION
+        .patch_parameter(
+            &state,
+            parameter::SIDECHAIN_EQ_MODE,
+            ParameterValue::Choice(1),
+        )
+        .unwrap();
+    sc_hp = patch(&sc_hp, parameter::SIDECHAIN_EQ_FREQ, 1_000.0);
+    let mut rt_no_eq = runtime(&state, 48_000);
+    let mut rt_hp = runtime(&sc_hp, 48_000);
+    let sub_sine: Vec<StereoFrame> = (0..4096)
+        .map(|i| {
+            let s = (2.0 * std::f32::consts::PI * 60.0 * i as f32 / 48_000.0).sin() * 0.8;
+            [s, s]
+        })
+        .collect();
+    let mut out_no_eq = vec![[0.2; 2]; 4096];
+    let mut out_hp = out_no_eq.clone();
+    rt_no_eq
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut out_no_eq, Some(&sub_sine), &mut scratch, 4096).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    rt_hp
+        .process_block_with_auxiliary(
+            StereoAuxiliaryBlock::new(&mut out_hp, Some(&sub_sine), &mut scratch, 4096).unwrap(),
+            None,
+            None,
+            false,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .unwrap();
+    assert!(out_no_eq[4095][0] < 0.08);
+    assert!(out_hp[4095][0] > 0.18);
 }
