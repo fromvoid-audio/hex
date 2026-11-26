@@ -7,12 +7,167 @@ use crate::mpe::{
     MAX_MPE_MASTER_PITCH_BEND_SEMITONES, MAX_MPE_PITCH_BEND_SEMITONES, MpeConfig, MpeDecoder,
     MpeExpressionEvent,
 };
-use crate::note_events::NoteEvent;
+use crate::note_events::{ControlChange, NoteEvent};
 use crate::timebase::{MachTimebase, MonotonicTimestampClock, TimedPacket, TimestampedNoteEvent};
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering},
+};
 
 /// Maximum number of MIDI input ports aggregated into one logical live input stream.
 pub const MAX_AGGREGATED_PORTS: usize = 16;
+
+/// Bounded per-port wait-free SPSC packet queue capacity (power of two).
+const PORT_QUEUE_CAPACITY: usize = 64;
+const PORT_QUEUE_MASK: usize = PORT_QUEUE_CAPACITY - 1;
+/// Maximum payload bytes carried in one wait-free queued packet slot.
+const PORT_PACKET_WORDS: usize = 32;
+const PORT_PACKET_MAX_BYTES: usize = PORT_PACKET_WORDS * 8;
+
+/// Losslessly pack [`Controllers`] into 63 bits for lock-free atomic reads.
+fn pack_controllers(c: Controllers) -> u64 {
+    let mut word = u64::from(c.pressure & 0x7f)
+        | (u64::from(c.bend as u16) << 7)
+        | (u64::from(c.wheel & 0x7f) << 23)
+        | (u64::from(c.sustain & 0x7f) << 30)
+        | (u64::from(c.expression & 0x7f) << 37);
+    if let Some(cc) = c.last_cc {
+        word |= (1_u64 << 44)
+            | (u64::from(cc.channel & 0x0f) << 45)
+            | (u64::from(cc.cc & 0x7f) << 49)
+            | (u64::from(cc.value & 0x7f) << 56);
+    }
+    word
+}
+
+fn unpack_controllers(word: u64) -> Controllers {
+    let last_cc = if (word >> 44) & 1 != 0 {
+        Some(ControlChange {
+            channel: ((word >> 45) & 0x0f) as u8,
+            cc: ((word >> 49) & 0x7f) as u8,
+            value: ((word >> 56) & 0x7f) as u8,
+        })
+    } else {
+        None
+    };
+    Controllers {
+        pressure: (word & 0x7f) as u8,
+        bend: ((word >> 7) & 0xffff) as u16 as i16,
+        wheel: ((word >> 23) & 0x7f) as u8,
+        sustain: ((word >> 30) & 0x7f) as u8,
+        expression: ((word >> 37) & 0x7f) as u8,
+        last_cc,
+    }
+}
+
+struct PacketSlot {
+    timestamp_ticks: AtomicU64,
+    len: AtomicU16,
+    words: [AtomicU64; PORT_PACKET_WORDS],
+}
+
+impl PacketSlot {
+    fn new() -> Self {
+        Self {
+            timestamp_ticks: AtomicU64::new(0),
+            len: AtomicU16::new(0),
+            words: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    fn write(&self, timestamp_ticks: u64, bytes: &[u8]) {
+        self.timestamp_ticks
+            .store(timestamp_ticks, Ordering::Relaxed);
+        let len = bytes.len().min(PORT_PACKET_MAX_BYTES);
+        self.len.store(len as u16, Ordering::Relaxed);
+        let full_words = len / 8;
+        for (i, chunk) in bytes[..full_words * 8].chunks_exact(8).enumerate() {
+            let mut buf = [0_u8; 8];
+            buf.copy_from_slice(chunk);
+            self.words[i].store(u64::from_le_bytes(buf), Ordering::Relaxed);
+        }
+        let rem = len % 8;
+        if rem > 0 {
+            let mut buf = [0_u8; 8];
+            buf[..rem].copy_from_slice(&bytes[full_words * 8..len]);
+            self.words[full_words].store(u64::from_le_bytes(buf), Ordering::Relaxed);
+        }
+    }
+
+    fn read(&self, out: &mut [u8; PORT_PACKET_MAX_BYTES]) -> (u64, usize) {
+        let timestamp_ticks = self.timestamp_ticks.load(Ordering::Relaxed);
+        let len = usize::from(self.len.load(Ordering::Relaxed)).min(PORT_PACKET_MAX_BYTES);
+        let word_count = len.div_ceil(8);
+        for i in 0..word_count {
+            let bytes = self.words[i].load(Ordering::Relaxed).to_le_bytes();
+            let start = i * 8;
+            let end = (start + 8).min(len);
+            out[start..end].copy_from_slice(&bytes[..(end - start)]);
+        }
+        (timestamp_ticks, len)
+    }
+}
+
+/// Safe, wait-free, allocation-free per-port SPSC packet ring buffer.
+///
+/// The CoreMIDI Mach callback pushes packets using only atomics (zero mutexes,
+/// zero heap allocation, zero caller closures); the worker/pump thread drains
+/// packets into [`MultiPortAggregator`].
+pub(crate) struct PortPacketQueue {
+    slots: Box<[PacketSlot; PORT_QUEUE_CAPACITY]>,
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    overflowed: AtomicBool,
+}
+
+impl PortPacketQueue {
+    pub(crate) fn new() -> Self {
+        Self {
+            slots: Box::new(std::array::from_fn(|_| PacketSlot::new())),
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            overflowed: AtomicBool::new(false),
+        }
+    }
+
+    /// Wait-free enqueue from the port callback thread. Returns `true` if any
+    /// slot was queued (or overflow was latched so the consumer should wake).
+    pub(crate) fn enqueue_packet(&self, timestamp_ticks: u64, bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return false;
+        }
+        let mut offset = 0;
+        let mut tail = self.tail.load(Ordering::Relaxed);
+        let head = self.head.load(Ordering::Acquire);
+        while offset < bytes.len() {
+            if tail.wrapping_sub(head) >= PORT_QUEUE_CAPACITY {
+                self.overflowed.store(true, Ordering::Release);
+                return true;
+            }
+            let end = (offset + PORT_PACKET_MAX_BYTES).min(bytes.len());
+            self.slots[tail & PORT_QUEUE_MASK].write(timestamp_ticks, &bytes[offset..end]);
+            tail = tail.wrapping_add(1);
+            offset = end;
+        }
+        self.tail.store(tail, Ordering::Release);
+        true
+    }
+
+    pub(crate) fn pop_packet(&self, out: &mut [u8; PORT_PACKET_MAX_BYTES]) -> Option<(u64, usize)> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head == tail {
+            return None;
+        }
+        let packet = self.slots[head & PORT_QUEUE_MASK].read(out);
+        self.head.store(head.wrapping_add(1), Ordering::Release);
+        Some(packet)
+    }
+
+    pub(crate) fn take_overflowed(&self) -> bool {
+        self.overflowed.swap(false, Ordering::AcqRel)
+    }
+}
 
 struct AggregatedState {
     decoders: Vec<Decoder>,
@@ -20,6 +175,9 @@ struct AggregatedState {
     current: Controllers,
     clock: MonotonicTimestampClock,
     merged_through: u64,
+}
+
+struct DeliveryCallbacks {
     publish: Box<dyn Fn(Controllers) + Send>,
     note: Box<dyn Fn(TimestampedNoteEvent) + Send>,
 }
@@ -27,17 +185,20 @@ struct AggregatedState {
 /// Bounded multi-port MIDI input aggregator (up to [`MAX_AGGREGATED_PORTS`] ports).
 ///
 /// Each port retains its own isolated [`Decoder`] (and optional [`MpeDecoder`])
-/// so running status, SysEx framing, MPE per-channel note ownership, and
-/// per-port burst overflow never bleed across physical inputs. One control-side
-/// mutex serializes merged controller snapshots, monotonic cross-port timestamps,
-/// a single monotonic held-note token counter, ordered note/CC/per-note expression
-/// delivery, and sole-writer publication into [`HeldNoteInput`].
+/// and a wait-free [`PortPacketQueue`] so CoreMIDI Mach callbacks never lock a
+/// mutex or invoke caller closures. `controllers()` and `set_mpe_pitch_bend_ranges()`
+/// are completely lock-free via atomics, and delivery releases decoder state
+/// before invoking caller `publish`/`note` closures.
 pub struct MultiPortAggregator {
     filter: ChannelFilter,
     mpe: Option<MpeConfig>,
     timebase: MachTimebase,
     notes: Arc<HeldNoteInput>,
+    current_packed: AtomicU64,
+    pending_mpe_ranges: AtomicU16,
+    port_queues: Vec<Arc<PortPacketQueue>>,
     state: std::sync::Mutex<AggregatedState>,
+    callbacks: std::sync::Mutex<DeliveryCallbacks>,
 }
 
 impl MultiPortAggregator {
@@ -61,23 +222,30 @@ impl MultiPortAggregator {
         decoders
             .try_reserve_exact(port_count)
             .map_err(|_| "could not allocate midi port decoders")?;
+        let mut port_queues = Vec::new();
+        port_queues
+            .try_reserve_exact(port_count)
+            .map_err(|_| "could not allocate midi port queues")?;
         for _ in 0..port_count {
             decoders.push(Decoder::default());
+            port_queues.push(Arc::new(PortPacketQueue::new()));
         }
         Ok(Self {
             filter,
             mpe: None,
             timebase,
             notes,
+            current_packed: AtomicU64::new(pack_controllers(Controllers::default())),
+            pending_mpe_ranges: AtomicU16::new(0),
+            port_queues,
             state: std::sync::Mutex::new(AggregatedState {
                 decoders,
                 mpe_decoders: Vec::new(),
                 current: Controllers::default(),
                 clock: MonotonicTimestampClock::default(),
                 merged_through: 0,
-                publish,
-                note,
             }),
+            callbacks: std::sync::Mutex::new(DeliveryCallbacks { publish, note }),
         })
     }
 
@@ -105,29 +273,170 @@ impl MultiPortAggregator {
         mpe_decoders
             .try_reserve_exact(port_count)
             .map_err(|_| "could not allocate mpe port decoders")?;
+        let mut port_queues = Vec::new();
+        port_queues
+            .try_reserve_exact(port_count)
+            .map_err(|_| "could not allocate midi port queues")?;
         for _ in 0..port_count {
             decoders.push(Decoder::default());
             mpe_decoders.push(MpeDecoder::new(config));
+            port_queues.push(Arc::new(PortPacketQueue::new()));
         }
         Ok(Self {
             filter: ChannelFilter::Omni,
             mpe: Some(config),
             timebase,
             notes,
+            current_packed: AtomicU64::new(pack_controllers(Controllers::default())),
+            pending_mpe_ranges: AtomicU16::new(0),
+            port_queues,
             state: std::sync::Mutex::new(AggregatedState {
                 decoders,
                 mpe_decoders,
                 current: Controllers::default(),
                 clock: MonotonicTimestampClock::default(),
                 merged_through: 0,
-                publish,
-                note,
             }),
+            callbacks: std::sync::Mutex::new(DeliveryCallbacks { publish, note }),
         })
+    }
+
+    /// Borrow the wait-free per-port packet queue for `port_index` so native
+    /// callbacks push raw MIDI bytes without acquiring any mutex.
+    pub(crate) fn port_queue(&self, port_index: usize) -> Option<Arc<PortPacketQueue>> {
+        self.port_queues.get(port_index).map(Arc::clone)
+    }
+
+    /// Wait-free enqueue of one timestamped packet onto `port_index`'s queue.
+    pub fn enqueue_packet(&self, port_index: usize, timestamp_ticks: u64, bytes: &[u8]) -> bool {
+        self.port_queues
+            .get(port_index)
+            .is_some_and(|queue| queue.enqueue_packet(timestamp_ticks, bytes))
+    }
+
+    /// Drain all queued per-port lock-free queues on the consumer thread and
+    /// deliver decoded updates. Returns the number of packets drained.
+    pub fn drain_queued_ports(&self) -> usize {
+        if self.notes.is_cancelled() {
+            return 0;
+        }
+        let mut drained = 0usize;
+        let mut scratch = [0_u8; PORT_PACKET_MAX_BYTES];
+        for (port_index, queue) in self.port_queues.iter().enumerate() {
+            while let Some((timestamp_ticks, len)) = queue.pop_packet(&mut scratch) {
+                self.deliver_timed_packets(
+                    port_index,
+                    [TimedPacket {
+                        timestamp_ticks,
+                        data: &scratch[..len],
+                    }],
+                );
+                drained += 1;
+                if self.notes.is_cancelled() {
+                    return drained;
+                }
+            }
+            if queue.take_overflowed() {
+                self.handle_port_queue_overflow(port_index);
+                drained += 1;
+            }
+        }
+        drained
+    }
+
+    fn handle_port_queue_overflow(&self, port_index: usize) {
+        if self.notes.is_cancelled() {
+            return;
+        }
+        let mut emitted_controllers: Vec<Controllers> = Vec::new();
+        let mut emitted_notes: Vec<TimestampedNoteEvent> = Vec::new();
+        {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if self.notes.is_cancelled() || port_index >= state.decoders.len() {
+                return;
+            }
+            let port_count = state.decoders.len();
+            let timestamp_ns = state.clock.advance(self.timebase, 0);
+            let AggregatedState {
+                decoders,
+                mpe_decoders,
+                current,
+                merged_through,
+                ..
+            } = &mut *state;
+            let decoder = &mut decoders[port_index];
+            let notes_out = std::cell::RefCell::new(&mut emitted_notes);
+            let emit = |event| {
+                notes_out.borrow_mut().push(TimestampedNoteEvent {
+                    timestamp_ns,
+                    event,
+                });
+            };
+            if let Some(mpe) = mpe_decoders.get_mut(port_index) {
+                if port_count > 1 {
+                    for ch in 0_u8..16 {
+                        if let Some(active) = mpe.active_note(ch) {
+                            emit(NoteEvent::Off {
+                                channel: ch,
+                                pitch: active.pitch,
+                                velocity: 0,
+                            });
+                        }
+                    }
+                    mpe.reset();
+                    decoder.clear_held_and_framing();
+                } else {
+                    mpe.reset();
+                    *current = Controllers::default();
+                    self.current_packed
+                        .store(pack_controllers(*current), Ordering::Release);
+                    emitted_controllers.push(*current);
+                    decoder.reset(&emit);
+                }
+            } else if port_count > 1 {
+                decoder.reset_port_isolated(self.filter, &emit);
+            } else {
+                decoder.reset(&emit);
+            }
+            if let Some(port_snapshot) = decoder.take_held_notes() {
+                *merged_through = (*merged_through).max(port_snapshot.through());
+                let merged = HeldNotes::merge_from(
+                    decoders.iter().map(Decoder::held_notes),
+                    *merged_through,
+                );
+                self.notes.publish(merged);
+            }
+        }
+        self.dispatch_emitted(&emitted_controllers, &emitted_notes);
+    }
+
+    fn dispatch_emitted(
+        &self,
+        emitted_controllers: &[Controllers],
+        emitted_notes: &[TimestampedNoteEvent],
+    ) {
+        if emitted_controllers.is_empty() && emitted_notes.is_empty() {
+            return;
+        }
+        let Ok(callbacks) = self.callbacks.lock() else {
+            return;
+        };
+        for &ctrl in emitted_controllers {
+            (callbacks.publish)(ctrl);
+        }
+        for &ev in emitted_notes {
+            (callbacks.note)(ev);
+        }
     }
 
     /// Deliver one batch of timestamped packets from `port_index` into its isolated
     /// decoder and publish merged held-note / controller / ordered-event updates.
+    ///
+    /// Releases internal decoder state before invoking caller `publish`/`note`
+    /// closures so re-entrant queries (`controllers()`, `set_mpe_pitch_bend_ranges()`)
+    /// never block or deadlock.
     pub fn deliver_timed_packets<'a>(
         &self,
         port_index: usize,
@@ -136,187 +445,203 @@ impl MultiPortAggregator {
         if self.notes.is_cancelled() {
             return;
         }
-        let Ok(mut state) = self.state.lock() else {
-            return;
-        };
-        if self.notes.is_cancelled() || port_index >= state.decoders.len() {
-            return;
-        }
-        let port_count = state.decoders.len();
-        let AggregatedState {
-            decoders,
-            mpe_decoders,
-            current,
-            clock,
-            merged_through,
-            publish,
-            note,
-        } = &mut *state;
-        let decoder = &mut decoders[port_index];
-        let mut mpe_decoder = if self.mpe.is_some() {
-            mpe_decoders.get_mut(port_index)
-        } else {
-            None
-        };
-        let mut faulted = false;
-        for_each_bounded_packet(packets, |timestamp_ticks, accepted, overflow| {
-            let timestamp_ns = clock.advance(self.timebase, timestamp_ticks);
-            let emit = |event| {
-                note(TimestampedNoteEvent {
-                    timestamp_ns,
-                    event,
-                });
+        let mut emitted_controllers: Vec<Controllers> = Vec::new();
+        let mut emitted_notes: Vec<TimestampedNoteEvent> = Vec::new();
+        {
+            let Ok(mut state) = self.state.lock() else {
+                return;
             };
-            if let Some(mpe) = mpe_decoder.as_deref_mut() {
-                let emit_mpe = |event: MpeExpressionEvent| {
-                    let mapped = match event {
-                        MpeExpressionEvent::NoteOn {
-                            channel,
-                            pitch,
-                            velocity,
-                        } => Some(NoteEvent::On {
-                            channel,
-                            pitch,
-                            velocity,
-                        }),
-                        MpeExpressionEvent::NoteOff {
-                            channel,
-                            pitch,
-                            velocity,
-                        } => Some(NoteEvent::Off {
-                            channel,
-                            pitch,
-                            velocity,
-                        }),
-                        MpeExpressionEvent::NotePitchBend {
-                            channel,
-                            pitch,
-                            cents,
-                        } => Some(NoteEvent::NotePitchBend {
-                            channel,
-                            pitch,
-                            cents,
-                        }),
-                        MpeExpressionEvent::NoteSlide {
-                            channel,
-                            pitch,
-                            value,
-                        } => Some(NoteEvent::NoteTimbre {
-                            channel,
-                            pitch,
-                            value,
-                        }),
-                        MpeExpressionEvent::NotePressure {
-                            channel,
-                            pitch,
-                            value,
-                        } => Some(NoteEvent::PolyPressure {
-                            channel,
-                            pitch,
-                            value,
-                        }),
-                        MpeExpressionEvent::MasterControlChange { channel, cc, value } => {
-                            Some(NoteEvent::ControlChange { channel, cc, value })
-                        }
-                        MpeExpressionEvent::AllNotesOff => Some(NoteEvent::AllNotesOff),
-                        MpeExpressionEvent::MasterPitchBend { .. }
-                        | MpeExpressionEvent::MasterPressure { .. } => None,
-                    };
-                    if let Some(note_event) = mapped {
-                        emit(note_event);
-                    }
-                };
-                for &byte in accepted {
-                    if let Some(next) = decoder.byte_with_mpe_with_token(
-                        byte,
-                        mpe,
-                        *current,
-                        merged_through,
-                        &emit_mpe,
-                    ) {
-                        *current = next;
-                        publish(*current);
-                    }
-                    if let Some(fault) = decoder.held_note_fault() {
-                        emit(NoteEvent::InputLost(fault));
-                        self.notes.fail(fault);
-                        faulted = true;
-                        return false;
-                    }
-                }
-                if overflow {
-                    if port_count > 1 {
-                        // Release only active notes owned by this overflowing MPE port.
-                        for ch in 0_u8..16 {
-                            if let Some(active) = mpe.active_note(ch) {
-                                emit(NoteEvent::Off {
-                                    channel: ch,
-                                    pitch: active.pitch,
-                                    velocity: 0,
-                                });
-                            }
-                        }
-                        mpe.reset();
-                        decoder.clear_held_and_framing();
-                    } else {
-                        mpe.reset();
-                        *current = Controllers::default();
-                        publish(*current);
-                        decoder.reset(&emit);
-                    }
-                }
-            } else {
-                for &byte in accepted {
-                    if let Some(next) = decoder.byte_with_notes_filtered_with_token(
-                        byte,
-                        self.filter,
-                        *current,
-                        merged_through,
-                        &emit,
-                    ) {
-                        *current = next;
-                        publish(*current);
-                    }
-                    if let Some(fault) = decoder.held_note_fault() {
-                        self.notes.fail(fault);
-                        faulted = true;
-                        return false;
-                    }
-                }
-                if overflow {
-                    if port_count > 1 {
-                        decoder.reset_port_isolated(self.filter, &emit);
-                    } else {
-                        decoder.reset(&emit);
-                    }
+            if self.notes.is_cancelled() || port_index >= state.decoders.len() {
+                return;
+            }
+            let packed_ranges = self.pending_mpe_ranges.swap(0, Ordering::AcqRel);
+            if packed_ranges != 0 {
+                let member = (packed_ranges >> 8) as u8;
+                let master = (packed_ranges & 0xff) as u8;
+                for decoder in &mut state.mpe_decoders {
+                    let _ = decoder.set_pitch_bend_ranges(member, master);
                 }
             }
-            true
-        });
-        if faulted {
-            return;
+            let port_count = state.decoders.len();
+            let AggregatedState {
+                decoders,
+                mpe_decoders,
+                current,
+                clock,
+                merged_through,
+            } = &mut *state;
+            let decoder = &mut decoders[port_index];
+            let mut mpe_decoder = if self.mpe.is_some() {
+                mpe_decoders.get_mut(port_index)
+            } else {
+                None
+            };
+            let mut faulted = false;
+            for_each_bounded_packet(packets, |timestamp_ticks, accepted, overflow| {
+                let timestamp_ns = clock.advance(self.timebase, timestamp_ticks);
+                let notes_out = std::cell::RefCell::new(&mut emitted_notes);
+                let emit = |event| {
+                    notes_out.borrow_mut().push(TimestampedNoteEvent {
+                        timestamp_ns,
+                        event,
+                    });
+                };
+                if let Some(mpe) = mpe_decoder.as_deref_mut() {
+                    let emit_mpe = |event: MpeExpressionEvent| {
+                        let mapped = match event {
+                            MpeExpressionEvent::NoteOn {
+                                channel,
+                                pitch,
+                                velocity,
+                            } => Some(NoteEvent::On {
+                                channel,
+                                pitch,
+                                velocity,
+                            }),
+                            MpeExpressionEvent::NoteOff {
+                                channel,
+                                pitch,
+                                velocity,
+                            } => Some(NoteEvent::Off {
+                                channel,
+                                pitch,
+                                velocity,
+                            }),
+                            MpeExpressionEvent::NotePitchBend {
+                                channel,
+                                pitch,
+                                cents,
+                            } => Some(NoteEvent::NotePitchBend {
+                                channel,
+                                pitch,
+                                cents,
+                            }),
+                            MpeExpressionEvent::NoteSlide {
+                                channel,
+                                pitch,
+                                value,
+                            } => Some(NoteEvent::NoteTimbre {
+                                channel,
+                                pitch,
+                                value,
+                            }),
+                            MpeExpressionEvent::NotePressure {
+                                channel,
+                                pitch,
+                                value,
+                            } => Some(NoteEvent::PolyPressure {
+                                channel,
+                                pitch,
+                                value,
+                            }),
+                            MpeExpressionEvent::MasterControlChange { channel, cc, value } => {
+                                Some(NoteEvent::ControlChange { channel, cc, value })
+                            }
+                            MpeExpressionEvent::AllNotesOff => Some(NoteEvent::AllNotesOff),
+                            MpeExpressionEvent::MasterPitchBend { .. }
+                            | MpeExpressionEvent::MasterPressure { .. } => None,
+                        };
+                        if let Some(note_event) = mapped {
+                            emit(note_event);
+                        }
+                    };
+                    for &byte in accepted {
+                        if let Some(next) = decoder.byte_with_mpe_with_token(
+                            byte,
+                            mpe,
+                            *current,
+                            merged_through,
+                            &emit_mpe,
+                        ) {
+                            *current = next;
+                            self.current_packed
+                                .store(pack_controllers(*current), Ordering::Release);
+                            emitted_controllers.push(*current);
+                        }
+                        if let Some(fault) = decoder.held_note_fault() {
+                            emit(NoteEvent::InputLost(fault));
+                            self.notes.fail(fault);
+                            faulted = true;
+                            return false;
+                        }
+                    }
+                    if overflow {
+                        if port_count > 1 {
+                            // Release only active notes owned by this overflowing MPE port.
+                            for ch in 0_u8..16 {
+                                if let Some(active) = mpe.active_note(ch) {
+                                    emit(NoteEvent::Off {
+                                        channel: ch,
+                                        pitch: active.pitch,
+                                        velocity: 0,
+                                    });
+                                }
+                            }
+                            mpe.reset();
+                            decoder.clear_held_and_framing();
+                        } else {
+                            mpe.reset();
+                            *current = Controllers::default();
+                            self.current_packed
+                                .store(pack_controllers(*current), Ordering::Release);
+                            emitted_controllers.push(*current);
+                            decoder.reset(&emit);
+                        }
+                    }
+                } else {
+                    for &byte in accepted {
+                        if let Some(next) = decoder.byte_with_notes_filtered_with_token(
+                            byte,
+                            self.filter,
+                            *current,
+                            merged_through,
+                            &emit,
+                        ) {
+                            *current = next;
+                            self.current_packed
+                                .store(pack_controllers(*current), Ordering::Release);
+                            emitted_controllers.push(*current);
+                        }
+                        if let Some(fault) = decoder.held_note_fault() {
+                            self.notes.fail(fault);
+                            faulted = true;
+                            return false;
+                        }
+                    }
+                    if overflow {
+                        if port_count > 1 {
+                            decoder.reset_port_isolated(self.filter, &emit);
+                        } else {
+                            decoder.reset(&emit);
+                        }
+                    }
+                }
+                true
+            });
+            if !faulted && let Some(fault) = decoder.held_note_fault() {
+                self.notes.fail(fault);
+                faulted = true;
+            }
+            if !faulted && let Some(port_snapshot) = decoder.take_held_notes() {
+                *merged_through = (*merged_through).max(port_snapshot.through());
+                let merged = HeldNotes::merge_from(
+                    decoders.iter().map(Decoder::held_notes),
+                    *merged_through,
+                );
+                self.notes.publish(merged);
+            }
         }
-        if let Some(fault) = decoder.held_note_fault() {
-            self.notes.fail(fault);
-            return;
-        }
-        if let Some(port_snapshot) = decoder.take_held_notes() {
-            *merged_through = (*merged_through).max(port_snapshot.through());
-            let merged =
-                HeldNotes::merge_from(decoders.iter().map(Decoder::held_notes), *merged_through);
-            self.notes.publish(merged);
-        }
+        self.dispatch_emitted(&emitted_controllers, &emitted_notes);
     }
 
+    /// Lock-free snapshot of the latest aggregated controller state.
     pub fn controllers(&self) -> Controllers {
-        self.state
-            .lock()
-            .map(|state| state.current)
-            .unwrap_or_default()
+        unpack_controllers(self.current_packed.load(Ordering::Acquire))
     }
 
-    /// Update member (`1..=96` st) and master (`1..=48` st) MPE pitch-bend ranges
-    /// live across every aggregated port without resetting or retuning active notes.
+    /// Lock-free update of member (`1..=96` st) and master (`1..=48` st) MPE
+    /// pitch-bend ranges across every aggregated port without blocking any
+    /// callback or resetting active notes.
     pub fn set_mpe_pitch_bend_ranges(
         &self,
         member_semitones: u8,
@@ -332,12 +657,8 @@ impl MultiPortAggregator {
         {
             return Err("controller mpe pitch bend range is invalid");
         }
-        let Ok(mut state) = self.state.lock() else {
-            return Err("controller aggregator state is unavailable");
-        };
-        for decoder in &mut state.mpe_decoders {
-            let _ = decoder.set_pitch_bend_ranges(member_semitones, master_semitones);
-        }
+        let packed = (u16::from(member_semitones) << 8) | u16::from(master_semitones);
+        self.pending_mpe_ranges.store(packed, Ordering::Release);
         Ok(())
     }
 }
@@ -822,6 +1143,104 @@ mod tests {
                     channel: 2,
                     pitch: 64,
                     cents: 1400,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn controllers_atomic_packing_round_trips_all_fields() {
+        let samples = [
+            Controllers::default(),
+            Controllers {
+                pressure: 127,
+                bend: -8192,
+                wheel: 64,
+                sustain: 127,
+                expression: 1,
+                last_cc: Some(ControlChange {
+                    channel: 15,
+                    cc: 127,
+                    value: 127,
+                }),
+            },
+            Controllers {
+                pressure: 0,
+                bend: 8191,
+                wheel: 127,
+                sustain: 0,
+                expression: 127,
+                last_cc: Some(ControlChange {
+                    channel: 0,
+                    cc: 1,
+                    value: 0,
+                }),
+            },
+        ];
+        for ctrl in samples {
+            assert_eq!(unpack_controllers(pack_controllers(ctrl)), ctrl);
+        }
+    }
+
+    #[test]
+    fn lock_free_per_port_queues_deliver_in_order_and_allow_reentrant_queries_in_callbacks() {
+        let held = Arc::new(HeldNoteInput::default());
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let agg_slot: Arc<std::sync::OnceLock<Arc<MultiPortAggregator>>> =
+            Arc::new(std::sync::OnceLock::new());
+        let observed_notes = Arc::clone(&observed);
+        let agg_for_note = Arc::clone(&agg_slot);
+        let agg_for_pub = Arc::clone(&agg_slot);
+        let agg = Arc::new(
+            MultiPortAggregator::new_mpe(
+                2,
+                MpeConfig::new(MpeZone::Lower { member_channels: 4 }, 48).unwrap(),
+                MachTimebase::NANOSECONDS,
+                Arc::clone(&held),
+                Box::new(move |ctrl| {
+                    // Re-entrantly reading controllers() inside publish must never deadlock.
+                    if let Some(a) = agg_for_pub.get() {
+                        assert_eq!(a.controllers().wheel, ctrl.wheel);
+                    }
+                }),
+                Box::new(move |ev| {
+                    // Re-entrantly querying controllers() and updating MPE ranges inside note
+                    // callback must never deadlock.
+                    if let Some(a) = agg_for_note.get() {
+                        let _ = a.controllers();
+                        let _ = a.set_mpe_pitch_bend_ranges(24, 2);
+                    }
+                    observed_notes.lock().unwrap().push(ev);
+                }),
+            )
+            .unwrap(),
+        );
+        agg_slot.set(Arc::clone(&agg)).ok();
+
+        // Simulate two CoreMIDI Mach threads pushing into lock-free per-port queues.
+        assert!(agg.enqueue_packet(0, 100, &[0x91, 60, 100, 0xb0, 1, 77]));
+        assert!(agg.enqueue_packet(1, 200, &[0x92, 64, 90]));
+        assert_eq!(agg.drain_queued_ports(), 2);
+
+        assert_eq!(agg.controllers().wheel, 77);
+        let events: Vec<_> = observed.lock().unwrap().iter().map(|e| e.event).collect();
+        assert_eq!(
+            events,
+            vec![
+                NoteEvent::On {
+                    channel: 1,
+                    pitch: 60,
+                    velocity: 100,
+                },
+                NoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 1,
+                    value: 77,
+                },
+                NoteEvent::On {
+                    channel: 2,
+                    pitch: 64,
+                    velocity: 90,
                 },
             ]
         );

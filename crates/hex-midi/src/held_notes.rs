@@ -1,6 +1,6 @@
 //! A bounded physical-note snapshot, separate from audio monitoring or recording.
 //! One native port callback writes; control reads at most two coherent attempts.
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering::SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 pub const HELD_NOTE_COUNT: usize = 128;
 const MAX_TOKEN: u64 = u64::MAX >> 8;
@@ -252,35 +252,38 @@ impl Default for HeldNoteInput {
 }
 impl HeldNoteInput {
     pub fn cancel(&self) {
-        self.cancelled.store(true, SeqCst);
+        self.cancelled.store(true, Ordering::Release);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(SeqCst)
+        self.cancelled.load(Ordering::Acquire)
     }
     pub fn fail(&self, fault: HeldNoteFault) {
-        self.fault.store(fault as u8, SeqCst);
+        self.fault.store(fault as u8, Ordering::Release);
         self.cancel();
     }
     pub(crate) fn publish(&self, notes: HeldNotes) {
         if self.is_cancelled() {
             return;
         }
-        let before = self.sequence.load(SeqCst);
+        let before = self.sequence.load(Ordering::Relaxed);
         // The low bit marks an in-flight publication.
         let Some(after) = before.checked_add(2).filter(|_| before & 1 == 0) else {
             self.fail(HeldNoteFault::PublicationLimit);
             return;
         };
-        self.sequence.store(before + 1, SeqCst);
+        // Odd sequence + Release fence orders payload writes after the odd store;
+        // even `after` Release store publishes all Relaxed payload words to Acquire readers.
+        self.sequence.store(before + 1, Ordering::Relaxed);
+        std::sync::atomic::fence(Ordering::Release);
         for (target, word) in self.words.iter().zip(notes.words) {
-            target.store(word, SeqCst);
+            target.store(word, Ordering::Relaxed);
         }
-        self.through.store(notes.through, SeqCst);
-        self.sequence.store(after, SeqCst);
+        self.through.store(notes.through, Ordering::Relaxed);
+        self.sequence.store(after, Ordering::Release);
     }
     pub fn read(&self) -> HeldNotesRead {
         for _ in 0..2 {
-            match self.fault.load(SeqCst) {
+            match self.fault.load(Ordering::Acquire) {
                 2 => return HeldNotesRead::Fault(HeldNoteFault::TokenLimit),
                 3 => return HeldNotesRead::Fault(HeldNoteFault::PublicationLimit),
                 _ => {}
@@ -288,15 +291,16 @@ impl HeldNoteInput {
             if self.is_cancelled() {
                 return HeldNotesRead::Cancelled;
             }
-            let before = self.sequence.load(SeqCst);
+            let before = self.sequence.load(Ordering::Acquire);
             if before & 1 != 0 {
                 continue;
             }
             let notes = HeldNotes {
-                words: std::array::from_fn(|i| self.words[i].load(SeqCst)),
-                through: self.through.load(SeqCst),
+                words: std::array::from_fn(|i| self.words[i].load(Ordering::Relaxed)),
+                through: self.through.load(Ordering::Relaxed),
             };
-            if before == self.sequence.load(SeqCst) && !self.is_cancelled() {
+            std::sync::atomic::fence(Ordering::Acquire);
+            if before == self.sequence.load(Ordering::Relaxed) && !self.is_cancelled() {
                 return HeldNotesRead::Snapshot(notes);
             }
         }
@@ -312,6 +316,7 @@ impl HeldNoteInput {
 mod tests {
     use super::*;
     use crate::{Controllers, Decoder, deliver_packets};
+    use std::sync::atomic::Ordering::SeqCst;
     fn feed(decoder: &mut Decoder, input: &HeldNoteInput, bytes: &[u8]) -> HeldNotes {
         deliver_packets(decoder, 2, Controllers::default(), [bytes], input, &|_| {});
         let HeldNotesRead::Snapshot(snapshot) = input.read() else {

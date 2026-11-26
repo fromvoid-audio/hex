@@ -14,14 +14,54 @@ mod platform {
     use crate::framing::ChannelFilter;
     use crate::held_notes::HeldNoteInput;
     use crate::mpe::MpeConfig;
-    use crate::timebase::{MachTimebase, TimedPacket};
-    use coremidi::{Client, InputPort, Source, Sources};
+    use crate::timebase::MachTimebase;
+    use coremidi::{Client, InputPort, Notification, Source, Sources};
+    use std::thread::{JoinHandle, Thread};
+
+    /// Lock-free wake primitive for the dedicated MIDI packet-pump thread.
+    struct PumpWake {
+        parked: AtomicBool,
+        thread: std::sync::OnceLock<Thread>,
+    }
+
+    impl PumpWake {
+        fn new() -> Self {
+            Self {
+                parked: AtomicBool::new(false),
+                thread: std::sync::OnceLock::new(),
+            }
+        }
+
+        fn register_current(&self) {
+            let _ = self.thread.set(std::thread::current());
+        }
+
+        fn unpark_if_parked(&self) {
+            if self.parked.swap(false, Ordering::AcqRel)
+                && let Some(thread) = self.thread.get()
+            {
+                thread.unpark();
+            }
+        }
+
+        fn force_unpark(&self) {
+            self.parked.store(false, Ordering::Release);
+            if let Some(thread) = self.thread.get() {
+                thread.unpark();
+            }
+        }
+    }
 
     struct Active {
-        // Rust drops fields in declaration order: input ports close before client.
         activation: u64,
-        _ports: Vec<InputPort>,
-        _client: Client,
+        // Drop input ports and CoreMIDI client before joining the pump thread
+        // so all Mach callbacks stop cleanly before teardown completes.
+        ports: Option<Vec<InputPort>>,
+        client: Option<Client>,
+        pump_stop: Arc<AtomicBool>,
+        pump_wake: Arc<PumpWake>,
+        pump_thread: Option<JoinHandle<()>>,
+        setup_changed: Arc<AtomicBool>,
         aggregator: Arc<MultiPortAggregator>,
         sources: Vec<Source>,
         cancel: Box<dyn Fn() + Send>,
@@ -32,6 +72,15 @@ mod platform {
     impl Drop for Active {
         fn drop(&mut self) {
             self.notes.cancel();
+            self.pump_stop.store(true, Ordering::Release);
+            // Close CoreMIDI input ports and client first so no Mach callback
+            // can still run while the pump thread drains and exits.
+            self.ports.take();
+            self.client.take();
+            self.pump_wake.force_unpark();
+            if let Some(thread) = self.pump_thread.take() {
+                let _ = thread.join();
+            }
             (self.cancel)();
         }
     }
@@ -79,7 +128,11 @@ mod platform {
         ports: Vec<Port>,
         mode: ConnectMode,
         sink: Sink,
+        wake_tx: &SyncSender<Request>,
     ) -> Result<Active, String> {
+        let setup_changed = Arc::new(AtomicBool::new(false));
+        let pump_stop = Arc::new(AtomicBool::new(false));
+        let pump_wake = Arc::new(PumpWake::new());
         let result = (|| {
             if sink.notes.is_cancelled() || (sink.is_cancelled)() {
                 return Err("controller activation was cancelled".into());
@@ -108,8 +161,24 @@ mod platform {
                 let source = source_by_id(port.id).ok_or("controller port is unavailable")?;
                 sources.push(source);
             }
-            let client = Client::new("hex controller input")
-                .map_err(|status| format!("controller client failed: {status}"))?;
+            let notify_flag = Arc::clone(&setup_changed);
+            let notify_tx = wake_tx.clone();
+            let client = Client::new_with_notifications(
+                "hex controller input",
+                move |notification: &Notification| {
+                    if matches!(
+                        notification,
+                        Notification::SetupChanged
+                            | Notification::ObjectAdded(_)
+                            | Notification::ObjectRemoved(_)
+                            | Notification::IoError(_)
+                    ) {
+                        notify_flag.store(true, Ordering::Release);
+                        let _ = notify_tx.try_send(Request::SetupChanged);
+                    }
+                },
+            )
+            .map_err(|status| format!("controller client failed: {status}"))?;
             let aggregator = match mode {
                 ConnectMode::Channel(filter) => MultiPortAggregator::new(
                     sources.len(),
@@ -130,19 +199,55 @@ mod platform {
             }
             .map(Arc::new)
             .map_err(str::to_owned)?;
+            let thread_agg = Arc::clone(&aggregator);
+            let thread_stop = Arc::clone(&pump_stop);
+            let thread_wake = Arc::clone(&pump_wake);
+            let thread_notes = Arc::clone(&sink.notes);
+            let pump_thread = std::thread::Builder::new()
+                .name("hex-midi-pump".into())
+                .spawn(move || {
+                    thread_wake.register_current();
+                    while !thread_stop.load(Ordering::Acquire) && !thread_notes.is_cancelled() {
+                        if thread_agg.drain_queued_ports() > 0 {
+                            continue;
+                        }
+                        thread_wake.parked.store(true, Ordering::Release);
+                        if thread_agg.drain_queued_ports() > 0
+                            || thread_stop.load(Ordering::Acquire)
+                            || thread_notes.is_cancelled()
+                        {
+                            thread_wake.parked.store(false, Ordering::Release);
+                            continue;
+                        }
+                        std::thread::park();
+                        thread_wake.parked.store(false, Ordering::Release);
+                    }
+                })
+                .map_err(|error| format!("controller pump thread failed: {error}"))?;
             let mut inputs = Vec::with_capacity(sources.len());
             for (port_index, source) in sources.iter().enumerate() {
-                let agg = Arc::clone(&aggregator);
+                let Some(queue) = aggregator.port_queue(port_index) else {
+                    return Err("controller port queue unavailable".into());
+                };
+                let wake = Arc::clone(&pump_wake);
+                let stop_flag = Arc::clone(&pump_stop);
                 let port_name = format!("hex controller input {port_index}");
                 let input = client
                     .input_port(&port_name, move |packets| {
-                        agg.deliver_timed_packets(
-                            port_index,
-                            packets.iter().map(|packet| TimedPacket {
-                                timestamp_ticks: packet.timestamp(),
-                                data: packet.data(),
-                            }),
-                        );
+                        // Wait-free CoreMIDI Mach callback: zero mutexes, zero
+                        // allocations, zero caller closures.
+                        if stop_flag.load(Ordering::Acquire) {
+                            return;
+                        }
+                        let mut pushed = false;
+                        for packet in packets.iter() {
+                            if queue.enqueue_packet(packet.timestamp(), packet.data()) {
+                                pushed = true;
+                            }
+                        }
+                        if pushed {
+                            wake.unpark_if_parked();
+                        }
                     })
                     .map_err(|status| format!("controller port creation failed: {status}"))?;
                 input
@@ -150,13 +255,17 @@ mod platform {
                     .map_err(|status| format!("controller connection failed: {status}"))?;
                 inputs.push(input);
             }
-            Ok((inputs, client, aggregator, sources))
+            Ok((inputs, client, pump_thread, aggregator, sources))
         })();
         match result {
-            Ok((inputs, client, aggregator, sources)) => Ok(Active {
+            Ok((inputs, client, pump_thread, aggregator, sources)) => Ok(Active {
                 activation,
-                _ports: inputs,
-                _client: client,
+                ports: Some(inputs),
+                client: Some(client),
+                pump_stop,
+                pump_wake,
+                pump_thread: Some(pump_thread),
+                setup_changed,
                 aggregator,
                 sources,
                 cancel: sink.cancel,
@@ -164,7 +273,10 @@ mod platform {
                 notes: sink.notes,
             }),
             Err(error) => {
-                // publish/note may have moved into the aggregator; cancel remaining owners.
+                // publish/note may have moved into the aggregator; stop any pump
+                // thread cleanly before cancelling remaining owners.
+                pump_stop.store(true, Ordering::Release);
+                pump_wake.force_unpark();
                 sink.notes.cancel();
                 (sink.cancel)();
                 Err(error)
@@ -174,6 +286,7 @@ mod platform {
 
     pub(super) fn run_with_outbox(
         requests: Receiver<Request>,
+        wake_tx: SyncSender<Request>,
         events: SyncSender<Event>,
         stop: Arc<AtomicBool>,
         mut outbox: Outbox,
@@ -183,8 +296,12 @@ mod platform {
             outbox.flush(&events);
             #[cfg(test)]
             outbox.notify_idle_wait();
+            let mut check_presence = false;
             match requests.recv_timeout(outbox.wait()) {
                 Ok(Request::Shutdown) => break,
+                Ok(Request::SetupChanged) => {
+                    check_presence = true;
+                }
                 Ok(Request::Command(Command::Discover { request_id })) => {
                     outbox.send(
                         &events,
@@ -206,6 +323,7 @@ mod platform {
                         vec![port],
                         ConnectMode::Channel(ChannelFilter::Single(channel)),
                         sink,
+                        &wake_tx,
                     ) {
                         Ok(connection) => {
                             active = Some(connection);
@@ -227,6 +345,7 @@ mod platform {
                         ports,
                         ConnectMode::Channel(channel_filter),
                         sink,
+                        &wake_tx,
                     ) {
                         Ok(connection) => {
                             active = Some(connection);
@@ -243,14 +362,19 @@ mod platform {
                     sink,
                 })) => {
                     active.take();
-                    let result =
-                        match connect_ports(activation, ports, ConnectMode::Mpe(config), sink) {
-                            Ok(connection) => {
-                                active = Some(connection);
-                                Ok(true)
-                            }
-                            Err(error) => Err(error),
-                        };
+                    let result = match connect_ports(
+                        activation,
+                        ports,
+                        ConnectMode::Mpe(config),
+                        sink,
+                        &wake_tx,
+                    ) {
+                        Ok(connection) => {
+                            active = Some(connection);
+                            Ok(true)
+                        }
+                        Err(error) => Err(error),
+                    };
                     outbox.send(&events, Event::Connection { activation, result });
                 }
                 Ok(Request::Command(Command::SetMpePitchBendRanges {
@@ -286,13 +410,20 @@ mod platform {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
             if let Some(connection) = &active {
-                // Check endpoint identity/presence, never infer loss from silence.
-                let present = connection.sources.iter().all(|connected| {
-                    connected
-                        .unique_id()
-                        .and_then(source_by_id)
-                        .is_some_and(|source| source == *connected)
-                });
+                let setup_notified =
+                    check_presence || connection.setup_changed.swap(false, Ordering::AcqRel);
+                let present = if setup_notified {
+                    // Check endpoint identity/presence only in response to CoreMIDI
+                    // setup/object notifications rather than 500 ms polling.
+                    connection.sources.iter().all(|connected| {
+                        connected
+                            .unique_id()
+                            .and_then(source_by_id)
+                            .is_some_and(|source| source == *connected)
+                    })
+                } else {
+                    true
+                };
                 if !present || connection.notes.is_cancelled() || (connection.is_cancelled)() {
                     let activation = connection.activation;
                     active.take();
@@ -317,6 +448,7 @@ mod platform {
 
     pub(super) fn run_with_outbox(
         requests: Receiver<Request>,
+        _wake_tx: SyncSender<Request>,
         events: SyncSender<Event>,
         stop: Arc<AtomicBool>,
         mut outbox: Outbox,
@@ -367,19 +499,26 @@ mod platform {
     }
 }
 
-pub(crate) fn run(requests: Receiver<Request>, events: SyncSender<Event>, stop: Arc<AtomicBool>) {
-    platform::run_with_outbox(requests, events, stop, Outbox::default());
+pub(crate) fn run(
+    requests: Receiver<Request>,
+    wake_tx: SyncSender<Request>,
+    events: SyncSender<Event>,
+    stop: Arc<AtomicBool>,
+) {
+    platform::run_with_outbox(requests, wake_tx, events, stop, Outbox::default());
 }
 
 #[cfg(test)]
 pub(crate) fn run_with_retain_signal(
     requests: Receiver<Request>,
+    wake_tx: SyncSender<Request>,
     events: SyncSender<Event>,
     stop: Arc<AtomicBool>,
     on_full_retain: SyncSender<()>,
 ) {
     platform::run_with_outbox(
         requests,
+        wake_tx,
         events,
         stop,
         Outbox::with_full_retain(on_full_retain),
@@ -389,9 +528,16 @@ pub(crate) fn run_with_retain_signal(
 #[cfg(test)]
 pub(crate) fn run_with_idle_signal(
     requests: Receiver<Request>,
+    wake_tx: SyncSender<Request>,
     events: SyncSender<Event>,
     stop: Arc<AtomicBool>,
     on_idle_wait: SyncSender<()>,
 ) {
-    platform::run_with_outbox(requests, events, stop, Outbox::with_idle_wait(on_idle_wait));
+    platform::run_with_outbox(
+        requests,
+        wake_tx,
+        events,
+        stop,
+        Outbox::with_idle_wait(on_idle_wait),
+    );
 }
