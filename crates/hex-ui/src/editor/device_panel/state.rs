@@ -622,6 +622,13 @@ fn release_active_graph_captures(
             graph.release_pointer_capture(cx);
         }
     }
+    for preview in view.device_panel.operator_previews.values() {
+        if let Some(control) = preview.filter_response.as_ref()
+            && Some(control.entity_id()) != excluded_graph
+        {
+            control.release_pointer_capture(cx);
+        }
+    }
 }
 
 pub(in crate::editor) fn retire_removed_send_controls(

@@ -1,12 +1,25 @@
-//! Read-only authored carrier-filter display. Pointer editing belongs to its consumer.
+//! Authored carrier-filter response curve and draggable frequency/resonance handle.
+use super::super::finalize_controls_except_graph;
 use super::*;
-use gpui::Entity;
+use gpui::{Entity, Subscription};
 use hex_lattice_contract::NativeDeviceState;
-use hex_widgets::{ControlStyle, ResponseGraph, ResponseGraphAxes, ResponseGraphModel};
+use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
+use hex_widgets::{
+    ControlStyle, ResponseGraph, ResponseGraphAxes, ResponseGraphEvent, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase,
+};
 
 const POINTS: usize = 128;
 const MIN_DB: f32 = -60.0;
 const MAX_DB: f32 = 60.0;
+const MIN_HZ: f32 = 20.0;
+const MAX_HZ: f32 = 20_000.0;
+const MIN_RES: f32 = 0.0;
+const MAX_RES: f32 = 100.0;
+const NODE_ID: u32 = 1;
+const FILTER_ENABLED: ParameterId = ParameterId::from_static(20_001);
+const FILTER_FREQUENCY: ParameterId = ParameterId::from_static(20_005);
+const FILTER_RESONANCE: ParameterId = ParameterId::from_static(20_006);
 
 #[derive(Clone, PartialEq)]
 struct Input {
@@ -16,7 +29,21 @@ struct Input {
 }
 pub(in crate::editor::device_panel) struct Control {
     entity: Entity<ResponseGraph>,
+    _subscription: Subscription,
     cache: Option<(Input, ResponseGraphModel)>,
+}
+
+impl Control {
+    pub(in crate::editor::device_panel) fn entity_id(&self) -> gpui::EntityId {
+        self.entity.entity_id()
+    }
+
+    pub(in crate::editor::device_panel) fn release_pointer_capture(
+        &self,
+        cx: &mut Context<EditorView>,
+    ) {
+        self.entity.update(cx, |graph, cx| graph.cancel(cx));
+    }
 }
 
 pub(super) fn hide(view: &mut EditorView, device: DeviceId) {
@@ -59,15 +86,186 @@ fn input(
 }
 
 fn upper(rate: u32) -> f32 {
-    (rate as f32 * 0.49).min(20_000.0)
+    (rate as f32 * 0.49).min(MAX_HZ)
 }
 fn x(frequency: f32, upper: f32) -> f32 {
-    (frequency / 20.0).ln() / (upper / 20.0).ln()
+    let clamped = frequency.clamp(MIN_HZ, upper.max(MIN_HZ));
+    let span = (upper / MIN_HZ).ln();
+    if !span.is_finite() || span <= 0.0 {
+        return 0.0;
+    }
+    ((clamped / MIN_HZ).ln() / span).clamp(0.0, 1.0)
 }
+fn x_to_freq(pos_x: f32, upper: f32) -> f32 {
+    let upper = upper.max(MIN_HZ);
+    (MIN_HZ * (upper / MIN_HZ).powf(pos_x.clamp(0.0, 1.0))).clamp(MIN_HZ, MAX_HZ)
+}
+fn res_to_y(resonance: f32) -> f32 {
+    ((resonance - MIN_RES) / (MAX_RES - MIN_RES)).clamp(0.0, 1.0)
+}
+fn y_to_res(pos_y: f32) -> f32 {
+    (MIN_RES + pos_y.clamp(0.0, 1.0) * (MAX_RES - MIN_RES)).clamp(MIN_RES, MAX_RES)
+}
+
+fn handle_graph_event(
+    view: &mut EditorView,
+    device: DeviceId,
+    graph_id: gpui::EntityId,
+    event: ResponseGraphEvent,
+    cx: &mut Context<EditorView>,
+) {
+    if event.node_id != NODE_ID
+        || matches!(
+            event.phase,
+            ResponseGraphPhase::Select
+                | ResponseGraphPhase::Remove
+                | ResponseGraphPhase::Press
+                | ResponseGraphPhase::Release
+                | ResponseGraphPhase::ReleaseOutside
+        )
+    {
+        return;
+    }
+    if event.phase == ResponseGraphPhase::Begin {
+        if !finalize_controls_except_graph(view, cx, graph_id) {
+            return;
+        }
+        if view.device_panel.gesture.snapshot().is_some() {
+            return;
+        }
+        let Some(canonical) = context::Owner::capture(view, device)
+            .and_then(|owner| owner.state(view))
+            .cloned()
+        else {
+            return;
+        };
+        let canon_freq = hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &canonical,
+            FILTER_FREQUENCY,
+        )
+        .unwrap_or(ParameterValue::Float(1_000.0));
+        let canon_res = hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &canonical,
+            FILTER_RESONANCE,
+        )
+        .unwrap_or(ParameterValue::Float(0.0));
+        let freq = effective_parameter_value(
+            view,
+            ParameterKey {
+                device,
+                parameter: FILTER_FREQUENCY,
+            },
+            canon_freq,
+        );
+        let res = effective_parameter_value(
+            view,
+            ParameterKey {
+                device,
+                parameter: FILTER_RESONANCE,
+            },
+            canon_res,
+        );
+        let pair = ParameterPairValue {
+            first: freq,
+            second: res,
+        };
+        if let Err(error) =
+            view.begin_device_pair_gesture(device, FILTER_FREQUENCY, FILTER_RESONANCE, pair)
+        {
+            view.device_panel.message = Some(error.to_owned());
+            return;
+        }
+        view.device_panel.pending_values.insert(
+            ParameterKey {
+                device,
+                parameter: FILTER_FREQUENCY,
+            },
+            pair.first,
+        );
+        view.device_panel.pending_values.insert(
+            ParameterKey {
+                device,
+                parameter: FILTER_RESONANCE,
+            },
+            pair.second,
+        );
+        cx.notify();
+        return;
+    }
+    let Some(snapshot) = view.device_panel.gesture.snapshot() else {
+        return;
+    };
+    let GestureTarget::DeviceParameterPair {
+        device: target_device,
+        first,
+        second,
+    } = snapshot.target
+    else {
+        return;
+    };
+    if target_device != device
+        || first != FILTER_FREQUENCY
+        || second != FILTER_RESONANCE
+        || view.device_panel.gesture.has_pending_terminal()
+    {
+        return;
+    }
+    if event.phase == ResponseGraphPhase::Cancel {
+        view.device_panel.pending_values.remove(&ParameterKey {
+            device,
+            parameter: FILTER_FREQUENCY,
+        });
+        view.device_panel.pending_values.remove(&ParameterKey {
+            device,
+            parameter: FILTER_RESONANCE,
+        });
+        let _ = view.cancel_device_gesture();
+        cx.notify();
+        return;
+    }
+    if !event.position[0].is_finite() || !event.position[1].is_finite() {
+        return;
+    }
+    let rate = view
+        .state
+        .as_ref()
+        .map_or(48_000, |state| state.project.sample_rate());
+    let pair = ParameterPairValue {
+        first: ParameterValue::Float(x_to_freq(event.position[0], upper(rate))),
+        second: ParameterValue::Float(y_to_res(event.position[1])),
+    };
+    view.device_panel.pending_values.insert(
+        ParameterKey {
+            device,
+            parameter: FILTER_FREQUENCY,
+        },
+        pair.first,
+    );
+    view.device_panel.pending_values.insert(
+        ParameterKey {
+            device,
+            parameter: FILTER_RESONANCE,
+        },
+        pair.second,
+    );
+    let result = match event.phase {
+        ResponseGraphPhase::Change => view.change_device_pair_gesture(pair),
+        ResponseGraphPhase::Commit => view.finish_device_pair_gesture(pair),
+        _ => return,
+    };
+    if let Err(error) = result {
+        view.device_panel.message = Some(error.to_owned());
+    }
+    cx.notify();
+}
+
 fn model(input: &Input) -> Option<(ResponseGraphModel, ResponseGraphAxes)> {
     let upper = upper(input.rate);
-    let frequencies: [f32; POINTS] =
-        std::array::from_fn(|index| 20.0 * (upper / 20.0).powf(index as f32 / (POINTS - 1) as f32));
+    let frequencies: [f32; POINTS] = std::array::from_fn(|index| {
+        MIN_HZ * (upper / MIN_HZ).powf(index as f32 / (POINTS - 1) as f32)
+    });
     let response = hex_engine::native_operator_filter_frequency_response(
         &input.state,
         input.rate,
@@ -85,13 +283,43 @@ fn model(input: &Input) -> Option<(ResponseGraphModel, ResponseGraphAxes)> {
             ]
         })
         .collect();
+    let enabled = matches!(
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::Instrument,
+            &input.state,
+            FILTER_ENABLED,
+        ),
+        Ok(ParameterValue::Bool(true))
+    );
+    let frequency = match hex_engine::native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &input.state,
+        FILTER_FREQUENCY,
+    ) {
+        Ok(ParameterValue::Float(value)) if value.is_finite() => value,
+        _ => 1_000.0,
+    };
+    let resonance = match hex_engine::native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &input.state,
+        FILTER_RESONANCE,
+    ) {
+        Ok(ParameterValue::Float(value)) if value.is_finite() => value,
+        _ => 0.0,
+    };
     let model = ResponseGraphModel {
         primary: primary.clone(),
         secondary: primary,
         analyzer: None,
         input_analyzer: None,
         analyzer_peak: None,
-        nodes: Vec::new(),
+        nodes: vec![ResponseGraphNode {
+            accent: Some(input.style.accent),
+            id: NODE_ID,
+            position: [x(frequency, upper), res_to_y(resonance)],
+            enabled,
+            selected: true,
+        }],
     };
     model.validate().ok()?;
     let axes = ResponseGraphAxes {
@@ -122,6 +350,7 @@ pub(super) fn graph(
     device: DeviceId,
     parameters: &[NativeDeviceParameterView],
 ) -> Div {
+    let generation = view.project_generation;
     let result = input(view, device, parameters).and_then(|input| {
         let control = view
             .device_panel
@@ -129,15 +358,30 @@ pub(super) fn graph(
             .entry(device)
             .or_default()
             .filter_response
-            .get_or_insert_with(|| Control {
-                entity: cx.new(|cx| {
-                    ResponseGraph::new(
-                        cx,
+            .get_or_insert_with(|| {
+                let entity = cx.new(|graph_cx| {
+                    let mut graph = ResponseGraph::new(
+                        graph_cx,
                         format!("operator-filter-response-{}", device.value()),
                         input.style,
-                    )
-                }),
-                cache: None,
+                    );
+                    graph.set_editable(true, graph_cx);
+                    graph.set_tab_navigation(true, graph_cx);
+                    graph
+                });
+                let subscription = cx.subscribe(
+                    &entity,
+                    move |view, graph, event: &ResponseGraphEvent, cx| {
+                        if view.project_generation == generation {
+                            handle_graph_event(view, device, graph.entity_id(), *event, cx);
+                        }
+                    },
+                );
+                Control {
+                    entity,
+                    _subscription: subscription,
+                    cache: None,
+                }
             });
         if control
             .cache
@@ -158,7 +402,9 @@ pub(super) fn graph(
     });
     let mut content = div()
         .debug_selector(|| "operator-filter-response".into())
+        .flex()
         .flex_1()
+        .h_full()
         .min_h_0()
         .w_full();
     if let Some(graph) = result {
@@ -186,6 +432,22 @@ pub(in crate::editor::device_panel) fn displayed(
     Some((&model.primary, &input.state, input.rate))
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(in crate::editor::device_panel) fn graph_for_test(
+    view: &EditorView,
+    device: DeviceId,
+) -> Option<Entity<ResponseGraph>> {
+    Some(
+        view.device_panel
+            .operator_previews
+            .get(&device)?
+            .filter_response
+            .as_ref()?
+            .entity
+            .clone(),
+    )
+}
+
 #[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests {
     use super::*;
@@ -206,6 +468,12 @@ mod tests {
             let (curve, axes) = model(&input).unwrap();
             assert_eq!(curve.primary.len(), POINTS);
             assert!(curve.primary.iter().all(|point| point[1] == 0.5));
+            assert_eq!(curve.nodes.len(), 1);
+            assert_eq!(curve.nodes[0].id, NODE_ID);
+            assert!(!curve.nodes[0].enabled);
+            let round_trip = x_to_freq(curve.nodes[0].position[0], upper(rate));
+            assert!((round_trip - 1_000.0).abs() < 1e-2);
+            assert_eq!(y_to_res(curve.nodes[0].position[1]), 0.0);
             assert!(curve.validate().is_ok());
             assert!(axes.horizontal.iter().all(|(x, _)| (0.0..=1.0).contains(x)));
             assert_eq!(
