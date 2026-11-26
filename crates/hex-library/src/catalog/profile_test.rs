@@ -33,10 +33,11 @@ fn profile_library_queries() {
                 entries.rotate_left(count / 3);
                 entries.reverse();
             }
-            let catalog = SampleCatalog {
+            let mut catalog = SampleCatalog {
                 entries,
                 ..SampleCatalog::default()
             };
+            catalog.rebuild_search_index();
             for query in ["", "kick", "group-1 pad", "missing"] {
                 let terms: Vec<_> = query.split_whitespace().collect();
                 let mut expected: Vec<_> = original
@@ -186,10 +187,11 @@ fn query_normalization_matches_legacy_global_place_and_native_path_semantics() {
         entries.push(e);
     }
     entries.sort_by(legacy_order);
-    let catalog = SampleCatalog {
+    let mut catalog = SampleCatalog {
         entries,
         ..SampleCatalog::default()
     };
+    catalog.rebuild_search_index();
     let listing = DirectoryListing {
         directory: "/ROOT".into(),
         entries: vec![

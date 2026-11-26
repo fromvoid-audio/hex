@@ -16,7 +16,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsString,
     fs::{self, File, OpenOptions},
-    io::{self, Read, Write},
+    io::{self, BufWriter, Read, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -156,12 +156,15 @@ impl SampleCatalog {
         if !reader.is_empty() {
             return Err(invalid());
         }
-        Ok(Self {
+        let mut catalog = Self {
             entries,
+            folded_paths: Vec::new(),
             records,
             tags,
             collections,
-        })
+        };
+        catalog.rebuild_search_index();
+        Ok(catalog)
     }
 
     /// This is a disposable index, never a project or user preferences file.
@@ -170,21 +173,14 @@ impl SampleCatalog {
     /// Returns `Ok(false)` without writing, syncing or touching the file's
     /// modification time when `path` already holds exactly these encoded bytes,
     /// so periodic rescans of an unchanged library cost no durable writes.
+    /// Comparison streams against a fixed-size stack buffer without allocating
+    /// full-catalog encode/read buffers in memory.
     pub fn save(&self, path: &Path) -> io::Result<bool> {
         if self.entries.len() > MAX_SAMPLES
             || self.tags.len() > MAX_SAMPLES
             || self.collections.len() > MAX_COLLECTIONS
         {
             return Err(invalid());
-        }
-        let mut bytes = Vec::from(magic(MAGIC_V3).as_slice());
-        bytes.extend_from_slice(&(self.entries.len() as u32).to_le_bytes());
-        for entry in &self.entries {
-            write_path(&mut bytes, &entry.path)?;
-            write_record(&mut bytes, self.records.get(&entry.path));
-            if bytes.len() > MAX_CATALOG_BYTES {
-                return Err(invalid());
-            }
         }
         // Write user tags in deterministic path order so identical state produces identical bytes.
         let mut sorted_tags: Vec<(Vec<u8>, &Path, &BTreeSet<String>)> = self
@@ -194,49 +190,30 @@ impl SampleCatalog {
             .map(|(path, set)| (encode_path(path), path.as_path(), set))
             .collect();
         sorted_tags.sort_by(|a, b| a.0.cmp(&b.0));
-        bytes.extend_from_slice(&(sorted_tags.len() as u32).to_le_bytes());
-        for (raw_path, path, set) in sorted_tags {
-            if !path.is_absolute()
-                || raw_path.is_empty()
-                || raw_path.len() > MAX_PATH_BYTES
-                || set.len() > MAX_TAGS_PER_SAMPLE
-            {
-                return Err(invalid());
+
+        if let Ok(file) = File::open(path)
+            && let Ok(metadata) = file.metadata()
+            && metadata.is_file()
+            && metadata.len() <= MAX_CATALOG_BYTES as u64
+        {
+            let mut compare = CompareSink::new(file, metadata.len());
+            self.encode_catalog(&sorted_tags, &mut compare)?;
+            if compare.is_exact_match() {
+                return Ok(false);
             }
-            bytes.extend_from_slice(&(raw_path.len() as u32).to_le_bytes());
-            bytes.extend_from_slice(&raw_path);
-            bytes.extend_from_slice(&(set.len() as u16).to_le_bytes());
-            for tag in set {
-                write_label(&mut bytes, tag)?;
-            }
-            if bytes.len() > MAX_CATALOG_BYTES {
-                return Err(invalid());
-            }
+        } else {
+            let mut validator = CountingSink::default();
+            self.encode_catalog(&sorted_tags, &mut validator)?;
         }
-        // Write user collections (BTreeMap + BTreeSet are already deterministically sorted).
-        bytes.extend_from_slice(&(self.collections.len() as u32).to_le_bytes());
-        for (name, members) in &self.collections {
-            if members.len() > MAX_SAMPLES {
-                return Err(invalid());
-            }
-            write_label(&mut bytes, name)?;
-            bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
-            for member in members {
-                write_path(&mut bytes, member)?;
-            }
-            if bytes.len() > MAX_CATALOG_BYTES {
-                return Err(invalid());
-            }
-        }
-        if holds_exactly(path, &bytes) {
-            return Ok(false);
-        }
+
         let name = path.file_name().ok_or_else(invalid)?;
         let parent = normalized_parent(path);
         fs::create_dir_all(parent)?;
-        let (temporary, mut file) = create_temporary(parent, name, &NEXT)?;
+        let (temporary, file) = create_temporary(parent, name, &NEXT)?;
         let result = (|| {
-            file.write_all(&bytes)?;
+            let mut sink = BufferedSink::new(file);
+            self.encode_catalog(&sorted_tags, &mut sink)?;
+            let file = sink.into_inner()?;
             file.sync_all()?;
             drop(file);
             fs::rename(&temporary, path)?;
@@ -248,6 +225,48 @@ impl SampleCatalog {
             let _ = fs::remove_file(temporary);
         }
         result.map(|()| true)
+    }
+
+    fn encode_catalog<S: CatalogSink>(
+        &self,
+        sorted_tags: &[(Vec<u8>, &Path, &BTreeSet<String>)],
+        sink: &mut S,
+    ) -> io::Result<()> {
+        sink.write_bytes(&magic(MAGIC_V3))?;
+        sink.write_bytes(&(self.entries.len() as u32).to_le_bytes())?;
+        for entry in &self.entries {
+            write_path(sink, &entry.path)?;
+            write_record(sink, self.records.get(&entry.path))?;
+        }
+        sink.write_bytes(&(sorted_tags.len() as u32).to_le_bytes())?;
+        for (raw_path, path, set) in sorted_tags {
+            if !path.is_absolute()
+                || raw_path.is_empty()
+                || raw_path.len() > MAX_PATH_BYTES
+                || set.len() > MAX_TAGS_PER_SAMPLE
+            {
+                return Err(invalid());
+            }
+            sink.write_bytes(&(raw_path.len() as u32).to_le_bytes())?;
+            sink.write_bytes(raw_path)?;
+            sink.write_bytes(&(set.len() as u16).to_le_bytes())?;
+            for tag in *set {
+                write_label(sink, tag)?;
+            }
+        }
+        // Write user collections (BTreeMap + BTreeSet are already deterministically sorted).
+        sink.write_bytes(&(self.collections.len() as u32).to_le_bytes())?;
+        for (name, members) in &self.collections {
+            if members.len() > MAX_SAMPLES {
+                return Err(invalid());
+            }
+            write_label(sink, name)?;
+            sink.write_bytes(&(members.len() as u32).to_le_bytes())?;
+            for member in members {
+                write_path(sink, member)?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -287,23 +306,141 @@ fn create_temporary(
     ))
 }
 
-/// Whether `path` is a regular file whose contents equal `bytes`. Reads at most
-/// `bytes.len() + 1` bytes (itself bounded by `MAX_CATALOG_BYTES`); any error
-/// or difference answers `false`, so the caller writes a fresh cache.
-fn holds_exactly(path: &Path, bytes: &[u8]) -> bool {
-    let Ok(file) = File::open(path) else {
-        return false;
-    };
-    if !file
-        .metadata()
-        .is_ok_and(|metadata| metadata.is_file() && metadata.len() == bytes.len() as u64)
-    {
-        return false;
+const COMPARE_CHUNK_BYTES: usize = 16 * 1024;
+const WRITE_BUFFER_BYTES: usize = 64 * 1024;
+
+trait CatalogSink {
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<()>;
+}
+
+#[derive(Default)]
+struct CountingSink {
+    written: usize,
+}
+
+impl CatalogSink for CountingSink {
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<()> {
+        self.written = self.written.saturating_add(data.len());
+        if self.written > MAX_CATALOG_BYTES {
+            return Err(invalid());
+        }
+        Ok(())
     }
-    let mut existing = Vec::with_capacity(bytes.len());
-    file.take(bytes.len() as u64 + 1)
-        .read_to_end(&mut existing)
-        .is_ok_and(|_| existing == bytes)
+}
+
+/// Streams encoded catalog bytes directly against an existing cache file using
+/// a fixed stack buffer so unchanged rescans allocate zero full-catalog buffers.
+struct CompareSink {
+    file: File,
+    buf: [u8; COMPARE_CHUNK_BYTES],
+    pos: usize,
+    filled: usize,
+    written: usize,
+    expected_len: u64,
+    matched: bool,
+}
+
+impl CompareSink {
+    fn new(file: File, expected_len: u64) -> Self {
+        Self {
+            file,
+            buf: [0; COMPARE_CHUNK_BYTES],
+            pos: 0,
+            filled: 0,
+            written: 0,
+            expected_len,
+            matched: true,
+        }
+    }
+
+    fn is_exact_match(&mut self) -> bool {
+        if !self.matched || self.written as u64 != self.expected_len || self.pos != self.filled {
+            return false;
+        }
+        let mut trailing = [0_u8; 1];
+        loop {
+            match self.file.read(&mut trailing) {
+                Ok(0) => return true,
+                Ok(_) => return false,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+impl CatalogSink for CompareSink {
+    fn write_bytes(&mut self, mut data: &[u8]) -> io::Result<()> {
+        self.written = self.written.saturating_add(data.len());
+        if self.written > MAX_CATALOG_BYTES {
+            return Err(invalid());
+        }
+        if !self.matched {
+            return Ok(());
+        }
+        if self.written as u64 > self.expected_len {
+            self.matched = false;
+            return Ok(());
+        }
+        while !data.is_empty() {
+            if self.pos == self.filled {
+                let read = loop {
+                    match self.file.read(&mut self.buf) {
+                        Ok(n) => break n,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => {
+                            self.matched = false;
+                            return Ok(());
+                        }
+                    }
+                };
+                if read == 0 {
+                    self.matched = false;
+                    return Ok(());
+                }
+                self.pos = 0;
+                self.filled = read;
+            }
+            let avail = (self.filled - self.pos).min(data.len());
+            if self.buf[self.pos..self.pos + avail] != data[..avail] {
+                self.matched = false;
+                return Ok(());
+            }
+            self.pos += avail;
+            data = &data[avail..];
+        }
+        Ok(())
+    }
+}
+
+struct BufferedSink {
+    writer: BufWriter<File>,
+    written: usize,
+}
+
+impl BufferedSink {
+    fn new(file: File) -> Self {
+        Self {
+            writer: BufWriter::with_capacity(WRITE_BUFFER_BYTES, file),
+            written: 0,
+        }
+    }
+
+    fn into_inner(self) -> io::Result<File> {
+        self.writer
+            .into_inner()
+            .map_err(io::IntoInnerError::into_error)
+    }
+}
+
+impl CatalogSink for BufferedSink {
+    fn write_bytes(&mut self, data: &[u8]) -> io::Result<()> {
+        self.written = self.written.saturating_add(data.len());
+        if self.written > MAX_CATALOG_BYTES {
+            return Err(invalid());
+        }
+        self.writer.write_all(data)
+    }
 }
 
 impl SampleCatalog {
@@ -323,29 +460,33 @@ impl SampleCatalog {
     }
 }
 
-fn write_record(bytes: &mut Vec<u8>, record: Option<&SampleRecord>) {
+fn write_record<S: CatalogSink>(sink: &mut S, record: Option<&SampleRecord>) -> io::Result<()> {
     let Some(record) = record else {
-        bytes.push(NO_RECORD);
-        return;
+        return sink.write_bytes(&[NO_RECORD]);
     };
     let tag = match (record.fingerprint, record.audio) {
         (Some(_), Some(_)) => RECORD_FINGERPRINTED_WITH_AUDIO,
         (Some(_), None) => RECORD_FINGERPRINTED,
         (None, _) => RECORD_UNREADABLE,
     };
-    bytes.push(tag);
-    bytes.extend_from_slice(&record.size.to_le_bytes());
-    bytes.extend_from_slice(&record.modified_ns.to_le_bytes());
+    let mut buf = [0_u8; 42];
+    buf[0] = tag;
+    buf[1..9].copy_from_slice(&record.size.to_le_bytes());
+    buf[9..17].copy_from_slice(&record.modified_ns.to_le_bytes());
+    let mut len = 17;
     if let Some(fingerprint) = record.fingerprint {
-        bytes.extend_from_slice(&fingerprint.value().to_le_bytes());
+        buf[17..25].copy_from_slice(&fingerprint.value().to_le_bytes());
+        len = 25;
         if let Some(audio) = record.audio {
-            bytes.extend_from_slice(&audio.sample_rate.to_le_bytes());
-            bytes.extend_from_slice(&audio.channels.to_le_bytes());
-            bytes.extend_from_slice(&audio.bit_depth.to_le_bytes());
-            bytes.extend_from_slice(&audio.frame_count.to_le_bytes());
-            bytes.push(audio.codec as u8);
+            buf[25..29].copy_from_slice(&audio.sample_rate.to_le_bytes());
+            buf[29..31].copy_from_slice(&audio.channels.to_le_bytes());
+            buf[31..33].copy_from_slice(&audio.bit_depth.to_le_bytes());
+            buf[33..41].copy_from_slice(&audio.frame_count.to_le_bytes());
+            buf[41] = audio.codec as u8;
+            len = 42;
         }
     }
+    sink.write_bytes(&buf[..len])
 }
 
 fn read_record(reader: &mut &[u8], version: u8) -> io::Result<Option<SampleRecord>> {
@@ -401,20 +542,16 @@ fn read_record(reader: &mut &[u8], version: u8) -> io::Result<Option<SampleRecor
     }))
 }
 
-fn write_path(bytes: &mut Vec<u8>, path: &Path) -> io::Result<()> {
+fn write_path<S: CatalogSink>(sink: &mut S, path: &Path) -> io::Result<()> {
     if !path.is_absolute() {
         return Err(invalid());
     }
     let raw = encode_path(path);
-    if raw.is_empty()
-        || raw.len() > MAX_PATH_BYTES
-        || bytes.len().saturating_add(raw.len()).saturating_add(4) > MAX_CATALOG_BYTES
-    {
+    if raw.is_empty() || raw.len() > MAX_PATH_BYTES {
         return Err(invalid());
     }
-    bytes.extend_from_slice(&(raw.len() as u32).to_le_bytes());
-    bytes.extend_from_slice(&raw);
-    Ok(())
+    sink.write_bytes(&(raw.len() as u32).to_le_bytes())?;
+    sink.write_bytes(&raw)
 }
 
 fn read_path(reader: &mut &[u8]) -> io::Result<PathBuf> {
@@ -427,17 +564,13 @@ fn read_path(reader: &mut &[u8]) -> io::Result<PathBuf> {
     decode_path(raw)
 }
 
-fn write_label(bytes: &mut Vec<u8>, label: &str) -> io::Result<()> {
+fn write_label<S: CatalogSink>(sink: &mut S, label: &str) -> io::Result<()> {
     let raw = label.as_bytes();
-    if raw.is_empty()
-        || raw.len() > MAX_TAG_BYTES
-        || bytes.len().saturating_add(raw.len()).saturating_add(2) > MAX_CATALOG_BYTES
-    {
+    if raw.is_empty() || raw.len() > MAX_TAG_BYTES {
         return Err(invalid());
     }
-    bytes.extend_from_slice(&(raw.len() as u16).to_le_bytes());
-    bytes.extend_from_slice(raw);
-    Ok(())
+    sink.write_bytes(&(raw.len() as u16).to_le_bytes())?;
+    sink.write_bytes(raw)
 }
 
 fn read_label(reader: &mut &[u8]) -> io::Result<String> {
