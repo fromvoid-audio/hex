@@ -354,3 +354,107 @@ fn non_finite_input_sanitizes_without_slipping_dry_delay_alignment() {
     assert_eq!(actual[LATENCY_FRAMES], [0.75, -0.5]);
     assert_eq!(actual[10 + LATENCY_FRAMES], [0.25, -0.25]);
 }
+
+fn dft_magnitude(samples: &[StereoFrame], freq_hz: f64, rate: u32) -> f64 {
+    let n = samples.len() as f64;
+    let (mut re, mut im) = (0.0_f64, 0.0_f64);
+    for (i, frame) in samples.iter().enumerate() {
+        let phase = std::f64::consts::TAU * freq_hz * i as f64 / f64::from(rate);
+        let x = f64::from(frame[0]);
+        re += x * phase.cos();
+        im -= x * phase.sin();
+    }
+    2.0 * (re * re + im * im).sqrt() / n
+}
+
+#[test]
+fn asymmetric_clipping_produces_even_and_odd_harmonics_with_zero_dc_offset() {
+    let rate = 48_000;
+    let mut s = patch(&state(), parameter::DRIVE, 0.7);
+    s = patch(&s, parameter::TONE, 1.0);
+    s = patch(&s, parameter::DRY_WET, 1.0);
+    s = patch(&s, parameter::FREQUENCY, 1_000.0);
+    s = patch(&s, parameter::BANDWIDTH, 6.0);
+
+    // 48000 samples = exact integer cycles of 1000 Hz, 2000 Hz, 3000 Hz.
+    let input = sine(1_000.0, rate, 0.35, 96_000);
+    let output = render(&s, rate, &input);
+    let steady = &output[48_000..];
+
+    let h1 = dft_magnitude(steady, 1_000.0, rate);
+    let h2 = dft_magnitude(steady, 2_000.0, rate);
+    let h3 = dft_magnitude(steady, 3_000.0, rate);
+    let dc = steady.iter().map(|f| f64::from(f[0])).sum::<f64>() / steady.len() as f64;
+
+    assert!(h1 > 0.1, "fundamental missing: {h1}");
+    // Asymmetric pedal clipping produces both 2nd (even) and 3rd (odd) harmonics.
+    assert!(
+        h2 / h1 > 0.03,
+        "2nd harmonic too weak for asymmetric overdrive: h2/h1 = {}",
+        h2 / h1
+    );
+    assert!(
+        h3 / h1 > 0.05,
+        "3rd harmonic too weak for overdrive: h3/h1 = {}",
+        h3 / h1
+    );
+    // Post-shaper DC blocker prevents rectification DC offset.
+    assert!(dc.abs() < 1.0e-3, "DC offset leaked through: {dc}");
+}
+
+#[test]
+fn tone_sweep_monotonically_controls_high_frequency_energy_and_opens_at_max() {
+    let rate = 48_000;
+    assert_eq!(tone_pole(1.0, rate), 0.0);
+    let base = patch(
+        &patch(&state(), parameter::DRY_WET, 1.0),
+        parameter::DRIVE,
+        0.4,
+    );
+    let base = patch(
+        &patch(&base, parameter::FREQUENCY, 3_000.0),
+        parameter::BANDWIDTH,
+        9.0,
+    );
+    let high_sine = sine(6_000.0, rate, 0.15, 16_384);
+    let mut prev_rms = 0.0;
+    for tone in [0.0_f32, 0.25, 0.5, 0.75, 1.0] {
+        let out = render(&patch(&base, parameter::TONE, tone), rate, &high_sine);
+        let level = rms(&out[8_192..]);
+        assert!(
+            level > prev_rms,
+            "tone {tone}: expected monotonic HF increase ({level} <= {prev_rms})"
+        );
+        prev_rms = level;
+    }
+}
+
+#[test]
+fn dynamics_and_filter_matrix_across_sample_rates_and_irregular_blocks() {
+    for rate in [8_000, 44_100, 48_000, 96_000, 192_000] {
+        let mut s = patch(&state(), parameter::DRY_WET, 1.0);
+        s = patch(&s, parameter::DRIVE, 0.8);
+        s = patch(&s, parameter::TONE, 0.65);
+        s = patch(&s, parameter::DYNAMICS, 0.75);
+        s = patch(&s, parameter::FREQUENCY, 1_500.0);
+        s = patch(&s, parameter::BANDWIDTH, 4.0);
+
+        let input = sine(500.0, rate, 0.25, 1_024);
+        let single = render(&s, rate, &input);
+        assert!(single.iter().flatten().all(|v| v.is_finite()));
+
+        // Irregular block partitioning must produce bit-identical PCM at every sample rate.
+        let mut chunked = input.clone();
+        let mut runtime = prepared(&s, rate).create_runtime();
+        let sizes = [1usize, 7, 13, 37, 128, 257];
+        let mut offset = 0usize;
+        let mut step = 0usize;
+        while offset < chunked.len() {
+            let n = sizes[step % sizes.len()].min(chunked.len() - offset);
+            runtime.process_block(&mut chunked[offset..offset + n], &EMPTY_DEVICE_RESOURCES);
+            offset += n;
+            step += 1;
+        }
+        assert_eq!(chunked, single, "block invariance failed at {rate} Hz");
+    }
+}
