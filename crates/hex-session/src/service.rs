@@ -236,7 +236,7 @@ pub use resident_audio::device_insert::{
 use worker::run_export_worker;
 use worker::{
     DocumentHandle, SaveCurrentCommit, bind_new_save, compile, device_track_command,
-    native_device_name, run_export_worker_with_signal, run_worker, save_document_as,
+    native_device_name, run_export_worker_with_recovery, run_worker, save_document_as,
 };
 #[cfg(test)]
 use worker::{

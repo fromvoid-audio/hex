@@ -29,7 +29,7 @@ pub(crate) use document_ops::{
 pub(crate) use export_worker::run_export_worker;
 pub(crate) use export_worker::{
     export_destination_is_original_media, latest_timeline_content_end,
-    run_export_worker_with_signal, same_existing_file,
+    run_export_worker_with_recovery, same_existing_file,
 };
 pub(crate) use live_input::{
     TuningInputPublication, compile, native_playback, prepare_tuning_input_publication,

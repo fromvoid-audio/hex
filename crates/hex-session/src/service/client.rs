@@ -54,6 +54,7 @@ pub struct Service {
     pub(super) arrangement_edit_views: arrangement_edit_views::Receiver,
     pub(super) diagnostics: Arc<diagnostics::Hooks>,
     pub(super) export_events: Receiver<ExportEvent>,
+    pub(super) export_recovery: Arc<crate::ExportRecoveryJournal>,
     pub(super) export_drain_signal: Arc<WakeSignal>,
     pub(super) outcome_drain_signal: Arc<WakeSignal>,
     pub(super) worker_wake_signal: Arc<WakeSignal>,
@@ -78,6 +79,11 @@ impl Drop for Service {
         // Bounded: an uncancellable job past the bound stays detached rather
         // than blocking the dropping thread. Quit paths call `shutdown` first.
         let _ = self.shutdown(DROP_SHUTDOWN_BOUND);
+        // Persist any unconsumed recovery-bearing export terminal sitting in
+        // `export_events` before dropping the receiver on application exit.
+        while let Ok(event) = self.export_events.try_recv() {
+            self.export_recovery.record_event(&event);
+        }
     }
 }
 
@@ -401,11 +407,17 @@ impl Service {
         let worker_wake = Arc::clone(&worker_wake_signal);
         let worker_exited = Arc::new(WakeSignal::default());
         let worker_exit_notify = Arc::clone(&worker_exited);
+        let export_recovery = crate::ExportRecoveryJournal::new(
+            recovery_slot
+                .as_deref()
+                .and_then(crate::ExportRecoveryJournal::default_path_for_recovery_slot),
+        );
+        let worker_export_recovery = Arc::clone(&export_recovery);
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || {
-                run_export_worker_with_signal(
+                run_export_worker_with_recovery(
                     export_work_rx,
                     export_event_tx,
                     exporter,
@@ -413,6 +425,7 @@ impl Service {
                     export_shutdown,
                     export_wake_hook,
                     worker_export_drain,
+                    Some(worker_export_recovery),
                     #[cfg(test)]
                     worker_test_hook,
                 )
@@ -551,6 +564,7 @@ impl Service {
             track_switch_views,
             arrangement_edit_views,
             export_events: export_event_rx,
+            export_recovery,
             export_drain_signal,
             outcome_drain_signal,
             worker_wake_signal,
@@ -836,6 +850,18 @@ impl Service {
 
     pub fn try_event(&self) -> Result<Event, TryRecvError> {
         self.events.try_recv()
+    }
+
+    /// Configure the durable path where undelivered export recovery notices
+    /// are recorded on shutdown, saturated/disconnected channels, or exit.
+    pub fn set_export_recovery_path(&self, path: Option<PathBuf>) {
+        self.export_recovery.set_path(path);
+    }
+
+    /// Drain undelivered export recovery notices captured in memory for this
+    /// service (e.g. during shutdown with a saturated result channel).
+    pub fn take_export_recovery_notices(&self) -> Vec<crate::ExportRecoveryNotice> {
+        self.export_recovery.take_notices()
     }
 
     /// Consume one separate export result and release the single-job reservation.
