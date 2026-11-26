@@ -37,11 +37,12 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 "crates/hex-ui/src/editor/clip_border_ui_test.rs": '.child(super::pixel_backdrop_shell(body, bounds, style, true, selector))',
                 "crates/hex-ui/src/editor/time_move_preview.rs": '.child(super::clip_name::passive_name_header(name, fill, true))',
                 "crates/hex-ui/src/editor/console_mixer.rs": '.child(activator) .child(solo) .child(gain) .child(pan) .child(toggles) .child(controls) .child(column) .child(super::track_meters::render(id, peaks, height)) .child(self.main_track_controls(cx)) .child(self.console_return_paging(page, frame, cx))',
-                "crates/hex-ui/src/editor/session_grid.rs": '.child(session_clip_backdrop(clip, fill, stroke)) .child(super::clip_boundary::backdrop_shell(body, left, width, style, true, selector)) .child(self.console_mixer_row(page, width, scenes, cx)) .child(self.console_main_header(width, cx)) .child(body)',
+                "crates/hex-ui/src/editor/session_grid/paint.rs": '.child(session_clip_backdrop(clip, fill, stroke)) .child(super::clip_boundary::backdrop_shell(body, left, width, style, true, selector)) .child(self.console_mixer_row(page, width, scenes, cx)) .child(self.console_main_header(width, cx)) .child(body)',
                 "crates/hex-ui/src/editor/console_returns.rs": '.child(button(glyph, label, id)) .child(self.track_name_label(target, name, cx)) .child(gain) .child(mute) .child(controls) .child(header) .child(mixer) .child(self.sample_arm_button(arm, cx)) .child(super::track_meters::render_return(id, levels, height))',
                 "crates/hex-ui/src/editor/mixer.rs": '.child(self.main_volume(cx))',
                 "crates/hex-ui/src/editor/return_tracks.rs": '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))',
-                "crates/hex-ui/src/editor/device_panel/modulators.rs": '.child(parameter_control_with_presentation(view, cx, id, identity, row)) .child(control_row)',
+                "crates/hex-ui/src/editor/device_panel/modulators/source_card.rs": '.child(parameter_control_with_presentation(view, cx, id, identity, row)) .child(control_row)',
+                "crates/hex-ui/src/editor/device_panel/saturator_panel.rs": '.child(ws_caption) .child(dial_row(ws_drive, ws_curve))',
             }
             for name, text in files.items():
                 path = root / name
@@ -49,7 +50,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 path.write_text(text)
             def run():
                 return subprocess.run([sys.executable, str(root / "scripts/check-ui-style.py")], capture_output=True, text=True)
-            self.assertEqual(run().returncode, 0)
+            baseline = run()
+            self.assertEqual(baseline.returncode, 0, baseline.stderr)
             for name, content in [
                 ("other.rs", '.child(super::super::render(&self.state, self.owner, self.now))'),
                 ("editor/track_performance/tests.rs", '.child("Unnormalized")'),
@@ -57,6 +59,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(self.browser_results(rows, count, cx))'),
                 ("other.rs", '.child(self.browser_scrollbar(cx))'),
                 ("other.rs", '.child(list)'),
+                ("other.rs", '.child(ws_caption)'),
+                ("editor/device_panel/saturator_panel.rs", '.child("Raw caption")'),
+                ("editor/device_panel/saturator_panel.rs", '.child(unknown_dial)'),
                 ("other.rs", '.child(bar)'),
                 ("other.rs", '.child(framed_clip)'),
                 ("other.rs", '.child(paint)'),
@@ -72,8 +77,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(self.console_mixer_row(page, width, scenes, cx))'),
                 ("other.rs", '.child(self.console_main_header(width, cx))'),
                 ("other.rs", '.child(self.main_track_controls(cx))'),
-                ("editor/session_grid.rs", '.child("Unnormalized")'),
-                ("editor/session_grid.rs", '.child(self.unregistered_component(cx))'),
+                ("editor/session_grid/paint.rs", '.child("Unnormalized")'),
+                ("editor/session_grid/paint.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/time_move_preview.rs", '.child("Unnormalized")'),
                 ("editor/time_move_preview.rs", '.child(self.unregistered_component(cx))'),
                 ("other.rs", '.child(super::pixel_backdrop_shell(body, bounds, style, true, selector))'),
@@ -88,8 +93,8 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(super::waveform::toggle_button_with_style(label, tooltip, id, style))'),
                 ("other.rs", '.child(parameter_control_with_presentation(view, cx, id, identity, row))'),
                 ("other.rs", '.child(control_row)'),
-                ("editor/device_panel/modulators.rs", '.child("Unnormalized")'),
-                ("editor/device_panel/modulators.rs", '.child(self.unregistered_component(cx))'),
+                ("editor/device_panel/modulators/source_card.rs", '.child("Unnormalized")'),
+                ("editor/device_panel/modulators/source_card.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/tracks.rs", '.child("Unnormalized")'),
                 ("editor/tracks.rs", '.child(self.unregistered_component(cx))'),
                 ("editor/return_tracks.rs", '.child("Unnormalized")'),
