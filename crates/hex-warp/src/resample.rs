@@ -150,13 +150,20 @@ impl RepitchWindow {
             base_scratch: 0,
             resampler: self.bank.resampler,
         };
+        let mut seg_cursor = self.map.segment_index(output_start);
+        let mut active_seg = usize::MAX;
         for (index, target) in output.iter_mut().enumerate() {
             if index % 1024 == 0 {
                 work.check(1024 * V2_MAX_TAPS as u64)?;
             }
             let frame = output_start + index as u64;
-            let position = self.map.position_q32(i128::from(frame))?;
-            self.bank.set_rate(self.map.rate_at(frame), &mut work)?;
+            let segment = self.map.advance_segment(&mut seg_cursor, frame);
+            let position = TimeMap::segment_position_q32(segment, i128::from(frame))?;
+            if seg_cursor != active_seg {
+                self.bank
+                    .set_rate(TimeMap::segment_rate(segment), &mut work)?;
+                active_seg = seg_cursor;
+            }
             *target = finite(self.bank.sample_with(position, |at| {
                 if at < i128::from(range.start) || at >= i128::from(range.end) {
                     return [0.0; 2];

@@ -132,7 +132,7 @@ pub(super) fn detect(
                 };
                 *value = Complex::new(x * window[i], 0.0);
             }
-            fft::transform(&mut fft, false)?;
+            fft::transform_real_forward(&mut fft)?;
             for bin in 0..bins {
                 let hz = bin as f64 * f64::from(input.sample_rate) / n as f64;
                 let band = if hz < 200.0 {

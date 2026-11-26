@@ -153,7 +153,7 @@ impl SpectralVocoder {
         mut cancel: Option<&mut dyn FnMut() -> bool>,
     ) -> Result<(), Error> {
         for channel in &mut self.analysis {
-            fft::transform(channel, false)?;
+            fft::transform_real_forward(channel)?;
         }
         if let Some(check) = cancel.as_deref_mut()
             && check()
@@ -270,10 +270,7 @@ impl SpectralVocoder {
         for channel in &mut self.synthesis {
             channel[0].im = 0.0;
             channel[self.half].im = 0.0;
-            for bin in 1..self.half {
-                channel[self.n - bin] = Complex::new(channel[bin].re, -channel[bin].im);
-            }
-            fft::transform(channel, true)?;
+            fft::transform_real_inverse(channel)?;
         }
         if let Some(check) = cancel
             && check()

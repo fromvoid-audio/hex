@@ -333,6 +333,18 @@ impl SequentialBeats {
                 let guard = f64::from(self.config.sample_rate) / 125.0;
                 let chunk_end = (age + FIRST_PASS_CHUNK_FRAMES).min(sounding);
                 let last_phys = self.physical_anchors.len().saturating_sub(1);
+                let window = if age < chunk_end {
+                    let pos_start = a.source + age as f64 * self.pitch;
+                    let pos_end = a.source + (chunk_end - 1) as f64 * self.pitch;
+                    let min_bound = self.physical_anchors[bounds_prev].source.floor() as i128;
+                    let max_bound =
+                        (self.physical_anchors[last_phys].source.ceil() as i128 - 1).max(min_bound);
+                    let win_start = (pos_start.floor() as i128 - TAP_WINDOW_PAD).max(min_bound);
+                    let win_end = (pos_end.ceil() as i128 + TAP_WINDOW_PAD).min(max_bound) + 1;
+                    ScratchWindow::load(source, scratch, win_start, win_end)?
+                } else {
+                    None
+                };
                 while age < chunk_end {
                     if age.is_multiple_of(256) && cancel() {
                         return Err(Error::Cancelled.into());
@@ -362,10 +374,15 @@ impl SequentialBeats {
                         lower = lower.max(a.source.ceil() as i128);
                     }
                     let upper = self.physical_anchors[bounds_next].source.ceil() as i128 - 1;
-                    let mut sample =
-                        bank.try_sample_segment(position, lower, upper.max(lower), |p| {
-                            source.frame(p)
-                        })?;
+                    let mut sample = bank.try_sample_segment(
+                        position,
+                        lower,
+                        upper.max(lower),
+                        |p| match &window {
+                            Some(win) => win.frame(p, source),
+                            None => source.frame(p),
+                        },
+                    )?;
                     let correction_gain = if join >= 2 && age < join {
                         1.0 - smooth_cubic(age as f64 / (join - 1) as f64)
                     } else {

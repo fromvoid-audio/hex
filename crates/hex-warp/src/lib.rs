@@ -324,12 +324,21 @@ impl TimeMap {
     pub fn segments(&self) -> &[MapSegment] {
         &self.segments
     }
-    pub fn position_q32(&self, frame: i128) -> Result<i128, Error> {
-        let index = self
-            .segments
-            .partition_point(|s| i128::from(s.output_end) <= frame)
-            .min(self.segments.len() - 1);
-        let segment = &self.segments[index];
+    pub(crate) fn segment_index(&self, frame: u64) -> usize {
+        self.segments
+            .partition_point(|s| s.output_end <= frame)
+            .min(self.segments.len() - 1)
+    }
+    #[inline]
+    pub(crate) fn advance_segment(&self, cursor: &mut usize, frame: u64) -> &MapSegment {
+        let last = self.segments.len() - 1;
+        while *cursor < last && self.segments[*cursor].output_end <= frame {
+            *cursor += 1;
+        }
+        &self.segments[*cursor]
+    }
+    #[inline]
+    pub(crate) fn segment_position_q32(segment: &MapSegment, frame: i128) -> Result<i128, Error> {
         let delta = frame
             .checked_sub(i128::from(segment.output_start))
             .ok_or(Error::Invalid("audio map position overflow"))?;
@@ -342,18 +351,25 @@ impl TimeMap {
             .checked_add(scaled)
             .ok_or(Error::Invalid("audio map position overflow"))
     }
+    #[inline]
+    pub(crate) fn segment_rate(segment: &MapSegment) -> f64 {
+        (segment.source_end_q32 - segment.source_start_q32) as f64
+            / Q32 as f64
+            / (segment.output_end - segment.output_start) as f64
+    }
+    pub fn position_q32(&self, frame: i128) -> Result<i128, Error> {
+        let index = self
+            .segments
+            .partition_point(|s| i128::from(s.output_end) <= frame)
+            .min(self.segments.len() - 1);
+        Self::segment_position_q32(&self.segments[index], frame)
+    }
     fn position(&self, frame: i128) -> Result<f64, Error> {
         Ok(self.position_q32(frame)? as f64 / Q32 as f64)
     }
     fn rate_at(&self, frame: u64) -> f64 {
-        let index = self
-            .segments
-            .partition_point(|s| s.output_end <= frame)
-            .min(self.segments.len() - 1);
-        let s = &self.segments[index];
-        (s.source_end_q32 - s.source_start_q32) as f64
-            / Q32 as f64
-            / (s.output_end - s.output_start) as f64
+        let index = self.segment_index(frame);
+        Self::segment_rate(&self.segments[index])
     }
     pub fn output_for_source(&self, source_q32: i128) -> Option<u64> {
         let index = self

@@ -28,6 +28,52 @@ use crate::{
 const MAX_SEGMENT_HORIZON_FRAMES: u64 = 262_144;
 const COPY_CHUNK_FRAMES: u64 = 1_024;
 const FIRST_PASS_CHUNK_FRAMES: u64 = 512;
+const TAP_WINDOW_PAD: i128 = (V2_MAX_TAPS / 2 + 2) as i128;
+
+/// Contiguous preloaded source slice in bounded caller-owned `scratch` memory.
+/// Serves all in-window tap reads in O(1) without per-tap `source.frame()` calls,
+/// falling back to `source.frame()` only for out-of-window indices.
+pub(super) struct ScratchWindow<'a> {
+    start: i128,
+    data: &'a [[f64; 2]],
+}
+
+impl<'a> ScratchWindow<'a> {
+    pub(super) fn load<S: GranularSource>(
+        source: &mut S,
+        scratch: &'a mut [[f64; 2]],
+        start: i128,
+        end: i128,
+    ) -> Result<Option<Self>, S::Error> {
+        if end <= start {
+            return Ok(None);
+        }
+        let Ok(len) = usize::try_from(end - start) else {
+            return Ok(None);
+        };
+        if len > scratch.len() {
+            return Ok(None);
+        }
+        let slice = &mut scratch[..len];
+        source.window(start, slice)?;
+        Ok(Some(Self { start, data: slice }))
+    }
+
+    #[inline]
+    pub(super) fn frame<S: GranularSource>(
+        &self,
+        at: i128,
+        source: &mut S,
+    ) -> Result<[f64; 2], S::Error> {
+        if at >= self.start {
+            let idx = (at - self.start) as usize;
+            if let Some(&sample) = self.data.get(idx) {
+                return Ok(sample);
+            }
+        }
+        source.frame(at)
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct Anchor {
@@ -925,58 +971,90 @@ impl SequentialBeats {
             self.poisoned = true;
             return Err(error);
         }
-        for (i, frame) in output.iter_mut().enumerate() {
-            self.history.push(*frame);
-            if self.decay < 100 {
-                let pos = start_pos + i as u64;
-                if let Some((seg_start, seg_end)) = self.envelope_segment(pos) {
-                    let age = pos - seg_start;
-                    let gain = (-12.0 * f64::from(100 - self.decay) / 100.0 * age as f64
-                        / (seg_end - seg_start) as f64)
-                        .exp();
-                    match finite(frame.map(|x| f64::from(x) * gain)) {
-                        Ok(scaled) => *frame = scaled,
-                        Err(error) => {
-                            self.poisoned = true;
-                            return Err(error);
-                        }
-                    }
+        if self.decay == 100 || self.env_boundaries.len() < 2 {
+            for frame in output.iter() {
+                self.history.push(*frame);
+            }
+            return Ok(());
+        }
+
+        // Locate the initial envelope segment once and advance linearly with a
+        // multiplicative per-sample decay step (resynced every 4096 samples to
+        // bound floating-point drift on very long segments).
+        let decay_scale = -12.0 * f64::from(100 - self.decay) / 100.0;
+        let last_seg = self.env_boundaries.len() - 1;
+        let mut seg_idx = {
+            let mut lo = 0;
+            let mut hi = last_seg;
+            while lo + 1 < hi {
+                let mid = (lo + hi) / 2;
+                if self.env_boundaries[mid].output <= start_pos {
+                    lo = mid;
+                } else {
+                    hi = mid;
                 }
             }
-        }
-        if self.decay < 100 {
-            let cursor = self.overlap.position();
-            let drop_count = self
-                .env_boundaries
-                .iter()
-                .skip(1)
-                .take(self.env_boundaries.len().saturating_sub(2))
-                .take_while(|b| b.output <= cursor)
-                .count();
-            if drop_count > 0 {
-                self.env_boundaries.drain(..drop_count);
+            lo
+        };
+        let mut active_seg: Option<(u64, u64, f64, f64, f64, u32)> = None;
+
+        for (i, frame) in output.iter_mut().enumerate() {
+            self.history.push(*frame);
+            let pos = start_pos + i as u64;
+            while seg_idx + 1 < last_seg && self.env_boundaries[seg_idx + 1].output <= pos {
+                seg_idx += 1;
+                active_seg = None;
             }
+            let a = self.env_boundaries[seg_idx].output;
+            let b = self.env_boundaries[seg_idx + 1].output;
+            if b > a && pos >= a && pos < b {
+                let (seg_start, seg_end, rate, step_factor, gain, steps_since_sync) =
+                    match active_seg {
+                        Some(state) if state.0 == a && state.1 == b => state,
+                        _ => {
+                            let rate = decay_scale / (b - a) as f64;
+                            let step_factor = rate.exp();
+                            let gain = (rate * (pos - a) as f64).exp();
+                            (a, b, rate, step_factor, gain, 0_u32)
+                        }
+                    };
+                match finite(frame.map(|x| f64::from(x) * gain)) {
+                    Ok(scaled) => *frame = scaled,
+                    Err(error) => {
+                        self.poisoned = true;
+                        return Err(error);
+                    }
+                }
+                let next_steps = steps_since_sync + 1;
+                let next_gain = if next_steps >= 4096 {
+                    (rate * (pos + 1 - seg_start) as f64).exp()
+                } else {
+                    gain * step_factor
+                };
+                active_seg = Some((
+                    seg_start,
+                    seg_end,
+                    rate,
+                    step_factor,
+                    next_gain,
+                    if next_steps >= 4096 { 0 } else { next_steps },
+                ));
+            } else {
+                active_seg = None;
+            }
+        }
+        let cursor = self.overlap.position();
+        let drop_count = self
+            .env_boundaries
+            .iter()
+            .skip(1)
+            .take(self.env_boundaries.len().saturating_sub(2))
+            .take_while(|b| b.output <= cursor)
+            .count();
+        if drop_count > 0 {
+            self.env_boundaries.drain(..drop_count);
         }
         Ok(())
-    }
-
-    fn envelope_segment(&self, pos: u64) -> Option<(u64, u64)> {
-        if self.env_boundaries.len() < 2 {
-            return None;
-        }
-        let mut lo = 0;
-        let mut hi = self.env_boundaries.len() - 1;
-        while lo + 1 < hi {
-            let mid = (lo + hi) / 2;
-            if self.env_boundaries[mid].output <= pos {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let a = self.env_boundaries[lo].output;
-        let b = self.env_boundaries[lo + 1].output;
-        (b > a && pos >= a && pos < b).then_some((a, b))
     }
 
     fn record_env_boundary(&mut self, boundary: Boundary) -> Result<(), Error> {
