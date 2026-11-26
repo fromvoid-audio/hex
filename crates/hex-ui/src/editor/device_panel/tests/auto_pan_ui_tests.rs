@@ -69,7 +69,7 @@ fn auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle(
                 + device_meter::WIDTH)
         );
         assert_eq!(frame.size.height, px(DEVICE_FRAME_HEIGHT));
-        for parameter in 1..=4 {
+        for parameter in 1..=13 {
             let control = visual
                 .debug_bounds(Box::leak(
                     format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str(),

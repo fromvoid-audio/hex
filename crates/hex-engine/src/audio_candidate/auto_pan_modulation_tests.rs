@@ -37,7 +37,8 @@ impl NativeParameterAutomation for ExpectedValues {
             parameter::AMOUNT => ParameterValue::Float(0.5 + 0.25 * wave),
             parameter::RATE => ParameterValue::Float(400.0_f32.powf(0.125 * wave)),
             parameter::RIGHT_PHASE => ParameterValue::Float(180.0 + 90.0 * wave),
-            parameter::WAVEFORM => ParameterValue::Choice(if wave > 0.0 { 2 } else { 0 }),
+            // 6 waveforms (0..=5): normalized +0.5 modulation maps 0.5 * 5 = 2.5 -> Choice(3).
+            parameter::WAVEFORM => ParameterValue::Choice(if wave > 0.0 { 3 } else { 0 }),
             _ => return None,
         })
     }
@@ -139,7 +140,7 @@ fn auto_pan_modulation_matches_independent_sample_frames_in_both_compilers() {
     assert!(!crate::project_device_modulation_target_supported(
         project,
         device,
-        ParameterId::from_static(5)
+        ParameterId::from_static(14)
     ));
 
     let mut expected = [[0.125, -0.25]; FRAMES];
