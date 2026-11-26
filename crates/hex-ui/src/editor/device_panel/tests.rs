@@ -904,7 +904,30 @@ fn exercise_vector_modulation_mapper(cx: &mut TestAppContext, kind: Option<&str>
     };
     click_modulator_control(&mut visual, "device-modulator-toggle".into(), false);
     let Some(kind) = kind else {
+        assert!(
+            visual
+                .debug_bounds("device-modulator-slots-empty-slot")
+                .is_some()
+        );
         assert!(visual.debug_bounds("device-modulator-scroll").is_none());
+        let add = Box::leak(format!("add-modulator-{}", device.value()).into_boxed_str());
+        assert!(visual.debug_bounds(add).is_none());
+        click_modulator_control(&mut visual, "device-macro-toggle".into(), false);
+        let add = Box::leak(format!("add-macro-{}", device.value()).into_boxed_str());
+        assert!(visual.debug_bounds(add).is_none());
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .device(device)
+                    .unwrap()
+                    .state(),
+                &original
+            );
+            assert!(bank(view).is_empty());
+        });
         return;
     };
     click_modulator_control(
