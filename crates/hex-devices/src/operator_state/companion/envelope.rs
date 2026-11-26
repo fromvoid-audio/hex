@@ -1,12 +1,13 @@
 //! Inline original envelope machines. Absolute frame/beat queries have bounded work.
 use super::*;
-use crate::operator_envelope::PreparedOperatorEnvelope;
+use crate::operator_envelope::{OperatorEnvelopeShape, PreparedOperatorEnvelope};
 use hex_lattice::NativeInstrumentRuntimeError as Error;
 const SIXTEENTH: u64 = 1 << 30;
 #[derive(Clone, Copy)]
 pub(in crate::operator_state) struct Machine {
     envelope: PreparedOperatorEnvelope,
     cycle: PreparedOperatorEnvelope,
+    shape: OperatorEnvelopeShape,
     levels: [f64; 3],
     mode: u32,
     loop_frames: u64,
@@ -17,14 +18,18 @@ pub(in crate::operator_state) struct Machine {
     release: Option<(u64, f64)>,
 }
 impl Machine {
-    pub fn prepare(
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_note_pitch(
         settings: Settings,
         operator: usize,
         envelope: OperatorEnvelope,
+        shape: OperatorEnvelopeShape,
         levels: [f64; 3],
         rate: u32,
         beat: Option<u64>,
         running: Option<bool>,
+        note_hz: f64,
+        loop_note_ratio: f64,
     ) -> Result<Self, Error> {
         let envelope = envelope
             .prepare(rate)
@@ -44,18 +49,75 @@ impl Machine {
         } else {
             None
         };
+        let (cycle, loop_frames) = if mode == 5 {
+            let hz = if note_hz.is_finite() && note_hz > 1.0 {
+                note_hz
+            } else {
+                440.0
+            };
+            let ratio = if loop_note_ratio.is_finite() {
+                loop_note_ratio.clamp(0.25, 4.0)
+            } else {
+                1.0
+            };
+            let period = (f64::from(rate) / (hz * ratio))
+                .round()
+                .clamp(2.0, f64::from(rate) * 60.0) as u64;
+            let raw_a = envelope.attack_frames();
+            let raw_d = envelope.decay_frames();
+            let raw_ad = raw_a.saturating_add(raw_d);
+            let scaled_a = if raw_ad == 0 {
+                0
+            } else {
+                ((period as f64) * (raw_a as f64 / raw_ad as f64))
+                    .round()
+                    .clamp(0.0, period as f64) as u64
+            };
+            let scaled_d = period.saturating_sub(scaled_a);
+            (envelope.with_ad_frames(scaled_a, scaled_d), period)
+        } else {
+            (
+                envelope,
+                (settings.float(operator, 6) * f64::from(rate)).round() as u64,
+            )
+        };
         Ok(Self {
             envelope,
-            cycle: envelope,
+            cycle,
+            shape,
             levels,
             mode,
-            loop_frames: (settings.float(operator, 6) * f64::from(rate)).round() as u64,
+            loop_frames,
             interval,
             next_beat,
             first: true,
             origin: 0,
             release: None,
         })
+    }
+
+    #[cfg(test)]
+    pub fn prepare(
+        settings: Settings,
+        operator: usize,
+        envelope: OperatorEnvelope,
+        levels: [f64; 3],
+        rate: u32,
+        beat: Option<u64>,
+        running: Option<bool>,
+    ) -> Result<Self, Error> {
+        Self::prepare_with_note_pitch(
+            settings,
+            operator,
+            envelope,
+            OperatorEnvelopeShape::default(),
+            levels,
+            rate,
+            beat,
+            running,
+            440.0,
+            1.0,
+        )
     }
     pub fn observe(
         &mut self,
@@ -100,15 +162,21 @@ impl Machine {
                 let period = ad + self.loop_frames;
                 let at = age % period;
                 if at < ad {
-                    self.envelope.level(at, u64::MAX)
+                    self.envelope.level_shaped(at, u64::MAX, self.shape)
                 } else {
                     self.levels[2]
                         + (self.levels[0] - self.levels[2]) * (at - ad) as f64
                             / self.loop_frames as f64
                 }
             }
-            2 | 3 => self.cycle.level(age.saturating_sub(self.origin), u64::MAX),
-            _ => self.envelope.level(age, u64::MAX),
+            2 | 3 => {
+                self.cycle
+                    .level_shaped(age.saturating_sub(self.origin), u64::MAX, self.shape)
+            }
+            5 => self
+                .cycle
+                .level_shaped(age % self.loop_frames.max(1), u64::MAX, self.shape),
+            _ => self.envelope.level_shaped(age, u64::MAX, self.shape),
         }
     }
     // Factory proves equal loop timing; released voices use the ordinary path.
@@ -135,24 +203,36 @@ impl Machine {
     }
     pub fn note_off(&mut self, age: u64) {
         if self.release.is_none() {
-            self.release = Some((age, self.held(age)));
+            // Note-off takes priority over a simultaneous note-pitch loop reset,
+            // starting release from the pre-reset level at the end of decay.
+            let level = if self.mode == 5
+                && age > 0
+                && age.is_multiple_of(self.loop_frames.max(1))
+            {
+                self.levels[2]
+            } else {
+                self.held(age)
+            };
+            self.release = Some((age, level));
         }
     }
     pub fn level(&self, age: u64) -> f64 {
         if self.mode == 4 {
-            return self.envelope.level(
+            return self.envelope.level_shaped(
                 age,
                 self.envelope.attack_frames() + self.envelope.decay_frames(),
+                self.shape,
             );
         }
         let Some((gate, level)) = self.release else {
             return self.held(age);
         };
         if self.mode == 0 {
-            return self.envelope.level(age, gate);
+            return self.envelope.level_shaped(age, gate, self.shape);
         }
         let elapsed = age.saturating_sub(gate);
-        self.envelope.released_level(level, elapsed)
+        self.envelope
+            .released_level_shaped(level, elapsed, self.shape)
     }
     // Completion is independent of oscillator history and held/release levels.
     // The event admission proof uses the same bounds without cloning machines.
@@ -311,5 +391,40 @@ mod tests {
         assert!(!machine.finished(1_119_999));
         assert!(machine.finished(1_120_000));
         assert_eq!(machine.level(1_120_000), 0.0);
+    }
+
+    #[test]
+    fn note_pitch_sync_fits_period_preserves_ratio_and_note_off_priority() {
+        let mut settings = Settings::default();
+        settings.words[0][5] = 5; // note-pitch
+        let env = OperatorEnvelope::new(0.1, 1.0, 0.4, 0.002, 0.004, 0.002).unwrap();
+        let shape = OperatorEnvelopeShape::new(0.2, 50.0, -50.0, 0.0).unwrap();
+        // 400 Hz at 8000 Hz, ratio 0.5x => period = 8000 / 200 = 40 frames.
+        // Attack:Decay = 1:2 => scaled_a = 13, scaled_d = 27.
+        let mut m = Machine::prepare_with_note_pitch(
+            settings,
+            0,
+            env,
+            shape,
+            [0.1, 1.0, 0.4],
+            8_000,
+            None,
+            None,
+            400.0,
+            0.5,
+        )
+        .unwrap();
+        assert_eq!(m.loop_frames, 40);
+        for age in 0..120 {
+            assert_eq!(m.level(age), m.level(age % 40));
+        }
+        assert!((m.level(0) - 0.1).abs() < 1e-12);
+        assert!((m.level(13) - 1.0).abs() < 1e-12);
+        // Simultaneous note-off at loop reset boundary (age = 40) takes priority
+        // and starts release from pre-reset sustain (0.4), NOT reset initial (0.1).
+        m.note_off(40);
+        assert!((m.level(40) - 0.4).abs() < 1e-12);
+        assert!((m.level(56) - 0.2).abs() < 1e-6);
+        assert!(m.finished(56));
     }
 }

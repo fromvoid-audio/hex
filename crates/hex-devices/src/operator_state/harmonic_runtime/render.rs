@@ -885,7 +885,9 @@ fn render_voice_sample(
     } else {
         factory.configuration.envelope_levels(age, gate)
     };
-    if let Some(boost) = timbre_boost {
+    if quality && voice.drain > 0 {
+        amplitudes = [0.0; 4];
+    } else if let Some(boost) = timbre_boost {
         for (op, amp) in amplitudes.iter_mut().enumerate() {
             if parameters[4 + op] == 0.0 {
                 *amp *= boost;

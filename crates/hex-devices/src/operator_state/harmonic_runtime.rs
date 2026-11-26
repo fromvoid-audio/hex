@@ -78,6 +78,8 @@ impl Factory {
         for (operator, source) in companion_sources.iter_mut().enumerate().skip(1) {
             for previous in 0..operator {
                 if settings.companion.words[operator] == settings.companion.words[previous]
+                    && settings.osc_env_shape.words[operator]
+                        == settings.osc_env_shape.words[previous]
                     && (0..ENVELOPE_FIELDS).all(|field| {
                         settings.fields[CORE_FIELDS + operator * ENVELOPE_FIELDS + field].to_bits()
                             == settings.fields[CORE_FIELDS + previous * ENVELOPE_FIELDS + field]
@@ -95,6 +97,7 @@ impl Factory {
         // imply equal prepared timing for every note velocity at this rate.
         let shared_loop_timing = !uniform_companion
             && !partial_companion
+            && settings.osc_env_shape.is_neutral()
             && (0..4).all(|i| {
                 settings.companion.words[i][5] == 1
                     && [3, 6]
@@ -116,7 +119,8 @@ impl Factory {
             } else {
                 FilterTrajectory::new(settings.filter, rate)?
             },
-            companion_active: settings.companion.requires_runtime(),
+            companion_active: settings.companion.requires_runtime()
+                || !settings.osc_env_shape.is_neutral(),
             uniform_companion,
             companion_sources,
             partial_companion,
@@ -147,21 +151,36 @@ impl Factory {
         }
         .map_err(|_| Error::InvalidEventBatch)?;
         let settings = self.settings;
-        let machines = if settings.companion.requires_runtime() {
+        let machines = if self.companion_active {
             let envelopes = settings
                 .companion
                 .envelopes(&settings.fields, velocity)
                 .map_err(|_| Error::InvalidEventBatch)?;
+            let note_hz = self
+                .tuning
+                .as_ref()
+                .and_then(|t| t.frequency(pitch).ok())
+                .unwrap_or_else(|| 440.0 * 2.0_f64.powf((f64::from(pitch) - 69.0) / 12.0));
             let machines = std::array::from_fn(|i| {
                 let base = CORE_FIELDS + i * ENVELOPE_FIELDS;
-                companion::Machine::prepare(
+                let shape = crate::operator_envelope::OperatorEnvelopeShape::new(
+                    settings.osc_env_shape.end_level(i),
+                    settings.osc_env_shape.attack_slope(i),
+                    settings.osc_env_shape.decay_slope(i),
+                    settings.osc_env_shape.release_slope(i),
+                )
+                .map_err(|_| Error::InvalidEventBatch)?;
+                companion::Machine::prepare_with_note_pitch(
                     settings.companion,
                     i,
                     envelopes[i],
+                    shape,
                     std::array::from_fn(|j| f64::from(settings.fields[base + j])),
                     self.rate,
                     beat,
                     running,
+                    note_hz,
+                    settings.osc_env_shape.loop_note_ratio(i),
                 )
                 .map(Some)
             });
@@ -230,6 +249,7 @@ impl Factory {
     fn compatible(&self, other: &Self) -> bool {
         self.rate == other.rate
             && self.settings.companion == other.settings.companion
+            && self.settings.osc_env_shape == other.settings.osc_env_shape
             && compatible_base(&self.base, &other.base, self.settings.global.active)
     }
     pub(super) fn effective_time_rate(&self, voice_time_rate: f64) -> f64 {

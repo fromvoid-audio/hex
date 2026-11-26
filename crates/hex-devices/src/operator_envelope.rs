@@ -16,6 +16,74 @@ pub const MAX_DECAY_SECONDS: f64 = 60.0;
 /// Maximum authored release duration, including direct kernel construction.
 pub const MAX_RELEASE_SECONDS: f64 = 60.0;
 
+/// Monotonic segment curve mapping `t in [0, 1]` with `slope_pct in [-100, 100]`.
+///
+/// `0%` is exact linear; positive values bow convex (fast start), negative
+/// values bow concave (slow start). Endpoints 0 and 1 are exact.
+#[inline]
+pub(crate) fn curve_shape(t: f64, slope_pct: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    if t == 0.0 || t == 1.0 || slope_pct == 0.0 {
+        return t;
+    }
+    let k = -(slope_pct.clamp(-100.0, 100.0) / 100.0) * 4.0;
+    if k.abs() < 1e-6 {
+        return t;
+    }
+    let denom = k.exp_m1();
+    if denom == 0.0 || !denom.is_finite() {
+        t
+    } else {
+        ((k * t).exp_m1() / denom).clamp(0.0, 1.0)
+    }
+}
+
+/// Optional segment slopes (`-100..=100%`) and release `end` level (`0..=1`).
+/// Kept separate from `PreparedOperatorEnvelope` so the legacy analytic context
+/// and feedback runtime retain their exact fixed storage budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct OperatorEnvelopeShape {
+    end: f32,
+    attack_slope: f32,
+    decay_slope: f32,
+    release_slope: f32,
+}
+
+impl OperatorEnvelopeShape {
+    pub fn new(
+        end: f64,
+        attack_slope: f64,
+        decay_slope: f64,
+        release_slope: f64,
+    ) -> Result<Self, Invalid> {
+        if !end.is_finite() || !(0.0..=1.0).contains(&end) {
+            return Err(Invalid("operator envelope end level must be finite in [0, 1]"));
+        }
+        if [attack_slope, decay_slope, release_slope]
+            .iter()
+            .any(|s| !s.is_finite() || !(-100.0..=100.0).contains(s))
+        {
+            return Err(Invalid(
+                "operator envelope slopes must be finite in [-100, 100] percent",
+            ));
+        }
+        Ok(Self {
+            end: end as f32,
+            attack_slope: attack_slope as f32,
+            decay_slope: decay_slope as f32,
+            release_slope: release_slope as f32,
+        })
+    }
+
+    #[inline]
+    pub fn is_neutral(self) -> bool {
+        self.end == 0.0
+            && self.attack_slope == 0.0
+            && self.decay_slope == 0.0
+            && self.release_slope == 0.0
+    }
+}
+
 /// Validated authoring values. Each oscillator owns an independent instance.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OperatorEnvelope {
@@ -121,6 +189,21 @@ impl PreparedOperatorEnvelope {
         self
     }
 
+    /// Rescale attack and decay frame counts for synced loop cycles while
+    /// preserving levels and release timing.
+    pub(crate) fn with_ad_frames(mut self, attack: u64, decay: u64) -> Self {
+        let rate = -RELATIVE_CUTOFF.ln();
+        self.attack = attack;
+        self.decay = decay;
+        self.attack_inverse = if attack == 0 {
+            0.0
+        } else {
+            1.0 / attack as f64
+        };
+        self.decay_rate = if decay == 0 { 0.0 } else { rate / decay as f64 };
+        self
+    }
+
     /// Release a separately latched, bounded level using the prepared curve rate.
     pub(crate) fn released_level(&self, initial: f64, elapsed: u64) -> f64 {
         if elapsed >= self.release {
@@ -129,6 +212,28 @@ impl PreparedOperatorEnvelope {
             initial * (-(elapsed as f64) * self.release_rate).exp()
         }
     }
+
+    /// Release a separately latched level with optional release slope and `end` target.
+    pub(crate) fn released_level_shaped(
+        &self,
+        initial: f64,
+        elapsed: u64,
+        shape: OperatorEnvelopeShape,
+    ) -> f64 {
+        if shape.is_neutral() {
+            return self.released_level(initial, elapsed);
+        }
+        let end = f64::from(shape.end);
+        if elapsed >= self.release {
+            end
+        } else if shape.release_slope == 0.0 {
+            end + (initial - end) * (-(elapsed as f64) * self.release_rate).exp()
+        } else {
+            let t = (elapsed as f64 / self.release as f64).clamp(0.0, 1.0);
+            initial + (end - initial) * curve_shape(t, f64::from(shape.release_slope))
+        }
+    }
+
     pub const fn attack_frames(&self) -> u64 {
         self.attack
     }
@@ -148,6 +253,32 @@ impl PreparedOperatorEnvelope {
         if decay_age < self.decay && self.peak != self.sustain {
             return self.sustain
                 + (self.peak - self.sustain) * (-(decay_age as f64) * self.decay_rate).exp();
+        }
+        self.sustain
+    }
+
+    fn held_level_shaped(&self, age: u64, shape: OperatorEnvelopeShape) -> f64 {
+        if shape.attack_slope == 0.0 && shape.decay_slope == 0.0 {
+            return self.held_level(age);
+        }
+        if age < self.attack {
+            if shape.attack_slope == 0.0 {
+                return self.initial
+                    + (self.peak - self.initial) * age as f64 * self.attack_inverse;
+            }
+            let t = (age as f64 * self.attack_inverse).clamp(0.0, 1.0);
+            return self.initial
+                + (self.peak - self.initial) * curve_shape(t, f64::from(shape.attack_slope));
+        }
+        let decay_age = age - self.attack;
+        if decay_age < self.decay && self.peak != self.sustain {
+            if shape.decay_slope == 0.0 {
+                return self.sustain
+                    + (self.peak - self.sustain) * (-(decay_age as f64) * self.decay_rate).exp();
+            }
+            let t = (decay_age as f64 / self.decay as f64).clamp(0.0, 1.0);
+            return self.peak
+                + (self.sustain - self.peak) * curve_shape(t, f64::from(shape.decay_slope));
         }
         self.sustain
     }
@@ -187,6 +318,26 @@ impl PreparedOperatorEnvelope {
             return 0.0;
         }
         self.held_level(gate_frames) * (-(released as f64) * self.release_rate).exp()
+    }
+
+    /// Evaluate the envelope with optional segment slopes and release `end` target.
+    /// Neutral shapes delegate directly to `level` for bit-identical legacy PCM.
+    #[inline]
+    pub fn level_shaped(
+        &self,
+        age_frames: u64,
+        gate_frames: u64,
+        shape: OperatorEnvelopeShape,
+    ) -> f64 {
+        if shape.is_neutral() {
+            return self.level(age_frames, gate_frames);
+        }
+        if age_frames < gate_frames {
+            return self.held_level_shaped(age_frames, shape);
+        }
+        let released = age_frames - gate_frames;
+        let start = self.held_level_shaped(gate_frames, shape);
+        self.released_level_shaped(start, released, shape)
     }
 }
 
@@ -467,5 +618,43 @@ mod tests {
                 assert!((actual - oracle(levels[i], times[i], age, 7)).abs() <= 1e-12);
             }
         }
+    }
+
+    #[test]
+    fn sloped_segments_end_level_and_rescaled_ad_frames_match_exact_oracle() {
+        let base = OperatorEnvelope::new(0.1, 1.0, 0.4, 0.01, 0.02, 0.02).unwrap();
+        let p_base = base.prepare(8_000).unwrap();
+        let neutral = OperatorEnvelopeShape::new(0.0, 0.0, 0.0, 0.0).unwrap();
+        for age in 0..500 {
+            assert_eq!(
+                p_base.level(age, 120).to_bits(),
+                p_base.level_shaped(age, 120, neutral).to_bits()
+            );
+        }
+
+        let shaped = OperatorEnvelopeShape::new(0.6, 80.0, -70.0, 50.0).unwrap();
+        // Convex attack bows above linear midpoint; concave decay stays closer to peak at midpoint.
+        assert!(p_base.level_shaped(40, u64::MAX, shaped) > 0.55);
+        assert!(p_base.level_shaped(160, u64::MAX, shaped) > 0.70);
+        // Release starts at latched level and reaches exact `end` level at release boundary.
+        let gate = 300;
+        assert!((p_base.level_shaped(gate, gate, shaped) - 0.4).abs() < 1e-12);
+        assert!((p_base.level_shaped(gate + 160, gate, shaped) - 0.6).abs() < 1e-6);
+        assert!((p_base.level_shaped(gate + 500, gate, shaped) - 0.6).abs() < 1e-6);
+
+        // Rescaled A/D frames for note-pitch sync preserve slopes and exact cycle bounds.
+        let rescaled = p_base.with_ad_frames(10, 20);
+        assert_eq!(rescaled.attack_frames(), 10);
+        assert_eq!(rescaled.decay_frames(), 20);
+        assert!((rescaled.level_shaped(0, u64::MAX, shaped) - 0.1).abs() < 1e-12);
+        assert!((rescaled.level_shaped(10, u64::MAX, shaped) - 1.0).abs() < 1e-12);
+        assert!((rescaled.level_shaped(30, u64::MAX, shaped) - 0.4).abs() < 1e-12);
+
+        // Invalid shape domains are refused.
+        assert!(OperatorEnvelopeShape::new(-0.01, 0.0, 0.0, 0.0).is_err());
+        assert!(OperatorEnvelopeShape::new(1.01, 0.0, 0.0, 0.0).is_err());
+        assert!(OperatorEnvelopeShape::new(0.0, 100.1, 0.0, 0.0).is_err());
+        assert!(OperatorEnvelopeShape::new(0.0, 0.0, -100.1, 0.0).is_err());
+        assert!(OperatorEnvelopeShape::new(0.0, 0.0, 0.0, f64::NAN).is_err());
     }
 }

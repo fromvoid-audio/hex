@@ -20,7 +20,7 @@ pub(super) const BEATS: [f64; 11] = [
 const BEAT_LABELS: [&str; 11] = [
     "1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "1", "2", "4", "8", "16",
 ];
-const LOOPS: [&str; 5] = ["none", "loop", "beat", "sync", "trigger"];
+const LOOPS: [&str; 6] = ["none", "loop", "beat", "sync", "trigger", "note-pitch"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Settings {
     pub words: [[u32; 8]; 4],
@@ -86,7 +86,7 @@ pub(super) const fn descriptors() -> [ParameterDescriptor; COUNT] {
 impl Settings {
     pub fn validate(&self) -> Result<(), DeviceContractError> {
         for row in self.words {
-            if row[0] > 1 || row[2] > 1 || row[5] > 4 || row[7] >= BEATS.len() as u32 {
+            if row[0] > 1 || row[2] > 1 || row[5] > 5 || row[7] >= BEATS.len() as u32 {
                 return Err(DeviceContractError::InvalidParameterValue);
             }
             for field in [1, 3, 4, 6] {
@@ -185,6 +185,10 @@ impl Settings {
         });
         let [a, b, c, d] = envelopes;
         Ok([a?, b?, c?, d?])
+    }
+
+    pub fn has_note_pitch_loop(self) -> bool {
+        self.words.iter().any(|row| row[5] == 5)
     }
     pub fn standalone_supported(self) -> bool {
         self.words.iter().all(|row| row[0] == 1 && row[5] == 0)

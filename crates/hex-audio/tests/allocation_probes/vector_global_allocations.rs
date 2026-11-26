@@ -68,6 +68,12 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
         (687, ParameterValue::Choice(3)),    // Shaper type (sine)
         (688, ParameterValue::Float(55.0)),  // Shaper drive (55%)
         (689, ParameterValue::Float(75.0)),  // Shaper dry/wet (75%)
+        (362, ParameterValue::Choice(5)),    // Op1 envelope loop = note-pitch
+        (691, ParameterValue::Float(45.0)),  // Op1 attack slope (+45%)
+        (692, ParameterValue::Float(-35.0)), // Op1 decay slope (-35%)
+        (693, ParameterValue::Float(25.0)),  // Op1 release slope (+25%)
+        (694, ParameterValue::Float(0.15)),  // Op1 end level (0.15)
+        (695, ParameterValue::Float(2.0)),   // Op1 loop note ratio (2x)
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,
