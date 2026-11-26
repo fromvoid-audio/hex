@@ -691,8 +691,15 @@ fn workspace_adb3_returns_gain_point_drag_keeps_tab_until_release_or_escape(
             .center();
         visual.simulate_click(show, Modifiers::default());
         visual.run_until_parked();
-        let plot = visual.debug_bounds("gain-lane-plot").unwrap();
-        let start = point(plot.origin.x + px(0.5), plot.center().y);
+        let marker = Box::leak(
+            format!(
+                "gain-point-{}-{}",
+                track.value(),
+                hex_project::BeatTime::ONE.raw()
+            )
+            .into_boxed_str(),
+        );
+        let start = visual.debug_bounds(marker).unwrap().center();
         let end = start - point(px(0.0), px(10.0));
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
