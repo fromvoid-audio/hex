@@ -8,7 +8,7 @@
 //! Seventeen controls consume the shared borrowed final-value stream; Lookahead is
 //! structural because it changes declared algorithmic latency.
 mod automation;
-mod sidechain_eq;
+pub(crate) mod sidechain_eq;
 use sidechain_eq::{SidechainEq, SidechainEqMode};
 
 use hex_lattice::{

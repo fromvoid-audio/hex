@@ -1,26 +1,37 @@
-//! Original zero-lookahead, linked-peak hysteresis gate.
+//! Stereo-linked hysteresis gate with Ableton Live 12 parity controls.
 //!
-//! Shared parameter delivery stages all six controls together. A return above
-//! threshold refuses the frame before coefficients, detector history or PCM
-//! change. Time-control changes retain history and restart only the affected
-//! active attack/release ramp; authored values use the existing gate envelope.
+//! Supports Threshold/Return hysteresis, Floor attenuation, Attack/Hold/Release
+//! envelopes, Flip (inverted ducking) mode, 0/1.5/10 ms Lookahead with declared
+//! algorithmic latency, external stereo sidechain routing, Sidechain Gain/Mix/EQ
+//! filtering, and live `DynamicsMeter` reporting.
+//!
+//! Twelve controls consume the shared borrowed final-value stream; Lookahead is
+//! structural because it changes declared algorithmic latency.
 mod automation;
+use crate::compressor::sidechain_eq::{SidechainEq, SidechainEqMode};
 
 use hex_lattice::{
-    NativeDeviceDefinition, NativeProcessorRuntime, OutputTail, PreparedNativeProcessor,
-    StereoFrame, StereoMatrix,
+    DynamicsMeter, NativeDeviceDefinition, NativeInstrumentClock, NativeParameterAutomation,
+    NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, StereoAuxiliaryBlock, StereoFrame,
+    StereoMatrix,
 };
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+    AuxiliaryInput, DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
     ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
 };
 use std::any::Any;
 
 pub const GATE_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.gate");
-pub const GATE_STATE_VERSION: u32 = 1;
-const STATE_BYTES: usize = 24;
+/// Current state version. Supported saved versions (Pulse #3280):
+/// - v1 (24 bytes): threshold, return, floor, attack, hold, release.
+/// - v2 (26 Nov 2026, 52 bytes): adds flip, lookahead, sidechain gain/mix, and
+///   sidechain EQ mode/freq/Q; v1 migrates losslessly to bit-exact v1 behavior.
+pub const GATE_STATE_VERSION: u32 = 2;
+const STATE_BYTES: usize = 52;
+const PARAM_COUNT: usize = 13;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
+const MAX_LOOKAHEAD_FRAMES: usize = 1_920; // 10 ms at 192 kHz
 /// Shortest internal hold, whatever the hold control says (Pulse #4107).
 ///
 /// The detector is the instantaneous linked peak, so a low-frequency tone
@@ -42,6 +53,13 @@ pub mod parameter {
     pub const ATTACK: ParameterId = ParameterId::from_static(4);
     pub const HOLD: ParameterId = ParameterId::from_static(5);
     pub const RELEASE: ParameterId = ParameterId::from_static(6);
+    pub const FLIP: ParameterId = ParameterId::from_static(7);
+    pub const LOOKAHEAD: ParameterId = ParameterId::from_static(8);
+    pub const SIDECHAIN_GAIN: ParameterId = ParameterId::from_static(9);
+    pub const SIDECHAIN_MIX: ParameterId = ParameterId::from_static(10);
+    pub const SIDECHAIN_EQ_MODE: ParameterId = ParameterId::from_static(11);
+    pub const SIDECHAIN_EQ_FREQ: ParameterId = ParameterId::from_static(12);
+    pub const SIDECHAIN_EQ_Q: ParameterId = ParameterId::from_static(13);
 }
 
 const DESCRIPTORS: &[ParameterDescriptor] = &[
@@ -111,7 +129,103 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
         default: ParameterValue::Float(100.0),
         presentation: ParameterPresentation::Logarithmic,
     },
+    ParameterDescriptor {
+        id: parameter::FLIP,
+        label: "flip",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::LOOKAHEAD,
+        label: "lookahead",
+        kind: ParameterKind::Choice {
+            labels: &["0 ms", "1.5 ms", "10 ms"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_GAIN,
+        label: "sc gain",
+        kind: ParameterKind::Float {
+            min: -24.0,
+            max: 24.0,
+            unit: Some("db"),
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_MIX,
+        label: "sc mix",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_EQ_MODE,
+        label: "sc eq",
+        kind: ParameterKind::Choice {
+            labels: &["off", "hp", "bp", "lp", "notch", "bell"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_EQ_FREQ,
+        label: "sc freq",
+        kind: ParameterKind::Float {
+            min: 30.0,
+            max: 15_000.0,
+            unit: Some("hz"),
+        },
+        default: ParameterValue::Float(100.0),
+        presentation: ParameterPresentation::Logarithmic,
+    },
+    ParameterDescriptor {
+        id: parameter::SIDECHAIN_EQ_Q,
+        label: "sc q",
+        kind: ParameterKind::Float {
+            min: 0.1,
+            max: 10.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.707),
+        presentation: ParameterPresentation::Logarithmic,
+    },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum GateLookahead {
+    Off = 0,
+    OnePointFiveMs = 1,
+    TenMs = 2,
+}
+impl GateLookahead {
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        match value {
+            0 => Ok(Self::Off),
+            1 => Ok(Self::OnePointFiveMs),
+            2 => Ok(Self::TenMs),
+            _ => Err(DeviceContractError::InvalidParameterValue),
+        }
+    }
+    fn frames(self, sample_rate: u32) -> u32 {
+        let ms = match self {
+            Self::Off => return 0,
+            Self::OnePointFiveMs => 1.5,
+            Self::TenMs => 10.0,
+        };
+        let frames = (ms * f64::from(sample_rate) / 1_000.0).ceil() as u32;
+        frames.min(MAX_LOOKAHEAD_FRAMES as u32)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct GateSettings {
@@ -121,6 +235,13 @@ struct GateSettings {
     attack_ms: f32,
     hold_ms: f32,
     release_ms: f32,
+    flip: bool,
+    lookahead: GateLookahead,
+    sidechain_gain_db: f32,
+    sidechain_mix: f32,
+    sidechain_eq_mode: SidechainEqMode,
+    sidechain_eq_freq_hz: f32,
+    sidechain_eq_q: f32,
 }
 
 const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
@@ -128,7 +249,7 @@ const MODULATED_SCALAR: hex_lattice_contract::ParameterSemantics =
         modulation: hex_lattice_contract::ParameterModulation::SampleRate,
         ..crate::parameter_binding::SCALAR_ENVELOPE
     };
-const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
+const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; PARAM_COUNT] = [
     crate::parameter_binding::Binding::float(
         DESCRIPTORS[0],
         MODULATED_SCALAR,
@@ -171,6 +292,74 @@ const BINDINGS: [crate::parameter_binding::Binding<GateSettings>; 6] = [
         |c| c.release_ms,
         |c, v| c.release_ms = v,
     ),
+    crate::parameter_binding::Binding::boolean(
+        DESCRIPTORS[6],
+        hex_lattice_contract::ParameterSemantics {
+            stepping: hex_lattice_contract::ParameterStepping::Boolean,
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.flip,
+        |c, v| c.flip = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[7],
+        hex_lattice_contract::ParameterSemantics {
+            automation: hex_lattice_contract::ParameterAutomation::Unsupported,
+            modulation: hex_lattice_contract::ParameterModulation::Unsupported,
+            change_impact: hex_lattice_contract::ParameterChangeImpact::Structural,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.lookahead as u32,
+        |c, v| {
+            c.lookahead = GateLookahead::from_choice(v)?;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[8],
+        MODULATED_SCALAR,
+        |c| c.sidechain_gain_db,
+        |c, v| c.sidechain_gain_db = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[9],
+        MODULATED_SCALAR,
+        |c| c.sidechain_mix,
+        |c, v| c.sidechain_mix = v,
+    ),
+    crate::parameter_binding::Binding::choice(
+        DESCRIPTORS[10],
+        hex_lattice_contract::ParameterSemantics {
+            modulation: hex_lattice_contract::ParameterModulation::SampleRate,
+            smoothing: hex_lattice_contract::ParameterSmoothing::DeviceManaged,
+            ..crate::parameter_binding::CHOICE_ENVELOPE
+        },
+        |c| c.sidechain_eq_mode as u32,
+        |c, v| {
+            c.sidechain_eq_mode = SidechainEqMode::from_choice(v)?;
+            Ok(())
+        },
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[11],
+        hex_lattice_contract::ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..MODULATED_SCALAR
+        },
+        |c| c.sidechain_eq_freq_hz,
+        |c, v| c.sidechain_eq_freq_hz = v,
+    ),
+    crate::parameter_binding::Binding::float(
+        DESCRIPTORS[12],
+        hex_lattice_contract::ParameterSemantics {
+            normalization: hex_lattice_contract::ParameterNormalization::PositiveLogarithmic,
+            ..MODULATED_SCALAR
+        },
+        |c| c.sidechain_eq_q,
+        |c, v| c.sidechain_eq_q = v,
+    ),
 ];
 
 impl Default for GateSettings {
@@ -182,7 +371,22 @@ impl Default for GateSettings {
             attack_ms: 1.0,
             hold_ms: 50.0,
             release_ms: 100.0,
+            flip: false,
+            lookahead: GateLookahead::Off,
+            sidechain_gain_db: 0.0,
+            sidechain_mix: 1.0,
+            sidechain_eq_mode: SidechainEqMode::Off,
+            sidechain_eq_freq_hz: 100.0,
+            sidechain_eq_q: 0.707,
         }
+    }
+}
+
+fn decode_bool_u32(value: u32) -> Result<bool, DeviceContractError> {
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(DeviceContractError::InvalidParameterValue),
     }
 }
 
@@ -190,14 +394,16 @@ fn decode(state: &NativeDeviceState) -> Result<GateSettings, DeviceContractError
     if state.type_id() != GATE_TYPE_ID {
         return Err(DeviceContractError::WrongDeviceType);
     }
-    if state.state_version() != GATE_STATE_VERSION {
-        return Err(DeviceContractError::UnsupportedStateVersion);
-    }
+    let expected = match state.state_version() {
+        1 => 24,
+        GATE_STATE_VERSION => STATE_BYTES,
+        _ => return Err(DeviceContractError::UnsupportedStateVersion),
+    };
     let bytes = state.payload();
-    if bytes.len() != STATE_BYTES {
+    if bytes.len() != expected {
         return Err(DeviceContractError::MalformedState);
     }
-    let read = |offset| {
+    let read_f32 = |offset| {
         f32::from_le_bytes([
             bytes[offset],
             bytes[offset + 1],
@@ -205,13 +411,57 @@ fn decode(state: &NativeDeviceState) -> Result<GateSettings, DeviceContractError
             bytes[offset + 3],
         ])
     };
+    let read_u32 = |offset| {
+        u32::from_le_bytes([
+            bytes[offset],
+            bytes[offset + 1],
+            bytes[offset + 2],
+            bytes[offset + 3],
+        ])
+    };
+    let defaults = GateSettings::default();
     let settings = GateSettings {
-        threshold_db: read(0),
-        return_db: read(4),
-        floor_db: read(8),
-        attack_ms: read(12),
-        hold_ms: read(16),
-        release_ms: read(20),
+        threshold_db: read_f32(0),
+        return_db: read_f32(4),
+        floor_db: read_f32(8),
+        attack_ms: read_f32(12),
+        hold_ms: read_f32(16),
+        release_ms: read_f32(20),
+        flip: if expected == STATE_BYTES {
+            decode_bool_u32(read_u32(24))?
+        } else {
+            defaults.flip
+        },
+        lookahead: if expected == STATE_BYTES {
+            GateLookahead::from_choice(read_u32(28))?
+        } else {
+            defaults.lookahead
+        },
+        sidechain_gain_db: if expected == STATE_BYTES {
+            read_f32(32)
+        } else {
+            defaults.sidechain_gain_db
+        },
+        sidechain_mix: if expected == STATE_BYTES {
+            read_f32(36)
+        } else {
+            defaults.sidechain_mix
+        },
+        sidechain_eq_mode: if expected == STATE_BYTES {
+            SidechainEqMode::from_choice(read_u32(40))?
+        } else {
+            defaults.sidechain_eq_mode
+        },
+        sidechain_eq_freq_hz: if expected == STATE_BYTES {
+            read_f32(44)
+        } else {
+            defaults.sidechain_eq_freq_hz
+        },
+        sidechain_eq_q: if expected == STATE_BYTES {
+            read_f32(48)
+        } else {
+            defaults.sidechain_eq_q
+        },
     };
     validate(settings)?;
     Ok(settings)
@@ -225,6 +475,10 @@ fn validate(settings: GateSettings) -> Result<(), DeviceContractError> {
         (parameter::ATTACK, settings.attack_ms),
         (parameter::HOLD, settings.hold_ms),
         (parameter::RELEASE, settings.release_ms),
+        (parameter::SIDECHAIN_GAIN, settings.sidechain_gain_db),
+        (parameter::SIDECHAIN_MIX, settings.sidechain_mix),
+        (parameter::SIDECHAIN_EQ_FREQ, settings.sidechain_eq_freq_hz),
+        (parameter::SIDECHAIN_EQ_Q, settings.sidechain_eq_q),
     ] {
         let descriptor = DESCRIPTORS
             .iter()
@@ -251,6 +505,13 @@ fn encode(settings: GateSettings) -> Result<NativeDeviceState, DeviceContractErr
     ] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
+    payload.extend_from_slice(&u32::from(settings.flip).to_le_bytes());
+    payload.extend_from_slice(&(settings.lookahead as u32).to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_gain_db.to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_mix.to_le_bytes());
+    payload.extend_from_slice(&(settings.sidechain_eq_mode as u32).to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_eq_freq_hz.to_le_bytes());
+    payload.extend_from_slice(&settings.sidechain_eq_q.to_le_bytes());
     NativeDeviceState::new(GATE_TYPE_ID, GATE_STATE_VERSION, payload)
 }
 
@@ -279,6 +540,9 @@ impl NativeDeviceMetadata for GateDefinition {
     }
     fn state_version(&self) -> u32 {
         GATE_STATE_VERSION
+    }
+    fn auxiliary_input(&self) -> AuxiliaryInput {
+        AuxiliaryInput::Stereo
     }
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         DESCRIPTORS
@@ -398,7 +662,7 @@ fn checked_frames(milliseconds: f32, sample_rate: u32) -> Result<u32, DeviceCont
 /// Closed Gate factory with no indirect storage.
 #[derive(Clone, Copy)]
 pub struct PreparedGate {
-    admitted: [bool; 6],
+    admitted: [bool; PARAM_COUNT],
     settings: GateSettings,
     sample_rate: u32,
     threshold: f64,
@@ -407,6 +671,8 @@ pub struct PreparedGate {
     attack_frames: u32,
     hold_frames: u32,
     release_frames: u32,
+    sidechain_gain_linear: f64,
+    lookahead_frames: u32,
 }
 
 impl PreparedNativeProcessor for PreparedGate {
@@ -454,16 +720,23 @@ impl PreparedNativeProcessor for PreparedGate {
         Box::new(crate::inline_owned::InlinePreparedProcessor::create_inline_runtime(self))
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
-        Some(0)
+        Some(self.lookahead_frames)
     }
     fn output_tail(&self) -> OutputTail {
-        OutputTail::Finite { max_tail_frames: 0 }
+        OutputTail::Finite {
+            max_tail_frames: u64::from(self.lookahead_frames),
+        }
     }
 }
 
 impl crate::inline_owned::InlinePreparedProcessor for PreparedGate {
     type Runtime = GateRuntime;
     fn create_inline_runtime(&self) -> Self::Runtime {
+        let closed_gain = if self.settings.flip {
+            1.0
+        } else {
+            self.floor_gain
+        };
         let runtime = GateRuntime {
             base: *self,
             controls: crate::parameter_binding::Controls::new(self.settings, self.admitted),
@@ -475,9 +748,20 @@ impl crate::inline_owned::InlinePreparedProcessor for PreparedGate {
             attack_frames: self.attack_frames,
             hold_frames: self.hold_frames,
             release_frames: self.release_frames,
+            sidechain_gain_linear: self.sidechain_gain_linear,
+            lookahead_frames: self.lookahead_frames,
             open: false,
             hold_elapsed: 0,
-            gain_ramp: hex_dsp::LinearRamp::settled(self.floor_gain),
+            gain_ramp: hex_dsp::LinearRamp::settled(closed_gain),
+            meter: DynamicsMeter::default(),
+            sidechain_eq: SidechainEq::new(
+                self.settings.sidechain_eq_mode,
+                self.settings.sidechain_eq_freq_hz,
+                self.settings.sidechain_eq_q,
+                self.sample_rate,
+            ),
+            lookahead_pos: 0,
+            lookahead_buf: [[0.0; 2]; MAX_LOOKAHEAD_FRAMES],
         };
         runtime.check_inline_ownership();
         runtime
@@ -495,7 +779,7 @@ struct GateHistory {
 #[derive(Clone, Copy)]
 pub struct GateRuntime {
     base: PreparedGate,
-    controls: crate::parameter_binding::Controls<GateSettings, 6>,
+    controls: crate::parameter_binding::Controls<GateSettings, PARAM_COUNT>,
     settings: GateSettings,
     sample_rate: u32,
     threshold: f64,
@@ -504,9 +788,15 @@ pub struct GateRuntime {
     attack_frames: u32,
     hold_frames: u32,
     release_frames: u32,
+    sidechain_gain_linear: f64,
+    lookahead_frames: u32,
     open: bool,
     hold_elapsed: u32,
     gain_ramp: hex_dsp::LinearRamp,
+    meter: DynamicsMeter,
+    sidechain_eq: SidechainEq,
+    lookahead_pos: usize,
+    lookahead_buf: [StereoFrame; MAX_LOOKAHEAD_FRAMES],
 }
 
 impl GateRuntime {
@@ -524,17 +814,29 @@ impl GateRuntime {
         self.gain_ramp = history.gain_ramp;
     }
 
+    fn target_gain(&self, open: bool) -> f64 {
+        if open != self.settings.flip {
+            1.0
+        } else {
+            self.floor_gain
+        }
+    }
+
     fn reset_history(&mut self) {
         self.open = false;
         self.hold_elapsed = 0;
-        self.gain_ramp.reset(self.floor_gain);
+        self.gain_ramp.reset(self.target_gain(false));
+        self.meter = DynamicsMeter::default();
+        self.sidechain_eq.reset();
+        self.lookahead_pos = 0;
+        self.lookahead_buf[..self.lookahead_frames as usize].fill([0.0; 2]);
     }
 
     fn start_ramp(&mut self, target: f64, frames: u32) {
         self.gain_ramp.retarget(target, frames);
     }
 
-    fn process_frame(&mut self, frame: &mut StereoFrame) {
+    fn process_frame(&mut self, frame: &mut StereoFrame, key: StereoFrame, bypassed: bool) {
         let left = if frame[0].is_finite() {
             f64::from(frame[0])
         } else {
@@ -545,12 +847,39 @@ impl GateRuntime {
         } else {
             0.0
         };
-        let peak = left.abs().max(right.abs());
+        let [raw_key_left, raw_key_right] = key.map(|sample| {
+            if sample.is_finite() {
+                f64::from(sample)
+            } else {
+                0.0
+            }
+        });
+        let sc_mix = f64::from(self.settings.sidechain_mix);
+        let [mut key_left, mut key_right] = if sc_mix == 1.0 {
+            [raw_key_left, raw_key_right]
+        } else if sc_mix == 0.0 {
+            [left, right]
+        } else {
+            [
+                left * (1.0 - sc_mix) + raw_key_left * sc_mix,
+                right * (1.0 - sc_mix) + raw_key_right * sc_mix,
+            ]
+        };
+        if self.sidechain_gain_linear != 1.0 {
+            key_left *= self.sidechain_gain_linear;
+            key_right *= self.sidechain_gain_linear;
+        }
+        if self.settings.sidechain_eq_mode != SidechainEqMode::Off {
+            let filtered = self.sidechain_eq.process([key_left, key_right]);
+            key_left = filtered[0];
+            key_right = filtered[1];
+        }
+        let peak = key_left.abs().max(key_right.abs());
         if peak >= self.threshold {
             if !self.open {
                 self.open = true;
                 self.hold_elapsed = 0;
-                self.start_ramp(1.0, self.attack_frames);
+                self.start_ramp(self.target_gain(true), self.attack_frames);
             } else {
                 self.hold_elapsed = 0;
             }
@@ -562,15 +891,42 @@ impl GateRuntime {
                 } else {
                     self.open = false;
                     self.hold_elapsed = 0;
-                    self.start_ramp(self.floor_gain, self.release_frames);
+                    self.start_ramp(self.target_gain(false), self.release_frames);
                 }
             } else {
                 self.hold_elapsed = 0;
             }
         }
         let gain = self.gain_ramp.advance();
-        frame[0] = (left * gain) as f32;
-        frame[1] = (right * gain) as f32;
+        if !bypassed {
+            let reduction = hex_dsp::LinearAmplitude::new(gain.max(1e-30))
+                .ok()
+                .and_then(hex_dsp::LinearAmplitude::decibels)
+                .map_or(80.0, |db| (-db.value()).max(0.0) as f32);
+            let peak_reduction = self.meter.reduction_db[0].max(reduction);
+            self.meter.reduction_db = [peak_reduction; 2];
+            self.meter.post_input_peak = self.meter.post_input_peak.max(peak as f32);
+        }
+        let (audio_left, audio_right) = if self.lookahead_frames > 0 {
+            let delayed = self.lookahead_buf[self.lookahead_pos];
+            self.lookahead_buf[self.lookahead_pos] = [left as f32, right as f32];
+            self.lookahead_pos += 1;
+            if self.lookahead_pos >= self.lookahead_frames as usize {
+                self.lookahead_pos = 0;
+            }
+            (f64::from(delayed[0]), f64::from(delayed[1]))
+        } else {
+            (left, right)
+        };
+        if bypassed {
+            if self.lookahead_frames > 0 {
+                frame[0] = audio_left as f32;
+                frame[1] = audio_right as f32;
+            }
+            return;
+        }
+        frame[0] = (audio_left * gain) as f32;
+        frame[1] = (audio_right * gain) as f32;
     }
 }
 
@@ -582,6 +938,37 @@ impl NativeProcessorRuntime for GateRuntime {
     fn supports_detached_source_rejoin(&self) -> bool {
         true
     }
+    fn process_block_with_auxiliary(
+        &mut self,
+        block: StereoAuxiliaryBlock<'_>,
+        _clock: Option<&dyn NativeInstrumentClock>,
+        automation: Option<&dyn NativeParameterAutomation>,
+        bypassed: bool,
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), DeviceContractError> {
+        let mut resolved = automation
+            .map(|values| self.controls.resolve(&BINDINGS, values))
+            .transpose()?;
+        let modulates_threshold =
+            automation.is_some_and(|v| v.has_sample_rate_modulation(parameter::THRESHOLD));
+        let modulates_return =
+            automation.is_some_and(|v| v.has_sample_rate_modulation(parameter::RETURN));
+        let (main, key) = block.into_parts();
+        for (offset, (frame, key)) in main.iter_mut().zip(key).enumerate() {
+            if let (Some(values), Some(resolved)) = (automation, resolved.as_mut()) {
+                self.apply_values(
+                    values,
+                    resolved,
+                    offset,
+                    modulates_threshold,
+                    modulates_return,
+                )?;
+            }
+            let key = key.map(|sample| if sample.is_finite() { sample } else { 0.0 });
+            self.process_frame(frame, key, bypassed);
+        }
+        Ok(())
+    }
 
     fn process_block(
         &mut self,
@@ -589,7 +976,7 @@ impl NativeProcessorRuntime for GateRuntime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            self.process_frame(frame);
+            self.process_frame(frame, *frame, false);
         }
     }
     fn process_bypassed_block(
@@ -598,9 +985,7 @@ impl NativeProcessorRuntime for GateRuntime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) {
         for frame in frames {
-            let original = *frame;
-            self.process_frame(frame);
-            *frame = original;
+            self.process_frame(frame, *frame, true);
         }
     }
     fn reset(&mut self) {
@@ -612,26 +997,42 @@ impl NativeProcessorRuntime for GateRuntime {
         self.attack_frames = self.base.attack_frames;
         self.hold_frames = self.base.hold_frames;
         self.release_frames = self.base.release_frames;
+        self.sidechain_gain_linear = self.base.sidechain_gain_linear;
+        self.sidechain_eq = SidechainEq::new(
+            self.settings.sidechain_eq_mode,
+            self.settings.sidechain_eq_freq_hz,
+            self.settings.sidechain_eq_q,
+            self.sample_rate,
+        );
         self.reset_history();
     }
     fn is_quiescent(&self) -> bool {
-        true
+        self.lookahead_frames == 0
+            || self.lookahead_buf[..self.lookahead_frames as usize]
+                .iter()
+                .all(|frame| frame[0] == 0.0 && frame[1] == 0.0)
+    }
+    fn take_dynamics_meter(&mut self) -> Option<DynamicsMeter> {
+        Some(std::mem::take(&mut self.meter))
     }
     fn can_copy_history_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+            .is_some_and(|previous| {
+                self.sample_rate == previous.sample_rate
+                    && self.lookahead_frames == previous.lookahead_frames
+            })
     }
     fn copy_history_from(&mut self, previous: &dyn NativeProcessorRuntime) {
-        let Some(previous) = previous
-            .as_any()
-            .downcast_ref::<Self>()
-            .filter(|previous| self.sample_rate == previous.sample_rate)
-        else {
+        let Some(previous) = previous.as_any().downcast_ref::<Self>().filter(|previous| {
+            self.sample_rate == previous.sample_rate
+                && self.lookahead_frames == previous.lookahead_frames
+        }) else {
             return;
         };
         self.set_history(previous.history());
+        self.meter = DynamicsMeter::default();
         if self.base.admitted.iter().any(|&v| v) && previous.base.admitted.iter().any(|&v| v) {
             self.controls.inherit(&previous.controls);
             self.settings = previous.settings;
@@ -641,8 +1042,23 @@ impl NativeProcessorRuntime for GateRuntime {
             self.attack_frames = previous.attack_frames;
             self.hold_frames = previous.hold_frames;
             self.release_frames = previous.release_frames;
+            self.sidechain_gain_linear = previous.sidechain_gain_linear;
+            self.sidechain_eq = previous.sidechain_eq;
         } else {
+            let mut eq = previous.sidechain_eq;
+            eq.update(
+                self.settings.sidechain_eq_mode,
+                self.settings.sidechain_eq_freq_hz,
+                self.settings.sidechain_eq_q,
+                self.sample_rate,
+            );
+            self.sidechain_eq = eq;
             self.retarget_envelope(previous.settings);
+        }
+        if self.lookahead_frames > 0 {
+            let len = self.lookahead_frames as usize;
+            self.lookahead_buf[..len].copy_from_slice(&previous.lookahead_buf[..len]);
+            self.lookahead_pos = previous.lookahead_pos % len;
         }
     }
 
@@ -650,7 +1066,10 @@ impl NativeProcessorRuntime for GateRuntime {
         previous
             .as_any()
             .downcast_ref::<Self>()
-            .is_some_and(|previous| self.sample_rate == previous.sample_rate)
+            .is_some_and(|previous| {
+                self.sample_rate == previous.sample_rate
+                    && self.lookahead_frames == previous.lookahead_frames
+            })
     }
     fn as_any(&self) -> &dyn Any {
         self

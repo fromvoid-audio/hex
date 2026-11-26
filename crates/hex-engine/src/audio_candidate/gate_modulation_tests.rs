@@ -129,9 +129,15 @@ fn check_gate_routes(ids: &[ParameterId]) {
     assert!(!crate::project_device_modulation_target_supported(
         editor.project(),
         device,
-        ParameterId::from_static(7)
+        parameter::LOOKAHEAD
     ));
-    assert!(GateDefinition::prepare_owned(&state, RATE, &[ParameterId::from_static(7)]).is_err());
+    assert!(!crate::project_device_modulation_target_supported(
+        editor.project(),
+        device,
+        ParameterId::from_static(99)
+    ));
+    assert!(GateDefinition::prepare_owned(&state, RATE, &[parameter::LOOKAHEAD]).is_err());
+    assert!(GateDefinition::prepare_owned(&state, RATE, &[ParameterId::from_static(99)]).is_err());
     assert!(GateDefinition::prepare_owned(&state, RATE - 1, ids).is_err());
     let malformed =
         hex_lattice_contract::NativeDeviceState::new(GATE_TYPE_ID, state.state_version(), vec![0])
