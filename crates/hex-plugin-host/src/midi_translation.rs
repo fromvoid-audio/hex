@@ -167,7 +167,7 @@ impl PluginOutputEvent {
 /// is never applied twice and unsupported plugins never pretend arbitrary retuning.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PluginTuningCapability {
-    /// Plugin advertises `INoteExpressionController` `kTuningTypeID`.
+    /// Plugin advertises `kTuningTypeID` with a symmetric supported range in semitones.
     NoteExpressionTuning { semitone_range: u8 },
     /// Plugin manages its own MTS-ESP or internal microtuning client.
     PluginInternalMts,
@@ -186,6 +186,16 @@ pub enum TuningDispatchPolicy {
     UnsupportedDisclosed,
 }
 
+/// VST3 kTuningTypeID spans −120 to +120 semitones with neutral at 0.5.
+/// A narrower admitted range limits the displacement without changing its units.
+fn normalized_vst3_tuning(semitones: f64, range: u8) -> Result<f64, MidiTranslationError> {
+    if range == 0 || !semitones.is_finite() {
+        return Err(MidiTranslationError::InvalidValue);
+    }
+    let limit = f64::from(range.min(120));
+    Ok(0.5 + semitones.clamp(-limit, limit) / 240.0)
+}
+
 /// Resolve how project tuning interacts with a plugin's declared tuning capability.
 pub fn resolve_tuning_dispatch(
     capability: PluginTuningCapability,
@@ -196,11 +206,7 @@ pub fn resolve_tuning_dispatch(
     }
     match capability {
         PluginTuningCapability::NoteExpressionTuning { semitone_range } => {
-            if semitone_range == 0 {
-                return Err(MidiTranslationError::InvalidValue);
-            }
-            let half = f64::from(semitone_range);
-            let normalized = (0.5 + detune_semitones / (2.0 * half)).clamp(0.0, 1.0);
+            let normalized = normalized_vst3_tuning(detune_semitones, semitone_range)?;
             Ok(TuningDispatchPolicy::ApplyNoteExpression { normalized })
         }
         PluginTuningCapability::PluginInternalMts => Ok(TuningDispatchPolicy::DelegatedToPlugin),
@@ -449,9 +455,11 @@ impl NoteExpressionTracker {
 
     /// Translate an MPE member-channel pitch-bend, pressure, or CC74 (brightness/slide)
     /// message into a VST3 `NoteExpressionEvent` bound to the active note on `channel`.
+    /// For pitch bend, pass the member bend range captured for that note.
     pub fn translate_mpe_channel_event(
         &self,
         event: MidiControllerEvent,
+        member_bend_range_semitones: u8,
     ) -> Result<NoteExpressionEvent, MidiTranslationError> {
         if event.channel > 15 {
             return Err(MidiTranslationError::InvalidChannel);
@@ -467,9 +475,13 @@ impl NoteExpressionTracker {
                 if event.raw_value > 16_383 {
                     return Err(MidiTranslationError::InvalidValue);
                 }
+                let bend = i32::from(event.raw_value) - 8192;
+                let full_scale = if bend < 0 { 8192.0 } else { 8191.0 };
+                let semitones =
+                    f64::from(bend) * f64::from(member_bend_range_semitones) / full_scale;
                 (
                     NoteExpressionTypeId::Tuning,
-                    f64::from(event.raw_value) / 16_383.0,
+                    normalized_vst3_tuning(semitones, member_bend_range_semitones)?,
                 )
             }
             MidiControllerKind::Aftertouch => {
@@ -714,6 +726,63 @@ mod tests {
     }
 
     #[test]
+    fn mpe_tuning_recovers_the_member_bend_in_semitones() {
+        let mut tracker = NoteExpressionTracker::new();
+        tracker.note_on(2, 60, 42).unwrap();
+        for range in [2_u8, 48] {
+            for (raw_value, expected) in [
+                (0, -f64::from(range)),
+                (4096, -0.5 * f64::from(range)),
+                (8192, 0.0),
+                (16383, f64::from(range)),
+            ] {
+                let event = MidiControllerEvent {
+                    sample_offset: 19,
+                    channel: 2,
+                    controller: MidiControllerKind::PitchBend,
+                    raw_value,
+                };
+                let expression = tracker.translate_mpe_channel_event(event, range).unwrap();
+                // Steinberg ivstnoteexpression.h defines the inverse for kTuningTypeID.
+                let semitones = 240.0 * (expression.normalized - 0.5);
+                assert!(
+                    (semitones - expected).abs() < 1e-12,
+                    "{range} {raw_value}: {semitones}"
+                );
+                assert_eq!((expression.note_id, expression.sample_offset), (42, 19));
+            }
+        }
+    }
+
+    #[test]
+    fn project_tuning_clips_to_supported_semitones_and_preserves_sdk_limits() {
+        for (range, requested, expected) in
+            [(2, -12.0, -2.0), (48, 90.0, 48.0), (127, 121.0, 120.0)]
+        {
+            let capability = PluginTuningCapability::NoteExpressionTuning {
+                semitone_range: range,
+            };
+            let TuningDispatchPolicy::ApplyNoteExpression { normalized } =
+                resolve_tuning_dispatch(capability, requested).unwrap()
+            else {
+                panic!("expected tuning")
+            };
+            assert!((240.0 * (normalized - 0.5) - expected).abs() < 1e-12);
+        }
+        for (range, requested) in [(0, 1.0), (2, f64::NAN)] {
+            assert_eq!(
+                resolve_tuning_dispatch(
+                    PluginTuningCapability::NoteExpressionTuning {
+                        semitone_range: range
+                    },
+                    requested
+                ),
+                Err(MidiTranslationError::InvalidValue)
+            );
+        }
+    }
+
+    #[test]
     fn note_expression_and_mpe_follow_note_on_across_blocks_and_refuse_orphans() {
         let mut tracker = NoteExpressionTracker::new();
         // Expression before Note-On is refused.
@@ -731,24 +800,30 @@ mod tests {
         tracker.note_on(2, 60, 42).unwrap();
         // Block 2: MPE pitch bend and CC74 retain exact note_id 42 across blocks.
         let bend = tracker
-            .translate_mpe_channel_event(MidiControllerEvent {
-                sample_offset: 12,
-                channel: 2,
-                controller: MidiControllerKind::PitchBend,
-                raw_value: 12_288,
-            })
+            .translate_mpe_channel_event(
+                MidiControllerEvent {
+                    sample_offset: 12,
+                    channel: 2,
+                    controller: MidiControllerKind::PitchBend,
+                    raw_value: 12_288,
+                },
+                48,
+            )
             .unwrap();
         assert_eq!(bend.note_id, 42);
         assert_eq!(bend.sample_offset, 12);
         assert_eq!(bend.type_id, NoteExpressionTypeId::Tuning);
 
         let slide = tracker
-            .translate_mpe_channel_event(MidiControllerEvent {
-                sample_offset: 19,
-                channel: 2,
-                controller: MidiControllerKind::Cc(74),
-                raw_value: 127,
-            })
+            .translate_mpe_channel_event(
+                MidiControllerEvent {
+                    sample_offset: 19,
+                    channel: 2,
+                    controller: MidiControllerKind::Cc(74),
+                    raw_value: 127,
+                },
+                48,
+            )
             .unwrap();
         assert_eq!(slide.note_id, 42);
         assert_eq!(slide.type_id, NoteExpressionTypeId::Brightness);
@@ -818,7 +893,9 @@ mod tests {
                 1.0
             )
             .unwrap(),
-            TuningDispatchPolicy::ApplyNoteExpression { normalized: 0.75 }
+            TuningDispatchPolicy::ApplyNoteExpression {
+                normalized: 0.5 + 1.0 / 240.0
+            }
         );
         assert_eq!(
             resolve_tuning_dispatch(PluginTuningCapability::PluginInternalMts, 1.0).unwrap(),
