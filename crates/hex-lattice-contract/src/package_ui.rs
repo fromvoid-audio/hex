@@ -32,6 +32,8 @@ pub const MAX_PACKAGE_UI_ITEMS: usize = 64;
 pub const MAX_PACKAGE_UI_METERS: usize = 8;
 /// Maximum interactive curve/band nodes bound to one reusable curve plot (`#3000`).
 pub const MAX_PACKAGE_UI_CURVE_NODES: usize = 16;
+/// Maximum harmonic bar bindings in one reusable harmonic editor (`#3001`).
+pub const MAX_PACKAGE_UI_HARMONICS: usize = 16;
 /// Maximum control-computed frequency-response points in a presentation snapshot.
 pub const MAX_PACKAGE_RESPONSE_BINS: usize = 128;
 /// Maximum FFT spectrum bins in a read-only presentation snapshot.
@@ -58,6 +60,10 @@ pub const UI_CAP_CONDITIONAL_VISIBILITY: u64 = 1 << 5;
 pub const UI_CAP_CURVE_PLOT: u64 = 1 << 6;
 /// Reusable bounded read-only spectrum overlay capability (`#3000`).
 pub const UI_CAP_SPECTRUM_OVERLAY: u64 = 1 << 7;
+/// Reusable bounded ADSR envelope plot capability (`#3001`).
+pub const UI_CAP_ENVELOPE_PLOT: u64 = 1 << 8;
+/// Reusable bounded harmonic bar-graph editor capability (`#3001`).
+pub const UI_CAP_HARMONIC_EDITOR: u64 = 1 << 9;
 /// Bitmask of all UI capabilities supported by v1 generic native hosts.
 pub const UI_CAP_KNOWN_MASK_V1: u64 = UI_CAP_SCALAR
     | UI_CAP_TOGGLE
@@ -66,7 +72,9 @@ pub const UI_CAP_KNOWN_MASK_V1: u64 = UI_CAP_SCALAR
     | UI_CAP_SECTIONS
     | UI_CAP_CONDITIONAL_VISIBILITY
     | UI_CAP_CURVE_PLOT
-    | UI_CAP_SPECTRUM_OVERLAY;
+    | UI_CAP_SPECTRUM_OVERLAY
+    | UI_CAP_ENVELOPE_PLOT
+    | UI_CAP_HARMONIC_EDITOR;
 
 /// Explicit refusal reasons for malformed or unsupported package UI schemas.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -232,12 +240,34 @@ pub struct PackageUiCurvePlot {
     pub nodes: Vec<PackageUiCurveNodeBinding>,
 }
 
+/// Reusable bounded ADSR envelope plot bound to four scalar parameters (`#3001`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageUiEnvelopePlot {
+    pub plot_id: u32,
+    pub label: String,
+    pub attack_parameter: ParameterId,
+    pub decay_parameter: ParameterId,
+    pub sustain_parameter: ParameterId,
+    pub release_parameter: ParameterId,
+}
+
+/// Reusable bounded harmonic bar-graph editor bound to ordered scalar partial
+/// parameters (`#3001`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageUiHarmonicBarGraph {
+    pub graph_id: u32,
+    pub label: String,
+    pub harmonic_parameters: Vec<ParameterId>,
+}
+
 /// One item inside a [`PackageUiSection`].
 #[derive(Clone, Debug, PartialEq)]
 pub enum PackageUiItem {
     Control(PackageUiControl),
     Meter(PackageUiMeter),
     CurvePlot(PackageUiCurvePlot),
+    EnvelopePlot(PackageUiEnvelopePlot),
+    HarmonicBarGraph(PackageUiHarmonicBarGraph),
 }
 
 /// Compact vertical/grid section inside a [`PackageUiSchema`].
@@ -434,6 +464,54 @@ impl PackageUiSchema {
                                 ) {
                                     return Err(PackageUiError::IncompatibleWidgetKind);
                                 }
+                            }
+                        }
+                    }
+                    PackageUiItem::EnvelopePlot(env) => {
+                        if (self.required_capabilities & UI_CAP_ENVELOPE_PLOT) == 0 {
+                            return Err(PackageUiError::MissingCapability);
+                        }
+                        if env.plot_id == 0 {
+                            return Err(PackageUiError::InvalidBounds);
+                        }
+                        if !valid_ui_text(&env.label, MAX_PACKAGE_UI_LABEL_BYTES) {
+                            return Err(PackageUiError::InvalidText);
+                        }
+                        for param_id in [
+                            env.attack_parameter,
+                            env.decay_parameter,
+                            env.sustain_parameter,
+                            env.release_parameter,
+                        ] {
+                            let desc = descriptors
+                                .iter()
+                                .find(|candidate| candidate.id == param_id)
+                                .ok_or(PackageUiError::UnknownParameter)?;
+                            if !matches!(desc.kind, ParameterKind::Float { .. }) {
+                                return Err(PackageUiError::IncompatibleWidgetKind);
+                            }
+                        }
+                    }
+                    PackageUiItem::HarmonicBarGraph(harm) => {
+                        if (self.required_capabilities & UI_CAP_HARMONIC_EDITOR) == 0 {
+                            return Err(PackageUiError::MissingCapability);
+                        }
+                        if harm.graph_id == 0
+                            || harm.harmonic_parameters.is_empty()
+                            || harm.harmonic_parameters.len() > MAX_PACKAGE_UI_HARMONICS
+                        {
+                            return Err(PackageUiError::InvalidBounds);
+                        }
+                        if !valid_ui_text(&harm.label, MAX_PACKAGE_UI_LABEL_BYTES) {
+                            return Err(PackageUiError::InvalidText);
+                        }
+                        for &param_id in &harm.harmonic_parameters {
+                            let desc = descriptors
+                                .iter()
+                                .find(|candidate| candidate.id == param_id)
+                                .ok_or(PackageUiError::UnknownParameter)?;
+                            if !matches!(desc.kind, ParameterKind::Float { .. }) {
+                                return Err(PackageUiError::IncompatibleWidgetKind);
                             }
                         }
                     }

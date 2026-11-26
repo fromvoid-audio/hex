@@ -1196,3 +1196,318 @@ fn eq_and_eq8_packages_pass_biquad_oracle_curve_schema_stale_band_refusal_and_ze
         }
     }
 }
+
+#[test]
+fn vector_operator_and_fm4_instrument_packages_pass_odd_blocks_expression_tails_schema_and_zero_allocs()
+ {
+    use hex_lattice_contract::package_abi::{CAP_CHANNEL_EXPRESSION, CAP_NOTE_EXPRESSION};
+    use hex_lattice_contract::package_ui::{
+        PACKAGE_UI_VERSION_V1, PackageUiEnvelopePlot, PackageUiHarmonicBarGraph, PackageUiItem,
+        PackageUiSchema, PackageUiSection, UI_CAP_ENVELOPE_PLOT, UI_CAP_HARMONIC_EDITOR,
+    };
+    use hex_project::{Command as ProjectCommand, Created, Editor, Project};
+    use std::num::NonZeroU64;
+
+    let tmp = TempDir::new("cohort-synths");
+    let token = "reviewed-test-fixture-token-v1";
+    let mut policy = AdmissionPolicy::host_default();
+    policy.allow_reviewed_test("hex.factory", sha256_hex(token.as_bytes()));
+    let synth_caps = CAP_INSTRUMENT
+        | CAP_PARAMETER_EVENTS
+        | CAP_NOTE_EVENTS
+        | CAP_ZERO_LATENCY
+        | CAP_STATE_PERSISTENCE
+        | CAP_NOTE_EXPRESSION
+        | CAP_CHANNEL_EXPRESSION;
+
+    let lib_dir = tmp.path().join("library");
+    let catalog = DevicePackageCatalog::open_and_recover(&lib_dir).unwrap();
+    let specs = [
+        (
+            "operator_v1.c",
+            "hex.pkg.operator",
+            "vector",
+            12u32,
+            13u32,
+            14u32,
+            15u32,
+        ),
+        ("fm4_v1.c", "hex.pkg.fm4", "fm4", 5u32, 6u32, 7u32, 8u32),
+    ];
+
+    let tuning = TuningTable::default();
+    let ctx = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 512 * 1024,
+        max_events_per_block: 64,
+        max_active_occurrences: 16,
+        max_tail_frames: 48_000,
+    };
+
+    for (src, type_id, display, atk, dec, sus, rel) in specs {
+        let archive = build_package(
+            &tmp,
+            src,
+            type_id,
+            display,
+            DEVICE_KIND_INSTRUMENT,
+            synth_caps,
+            token,
+        );
+        let rec = match catalog.install_file(&archive, &policy, None).unwrap() {
+            InstallOutcome::Installed(rec) => rec,
+            other => panic!("expected Installed for {display}, got {other:?}"),
+        };
+        let dylib = lib_dir
+            .join(&rec.generation_rel_dir)
+            .join(&rec.native_module_rel_path);
+        let def = InstalledPackageInstrument::load_on_control(
+            &dylib,
+            rec.publisher_id.clone(),
+            hex_to_bytes32(&rec.package_sha256),
+        )
+        .unwrap();
+
+        let state = def.default_state().unwrap();
+        let descs = def.descriptors_for_state(&state).unwrap();
+        // Validate reusable EnvelopePlot & HarmonicBarGraph schema (zero type-ID switch).
+        let schema = PackageUiSchema {
+            ui_version: PACKAGE_UI_VERSION_V1,
+            required_capabilities: UI_CAP_ENVELOPE_PLOT | UI_CAP_HARMONIC_EDITOR,
+            frame_width: 340.0,
+            sections: vec![PackageUiSection {
+                heading: "synth".into(),
+                columns: 1,
+                items: vec![
+                    PackageUiItem::EnvelopePlot(PackageUiEnvelopePlot {
+                        plot_id: 1,
+                        label: "amp env".into(),
+                        attack_parameter: ParameterId::from_static(atk),
+                        decay_parameter: ParameterId::from_static(dec),
+                        sustain_parameter: ParameterId::from_static(sus),
+                        release_parameter: ParameterId::from_static(rel),
+                    }),
+                    PackageUiItem::HarmonicBarGraph(PackageUiHarmonicBarGraph {
+                        graph_id: 1,
+                        label: "partials".into(),
+                        harmonic_parameters: vec![
+                            ParameterId::from_static(1),
+                            ParameterId::from_static(2),
+                            ParameterId::from_static(3),
+                            ParameterId::from_static(4),
+                        ],
+                    }),
+                ],
+            }],
+        };
+        assert_eq!(schema.validate(&descs), Ok(()));
+
+        // Verify odd-block vs single-block render equivalence across feedback + release tail + expression.
+        let prepared = def.prepare_instrument(&state, &ctx).unwrap();
+        let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+        let mut whole_pair = NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+        let mut split_pair = NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+
+        let events = [
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 60,
+                velocity: 110,
+            },
+            NativeInstrumentEvent::NotePitchBend {
+                frame_offset: 11,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                cents: 150,
+            },
+            NativeInstrumentEvent::NotePressure {
+                frame_offset: 23,
+                occurrence_id: NonZeroU64::new(1).unwrap(),
+                value: 96,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 70,
+                occurrence_id: 1,
+            },
+        ];
+        let mut whole = [[0.0f32; 2]; 120];
+        whole_pair.begin_block();
+        whole_pair
+            .process_block(&events, &mut whole, &EMPTY_DEVICE_RESOURCES)
+            .unwrap();
+        whole_pair.commit_block();
+        // Verify sound during held note AND non-zero release tail after NoteOff at frame 70!
+        assert!(whole[40][0].abs() > 0.005, "{display} held note silent");
+        assert!(whole[90][0].abs() > 0.001, "{display} release tail missing");
+
+        let mut split = [[0.0f32; 2]; 120];
+        let mut cursor = 0usize;
+        for chunk_len in [19usize, 37, 64] {
+            let chunk_end = cursor + chunk_len;
+            let chunk_events: Vec<_> = events
+                .iter()
+                .copied()
+                .filter(|ev| {
+                    let off = ev.frame_offset();
+                    off >= cursor && off < chunk_end
+                })
+                .map(|ev| match ev {
+                    NativeInstrumentEvent::NoteOn {
+                        frame_offset,
+                        occurrence_id,
+                        pitch,
+                        velocity,
+                    } => NativeInstrumentEvent::NoteOn {
+                        frame_offset: frame_offset - cursor,
+                        occurrence_id,
+                        pitch,
+                        velocity,
+                    },
+                    NativeInstrumentEvent::NoteOff {
+                        frame_offset,
+                        occurrence_id,
+                    } => NativeInstrumentEvent::NoteOff {
+                        frame_offset: frame_offset - cursor,
+                        occurrence_id,
+                    },
+                    NativeInstrumentEvent::NotePitchBend {
+                        frame_offset,
+                        occurrence_id,
+                        cents,
+                    } => NativeInstrumentEvent::NotePitchBend {
+                        frame_offset: frame_offset - cursor,
+                        occurrence_id,
+                        cents,
+                    },
+                    NativeInstrumentEvent::NotePressure {
+                        frame_offset,
+                        occurrence_id,
+                        value,
+                    } => NativeInstrumentEvent::NotePressure {
+                        frame_offset: frame_offset - cursor,
+                        occurrence_id,
+                        value,
+                    },
+                    other => other,
+                })
+                .collect();
+            split_pair.begin_block();
+            split_pair
+                .process_block(
+                    &chunk_events,
+                    &mut split[cursor..chunk_end],
+                    &EMPTY_DEVICE_RESOURCES,
+                )
+                .unwrap();
+            split_pair.commit_block();
+            cursor = chunk_end;
+        }
+        for i in 0..120 {
+            assert!(
+                (whole[i][0] - split[i][0]).abs() < 1e-5
+                    && (whole[i][1] - split[i][1]).abs() < 1e-5,
+                "{display} odd-block mismatch at frame {i}: whole={:?} split={:?}",
+                whole[i],
+                split[i]
+            );
+        }
+
+        // Stop/reset silences voices cleanly.
+        whole_pair.reset();
+        assert!(whole_pair.committed_is_quiescent());
+
+        // Save/reopen & Undo/Redo round-trip.
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(ProjectCommand::AddTrack {
+                name: display.into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let Created::Device(dev_id) = editor
+            .execute(ProjectCommand::InsertInstrument {
+                track,
+                state: state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("instrument");
+        };
+        let save_path = tmp.path().join(format!("{display}.hexproj"));
+        hex_storage::save_new(&save_path, editor.project()).unwrap();
+        let reopened = hex_storage::load(&save_path).unwrap();
+        assert_eq!(reopened.device(dev_id).unwrap().state(), &state);
+
+        // Zero callback allocations under allocation-probe.
+        let mut block = [[0.0f32; 2]; 64];
+        let ramp = RampAutomation {
+            ids: [ParameterId::from_static(1)],
+            start: 0.4,
+            step: 0.002,
+            active: true,
+        };
+        let simple_events = [
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 2,
+                pitch: 64,
+                velocity: 100,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 40,
+                occurrence_id: 2,
+            },
+        ];
+        split_pair.reset();
+        split_pair.begin_block();
+        split_pair
+            .process_block_with_clock_and_automation(
+                &simple_events,
+                &mut block,
+                None,
+                &[],
+                &ramp,
+                &EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        split_pair.commit_block();
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(|| {
+                for _ in 0..32 {
+                    block.fill([0.0; 2]);
+                    split_pair.begin_block();
+                    let _ = split_pair.process_block_with_clock_and_automation(
+                        &simple_events,
+                        &mut block,
+                        None,
+                        &[],
+                        &ramp,
+                        &EMPTY_DEVICE_RESOURCES,
+                    );
+                    split_pair.commit_block();
+                }
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        drop(whole_pair);
+        drop(split_pair);
+        drop(factory);
+        drop(prepared);
+        assert_eq!(def.active_module_leases(), 1);
+    }
+}
