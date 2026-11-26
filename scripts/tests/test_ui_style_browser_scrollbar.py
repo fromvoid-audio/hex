@@ -47,6 +47,7 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                     ".child(mod_mode) .child(stereo_rail) .child(main_rail)"
                 ),
                 "crates/hex-ui/src/editor/device_panel/modulators/source_card.rs": '.child(parameter_control_with_presentation(view, cx, id, identity, row)) .child(control_row)',
+                "crates/hex-ui/src/editor/device_panel/operator_panel/waveform_editor.rs": ".child(\n  hex_widgets::device_inline_caption(\n    theme::text(readout), style))",
                 "crates/hex-ui/src/editor/device_panel/operator_panel/global.rs": ".child(voices) .child(glide_enabled) .child(glide_time)",
                 "crates/hex-ui/src/editor/device_panel/operator_panel.rs": ".child(performance_column(view, cx, device, identity, parameters))",
                 "crates/hex-ui/src/editor/device_panel/saturator_panel.rs": '.child(ws_caption) .child(dial_row(ws_drive, ws_curve))',
@@ -71,6 +72,9 @@ class BrowserScrollbarStyleGuardTests(unittest.TestCase):
                 ("other.rs", '.child(list)'),
                 ("other.rs", '.child(ws_caption)'),
                 ("editor/device_panel/operator_panel.rs", '.child("Raw caption")'),
+                ("editor/device_panel/operator_panel/waveform_editor.rs", '.child(hex_widgets::device_inline_caption("Raw", style))'),
+                ("editor/device_panel/operator_panel/waveform_editor.rs", '.child(hex_widgets::device_inline_caption(readout, style))'),
+                ("other.rs", '.child(hex_widgets::device_inline_caption(theme::text(readout), style))'),
                 ("editor/device_panel/operator_panel/global.rs", '.child("Raw caption")'),
                 ("other.rs", ".child(glide_enabled)"),
                 ("other.rs", ".child(glide_time)"),
