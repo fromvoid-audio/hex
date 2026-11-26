@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin};
 #[cfg(unix)]
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 #[cfg(unix)]
 const READY: &[u8] = b"hex-update-observer-ready-v1\n";
@@ -26,118 +26,218 @@ const APPROVAL: &[u8] = b"hex-update-approved-v1\n";
 const MAX_RECEIPT: u64 = 8 * 1024 * 1024;
 #[cfg(unix)]
 const MAX_HELPER_FILE: u64 = 128 * 1024 * 1024;
+const AVAILABILITY_INTERVAL: Duration = Duration::from_secs(2);
+const POLL_SLICE: Duration = Duration::from_millis(50);
+const DEFAULT_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
+
+struct ExitSignal(Arc<(Mutex<bool>, Condvar)>);
+
+impl Drop for ExitSignal {
+    fn drop(&mut self) {
+        let (lock, condvar) = &*self.0;
+        let mut finished = lock.lock().unwrap_or_else(|poison| poison.into_inner());
+        *finished = true;
+        condvar.notify_all();
+    }
+}
+
+/// Owned handle for the desktop update-control worker.
+///
+/// Signals shutdown and joins the worker thread (up to a bounded timeout)
+/// before the desktop's shared publication lease is dropped.
+pub(super) struct UpdateSupervisorHandle {
+    stop: Arc<AtomicBool>,
+    done: Arc<(Mutex<bool>, Condvar)>,
+    thread: Option<JoinHandle<()>>,
+    join_timeout: Duration,
+}
+
+impl UpdateSupervisorHandle {
+    /// Request shutdown and wait up to `join_timeout` for the worker to exit.
+    /// Returns `true` when the worker thread has been joined (or was already joined).
+    pub(super) fn shutdown(&mut self) -> bool {
+        let Some(thread) = self.thread.take() else {
+            return true;
+        };
+        self.stop.store(true, Ordering::Release);
+        let (lock, condvar) = &*self.done;
+        let deadline = Instant::now() + self.join_timeout;
+        let mut finished = lock.lock().unwrap_or_else(|poison| poison.into_inner());
+        while !*finished {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                break;
+            };
+            if remaining.is_zero() {
+                break;
+            }
+            let (guard, result) = condvar
+                .wait_timeout(finished, remaining)
+                .unwrap_or_else(|poison| poison.into_inner());
+            finished = guard;
+            if result.timed_out() {
+                break;
+            }
+        }
+        let exited = *finished;
+        drop(finished);
+        if exited {
+            let _ = thread.join();
+            true
+        } else {
+            // Bounded wait expired; leave the thread detached rather than hanging process exit.
+            false
+        }
+    }
+}
+
+impl Drop for UpdateSupervisorHandle {
+    fn drop(&mut self) {
+        let _ = self.shutdown();
+    }
+}
 
 /// Start one desktop-owned worker for a bundle whose startup lease is held.
-pub(super) fn start(target: PathBuf, worker: hex_ui::UpdateWorker) -> io::Result<()> {
+pub(super) fn start(
+    target: PathBuf,
+    worker: hex_ui::UpdateWorker,
+) -> io::Result<UpdateSupervisorHandle> {
     use hex_ui::{UpdateAction, UpdateCommand, UpdateStatus};
-    std::thread::Builder::new()
-        .name("hex-update-control".into())
-        .spawn(move || {
-            let mut delivered: Option<u64> = None;
-            let mut selection: Option<(u64, String)> = None;
-            let mut availability_cache = None;
-            let previous = last_result(&target);
-            let mut monitor_available = previous.is_none();
-            if let Some((message, failed)) = previous {
-                worker.publish(UpdateStatus::PreviousResult { message, failed });
-            }
-            loop {
-                let command = match worker.commands.recv_timeout(Duration::from_secs(2)) {
-                    Ok(command) => command,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {
-                        if monitor_available && selection.is_none() && delivered.is_none() {
-                            let available = cached_availability(&target, &mut availability_cache)
-                                .unwrap_or(false);
-                            worker.publish(if available {
-                                UpdateStatus::Available
-                            } else {
-                                UpdateStatus::Idle
-                            });
-                        }
-                        continue;
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
+    let worker_stop = Arc::clone(&stop);
+    let worker_done = Arc::clone(&done);
+    let thread =
+        std::thread::Builder::new()
+            .name("hex-update-control".into())
+            .spawn(move || {
+                let _exit_signal = ExitSignal(worker_done);
+                let mut delivered: Option<u64> = None;
+                let mut selection: Option<(u64, String)> = None;
+                let mut availability_cache = None;
+                let previous = last_result(&target);
+                let mut monitor_available = previous.is_none();
+                if let Some((message, failed)) = previous {
+                    worker.publish(UpdateStatus::PreviousResult { message, failed });
+                }
+                let mut next_availability_check = Instant::now() + AVAILABILITY_INTERVAL;
+                loop {
+                    if worker_stop.load(Ordering::Acquire) {
+                        break;
                     }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                };
-                match command {
-                    UpdateCommand::DismissResult => {
-                        monitor_available = true;
-                        worker.publish(UpdateStatus::Idle);
-                    }
-                    UpdateCommand::Select(id) if delivered.is_none() && id != 0 => {
-                        monitor_available = false;
-                        match select_available_receipt(&target) {
-                            Ok(digest) => {
-                                selection = Some((id, digest));
-                                worker.publish(UpdateStatus::Selected(id));
+                    let now = Instant::now();
+                    let wait = next_availability_check
+                        .saturating_duration_since(now)
+                        .min(POLL_SLICE);
+                    let command = match worker.commands.recv_timeout(wait) {
+                        Ok(command) => command,
+                        Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if worker_stop.load(Ordering::Acquire) {
+                                break;
                             }
-                            Err(error) => {
-                                selection = None;
-                                worker.publish(UpdateStatus::Failed(id, error.to_string()));
-                            }
-                        }
-                    }
-                    UpdateCommand::Select(id) => {
-                        worker.publish(UpdateStatus::Failed(id, "update already preparing".into()))
-                    }
-                    UpdateCommand::Prepare { id, action }
-                        if delivered.is_none()
-                            && selection
-                                .as_ref()
-                                .is_some_and(|(selected, _)| *selected == id) =>
-                    {
-                        worker.publish(UpdateStatus::Preparing(id));
-                        let action = match action {
-                            UpdateAction::InstallOnQuit => Action::Install,
-                            UpdateAction::SaveAndRestart => Action::Restart,
-                        };
-                        let digest = selection
-                            .as_ref()
-                            .map(|(_, digest)| digest.as_str())
-                            .unwrap_or("");
-                        match prepare(&target, action, digest) {
-                            Ok(handle) => match worker.deliver(hex_ui::UpdateReady {
-                                id,
-                                approval: Box::new(handle),
-                            }) {
-                                Ok(()) => {
-                                    delivered = Some(id);
-                                    worker.publish(UpdateStatus::Ready(id));
+                            let now = Instant::now();
+                            if now >= next_availability_check {
+                                next_availability_check = now + AVAILABILITY_INTERVAL;
+                                if monitor_available && selection.is_none() && delivered.is_none() {
+                                    let available =
+                                        cached_availability(&target, &mut availability_cache)
+                                            .unwrap_or(false);
+                                    worker.publish(if available {
+                                        UpdateStatus::Available
+                                    } else {
+                                        UpdateStatus::Idle
+                                    });
                                 }
-                                Err(ready) => {
-                                    drop(ready);
-                                    worker.publish(UpdateStatus::Failed(
-                                        id,
-                                        "update handoff unavailable".into(),
-                                    ));
+                            }
+                            continue;
+                        }
+                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    };
+                    if worker_stop.load(Ordering::Acquire) {
+                        break;
+                    }
+                    match command {
+                        UpdateCommand::DismissResult => {
+                            monitor_available = true;
+                            worker.publish(UpdateStatus::Idle);
+                        }
+                        UpdateCommand::Select(id) if delivered.is_none() && id != 0 => {
+                            monitor_available = false;
+                            match select_available_receipt(&target) {
+                                Ok(digest) => {
+                                    selection = Some((id, digest));
+                                    worker.publish(UpdateStatus::Selected(id));
                                 }
-                            },
-                            Err(error) => {
-                                worker.publish(UpdateStatus::Failed(id, error.to_string()))
+                                Err(error) => {
+                                    selection = None;
+                                    worker.publish(UpdateStatus::Failed(id, error.to_string()));
+                                }
                             }
                         }
-                    }
-                    UpdateCommand::Prepare { id, .. } => {
-                        worker.publish(UpdateStatus::Failed(id, "update already preparing".into()))
-                    }
-                    UpdateCommand::Cancel(id) => {
-                        worker.revoke(id);
-                        monitor_available = true;
-                        if selection
-                            .as_ref()
-                            .is_some_and(|(selected, _)| *selected == id)
+                        UpdateCommand::Select(id) => worker
+                            .publish(UpdateStatus::Failed(id, "update already preparing".into())),
+                        UpdateCommand::Prepare { id, action }
+                            if delivered.is_none()
+                                && selection
+                                    .as_ref()
+                                    .is_some_and(|(selected, _)| *selected == id) =>
                         {
-                            selection = None;
-                            worker.publish(UpdateStatus::Idle);
+                            worker.publish(UpdateStatus::Preparing(id));
+                            let action = match action {
+                                UpdateAction::InstallOnQuit => Action::Install,
+                                UpdateAction::SaveAndRestart => Action::Restart,
+                            };
+                            let digest = selection
+                                .as_ref()
+                                .map(|(_, digest)| digest.as_str())
+                                .unwrap_or("");
+                            match prepare_with_stop(&target, action, digest, &worker_stop) {
+                                Ok(handle) => match worker.deliver(hex_ui::UpdateReady {
+                                    id,
+                                    approval: Box::new(handle),
+                                }) {
+                                    Ok(()) => {
+                                        delivered = Some(id);
+                                        worker.publish(UpdateStatus::Ready(id));
+                                    }
+                                    Err(ready) => {
+                                        drop(ready);
+                                        worker.publish(UpdateStatus::Failed(
+                                            id,
+                                            "update handoff unavailable".into(),
+                                        ));
+                                    }
+                                },
+                                Err(error) => {
+                                    worker.publish(UpdateStatus::Failed(id, error.to_string()))
+                                }
+                            }
                         }
-                        if delivered == Some(id) {
-                            delivered = None;
-                            worker.publish(UpdateStatus::Idle);
+                        UpdateCommand::Prepare { id, .. } => worker
+                            .publish(UpdateStatus::Failed(id, "update already preparing".into())),
+                        UpdateCommand::Cancel(id) => {
+                            worker.revoke(id);
+                            monitor_available = true;
+                            if selection
+                                .as_ref()
+                                .is_some_and(|(selected, _)| *selected == id)
+                            {
+                                selection = None;
+                                worker.publish(UpdateStatus::Idle);
+                            }
+                            if delivered == Some(id) {
+                                delivered = None;
+                                worker.publish(UpdateStatus::Idle);
+                            }
                         }
                     }
                 }
-            }
-        })
-        .map(|_| ())
+            })?;
+    Ok(UpdateSupervisorHandle {
+        stop,
+        done,
+        thread: Some(thread),
+        join_timeout: DEFAULT_JOIN_TIMEOUT,
+    })
 }
 
 impl hex_ui::UpdateApproval for Prepared {
@@ -410,13 +510,21 @@ fn copy_bundle_bounded(
 }
 
 #[cfg(unix)]
-fn run_checked(command: &mut Command, timeout: Duration) -> io::Result<()> {
+fn run_checked(command: &mut Command, timeout: Duration, stop: &AtomicBool) -> io::Result<()> {
     let mut child = command
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
     let deadline = Instant::now() + timeout;
     loop {
+        if stop.load(Ordering::Acquire) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "update preparation cancelled by shutdown",
+            ));
+        }
         if let Some(status) = child.try_wait()? {
             return if status.success() {
                 Ok(())
@@ -531,9 +639,25 @@ fn cached_availability(
     Ok(available)
 }
 
-#[cfg(unix)]
+#[cfg(all(test, unix))]
 pub(super) fn prepare(target: &Path, action: Action, selected: &str) -> io::Result<Prepared> {
+    prepare_with_stop(target, action, selected, &AtomicBool::new(false))
+}
+
+#[cfg(unix)]
+fn prepare_with_stop(
+    target: &Path,
+    action: Action,
+    selected: &str,
+    stop: &AtomicBool,
+) -> io::Result<Prepared> {
     use std::os::unix::fs::MetadataExt;
+    if stop.load(Ordering::Acquire) {
+        return Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "update preparation cancelled by shutdown",
+        ));
+    }
     plain_path(target)?;
     if target
         .file_name()
@@ -600,6 +724,7 @@ pub(super) fn prepare(target: &Path, action: Action, selected: &str) -> io::Resu
             .args(["--verify", "--strict", "--test-requirement", &requirement])
             .arg(&bundle),
         Duration::from_secs(30),
+        stop,
     )?;
     use std::os::unix::process::CommandExt;
     let mut command = Command::new(bundle.join("Contents/MacOS/hex-update"));
@@ -638,21 +763,45 @@ pub(super) fn prepare(target: &Path, action: Action, selected: &str) -> io::Resu
         cancel_child_group(&mut child);
         return Err(error);
     }
-    match receiver.recv_timeout(Duration::from_secs(180)) {
-        Ok(Ok(line)) if line == READY => Ok(Prepared {
-            child: Some(child),
-            input: Some(input),
-        }),
-        _ => {
+    let deadline = Instant::now() + Duration::from_secs(180);
+    loop {
+        if stop.load(Ordering::Acquire) {
             drop(input);
             cancel_child_group(&mut child);
-            Err(invalid("update helper did not become ready"))
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "update preparation cancelled by shutdown",
+            ));
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            drop(input);
+            cancel_child_group(&mut child);
+            return Err(invalid("update helper did not become ready"));
+        };
+        match receiver.recv_timeout(remaining.min(POLL_SLICE)) {
+            Ok(Ok(line)) if line == READY => {
+                return Ok(Prepared {
+                    child: Some(child),
+                    input: Some(input),
+                });
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            _ => {
+                drop(input);
+                cancel_child_group(&mut child);
+                return Err(invalid("update helper did not become ready"));
+            }
         }
     }
 }
 
 #[cfg(not(unix))]
-pub(super) fn prepare(_target: &Path, _action: Action, _selected: &str) -> io::Result<Prepared> {
+fn prepare_with_stop(
+    _target: &Path,
+    _action: Action,
+    _selected: &str,
+    _stop: &AtomicBool,
+) -> io::Result<Prepared> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "local update handoff requires macos",
@@ -818,5 +967,59 @@ mod tests {
         cancel_child_group(&mut child);
         assert_eq!(ready.unwrap(), (true, "ready\n".into()));
         assert!(receiver.recv_timeout(Duration::from_secs(5)).unwrap().0);
+    }
+
+    #[test]
+    fn supervisor_handle_joins_promptly_on_shutdown_and_channel_drop() {
+        let fixture = Fixture::new();
+        let target = fixture.0.join("hex.app");
+        fs::create_dir(&target).unwrap();
+
+        // Case 1: channel disconnects before shutdown -> immediate join.
+        let (client, worker) = hex_ui::update_channel();
+        let mut handle = start(target.clone(), worker).unwrap();
+        drop(client);
+        let started = Instant::now();
+        assert!(handle.shutdown());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        // Repeated shutdown is idempotent.
+        assert!(handle.shutdown());
+
+        // Case 2: client remains alive (e.g. still held in GPUI global on macOS quit)
+        // -> stop flag wakes the poll slice and joins promptly without hanging for 2s.
+        let (client, worker) = hex_ui::update_channel();
+        let mut handle = start(target, worker).unwrap();
+        let started = Instant::now();
+        assert!(handle.shutdown());
+        assert!(started.elapsed() < Duration::from_millis(500));
+        drop(client);
+    }
+
+    #[test]
+    fn supervisor_handle_shutdown_respects_bounded_timeout() {
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_done = Arc::clone(&done);
+        let thread = std::thread::Builder::new()
+            .name("hex-update-timeout-test".into())
+            .spawn(move || {
+                let _exit = ExitSignal(worker_done);
+                let _ = release_rx.recv();
+            })
+            .unwrap();
+        let mut handle = UpdateSupervisorHandle {
+            stop,
+            done,
+            thread: Some(thread),
+            join_timeout: Duration::from_millis(40),
+        };
+        let started = Instant::now();
+        assert!(
+            !handle.shutdown(),
+            "blocked worker must not hang past bounded timeout"
+        );
+        assert!(started.elapsed() < Duration::from_millis(400));
+        let _ = release_tx.send(());
     }
 }

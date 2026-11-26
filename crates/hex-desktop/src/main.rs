@@ -67,7 +67,7 @@ fn main() -> ExitCode {
 
     let options = diagnostic_options(std::env::args_os().skip(1))
         .map_err(|error| StartupFailure::new(Stage::Arguments, error));
-    let (_update_lease, (audio_diagnostics, action_diagnostics)) = match (update_lease, options) {
+    let (update_lease, (audio_diagnostics, action_diagnostics)) = match (update_lease, options) {
         (Ok(lease), Ok(options)) => (lease, options),
         (Err(failure), _) | (Ok(_), Err(failure)) => {
             // No worker has started; show the failure instead of vanishing.
@@ -85,24 +85,35 @@ fn main() -> ExitCode {
     }
     let midi_worker = hex_midi::Worker::start();
     let midi_handle = midi_worker.as_ref().ok().map(hex_midi::Worker::handle);
-    let mut mts_worker = hex_mts::Worker::start();
+    let mts_worker = hex_mts::Worker::start();
     let mts_handle = mts_worker.as_ref().ok().map(hex_mts::Worker::handle);
-    let update_client = if _update_lease.is_some() {
-        std::env::current_exe()
+    let (update_client, update_supervisor) = if update_lease.is_some() {
+        match std::env::current_exe()
             .ok()
             .and_then(|executable| std::fs::canonicalize(executable).ok())
             .and_then(|executable| {
                 let target = executable.ancestors().nth(3)?.to_path_buf();
                 let (client, worker) = hex_ui::update_channel();
-                if let Err(error) = update_supervisor::start(target, worker) {
-                    eprintln!("local update worker unavailable: {error}");
-                    return None;
+                match update_supervisor::start(target, worker) {
+                    Ok(handle) => Some((client, handle)),
+                    Err(error) => {
+                        eprintln!("local update worker unavailable: {error}");
+                        None
+                    }
                 }
-                Some(client)
-            })
+            }) {
+            Some((client, handle)) => (Some(client), Some(handle)),
+            None => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
+    exit.attach_runtime(DesktopRuntime {
+        update_supervisor,
+        mts_worker: mts_worker.ok(),
+        midi_worker: midi_worker.ok(),
+        update_lease,
+    });
     let run_exit = Rc::clone(&exit);
     let application = Application::new().with_assets(hex_ui::assets::HexAssets);
     application.run(move |cx: &mut App| {
@@ -140,11 +151,9 @@ fn main() -> ExitCode {
             cx.activate(true);
         }
     });
-    if let Ok(worker) = &mut mts_worker {
-        worker.shutdown();
-    }
-    // The UI/audio lifecycle has ended; joining file I/O is safe here.
-    exit.shutdown_log();
+    // The UI/audio lifecycle has ended; join workers, flush the session log,
+    // and release shared publication custody in deterministic order.
+    exit.shutdown_all();
     ExitCode::from(exit.code())
 }
 
@@ -160,14 +169,27 @@ fn record_startup_identity(handle: &hex_diagnostics::DiagnosticsHandle) {
     );
 }
 
-/// Startup exit status and session-log custody.
+/// Desktop-owned workers and shared publication lease torn down in strict order:
+/// every background worker joins before the update lease is released.
+#[derive(Default)]
+struct DesktopRuntime {
+    update_supervisor: Option<update_supervisor::UpdateSupervisorHandle>,
+    mts_worker: Option<hex_mts::Worker>,
+    midi_worker: Option<hex_midi::Worker>,
+    update_lease: Option<update_lease::UpdateLease>,
+}
+
+/// Startup exit status, worker teardown, and session-log custody.
 ///
 /// Any run that never opens the editor exits 1. macOS `terminate:` exits the
-/// process inside `Application::run` without returning, so a failed startup
-/// also flushes the log and exits 1 from the quit observer, once its alert is
-/// dismissed. Platforms whose `run` returns use [`StartupExit::code`].
+/// process inside `Application::run` without returning, so the quit observer
+/// always shuts down every desktop worker, flushes the session log, and drops
+/// the update lease in custody order before returning or exiting 1 on failed
+/// startup. Platforms whose `run` returns call the same idempotent teardown
+/// and exit with [`StartupExit::code`].
 struct StartupExit {
     log: RefCell<Result<hex_diagnostics::SessionLog, String>>,
+    runtime: RefCell<Option<DesktopRuntime>>,
     /// Set only once the editor (or demo) window opens.
     opened: Cell<bool>,
 }
@@ -176,8 +198,15 @@ impl StartupExit {
     fn new(log: Result<hex_diagnostics::SessionLog, String>) -> Rc<Self> {
         Rc::new(Self {
             log: RefCell::new(log),
+            runtime: RefCell::new(None),
             opened: Cell::new(false),
         })
+    }
+
+    fn attach_runtime(&self, runtime: DesktopRuntime) {
+        if let Ok(mut slot) = self.runtime.try_borrow_mut() {
+            *slot = Some(runtime);
+        }
     }
 
     fn log_handle(&self) -> Result<hex_diagnostics::DiagnosticsHandle, String> {
@@ -203,12 +232,58 @@ impl StartupExit {
         }
     }
 
+    /// Shut down desktop workers, session log, and update lease in strict custody
+    /// order so no worker runs after shared publication custody is released.
+    fn shutdown_all(&self) {
+        self.shutdown_all_observed(|_| {});
+    }
+
+    fn shutdown_all_observed(&self, mut observe: impl FnMut(&'static str)) {
+        let runtime = self
+            .runtime
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        let update_lease = if let Some(mut runtime) = runtime {
+            if let Some(mut supervisor) = runtime.update_supervisor.take() {
+                let _ = supervisor.shutdown();
+                drop(supervisor);
+                observe("update_supervisor");
+            }
+            if let Some(mut mts) = runtime.mts_worker.take() {
+                mts.shutdown();
+                drop(mts);
+                observe("mts_worker");
+            }
+            if let Some(midi) = runtime.midi_worker.take() {
+                drop(midi);
+                observe("midi_worker");
+            }
+            runtime.update_lease.take()
+        } else {
+            None
+        };
+        self.shutdown_log();
+        observe("session_log");
+        if let Some(lease) = update_lease {
+            drop(lease);
+            observe("update_lease");
+        }
+    }
+
+    /// Perform ordered teardown on application quit; returns the non-zero exit
+    /// code that failed-startup quit must report once teardown is complete.
+    fn prepare_quit_exit(&self) -> Option<i32> {
+        self.shutdown_all();
+        let code = self.code();
+        (code != 0).then(|| i32::from(code))
+    }
+
     fn exit_on_failed_quit(self: &Rc<Self>, cx: &mut App) {
         let exit = Rc::clone(self);
         cx.on_app_quit(move |_| {
-            if exit.code() != 0 {
-                exit.shutdown_log();
-                std::process::exit(i32::from(exit.code()));
+            if let Some(code) = exit.prepare_quit_exit() {
+                std::process::exit(code);
             }
             async {}
         })
@@ -288,23 +363,38 @@ fn diagnostic_options(
 
 #[cfg(test)]
 mod startup_exit_tests {
-    use super::{StartupExit, record_startup_identity};
+    use super::{
+        DesktopRuntime, StartupExit, record_startup_identity, update_lease, update_supervisor,
+    };
+    use std::fs::{self, OpenOptions};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_DIR: AtomicU64 = AtomicU64::new(0);
+
+    fn temp_dir(prefix: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            NEXT_DIR.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
 
     #[test]
     fn startup_identity_is_classified_in_the_session_log() {
-        let dir =
-            std::env::temp_dir().join(format!("hex-startup-classification-{}", std::process::id()));
+        let dir = temp_dir("hex-startup-classification");
         let mut log = hex_diagnostics::SessionLog::start(dir.clone()).unwrap();
         record_startup_identity(&log.handle());
         log.shutdown().unwrap();
-        let contents = std::fs::read_to_string(log.path()).unwrap();
+        let contents = fs::read_to_string(log.path()).unwrap();
         assert!(
             contents
                 .lines()
                 .any(|line| line.contains("level=info category=startup")
                     && line.contains("hex version="))
         );
-        std::fs::remove_dir_all(dir).unwrap();
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -317,6 +407,111 @@ mod startup_exit_tests {
         exit.shutdown_log();
         exit.shutdown_log();
         assert!(exit.log_handle().is_err());
+    }
+
+    #[test]
+    fn normal_exit_joins_workers_before_releasing_update_lease() {
+        let dir = temp_dir("hex-normal-shutdown-order");
+        let target = dir.join("hex.app");
+        fs::create_dir(&target).unwrap();
+        let lock_path = dir.join(".hex-test-build.lock");
+        let lease = update_lease::UpdateLease::acquire_lock_file_for_test(&lock_path).unwrap();
+        let installer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&installer).is_err());
+
+        let (client, worker) = hex_ui::update_channel();
+        let supervisor = update_supervisor::start(target, worker).unwrap();
+        let log = hex_diagnostics::SessionLog::start(dir.join("logs"));
+        let exit = StartupExit::new(log);
+        exit.opened.set(true);
+        exit.attach_runtime(DesktopRuntime {
+            update_supervisor: Some(supervisor),
+            mts_worker: None,
+            midi_worker: None,
+            update_lease: Some(lease),
+        });
+
+        let mut order = Vec::new();
+        exit.shutdown_all_observed(|step| {
+            // Exclusive lock must remain blocked until update_lease drops last.
+            if step != "update_lease" {
+                assert!(
+                    fs2::FileExt::try_lock_exclusive(&installer).is_err(),
+                    "update lease released before {step} completed"
+                );
+            }
+            order.push(step);
+        });
+        assert_eq!(order, ["update_supervisor", "session_log", "update_lease"]);
+        fs2::FileExt::try_lock_exclusive(&installer)
+            .expect("exclusive lock must be available after ordered shutdown");
+        let _ = fs2::FileExt::unlock(&installer);
+        // Second call (e.g. after Application::run returns) is an idempotent no-op.
+        assert_eq!(exit.prepare_quit_exit(), None);
+        drop(client);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_startup_quit_shuts_down_workers_and_releases_lease_before_exiting() {
+        let dir = temp_dir("hex-failed-startup-shutdown");
+        let target = dir.join("hex.app");
+        fs::create_dir(&target).unwrap();
+        let lock_path = dir.join(".hex-test-build.lock");
+        let lease = update_lease::UpdateLease::acquire_lock_file_for_test(&lock_path).unwrap();
+        let installer = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+
+        let (client, worker) = hex_ui::update_channel();
+        let supervisor = update_supervisor::start(target, worker).unwrap();
+        let mts = hex_mts::Worker::start().ok();
+        let midi = hex_midi::Worker::start().ok();
+        let had_mts = mts.is_some();
+        let had_midi = midi.is_some();
+        let log = hex_diagnostics::SessionLog::start(dir.join("logs"));
+        let exit = StartupExit::new(log);
+        // Editor never opened -> failed startup exit code 1.
+        exit.attach_runtime(DesktopRuntime {
+            update_supervisor: Some(supervisor),
+            mts_worker: mts,
+            midi_worker: midi,
+            update_lease: Some(lease),
+        });
+
+        let mut expected = vec!["update_supervisor"];
+        if had_mts {
+            expected.push("mts_worker");
+        }
+        if had_midi {
+            expected.push("midi_worker");
+        }
+        expected.push("session_log");
+        expected.push("update_lease");
+
+        let mut order = Vec::new();
+        exit.shutdown_all_observed(|step| {
+            if step != "update_lease" {
+                assert!(
+                    fs2::FileExt::try_lock_exclusive(&installer).is_err(),
+                    "update lease released before {step} finished on failed startup"
+                );
+            }
+            order.push(step);
+        });
+        assert_eq!(order, expected);
+        assert_eq!(exit.prepare_quit_exit(), Some(1));
+        fs2::FileExt::try_lock_exclusive(&installer)
+            .expect("exclusive lock must be released before failed startup exits");
+        let _ = fs2::FileExt::unlock(&installer);
+        drop(client);
+        fs::remove_dir_all(dir).unwrap();
     }
 }
 
