@@ -502,6 +502,160 @@ pub fn validate_pcm_output(frames: &[[f32; 2]]) -> Result<(), AbiStatus> {
     Ok(())
 }
 
+/// Magic 4-byte prefix for canonical package-state envelopes stored inside
+/// `NativeDeviceState::payload()`.
+pub const PACKAGE_STATE_ENVELOPE_MAGIC: [u8; 4] = *b"HXPS";
+/// Envelope format version.
+pub const PACKAGE_STATE_ENVELOPE_VERSION: u8 = 1;
+
+/// Exact immutable package identity pinned alongside opaque device state
+/// bytes in project/preset/history payloads (`#2992`, `#2993`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageIdentityEnvelope {
+    pub publisher_id: String,
+    pub type_id: String,
+    pub package_major: u16,
+    pub package_minor: u16,
+    pub package_patch: u16,
+    pub state_version: u32,
+    pub abi_version: u32,
+    pub ui_version: u32,
+    pub package_sha256: [u8; 32],
+}
+
+impl PackageIdentityEnvelope {
+    /// Encode this package identity together with raw device-owned state bytes
+    /// into a bounded deterministic payload suitable for `NativeDeviceState`.
+    pub fn encode_with_raw_state(&self, raw_state: &[u8]) -> Result<Vec<u8>, DeviceContractError> {
+        if self.publisher_id.is_empty()
+            || self.publisher_id.len() > 64
+            || self.type_id.is_empty()
+            || self.type_id.len() > MAX_DEVICE_TYPE_ID_BYTES
+        {
+            return Err(DeviceContractError::MalformedState);
+        }
+        DeviceTypeId::new(&self.type_id)?;
+        if raw_state.len() > PACKAGE_ABI_MAX_STATE_BYTES as usize {
+            return Err(DeviceContractError::StateTooLarge);
+        }
+        let total = 4
+            + 1
+            + 2
+            + 2
+            + 2
+            + 4
+            + 4
+            + 4
+            + 32
+            + 1
+            + self.publisher_id.len()
+            + 1
+            + self.type_id.len()
+            + 4
+            + raw_state.len();
+        if total > crate::MAX_NATIVE_DEVICE_STATE_BYTES {
+            return Err(DeviceContractError::StateTooLarge);
+        }
+        let mut out = Vec::with_capacity(total);
+        out.extend_from_slice(&PACKAGE_STATE_ENVELOPE_MAGIC);
+        out.push(PACKAGE_STATE_ENVELOPE_VERSION);
+        out.extend_from_slice(&self.package_major.to_le_bytes());
+        out.extend_from_slice(&self.package_minor.to_le_bytes());
+        out.extend_from_slice(&self.package_patch.to_le_bytes());
+        out.extend_from_slice(&self.state_version.to_le_bytes());
+        out.extend_from_slice(&self.abi_version.to_le_bytes());
+        out.extend_from_slice(&self.ui_version.to_le_bytes());
+        out.extend_from_slice(&self.package_sha256);
+        out.push(self.publisher_id.len() as u8);
+        out.extend_from_slice(self.publisher_id.as_bytes());
+        out.push(self.type_id.len() as u8);
+        out.extend_from_slice(self.type_id.as_bytes());
+        out.extend_from_slice(&(raw_state.len() as u32).to_le_bytes());
+        out.extend_from_slice(raw_state);
+        Ok(out)
+    }
+
+    /// Decode a canonical package state envelope, returning the pinned package
+    /// identity and borrowed raw device state slice without executing module code.
+    pub fn decode_with_raw_state(bytes: &[u8]) -> Result<(Self, &[u8]), DeviceContractError> {
+        if bytes.len() < 4 + 1 + 6 + 12 + 32 + 2 + 4 {
+            return Err(DeviceContractError::MalformedState);
+        }
+        if bytes[0..4] != PACKAGE_STATE_ENVELOPE_MAGIC {
+            return Err(DeviceContractError::MalformedState);
+        }
+        if bytes[4] != PACKAGE_STATE_ENVELOPE_VERSION {
+            return Err(DeviceContractError::UnsupportedStateVersion);
+        }
+        let package_major = u16::from_le_bytes([bytes[5], bytes[6]]);
+        let package_minor = u16::from_le_bytes([bytes[7], bytes[8]]);
+        let package_patch = u16::from_le_bytes([bytes[9], bytes[10]]);
+        let state_version = u32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
+        let abi_version = u32::from_le_bytes([bytes[15], bytes[16], bytes[17], bytes[18]]);
+        let ui_version = u32::from_le_bytes([bytes[19], bytes[20], bytes[21], bytes[22]]);
+        let mut package_sha256 = [0u8; 32];
+        package_sha256.copy_from_slice(&bytes[23..55]);
+        let mut cursor = 55usize;
+
+        let pub_len = usize::from(
+            *bytes
+                .get(cursor)
+                .ok_or(DeviceContractError::MalformedState)?,
+        );
+        cursor += 1;
+        if pub_len == 0 || pub_len > 64 || cursor + pub_len > bytes.len() {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let publisher_id = std::str::from_utf8(&bytes[cursor..cursor + pub_len])
+            .map_err(|_| DeviceContractError::MalformedState)?
+            .to_owned();
+        cursor += pub_len;
+
+        let type_len = usize::from(
+            *bytes
+                .get(cursor)
+                .ok_or(DeviceContractError::MalformedState)?,
+        );
+        cursor += 1;
+        if type_len == 0 || type_len > MAX_DEVICE_TYPE_ID_BYTES || cursor + type_len > bytes.len() {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let type_id = std::str::from_utf8(&bytes[cursor..cursor + type_len])
+            .map_err(|_| DeviceContractError::MalformedState)?
+            .to_owned();
+        DeviceTypeId::new(&type_id)?;
+        cursor += type_len;
+
+        if cursor + 4 > bytes.len() {
+            return Err(DeviceContractError::MalformedState);
+        }
+        let raw_len = u32::from_le_bytes([
+            bytes[cursor],
+            bytes[cursor + 1],
+            bytes[cursor + 2],
+            bytes[cursor + 3],
+        ]) as usize;
+        cursor += 4;
+        if cursor + raw_len != bytes.len() {
+            return Err(DeviceContractError::MalformedState);
+        }
+        Ok((
+            Self {
+                publisher_id,
+                type_id,
+                package_major,
+                package_minor,
+                package_patch,
+                state_version,
+                abi_version,
+                ui_version,
+                package_sha256,
+            },
+            &bytes[cursor..],
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,6 +773,28 @@ mod tests {
         assert_eq!(
             validate_pcm_output(&[[f32::INFINITY, 0.0]]),
             Err(AbiStatus::InvalidOutput)
+        );
+
+        let env = PackageIdentityEnvelope {
+            publisher_id: "hex.factory".to_owned(),
+            type_id: "hex.pkg.utility".to_owned(),
+            package_major: 1,
+            package_minor: 2,
+            package_patch: 3,
+            state_version: 1,
+            abi_version: PACKAGE_ABI_VERSION_V1,
+            ui_version: 2,
+            package_sha256: [0xAB; 32],
+        };
+        let raw = [1u8, 2, 3, 4, 5];
+        let encoded_env = env.encode_with_raw_state(&raw).expect("encode envelope");
+        let (decoded_env, decoded_raw) =
+            PackageIdentityEnvelope::decode_with_raw_state(&encoded_env).expect("decode envelope");
+        assert_eq!(decoded_env, env);
+        assert_eq!(decoded_raw, &raw);
+        assert_eq!(
+            PackageIdentityEnvelope::decode_with_raw_state(&encoded_env[..10]),
+            Err(DeviceContractError::MalformedState)
         );
     }
 }

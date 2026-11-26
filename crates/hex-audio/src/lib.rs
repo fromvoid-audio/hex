@@ -49,6 +49,8 @@ pub mod external_instrument;
 pub mod hardware_send_return;
 pub mod input_capture;
 pub mod input_devices;
+#[cfg(test)]
+mod installed_package_tests;
 mod open_outcome;
 pub mod output_devices;
 mod output_route;
