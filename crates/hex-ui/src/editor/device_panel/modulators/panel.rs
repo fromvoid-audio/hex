@@ -633,7 +633,9 @@ pub(in crate::editor) fn panel_with_targets(
         }
         let envelope_time = |cx: &mut Context<EditorView>, name: &str, micros, edits: [Edit; 2]| {
             div()
+                .max_w_full()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(2.0))
                 .child(theme::text(format!("{name} {}", duration_text(micros))))
@@ -1331,8 +1333,7 @@ pub(in crate::editor) fn panel_with_targets(
             .debug_selector(|| "device-modulator-scroll".into())
             .flex()
             .flex_col()
-            .min_w(px(104.0))
-            .flex_shrink_0()
+            .w(px(104.0))
             .h_full()
             .occlude()
             .overflow_y_scroll()
