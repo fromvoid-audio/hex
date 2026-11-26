@@ -4,7 +4,7 @@ use crate::fm4::PreparedOperatorNote;
 fn suffix_migration_preserves_every_prefix_and_catalog_version_boundary() {
     let current = crate::operator_state::tests::legacy_state();
     assert_eq!(current.payload().len(), tlv_codec::CANONICAL_BYTES);
-    assert_eq!(OPERATOR_METADATA.descriptors().len(), 500);
+    assert_eq!(OPERATOR_METADATA.descriptors().len(), 518);
     let current_v17 = OperatorSettings::from_state(&current)
         .unwrap()
         .to_v17_state()

@@ -74,6 +74,12 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
         (693, ParameterValue::Float(25.0)),  // Op1 release slope (+25%)
         (694, ParameterValue::Float(0.15)),  // Op1 end level (0.15)
         (695, ParameterValue::Float(2.0)),   // Op1 loop note ratio (2x)
+        (83, ParameterValue::Choice(6)),     // LFO waveform (noise)
+        (711, ParameterValue::Choice(1)),    // LFO range (high)
+        (712, ParameterValue::Bool(true)),   // LFO filter destination
+        (713, ParameterValue::Float(50.0)),  // LFO r<key (+50%)
+        (714, ParameterValue::Float(40.0)),  // LFO amt<vel (+40%)
+        (715, ParameterValue::Bool(true)),   // LFO env enabled
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,

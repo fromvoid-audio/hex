@@ -84,7 +84,11 @@ impl Voice {
         let mut global = factory.settings.global;
         global.pan = (f64::from(global.pan) + effective.pan_delta).clamp(-50.0, 50.0) as f32;
         self.pan_gains = global.gains(self.note.midi_origin().0, self.sequence);
-        self.lfo_rate_multiplier = effective.lfo_rate_octaves.exp2();
+        self.lfo_rate_multiplier = effective.lfo_rate_octaves.exp2()
+            * factory
+                .settings
+                .lfo_ext
+                .rate_key_multiplier(self.note.midi_origin().0);
         self.effective = effective;
         Ok(())
     }

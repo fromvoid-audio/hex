@@ -32,13 +32,15 @@ pub(super) const TAG_PITCH_ENV: u16 = 17;
 pub(super) const TAG_FILTER_ENV: u16 = 18;
 pub(super) const TAG_FILTER_SHAPER: u16 = 19;
 pub(super) const TAG_OSC_ENV_SHAPE: u16 = 20;
+pub(super) const TAG_LFO_EXT: u16 = 21;
 const V18_SECTION_COUNT: u16 = 14;
 const V19_SECTION_COUNT: u16 = 15;
 const V20_SECTION_COUNT: u16 = 16;
 const V21_SECTION_COUNT: u16 = 17;
 const V22_SECTION_COUNT: u16 = 18;
 const V23_SECTION_COUNT: u16 = 19;
-const SECTION_COUNT: u16 = 20;
+const V24_SECTION_COUNT: u16 = 20;
+const SECTION_COUNT: u16 = 21;
 #[cfg(test)]
 pub(super) const CANONICAL_BYTES: usize = HEADER_BYTES
     + SECTION_COUNT as usize * ENTRY_HEADER_BYTES
@@ -48,7 +50,8 @@ pub(super) const CANONICAL_BYTES: usize = HEADER_BYTES
     + pitch_env::BYTES
     + filter_env::BYTES
     + filter_shaper::BYTES
-    + osc_env_shape::BYTES;
+    + osc_env_shape::BYTES
+    + lfo_ext::BYTES;
 
 pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
     let total_bytes = HEADER_BYTES
@@ -59,7 +62,8 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
         + pitch_env::BYTES
         + filter_env::BYTES
         + filter_shaper::BYTES
-        + osc_env_shape::BYTES;
+        + osc_env_shape::BYTES
+        + lfo_ext::BYTES;
     if total_bytes > MAX_TLV_BYTES {
         return Err(DeviceContractError::StateTooLarge);
     }
@@ -69,6 +73,49 @@ pub(super) fn encode(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContr
     out.extend_from_slice(&MAGIC);
     out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
     out.extend_from_slice(&SECTION_COUNT.to_le_bytes());
+    write_v18_sections(&mut out, settings);
+    write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
+        settings.performance.append(buf);
+    });
+    write_section(&mut out, TAG_PITCH_PERF, pitch_perf::BYTES, |buf| {
+        settings.pitch_perf.append(buf);
+    });
+    write_section(&mut out, TAG_PITCH_ENV, pitch_env::BYTES, |buf| {
+        settings.pitch_env.append(buf);
+    });
+    write_section(&mut out, TAG_FILTER_ENV, filter_env::BYTES, |buf| {
+        settings.filter_env.append(buf);
+    });
+    write_section(&mut out, TAG_FILTER_SHAPER, filter_shaper::BYTES, |buf| {
+        settings.filter_shaper.append(buf);
+    });
+    write_section(&mut out, TAG_OSC_ENV_SHAPE, osc_env_shape::BYTES, |buf| {
+        settings.osc_env_shape.append(buf);
+    });
+    write_section(&mut out, TAG_LFO_EXT, lfo_ext::BYTES, |buf| {
+        settings.lfo_ext.append(buf);
+    });
+    debug_assert_eq!(out.len(), total_bytes);
+    Ok(out)
+}
+
+#[cfg(test)]
+pub(super) fn encode_v24(settings: &OperatorSettings) -> Result<Vec<u8>, DeviceContractError> {
+    let total_bytes = HEADER_BYTES
+        + usize::from(V24_SECTION_COUNT) * ENTRY_HEADER_BYTES
+        + PAYLOAD_BYTES
+        + performance::BYTES
+        + pitch_perf::BYTES
+        + pitch_env::BYTES
+        + filter_env::BYTES
+        + filter_shaper::BYTES
+        + osc_env_shape::BYTES;
+    let mut out = Vec::new();
+    out.try_reserve_exact(total_bytes)
+        .map_err(|_| DeviceContractError::RuntimeAllocation)?;
+    out.extend_from_slice(&MAGIC);
+    out.extend_from_slice(&FORMAT_VERSION.to_le_bytes());
+    out.extend_from_slice(&V24_SECTION_COUNT.to_le_bytes());
     write_v18_sections(&mut out, settings);
     write_section(&mut out, TAG_PERFORMANCE, performance::BYTES, |buf| {
         settings.performance.append(buf);
@@ -339,7 +386,8 @@ pub(super) fn decode(
         PITCH_ENV_STATE_VERSION => V21_SECTION_COUNT,
         FILTER_ENV_STATE_VERSION => V22_SECTION_COUNT,
         FILTER_SHAPER_STATE_VERSION => V23_SECTION_COUNT,
-        OSC_ENV_SHAPE_STATE_VERSION => SECTION_COUNT,
+        OSC_ENV_SHAPE_STATE_VERSION => V24_SECTION_COUNT,
+        LFO_EXT_STATE_VERSION => SECTION_COUNT,
         _ => return Err(DeviceContractError::UnsupportedStateVersion),
     };
     if bytes.len() < HEADER_BYTES || bytes.len() > MAX_TLV_BYTES {
@@ -382,6 +430,7 @@ pub(super) fn decode(
     let mut filter_env = filter_env::Settings::default();
     let mut filter_shaper = filter_shaper::Settings::default();
     let mut osc_env_shape = osc_env_shape::Settings::default();
+    let mut lfo_ext = lfo_ext::Settings::default();
 
     for _ in 0..section_count {
         let header = bytes
@@ -468,6 +517,9 @@ pub(super) fn decode(
             }
             TAG_LFO => {
                 lfo = lfo::LfoSettings::decode(section)?;
+                if state_version < LFO_EXT_STATE_VERSION && lfo.uses_v25_waveform() {
+                    return Err(DeviceContractError::MalformedState);
+                }
             }
             TAG_ENABLED => {
                 enabled = enable::EnableSettings::decode(section)?;
@@ -518,6 +570,9 @@ pub(super) fn decode(
             TAG_OSC_ENV_SHAPE if state_version >= OSC_ENV_SHAPE_STATE_VERSION => {
                 osc_env_shape = osc_env_shape::Settings::decode(section)?;
             }
+            TAG_LFO_EXT if state_version >= LFO_EXT_STATE_VERSION => {
+                lfo_ext = lfo_ext::Settings::decode(section)?;
+            }
             _ => return Err(DeviceContractError::MalformedState),
         }
     }
@@ -552,6 +607,7 @@ pub(super) fn decode(
         filter_env,
         filter_shaper,
         osc_env_shape,
+        lfo_ext,
     };
     result.kernel_parts()?;
     Ok(result)

@@ -21,7 +21,8 @@ use hex_lattice_contract::{
 };
 
 pub const OPERATOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.operator");
-pub const OPERATOR_STATE_VERSION: u32 = OSC_ENV_SHAPE_STATE_VERSION;
+pub const OPERATOR_STATE_VERSION: u32 = LFO_EXT_STATE_VERSION;
+const LFO_EXT_STATE_VERSION: u32 = 25;
 const OSC_ENV_SHAPE_STATE_VERSION: u32 = 24;
 const FILTER_SHAPER_STATE_VERSION: u32 = 23;
 const FILTER_ENV_STATE_VERSION: u32 = 22;
@@ -70,6 +71,7 @@ mod enable_continuation;
 #[cfg(test)]
 mod feedback_runtime;
 mod lfo;
+mod lfo_ext;
 #[cfg(test)]
 mod lfo_runtime;
 mod occurrence_gain;
@@ -103,7 +105,8 @@ const PARAMETER_COUNT: usize = STORED_PARAMETER_COUNT
     + pitch_env::COUNT
     + filter_env::COUNT
     + filter_shaper::COUNT
-    + osc_env_shape::COUNT;
+    + osc_env_shape::COUNT
+    + lfo_ext::COUNT;
 const LEGACY_PAYLOAD_BYTES: usize = FIELD_COUNT * size_of::<f32>();
 const WAVEFORM_PAYLOAD_BYTES: usize = LEGACY_PAYLOAD_BYTES + WAVEFORM_COUNT * size_of::<u32>();
 const TUNING_PAYLOAD_BYTES: usize = WAVEFORM_PAYLOAD_BYTES + tuning::BYTES;
@@ -332,6 +335,34 @@ pub mod parameter {
     pub const fn oscillator_loop_note_ratio(operator: u32) -> ParameterId {
         super::osc_env_shape::param_id(operator, 4)
     }
+
+    pub const LFO_RANGE: ParameterId = ParameterId::from_static(super::lfo_ext::RANGE_ID);
+    pub const LFO_DEST_FILTER: ParameterId =
+        ParameterId::from_static(super::lfo_ext::DEST_FILTER_ID);
+    pub const LFO_RATE_KEY: ParameterId = ParameterId::from_static(super::lfo_ext::RATE_KEY_ID);
+    pub const LFO_AMOUNT_VEL: ParameterId = ParameterId::from_static(super::lfo_ext::AMOUNT_VEL_ID);
+    pub const LFO_ENV_ENABLED: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_ENABLED_ID);
+    pub const LFO_ENV_INITIAL: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_INITIAL_ID);
+    pub const LFO_ENV_PEAK: ParameterId = ParameterId::from_static(super::lfo_ext::ENV_PEAK_ID);
+    pub const LFO_ENV_SUSTAIN: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_SUSTAIN_ID);
+    pub const LFO_ENV_END: ParameterId = ParameterId::from_static(super::lfo_ext::ENV_END_ID);
+    pub const LFO_ENV_ATTACK: ParameterId = ParameterId::from_static(super::lfo_ext::ENV_ATTACK_ID);
+    pub const LFO_ENV_DECAY: ParameterId = ParameterId::from_static(super::lfo_ext::ENV_DECAY_ID);
+    pub const LFO_ENV_RELEASE: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_RELEASE_ID);
+    pub const LFO_ENV_ATTACK_SLOPE: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_ATTACK_SLOPE_ID);
+    pub const LFO_ENV_DECAY_SLOPE: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_DECAY_SLOPE_ID);
+    pub const LFO_ENV_RELEASE_SLOPE: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_RELEASE_SLOPE_ID);
+    pub const LFO_ENV_LOOP: ParameterId = ParameterId::from_static(super::lfo_ext::ENV_LOOP_ID);
+    pub const LFO_ENV_LOOP_TIME: ParameterId =
+        ParameterId::from_static(super::lfo_ext::ENV_LOOP_TIME_ID);
+    pub const LFO_ENV_BEAT: ParameterId = ParameterId::from_static(super::lfo_ext::ENV_BEAT_ID);
 
     /// Derived eleven-algorithm selector; zero preserves custom legacy routing.
     pub const ALGORITHM: ParameterId = ParameterId::from_static(600);
@@ -602,6 +633,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < fine::COUNT {
         result[PARAMETER_COUNT
+            - lfo_ext::COUNT
             - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
@@ -617,6 +649,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < keytrack::COUNT {
         result[PARAMETER_COUNT
+            - lfo_ext::COUNT
             - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
@@ -631,6 +664,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < performance::COUNT {
         result[PARAMETER_COUNT
+            - lfo_ext::COUNT
             - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
@@ -644,6 +678,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < pitch_perf::COUNT {
         result[PARAMETER_COUNT
+            - lfo_ext::COUNT
             - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
@@ -656,6 +691,7 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let mut offset = 0;
     while offset < pitch_env::COUNT {
         result[PARAMETER_COUNT
+            - lfo_ext::COUNT
             - osc_env_shape::COUNT
             - filter_shaper::COUNT
             - filter_env::COUNT
@@ -666,21 +702,32 @@ const fn parameters() -> [ParameterDescriptor; PARAMETER_COUNT] {
     let filter_env = filter_env::descriptors();
     let mut offset = 0;
     while offset < filter_env::COUNT {
-        result[PARAMETER_COUNT - osc_env_shape::COUNT - filter_shaper::COUNT - filter_env::COUNT
+        result[PARAMETER_COUNT
+            - lfo_ext::COUNT
+            - osc_env_shape::COUNT
+            - filter_shaper::COUNT
+            - filter_env::COUNT
             + offset] = filter_env[offset];
         offset += 1;
     }
     let filter_shaper = filter_shaper::descriptors();
     let mut offset = 0;
     while offset < filter_shaper::COUNT {
-        result[PARAMETER_COUNT - osc_env_shape::COUNT - filter_shaper::COUNT + offset] =
-            filter_shaper[offset];
+        result[PARAMETER_COUNT - lfo_ext::COUNT - osc_env_shape::COUNT - filter_shaper::COUNT
+            + offset] = filter_shaper[offset];
         offset += 1;
     }
     let osc_env_shape = osc_env_shape::descriptors();
     let mut offset = 0;
     while offset < osc_env_shape::COUNT {
-        result[PARAMETER_COUNT - osc_env_shape::COUNT + offset] = osc_env_shape[offset];
+        result[PARAMETER_COUNT - lfo_ext::COUNT - osc_env_shape::COUNT + offset] =
+            osc_env_shape[offset];
+        offset += 1;
+    }
+    let lfo_ext = lfo_ext::descriptors();
+    let mut offset = 0;
+    while offset < lfo_ext::COUNT {
+        result[PARAMETER_COUNT - lfo_ext::COUNT + offset] = lfo_ext[offset];
         offset += 1;
     }
     result
@@ -711,6 +758,7 @@ pub struct OperatorSettings {
     filter_env: filter_env::Settings,
     filter_shaper: filter_shaper::Settings,
     osc_env_shape: osc_env_shape::Settings,
+    lfo_ext: lfo_ext::Settings,
 }
 
 impl OperatorSettings {
@@ -744,6 +792,7 @@ impl OperatorSettings {
             filter_env: filter_env::Settings::default(),
             filter_shaper: filter_shaper::Settings::default(),
             osc_env_shape: osc_env_shape::Settings::default(),
+            lfo_ext: lfo_ext::Settings::default(),
         }
     }
 
@@ -766,6 +815,7 @@ impl OperatorSettings {
                 | FILTER_ENV_STATE_VERSION
                 | FILTER_SHAPER_STATE_VERSION
                 | OSC_ENV_SHAPE_STATE_VERSION
+                | LFO_EXT_STATE_VERSION
         ) {
             return tlv_codec::decode(state.payload(), state.state_version());
         }
@@ -867,7 +917,13 @@ impl OperatorSettings {
             }
         }
         let lfo = if state.state_version() >= LFO_STATE_VERSION {
-            lfo::LfoSettings::decode(&state.payload()[FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES])?
+            let decoded = lfo::LfoSettings::decode(
+                &state.payload()[FEEDBACK_PAYLOAD_BYTES..LFO_PAYLOAD_BYTES],
+            )?;
+            if decoded.uses_v25_waveform() {
+                return Err(DeviceContractError::MalformedState);
+            }
+            decoded
         } else {
             lfo::LfoSettings::default()
         };
@@ -935,6 +991,7 @@ impl OperatorSettings {
             return Err(DeviceContractError::MalformedState);
         }
         let result = Self {
+            lfo_ext: lfo_ext::Settings::default(),
             osc_env_shape: osc_env_shape::Settings::default(),
             filter_shaper: filter_shaper::Settings::default(),
             filter_env: filter_env::Settings::default(),
@@ -1077,6 +1134,7 @@ impl OperatorSettings {
         self.filter_env.validate()?;
         self.filter_shaper.validate()?;
         self.osc_env_shape.validate()?;
+        self.lfo_ext.validate()?;
         for descriptor in PARAMETERS.iter().take(FLOAT_PARAMETER_COUNT) {
             descriptor.validate(ParameterValue::Float(
                 self.fields[descriptor.id.value() as usize - 1],
@@ -1286,6 +1344,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = OperatorSettings::from_state(state)?;
+        if let Some(value) = settings.lfo_ext.read(parameter) {
+            return Ok(value);
+        }
         if let Some(value) = settings.osc_env_shape.read(parameter) {
             return Ok(value);
         }
@@ -1413,6 +1474,13 @@ impl NativeDeviceMetadata for OperatorMetadata {
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
         let mut settings = OperatorSettings::from_state(state)?;
+        if settings.lfo_ext.patch(parameter, value)? {
+            if parameter == parameter::LFO_RANGE {
+                settings.lfo.set_sync(settings.lfo_ext.is_sync());
+            }
+            settings.global.active = true;
+            return settings.to_state();
+        }
         if settings.osc_env_shape.patch(parameter, value)? {
             settings.global.active = true;
             return settings.to_state();
@@ -1472,6 +1540,16 @@ impl NativeDeviceMetadata for OperatorMetadata {
             return settings.to_state();
         }
         if settings.lfo.patch(parameter, value) {
+            if parameter == parameter::LFO_SYNC {
+                if settings.lfo.sync() {
+                    settings.lfo_ext.set_range(2);
+                } else if settings.lfo_ext.is_sync() {
+                    settings.lfo_ext.set_range(0);
+                }
+            }
+            if settings.lfo.uses_v25_waveform() {
+                settings.global.active = true;
+            }
             return settings.to_state();
         }
         if let Some(index) = OperatorSettings::feedback_index(parameter) {
@@ -1611,6 +1689,8 @@ impl PreparedNativeInstrument for PreparedOperatorInstrument {
             || !self.harmonic_runtime.settings.filter_env.is_neutral()
             || !self.harmonic_runtime.settings.filter_shaper.is_neutral()
             || !self.harmonic_runtime.settings.osc_env_shape.is_neutral()
+            || !self.harmonic_runtime.settings.lfo_ext.is_neutral()
+            || self.harmonic_runtime.settings.lfo.uses_v25_waveform()
             || self.harmonic_runtime.settings.filter.circuit() != 0
             || self.harmonic_runtime.settings.fine.values() != [0.0; OPERATORS]
             || self

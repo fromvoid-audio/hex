@@ -175,6 +175,8 @@ impl Runtime {
         let pitch_env_active = self.factory.settings.pitch_env.enabled();
         let filter_env_active =
             self.factory.settings.filter.armed && self.factory.settings.filter_env.amount() != 0.0;
+        let lfo_env_active =
+            self.factory.settings.lfo.active() && self.factory.settings.lfo_ext.env_enabled();
         let output_stage_active = base_tone_alpha.is_some()
             || base_volume_gain != 1.0
             || base_spread_pct > 0.0
@@ -195,7 +197,12 @@ impl Runtime {
                 .factory
                 .settings
                 .filter_env
-                .needs_clock(self.factory.settings.filter.armed);
+                .needs_clock(self.factory.settings.filter.armed)
+            || self
+                .factory
+                .settings
+                .lfo_ext
+                .needs_clock(self.factory.settings.lfo.active());
         let has_modulation = self.factory.configuration.has_modulation();
         let needs_companion_transport = companion.needs_running()
             || self.factory.settings.pitch_env.needs_running()
@@ -203,7 +210,12 @@ impl Runtime {
                 .factory
                 .settings
                 .filter_env
-                .needs_running(self.factory.settings.filter.armed);
+                .needs_running(self.factory.settings.filter.armed)
+            || self
+                .factory
+                .settings
+                .lfo_ext
+                .needs_running(self.factory.settings.lfo.active());
         let base_targets = automation::base_target_values(&self.factory.settings);
         let rate_f64 = f64::from(self.factory.rate);
         let step_per_hz = (u64::MAX as f64 + 1.0) / rate_f64;
@@ -236,7 +248,7 @@ impl Runtime {
                 } else {
                     None
                 };
-                if companion_active || pitch_env_active || filter_env_active {
+                if companion_active || pitch_env_active || filter_env_active || lfo_env_active {
                     for voice in self.voices.iter_mut().take(voice_end) {
                         if voice.id != 0 {
                             let obs_age = if quality {
@@ -254,6 +266,9 @@ impl Runtime {
                             }
                             if let Some(fe) = &mut voice.filter_env {
                                 let _ = fe.observe(obs_age, beat, running);
+                            }
+                            if let Some(le) = &mut voice.lfo_env {
+                                let _ = le.observe(obs_age, beat, running);
                             }
                         }
                     }
@@ -395,7 +410,9 @@ impl Runtime {
                     .map_or_else(|| law.amount(), |v| f64::from(v).clamp(0.0, 100.0) / 100.0);
                 let delta = if !law.active() {
                     0.0
-                } else if law.sync() {
+                } else if self.factory.settings.lfo_ext.is_high() {
+                    ((lfo_rate_hz * 100.0).min(0.45 * rate_f64)) / rate_f64
+                } else if law.sync() || self.factory.settings.lfo_ext.is_sync() {
                     clock
                         .and_then(|c| c.beat_at_offset(offset).zip(c.beat_at_offset(offset + 1)))
                         .map_or(0.0, |(a, b)| {
@@ -594,7 +611,7 @@ impl Runtime {
                 for (local, (frame, sample_ctx)) in
                     sub_frames.iter_mut().zip(sub_slice.iter()).enumerate()
                 {
-                    if (companion_active || pitch_env_active || filter_env_active)
+                    if (companion_active || pitch_env_active || filter_env_active || lfo_env_active)
                         && !(local == 0 && voices_changed)
                     {
                         let obs_age = if quality {
@@ -613,6 +630,9 @@ impl Runtime {
                         }
                         if let Some(fe) = &mut voice.filter_env {
                             let _ = fe.observe(obs_age, sample_ctx.beat, sample_ctx.running);
+                        }
+                        if let Some(le) = &mut voice.lfo_env {
+                            let _ = le.observe(obs_age, sample_ctx.beat, sample_ctx.running);
                         }
                     }
                     let [left, right] = render_voice_sample(
@@ -772,13 +792,19 @@ fn render_voice_sample(
     let quality = factory.settings.global.active;
     let spectrum = ctx.spectrum.as_ref().unwrap_or(&factory.target);
     let parameters = ctx.parameters;
+    let age = if quality {
+        voice.envelope_frame()
+    } else {
+        voice.age
+    };
+    let lfo_ext = factory.settings.lfo_ext;
     let phase = if law.retrigger() || quality {
         (voice.lfo_fraction, voice.lfo_cycle)
     } else {
         ctx.phase
     };
-    let multiplier = if law.active() {
-        ((if quality {
+    let (lfo_signal, multiplier) = if law.active() {
+        let wave = if quality {
             factory.lfo_table.sample(
                 law.0[1],
                 phase.0,
@@ -787,16 +813,28 @@ fn render_voice_sample(
             )
         } else {
             lfo::waveform(law.0[1], phase.0, phase.1)
-        }) * (ctx.lfo_amount
+        };
+        let raw_depth = (ctx.lfo_amount
             + if quality {
                 voice.effective.lfo_amount_delta / 100.0
             } else {
                 0.0
             })
-        .clamp(-1.0, 1.0))
-        .exp2()
+        .clamp(-1.0, 1.0);
+        let depth = if lfo_ext.is_neutral() {
+            raw_depth
+        } else {
+            let vel_scale = lfo_ext.amount_vel_scale(voice.note.midi_origin().1);
+            let env_scale = voice
+                .lfo_env
+                .as_ref()
+                .map_or(1.0, |le| (le.value(age) / 100.0).clamp(0.0, 1.0));
+            (raw_depth * vel_scale * env_scale).clamp(-1.0, 1.0)
+        };
+        let sig = wave * depth;
+        (sig, sig.exp2())
     } else {
-        1.0
+        (0.0, 1.0)
     };
     let steps = if let Some((scales, fine_deltas)) = ctx.pitch_mod {
         let modulated = std::array::from_fn(|op| {
@@ -811,11 +849,6 @@ fn render_voice_sample(
         }
     } else {
         static_steps
-    };
-    let age = if quality {
-        voice.envelope_frame()
-    } else {
-        voice.age
     };
     let pitch_env_st = voice.pitch_env.as_ref().map_or(0.0, |pe| {
         factory.settings.pitch_env.semitone_offset(
@@ -894,9 +927,14 @@ fn render_voice_sample(
             }
         }
     }
+    let lfo_filter_oct = if law.active() && lfo_ext.dest_filter() {
+        lfo_signal * 4.0
+    } else {
+        0.0
+    };
     let filter_env_oct = voice.filter_env.as_ref().map_or(0.0, |fe| {
         filter_env::Settings::envelope_octaves(fe, age, ctx.filter_env_amount_st)
-    });
+    }) + lfo_filter_oct;
     let voice_filter_frame = if filter_env_oct != 0.0 && factory.settings.filter.armed {
         let triplet = ctx
             .automated_filter_triplet
@@ -1066,14 +1104,15 @@ fn render_voice_sample(
         } else {
             1.0
         };
-        let next = voice.lfo_fraction
-            + ctx.delta
-                * pe_lfo_mult
-                * if quality {
-                    voice.lfo_rate_multiplier
-                } else {
-                    1.0
-                };
+        let step_delta = (ctx.delta
+            * pe_lfo_mult
+            * if quality {
+                voice.lfo_rate_multiplier
+            } else {
+                1.0
+            })
+        .clamp(0.0, 0.45);
+        let next = voice.lfo_fraction + step_delta;
         voice.lfo_cycle = voice.lfo_cycle.wrapping_add(next.floor() as u64);
         voice.lfo_fraction = next.fract();
     }

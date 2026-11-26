@@ -216,12 +216,23 @@ impl Factory {
         } else {
             None
         };
+        let lfo_env = if settings.lfo.active() && settings.lfo_ext.env_enabled() {
+            Some(mod_env::Machine::prepare(
+                settings.lfo_ext.spec(),
+                self.rate,
+                beat,
+                running,
+            )?)
+        } else {
+            None
+        };
         Ok(Voice {
             note,
             phases,
             machines,
             pitch_env,
             filter_env,
+            lfo_env,
             ..Voice::default()
         })
     }
@@ -356,6 +367,7 @@ pub(super) struct Voice {
     pub glide_target_pitch: f64,
     pub pitch_env: Option<mod_env::Machine>,
     pub filter_env: Option<mod_env::Machine>,
+    pub lfo_env: Option<mod_env::Machine>,
 }
 #[derive(Clone, Copy)]
 pub(super) struct ParameterRamp {

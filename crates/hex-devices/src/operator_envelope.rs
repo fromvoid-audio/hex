@@ -57,7 +57,9 @@ impl OperatorEnvelopeShape {
         release_slope: f64,
     ) -> Result<Self, Invalid> {
         if !end.is_finite() || !(0.0..=1.0).contains(&end) {
-            return Err(Invalid("operator envelope end level must be finite in [0, 1]"));
+            return Err(Invalid(
+                "operator envelope end level must be finite in [0, 1]",
+            ));
         }
         if [attack_slope, decay_slope, release_slope]
             .iter()
