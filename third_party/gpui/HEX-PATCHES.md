@@ -568,3 +568,15 @@ previous-frame `LineLayoutCache` or scene indices against a newer
 unsafe code, public API or scheduling change. Hex regressions cover nested
 outer-cache-hit to uncached transitions with shrinking text layouts and the
 hosted `EditorWindowRoot` sibling-overlay transition.
+
+26 November consecutive identical draw-order leaf reuse (#8784): `BoundsTree`
+retains `last_leaf` and its verified root-to-leaf ancestor path `last_path`
+after live insertions of nonempty rectangles that perform no tree rotation.
+When the immediately following live insertion submits an exact identical
+nonempty rectangle, it advances that leaf's order by one (`checked_add(1)`)
+and propagates `max_order` along `last_path` without descending the tree or
+re-scanning sibling subtrees. Rotations, reservations, ordered groups, clears,
+and degenerate/empty rectangles clear or bypass the cached path. Confined to
+`src/bounds_tree.rs`; verified by `BoundsTree::verify_ordering` against the
+independent leaf-scan oracle across duplicates, intervening overlaps,
+degenerate rectangles, reservations, ordered groups and clears.

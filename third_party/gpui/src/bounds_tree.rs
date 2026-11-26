@@ -13,6 +13,8 @@ where
     nodes: Vec<Node<U>>,
     stack: Vec<usize>,
     group_members: Vec<(TreeBounds<U>, u32)>,
+    last_leaf: Option<usize>,
+    last_path: Vec<usize>,
 }
 
 impl<U> BoundsTree<U>
@@ -31,6 +33,8 @@ where
         self.nodes.clear();
         self.stack.clear();
         self.group_members.clear();
+        self.last_leaf = None;
+        self.last_path.clear();
     }
 
     pub fn insert(&mut self, new_bounds: Bounds<U>) -> u32 {
@@ -50,10 +54,41 @@ where
 
     fn insert_with_order(&mut self, raw_bounds: Bounds<U>, reserved: Option<u32>) -> u32 {
         let bounds = TreeBounds::from_bounds(&raw_bounds);
+        // Fast path: when the immediately preceding live insertion placed an exact
+        // identical nonempty rectangle into `last_leaf` with a verified ancestor
+        // path, every older intersecting leaf/group already has order <= `*stored`,
+        // and because the rectangle intersects itself the next order is `*stored + 1`.
+        if reserved.is_none()
+            && let Some(leaf) = self.last_leaf
+            && let Some(Node::Leaf {
+                bounds: old,
+                order: stored,
+            }) = self.nodes.get_mut(leaf)
+            && *old == bounds
+            && let Some(next) = (*stored).checked_add(1)
+        {
+            *stored = next;
+            for &ancestor in self.last_path.iter().rev() {
+                if let Node::Internal { max_order, .. } = &mut self.nodes[ancestor] {
+                    if *max_order >= next {
+                        break;
+                    }
+                    *max_order = next;
+                }
+            }
+            return next;
+        }
+        self.last_leaf = None;
+        self.last_path.clear();
+
         let Some(index) = self.placement_leaf(&bounds) else {
             let order = reserved.unwrap_or(1);
             let leaf = self.push_leaf(bounds, order);
             self.root = Some(leaf);
+            if reserved.is_none() && self.nodes[leaf].bounds().intersects(self.nodes[leaf].bounds())
+            {
+                self.last_leaf = Some(leaf);
+            }
             return order;
         };
 
@@ -70,18 +105,33 @@ where
             }
         }
         let order = reserved.unwrap_or_else(|| order + 1);
-        if let Node::Leaf {
+        let nonempty = bounds.intersects(&bounds);
+        let target_leaf = if let Node::Leaf {
             bounds: old,
             order: stored,
         } = &mut self.nodes[index]
             && *old == bounds
         {
             *stored = (*stored).max(order);
+            if reserved.is_none() && nonempty {
+                self.last_path.extend_from_slice(&self.stack);
+            }
+            index
         } else {
             let leaf = self.push_leaf(bounds, order);
-            self.attach(leaf, index);
+            let parent = self.attach(leaf, index);
+            if reserved.is_none() && nonempty {
+                self.last_path.extend_from_slice(&self.stack);
+                self.last_path.push(parent);
+            }
+            leaf
+        };
+        let rotated = self.rebalance_placement();
+        if reserved.is_none() && nonempty && !rotated {
+            self.last_leaf = Some(target_leaf);
+        } else {
+            self.last_path.clear();
         }
-        self.rebalance_placement();
         order
     }
 
@@ -91,6 +141,8 @@ where
         if bounds.is_empty() || bounds.len() != orders.len() {
             return None;
         }
+        self.last_leaf = None;
+        self.last_path.clear();
         let start = self.group_members.len();
         let mut envelope = TreeBounds::from_bounds(&bounds[0]);
         let mut max_order = 0;
@@ -152,7 +204,7 @@ where
         Some(index)
     }
 
-    fn attach(&mut self, leaf: usize, index: usize) {
+    fn attach(&mut self, leaf: usize, index: usize) -> usize {
         let parent = self.push_internal(index, leaf);
         if let Some(&ancestor) = self.stack.last() {
             let Node::Internal { left, right, .. } = &mut self.nodes[ancestor] else {
@@ -166,12 +218,15 @@ where
         } else {
             self.root = Some(parent);
         }
+        parent
     }
 
-    fn rebalance_placement(&mut self) {
+    fn rebalance_placement(&mut self) -> bool {
+        let mut rotated = false;
         while let Some(parent) = self.stack.pop() {
-            self.rebalance(parent);
+            rotated |= self.rebalance(parent);
         }
+        rotated
     }
 
     fn find_order(&self, index: usize, bounds: &TreeBounds<U>, mut order: u32) -> u32 {
@@ -258,7 +313,7 @@ where
         self.set_internal(index, far, left);
     }
 
-    fn rebalance(&mut self, index: usize) {
+    fn rebalance(&mut self, index: usize) -> bool {
         let (left, right) = self.children(index);
         let left_height = self.nodes[left].height();
         let right_height = self.nodes[right].height();
@@ -268,14 +323,17 @@ where
                 self.rotate_right(right);
             }
             self.rotate_left(index);
+            true
         } else if left_height > right_height + 1 {
             let (far, near) = self.children(left);
             if self.nodes[near].height() > self.nodes[far].height() {
                 self.rotate_left(left);
             }
             self.rotate_right(index);
+            true
         } else {
             self.set_internal(index, left, right);
+            false
         }
     }
 }
@@ -290,6 +348,8 @@ where
             nodes: Vec::new(),
             stack: Vec::new(),
             group_members: Vec::new(),
+            last_leaf: None,
+            last_path: Vec::new(),
         }
     }
 }
@@ -625,6 +685,83 @@ mod ordering_verification {
         )?;
         edge.clear();
         require(edge.insert(bounds) == 1, "clear retained old order state")?;
+
+        // Consecutive identical degenerate/empty rectangles do not intersect themselves
+        // and must not use the nonempty leaf fast path to inflate their order.
+        let mut degenerate = BoundsTree::default();
+        let cover = rect(0.0, 0.0, 4.0, 4.0);
+        require(degenerate.insert(cover) == 1, "degenerate cover")?;
+        for empty in [
+            rect(1.0, 1.0, 0.0, 2.0),
+            rect(1.0, 1.0, 2.0, 0.0),
+            rect(1.0, 1.0, f32::EPSILON / 4.0, 2.0),
+        ] {
+            let expected_first = if cover.intersects(&empty) { 2 } else { 1 };
+            require(
+                degenerate.insert(empty) == expected_first,
+                "first degenerate bounds order mismatch",
+            )?;
+            require(
+                degenerate.insert(empty) == expected_first,
+                "consecutive degenerate bounds spuriously incremented order",
+            )?;
+        }
+
+        // Bursts of consecutive identical nonempty rectangles interleaved with overlaps,
+        // reservations, ordered groups and clears must match an independent leaf scan.
+        let mut burst_tree = BoundsTree::default();
+        let mut burst_leaves: Vec<(Bounds<f32>, u32)> = Vec::new();
+        let mut rng = 0x5eed_8784_u64;
+        for step in 0..160 {
+            if step % 64 == 0 {
+                burst_tree.clear();
+                burst_leaves.clear();
+            }
+            rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let x = ((rng >> 16) % 32) as f32 * 2.0;
+            let y = ((rng >> 28) % 16) as f32 * 2.0;
+            let b = rect(x, y, 4.0, 4.0);
+            if step % 19 == 0 {
+                let g = [b, rect(x + 0.5, y + 0.5, 3.0, 3.0)];
+                let mut orders = [0; 2];
+                require(
+                    burst_tree.insert_group(&g, &mut orders).is_some(),
+                    "burst insert_group failed",
+                )?;
+                for (rect_item, actual) in g.into_iter().zip(orders) {
+                    let expected = burst_leaves
+                        .iter()
+                        .filter(|(prev, _)| prev.intersects(&rect_item))
+                        .map(|(_, o)| *o)
+                        .max()
+                        .unwrap_or(0)
+                        + 1;
+                    require(actual == expected, "burst group order mismatch")?;
+                    burst_leaves.push((rect_item, actual));
+                }
+            } else if step % 17 == 0 {
+                let base = burst_leaves.iter().map(|(_, o)| *o).max().unwrap_or(0) + 1;
+                require(
+                    burst_tree.reserve(b, 2) == Some(base),
+                    "burst reserve mismatch",
+                )?;
+                burst_leaves.push((b, base + 2));
+            } else {
+                let repeats = ((rng >> 40) % 4) + 1;
+                for _ in 0..repeats {
+                    let expected = burst_leaves
+                        .iter()
+                        .filter(|(prev, _)| prev.intersects(&b))
+                        .map(|(_, o)| *o)
+                        .max()
+                        .unwrap_or(0)
+                        + 1;
+                    let actual = burst_tree.insert(b);
+                    require(actual == expected, "consecutive identical fast path mismatch")?;
+                    burst_leaves.push((b, actual));
+                }
+            }
+        }
         Ok(())
     }
 }
