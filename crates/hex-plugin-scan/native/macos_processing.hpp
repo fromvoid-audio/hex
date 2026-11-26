@@ -214,7 +214,8 @@ public:
             const int32 aux_ch=channels[i-1];
             for (int32 n=0;n<num_samples;++n) {
                 const Sample l=std::isfinite(pointers[i-1][0][n])?pointers[i-1][0][n]:Sample(0);
-                const Sample r=(aux_ch>=2 && std::isfinite(pointers[i-1][1][n]))?pointers[i-1][1][n]:l;
+                const Sample right=aux_ch==2?pointers[i-1][1][n]:l;
+                const Sample r=std::isfinite(right)?right:Sample(0);
                 if (main_bus.numChannels==1 && main_ch[0]) {
                     const Sample sum=aux_ch>=2?Sample(0.5)*(l+r):l;
                     if (sum!=Sample(0)) {
