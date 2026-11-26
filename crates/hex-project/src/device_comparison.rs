@@ -20,6 +20,8 @@ impl DeviceVariant {
 pub enum DeviceComparisonAction {
     Switch,
     CopyToInactive,
+    /// Copy the named slot to its peer, capturing an independent bank on first use.
+    CopyFrom(DeviceVariant),
 }
 
 /// The other authored variant. `Device::state()` remains the active provider input.
@@ -105,6 +107,15 @@ impl Device {
                     comparison.inactive.clone_from(&self.state);
                 }
             }
+            DeviceComparisonAction::CopyFrom(source) => match &mut self.comparison {
+                None => {
+                    self.comparison = Some(DeviceComparison::new(expected, self.state.clone()));
+                }
+                Some(comparison) if source == expected => {
+                    comparison.inactive.clone_from(&self.state)
+                }
+                Some(comparison) => self.state.clone_from(&comparison.inactive),
+            },
             DeviceComparisonAction::Switch => {
                 if let Some(comparison) = self.comparison.as_mut() {
                     std::mem::swap(&mut self.state, &mut comparison.inactive);

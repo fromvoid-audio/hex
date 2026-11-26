@@ -293,9 +293,21 @@ pub(in crate::editor) fn render_source(
     };
     let manager = source_manager::button(view, window, cx);
     let close = source_manager::close_button(view, window, cx);
-    div()
+    let focus = view.device_panel.chain_window.focus(device.id(), cx);
+    let selected = view.device_panel.is_selected(device.id());
+    let title = device_comparison::source_title(
+        device.id(),
+        format!(
+            "source · {}",
+            hex_session::service::text::verbatim(definition.name())
+        ),
+        cx,
+    );
+    let comparison = device_comparison::actions(view, device, identity.class, selected, cx);
+    let panel = div()
         .id("source-device-panel")
         .debug_selector(|| "source-device-panel".into())
+        .track_focus(&focus)
         .h(px(DEVICE_PANEL_HEIGHT))
         .w_full()
         .flex_shrink_0()
@@ -316,13 +328,11 @@ pub(in crate::editor) fn render_source(
                 .items_center()
                 .gap(px(4.0))
                 .children(std::iter::once(manager))
-                .child(theme::text(format!(
-                    "source · {}",
-                    hex_session::service::text::verbatim(definition.name())
-                )))
+                .children([title.into_any_element(), comparison.into_any_element()])
                 .children(std::iter::once(close)),
         )
-        .child(body)
+        .child(body);
+    device_comparison::card(view, cx, device.id(), identity.class, focus, panel)
 }
 
 pub(in crate::editor) fn render_track(

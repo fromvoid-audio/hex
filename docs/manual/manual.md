@@ -952,6 +952,10 @@ click a device header to focus its card, then press **0** to toggle its bypass.
 this uses the same state as the header bypass control and supports undo/redo.
 while a parameter field or browser search has focus, **0** remains text input.
 
+with a native device header focused, press **,** to hear settings a or **.** to
+hear settings b. press **option-,** to copy a to b or **option-.** to copy b
+to a. copying keeps the current slot selected and can be undone with **cmd-z**.
+
 double-click a device title to collapse its body or expand it again. with a
 device header focused, press **-** to collapse the selected devices and **+**
 to expand them. collapsed devices keep their header controls and continue
