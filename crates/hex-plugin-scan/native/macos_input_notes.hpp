@@ -1,6 +1,7 @@
 // A borrowed read-only SDK event list on the isolated processing lane.
 #pragma once
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivstnoteexpression.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <thread>
 
 namespace hex_instance {
@@ -196,6 +198,31 @@ public:
     }
 };
 
+struct ChannelVoiceMessage {
+    uint8 length;
+    std::array<uint8,3> bytes;
+};
+
+// Legacy output has no note identity. Only pitch bend and poly pressure use
+// the second value. System messages have no channel-voice wire representation.
+inline std::optional<ChannelVoiceMessage> channel_voice_output(const LegacyMIDICCOutEvent& cc) {
+    if(cc.channel<0 || cc.channel>15 || cc.value<0) return std::nullopt;
+    const auto value=static_cast<uint8>(cc.value);
+    const auto status=[&](uint8 kind) { return static_cast<uint8>(kind|cc.channel); };
+    if(cc.controlNumber<128)
+        return ChannelVoiceMessage{3,{status(0xb0),cc.controlNumber,value}};
+    switch(cc.controlNumber) {
+    case kAfterTouch: return ChannelVoiceMessage{2,{status(0xd0),value,0}};
+    case kCtrlProgramChange: return ChannelVoiceMessage{2,{status(0xc0),value,0}};
+    case kPitchBend:
+    case kCtrlPolyPressure:
+        if(cc.value2>=0) return ChannelVoiceMessage{3,{status(cc.controlNumber==kPitchBend?0xe0:0xa0),
+                                                       value,static_cast<uint8>(cc.value2)}};
+        break;
+    }
+    return std::nullopt;
+}
+
 // An SDK slice borrows its bus-zero output list on the processing lane.
 // Keep validation failures separate from lifetime violations: a refused
 // event invalidates the whole reply, including any earlier slice's releases.
@@ -217,6 +244,18 @@ public:
 
     tresult PLUGIN_API addEvent(Event& event) override {
         if(!accessible()) return kInvalidArgument;
+        if(invalid || count>=capacity || event.busIndex!=0 ||
+            event.sampleOffset<0 || event.sampleOffset>=frames ||
+            (count && events[count-1].sampleOffset>event.sampleOffset)) {
+            invalid=true;return kInvalidArgument;
+        }
+        if(event.type==Event::kLegacyMIDICCOutEvent) {
+            if(event.midiCCOut.channel>=channels || !channel_voice_output(event.midiCCOut)) {
+                invalid=true;return kInvalidArgument;
+            }
+            events[count++]=event;
+            return kResultOk;
+        }
         int16 channel=-1,pitch=-1;
         int32 id=-1;
         float value=0;
@@ -233,10 +272,7 @@ public:
         default:
             invalid=true;return kNotImplemented;
         }
-        if(invalid || count>=capacity || event.busIndex!=0 ||
-            event.sampleOffset<0 || event.sampleOffset>=frames ||
-            (count && events[count-1].sampleOffset>event.sampleOffset) ||
-            channel<0 || channel>=channels || pitch<0 || pitch>127 ||
+        if(channel<0 || channel>=channels || pitch<0 || pitch>127 ||
             !std::isfinite(value) || value<0 || value>1 ||
             (id< -1 && (id< -10000 || id> -1000))) {
             invalid=true;return kInvalidArgument;
