@@ -19,6 +19,8 @@ mod gate;
 mod instrument_rack;
 #[path = "callback_allocations/midi_processor.rs"]
 mod midi_processor;
+#[path = "callback_allocations/multi_output.rs"]
+mod multi_output;
 #[path = "callback_allocations/multisample_zones.rs"]
 mod multisample_zones;
 #[path = "callback_allocations/output_capture.rs"]
