@@ -34,10 +34,11 @@ use hex_engine::{NativeDeviceParameterView, NativeDeviceView};
 use hex_lattice_contract::package_ui::{
     MAX_PACKAGE_UI_FRAME_WIDTH, MAX_PACKAGE_UI_JSON_BYTES, MIN_PACKAGE_UI_FRAME_WIDTH,
     PACKAGE_UI_VERSION_V1, PackageNumericFormat, PackagePresentationSnapshot, PackageUiControl,
-    PackageUiCurveNodeBinding, PackageUiCurvePlot, PackageUiItem, PackageUiMeter, PackageUiSchema,
-    PackageUiSection, PackageUiWidgetKind, PackageVisibilityRule, UI_CAP_CONDITIONAL_VISIBILITY,
-    UI_CAP_CURVE_PLOT, UI_CAP_METER, UI_CAP_SCALAR, UI_CAP_SECTIONS, UI_CAP_SELECTOR,
-    UI_CAP_SPECTRUM_OVERLAY, UI_CAP_TOGGLE,
+    PackageUiCurveNodeBinding, PackageUiCurvePlot, PackageUiEnvelopePlot,
+    PackageUiHarmonicBarGraph, PackageUiItem, PackageUiMeter, PackageUiSchema, PackageUiSection,
+    PackageUiWidgetKind, PackageVisibilityRule, UI_CAP_CONDITIONAL_VISIBILITY, UI_CAP_CURVE_PLOT,
+    UI_CAP_ENVELOPE_PLOT, UI_CAP_HARMONIC_EDITOR, UI_CAP_METER, UI_CAP_SCALAR, UI_CAP_SECTIONS,
+    UI_CAP_SELECTOR, UI_CAP_SPECTRUM_OVERLAY, UI_CAP_TOGGLE,
 };
 use hex_lattice_contract::{ParameterDescriptor, ParameterId, ParameterValue};
 use hex_project::DeviceId;
@@ -90,6 +91,8 @@ pub fn parse_package_ui_json(raw: &str) -> Result<PackageUiSchema, String> {
             "conditional_visibility" => UI_CAP_CONDITIONAL_VISIBILITY,
             "curve_plot" => UI_CAP_CURVE_PLOT,
             "spectrum_overlay" => UI_CAP_SPECTRUM_OVERLAY,
+            "envelope_plot" => UI_CAP_ENVELOPE_PLOT,
+            "harmonic_editor" => UI_CAP_HARMONIC_EDITOR,
             unknown => {
                 return Err(format!("unsupported package ui capability '{unknown}'"));
             }
@@ -365,6 +368,86 @@ fn parse_item(value: &Value) -> Result<PackageUiItem, String> {
                 nodes,
             }))
         }
+        "envelope_plot" => {
+            for key in obj.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "kind"
+                        | "plot_id"
+                        | "label"
+                        | "attack_parameter"
+                        | "decay_parameter"
+                        | "sustain_parameter"
+                        | "release_parameter"
+                ) {
+                    return Err(format!("unknown package ui envelope_plot field '{key}'"));
+                }
+            }
+            let pid = |name: &str| -> Result<ParameterId, String> {
+                let raw = obj
+                    .get(name)
+                    .and_then(Value::as_u64)
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or_else(|| format!("envelope_plot missing valid {name}"))?;
+                ParameterId::new(raw).map_err(|_| format!("invalid {name} {raw}"))
+            };
+            let plot_id = obj
+                .get("plot_id")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| "envelope_plot missing valid plot_id".to_owned())?;
+            let label = obj
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "envelope_plot missing label".to_owned())?
+                .to_owned();
+            Ok(PackageUiItem::EnvelopePlot(PackageUiEnvelopePlot {
+                plot_id,
+                label,
+                attack_parameter: pid("attack_parameter")?,
+                decay_parameter: pid("decay_parameter")?,
+                sustain_parameter: pid("sustain_parameter")?,
+                release_parameter: pid("release_parameter")?,
+            }))
+        }
+        "harmonic_bars" => {
+            for key in obj.keys() {
+                if !matches!(
+                    key.as_str(),
+                    "kind" | "graph_id" | "label" | "harmonic_parameters"
+                ) {
+                    return Err(format!("unknown package ui harmonic_bars field '{key}'"));
+                }
+            }
+            let graph_id = obj
+                .get("graph_id")
+                .and_then(Value::as_u64)
+                .and_then(|v| u32::try_from(v).ok())
+                .ok_or_else(|| "harmonic_bars missing valid graph_id".to_owned())?;
+            let label = obj
+                .get("label")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "harmonic_bars missing label".to_owned())?
+                .to_owned();
+            let raw_params = obj
+                .get("harmonic_parameters")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "harmonic_bars missing harmonic_parameters".to_owned())?;
+            let mut harmonic_parameters = Vec::with_capacity(raw_params.len());
+            for entry in raw_params {
+                let raw = entry
+                    .as_u64()
+                    .and_then(|v| u32::try_from(v).ok())
+                    .ok_or_else(|| "invalid harmonic parameter id".to_owned())?;
+                harmonic_parameters
+                    .push(ParameterId::new(raw).map_err(|_| format!("invalid harmonic id {raw}"))?);
+            }
+            Ok(PackageUiItem::HarmonicBarGraph(PackageUiHarmonicBarGraph {
+                graph_id,
+                label,
+                harmonic_parameters,
+            }))
+        }
         unknown => Err(format!("unknown package ui item kind '{unknown}'")),
     }
 }
@@ -573,6 +656,12 @@ pub(in crate::editor) fn render_body(
                 PackageUiItem::CurvePlot(plot) => {
                     grid = grid.child(render_readonly_curve_plot(plot, snapshot));
                 }
+                PackageUiItem::EnvelopePlot(env) => {
+                    grid = grid.child(render_readonly_envelope_plot(env));
+                }
+                PackageUiItem::HarmonicBarGraph(harm) => {
+                    grid = grid.child(render_readonly_harmonic_bars(harm));
+                }
             }
         }
         column = column.child(grid);
@@ -714,6 +803,43 @@ fn render_readonly_curve_plot(
         .child(theme::text(format!(
             "{} bands · {bins} pts · {spectrum_bins} fft",
             plot.nodes.len()
+        )))
+}
+
+fn render_readonly_envelope_plot(env: &PackageUiEnvelopePlot) -> Div {
+    div()
+        .w(px(120.0))
+        .h(px(44.0))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .p(px(4.0))
+        .border_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .text_size(px(9.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(env.label.as_str()))
+        .child(theme::text("adsr"))
+}
+
+fn render_readonly_harmonic_bars(harm: &PackageUiHarmonicBarGraph) -> Div {
+    div()
+        .w(px(120.0))
+        .h(px(44.0))
+        .flex()
+        .flex_col()
+        .justify_between()
+        .p(px(4.0))
+        .border_1()
+        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+        .text_size(px(9.0))
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(harm.label.as_str()))
+        .child(theme::text(format!(
+            "{} partials",
+            harm.harmonic_parameters.len()
         )))
 }
 
