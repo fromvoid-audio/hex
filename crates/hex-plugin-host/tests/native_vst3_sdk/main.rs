@@ -369,6 +369,115 @@ fn source() -> Source {
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn independent_processor_note_output_preserves_slices_pcm_and_capacity() {
+    use crate::transport::{ProcessTiming, SegmentTiming, channel};
+    for (variant, split) in [
+        (0, false),
+        (167, true),
+        (168, false),
+        (168, true),
+        (169, false),
+        (170, false),
+        (171, false),
+    ] {
+        let case = Case::new();
+        let mut instance = Prepared::prepare(
+            &build(),
+            source(),
+            options(),
+            PreparationCancellation::new_on_control().unwrap(),
+            case.setup(variant),
+        )
+        .unwrap();
+        let binding = instance.configuration().binding;
+        let mut input = request(instance.configuration(), 0);
+        if split {
+            let (_control, mut callback, mut worker) = channel(binding, 8).unwrap();
+            callback.begin_physical_callback(8).unwrap();
+            for (offset, playing) in [(0, true), (4, false)] {
+                callback
+                    .stage_segment_with_timing(
+                        offset,
+                        &[[0.25, -0.5]; 4],
+                        &[],
+                        &[],
+                        &mut [[0.0; 2]; 4],
+                        SegmentTiming {
+                            playing: Some(playing),
+                            at: |i| {
+                                Some(ProcessTiming {
+                                    playing,
+                                    arrangement_frame: (offset + i) as i64,
+                                    ..Default::default()
+                                })
+                            },
+                        },
+                    )
+                    .unwrap();
+            }
+            callback.finish(true).unwrap();
+            input = worker.receive_request().unwrap().unwrap().block;
+            assert_eq!(input.timing_changes.as_slice().len(), 1);
+        }
+        let pcm = input.pcm;
+        let reply = instance.exchange_on_worker(input);
+        if variant >= 169 || (variant == 168 && split) {
+            assert!(
+                matches!(reply, Err(Error::Worker(7))),
+                "invalid processor reply variant {variant} was published"
+            );
+            instance.cancel_and_reap_on_control().unwrap();
+            continue;
+        }
+        let reply = reply.unwrap();
+        assert_eq!(reply.binding, binding);
+        for (i, input) in pcm[..8].iter().enumerate() {
+            let scale = if variant == 167 && i >= 4 { 0.625 } else { 0.5 };
+            assert_eq!(reply.pcm[i], [input[0] * scale, input[1] * scale]);
+        }
+        let events = reply.events.as_slice();
+        if variant == 0 {
+            assert!(events.is_empty());
+        } else if variant == 167 {
+            let points = reply.parameters.as_slice();
+            assert_eq!(points.len(), 1);
+            assert_eq!(
+                (points[0].frame, points[0].id, points[0].normalized),
+                (2, 7, 0.75)
+            );
+            let notes: Vec<_> = events
+                .iter()
+                .map(|e| (e.frame, e.bytes, e.vst3_output_note_id()))
+                .collect();
+            assert_eq!(
+                notes,
+                [
+                    (1, [0x92, 61, 64], Some(0)),
+                    (4, [0xa2, 61, 32], Some(0)),
+                    (7, [0x82, 61, 127], Some(0))
+                ]
+            );
+            assert!(
+                instance
+                    .exchange_on_worker(request(instance.configuration(), 1))
+                    .unwrap()
+                    .events
+                    .as_slice()
+                    .is_empty()
+            );
+        } else {
+            assert_eq!(events.len(), 64);
+            assert_eq!(events[0].bytes, [0x92, 61, 1]);
+            for (i, event) in events.iter().enumerate() {
+                assert_eq!(event.vst3_output_note_id(), Some(i as i32 + 1));
+            }
+        }
+        instance.stop_and_reap_on_control().unwrap();
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn sdk_timing_follows_the_original_sliced_instrument_reply() {
     use crate::transport::{ProcessTiming, SegmentTiming, channel};
     let case = Case::new();

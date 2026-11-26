@@ -1072,6 +1072,7 @@ int main(int argc,char** argv) {
                     };
                     wire::Packet packet{};
                     hex_instance::InputNotes input_notes;
+                    hex_instance::OutputNotes output_notes;
                     hex_instance::HeldInputNotes held_notes;
                     std::array<float,wire::max_frames> left{},right{},aux_left{},aux_right{},output_left{},output_right{};
                     float* input_pointers[]={left.data(),right.data()};float* output_pointers[]={output_left.data(),output_right.data()};
@@ -1093,11 +1094,18 @@ int main(int argc,char** argv) {
                         auto release=data;
                         release.numSamples=1;release.processContext=&stopped;
                         release.inputEvents=&input_notes;
+                        const auto output_channels=instance.event_output_channels();
+                        // A quiescent release has no PCM reply. Refuse renewal if the
+                        // processor emits an event that cannot be delivered to the graph.
+                        if(output_channels && !output_notes.begin(1,output_channels,0)) return false;
+                        release.outputEvents=output_channels?&output_notes:nullptr;
                         release.inputParameterChanges=nullptr;release.outputParameterChanges=&parameter_output;
                         const auto restart_frontier=instance.value_restart_frontier_on_worker();
                         const bool processed=instance.process(release);
                         const bool parameters_returned=parameter_output.end_sdk(), notes_returned=input_notes.end();
-                        if(!processed || !parameters_returned || !notes_returned) return false;
+                        const bool outputs_returned=!output_channels || output_notes.end();
+                        if(!processed || !parameters_returned || !notes_returned || !outputs_returned ||
+                            (output_channels && !output_notes.valid())) return false;
                         for(size_t index=0;index<parameter_output.size();++index) {
                             hex_instance::ParameterPoint point{};
                             if(!parameter_output.point(index,point)) return false;
@@ -1282,6 +1290,7 @@ int main(int argc,char** argv) {
                             }
                         }
                         const auto event_channels=instance.event_input_channels();
+                        const auto output_channels=instance.event_output_channels();
                         // The wire has already validated the notes. A generator
                         // with no event bus still renders with inputEvents=null.
                         if(config->inputs && !event_channels && (packet.note_count || packet.controller_count)) valid=false;
@@ -1412,6 +1421,11 @@ int main(int argc,char** argv) {
                             window.inputParameterChanges=parameter_input.size()?&parameter_input:nullptr;
                             window.outputParameterChanges=&parameter_output;
                             window.inputEvents=event_channels?&input_notes:nullptr;
+                            if(output_channels && !output_notes.begin(width,output_channels,
+                                hex_instance::OUTPUT_NOTE_COUNT-packet.output_event_count)) {
+                                worker_failure.store(Processing);break;
+                            }
+                            window.outputEvents=output_channels?&output_notes:nullptr;
                             window.processContext=slice_context;
                             window.numSamples=width;phase.store(2,std::memory_order_release);
                             const auto host_frontier=instance.editor_frontier_on_worker();
@@ -1429,10 +1443,13 @@ int main(int argc,char** argv) {
                             // No SDK stop/unload beneath a retained borrowed queue.
                             const bool input_returned=parameter_input.end_sdk(),output_returned=parameter_output.end_sdk();
                             const bool notes_returned=!event_channels || input_notes.end();
-                            if(!input_returned || !output_returned || !notes_returned) {
+                            const bool emitted_returned=!output_channels || output_notes.end();
+                            if(!input_returned || !output_returned || !notes_returned || !emitted_returned) {
                                 error(channel,&*config,Processing);std::_Exit(Processing);
                             }
-                            if(!processed) { worker_failure.store(Processing);break; }
+                            if(!processed || (output_channels && !packet.append_output_slice(first,output_notes))) {
+                                worker_failure.store(Processing);break;
+                            }
                             // Mirror the latest chronological value per ID. DSP
                             // feedback wins a tie, never a later host point.
                             size_t incoming=0,outgoing=0;

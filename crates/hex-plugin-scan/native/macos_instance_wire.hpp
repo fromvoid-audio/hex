@@ -241,7 +241,8 @@ struct Packet {
     std::array<ControllerPoint,hex_instance::LEGACY_INPUT_NOTE_COUNT> controllers{};
     size_t note_count=0,controller_count=0;
     size_t parameter_count=0;
-    size_t reply_parameter_count=0,timing_change_count=0;
+    std::array<std::array<uint8_t,12>,hex_instance::OUTPUT_NOTE_COUNT> output_events{};
+    size_t output_event_count=0,reply_parameter_count=0,timing_change_count=0;
     bool reply_parameters_coalesced=false;
     std::array<hex_instance::ParameterPoint,hex_instance::PARAMETER_POINT_COUNT> reply_parameters{};
     std::array<TimingChange,timing_change_limit> timing_changes{};
@@ -291,7 +292,7 @@ struct Packet {
         if(from_shm && !pcm) return -1;
         const auto wire_version=number(p+4,2);
         const bool guarded_flush=flush && wire_version==3;
-        reply_parameter_count=0;
+        output_event_count=0;reply_parameter_count=0;
         reply_parameters_coalesced=false;
         expected_editor_admission.reset();
         constexpr uint64_t authored_bit=0x8000;
@@ -661,12 +662,43 @@ struct Packet {
         put(point+24,edit.id,4);put(point+28,0,4);
         ++reply_editor_count;return true;
     }
+    bool append_output_slice(size_t first,const hex_instance::OutputNotes& notes) {
+        if(!notes.valid() || notes.size()>output_events.size()-output_event_count) return false;
+        for(size_t n=0;n<notes.size();++n) {
+            const auto& event=notes.at(n);
+            const auto frame=first+static_cast<size_t>(event.sampleOffset);
+            if(frame>=frames) return false;
+            auto& out=output_events[output_event_count++];
+            out={};out[0]=static_cast<uint8_t>(frame);out[1]=static_cast<uint8_t>(frame>>8);out[2]=3;
+            int32_t id=-1;float value=0;
+            switch(event.type) {
+            case Steinberg::Vst::Event::kNoteOnEvent:
+                out[3]=0x90|event.noteOn.channel;out[4]=event.noteOn.pitch;
+                id=event.noteOn.noteId;value=event.noteOn.velocity;break;
+            case Steinberg::Vst::Event::kNoteOffEvent:
+                out[3]=0x80|event.noteOff.channel;out[4]=event.noteOff.pitch;
+                id=event.noteOff.noteId;value=event.noteOff.velocity;break;
+            case Steinberg::Vst::Event::kPolyPressureEvent:
+                out[3]=0xa0|event.polyPressure.channel;out[4]=event.polyPressure.pitch;
+                id=event.polyPressure.noteId;value=event.polyPressure.pressure;break;
+            default: return false;
+            }
+            out[5]=static_cast<uint8_t>(std::lround(value*127.0f));
+            // MIDI represents a zero-velocity note-on as a release. Preserve
+            // the SDK gate even for an onset below the first velocity step.
+            if(event.type==Steinberg::Vst::Event::kNoteOnEvent && !out[5]) out[5]=1;
+            out[6]=(event.flags&Steinberg::Vst::Event::kIsLive)?1:0;
+            const uint32_t raw=id==-1?0u:(id==0?UINT32_MAX:static_cast<uint32_t>(id));
+            for(size_t byte=0;byte<4;++byte) out[8+byte]=static_cast<uint8_t>(raw>>(byte*8));
+        }
+        return true;
+    }
     bool write(int fd,const hex_instance_shm::ShmRing* shm=nullptr) {
-        bytes[4]=reply_parameter_count?2:1;
+        bytes[4]=output_event_count?3:(reply_parameter_count?2:1);
         bytes[5]=static_cast<uint8_t>(((observe_editor_pcm?editor_pcm_bit:0)|
             (group_touch?editor_group_touch_bit:(editor_touch?editor_touch_bit:0))|
             (observe_sdk_timing?sdk_timing_bit:0))>>8);
-        bytes[8]=bytes[9]=0; // Input notes are never echoed as processor output.
+        bytes[8]=static_cast<uint8_t>(output_event_count);bytes[9]=0;
         bytes[10]=static_cast<uint8_t>(reply_parameter_count);
         std::fill(bytes.begin()+11,bytes.begin()+16,0); // Request timing is never echoed.
         bytes[12]=static_cast<uint8_t>(reply_editor_count);
@@ -674,6 +706,14 @@ struct Packet {
         const auto put=[](uint8_t* dst,uint64_t value,size_t count) {
             for(size_t n=0;n<count;++n) dst[n]=static_cast<uint8_t>(value>>(n*8));
         };
+        if(output_event_count) {
+            const auto start=header_size+frames*8;
+            const auto added=output_event_count*output_events.front().size();
+            if(size+added>bytes.size()) return false;
+            std::memmove(bytes.data()+start+added,bytes.data()+start,size-start);
+            std::memcpy(bytes.data()+start,output_events.data(),added);
+            size+=added;
+        }
         for(const auto& restored:editor_restore) {
             if(!restored.sequence) break;
             if(!editor_touch || (!group_touch && bytes[13]) || size+editor_restore_bytes>bytes.size()) return false;

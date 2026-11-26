@@ -81,9 +81,11 @@ public:
     }
 };
 
-class InputNotes final : public IEventList {
+template<size_t Capacity>
+class ProcessEvents : public IEventList {
+protected:
     const std::thread::id worker=std::this_thread::get_id();
-    std::array<Event,INPUT_NOTE_COUNT> events{};
+    std::array<Event,Capacity> events{};
     size_t count=0;
     bool active=false;
     std::atomic<uint32> references{1};
@@ -94,6 +96,50 @@ class InputNotes final : public IEventList {
         refused.store(true,std::memory_order_relaxed);
         return false;
     }
+public:
+    bool end() {
+        active=false;
+        return references.load()==1 && !refused.load();
+    }
+    tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
+        if(!out) return kInvalidArgument;
+        *out=nullptr;
+        if(!accessible() || !iid) return kInvalidArgument;
+        if(std::memcmp(iid,INLINE_UID_OF(IEventList),16) &&
+           std::memcmp(iid,INLINE_UID_OF(FUnknown),16)) return kNoInterface;
+        addRef();
+        *out=static_cast<IEventList*>(this);
+        return kResultOk;
+    }
+    uint32 PLUGIN_API addRef() override {
+        if(!accessible()) return references.load();
+        const auto count=references.load();
+        if(count==std::numeric_limits<uint32>::max()) {
+            refused.store(true);
+            return count;
+        }
+        return ++references;
+    }
+    uint32 PLUGIN_API release() override {
+        if(!accessible()) return references.load();
+        if(references.load()==1) {
+            refused.store(true);
+            return 1;
+        }
+        return --references;
+    }
+    int32 PLUGIN_API getEventCount() override {
+        return accessible()?static_cast<int32>(count):0;
+    }
+    tresult PLUGIN_API getEvent(int32 index,Event& event) override {
+        if(!accessible() || index<0 || static_cast<size_t>(index)>=count) return kInvalidArgument;
+        event=events[static_cast<size_t>(index)];
+        return kResultOk;
+    }
+    tresult PLUGIN_API addEvent(Event&) override { return kNotImplemented; }
+};
+
+class InputNotes final : public ProcessEvents<INPUT_NOTE_COUNT> {
 public:
     // Populate Event::ppqPosition from the active slice's ProcessContext:
     // - When kProjectTimeMusicValid is set and playing with a valid positive
@@ -148,45 +194,55 @@ public:
         active=true;
         return true;
     }
-    bool end() {
-        active=false;
-        return references.load()==1 && !refused.load();
+};
+
+// An SDK slice borrows its bus-zero output list on the processing lane.
+// Keep validation failures separate from lifetime violations: a refused
+// event invalidates the whole reply, including any earlier slice's releases.
+inline constexpr size_t OUTPUT_NOTE_COUNT=64;
+class OutputNotes final : public ProcessEvents<OUTPUT_NOTE_COUNT> {
+    int32 frames=0,channels=0;
+    size_t capacity=0;
+    bool invalid=false;
+public:
+    bool begin(int32 slice_frames,int32 output_channels,size_t remaining) {
+        if(active || refused.load() || references.load()!=1 || remaining>events.size()) return false;
+        active=true;count=0;invalid=false;
+        frames=slice_frames;channels=output_channels;capacity=remaining;
+        return true;
     }
-    tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
-        if(!out) return kInvalidArgument;
-        *out=nullptr;
-        if(!accessible() || !iid) return kInvalidArgument;
-        if(std::memcmp(iid,INLINE_UID_OF(IEventList),16) &&
-           std::memcmp(iid,INLINE_UID_OF(FUnknown),16)) return kNoInterface;
-        addRef();
-        *out=static_cast<IEventList*>(this);
+    bool valid() const { return !invalid; }
+    size_t size() const { return count; }
+    const Event& at(size_t index) const { return events[index]; }
+
+    tresult PLUGIN_API addEvent(Event& event) override {
+        if(!accessible()) return kInvalidArgument;
+        int16 channel=-1,pitch=-1;
+        int32 id=-1;
+        float value=0;
+        switch(event.type) {
+        case Event::kNoteOnEvent:
+            channel=event.noteOn.channel;pitch=event.noteOn.pitch;id=event.noteOn.noteId;value=event.noteOn.velocity;
+            break;
+        case Event::kNoteOffEvent:
+            channel=event.noteOff.channel;pitch=event.noteOff.pitch;id=event.noteOff.noteId;value=event.noteOff.velocity;
+            break;
+        case Event::kPolyPressureEvent:
+            channel=event.polyPressure.channel;pitch=event.polyPressure.pitch;id=event.polyPressure.noteId;value=event.polyPressure.pressure;
+            break;
+        default:
+            invalid=true;return kNotImplemented;
+        }
+        if(invalid || count>=capacity || event.busIndex!=0 ||
+            event.sampleOffset<0 || event.sampleOffset>=frames ||
+            (count && events[count-1].sampleOffset>event.sampleOffset) ||
+            channel<0 || channel>=channels || pitch<0 || pitch>127 ||
+            !std::isfinite(value) || value<0 || value>1 ||
+            (id< -1 && (id< -10000 || id> -1000))) {
+            invalid=true;return kInvalidArgument;
+        }
+        events[count++]=event;
         return kResultOk;
     }
-    uint32 PLUGIN_API addRef() override {
-        if(!accessible()) return references.load();
-        const auto count=references.load();
-        if(count==std::numeric_limits<uint32>::max()) {
-            refused.store(true);
-            return count;
-        }
-        return ++references;
-    }
-    uint32 PLUGIN_API release() override {
-        if(!accessible()) return references.load();
-        if(references.load()==1) {
-            refused.store(true);
-            return 1;
-        }
-        return --references;
-    }
-    int32 PLUGIN_API getEventCount() override {
-        return accessible()?static_cast<int32>(count):0;
-    }
-    tresult PLUGIN_API getEvent(int32 index,Event& event) override {
-        if(!accessible() || index<0 || static_cast<size_t>(index)>=count) return kInvalidArgument;
-        event=events[static_cast<size_t>(index)];
-        return kResultOk;
-    }
-    tresult PLUGIN_API addEvent(Event&) override { return kNotImplemented; }
 };
 } // namespace hex_instance
