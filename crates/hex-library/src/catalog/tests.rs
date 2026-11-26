@@ -807,6 +807,7 @@ fn metadata_query_tags_collections_and_sorting_accurate_across_10k_entries() {
         });
     }
     sort_entries(&mut catalog.entries, true);
+    catalog.rebuild_search_index();
 
     // Structured query across 12,000 entries: tag + codec + sample_rate + duration sort
     let matches = catalog.query(&CatalogQuery {
@@ -1018,4 +1019,259 @@ fn mutations_enforce_absolute_paths_and_bounds_and_invalid_filters_return_empty(
     let tagged = catalog.search_with_listing_in("tag:a-tag-00 kick", Some(&root_b), Some(&listing));
     assert_eq!(tagged.len(), 1);
     assert_eq!(tagged[0].path, sample_b);
+}
+
+#[test]
+fn schwartzian_metadata_sorts_preserve_exact_order_missing_placement_and_path_tiebreaks() {
+    struct SortFixture {
+        path: &'static str,
+        size: Option<u64>,
+        audio: Option<(u32, u16, u64)>,
+    }
+    let mut catalog = SampleCatalog::default();
+    let specs = [
+        SortFixture {
+            path: "/lib/b_short_48k_24.wav",
+            size: Some(4_000),
+            audio: Some((48_000, 24, 500)),
+        },
+        SortFixture {
+            path: "/lib/a_short_48k_24.wav",
+            size: Some(4_000),
+            audio: Some((48_000, 24, 500)),
+        },
+        SortFixture {
+            path: "/lib/c_long_96k_16.wav",
+            size: Some(9_000),
+            audio: Some((96_000, 16, 2_000)),
+        },
+        SortFixture {
+            path: "/lib/d_mid_44k_32.wav",
+            size: Some(2_000),
+            audio: Some((44_100, 32, 1_000)),
+        },
+        SortFixture {
+            path: "/lib/e_record_no_audio.wav",
+            size: Some(12_000),
+            audio: None,
+        },
+        SortFixture {
+            path: "/lib/f_no_record.wav",
+            size: None,
+            audio: None,
+        },
+    ];
+    for spec in specs {
+        let path = PathBuf::from(spec.path);
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if let Some(size) = spec.size {
+            let audio = spec.audio.map(|(sample_rate, bit_depth, duration_ms)| {
+                let frame_count = (u64::from(sample_rate) * duration_ms) / 1_000;
+                AudioHeaderMetadata {
+                    sample_rate,
+                    channels: 2,
+                    bit_depth,
+                    frame_count,
+                    codec: AudioCodec::WavPcm,
+                }
+            });
+            catalog.records.insert(
+                path.clone(),
+                SampleRecord {
+                    size,
+                    modified_ns: 1,
+                    fingerprint: Some(Fingerprint::from_value(1)),
+                    audio,
+                    audio_inspected: true,
+                },
+            );
+        }
+        catalog.entries.push(LibraryEntry {
+            name,
+            path,
+            kind: EntryKind::WaveAudio,
+        });
+    }
+    sort_entries(&mut catalog.entries, true);
+    catalog.rebuild_search_index();
+
+    let paths_for = |sort: CatalogSort| -> Vec<String> {
+        catalog
+            .query(&CatalogQuery {
+                sort,
+                ..CatalogQuery::default()
+            })
+            .into_iter()
+            .map(|e| e.path.to_string_lossy().into_owned())
+            .collect()
+    };
+
+    assert_eq!(
+        paths_for(CatalogSort::DurationAsc),
+        [
+            "/lib/a_short_48k_24.wav",
+            "/lib/b_short_48k_24.wav",
+            "/lib/d_mid_44k_32.wav",
+            "/lib/c_long_96k_16.wav",
+            "/lib/e_record_no_audio.wav",
+            "/lib/f_no_record.wav",
+        ]
+    );
+    assert_eq!(
+        paths_for(CatalogSort::DurationDesc),
+        [
+            "/lib/c_long_96k_16.wav",
+            "/lib/d_mid_44k_32.wav",
+            "/lib/a_short_48k_24.wav",
+            "/lib/b_short_48k_24.wav",
+            "/lib/e_record_no_audio.wav",
+            "/lib/f_no_record.wav",
+        ]
+    );
+    assert_eq!(
+        paths_for(CatalogSort::SampleRateAsc),
+        [
+            "/lib/d_mid_44k_32.wav",
+            "/lib/a_short_48k_24.wav",
+            "/lib/b_short_48k_24.wav",
+            "/lib/c_long_96k_16.wav",
+            "/lib/e_record_no_audio.wav",
+            "/lib/f_no_record.wav",
+        ]
+    );
+    assert_eq!(
+        paths_for(CatalogSort::SampleRateDesc),
+        [
+            "/lib/c_long_96k_16.wav",
+            "/lib/a_short_48k_24.wav",
+            "/lib/b_short_48k_24.wav",
+            "/lib/d_mid_44k_32.wav",
+            "/lib/e_record_no_audio.wav",
+            "/lib/f_no_record.wav",
+        ]
+    );
+    assert_eq!(
+        paths_for(CatalogSort::BitDepthDesc),
+        [
+            "/lib/d_mid_44k_32.wav",
+            "/lib/a_short_48k_24.wav",
+            "/lib/b_short_48k_24.wav",
+            "/lib/c_long_96k_16.wav",
+            "/lib/e_record_no_audio.wav",
+            "/lib/f_no_record.wav",
+        ]
+    );
+    assert_eq!(
+        paths_for(CatalogSort::SizeDesc),
+        [
+            "/lib/e_record_no_audio.wav",
+            "/lib/c_long_96k_16.wav",
+            "/lib/a_short_48k_24.wav",
+            "/lib/b_short_48k_24.wav",
+            "/lib/d_mid_44k_32.wav",
+            "/lib/f_no_record.wav",
+        ]
+    );
+}
+
+#[test]
+fn prefolded_search_index_stays_in_sync_across_load_relocate_and_retain() {
+    let fixture = Fixture::new();
+    let old_root = fixture.0.join("PackAlpha");
+    let keep_root = fixture.0.join("KeepBeta");
+    let moved_root = fixture.0.join("PackRenamed");
+    let kick = old_root.join("ΣΟΣ_Kick.WAV");
+    let pad = keep_root.join("WarmPad.wav");
+    write(&kick, &minimal_wav(48_000, 2, 16, 4_800));
+    write(&pad, &minimal_wav(48_000, 2, 16, 4_800));
+
+    let scanned = scan_samples(&[old_root.clone(), keep_root.clone()]).catalog;
+    assert_eq!(scanned.folded_paths.len(), scanned.entries.len());
+    assert_eq!(scanned.filtered("packalpha σος", None).len(), 1);
+
+    let db = fixture.0.join("folded.db");
+    assert!(scanned.save(&db).unwrap());
+    let mut loaded = SampleCatalog::load(&db).unwrap();
+    assert_eq!(loaded.folded_paths.len(), loaded.entries.len());
+    assert_eq!(loaded.filtered("packalpha kick", None).len(), 1);
+
+    loaded.relocate_root(&old_root, &moved_root);
+    assert_eq!(loaded.folded_paths.len(), loaded.entries.len());
+    assert!(loaded.filtered("packalpha", None).is_empty());
+    let moved = loaded.filtered("packrenamed σος", None);
+    assert_eq!(moved.len(), 1);
+    assert_eq!(moved[0].path, moved_root.join("ΣΟΣ_Kick.WAV"));
+
+    loaded.retain_roots(std::slice::from_ref(&keep_root));
+    assert_eq!(loaded.folded_paths.len(), loaded.entries.len());
+    assert!(loaded.filtered("packrenamed", None).is_empty());
+    assert_eq!(loaded.filtered("warmpad", None).len(), 1);
+}
+
+#[test]
+fn streaming_save_compare_handles_multi_chunk_noop_mutation_truncation_and_growth() {
+    let fixture = Fixture::new();
+    let mut catalog = SampleCatalog::default();
+    // ~600 entries produce > 40 KiB, spanning multiple 16 KiB compare chunks.
+    for i in 0..600_usize {
+        let path = PathBuf::from(format!(
+            "/synthetic/streaming-compare/bank-{:02}/sample-{i:04}-long-path-segment.wav",
+            i % 16
+        ));
+        catalog.records.insert(
+            path.clone(),
+            SampleRecord {
+                size: 1024 + i as u64,
+                modified_ns: 42,
+                fingerprint: Some(Fingerprint::from_value(i as u64 + 1)),
+                audio: Some(AudioHeaderMetadata {
+                    sample_rate: 48_000,
+                    channels: 2,
+                    bit_depth: 24,
+                    frame_count: 48_000,
+                    codec: AudioCodec::WavPcm,
+                }),
+                audio_inspected: true,
+            },
+        );
+        catalog.entries.push(LibraryEntry {
+            name: format!("sample-{i:04}-long-path-segment.wav"),
+            path,
+            kind: EntryKind::WaveAudio,
+        });
+    }
+    sort_entries(&mut catalog.entries, true);
+    catalog.rebuild_search_index();
+
+    let db = fixture.0.join("multi-chunk.db");
+    assert!(catalog.save(&db).unwrap());
+    let encoded = fs::read(&db).unwrap();
+    assert!(
+        encoded.len() > 32 * 1024,
+        "fixture must span multiple compare chunks, got {} bytes",
+        encoded.len()
+    );
+    assert!(
+        !catalog.save(&db).unwrap(),
+        "exact multi-chunk match is a no-op"
+    );
+
+    // Flip a byte in the second chunk (offset > 16 KiB): must detect and rewrite.
+    let mut mutated = encoded.clone();
+    mutated[20_000] ^= 0x55;
+    fs::write(&db, &mutated).unwrap();
+    assert!(catalog.save(&db).unwrap());
+    assert_eq!(fs::read(&db).unwrap(), encoded);
+
+    // Truncate by 1 byte: must detect and rewrite.
+    fs::write(&db, &encoded[..encoded.len() - 1]).unwrap();
+    assert!(catalog.save(&db).unwrap());
+    assert_eq!(fs::read(&db).unwrap(), encoded);
+
+    // Append 1 trailing byte: must detect and rewrite.
+    let mut grown = encoded.clone();
+    grown.push(0);
+    fs::write(&db, &grown).unwrap();
+    assert!(catalog.save(&db).unwrap());
+    assert_eq!(fs::read(&db).unwrap(), encoded);
 }

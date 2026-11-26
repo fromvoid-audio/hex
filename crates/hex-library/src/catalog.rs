@@ -38,9 +38,12 @@ pub(super) const MAX_CATALOG_BYTES: usize = 32 * 1024 * 1024;
 
 /// A derived sample database with audio header metadata and persistent user tags/collections.
 /// Original paths remain the import/preview identity.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct SampleCatalog {
     entries: Vec<LibraryEntry>,
+    /// Pre-folded lowercase paths parallel to `entries`, keeping interactive search
+    /// keystrokes free of per-entry `PathBuf` lowercasing allocations.
+    folded_paths: Vec<String>,
     /// File facts keyed by original path. Entries loaded from a version 1 cache
     /// have no record until the next scan inspects them.
     records: HashMap<PathBuf, SampleRecord>,
@@ -49,6 +52,17 @@ pub struct SampleCatalog {
     /// Persistent named collections of original sample paths.
     collections: BTreeMap<String, BTreeSet<PathBuf>>,
 }
+
+impl PartialEq for SampleCatalog {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+            && self.records == other.records
+            && self.tags == other.tags
+            && self.collections == other.collections
+    }
+}
+
+impl Eq for SampleCatalog {}
 
 /// Facts recorded for one sample file when it was last scanned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -319,9 +333,13 @@ impl SampleCatalog {
         }
         // A relocated entry may now alias one already cataloged under `new`.
         let mut seen = BTreeSet::new();
+        let before = self.entries.len();
         self.entries.retain(|entry| seen.insert(entry.path.clone()));
         if moved {
             sort_entries(&mut self.entries, true);
+        }
+        if moved || self.entries.len() != before || self.folded_paths.len() != self.entries.len() {
+            self.rebuild_search_index();
         }
     }
 
@@ -427,12 +445,35 @@ impl SampleCatalog {
 
     /// Discard cached records outside the current configured roots.
     pub fn retain_roots(&mut self, roots: &[PathBuf]) {
-        self.entries
-            .retain(|entry| roots.iter().any(|root| entry.path.starts_with(root)));
+        if self.folded_paths.len() == self.entries.len() {
+            let keep: Vec<bool> = self
+                .entries
+                .iter()
+                .map(|entry| roots.iter().any(|root| entry.path.starts_with(root)))
+                .collect();
+            let mut keep_entries = keep.iter().copied();
+            self.entries
+                .retain(|_| keep_entries.next().unwrap_or(false));
+            let mut keep_folded = keep.into_iter();
+            self.folded_paths
+                .retain(|_| keep_folded.next().unwrap_or(false));
+        } else {
+            self.entries
+                .retain(|entry| roots.iter().any(|root| entry.path.starts_with(root)));
+            self.rebuild_search_index();
+        }
         let entries = &self.entries;
         if self.records.len() > entries.len() {
             let kept: BTreeSet<_> = entries.iter().map(|entry| entry.path.as_path()).collect();
             self.records.retain(|path, _| kept.contains(path.as_path()));
+        }
+    }
+
+    pub(super) fn rebuild_search_index(&mut self) {
+        self.folded_paths.clear();
+        self.folded_paths.reserve(self.entries.len());
+        for entry in &self.entries {
+            self.folded_paths.push(fold_path(&entry.path));
         }
     }
 
@@ -491,116 +532,215 @@ impl SampleCatalog {
         let required_channels = q.channels.or(parsed.inline_channels);
         let required_codec = q.codec.or(parsed.inline_codec);
 
-        let mut folded = String::new();
-        let mut results: Vec<LibraryEntry> = self
-            .entries
-            .iter()
-            .filter(|entry| {
+        if self.tags.is_empty() && (required_tag.is_some() || !parsed.inline_tags.is_empty()) {
+            return Vec::new();
+        }
+        let need_tags = !self.tags.is_empty()
+            && (required_tag.is_some()
+                || !parsed.inline_tags.is_empty()
+                || !parsed.text_terms.is_empty());
+        let need_audio_filter = required_codec.is_some()
+            || required_rate.is_some()
+            || required_channels.is_some()
+            || q.min_duration_ms.is_some()
+            || q.max_duration_ms.is_some();
+        let sort_needs_record = !matches!(q.sort, CatalogSort::NameAsc | CatalogSort::NameDesc);
+        let has_pre_folded = self.folded_paths.len() == self.entries.len();
+
+        let mut folded_scratch = String::new();
+        if !sort_needs_record {
+            let mut results = Vec::new();
+            for (idx, entry) in self.entries.iter().enumerate() {
                 if !q.source.is_none_or(|source| entry.path.starts_with(source)) {
-                    return false;
+                    continue;
                 }
                 if let Some(members) = collection_set
                     && !members.contains(&entry.path)
                 {
-                    return false;
+                    continue;
                 }
-                let entry_tags = self.tags.get(&entry.path);
+                let entry_tags = if need_tags {
+                    self.tags.get(&entry.path)
+                } else {
+                    None
+                };
                 if let Some(tag) = required_tag.as_deref()
                     && !entry_tags.is_some_and(|set| set.contains(tag))
                 {
-                    return false;
+                    continue;
                 }
-                for tag in &parsed.inline_tags {
-                    if !entry_tags.is_some_and(|set| set.contains(*tag)) {
-                        return false;
+                if parsed
+                    .inline_tags
+                    .iter()
+                    .any(|tag| !entry_tags.is_some_and(|set| set.contains(*tag)))
+                {
+                    continue;
+                }
+                if !parsed.text_terms.is_empty() {
+                    let matched = if has_pre_folded {
+                        matches_folded_path_or_tags(
+                            &self.folded_paths[idx],
+                            entry_tags,
+                            &parsed.text_terms,
+                        )
+                    } else {
+                        matches_path_or_tags(
+                            &entry.path,
+                            entry_tags,
+                            &parsed.text_terms,
+                            &mut folded_scratch,
+                        )
+                    };
+                    if !matched {
+                        continue;
                     }
                 }
-                let audio = self.records.get(&entry.path).and_then(|r| r.audio);
-                if let Some(codec) = required_codec
-                    && audio.is_none_or(|m| m.codec != codec)
-                {
-                    return false;
+                if need_audio_filter {
+                    let audio = self.records.get(&entry.path).and_then(|r| r.audio);
+                    if !matches_audio_filters(
+                        audio,
+                        required_codec,
+                        required_rate,
+                        required_channels,
+                        q.min_duration_ms,
+                        q.max_duration_ms,
+                    ) {
+                        continue;
+                    }
                 }
-                if let Some(rate) = required_rate
-                    && audio.is_none_or(|m| m.sample_rate != rate)
-                {
-                    return false;
-                }
-                if let Some(ch) = required_channels
-                    && audio.is_none_or(|m| m.channels != ch)
-                {
-                    return false;
-                }
-                if let Some(min_ms) = q.min_duration_ms
-                    && audio.is_none_or(|m| m.duration_ms() < min_ms)
-                {
-                    return false;
-                }
-                if let Some(max_ms) = q.max_duration_ms
-                    && audio.is_none_or(|m| m.duration_ms() > max_ms)
-                {
-                    return false;
-                }
-                matches_path_or_tags(&entry.path, entry_tags, &parsed.text_terms, &mut folded)
-            })
-            .cloned()
-            .collect();
-
-        match q.sort {
-            CatalogSort::NameAsc => {} // `self.entries` is already sorted NameAsc with path tie-break.
-            CatalogSort::NameDesc => results.reverse(),
-            CatalogSort::DurationAsc => {
-                results.sort_by(|a, b| {
-                    let da = self
-                        .audio_metadata(&a.path)
-                        .map_or(u64::MAX, |m| m.duration_ms());
-                    let db = self
-                        .audio_metadata(&b.path)
-                        .map_or(u64::MAX, |m| m.duration_ms());
-                    da.cmp(&db).then_with(|| a.path.cmp(&b.path))
-                });
+                results.push(entry.clone());
             }
-            CatalogSort::DurationDesc => {
-                results.sort_by(|a, b| {
-                    let da = self.audio_metadata(&a.path).map_or(0, |m| m.duration_ms());
-                    let db = self.audio_metadata(&b.path).map_or(0, |m| m.duration_ms());
-                    db.cmp(&da).then_with(|| a.path.cmp(&b.path))
-                });
+            if q.sort == CatalogSort::NameDesc {
+                results.reverse();
             }
-            CatalogSort::SampleRateDesc => {
-                results.sort_by(|a, b| {
-                    let ra = self.audio_metadata(&a.path).map_or(0, |m| m.sample_rate);
-                    let rb = self.audio_metadata(&b.path).map_or(0, |m| m.sample_rate);
-                    rb.cmp(&ra).then_with(|| a.path.cmp(&b.path))
-                });
-            }
-            CatalogSort::SampleRateAsc => {
-                results.sort_by(|a, b| {
-                    let ra = self
-                        .audio_metadata(&a.path)
-                        .map_or(u32::MAX, |m| m.sample_rate);
-                    let rb = self
-                        .audio_metadata(&b.path)
-                        .map_or(u32::MAX, |m| m.sample_rate);
-                    ra.cmp(&rb).then_with(|| a.path.cmp(&b.path))
-                });
-            }
-            CatalogSort::BitDepthDesc => {
-                results.sort_by(|a, b| {
-                    let ba = self.audio_metadata(&a.path).map_or(0, |m| m.bit_depth);
-                    let bb = self.audio_metadata(&b.path).map_or(0, |m| m.bit_depth);
-                    bb.cmp(&ba).then_with(|| a.path.cmp(&b.path))
-                });
-            }
-            CatalogSort::SizeDesc => {
-                results.sort_by(|a, b| {
-                    let sa = self.records.get(&a.path).map_or(0, |r| r.size);
-                    let sb = self.records.get(&b.path).map_or(0, |r| r.size);
-                    sb.cmp(&sa).then_with(|| a.path.cmp(&b.path))
-                });
-            }
+            return results;
         }
-        results
+
+        // Pre-project one sort key per matching entry (Schwartzian transform) so
+        // sorting performs zero `HashMap<PathBuf, _>` lookups inside the comparator.
+        let mut keyed: Vec<(u64, usize)> = Vec::new();
+        for (idx, entry) in self.entries.iter().enumerate() {
+            if !q.source.is_none_or(|source| entry.path.starts_with(source)) {
+                continue;
+            }
+            if let Some(members) = collection_set
+                && !members.contains(&entry.path)
+            {
+                continue;
+            }
+            let entry_tags = if need_tags {
+                self.tags.get(&entry.path)
+            } else {
+                None
+            };
+            if let Some(tag) = required_tag.as_deref()
+                && !entry_tags.is_some_and(|set| set.contains(tag))
+            {
+                continue;
+            }
+            if parsed
+                .inline_tags
+                .iter()
+                .any(|tag| !entry_tags.is_some_and(|set| set.contains(*tag)))
+            {
+                continue;
+            }
+            if !parsed.text_terms.is_empty() {
+                let matched = if has_pre_folded {
+                    matches_folded_path_or_tags(
+                        &self.folded_paths[idx],
+                        entry_tags,
+                        &parsed.text_terms,
+                    )
+                } else {
+                    matches_path_or_tags(
+                        &entry.path,
+                        entry_tags,
+                        &parsed.text_terms,
+                        &mut folded_scratch,
+                    )
+                };
+                if !matched {
+                    continue;
+                }
+            }
+            let record = self.records.get(&entry.path);
+            let audio = record.and_then(|r| r.audio);
+            if need_audio_filter
+                && !matches_audio_filters(
+                    audio,
+                    required_codec,
+                    required_rate,
+                    required_channels,
+                    q.min_duration_ms,
+                    q.max_duration_ms,
+                )
+            {
+                continue;
+            }
+            keyed.push((metadata_sort_key(q.sort, record, audio), idx));
+        }
+
+        keyed.sort_by(|&(ka, ia), &(kb, ib)| {
+            ka.cmp(&kb)
+                .then_with(|| self.entries[ia].path.cmp(&self.entries[ib].path))
+        });
+        keyed
+            .into_iter()
+            .map(|(_, idx)| self.entries[idx].clone())
+            .collect()
+    }
+}
+
+fn matches_audio_filters(
+    audio: Option<AudioHeaderMetadata>,
+    required_codec: Option<AudioCodec>,
+    required_rate: Option<u32>,
+    required_channels: Option<u16>,
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
+) -> bool {
+    if let Some(codec) = required_codec
+        && audio.is_none_or(|m| m.codec != codec)
+    {
+        return false;
+    }
+    if let Some(rate) = required_rate
+        && audio.is_none_or(|m| m.sample_rate != rate)
+    {
+        return false;
+    }
+    if let Some(ch) = required_channels
+        && audio.is_none_or(|m| m.channels != ch)
+    {
+        return false;
+    }
+    if let Some(min_ms) = min_duration_ms
+        && audio.is_none_or(|m| m.duration_ms() < min_ms)
+    {
+        return false;
+    }
+    if let Some(max_ms) = max_duration_ms
+        && audio.is_none_or(|m| m.duration_ms() > max_ms)
+    {
+        return false;
+    }
+    true
+}
+
+fn metadata_sort_key(
+    sort: CatalogSort,
+    record: Option<&SampleRecord>,
+    audio: Option<AudioHeaderMetadata>,
+) -> u64 {
+    match sort {
+        CatalogSort::DurationAsc => audio.map_or(u64::MAX, |m| m.duration_ms()),
+        CatalogSort::DurationDesc => u64::MAX - audio.map_or(0, |m| m.duration_ms()),
+        CatalogSort::SampleRateDesc => u64::MAX - u64::from(audio.map_or(0, |m| m.sample_rate)),
+        CatalogSort::SampleRateAsc => u64::from(audio.map_or(u32::MAX, |m| m.sample_rate)),
+        CatalogSort::BitDepthDesc => u64::MAX - u64::from(audio.map_or(0, |m| m.bit_depth)),
+        CatalogSort::SizeDesc => u64::MAX - record.map_or(0, |r| r.size),
+        CatalogSort::NameAsc | CatalogSort::NameDesc => 0,
     }
 }
 
@@ -738,6 +878,26 @@ pub(super) fn normalize_label(raw: &str) -> Result<String, &'static str> {
     Ok(normalized)
 }
 
+fn fold_path(path: &Path) -> String {
+    let lossy = path.to_string_lossy();
+    if lossy.is_ascii() {
+        lossy.to_ascii_lowercase()
+    } else {
+        lossy.to_lowercase()
+    }
+}
+
+fn matches_folded_path_or_tags(
+    folded_path: &str,
+    tags: Option<&BTreeSet<String>>,
+    terms: &[&str],
+) -> bool {
+    terms.iter().all(|term| {
+        folded_path.contains(term)
+            || tags.is_some_and(|set| set.iter().any(|tag| tag.contains(term)))
+    })
+}
+
 fn matches_path_or_tags(
     path: &Path,
     tags: Option<&BTreeSet<String>>,
@@ -749,9 +909,7 @@ fn matches_path_or_tags(
     }
     let path_str = path.to_string_lossy();
     let lowered = lowercase_into(&path_str, folded);
-    terms.iter().all(|term| {
-        lowered.contains(term) || tags.is_some_and(|set| set.iter().any(|tag| tag.contains(term)))
-    })
+    matches_folded_path_or_tags(lowered, tags, terms)
 }
 
 fn matches_name_terms(name: &str, terms: &[&str], folded: &mut String) -> bool {
@@ -821,6 +979,7 @@ pub fn scan_samples_with(roots: &[PathBuf], control: ScanControl<'_>) -> Catalog
         result.catalog.collections = previous.collections.clone();
     }
     sort_entries(&mut result.catalog.entries, true);
+    result.catalog.rebuild_search_index();
     result
 }
 
