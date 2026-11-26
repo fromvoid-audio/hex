@@ -53,7 +53,8 @@ fn normalized_all_four_lanes_apply_discrete_endpoints_and_five_ms_transitions_in
         (p::AMOUNT, 1.0, 0.25),
         (p::RATE, 0.5, 0.75),
         (p::RIGHT_PHASE, 0.0, 0.75),
-        (p::WAVEFORM, 1.0, 0.25),
+        // The six-choice catalog places square at index 4 and triangle at index 1.
+        (p::WAVEFORM, 4.0 / 5.0, 1.0 / 5.0),
     ] {
         editor
             .execute(Command::ReplaceDeviceAutomation {
