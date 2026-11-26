@@ -6,11 +6,9 @@ use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 mod capture;
-#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 mod editor_pcm;
 mod edits;
 mod parameter_page;
-#[cfg(any(all(target_os = "macos", target_arch = "aarch64"), all(test, unix)))]
 pub(crate) use editor_pcm::pcm_packet_extent;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use editor_pcm::{
