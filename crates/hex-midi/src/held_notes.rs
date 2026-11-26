@@ -66,10 +66,19 @@ impl HeldNotes {
         }
         merged
     }
-    pub(crate) fn observe_filtered(
+    fn allocate_token(counter: &mut u64) -> Result<u64, HeldNoteFault> {
+        let next = counter
+            .checked_add(1)
+            .filter(|value| *value <= MAX_TOKEN)
+            .ok_or(HeldNoteFault::TokenLimit)?;
+        *counter = next;
+        Ok(next)
+    }
+    pub(crate) fn observe_filtered_with_token(
         &mut self,
         message: &[u8],
         filter: crate::ChannelFilter,
+        token_counter: &mut u64,
     ) -> Result<bool, HeldNoteFault> {
         let [status, pitch, velocity] = message else {
             return Ok(false);
@@ -79,12 +88,8 @@ impl HeldNotes {
         }
         match status & 0xf0 {
             0x90 if *velocity != 0 => {
-                let next = self
-                    .through
-                    .checked_add(1)
-                    .filter(|value| *value <= MAX_TOKEN)
-                    .ok_or(HeldNoteFault::TokenLimit)?;
-                self.through = next;
+                let next = Self::allocate_token(token_counter)?;
+                self.through = self.through.max(next);
                 self.words[usize::from(*pitch)] = (next << 8) | u64::from(*velocity);
                 Ok(true)
             }
@@ -102,14 +107,16 @@ impl HeldNotes {
             _ => Ok(false),
         }
     }
-    pub(crate) fn observe_omni_with_channels(
+    pub(crate) fn observe_omni_with_channels_and_token(
         &mut self,
         held_channels: &mut [u16; HELD_NOTE_COUNT],
         message: &[u8],
         filter: crate::ChannelFilter,
+        token_counter: &mut u64,
+        mut on_omni_channel_off: impl FnMut(u8, u8),
     ) -> Result<bool, HeldNoteFault> {
         if matches!(filter, crate::ChannelFilter::Single(_)) {
-            return self.observe_filtered(message, filter);
+            return self.observe_filtered_with_token(message, filter, token_counter);
         }
         let [status, pitch, velocity] = message else {
             return Ok(false);
@@ -123,12 +130,8 @@ impl HeldNotes {
         let bit = 1_u16 << channel;
         match status & 0xf0 {
             0x90 if *velocity != 0 => {
-                let next = self
-                    .through
-                    .checked_add(1)
-                    .filter(|value| *value <= MAX_TOKEN)
-                    .ok_or(HeldNoteFault::TokenLimit)?;
-                self.through = next;
+                let next = Self::allocate_token(token_counter)?;
+                self.through = self.through.max(next);
                 held_channels[usize::from(*pitch)] |= bit;
                 self.words[usize::from(*pitch)] = (next << 8) | u64::from(*velocity);
                 Ok(true)
@@ -147,9 +150,14 @@ impl HeldNotes {
             }
             0xb0 if crate::note_events::is_all_notes_off_cc(*pitch) => {
                 let mut changed = false;
-                for (mask, word) in held_channels.iter_mut().zip(self.words.iter_mut()) {
+                for (note_pitch, (mask, word)) in held_channels
+                    .iter_mut()
+                    .zip(self.words.iter_mut())
+                    .enumerate()
+                {
                     if *mask & bit != 0 {
                         *mask &= !bit;
+                        on_omni_channel_off(channel, note_pitch as u8);
                         if *mask == 0 && *word != 0 {
                             *word = 0;
                             changed = true;
@@ -161,10 +169,11 @@ impl HeldNotes {
             _ => Ok(false),
         }
     }
-    pub(crate) fn observe_mpe_event(
+    pub(crate) fn observe_mpe_event_with_token(
         &mut self,
         held_channels: &mut [u16; HELD_NOTE_COUNT],
         event: crate::MpeExpressionEvent,
+        token_counter: &mut u64,
     ) -> Result<bool, HeldNoteFault> {
         match event {
             crate::MpeExpressionEvent::NoteOn {
@@ -172,12 +181,8 @@ impl HeldNotes {
                 pitch,
                 velocity,
             } if channel < 16 && pitch <= 127 && velocity > 0 && velocity <= 127 => {
-                let next = self
-                    .through
-                    .checked_add(1)
-                    .filter(|value| *value <= MAX_TOKEN)
-                    .ok_or(HeldNoteFault::TokenLimit)?;
-                self.through = next;
+                let next = Self::allocate_token(token_counter)?;
+                self.through = self.through.max(next);
                 held_channels[usize::from(pitch)] |= 1_u16 << channel;
                 self.words[usize::from(pitch)] = (next << 8) | u64::from(velocity);
                 Ok(true)

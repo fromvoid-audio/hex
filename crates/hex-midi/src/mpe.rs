@@ -12,6 +12,8 @@ use crate::ControlChange;
 pub const DEFAULT_MPE_PITCH_BEND_SEMITONES: u8 = 48;
 /// Maximum supported MPE per-note pitch bend range in semitones.
 pub const MAX_MPE_PITCH_BEND_SEMITONES: u8 = 96;
+/// Maximum per-note pitch bend offset in cents corresponding to [`MAX_MPE_PITCH_BEND_SEMITONES`].
+pub const MAX_MPE_PITCH_BEND_CENTS: i16 = (MAX_MPE_PITCH_BEND_SEMITONES as i16) * 100;
 /// Default MPE master-channel pitch bend range in semitones per the MPE specification.
 pub const DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES: u8 = 2;
 /// Maximum supported MPE master-channel pitch bend range in semitones.
@@ -124,13 +126,15 @@ impl MpeConfig {
     }
 
     /// Convert a signed 14-bit MIDI pitch bend (`-8192..=8191`) into cents
-    /// scaled by `pitch_bend_range_semitones`, clamped to `-4800..=4800`.
+    /// scaled by `pitch_bend_range_semitones`, clamped to
+    /// `±MAX_MPE_PITCH_BEND_CENTS` (`-9600..=9600`).
     pub fn bend_to_cents(self, bend: i16) -> i16 {
         MpeDecoder::bend_to_cents_with_range(bend, self.pitch_bend_range_semitones)
     }
 
     /// Convert a signed 14-bit master-channel pitch bend (`-8192..=8191`) into cents
-    /// scaled by `master_pitch_bend_range_semitones`, clamped to `-4800..=4800`.
+    /// scaled by `master_pitch_bend_range_semitones`, clamped to
+    /// `±MAX_MPE_PITCH_BEND_CENTS` (`-9600..=9600`).
     pub fn master_bend_to_cents(self, bend: i16) -> i16 {
         MpeDecoder::bend_to_cents_with_range(bend, self.master_pitch_bend_range_semitones)
     }
@@ -348,13 +352,15 @@ impl MpeDecoder {
         self.sustain_down[usize::from(channel)] || self.sustain_down[usize::from(master)]
     }
 
-    fn bend_to_cents_with_range(bend: i16, range_semitones: u8) -> i16 {
-        let range_cents = i64::from(range_semitones) * 100;
+    pub(crate) fn bend_to_cents_with_range(bend: i16, range_semitones: u8) -> i16 {
+        let clamped_semitones = range_semitones.min(MAX_MPE_PITCH_BEND_SEMITONES);
+        let range_cents = i64::from(clamped_semitones) * 100;
         let denom = if bend < 0 { 8192_i64 } else { 8191_i64 };
         let scaled = (i64::from(bend) * range_cents
             + if bend >= 0 { denom / 2 } else { -(denom / 2) })
             / denom;
-        scaled.clamp(-4800, 4800) as i16
+        let limit = i64::from(MAX_MPE_PITCH_BEND_CENTS);
+        scaled.clamp(-limit, limit) as i16
     }
 
     /// Decode one complete MIDI 1.0 channel-voice message (2 or 3 bytes) into
@@ -488,8 +494,9 @@ impl MpeDecoder {
                     let member_cents =
                         Self::bend_to_cents_with_range(bend, note.pitch_bend_range_semitones);
                     note.member_bend_cents = member_cents;
+                    let limit = i32::from(MAX_MPE_PITCH_BEND_CENTS);
                     let total_cents = (i32::from(member_cents) + i32::from(self.master_bend_cents))
-                        .clamp(-4800, 4800) as i16;
+                        .clamp(-limit, limit) as i16;
                     push(MpeExpressionEvent::NotePitchBend {
                         channel,
                         pitch: note.pitch,
@@ -501,13 +508,14 @@ impl MpeDecoder {
                         self.config.master_pitch_bend_range_semitones,
                     );
                     self.master_bend_cents = master_cents;
+                    let limit = i32::from(MAX_MPE_PITCH_BEND_CENTS);
                     for ch in 0_u8..16 {
                         if self.config.zone.is_member_channel(ch)
                             && let Some(note) = self.active[usize::from(ch)]
                         {
                             let total_cents =
                                 (i32::from(note.member_bend_cents) + i32::from(master_cents))
-                                    .clamp(-4800, 4800) as i16;
+                                    .clamp(-limit, limit) as i16;
                             push(MpeExpressionEvent::NotePitchBend {
                                 channel: ch,
                                 pitch: note.pitch,
@@ -1168,5 +1176,97 @@ mod tests {
                 cents: 0,
             }
         );
+    }
+
+    #[test]
+    fn bend_to_cents_supports_full_96_semitone_range_without_4800_clamp() {
+        let config = MpeConfig::new(MpeZone::Lower { member_channels: 4 }, 96).unwrap();
+        assert_eq!(config.bend_to_cents(8191), 9600);
+        assert_eq!(config.bend_to_cents(-8192), -9600);
+        assert_eq!(config.bend_to_cents(0), 0);
+
+        let mut mpe = MpeDecoder::new(config);
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0xe1, 0x7f, 0x7f], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 9600,
+            }
+        );
+        assert_eq!(mpe.decode_message_into(&[0xe1, 0x00, 0x00], &mut out), 1);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: -9600,
+            }
+        );
+    }
+
+    #[test]
+    fn idle_member_cc120_and_cc123_to_127_emit_zero_events_without_disturbing_active_members() {
+        let config = MpeConfig::new(MpeZone::Lower { member_channels: 4 }, 48).unwrap();
+        let mut mpe = MpeDecoder::new(config);
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        for cc in [120_u8, 123, 124, 125, 126, 127] {
+            assert_eq!(
+                mpe.decode_message_into(&[0xb2, cc, 0], &mut out),
+                0,
+                "idle member CC{cc} must emit zero events"
+            );
+            assert_eq!(mpe.active_pitch(1), Some(60));
+        }
+    }
+
+    #[test]
+    fn mpe_burst_overflow_resets_controllers_and_clears_decoder_held_notes() {
+        use crate::{Controllers, Decoder, deliver_packets_with_mpe};
+        use std::cell::RefCell;
+
+        let mut decoder = Decoder::default();
+        let mut mpe = MpeDecoder::new(MpeConfig::default());
+        let published = RefCell::new(Vec::new());
+        let events = RefCell::new(Vec::new());
+
+        let initial = deliver_packets_with_mpe(
+            &mut decoder,
+            &mut mpe,
+            Controllers::default(),
+            [&[0x91, 60, 100, 0xb0, 1, 96][..]],
+            &|ctrl| published.borrow_mut().push(ctrl),
+            &|ev| events.borrow_mut().push(ev),
+        );
+        assert_eq!(initial.wheel, 96);
+        assert_eq!(decoder.held_notes().after(0).count(), 1);
+        let _ = decoder.take_held_notes();
+        published.borrow_mut().clear();
+        events.borrow_mut().clear();
+
+        let burst = vec![&[0xf8_u8][..]; 1025];
+        let after = deliver_packets_with_mpe(
+            &mut decoder,
+            &mut mpe,
+            initial,
+            burst,
+            &|ctrl| published.borrow_mut().push(ctrl),
+            &|ev| events.borrow_mut().push(ev),
+        );
+        assert_eq!(after, Controllers::default());
+        assert_eq!(*published.borrow(), vec![Controllers::default()]);
+        assert_eq!(
+            events.borrow().last(),
+            Some(&MpeExpressionEvent::AllNotesOff)
+        );
+        assert!(!mpe.has_active_notes());
+        let cleared = decoder
+            .take_held_notes()
+            .expect("burst overflow must mark decoder held notes dirty");
+        assert_eq!(cleared.after(0).count(), 0);
     }
 }
