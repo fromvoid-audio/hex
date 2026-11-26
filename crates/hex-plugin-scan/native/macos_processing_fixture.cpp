@@ -792,8 +792,20 @@ public:
         return static_cast<uint32>(frames);
     }
     tresult PLUGIN_API setAudioPresentationLatencySamples(BusDirection direction,int32 index,uint32 value) override {
-        if (!control() || !active || processing || index || (direction!=kInput && direction!=kOutput) ||
+        const bool auxiliary=direction==kOutput && active_aux_outputs && index>0 && index<3;
+        if (!control() || !active || processing || (index!=0 && !auxiliary) ||
+            (direction!=kInput && direction!=kOutput) ||
             (direction==kInput && (!inputs || fault==120)) || fault==17) return kResultFalse;
+        if (direction==kOutput) {
+            if (const auto* path=std::getenv("HEX_ORIGINAL_OUTPUT_PRESENTATION_TRACE")) {
+                auto* file=std::fopen(path,"a");
+                if (!file) return kResultFalse;
+                const bool written=std::fprintf(file,"%d %u\n",index,value)>0;
+                if (std::fclose(file)!=0 || !written) return kResultFalse;
+            }
+            if (auxiliary && index==2 && std::getenv("HEX_ORIGINAL_REFUSE_AUX_PRESENTATION"))
+                return kResultFalse;
+        }
         if(fault==67 && observed.stops) fault_hang(22);
         ++presentation_calls;
         (direction==kInput?input_latency:output_latency)=value;return kResultOk;

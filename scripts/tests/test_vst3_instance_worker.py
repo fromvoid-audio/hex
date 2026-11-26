@@ -777,6 +777,28 @@ class NativeInstanceTests(unittest.TestCase):
                 self.assertEqual((ons, offs, last_on, last_off),
                                  (1, int(release), 41, 41 if release else -1))
 
+    def test_presentation_reaches_each_active_instrument_output_sharing_the_mix(self):
+        downstream = 65539
+        for variant, indices in [(172, (0, 1, 2)), (128, (0,))]:
+            with self.subTest(variant=variant):
+                trace = self.root / f"presentation-{variant}.txt"
+                with patch.dict(os.environ, {"HEX_ORIGINAL_OUTPUT_PRESENTATION_TRACE": str(trace)}):
+                    session = self.session(variant=variant, channels=(0, 2), auto_present=False)
+                self.assertEqual(session.message()[0], b"HXVIFA05")
+                session.presentation((17, downstream))
+                self.assertEqual(session.message()[0], b"HXVIRD06")
+                calls = [tuple(map(int, line.split())) for line in trace.read_text().splitlines()]
+                self.assertEqual(calls, [(index, downstream) for index in indices])
+                self.terminal(session, 0, message=session.stop())
+
+    def test_refused_auxiliary_presentation_keeps_instrument_out_of_processing(self):
+        with patch.dict(os.environ, {"HEX_ORIGINAL_REFUSE_AUX_PRESENTATION": "1"}):
+            session = self.session(variant=172, channels=(0, 2))
+        self.error(session, 5)
+        # This active-output fixture also refuses to deactivate its auxiliary buses.
+        self.terminal(session, 10, closed=False, unloaded=False)
+        self.assertEqual(self.observation()[10], 0)
+
     def test_active_aux_output_mix_preserves_independent_finite_channels(self):
         for variant in (172, 173):  # Independently exercise the SDK float and double buffers.
             with self.subTest(variant=variant):
