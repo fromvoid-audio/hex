@@ -223,8 +223,8 @@ fn open_verified_file_with_limiter(
     h: &mut Harness,
     files: &Files,
 ) -> (DeviceId, hex_session::service::Event) {
-    h.wait = Duration::from_millis(500);
     h.next();
+    h.wait = Duration::from_millis(500);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,
