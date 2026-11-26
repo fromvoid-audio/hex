@@ -112,6 +112,7 @@ mod instrument;
 mod instrument_gain;
 mod instrument_pair;
 mod instrument_runtime;
+mod midi_processor;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, AnalyticNoteContinuation, MAX_SHARED_ANALYTIC_CONTEXT_BYTES,
     NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
@@ -130,6 +131,11 @@ pub use instrument_runtime::{
     NativeInstrumentClock, NativeInstrumentEvent, NativeInstrumentExpression,
     NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
     PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
+};
+pub use midi_processor::{
+    MidiProcessorOutput, MutableMidiProcessorRuntime, NativeMidiProcessorDefinition,
+    NativeMidiProcessorError, NativeMidiProcessorLimits, NativeMidiProcessorRegistry,
+    NativeMidiProcessorRuntimePair, PreparedNativeMidiProcessor,
 };
 
 mod adapters;

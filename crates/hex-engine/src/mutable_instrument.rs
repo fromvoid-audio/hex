@@ -11,6 +11,7 @@ pub(crate) mod authored_gate;
 mod automation;
 pub(crate) mod frozen_parameters;
 mod live;
+mod midi_processor;
 pub(crate) mod output_trim;
 #[cfg(test)]
 mod retarget_deadline_tests;
@@ -387,6 +388,7 @@ pub(crate) struct MutableInstrumentTrackRuntime {
     sample_rate: u32,
     frozen_parameters: frozen_parameters::FrozenParameters,
     modulation: Option<Box<hex_lattice::ModulationRuntime>>,
+    midi_processor: Option<Box<midi_processor::MidiProcessorStage>>,
     output_trim: Option<output_trim::OutputTrim>,
     pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
@@ -591,6 +593,7 @@ impl MutableInstrumentTrackRuntime {
             && self.resources.is_none()
             && self.expression.is_none()
             && self.modulation.is_none()
+            && self.midi_processor.is_none()
             && self.output_trim.is_none()
             && !self.has_volume_gain()
     }
@@ -637,6 +640,7 @@ impl MutableInstrumentTrackRuntime {
             sample_rate: _,
             frozen_parameters,
             modulation,
+            midi_processor,
             output_trim,
             resources,
             expression_identity: _,
@@ -654,6 +658,7 @@ impl MutableInstrumentTrackRuntime {
         if expression.is_some()
             || resources.is_some()
             || modulation.is_some()
+            || midi_processor.is_some()
             || output_trim.is_some()
         {
             return Err(crate::AudioStorageError::UnsupportedGraph);
@@ -751,6 +756,7 @@ impl MutableInstrumentTrackRuntime {
             sample_rate,
             frozen_parameters,
             modulation: None,
+            midi_processor: None,
             output_trim: None,
             resources: None,
             expression_identity: None,
@@ -804,8 +810,38 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
+    /// Control-side installation of one bounded native MIDI processor before
+    /// this track's mutable instrument runtime.
+    pub(crate) fn install_midi_processor(
+        &mut self,
+        identity: std::num::NonZeroU64,
+        prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        if !self.committed_is_quiescent() || !self.committed_state_available() {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        }
+        let stage = midi_processor::MidiProcessorStage::new(identity, prepared)?;
+        self.midi_processor = Some(Box::new(stage));
+        Ok(())
+    }
+
+    pub(crate) fn has_midi_processor(&self) -> bool {
+        self.midi_processor.is_some()
+    }
+
+    pub(crate) fn midi_processor_matches(&self, previous: &Self) -> bool {
+        match (&self.midi_processor, &previous.midi_processor) {
+            (None, None) => true,
+            (Some(current), Some(old)) => current.can_inherit_from(old),
+            _ => false,
+        }
+    }
+
     pub(crate) fn begin_block(&mut self) {
         self.pair.begin_block();
+        if let Some(stage) = &mut self.midi_processor {
+            stage.begin_block();
+        }
         if let Some(trim) = &mut self.output_trim {
             trim.scratch = trim.committed;
         }
@@ -824,6 +860,10 @@ impl MutableInstrumentTrackRuntime {
         self.primary.is_empty()
             && !self.has_committed_live_occurrences()
             && self.pair.committed_is_quiescent()
+            && self
+                .midi_processor
+                .as_ref()
+                .is_none_or(|stage| stage.committed_is_quiescent())
     }
 
     pub(crate) fn committed_state_available(&self) -> bool {
@@ -897,6 +937,7 @@ impl MutableInstrumentTrackRuntime {
     /// caller's responsibility.
     pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
         self.resource_history_matches(previous)
+            && self.midi_processor_matches(previous)
             && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && (previous.live.is_none() || self.live.is_some())
@@ -911,6 +952,7 @@ impl MutableInstrumentTrackRuntime {
         previous: &Self,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         if !self.resource_history_matches(previous)
+            || !self.midi_processor_matches(previous)
             || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || (previous.live.is_some() && self.live.is_none())
@@ -923,6 +965,13 @@ impl MutableInstrumentTrackRuntime {
         self.pair
             .inherit_from(&previous.pair)
             .map_err(map_runtime_error)?;
+        if let Some((next, old)) = self
+            .midi_processor
+            .as_mut()
+            .zip(previous.midi_processor.as_ref())
+        {
+            next.inherit_from(old)?;
+        }
         self.inherit_modulation(previous);
         self.primary.clear();
         self.primary.extend_from_slice(&previous.primary);
@@ -1019,6 +1068,7 @@ impl MutableInstrumentTrackRuntime {
         if self.sample_rate != previous.sample_rate
             || max_mutable_tail_frames(self.sample_rate).is_none_or(|limit| target_tail > limit)
             || !self.resource_history_matches(previous)
+            || !self.midi_processor_matches(previous)
             || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || (previous.live.is_some() && self.live.is_none())
@@ -1083,6 +1133,13 @@ impl MutableInstrumentTrackRuntime {
         self.pair
             .retarget_from(&previous.pair, proof)
             .map_err(map_runtime_error)?;
+        if let Some((next, old)) = self
+            .midi_processor
+            .as_mut()
+            .zip(previous.midi_processor.as_ref())
+        {
+            next.inherit_from(old)?;
+        }
         self.inherit_modulation(previous);
         self.primary.clear();
         for &occurrence in &previous.primary {
@@ -1157,6 +1214,10 @@ impl MutableInstrumentTrackRuntime {
         self.live.as_ref().is_none_or(|ledger| {
             ledger.pending_len == 0 && ledger.scratch.iter().all(Option::is_none)
         }) && self.pair.speculative_is_quiescent()
+            && self
+                .midi_processor
+                .as_ref()
+                .is_none_or(|stage| stage.speculative_is_quiescent())
     }
 
     pub(crate) fn declared_pair_bytes(&self) -> usize {
@@ -1696,6 +1757,9 @@ impl MutableInstrumentTrackRuntime {
             };
             (event.frame_offset(), rank, occurrence_id)
         });
+        if let Some(stage) = &mut self.midi_processor {
+            stage.process_block(events, frames.len(), clock)?;
+        }
         let resources = self
             .resources
             .as_ref()
@@ -1814,6 +1878,9 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn commit_block(&mut self) {
         self.pair.commit_block();
+        if let Some(stage) = &mut self.midi_processor {
+            stage.commit_block();
+        }
         if let Some(trim) = &mut self.output_trim {
             trim.committed = trim.scratch;
         }
@@ -1827,7 +1894,12 @@ impl MutableInstrumentTrackRuntime {
             live.age = live.scratch_age;
             live.monitor_anchor = live.scratch_monitor_anchor;
         }
-        if self.pair.committed_is_quiescent() {
+        if self.pair.committed_is_quiescent()
+            && self
+                .midi_processor
+                .as_ref()
+                .is_none_or(|stage| stage.committed_is_quiescent())
+        {
             self.primary.clear();
             if let Some(live) = &mut self.live {
                 live.primary.fill(None);
@@ -1837,6 +1909,9 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn rollback_block(&mut self) {
         self.pair.rollback_block();
+        if let Some(stage) = &mut self.midi_processor {
+            stage.rollback_block();
+        }
         if let Some(modulation) = &mut self.modulation {
             modulation.rollback();
         }
@@ -1844,6 +1919,9 @@ impl MutableInstrumentTrackRuntime {
 
     pub(crate) fn reset(&mut self) {
         self.pair.reset();
+        if let Some(stage) = &mut self.midi_processor {
+            stage.reset();
+        }
         if let Some(trim) = &mut self.output_trim {
             *trim = output_trim::OutputTrim::new(trim.base);
         }
@@ -1919,6 +1997,7 @@ pub(crate) enum MutableInstrumentRuntimeError {
     InvalidSourceSpan,
     EventCapacity,
     Runtime(NativeInstrumentRuntimeError),
+    MidiProcessor(hex_lattice::NativeMidiProcessorError),
 }
 
 impl MutableInstrumentRuntimeError {
@@ -1935,6 +2014,7 @@ impl MutableInstrumentRuntimeError {
             Self::InvalidSourceSpan => "mutable instrument source span is invalid",
             Self::EventCapacity => "mutable instrument event query capacity exceeded",
             Self::Runtime(error) => error.diagnostic_message(),
+            Self::MidiProcessor(error) => error.diagnostic_message(),
         })
     }
 }
@@ -1943,9 +2023,9 @@ impl From<MutableInstrumentRuntimeError> for crate::SessionPlaybackError {
     fn from(error: MutableInstrumentRuntimeError) -> Self {
         match error {
             MutableInstrumentRuntimeError::Allocation => Self::Allocation,
-            MutableInstrumentRuntimeError::Budget | MutableInstrumentRuntimeError::Runtime(_) => {
-                Self::MutableInstrumentRuntime
-            }
+            MutableInstrumentRuntimeError::Budget
+            | MutableInstrumentRuntimeError::Runtime(_)
+            | MutableInstrumentRuntimeError::MidiProcessor(_) => Self::MutableInstrumentRuntime,
             MutableInstrumentRuntimeError::Arithmetic
             | MutableInstrumentRuntimeError::IdentityExhausted => Self::ArithmeticOverflow,
             MutableInstrumentRuntimeError::OrphanedGate
