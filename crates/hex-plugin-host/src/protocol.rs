@@ -746,7 +746,17 @@ pub fn resumed(
     }
     Ok(result)
 }
+/// Decode a native PCM reply for the expected instance and sequence. Counted
+/// v3 replies may carry up to the callback output limit of gate and polyphonic
+/// pressure events with block-relative offsets and optional note identities.
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
+    // An event-bearing reply uses the bounded native v3 layout. Older
+    // event-free packets retain the copied decoder's original admission.
+    if let Some(header) = bytes.first_chunk::<{ crate::transport::wire::HEADER_BYTES }>()
+        && header[8..10] != [0; 2]
+    {
+        pcm_packet_extent(header)?;
+    }
     read_pcm(Cursor::new(bytes), config, sequence)
 }
 fn read_pcm(
@@ -763,7 +773,11 @@ fn read_pcm(
         || block.sequence != sequence
         || block.frames != config.quantum
         || sequence.checked_mul(u64::from(config.quantum)) != Some(block.first_frame)
-        || !block.events.as_slice().is_empty()
+        || block
+            .events
+            .as_slice()
+            .iter()
+            .any(|event| !matches!(event.bytes[0] & 0xf0, 0x80 | 0x90 | 0xa0))
         || (config.output_channels == 1
             && block.pcm[..usize::from(config.quantum)]
                 .iter()

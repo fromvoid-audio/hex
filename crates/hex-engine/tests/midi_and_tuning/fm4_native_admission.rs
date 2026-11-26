@@ -465,3 +465,157 @@ fn unsupported_authored_fm4_pitch_is_refused_during_control_preparation() {
         "unsupported authored pitch must be refused before callback admission"
     );
 }
+
+#[test]
+fn subtractive_registered_path_renders_seeks_roundtrips_history_and_snapshot() {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "subtractive".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    if editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .is_some()
+    {
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+    }
+    let default_state = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        hex_devices::subtractive::SUBTRACTIVE_TYPE_ID,
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: default_state.clone(),
+        })
+        .unwrap();
+    let device = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let darker = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        &default_state,
+        hex_devices::subtractive::parameter::FILTER_CUTOFF,
+        hex_lattice_contract::ParameterValue::Float(600.0),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: darker.clone(),
+        })
+        .unwrap();
+    // Snapshot round-trip and Undo/Redo preserve exact subtractive device state.
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    assert_eq!(reopened, *editor.project());
+    assert!(editor.undo());
+    assert_eq!(
+        editor.project().device(device).unwrap().state(),
+        &default_state
+    );
+    assert!(editor.redo());
+    assert_eq!(editor.project().device(device).unwrap().state(), &darker);
+
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat(2),
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat(1),
+            pitch: 60,
+            channel: 0,
+            velocity: 110,
+        })
+        .unwrap();
+
+    let table = Arc::new(SineTable::new());
+    let first = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+    let mut whole = SessionPlayback::new(Arc::clone(&first)).unwrap();
+    whole.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; 512];
+    whole.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().all(|s| s.is_finite()));
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Irregular block partition + seek-to-zero reproducibility + Stop silence.
+    let mut chunked = SessionPlayback::new(Arc::clone(&first)).unwrap();
+    chunked.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; 512];
+    let mut cursor = 0;
+    for len in [1, 7, 31, 63, 128, 282] {
+        chunked.render(&mut actual[cursor..cursor + len]).unwrap();
+        cursor += len;
+    }
+    assert_eq!(expected, actual);
+
+    // Seeking while a mutable voice is active refuses explicitly; Stop + Seek(0) reproduces bit-identically.
+    assert_eq!(
+        chunked.apply(SessionPlaybackCommand::Seek(0)),
+        Err(hex_engine::SessionPlaybackError::MutableInstrumentActive)
+    );
+    chunked.apply(SessionPlaybackCommand::Stop).unwrap();
+    chunked.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    chunked.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replayed = vec![[0.0_f32; 2]; 512];
+    chunked.render(&mut replayed).unwrap();
+    assert_eq!(expected, replayed);
+
+    // Live retarget across a cutoff edit preserves active voice continuity.
+    let brighter = hex_engine::patch_native_device_parameter_for_class(
+        hex_engine::NativeDeviceClass::Instrument,
+        &darker,
+        hex_devices::subtractive::parameter::FILTER_CUTOFF,
+        hex_lattice_contract::ParameterValue::Float(6_000.0),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: brighter,
+        })
+        .unwrap();
+    let second = Arc::new(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            Some(first.session()),
+        )
+        .unwrap(),
+    );
+    let mut candidate = SessionPlayback::new(second).unwrap();
+    candidate.try_inherit_state_from(&mut chunked).unwrap();
+    let mut post_handoff = vec![[0.0_f32; 2]; 128];
+    candidate.render(&mut post_handoff).unwrap();
+    assert!(post_handoff.iter().flatten().all(|s| s.is_finite()));
+    assert!(post_handoff.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+    let mut stopped = vec![[0.0_f32; 2]; 128];
+    candidate.render(&mut stopped).unwrap();
+    assert!(stopped.iter().flatten().all(|&s| s == 0.0));
+}

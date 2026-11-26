@@ -45,6 +45,7 @@ pub mod rattle;
 pub mod reverb;
 pub mod sampler;
 pub mod saturator;
+pub mod subtractive;
 pub mod tuning_audition;
 pub mod utility;
 pub mod utility_filters;
@@ -81,11 +82,12 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 14] = 
     &delay::DEFINITION,
     &rattle::RATTLE_DEFINITION,
 ];
-static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
+static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 5] = [
     &SINE_INSTRUMENT,
     &sampler::catalog::DEFINITION,
     &fm4::device::FM4_DEFINITION,
     &operator_state::OPERATOR_METADATA,
+    &subtractive::SUBTRACTIVE_DEFINITION,
 ];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
