@@ -3,7 +3,7 @@ use hex_audio::prepared::AppliedAudioSource;
 use hex_session::service::PluginParameterRow;
 use std::collections::BTreeSet;
 
-pub(super) const PAGE_SIZE: usize = 4;
+pub(super) use hex_audio::plugin_worker::PARAMETER_PAGE_SIZE as PAGE_SIZE;
 const REFRESH_YIELDED_TO_CONTROL: &str = "vst3 parameter refresh yielded to control";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,9 +177,12 @@ mod tests {
 
     #[test]
     fn live_page_validation_requires_the_cached_total_and_ordered_ids() {
-        let rows = (0_u32..6)
+        let width = hex_audio::plugin_worker::PARAMETER_PAGE_SIZE;
+        let first = width as u16;
+        let total = first + 2;
+        let rows = (0..total)
             .map(|index| PluginParameterRow {
-                id: 20 + index,
+                id: 20 + u32::from(index),
                 name: format!("parameter {index}"),
                 value: String::new(),
                 normalized: 0.0,
@@ -187,56 +190,32 @@ mod tests {
                 steps: 0,
                 editable: false,
                 automation_class: None,
-                page_first: ((index / 4) * 4) as u16,
+                page_first: index / first * first,
                 metadata_revision: 0,
                 editor_sequence: 0,
             })
             .collect::<Vec<_>>();
-        let mut second_page = rows[4..].to_vec();
-        second_page[0].value = "live".into();
-        let prior =
-            matching_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &second_page).unwrap();
-        assert_eq!(prior, &rows[4..]);
-        assert!(
-            matching_page(&rows, Some([8; 32]), Some(5), 6, 4, [8; 32], &second_page).is_none()
-        );
-        assert!(matching_page(&rows, Some([8; 32]), Some(6), 6, 1, [8; 32], &rows[1..5]).is_none());
-        let mut reordered = second_page;
-        reordered.swap(0, 1);
-        assert!(matching_page(&rows, Some([8; 32]), Some(6), 6, 4, [8; 32], &reordered).is_none());
-        let unchanged_ids_with_changed_signature = rows[4..].to_vec();
-        assert!(
+        let matches = |start, page: &[PluginParameterRow], cached_total, signature| {
             matching_page(
                 &rows,
                 Some([8; 32]),
-                Some(6),
-                6,
-                4,
-                [9; 32],
-                &unchanged_ids_with_changed_signature,
+                Some(cached_total),
+                total,
+                start,
+                signature,
+                page,
             )
-            .is_none()
-        );
-        let value_only_update = rows[4..]
-            .iter()
-            .cloned()
-            .map(|mut row| {
-                row.value = "changed value".into();
-                row
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            matching_page(
-                &rows,
-                Some([8; 32]),
-                Some(6),
-                6,
-                4,
-                [8; 32],
-                &value_only_update
-            )
-            .is_some()
-        );
+        };
+        let (full_page, tail) = rows.split_at(width);
+        assert_eq!(matches(0, full_page, total, [8; 32]), Some(full_page));
+        let mut changed = tail.to_vec();
+        changed[0].value = "live".into();
+        assert_eq!(matches(first, &changed, total, [8; 32]), Some(tail));
+        assert!(matches(first, tail, total - 1, [8; 32]).is_none());
+        assert!(matches(1, &rows[1..=width], total, [8; 32]).is_none());
+        assert!(matches(first, tail, total, [9; 32]).is_none());
+        changed.swap(0, 1);
+        assert!(matches(first, &changed, total, [8; 32]).is_none());
     }
 
     #[test]

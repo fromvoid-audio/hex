@@ -26,11 +26,18 @@ fn live_pages_retain_unchanged_inventory_and_update_search(cx: &mut gpui::TestAp
         let signature = [7; 32];
         panel.source = Some(binding);
         panel.descriptor_signature = Some(signature);
-        panel.total = Some(1);
+        panel.total = Some(6);
         let mut row = layout_row(0.25, true, 1);
         row.name = "filter cutoff".into();
         panel.filter = "filter".into();
-        let inventory = Arc::new(vec![row.clone()]);
+        // The controller returns a single partial page for this six-parameter plug-in.
+        let mut page = vec![row.clone()];
+        page.extend((1..6).map(|index| PluginParameterRow {
+            id: row.id + index,
+            name: format!("parameter {index}"),
+            ..row.clone()
+        }));
+        let inventory = Arc::new(page);
         panel.result = Some(Arc::clone(&inventory));
         panel.refilter(false);
         let matches = Arc::clone(&panel.matched);
@@ -44,6 +51,8 @@ fn live_pages_retain_unchanged_inventory_and_update_search(cx: &mut gpui::TestAp
             audio_revision: 1,
         };
         let apply_page = |view: &mut EditorView, row, cx: &mut Context<EditorView>| {
+            let mut page = inventory.as_ref().clone();
+            page[0] = row;
             view.device_panel.vst3_parameters.in_flight = Some((query, source));
             apply_result(
                 view,
@@ -51,8 +60,8 @@ fn live_pages_retain_unchanged_inventory_and_update_search(cx: &mut gpui::TestAp
                     query,
                     source: Some(binding),
                     descriptor_signature: Some(signature),
-                    total: 1,
-                    rows: Ok(vec![row]),
+                    total: page.len() as u16,
+                    rows: Ok(page),
                 },
                 query.context.editor_revision,
                 Some(source),
@@ -67,7 +76,7 @@ fn live_pages_retain_unchanged_inventory_and_update_search(cx: &mut gpui::TestAp
         row.normalized = 0.75;
         apply_page(view, row.clone(), cx);
         let panel = &view.device_panel.vst3_parameters.panels[&device];
-        assert_eq!(panel.rows().unwrap(), &[row.clone()]);
+        assert_eq!(panel.rows().unwrap()[0], row);
         assert_eq!(inventory[0].normalized, 0.25);
         assert!(Arc::ptr_eq(&panel.matched, &matches));
 
@@ -1295,7 +1304,8 @@ fn vst3_modulation_maps_only_fresh_continuous_rows_and_keeps_signed_pending_dept
                     body,
                     panel,
                 )
-                .w(px(300.0))
+                // Leave the VST3 row hittable beside the expanded modulator panel.
+                .w(px(640.0))
                 .h(px(360.0))
             })
         }
