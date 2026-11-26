@@ -9,6 +9,8 @@ mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
+#[cfg(feature = "allocation-probe")]
+mod midi_output_probe;
 mod recovery;
 mod release_custody;
 mod resident_authoring;

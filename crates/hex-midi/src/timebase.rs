@@ -105,6 +105,19 @@ impl MachTimebase {
     pub fn ticks_to_nanos_saturating(self, ticks: u64) -> u64 {
         self.ticks_to_nanos(ticks).unwrap_or(u64::MAX)
     }
+
+    /// Converts nanoseconds to raw host ticks (`floor(nanos * denom / numer)`)
+    /// using checked `u128` arithmetic. Returns `None` on `u64` overflow.
+    pub fn nanos_to_ticks(self, nanos: u64) -> Option<u64> {
+        let scaled = u128::from(nanos).checked_mul(u128::from(self.denom))?;
+        let ticks = scaled / u128::from(self.numer);
+        u64::try_from(ticks).ok()
+    }
+
+    /// Converts nanoseconds to raw host ticks, saturating at `u64::MAX` on overflow.
+    pub fn nanos_to_ticks_saturating(self, nanos: u64) -> u64 {
+        self.nanos_to_ticks(nanos).unwrap_or(u64::MAX)
+    }
 }
 
 fn detect_host_timebase() -> MachTimebase {
@@ -187,6 +200,17 @@ mod tests {
         // Overflow returns None on checked conversion and u64::MAX on saturating.
         assert_eq!(apple_silicon.ticks_to_nanos(u64::MAX), None);
         assert_eq!(apple_silicon.ticks_to_nanos_saturating(u64::MAX), u64::MAX);
+        // Exact inverse nanos -> ticks conversion.
+        assert_eq!(apple_silicon.nanos_to_ticks(0), Some(0));
+        assert_eq!(
+            apple_silicon.nanos_to_ticks(1_000_000_000),
+            Some(24_000_000)
+        );
+        assert_eq!(apple_silicon.nanos_to_ticks(1_000), Some(24));
+        assert_eq!(
+            apple_silicon.nanos_to_ticks_saturating(u64::MAX),
+            apple_silicon.nanos_to_ticks(u64::MAX).unwrap()
+        );
 
         let intel = MachTimebase::from_frequency_hz(1_000_000_000).unwrap();
         assert_eq!(intel, MachTimebase::NANOSECONDS);
