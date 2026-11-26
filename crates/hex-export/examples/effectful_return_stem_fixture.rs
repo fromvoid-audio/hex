@@ -5,15 +5,16 @@
 //! - Track 2 (`pad-unselected`, gain 0.70, pan +0.40): held MIDI note (`G3`, 0.5..2.0 s) -> Return A send 0.50
 //! - Return A (`reverb-return`, gain 0.90): native `hex.reverb` (100% wet)
 //!
-//! Exports Main (`main.wav`), selected Track 1 stem, and separate Return A stem over
-//! 4.0 seconds (including 2.0 seconds of reverb release tail), verifies non-zero tail
+//! Saves and reopens `return-listening.hex`, then exports Main (`main.wav`), the selected
+//! Track 1 stem, and the separate Return A stem over 4.0 seconds (including 2.0 seconds
+//! of reverb release tail). Verifies non-zero tail
 //! energy and distinct Main vs Return output, and prints a concise user listening checklist.
 //!
 //! Usage:
 //! `cargo run --release -p hex-export --example effectful_return_stem_fixture -- [output_dir]`
 use hex_engine::{OutputCaptureId, PreparedRevision, SineTable, default_native_device_state};
 use hex_export::{ExportControl, Stem, render_prepared_new, render_stems_new};
-use hex_lattice_contract::DeviceTypeId;
+use hex_lattice_contract::{DeviceTypeId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project, TrackDeviceSlot};
 use std::{
     collections::BTreeMap,
@@ -154,6 +155,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         gain: 0.90,
     })?;
     let reverb_state = default_native_device_state(DeviceTypeId::from_static("hex.reverb"))?;
+    let reverb_state = hex_engine::patch_native_device_parameter(
+        &reverb_state,
+        hex_devices::reverb::parameter::DRY_WET,
+        ParameterValue::Float(100.0),
+    )?;
     editor.execute(Command::InsertReturnDevice {
         return_track: return_bus,
         before: None,
@@ -170,8 +176,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         gain: 0.50,
     })?;
 
+    let project_path = out_dir.join("return-listening.hex");
+    hex_storage::save_new(&project_path, editor.project())?;
+    let reopened = hex_storage::load(&project_path)?;
+    if &reopened != editor.project() {
+        return Err("reopened listening project differs from the authored project".into());
+    }
     let revision = Arc::new(PreparedRevision::prepare(
-        editor.project(),
+        &reopened,
         &BTreeMap::new(),
         Arc::new(SineTable::new()),
         None,
@@ -205,21 +217,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         )
         .into());
     }
-    if main_digest == ret_digest || main_digest == lead_digest {
+    if main_digest == ret_digest || main_digest == lead_digest || lead_digest == ret_digest {
         return Err("main, lead stem, and return stem must be distinct".into());
     }
 
     println!("fixture_dir={}", out_dir.display());
+    println!("project={}", project_path.display());
     println!("effect=hex.reverb rate={RATE} duration_s={SECONDS} frames={FRAMES}");
     println!(
         "main.wav frames={} peak={main_peak:.5} tail_peak_after_2.5s={main_tail:.5} digest={main_digest:016x}",
         main_report.frames
     );
     println!(
-        "stems/lead-selected.wav peak={lead_peak:.5} tail_peak_after_2.5s={lead_tail:.5} digest={lead_digest:016x}"
+        "{} peak={lead_peak:.5} tail_peak_after_2.5s={lead_tail:.5} digest={lead_digest:016x}",
+        lead_path.display()
     );
     println!(
-        "stems/reverb-return.wav peak={ret_peak:.5} tail_peak_after_2.5s={ret_tail:.5} digest={ret_digest:016x} batch_frames={}",
+        "{} peak={ret_peak:.5} tail_peak_after_2.5s={ret_tail:.5} digest={ret_digest:016x} batch_frames={}",
+        ret_path.display(),
         stem_report.frames
     );
     println!("--- user listening checklist (#2388) ---");
@@ -227,10 +242,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         "1. Listen to main.wav: confirm left-panned C4+E4 lead (0..1.5s), right-panned G3 pad (0.5..2.0s), and shared reverb tail decaying smoothly past 2.5s without clicks."
     );
     println!(
-        "2. Listen to stems/lead-selected.wav: confirm dry left-panned lead only (no pad, no reverb tail)."
+        "2. Listen to the lead stem: confirm dry left-panned lead only (no pad, no reverb tail)."
     );
     println!(
-        "3. Listen to stems/reverb-return.wav: confirm wet reverb fed by BOTH selected lead AND unselected pad, with smooth release tail past 2.5s and clean source labeling."
+        "3. Listen to the return stem: confirm wet reverb fed by BOTH selected lead AND unselected pad, with smooth release tail past 2.5s and clean source labeling."
     );
     Ok(())
 }

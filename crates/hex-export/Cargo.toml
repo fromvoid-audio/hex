@@ -16,6 +16,8 @@ hex-media = { path = "../hex-media" }
 rustix = { version = "=1.1.5", features = ["fs"] }
 
 [dev-dependencies]
+hex-devices = { path = "../hex-devices" }
+hex-storage = { path = "../hex-storage" }
 hex-tuning = { path = "../hex-tuning" }
 hex-project = { path = "../hex-project" }
 hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

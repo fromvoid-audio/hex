@@ -67,7 +67,8 @@ DEV_ALLOWED = {
     'hex-desktop': {'hex-project', 'hex-tuning', 'hex-storage', 'hex-plugin-state'},
     # Actual provider/pair callback allocation probes; never a production edge.
     'hex-audio': {'hex-project', 'hex-storage', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning', 'hex-devices', 'hex-plugin-scan', 'hex-plugin-state'},
-    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
+    # Listening fixtures author real effect parameters and reopen the exported project.
+    'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning', 'hex-devices', 'hex-storage'},
 }
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'hex-shm-ring': {'hex-plugin-host'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
               'gpui_platform': {'hex-ui', 'hex-ui-kit', 'hex-desktop', 'hex-widgets', 'hex-sandbox'},
