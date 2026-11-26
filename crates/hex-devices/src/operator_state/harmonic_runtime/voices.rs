@@ -393,6 +393,9 @@ impl Runtime {
                         if let Some(fe) = &mut voice.filter_env {
                             fe.note_off(voice.envelope_age as u64);
                         }
+                        if let Some(le) = &mut voice.lfo_env {
+                            le.note_off(voice.envelope_age as u64);
+                        }
                         self.expire();
                     }
                 }

@@ -6,7 +6,15 @@ use hex_lattice_contract::{
 
 pub(super) const COUNT: usize = 11;
 pub(super) const BYTES: usize = COUNT * 4;
-pub(super) const WAVES: &[&str] = &["sine", "triangle", "saw", "square", "sample and hold"];
+pub(super) const WAVES: &[&str] = &[
+    "sine",
+    "triangle",
+    "saw",
+    "square",
+    "sample and hold",
+    "saw down",
+    "noise",
+];
 pub(super) const DIVISIONS: &[&str] = &[
     "1/16 beat",
     "1/8 beat",
@@ -156,6 +164,12 @@ impl LfoSettings {
     pub(super) fn retrigger(self) -> bool {
         self.0[6] == 1
     }
+    pub(super) fn uses_v25_waveform(self) -> bool {
+        self.0[1] > 4
+    }
+    pub(super) fn set_sync(&mut self, sync: bool) {
+        self.0[2] = u32::from(sync);
+    }
     pub(super) fn selected(self, operator: usize) -> bool {
         self.0[7 + operator] == 1
     }
@@ -184,6 +198,17 @@ pub(super) fn waveform(choice: u32, phase: f64, cycle: u64) -> f64 {
         }
         4 => {
             let mut x = cycle.wrapping_add(0x9e3779b97f4a7c15);
+            x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+            x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+            x ^= x >> 31;
+            (x >> 11) as f64 * (2.0 / 9_007_199_254_740_992.0) - 1.0
+        }
+        5 => 1.0 - 2.0 * phase,
+        6 => {
+            let step = (phase.clamp(0.0, 1.0) * 65_536.0) as u64;
+            let mut x = cycle
+                .wrapping_mul(0x9e3779b97f4a7c15)
+                .wrapping_add(step.wrapping_mul(0xbf58476d1ce4e5b9));
             x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
             x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
             x ^= x >> 31;

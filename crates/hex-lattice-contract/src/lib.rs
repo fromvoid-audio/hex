@@ -50,7 +50,7 @@ pub const MAX_DEVICE_TYPE_ID_BYTES: usize = 128;
 /// arithmetic and refuse exhaustion instead of wrapping/reusing an ID.
 pub const MAX_PARAMETER_ID: u32 = u32::MAX - 2;
 pub const MAX_NATIVE_DEVICE_TYPES: usize = 256;
-pub const MAX_PARAMETERS_PER_DEVICE: usize = 512;
+pub const MAX_PARAMETERS_PER_DEVICE: usize = 640;
 pub const MAX_PARAMETER_SNAPSHOT_ENTRIES: usize = 64;
 
 /// Control-side atomic edits. Unused slots are canonical and cannot be supplied

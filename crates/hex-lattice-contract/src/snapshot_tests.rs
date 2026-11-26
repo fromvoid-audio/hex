@@ -18,7 +18,7 @@ fn snapshot_requires_finite_distinct_bounded_entries() {
     let full = DeviceParameterSnapshot::new(&entries[..64]).unwrap();
     assert_eq!(full.entries(), &entries[..64]);
     assert_eq!(std::mem::size_of::<DeviceParameterSnapshot>(), 772);
-    assert_eq!(MAX_PARAMETERS_PER_DEVICE, 512);
+    assert_eq!(MAX_PARAMETERS_PER_DEVICE, 640);
 }
 
 #[test]

@@ -135,6 +135,9 @@ impl Runtime {
                 if let Some(fe) = &mut voice.filter_env {
                     fe.note_off(voice.age);
                 }
+                if let Some(le) = &mut voice.lfo_env {
+                    le.note_off(voice.age);
+                }
                 self.expire();
             }
         }
@@ -458,6 +461,9 @@ impl MutableInstrumentRuntime for Runtime {
         _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Error> {
         let companion = self.factory.settings.companion;
+        let effective_lfo_sync = self.factory.settings.lfo.active()
+            && !self.factory.settings.lfo_ext.is_high()
+            && (self.factory.settings.lfo.sync() || self.factory.settings.lfo_ext.is_sync());
         let beat_required = companion.needs_clock()
             || self.factory.settings.pitch_env.needs_clock()
             || self
@@ -465,14 +471,24 @@ impl MutableInstrumentRuntime for Runtime {
                 .settings
                 .filter_env
                 .needs_clock(self.factory.settings.filter.armed)
-            || (self.factory.settings.lfo.active() && self.factory.settings.lfo.sync());
+            || self
+                .factory
+                .settings
+                .lfo_ext
+                .needs_clock(self.factory.settings.lfo.active())
+            || effective_lfo_sync;
         if (companion.needs_running()
             || self.factory.settings.pitch_env.needs_running()
             || self
                 .factory
                 .settings
                 .filter_env
-                .needs_running(self.factory.settings.filter.armed))
+                .needs_running(self.factory.settings.filter.armed)
+            || self
+                .factory
+                .settings
+                .lfo_ext
+                .needs_running(self.factory.settings.lfo.active()))
             && clock
                 .and_then(|clock| clock.transport_is_running())
                 .is_none()
@@ -482,12 +498,11 @@ impl MutableInstrumentRuntime for Runtime {
         if beat_required {
             let clock = clock.ok_or(Error::InvalidEventBatch)?;
             let mut before = clock.beat_at_offset(0).ok_or(Error::InvalidEventBatch)?;
-            let observations =
-                if self.factory.settings.lfo.active() && self.factory.settings.lfo.sync() {
-                    frames.checked_add(1).ok_or(Error::InvalidEventBatch)?
-                } else {
-                    frames
-                };
+            let observations = if effective_lfo_sync {
+                frames.checked_add(1).ok_or(Error::InvalidEventBatch)?
+            } else {
+                frames
+            };
             for offset in 0..observations {
                 let next = clock
                     .beat_at_offset(offset)

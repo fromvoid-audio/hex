@@ -169,10 +169,9 @@ impl Machine {
                             / self.loop_frames as f64
                 }
             }
-            2 | 3 => {
-                self.cycle
-                    .level_shaped(age.saturating_sub(self.origin), u64::MAX, self.shape)
-            }
+            2 | 3 => self
+                .cycle
+                .level_shaped(age.saturating_sub(self.origin), u64::MAX, self.shape),
             5 => self
                 .cycle
                 .level_shaped(age % self.loop_frames.max(1), u64::MAX, self.shape),
@@ -205,9 +204,7 @@ impl Machine {
         if self.release.is_none() {
             // Note-off takes priority over a simultaneous note-pitch loop reset,
             // starting release from the pre-reset level at the end of decay.
-            let level = if self.mode == 5
-                && age > 0
-                && age.is_multiple_of(self.loop_frames.max(1))
+            let level = if self.mode == 5 && age > 0 && age.is_multiple_of(self.loop_frames.max(1))
             {
                 self.levels[2]
             } else {

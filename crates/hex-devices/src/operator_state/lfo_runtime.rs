@@ -866,6 +866,7 @@ impl<const N: usize> super::harmonic_runtime::VoiceHistory for Runtime<N> {
             glide_target_pitch: 0.0,
             pitch_env: None,
             filter_env: None,
+            lfo_env: None,
             pan_gains: Default::default(),
             lfo_rate_multiplier: 1.0,
             envelope_age: old.age as f64,

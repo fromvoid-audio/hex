@@ -4,7 +4,7 @@ use super::super::*;
 fn enable_migration_preserves_each_valid_prefix_and_defaults_every_oscillator_on() {
     let current = tests::legacy_state();
     assert_eq!(current.payload().len(), tlv_codec::CANONICAL_BYTES);
-    assert_eq!(PARAMETER_COUNT, 500);
+    assert_eq!(PARAMETER_COUNT, 518);
     let current_v17 = OperatorSettings::from_state(&current)
         .unwrap()
         .to_v17_state()

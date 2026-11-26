@@ -67,7 +67,7 @@ impl LfoTable {
         }))
     }
     pub fn sample(&self, shape: u32, phase: f64, cycle: u64, interpolate: bool) -> f64 {
-        if shape == 4 {
+        if shape >= 4 {
             return lfo::waveform(shape, phase, cycle);
         }
         let Some(table) = self.0.get(shape as usize) else {

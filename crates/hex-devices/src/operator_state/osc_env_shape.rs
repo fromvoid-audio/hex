@@ -221,7 +221,9 @@ mod tests {
             tuning: &tuning,
             resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
         };
-        let prepared = OPERATOR_METADATA.prepare_instrument(state, &context).unwrap();
+        let prepared = OPERATOR_METADATA
+            .prepare_instrument(state, &context)
+            .unwrap();
         let factory = prepared
             .prepare_mutable_runtime()
             .unwrap()
@@ -371,9 +373,7 @@ mod tests {
             )
             .unwrap();
         let energy = |buf: &[[f32; 2]]| -> f64 {
-            buf.iter()
-                .map(|f| f64::from(f[0]) * f64::from(f[0]))
-                .sum()
+            buf.iter().map(|f| f64::from(f[0]) * f64::from(f[0])).sum()
         };
         let e_convex = energy(&render(&convex, 48_000, 480, 64, 60, 480));
         let e_concave = energy(&render(&concave, 48_000, 480, 64, 60, 480));
