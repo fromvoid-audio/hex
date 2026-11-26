@@ -259,7 +259,7 @@ fn scalar_job_is_resumable_never_publishes_partial_page_and_damage_refuses() {
     assert_eq!(job.page.key, Some(key));
     for index in 0..2048 {
         assert_eq!(
-            job.page.scalar_values[index],
+            job.page.scalar.as_ref().unwrap().values[index],
             if index % 2 == 0 { 0.0 } else { 0.75 }
         );
     }
@@ -883,4 +883,37 @@ fn optimized_scalar_worker_pages_sparse_and_dense() {
             "scalar worker page profile: {label}, 65536 records, 16 x 4096 output frames, {quanta} bounded quanta, {elapsed:?} total; source setup excluded; no native deadline claim"
         );
     }
+}
+
+#[test]
+fn decoupled_scalar_backings_avoid_16mib_overhead_at_1024_page_scale_and_idle_workers_wake_via_signal()
+ {
+    let (_file, definition) = definition(true, 0);
+    let key = definition.metadata().key();
+    let config = StreamConfig::with_pool_pages(1024);
+    let mut runtime =
+        StreamRuntime::spawn_with_scalar_sources(config, vec![], vec![definition]).unwrap();
+    runtime.wait_until_ready(Duration::from_secs(2)).unwrap();
+    let (control, mut pages) = runtime.split().ok().unwrap();
+    let scalar_bytes = control.owner.transport_data.scalar_boxes
+        + control.owner.transport_data.scalar_coverage_boxes;
+    let expected = 8
+        * (hex_engine::STREAM_PAGE_FRAMES * std::mem::size_of::<f32>()
+            + hex_engine::STREAM_PAGE_FRAMES.div_ceil(64) * std::mem::size_of::<u64>());
+    assert_eq!(
+        scalar_bytes, expected,
+        "1 scalar lane on a 1,024-page PCM pool must allocate only 8 scalar backings ({expected} B), not 1,024 (~16.5 MiB)"
+    );
+    assert!(scalar_bytes < 256 * 1024);
+
+    // Park the worker indefinitely via the event condvar, then wake it to serve a page.
+    control.set_idle(true);
+    std::thread::sleep(Duration::from_millis(5));
+    pages.request_scalar_page(key, 0);
+    control.set_idle(false);
+    await_scalar(&mut pages, key);
+    assert!(pages.scalar_page(key, 0).is_some());
+    let report = control.shutdown(pages).ok().unwrap();
+    assert!(report.accounting_complete);
+    assert_eq!(report.page_buffers, 1024);
 }

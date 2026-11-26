@@ -255,8 +255,7 @@ impl Domain<'_> {
         // live-location/retirement receipt. Completion racing this observation
         // can release storage, but cannot grow this fixed constructor domain.
         let worker = lock_unpoisoned(worker);
-        if owner.stop.load(Ordering::Acquire) || worker.as_ref().is_none_or(JoinHandle::is_finished)
-        {
+        if owner.stop.is_stopped() || worker.as_ref().is_none_or(JoinHandle::is_finished) {
             return Err(AudioStreamStorageError::UnknownData);
         }
         let state = lock_unpoisoned(catalog_state);
@@ -1084,7 +1083,7 @@ mod tests {
         assert!(control.catalog_footprint().is_some());
         // Test-only stop injection models the terminal worker observation;
         // production shutdown cannot consume these borrowed halves.
-        control.owner.stop.store(true, Ordering::Release);
+        control.owner.stop.request_stop();
         control.owner.worker_wake.unpark();
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while !lock_unpoisoned(&control.owner.worker)

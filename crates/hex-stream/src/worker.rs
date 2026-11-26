@@ -1,5 +1,5 @@
 use crate::{
-    endpoint::{PageBuffer, PageRequest},
+    endpoint::{PageBuffer, PageRequest, ScalarPayload},
     types::{
         CatalogFootprint, PageKey, ScalarSourceDefinition, SourceDefinition, StreamConfig,
         StreamFailure, StreamFailureKind, VerifiedCatalog,
@@ -19,7 +19,7 @@ use scalar::ScalarJob;
 use std::{
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Condvar, Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::SyncSender,
     },
@@ -27,46 +27,163 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// Stack-only adaptive wait for the stream I/O worker. Catches multi-track
-/// request bursts via bounded yields, polls promptly while streaming is active
-/// (avoiding 2-5 ms macOS park_timeout stalls), and sleeps deeper when idle.
-/// The audio callback thread never locks, allocates, or calls syscalls here;
-/// control retains exclusive `worker_wake.unpark()` ownership.
+/// Bounded scalar backing count decoupled from the PCM page pool so a single
+/// streamed automation lane never allocates 16.5 MiB across 1,024 PCM pages.
+pub(crate) fn scalar_backing_count(page_buffers: usize, scalar_sources: usize) -> usize {
+    if scalar_sources == 0 {
+        0
+    } else {
+        scalar_sources.saturating_mul(8).max(8).min(page_buffers)
+    }
+}
+
+/// Shared control-to-worker lifecycle and event-driven condvar wakeup gate.
+/// Replaces flat 1 ms idle polling while preserving zero-lock, zero-syscall
+/// real-time audio callbacks (only control calls `wake`, `set_idle_park`, or
+/// `request_stop`).
+pub(crate) struct WorkerSignal {
+    stop: AtomicBool,
+    idle_park: AtomicBool,
+    wake_epoch: Mutex<u64>,
+    wake_cv: Condvar,
+}
+
+impl WorkerSignal {
+    pub(crate) fn new() -> Self {
+        Self {
+            stop: AtomicBool::new(false),
+            idle_park: AtomicBool::new(false),
+            wake_epoch: Mutex::new(0),
+            wake_cv: Condvar::new(),
+        }
+    }
+
+    pub(crate) fn stop_flag(&self) -> &AtomicBool {
+        &self.stop
+    }
+
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn request_stop(&self) {
+        self.stop.store(true, Ordering::Release);
+        self.wake();
+    }
+
+    pub(crate) fn set_idle_park(&self, idle: bool) {
+        self.idle_park.store(idle, Ordering::Release);
+        if !idle {
+            self.wake();
+        }
+    }
+
+    pub(crate) fn is_idle_parked(&self) -> bool {
+        self.idle_park.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn wake(&self) {
+        let mut epoch = match self.wake_epoch.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *epoch = epoch.wrapping_add(1);
+        self.wake_cv.notify_one();
+    }
+
+    fn current_epoch(&self) -> u64 {
+        let guard = match self.wake_epoch.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *guard
+    }
+
+    fn wait_event(&self, seen_epoch: u64, timeout: Option<Duration>) -> u64 {
+        let mut guard = match self.wake_epoch.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if *guard != seen_epoch || self.is_stopped() {
+            return *guard;
+        }
+        match timeout {
+            Some(duration) => {
+                let (next, _) = match self.wake_cv.wait_timeout(guard, duration) {
+                    Ok(res) => res,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *next
+            }
+            None => {
+                while *guard == seen_epoch && !self.is_stopped() && self.is_idle_parked() {
+                    guard = match self.wake_cv.wait(guard) {
+                        Ok(next) => next,
+                        Err(poisoned) => poisoned.into_inner(),
+                    };
+                }
+                *guard
+            }
+        }
+    }
+}
+
+/// Stack-only adaptive condvar wait for the stream I/O worker. Catches
+/// multi-track request bursts via bounded yields, wakes promptly while active
+/// or on any control `wake()` / `stop` signal, backs off exponentially when
+/// idle (avoiding 1 kHz idle timer wakeups), and parks indefinitely on the
+/// condvar when control marks playback stopped (`set_idle_park(true)`).
 struct IdleBackoff {
     last_activity: Instant,
     spins: u8,
+    idle_step: u8,
 }
 
 impl IdleBackoff {
     const BURST_YIELDS: u8 = 8;
     const ACTIVE_WINDOW: Duration = Duration::from_millis(250);
     const ACTIVE_PARK: Duration = Duration::from_micros(150);
-    const IDLE_PARK: Duration = Duration::from_millis(1);
+    const IDLE_SCHEDULE_MS: [u64; 6] = [1, 2, 4, 8, 16, 50];
 
     fn new() -> Self {
         Self {
             last_activity: Instant::now(),
             spins: 0,
+            idle_step: 0,
         }
     }
 
     fn record_activity(&mut self) {
         self.last_activity = Instant::now();
         self.spins = 0;
+        self.idle_step = 0;
     }
 
-    fn wait(&mut self) {
+    fn wait(&mut self, signal: &WorkerSignal, seen_epoch: u64) -> u64 {
+        if signal.is_stopped() {
+            return seen_epoch;
+        }
+        if signal.is_idle_parked() {
+            self.spins = Self::BURST_YIELDS;
+            return signal.wait_event(seen_epoch, None);
+        }
         if self.spins < Self::BURST_YIELDS {
             self.spins += 1;
             thread::yield_now();
-            return;
+            return seen_epoch;
         }
         let timeout = if self.last_activity.elapsed() < Self::ACTIVE_WINDOW {
+            self.idle_step = 0;
             Self::ACTIVE_PARK
         } else {
-            Self::IDLE_PARK
+            let idx = usize::from(self.idle_step).min(Self::IDLE_SCHEDULE_MS.len() - 1);
+            self.idle_step = self
+                .idle_step
+                .saturating_add(1)
+                .min((Self::IDLE_SCHEDULE_MS.len() - 1) as u8);
+            Duration::from_millis(Self::IDLE_SCHEDULE_MS[idx])
         };
-        thread::park_timeout(timeout);
+        signal.wait_event(seen_epoch, Some(timeout))
     }
 }
 
@@ -514,13 +631,15 @@ pub(crate) fn run_worker(
     mut scalar_definitions: Vec<ScalarSourceDefinition>,
     granular: Option<granular::PreparedGranular>,
     mut free_pages: Vec<Box<PageBuffer>>,
+    mut free_scalar_backings: Vec<Box<ScalarPayload>>,
     mut queues: WorkerQueues,
-    stop: Arc<AtomicBool>,
+    signal: Arc<WorkerSignal>,
     catalog_result: SyncSender<Result<VerifiedCatalog, StreamFailureKind>>,
     offline_consumer: Option<thread::Thread>,
     #[cfg(test)] test_hooks: Option<TestWorkerHooks>,
     #[cfg(feature = "test-support")] mut page_gate: Option<crate::test_support::PageGate>,
 ) -> WorkerExit {
+    let stop = signal.stop_flag();
     let mut source_scratch = Vec::new();
     let scratch_ok = source_scratch
         .try_reserve_exact(config.source_scratch_frames)
@@ -557,7 +676,7 @@ pub(crate) fn run_worker(
             definitions,
             &mut source_scratch,
             pitch_scratch.capacity(),
-            &stop,
+            stop,
         )
     } else {
         Err(StreamFailureKind::DecodeFailed)
@@ -567,7 +686,7 @@ pub(crate) fn run_worker(
         let _ = catalog_result.send(Err(*kind));
         return Ok(free_pages);
     }
-    let mut granular = match granular.map(|prepared| prepared.start(&stop)).transpose() {
+    let mut granular = match granular.map(|prepared| prepared.start(stop)).transpose() {
         Ok(routing) => routing,
         Err(kind) => {
             let _ = catalog_result.send(Err(kind));
@@ -621,18 +740,22 @@ pub(crate) fn run_worker(
     #[cfg(test)]
     if test_hooks
         .as_ref()
-        .is_some_and(|hooks| !hooks.wait_for_release(&stop))
+        .is_some_and(|hooks| !hooks.wait_for_release(stop))
     {
         return Ok(free_pages);
     }
     let mut scalar_job: Option<ScalarJob> = None;
     let mut idle_backoff = IdleBackoff::new();
+    let mut seen_epoch = signal.current_epoch();
     loop {
         let mut did_work = false;
         for _ in 0..config.return_capacity {
-            let Ok(page) = queues.returns.pop() else {
+            let Ok(mut page) = queues.returns.pop() else {
                 break;
             };
+            if let Some(scalar) = page.scalar.take() {
+                free_scalar_backings.push(scalar);
+            }
             free_pages.push(page);
             did_work = true;
         }
@@ -674,7 +797,10 @@ pub(crate) fn run_worker(
             consumer.unpark();
         }
         if stop.load(Ordering::Acquire) {
-            while let Ok(page) = queues.returns.pop() {
+            while let Ok(mut page) = queues.returns.pop() {
+                if let Some(scalar) = page.scalar.take() {
+                    free_scalar_backings.push(scalar);
+                }
                 free_pages.push(page);
             }
             break;
@@ -683,13 +809,13 @@ pub(crate) fn run_worker(
             idle_backoff.record_activity();
         }
         if !held_pages.is_empty() || !held_failures.is_empty() {
-            idle_backoff.wait();
+            seen_epoch = idle_backoff.wait(&signal, seen_epoch);
             continue;
         }
         #[cfg(test)]
         if let Some(job) = &scalar_job
             && let (Some(hooks), StreamResourceKey::Scalar(key)) = (&test_hooks, job.key.source)
-            && !hooks.before_scalar_step(key, &stop)
+            && !hooks.before_scalar_step(key, stop)
         {
             break;
         }
@@ -709,6 +835,9 @@ pub(crate) fn run_worker(
                 Err(kind) => {
                     job.page.key = None;
                     job.page.valid_frames = 0;
+                    if let Some(scalar) = job.page.scalar.take() {
+                        free_scalar_backings.push(scalar);
+                    }
                     free_pages.push(job.page);
                     hold_failure(
                         StreamFailure {
@@ -747,7 +876,7 @@ pub(crate) fn run_worker(
         };
         let Some(PageRequest(key)) = request else {
             if scalar_job.is_none() {
-                idle_backoff.wait();
+                seen_epoch = idle_backoff.wait(&signal, seen_epoch);
             }
             continue;
         };
@@ -758,7 +887,7 @@ pub(crate) fn run_worker(
                 && key.page_index == gate.key.page_index
         }) {
             let failure = gate.read_failure_after;
-            if !gate.wait(&stop) {
+            if !gate.wait(stop) {
                 break;
             }
             failure
@@ -801,7 +930,13 @@ pub(crate) fn run_worker(
         }
         // A fast consumer can send a returned buffer and its next request
         // after the loop's first drain. Recheck after acquiring the request.
-        let Some(mut page) = free_pages.pop().or_else(|| queues.returns.pop().ok()) else {
+        let Some(mut page) = free_pages.pop().or_else(|| {
+            let mut returned = queues.returns.pop().ok()?;
+            if let Some(scalar) = returned.scalar.take() {
+                free_scalar_backings.push(scalar);
+            }
+            Some(returned)
+        }) else {
             let failure = StreamFailure {
                 key: key.source,
                 page_index: key.page_index,
@@ -811,13 +946,39 @@ pub(crate) fn run_worker(
             continue;
         };
         if let StreamResourceKey::Scalar(scalar_key) = key.source {
+            // Drain any returned scalar page so its decoupled backing is immediately reusable.
+            if free_scalar_backings.is_empty() {
+                while let Ok(mut returned) = queues.returns.pop() {
+                    if let Some(scalar) = returned.scalar.take() {
+                        free_scalar_backings.push(scalar);
+                    }
+                    free_pages.push(returned);
+                }
+            }
             match scalar_definitions
                 .binary_search_by_key(&scalar_key, |definition| definition.metadata().key())
             {
                 Ok(index) => {
+                    let Some(scalar_payload) = free_scalar_backings.pop() else {
+                        free_pages.push(page);
+                        hold_failure(
+                            StreamFailure {
+                                key: key.source,
+                                page_index: key.page_index,
+                                kind: StreamFailureKind::CapacityExhausted,
+                            },
+                            &mut held_failures,
+                            &mut queues.failures,
+                        );
+                        continue;
+                    };
+                    page.scalar = Some(scalar_payload);
                     match ScalarJob::begin(index, &mut scalar_definitions[index], key, page) {
                         Ok(job) => scalar_job = Some(job),
-                        Err((page, kind)) => {
+                        Err((mut page, kind)) => {
+                            if let Some(scalar) = page.scalar.take() {
+                                free_scalar_backings.push(scalar);
+                            }
                             free_pages.push(page);
                             hold_failure(
                                 StreamFailure {
@@ -885,7 +1046,7 @@ pub(crate) fn run_worker(
             continue;
         };
         let source = &mut sources[source_index];
-        let rendered = match reader_pool.reader_mut(source.asset_index, &stop) {
+        let rendered = match reader_pool.reader_mut(source.asset_index, stop) {
             Ok(reader) => {
                 #[cfg(feature = "test-support")]
                 if let Some(after) = read_failure_after {
@@ -901,7 +1062,7 @@ pub(crate) fn run_worker(
                     &mut page,
                     &mut source_scratch,
                     &mut pitch_scratch,
-                    &stop,
+                    stop,
                     #[cfg(test)]
                     test_hooks
                         .as_ref()

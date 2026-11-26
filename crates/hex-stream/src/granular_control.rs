@@ -2,7 +2,7 @@
 use crate::{
     AllocationData, GranularBankData, GranularWorkerBank, GranularWorkerExit,
     GranularWorkerOutcome, GranularWorkerQueues, GranularWorkerRequest, GranularWorkerResult,
-    StreamRuntimeError, run_granular_worker,
+    StreamRuntimeError,
 };
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::{
@@ -146,7 +146,7 @@ impl GranularWorkerControl {
                 #[cfg(feature = "test-support")]
                 if let Some(gate) = gate {
                     let mut gate = Some(gate);
-                    return crate::granular_worker::run_with_step_hook(
+                    return crate::granular_worker::run_with_step_hook_signaled(
                         bank,
                         GranularWorkerQueues {
                             requests: request_rx,
@@ -161,7 +161,7 @@ impl GranularWorkerControl {
                         },
                     );
                 }
-                run_granular_worker(
+                crate::granular_worker::run_granular_worker_signaled(
                     bank,
                     GranularWorkerQueues {
                         requests: request_rx,

@@ -524,7 +524,7 @@ mod tests {
             .unwrap();
         assert_eq!(refusal.reason, AudioStreamStorageError::UnregisteredLease);
         assert_eq!(Arc::as_ptr(&refusal.control.pair_id), identity);
-        assert!(!refusal.control.owner.stop.load(Ordering::Acquire));
+        assert!(!refusal.control.owner.stop.is_stopped());
         let StreamDomainSealRefusal {
             control,
             pages,

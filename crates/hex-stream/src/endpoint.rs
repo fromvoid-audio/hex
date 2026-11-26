@@ -26,11 +26,51 @@ const PENDING_PINS: u8 = 0b0111_0000;
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct PageRequest(pub(crate) ResourcePageKey);
 
+/// Decoupled scalar automation page storage. Allocated in a small bounded
+/// pool only when scalar sources exist, so 1,024 PCM `PageBuffer`s never carry
+/// 16.5 MiB of unused scalar arrays.
+pub(crate) struct ScalarPayload {
+    pub(crate) values: Box<[f32]>,
+    pub(crate) coverage: Box<[u64]>,
+}
+
+impl ScalarPayload {
+    pub(crate) fn new_with_capacity() -> Result<(Box<Self>, usize), ()> {
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(STREAM_PAGE_FRAMES)
+            .map_err(|_| ())?;
+        values.resize(STREAM_PAGE_FRAMES, 0.0);
+        let mut coverage = Vec::new();
+        coverage
+            .try_reserve_exact(STREAM_PAGE_FRAMES.div_ceil(64))
+            .map_err(|_| ())?;
+        coverage.resize(STREAM_PAGE_FRAMES.div_ceil(64), 0);
+        let old_capacity = values
+            .capacity()
+            .checked_mul(std::mem::size_of::<f32>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    coverage
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<u64>())?,
+                )
+            })
+            .ok_or(())?;
+        Ok((
+            Box::new(Self {
+                values: values.into_boxed_slice(),
+                coverage: coverage.into_boxed_slice(),
+            }),
+            old_capacity,
+        ))
+    }
+}
+
 pub(crate) struct PageBuffer {
     pub(crate) key: Option<ResourcePageKey>,
     pub(crate) frames: Box<[Frame]>,
-    pub(crate) scalar_values: Box<[f32]>,
-    pub(crate) scalar_coverage: Box<[u64]>,
+    pub(crate) scalar: Option<Box<ScalarPayload>>,
     pub(crate) valid_frames: usize,
 }
 
@@ -45,41 +85,19 @@ impl PageBuffer {
             .try_reserve_exact(STREAM_PAGE_FRAMES)
             .map_err(|_| ())?;
         frames.resize(STREAM_PAGE_FRAMES, [0.0; 2]);
-        let old_capacity = frames.capacity() * std::mem::size_of::<Frame>();
-        let mut scalar_values = Vec::new();
-        let mut scalar_coverage = Vec::new();
-        if scalar {
-            scalar_values
-                .try_reserve_exact(STREAM_PAGE_FRAMES)
-                .map_err(|_| ())?;
-            scalar_values.resize(STREAM_PAGE_FRAMES, 0.0);
-            scalar_coverage
-                .try_reserve_exact(STREAM_PAGE_FRAMES.div_ceil(64))
-                .map_err(|_| ())?;
-            scalar_coverage.resize(STREAM_PAGE_FRAMES.div_ceil(64), 0);
-        }
-        // Vec-to-box may briefly retain the old backing beside the new box.
-        let old_capacity = old_capacity
-            .checked_add(
-                scalar_values
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<f32>())
-                    .ok_or(())?,
-            )
-            .and_then(|bytes| {
-                bytes.checked_add(
-                    scalar_coverage
-                        .capacity()
-                        .checked_mul(std::mem::size_of::<u64>())?,
-                )
-            })
-            .ok_or(())?;
+        let mut old_capacity = frames.capacity() * std::mem::size_of::<Frame>();
+        let scalar_payload = if scalar {
+            let (payload, scalar_old) = ScalarPayload::new_with_capacity()?;
+            old_capacity = old_capacity.checked_add(scalar_old).ok_or(())?;
+            Some(payload)
+        } else {
+            None
+        };
         Ok((
             Box::new(Self {
                 key: None,
                 frames: frames.into_boxed_slice(),
-                scalar_values: scalar_values.into_boxed_slice(),
-                scalar_coverage: scalar_coverage.into_boxed_slice(),
+                scalar: scalar_payload,
                 valid_frames: 0,
             }),
             old_capacity,
@@ -87,10 +105,12 @@ impl PageBuffer {
     }
     fn payload_len(&self) -> usize {
         match self.key.map(|key| key.source) {
-            Some(StreamResourceKey::Scalar(_)) => self
-                .scalar_values
-                .len()
-                .min(self.scalar_coverage.len().saturating_mul(64)),
+            Some(StreamResourceKey::Scalar(_)) => self.scalar.as_deref().map_or(0, |payload| {
+                payload
+                    .values
+                    .len()
+                    .min(payload.coverage.len().saturating_mul(64))
+            }),
             _ => self.frames.len(),
         }
     }
@@ -103,14 +123,18 @@ pub(crate) struct EndpointQueues {
     pub(crate) failure_rx: Consumer<StreamFailure>,
 }
 
+const LRU_NONE: u16 = u16::MAX;
+
 enum CacheSlot {
     Empty,
     Occupied {
         page: Box<PageBuffer>,
         pinned: u8,
-        /// Monotonic insertion/use stamp so eviction prefers stale pages over
-        /// freshly installed multi-source prefetches (fits in existing padding).
-        stamp: u32,
+        /// Intrusive index-based doubly-linked LRU list for unpinned (`pinned == 0`)
+        /// slots. Fits inside the existing 16-byte `CacheSlot` footprint so callback
+        /// eviction and prefetch victim selection stay O(1) with zero extra DATA.
+        lru_prev: u16,
+        lru_next: u16,
     },
 }
 
@@ -156,8 +180,9 @@ pub(crate) struct Endpoint {
     cache: Vec<CacheSlot>,
     max_cached_pages: usize,
     cache_count: usize,
-    eviction_cursor: usize,
-    access_tick: u32,
+    unpinned_head: u16,
+    unpinned_tail: u16,
+    unpinned_count: usize,
     pending: Vec<PendingSlot>,
     pending_mask: usize,
     /// Total occupied `pending` slots (demand + speculative prefetch).
@@ -183,6 +208,8 @@ pub(crate) struct Endpoint {
     cache_probe_count: Cell<usize>,
     #[cfg(test)]
     pending_probe_count: Cell<usize>,
+    #[cfg(test)]
+    victim_scan_count: Cell<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -245,6 +272,9 @@ impl Endpoint {
             .checked_sub(1)?
             .checked_next_power_of_two()?
             .checked_mul(2)?;
+        if cache >= usize::from(LRU_NONE) {
+            return None;
+        }
         let pending = request_capacity
             .checked_mul(2)?
             .checked_next_power_of_two()?;
@@ -277,8 +307,9 @@ impl Endpoint {
             cache,
             max_cached_pages,
             cache_count: 0,
-            eviction_cursor: 0,
-            access_tick: 0,
+            unpinned_head: LRU_NONE,
+            unpinned_tail: LRU_NONE,
+            unpinned_count: 0,
             pending,
             pending_mask: pending_count - 1,
             pending_count: 0,
@@ -301,6 +332,8 @@ impl Endpoint {
             cache_probe_count: Cell::new(0),
             #[cfg(test)]
             pending_probe_count: Cell::new(0),
+            #[cfg(test)]
+            victim_scan_count: Cell::new(0),
         })
     }
 
@@ -429,13 +462,20 @@ impl Endpoint {
                 source: extent.source,
                 page_index: extent.page_index,
             };
-            if let Some(index) = self.cache_lookup(key)
-                && let CacheSlot::Occupied { page, pinned, .. } = &mut self.cache[index]
-                && extent.start < extent.end
-                && extent.end <= page.valid_frames
-                && page.valid_frames <= page.payload_len()
-            {
-                *pinned |= mask;
+            if let Some(index) = self.cache_lookup(key) {
+                let mut became_pinned = false;
+                if let CacheSlot::Occupied { page, pinned, .. } = &mut self.cache[index]
+                    && extent.start < extent.end
+                    && extent.end <= page.valid_frames
+                    && page.valid_frames <= page.payload_len()
+                {
+                    let was_unpinned = *pinned == 0;
+                    *pinned |= mask;
+                    became_pinned = was_unpinned && *pinned != 0;
+                }
+                if became_pinned {
+                    self.lru_unlink(index);
+                }
             }
         }
     }
@@ -506,10 +546,16 @@ impl Endpoint {
             return false;
         }
         for key in keys {
-            if let Some(index) = self.cache_lookup(*key)
-                && let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index]
-            {
-                *pinned |= 8;
+            if let Some(index) = self.cache_lookup(*key) {
+                let mut became_pinned = false;
+                if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
+                    let was_unpinned = *pinned == 0;
+                    *pinned |= 8;
+                    became_pinned = was_unpinned && *pinned != 0;
+                }
+                if became_pinned {
+                    self.lru_unlink(index);
+                }
             }
         }
         true
@@ -544,25 +590,44 @@ impl Endpoint {
         mask: u8,
         extents: [&[crate::StreamResourceExtent]; N],
     ) {
-        for slot in &mut self.cache {
-            if let CacheSlot::Occupied { pinned, .. } = slot {
+        for index in 0..self.cache.len() {
+            let mut became_unpinned = false;
+            if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
+                let was_pinned = *pinned != 0;
                 *pinned &= !mask;
+                became_unpinned = was_pinned && *pinned == 0;
+            }
+            if became_unpinned {
+                self.lru_push_mru(index);
             }
         }
         for extent in extents.into_iter().flatten() {
             if let Some(index) = self.cache_lookup(ResourcePageKey {
                 source: extent.source,
                 page_index: extent.page_index,
-            }) && let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index]
-            {
-                *pinned |= mask;
+            }) {
+                let mut became_pinned = false;
+                if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
+                    let was_unpinned = *pinned == 0;
+                    *pinned |= mask;
+                    became_pinned = was_unpinned && *pinned != 0;
+                }
+                if became_pinned {
+                    self.lru_unlink(index);
+                }
             }
         }
     }
     pub fn unpin_all(&mut self) {
-        for slot in &mut self.cache {
-            if let CacheSlot::Occupied { pinned, .. } = slot {
+        for index in 0..self.cache.len() {
+            let mut became_unpinned = false;
+            if let CacheSlot::Occupied { pinned, .. } = &mut self.cache[index] {
+                let was_pinned = *pinned != 0;
                 *pinned &= !8;
+                became_unpinned = was_pinned && *pinned == 0;
+            }
+            if became_unpinned {
+                self.lru_push_mru(index);
             }
         }
     }
@@ -577,6 +642,9 @@ impl Endpoint {
             }
         }
         self.cache_count = 0;
+        self.unpinned_head = LRU_NONE;
+        self.unpinned_tail = LRU_NONE;
+        self.unpinned_count = 0;
         self.flush_held_returns();
         returned
     }
@@ -876,7 +944,6 @@ impl Endpoint {
             let Some((page, _)) = self.cache_remove(victim) else {
                 return;
             };
-            self.eviction_cursor = (victim + 1) & (self.cache.len() - 1);
             self.return_buffer(page);
             self.flush_held_returns();
         } else if self.cache_count.saturating_add(self.pending_count) >= self.max_cached_pages {
@@ -912,58 +979,82 @@ impl Endpoint {
         if candidate == incoming_reading {
             return true;
         }
-        self.prefetch_keys.iter().any(|pending| {
-            candidate
-                == ResourcePageKey {
-                    source: pending.source,
-                    page_index: pending.page_index.wrapping_sub(1),
-                }
+        if self.prefetch_keys.is_empty() {
+            return false;
+        }
+        self.is_pending_prefetch(ResourcePageKey {
+            source: candidate.source,
+            page_index: candidate.page_index.wrapping_add(1),
         })
     }
 
     fn unpinned_victim_for_prefetch(&self, incoming: ResourcePageKey) -> Option<usize> {
-        let mask = self.cache.len() - 1;
-        let mut best: Option<(usize, u32)> = None;
-        for offset in 0..self.cache.len() {
-            let index = (self.eviction_cursor + offset) & mask;
-            if let CacheSlot::Occupied {
+        let mut cursor = self.unpinned_head;
+        while cursor != LRU_NONE {
+            let index = usize::from(cursor);
+            #[cfg(test)]
+            self.victim_scan_count
+                .set(self.victim_scan_count.get().saturating_add(1));
+            let CacheSlot::Occupied {
                 page,
                 pinned: 0,
-                stamp,
+                lru_next,
+                ..
             } = &self.cache[index]
-                && page
-                    .key
-                    .is_some_and(|candidate| !self.is_prefetch_reading_page(candidate, incoming))
+            else {
+                break;
+            };
+            if page
+                .key
+                .is_some_and(|candidate| !self.is_prefetch_reading_page(candidate, incoming))
             {
-                let age = self.access_tick.wrapping_sub(*stamp);
-                if best.is_none_or(|(_, best_age)| age > best_age) {
-                    best = Some((index, age));
-                }
+                return Some(index);
             }
+            cursor = *lru_next;
         }
-        best.map(|(index, _)| index)
+        None
     }
 
     fn has_unpinned_victims_for_prefetch(&self, incoming: ResourcePageKey, needed: usize) -> bool {
         if needed == 0 {
             return true;
         }
-        let mask = self.cache.len() - 1;
+        if self.unpinned_count < needed {
+            return false;
+        }
+        // At most `1 + prefetch_keys.len()` cached pages can be reading pages for
+        // active/incoming prefetches; if unpinned headroom exceeds that, we have
+        // enough victims in O(1) without touching a single cache slot.
+        let max_reading = self.prefetch_keys.len().saturating_add(1);
+        if self.unpinned_count.saturating_sub(max_reading) >= needed {
+            return true;
+        }
         let mut found = 0usize;
-        for offset in 0..self.cache.len() {
-            let index = (self.eviction_cursor + offset) & mask;
-            if let CacheSlot::Occupied {
-                page, pinned: 0, ..
+        let mut cursor = self.unpinned_head;
+        while cursor != LRU_NONE {
+            let index = usize::from(cursor);
+            #[cfg(test)]
+            self.victim_scan_count
+                .set(self.victim_scan_count.get().saturating_add(1));
+            let CacheSlot::Occupied {
+                page,
+                pinned: 0,
+                lru_next,
+                ..
             } = &self.cache[index]
-                && page
-                    .key
-                    .is_some_and(|candidate| !self.is_prefetch_reading_page(candidate, incoming))
+            else {
+                break;
+            };
+            if page
+                .key
+                .is_some_and(|candidate| !self.is_prefetch_reading_page(candidate, incoming))
             {
                 found += 1;
                 if found >= needed {
                     return true;
                 }
             }
+            cursor = *lru_next;
         }
         false
     }
@@ -1001,47 +1092,64 @@ impl Endpoint {
     }
 
     fn reclaim_fade_victim(&mut self, retained: &[&[crate::StreamResourceExtent]]) -> bool {
-        let mask = self.cache.len() - 1;
-        let victim = (0..self.cache.len())
-            .map(|offset| (self.eviction_cursor + offset) & mask)
-            .find(|&index| {
-                matches!(&self.cache[index], CacheSlot::Occupied { page, pinned: 0, .. }
-                if page.key.is_some_and(|key| {
-                    !retained.iter().any(|extents| extents.binary_search_by_key(
-                        &(key.source, key.page_index),
-                        |extent| (extent.source, extent.page_index),
-                    ).is_ok())
-                }))
-            });
+        let mut victim = None;
+        let mut cursor = self.unpinned_head;
+        while cursor != LRU_NONE {
+            let index = usize::from(cursor);
+            let CacheSlot::Occupied {
+                page,
+                pinned: 0,
+                lru_next,
+                ..
+            } = &self.cache[index]
+            else {
+                break;
+            };
+            if page.key.is_some_and(|key| {
+                !retained.iter().any(|extents| {
+                    extents
+                        .binary_search_by_key(&(key.source, key.page_index), |extent| {
+                            (extent.source, extent.page_index)
+                        })
+                        .is_ok()
+                })
+            }) {
+                victim = Some(index);
+                break;
+            }
+            cursor = *lru_next;
+        }
         let Some(index) = victim else { return false };
         let Some((page, _)) = self.cache_remove(index) else {
             return false;
         };
-        self.eviction_cursor = (index + 1) & mask;
         self.return_buffer(page);
         self.flush_held_returns();
         true
     }
 
     fn unpinned_victim_except(&self, keep: ResourcePageKey) -> Option<usize> {
-        let mask = self.cache.len() - 1;
-        let mut best: Option<(usize, u32)> = None;
-        for offset in 0..self.cache.len() {
-            let index = (self.eviction_cursor + offset) & mask;
-            if let CacheSlot::Occupied {
+        let mut cursor = self.unpinned_head;
+        while cursor != LRU_NONE {
+            let index = usize::from(cursor);
+            #[cfg(test)]
+            self.victim_scan_count
+                .set(self.victim_scan_count.get().saturating_add(1));
+            let CacheSlot::Occupied {
                 page,
                 pinned: 0,
-                stamp,
+                lru_next,
+                ..
             } = &self.cache[index]
-                && page.key != Some(keep)
-            {
-                let age = self.access_tick.wrapping_sub(*stamp);
-                if best.is_none_or(|(_, best_age)| age > best_age) {
-                    best = Some((index, age));
-                }
+            else {
+                break;
+            };
+            if page.key != Some(keep) {
+                return Some(index);
             }
+            cursor = *lru_next;
         }
-        best.map(|(index, _)| index)
+        None
     }
 
     fn cache_lookup(&self, key: impl Into<ResourcePageKey>) -> Option<usize> {
@@ -1100,33 +1208,38 @@ impl Endpoint {
                 self.return_buffer(page);
                 return false;
             }
-            let stamp = self.next_access_stamp();
+            let was_unpinned = matches!(self.cache[index], CacheSlot::Occupied { pinned: 0, .. });
+            if was_unpinned {
+                self.lru_unlink(index);
+            }
             let old = std::mem::replace(
                 &mut self.cache[index],
                 CacheSlot::Occupied {
                     page,
                     pinned: pending_mask,
-                    stamp,
+                    lru_prev: LRU_NONE,
+                    lru_next: LRU_NONE,
                 },
             );
+            let mut merged_pinned = pending_mask;
             if let CacheSlot::Occupied { page, pinned, .. } = old {
                 if let CacheSlot::Occupied {
                     pinned: current, ..
                 } = &mut self.cache[index]
                 {
                     *current |= pinned;
+                    merged_pinned = *current;
                 }
                 self.return_buffer(page);
+            }
+            if merged_pinned == 0 {
+                self.lru_push_mru(index);
             }
             return true;
         }
         if self.cache_count >= self.max_cached_pages {
             let victim = if let Some(keep) = keep {
-                let victim = self.unpinned_victim_except(keep);
-                if let Some(index) = victim {
-                    self.eviction_cursor = (index + 1) & (self.cache.len() - 1);
-                }
-                victim
+                self.unpinned_victim_except(keep)
             } else {
                 self.unpinned_victim()
             };
@@ -1142,23 +1255,111 @@ impl Endpoint {
             self.return_buffer(page);
             return false;
         };
-        let stamp = self.next_access_stamp();
         self.cache[index] = CacheSlot::Occupied {
             page,
             pinned: pending_mask,
-            stamp,
+            lru_prev: LRU_NONE,
+            lru_next: LRU_NONE,
         };
         self.cache_count += 1;
+        if pending_mask == 0 {
+            self.lru_push_mru(index);
+        }
         true
     }
 
-    fn next_access_stamp(&mut self) -> u32 {
-        self.access_tick = self.access_tick.wrapping_add(1);
-        self.access_tick
+    fn lru_push_mru(&mut self, index: usize) {
+        let idx = index as u16;
+        let prev = self.unpinned_tail;
+        if let CacheSlot::Occupied {
+            lru_prev, lru_next, ..
+        } = &mut self.cache[index]
+        {
+            *lru_prev = prev;
+            *lru_next = LRU_NONE;
+        }
+        if prev != LRU_NONE {
+            if let CacheSlot::Occupied { lru_next, .. } = &mut self.cache[usize::from(prev)] {
+                *lru_next = idx;
+            }
+        } else {
+            self.unpinned_head = idx;
+        }
+        self.unpinned_tail = idx;
+        self.unpinned_count += 1;
+    }
+
+    fn lru_unlink(&mut self, index: usize) {
+        let (prev, next) = match &mut self.cache[index] {
+            CacheSlot::Occupied {
+                lru_prev, lru_next, ..
+            } => {
+                let pair = (*lru_prev, *lru_next);
+                *lru_prev = LRU_NONE;
+                *lru_next = LRU_NONE;
+                pair
+            }
+            CacheSlot::Empty => return,
+        };
+        if prev != LRU_NONE {
+            if let CacheSlot::Occupied { lru_next, .. } = &mut self.cache[usize::from(prev)] {
+                *lru_next = next;
+            }
+        } else {
+            self.unpinned_head = next;
+        }
+        if next != LRU_NONE {
+            if let CacheSlot::Occupied { lru_prev, .. } = &mut self.cache[usize::from(next)] {
+                *lru_prev = prev;
+            }
+        } else {
+            self.unpinned_tail = prev;
+        }
+        self.unpinned_count = self.unpinned_count.saturating_sub(1);
+    }
+
+    fn lru_touch(&mut self, index: usize) {
+        if !matches!(self.cache[index], CacheSlot::Occupied { pinned: 0, .. })
+            || self.unpinned_tail == index as u16
+        {
+            return;
+        }
+        self.lru_unlink(index);
+        self.lru_push_mru(index);
+    }
+
+    fn lru_relocate(&mut self, new_index: usize) {
+        let (prev, next) = match self.cache[new_index] {
+            CacheSlot::Occupied {
+                pinned: 0,
+                lru_prev,
+                lru_next,
+                ..
+            } => (lru_prev, lru_next),
+            _ => return,
+        };
+        let new_u16 = new_index as u16;
+        if prev != LRU_NONE {
+            if let CacheSlot::Occupied { lru_next, .. } = &mut self.cache[usize::from(prev)] {
+                *lru_next = new_u16;
+            }
+        } else {
+            self.unpinned_head = new_u16;
+        }
+        if next != LRU_NONE {
+            if let CacheSlot::Occupied { lru_prev, .. } = &mut self.cache[usize::from(next)] {
+                *lru_prev = new_u16;
+            }
+        } else {
+            self.unpinned_tail = new_u16;
+        }
     }
 
     fn cache_remove(&mut self, index: usize) -> Option<(Box<PageBuffer>, u8)> {
         let mask = self.cache.len() - 1;
+        if matches!(self.cache[index], CacheSlot::Occupied { pinned: 0, .. }) {
+            self.lru_unlink(index);
+        }
         let removed = std::mem::replace(&mut self.cache[index], CacheSlot::Empty);
         let CacheSlot::Occupied { page, pinned, .. } = removed else {
             return None;
@@ -1180,6 +1381,7 @@ impl Endpoint {
             let home = page_slot(key, mask);
             if probe_distance(home, hole, mask) < probe_distance(home, scan, mask) {
                 self.cache[hole] = std::mem::replace(&mut self.cache[scan], CacheSlot::Empty);
+                self.lru_relocate(hole);
                 hole = scan;
             }
             scan = (scan + 1) & mask;
@@ -1201,23 +1403,10 @@ impl Endpoint {
     }
 
     fn unpinned_victim(&mut self) -> Option<usize> {
-        let mask = self.cache.len() - 1;
-        let mut best: Option<(usize, u32)> = None;
-        for offset in 0..self.cache.len() {
-            let index = (self.eviction_cursor + offset) & mask;
-            if let CacheSlot::Occupied {
-                pinned: 0, stamp, ..
-            } = self.cache[index]
-            {
-                let age = self.access_tick.wrapping_sub(stamp);
-                if best.is_none_or(|(_, best_age)| age > best_age) {
-                    best = Some((index, age));
-                }
-            }
-        }
-        let (index, _) = best?;
-        self.eviction_cursor = (index + 1) & mask;
-        Some(index)
+        #[cfg(test)]
+        self.victim_scan_count
+            .set(self.victim_scan_count.get().saturating_add(1));
+        (self.unpinned_head != LRU_NONE).then_some(usize::from(self.unpinned_head))
     }
 
     fn return_buffer(&mut self, page: Box<PageBuffer>) {
@@ -1252,9 +1441,8 @@ impl MediaPages for Endpoint {
             page_index,
         };
         if let Some(slot) = self.cache_lookup(key) {
-            let next_stamp = self.next_access_stamp();
-            if let CacheSlot::Occupied { page, stamp, .. } = &mut self.cache[slot] {
-                *stamp = next_stamp;
+            self.lru_touch(slot);
+            if let CacheSlot::Occupied { page, .. } = &self.cache[slot] {
                 return Some(BorrowedMediaPage {
                     page_index,
                     frames: &page.frames[..page.valid_frames],
@@ -1289,14 +1477,15 @@ impl MediaPages for Endpoint {
             page_index,
         };
         if let Some(slot) = self.cache_lookup(resource) {
-            let next_stamp = self.next_access_stamp();
-            if let CacheSlot::Occupied { page, stamp, .. } = &mut self.cache[slot] {
-                *stamp = next_stamp;
+            self.lru_touch(slot);
+            if let CacheSlot::Occupied { page, .. } = &self.cache[slot]
+                && let Some(payload) = page.scalar.as_deref()
+            {
                 return Some(BorrowedScalarPage {
                     key,
                     page_index,
-                    values: &page.scalar_values[..page.valid_frames],
-                    coverage: &page.scalar_coverage[..page.valid_frames.div_ceil(64)],
+                    values: &payload.values[..page.valid_frames],
+                    coverage: &payload.coverage[..page.valid_frames.div_ceil(64)],
                 });
             }
         }
@@ -1341,8 +1530,9 @@ impl Endpoint {
             cache,
             max_cached_pages: _,
             cache_count: _,
-            eviction_cursor: _,
-            access_tick: _,
+            unpinned_head: _,
+            unpinned_tail: _,
+            unpinned_count: _,
             pending,
             pending_mask: _,
             pending_count: _,
@@ -1365,6 +1555,8 @@ impl Endpoint {
                 cache_probe_count: _,
             #[cfg(test)]
                 pending_probe_count: _,
+            #[cfg(test)]
+                victim_scan_count: _,
         } = self;
         crate::EndpointData {
             cache: crate::AllocationData::of::<CacheSlot>(cache.capacity()),
@@ -2362,8 +2554,10 @@ mod tests {
                 source: scalar_source.into(),
                 page_index,
             });
-            buf.scalar_values = vec![0.0; 16].into_boxed_slice();
-            buf.scalar_coverage = vec![0u64; 1].into_boxed_slice();
+            buf.scalar = Some(Box::new(ScalarPayload {
+                values: vec![0.0; 16].into_boxed_slice(),
+                coverage: vec![0u64; 1].into_boxed_slice(),
+            }));
             buf.valid_frames = 16;
             buf
         };
@@ -2378,5 +2572,79 @@ mod tests {
         assert!(scalar_ep.scalar_page(scalar_source, 10).is_some());
         assert!(scalar_ep.scalar_page(scalar_source, 11).is_none());
         assert!(scalar_ep.scalar_page(scalar_source, 12).is_some());
+    }
+
+    #[test]
+    fn o1_intrusive_lru_victim_and_prefetch_avoid_linear_scans_at_1024_page_scale() {
+        let source = source();
+        // 1,024-page pool -> 2,048 hash slots, max_cached_pages = 1,023.
+        let (request_tx, mut requests) = RingBuffer::new(128);
+        let (mut ready, ready_rx) = RingBuffer::new(1024);
+        let (return_tx, mut returns) = RingBuffer::new(1024);
+        let (_failures, failure_rx) = RingBuffer::new(16);
+        let mut endpoint = Endpoint::new(
+            1024,
+            128,
+            vec![source.into()],
+            EndpointQueues {
+                request_tx,
+                ready_rx,
+                return_tx,
+                failure_rx,
+            },
+        )
+        .expect("1024-page endpoint");
+        assert_eq!(endpoint.cache.len(), 2048);
+        assert_eq!(endpoint.max_cached_pages, 1023);
+        assert_eq!(std::mem::size_of::<CacheSlot>(), 16);
+
+        let make_page = |page_index: u64| {
+            let mut buf = PageBuffer::new().expect("page buffer");
+            buf.key = Some(ResourcePageKey {
+                source: source.into(),
+                page_index,
+            });
+            buf.valid_frames = 16;
+            buf
+        };
+        for p in 0..1023u64 {
+            assert!(ready.push(make_page(p)).is_ok());
+        }
+        assert_eq!(endpoint.pump_ready(1023), 1023);
+        assert_eq!(endpoint.cache_count, 1023);
+        assert_eq!(endpoint.unpinned_count, 1023);
+
+        // Pin page 0 so page 1 becomes the oldest unpinned LRU victim.
+        assert!(endpoint.pin_pages(&[PageKey {
+            source,
+            page_index: 0,
+        }]));
+        assert_eq!(endpoint.unpinned_count, 1022);
+
+        // Touch page 1 -> page 2 becomes the oldest unpinned victim.
+        assert!(endpoint.page(source, 1).is_some());
+
+        endpoint.victim_scan_count.set(0);
+        assert!(ready.push(make_page(2000)).is_ok());
+        assert_eq!(endpoint.pump_ready(1), 1);
+        assert!(
+            endpoint.victim_scan_count.get() <= 2,
+            "eviction must be O(1), scanned {} slots",
+            endpoint.victim_scan_count.get()
+        );
+        assert!(endpoint.page(source, 0).is_some(), "pinned page 0 kept");
+        assert!(endpoint.page(source, 1).is_some(), "touched page 1 kept");
+        assert!(endpoint.page(source, 2).is_none(), "oldest page 2 evicted");
+        assert!(returns.pop().is_ok());
+
+        // Prefetch victim check and eviction at full 1,024-page cache must stay O(1).
+        endpoint.victim_scan_count.set(0);
+        endpoint.prefetch_page(source, 2001);
+        assert!(
+            endpoint.victim_scan_count.get() <= 2,
+            "prefetch victim selection must be O(1), scanned {} slots",
+            endpoint.victim_scan_count.get()
+        );
+        assert!(requests.pop().is_ok());
     }
 }
