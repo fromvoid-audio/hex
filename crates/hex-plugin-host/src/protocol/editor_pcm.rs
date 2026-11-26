@@ -2,12 +2,14 @@
 //! No editor receipt is consumed here and this is not host output acceptance.
 use super::*;
 use crate::transport::{MAX_EVENTS, MAX_PARAMETER_POINTS, wire::HEADER_BYTES};
+#[cfg(any(test, all(target_os = "macos", target_arch = "aarch64")))]
 use std::io::Read;
 
 pub(crate) const EDITOR_PCM_BIT: u16 = 0x4000;
 pub(crate) const EDITOR_TOUCH_BIT: u16 = 0x2000;
 pub(crate) const EDITOR_GROUP_TOUCH_BIT: u16 = 0x1000;
 pub(crate) const SDK_TIMING_BIT: u16 = 0x0400;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) const SIDECHAIN_PCM_BIT: u16 = 0x0200;
 const EDITOR_RESTORE_BYTES: usize = 24;
 const EDITOR_POINT_BYTES: usize = 32;
@@ -15,7 +17,15 @@ const EDITOR_POINT_BYTES: usize = 32;
 struct Layout {
     pcm_end: usize,
     len: usize,
+    #[cfg_attr(
+        not(any(test, all(target_os = "macos", target_arch = "aarch64"))),
+        allow(dead_code)
+    )]
     editor: bool,
+    #[cfg_attr(
+        not(any(test, all(target_os = "macos", target_arch = "aarch64"))),
+        allow(dead_code)
+    )]
     touch: u16,
     restore: usize,
     sdk_timing: bool,
