@@ -49,6 +49,7 @@ pub enum MultiOutputError {
     TooManyRoutes,
     PdcExceedsLimit,
     BlockLengthMismatch,
+    MissingActiveBus,
     MalformedSnapshot,
 }
 
@@ -59,6 +60,7 @@ impl fmt::Display for MultiOutputError {
             Self::DuplicateBusRoute => "vst3 output bus already has an assigned destination",
             Self::TooManyRoutes => "vst3 multi-output route count exceeds capacity",
             Self::PdcExceedsLimit => "vst3 multi-output pdc delay exceeds bounded limit",
+            Self::MissingActiveBus => "active vst3 output bus has no block buffer",
             Self::BlockLengthMismatch => "vst3 multi-output bus block length mismatch",
             Self::MalformedSnapshot => "vst3 multi-output route snapshot is malformed",
         })
@@ -282,6 +284,7 @@ pub struct MultiOutputRouter {
     device_id: u64,
     pdc_frames: usize,
     routes: [Option<MultiOutputRoute>; MAX_MULTI_OUTPUT_BUSES],
+    required_bus_buffers: usize,
     delays: Vec<BusDelayLine>,
     meters: [MultiOutputBusMeter; MAX_MULTI_OUTPUT_BUSES],
 }
@@ -304,6 +307,10 @@ impl MultiOutputRouter {
         {
             routes[usize::from(route.bus_index)] = Some(route);
         }
+        let required_bus_buffers = routes
+            .iter()
+            .rposition(|route| route.is_some_and(|route| route.active))
+            .map_or(0, |index| index + 1);
         let mut delays = Vec::with_capacity(MAX_MULTI_OUTPUT_BUSES);
         for _ in 0..MAX_MULTI_OUTPUT_BUSES {
             delays.push(BusDelayLine::new(pdc_frames)?);
@@ -316,6 +323,7 @@ impl MultiOutputRouter {
             device_id,
             pdc_frames,
             routes,
+            required_bus_buffers,
             delays,
             meters,
         })
@@ -336,6 +344,8 @@ impl MultiOutputRouter {
     /// Route one block of per-bus stereo PCM into caller-supplied destination
     /// buffers via `sink(destination, frames)`.
     ///
+    /// A missing active routed bus refuses the whole block before delivery,
+    /// metering or delay advancement. Trailing inactive buses may be omitted.
     /// Performs zero heap allocations. Inactive or unrouted buses are ignored
     /// (never downmixed into Main or sibling buses).
     pub fn route_block(
@@ -346,6 +356,9 @@ impl MultiOutputRouter {
     ) -> Result<(), MultiOutputError> {
         if bus_buffers.len() > MAX_MULTI_OUTPUT_BUSES {
             return Err(MultiOutputError::BusIndexOutOfRange);
+        }
+        if bus_buffers.len() < self.required_bus_buffers {
+            return Err(MultiOutputError::MissingActiveBus);
         }
         for buffer in bus_buffers.iter() {
             if buffer.len() != expected_frames {
@@ -468,6 +481,51 @@ mod tests {
         assert_eq!(router.meter(1).unwrap().peak_left, 0.5);
         assert_eq!(router.meter(2).unwrap().peak_left, 0.0);
         assert_eq!(router.meter(3).unwrap().peak_right, 0.4);
+    }
+
+    #[test]
+    fn missing_active_bus_refuses_before_pcm_meters_or_delay_advance() {
+        let device = 19;
+        let table = MultiOutputRouteTable::default()
+            .with_route(device, 0, Some(MultiOutputDestination::Main), true)
+            .unwrap()
+            .with_route(device, 2, Some(MultiOutputDestination::Track(7)), true)
+            .unwrap()
+            .with_route(device, 3, Some(MultiOutputDestination::Return(8)), true)
+            .unwrap()
+            .with_bus_active(device, 3, false);
+        let mut router = MultiOutputRouter::prepare(device, &table, 1).unwrap();
+        fn render(
+            router: &mut MultiOutputRouter,
+            marker: f32,
+        ) -> Vec<(MultiOutputDestination, Vec<Frame>)> {
+            let mut main = [[marker, marker]; 2];
+            let mut skipped = [[0.0; 2]; 2];
+            let mut auxiliary = [[-marker, marker]; 2];
+            let mut delivered = Vec::new();
+            // The inactive trailing bus has no supplied buffer.
+            router
+                .route_block(
+                    &mut [&mut main, &mut skipped, &mut auxiliary],
+                    2,
+                    |destination, pcm| delivered.push((destination, pcm.to_vec())),
+                )
+                .unwrap();
+            delivered
+        }
+        assert_eq!(render(&mut router, 0.5).len(), 2);
+        let mut untouched = router.clone();
+        let mut main = [[0.875, -0.875]; 2];
+        let original = main;
+        let mut published = false;
+        let result = router.route_block(&mut [&mut main], 2, |_, _| published = true);
+        assert_eq!(result, Err(MultiOutputError::MissingActiveBus));
+        assert!(!published);
+        assert_eq!(main, original);
+        for bus in [0, 2] {
+            assert_eq!(router.meter(bus), untouched.meter(bus));
+        }
+        assert_eq!(render(&mut router, 0.25), render(&mut untouched, 0.25));
     }
 
     #[test]
