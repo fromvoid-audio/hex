@@ -1514,3 +1514,59 @@ fn layout_row(normalized: f64, editable: bool, metadata_revision: u64) -> Plugin
         editor_sequence: 0,
     }
 }
+
+#[gpui::test]
+fn vst3_sidechain_control_exposes_eligible_sources_and_excludes_self(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+    use hex_project::{Command, Created, Editor, Project};
+
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(key_track) = model
+        .execute(Command::AddTrack {
+            name: "kick".into(),
+        })
+        .unwrap()
+    else {
+        panic!("key track");
+    };
+    let Created::Track(fx_track) = model
+        .execute(Command::AddTrack {
+            name: "bass".into(),
+        })
+        .unwrap()
+    else {
+        panic!("fx track");
+    };
+    let mut payload = vec![0; 96];
+    payload[..4].copy_from_slice(b"HXVS");
+    payload[4] = 1;
+    payload[8..24].fill(2);
+    payload[24..88].fill(3);
+    let state = NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, payload).unwrap();
+    let Created::Device(device) = model
+        .execute(Command::InsertDevice {
+            track: fx_track,
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device");
+    };
+
+    let eligible = model.project().eligible_sidechain_sources(device).unwrap();
+    assert_eq!(eligible, vec![key_track]);
+    assert!(!eligible.contains(&fx_track));
+
+    let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        model.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        let row = super::super::compressor_panel::sidechain::control(view, cx, device);
+        assert!(row.is_some(), "vst3 effect must expose sidechain selector");
+    });
+}
