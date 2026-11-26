@@ -322,7 +322,7 @@ impl EditorView {
     /// Atomic bulk tag update across multiple sample paths. If every item already
     /// carries `tag`, removes it from all; otherwise assigns it to every item.
     /// Validation failure leaves the entire catalog unchanged.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(not(all(test, feature = "ui-test-support")), allow(dead_code))]
     pub(super) fn bulk_toggle_sample_tag(
         &mut self,
         paths: &[PathBuf],

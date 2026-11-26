@@ -215,7 +215,10 @@ pub(in crate::editor) fn build_waveform_geometry(
         _ => None,
     };
     let sampled_envelope = (frame.is_some() && mapping.can_prove_overrange())
-        || matches!(mapping, WaveformMapping::PreparedFade(_));
+        || matches!(
+            mapping,
+            WaveformMapping::PreparedFade(_) | WaveformMapping::PreparedExact(_)
+        );
     let mut exact_overrange =
         (sampled_envelope && layout.all_columns_exact()).then(|| Vec::with_capacity(last - first));
     let gain = match mapping {
@@ -229,6 +232,7 @@ pub(in crate::editor) fn build_waveform_geometry(
         | WaveformMapping::Frame { .. }
         | WaveformMapping::MusicalEventFade { .. }
         | WaveformMapping::PreparedFade(_)
+        | WaveformMapping::PreparedExact(_)
         | WaveformMapping::PreparedMusicalFade(_) => 1.0,
     };
     let clip_fade = match mapping {
@@ -287,6 +291,9 @@ pub(in crate::editor) fn build_waveform_geometry(
             }
             WaveformMapping::PreparedFade(fade) => {
                 Some(fade.peaks(waveform, start..end, layout.frame_detail_budget())?)
+            }
+            WaveformMapping::PreparedExact(exact) => {
+                Some(exact.peaks(waveform, start..end, layout.frame_detail_budget())?)
             }
             WaveformMapping::PreparedMusicalFade(fade) => {
                 Some(fade.peaks(musical.as_ref()?, waveform, start..end)?)
@@ -466,9 +473,7 @@ pub(in crate::editor) fn build_waveform_geometry(
             },
             std::iter::empty(),
         )?;
-        let display = if let WaveformOverrange::Ready(columns) = &overrange
-            && sampled_envelope
-        {
+        let display = if let WaveformOverrange::Ready(columns) = &overrange {
             let step = local_pitch.unwrap_or(grid.width / grid.columns as f32);
             let left = if local_pitch.is_some() {
                 0.0

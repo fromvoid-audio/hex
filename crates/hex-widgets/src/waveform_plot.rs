@@ -162,6 +162,10 @@ impl WaveformChannel {
     pub fn has_zero_range_trace(&self) -> bool {
         self.zero_ranges.is_some()
     }
+
+    pub fn has_overrange_markers(&self) -> bool {
+        self.overrange.is_some()
+    }
 }
 
 // A validated envelope is an x-monotone band. Adjacent columns form an exact

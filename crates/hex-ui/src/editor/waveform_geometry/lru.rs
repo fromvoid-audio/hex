@@ -339,6 +339,11 @@ pub(in crate::editor) fn geometry_entry_hash(
             mix_u64(&mut hash, fade.timeline_origin);
             mix_u64(&mut hash, fade.root_offset);
         }
+        WaveformMappingKey::PreparedExact(exact) => {
+            mix_u64(&mut hash, 12);
+            mix_u64(&mut hash, exact.timeline_origin);
+            mix_u64(&mut hash, exact.root_offset);
+        }
         WaveformMappingKey::PreparedMusicalFade(fade) => {
             mix_u64(&mut hash, 2);
             mix_u64(&mut hash, fade.start());

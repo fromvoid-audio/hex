@@ -230,6 +230,109 @@ impl PreparedFade {
     }
 }
 
+/// Prepared Arrangement audio whose retained PCM already reflects any baked fade
+/// and matches the displayed clip extent exactly. Clip gain is applied once; fades
+/// are never repeated. Incompatible held/pending previews return `None` from
+/// `for_clip`, keeping their over-range state distinct from a known safe result.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct PreparedExact {
+    pub(super) timeline_origin: u64,
+    pub(super) root_offset: u64,
+    end: u64,
+    gain: ClipGain,
+}
+
+impl PreparedExact {
+    pub(super) fn for_clip(
+        project: &Project,
+        clip: &Clip,
+        prepared: &AudioClipWaveform,
+        held_fade: Option<ClipFade>,
+        held_trim: Option<&Clip>,
+        gain: ClipGain,
+    ) -> Option<Self> {
+        if held_fade.is_some() || held_trim.is_some() || clip.duration() == 0 {
+            return None;
+        }
+        let accepted = project.clip(clip.id())?;
+        if accepted != clip || prepared.length != accepted.duration() {
+            return None;
+        }
+        let timeline_origin = clip.start();
+        let end = timeline_origin.checked_add(clip.duration())?;
+        let root_offset = prepared.offset;
+        if root_offset.checked_add(clip.duration())?
+            > u64::try_from(prepared.waveform.source_frames()).ok()?
+        {
+            return None;
+        }
+        let at = usize::try_from(root_offset).ok()?;
+        prepared
+            .waveform
+            .bounded_exact_peaks_for_frames(at, at.checked_add(1)?, 1)?;
+        Some(Self {
+            timeline_origin,
+            root_offset,
+            end,
+            gain,
+        })
+    }
+
+    fn active(&self, visible: Range<u64>) -> Option<Range<u64>> {
+        if visible.start >= visible.end {
+            return None;
+        }
+        Some(
+            visible.start.clamp(self.timeline_origin, self.end) - self.timeline_origin
+                ..visible.end.clamp(self.timeline_origin, self.end) - self.timeline_origin,
+        )
+    }
+
+    fn source(&self, active: &Range<u64>) -> Option<Range<usize>> {
+        Some(
+            usize::try_from(self.root_offset.checked_add(active.start)?).ok()?
+                ..usize::try_from(self.root_offset.checked_add(active.end)?).ok()?,
+        )
+    }
+
+    pub(super) fn peaks(
+        &self,
+        waveform: &CachedWaveform,
+        visible: Range<u64>,
+        detail_limit: usize,
+    ) -> Option<[CachedPeak; 2]> {
+        let active = self.active(visible.clone())?;
+        if active.is_empty() {
+            return Some(ZERO);
+        }
+        let source = self.source(&active)?;
+        let mut values = (active.end - active.start < visible.end - visible.start).then_some(ZERO);
+        let gain = self.gain.linear();
+        let peak = if visible.end - visible.start <= detail_limit as u64 {
+            waveform.bounded_exact_peaks_for_frames(source.start, source.end, detail_limit)?
+        } else {
+            aggregate_peaks(waveform, source.start, source.end)?
+        };
+        super::waveform_frame::merge(&mut values, scale(peak, 1.0, gain));
+        values
+    }
+
+    pub(super) fn overrange(
+        &self,
+        waveform: &CachedWaveform,
+        visible: Range<u64>,
+        limit: usize,
+    ) -> Option<CachedOverrange> {
+        let active = self.active(visible)?;
+        if active.is_empty() {
+            return None;
+        }
+        let source = self.source(&active)?;
+        let gain = self.gain.linear();
+        waveform.bounded_overrange(source, limit, |_| Some((1.0, gain)))
+    }
+}
+
 fn scale(mut peaks: [CachedPeak; 2], fade: f32, gain: f32) -> [CachedPeak; 2] {
     for peak in &mut peaks {
         peak.min = (peak.min * fade) * gain;
@@ -408,5 +511,162 @@ mod tests {
             .unwrap();
         assert_eq!(clipped.positive, [true, false]);
         assert_eq!(clipped.negative, [false, true]);
+    }
+
+    #[test]
+    fn prepared_exact_classifies_baked_fade_crop_repeat_and_rejects_unavailable_or_incompatible() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Imported { clip, .. } = editor
+            .execute(Command::ImportAudioTrack {
+                name: "prepared".into(),
+                path: "prepared.wav".into(),
+                sample_rate: 48_000,
+                frames: 8,
+            })
+            .unwrap()
+        else {
+            panic!("import")
+        };
+        let canonical = editor.project().clip(clip).unwrap().clone();
+        // Simulated prepared PCM with pre-applied fade (sample 0 faded to 0.0,
+        // sample 1 at exact +/-1.0 full scale, sample 2 over-range on L+ and R-,
+        // sample 3 over-range on L- only when boosted by +6 dB).
+        let audio = Audio::new(
+            48_000,
+            vec![
+                [0.0, 0.0],
+                [1.0, -1.0],
+                [1.2, -1.2],
+                [-0.6, 0.5],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 0.0],
+            ],
+        )
+        .unwrap();
+        let repeated = waveform::summarize_repeated(
+            &audio,
+            Repeat {
+                offset: 0,
+                period: 4,
+                phase: 0,
+            },
+            10,
+            10,
+        )
+        .unwrap();
+        let prepared = AudioClipWaveform {
+            waveform: Arc::new(repeated),
+            offset: 2,
+            length: 8,
+            event_source: None,
+            event_sources: None,
+            preview_root: None,
+            neutral_musical: None,
+        };
+        // Incompatible held fade or trim previews must refuse classification.
+        let held_fade = ClipFade::new(8, 0, 4, 0).unwrap();
+        assert!(
+            PreparedExact::for_clip(
+                editor.project(),
+                &canonical,
+                &prepared,
+                Some(held_fade),
+                None,
+                ClipGain::UNITY,
+            )
+            .is_none()
+        );
+        assert!(
+            PreparedExact::for_clip(
+                editor.project(),
+                &canonical,
+                &prepared,
+                None,
+                Some(&canonical),
+                ClipGain::UNITY,
+            )
+            .is_none()
+        );
+
+        // Unity gain: offset 2 maps timeline 0 -> sample 2 ([1.2, -1.2], over-range L+ and R-),
+        // timeline 3 -> sample 1 ([1.0, -1.0], exact full scale = NOT over-range),
+        // timeline 4 -> sample 2 again via repeat!
+        let exact = PreparedExact::for_clip(
+            editor.project(),
+            &canonical,
+            &prepared,
+            None,
+            None,
+            ClipGain::UNITY,
+        )
+        .expect("matching prepared exact");
+        assert_eq!(
+            exact.overrange(&prepared.waveform, 0..1, 4),
+            Some(CachedOverrange {
+                positive: [true, false],
+                negative: [false, true],
+            })
+        );
+        assert_eq!(
+            exact.overrange(&prepared.waveform, 3..4, 4),
+            Some(CachedOverrange::default()),
+            "exact full scale must remain unmarked"
+        );
+        assert_eq!(
+            exact.overrange(&prepared.waveform, 4..5, 4),
+            Some(CachedOverrange {
+                positive: [true, false],
+                negative: [false, true],
+            }),
+            "repeated cycle preserves over-range at repeat boundary"
+        );
+        // Out-of-range interval is distinct from safe (None).
+        assert_eq!(exact.overrange(&prepared.waveform, 8..10, 4), None);
+        // Budget exceeded returns None.
+        assert_eq!(exact.overrange(&prepared.waveform, 0..4, 2), None);
+        // Peak-only (missing PCM) refuses PreparedExact construction.
+        let peak_only = AudioClipWaveform {
+            waveform: Arc::new(
+                CachedWaveform::from_peaks(10, prepared.waveform.bins().to_vec()).unwrap(),
+            ),
+            offset: 2,
+            length: 8,
+            event_source: None,
+            event_sources: None,
+            preview_root: None,
+            neutral_musical: None,
+        };
+        assert!(
+            PreparedExact::for_clip(
+                editor.project(),
+                &canonical,
+                &peak_only,
+                None,
+                None,
+                ClipGain::UNITY,
+            )
+            .is_none()
+        );
+        // +6 dB clip gain applied ONCE pushes sample 3 ([-0.6, 0.5] at timeline 1) over L- only!
+        let boosted = PreparedExact::for_clip(
+            editor.project(),
+            &canonical,
+            &prepared,
+            None,
+            None,
+            ClipGain::new(6_000).unwrap(),
+        )
+        .expect("boosted prepared exact");
+        assert_eq!(
+            boosted.overrange(&prepared.waveform, 1..2, 4),
+            Some(CachedOverrange {
+                positive: [false, false],
+                negative: [true, false],
+            })
+        );
     }
 }

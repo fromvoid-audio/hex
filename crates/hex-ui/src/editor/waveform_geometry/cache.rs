@@ -273,6 +273,7 @@ pub(in crate::editor) fn cached_waveform_geometry(
         WaveformMapping::Clip { .. }
             | WaveformMapping::Frame { .. }
             | WaveformMapping::PreparedFade(_)
+            | WaveformMapping::PreparedExact(_)
             | WaveformMapping::PreparedMusicalFade(_)
     ) && request.grid.is_some_and(|grid| grid.binned)
     {
@@ -346,6 +347,7 @@ pub(in crate::editor) fn waveform_geometry_key(
 ) -> WaveformGeometryKey {
     let mapping = match mapping {
         WaveformMapping::PreparedFade(fade) => WaveformMappingKey::PreparedFade(*fade),
+        WaveformMapping::PreparedExact(exact) => WaveformMappingKey::PreparedExact(*exact),
         WaveformMapping::PreparedMusicalFade(fade) => {
             WaveformMappingKey::PreparedMusicalFade(Arc::clone(fade))
         }
