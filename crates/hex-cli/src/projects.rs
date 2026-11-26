@@ -785,6 +785,12 @@ pub fn render_project(input: &Path, output: &Path) -> Result<(), Box<dyn Error>>
         report.frames,
         report.path.display()
     );
+    if let Some(stage) = report.retained_stage {
+        eprintln!(
+            "staging path {} was not removed; inspect it before removing anything",
+            stage.display()
+        );
+    }
     Ok(())
 }
 
@@ -1209,6 +1215,12 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
     }
     if let Some(recovery) = report.recovery_path {
         println!("previous file preserved at {}", recovery.display());
+    }
+    if let Some(stage) = report.retained_stage {
+        eprintln!(
+            "staging path {} was not removed; inspect it before removing anything",
+            stage.display()
+        );
     }
     Ok(())
 }

@@ -103,9 +103,13 @@ pub(super) fn replace_staged(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Published {
     /// The destination is a second link; the staging name still exists.
+    #[cfg_attr(not(test), allow(dead_code))]
     Linked,
     /// The staging file moved to the destination; its name no longer exists.
     Renamed,
+    /// The destination is a descriptor-bound CoW clone; the staging name remains.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Cloned,
     /// The destination is an exclusive synced copy; the staging name remains.
     Copied,
 }
@@ -194,7 +198,6 @@ pub(super) fn publish_new_source_bound(
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn verify_staging_matches_descriptor(source: &File, staging: &Path) -> io::Result<()> {
     let staged_meta = fs::symlink_metadata(staging)?;
     if staged_meta.file_type().is_symlink() || !staged_meta.file_type().is_file() {
@@ -222,7 +225,6 @@ fn verify_staging_matches_descriptor(source: &File, staging: &Path) -> io::Resul
 }
 
 #[cfg(target_os = "macos")]
-#[cfg_attr(not(test), allow(dead_code))]
 fn clone_from_file(source: &File, destination: &Path) -> io::Result<()> {
     #[cfg(test)]
     if let Some(error) = simulate::clone_error() {
@@ -238,7 +240,6 @@ fn clone_from_file(source: &File, destination: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[cfg_attr(not(test), allow(dead_code))]
 fn clone_from_file(_: &File, _: &Path) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
@@ -246,7 +247,6 @@ fn clone_from_file(_: &File, _: &Path) -> io::Result<()> {
     ))
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 fn clone_unsupported(error: &io::Error) -> bool {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -267,24 +267,38 @@ fn clone_unsupported(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::Unsupported
 }
 
+/// Publish a complete, synced staging file at an absent `destination` bound to
+/// the open rendered `source` descriptor, without creating a hard-link alias or
+/// unlinking `staging` by pathname afterwards (`#8094` / `#8119`).
+///
+/// 1. If `staging` still resolves to `source`'s exact `(dev, ino)`, attempt an
+///    exclusive no-replace rename (atomic, zero leftover staging file). Note:
+///    check-then-rename is not kernel-atomic against a concurrent same-user
+///    replacer in the final syscall window.
+/// 2. If `staging` was substituted before publication or exclusive rename is
+///    unsupported on the volume, publish directly from the held `source`
+///    descriptor via macOS `fclonefileat` (atomic, no-replace, isolated CoW)
+///    or descriptor-bound exclusive copy (`O_CREAT | O_EXCL`). Any foreign file
+///    at `staging` survives untouched and the caller reports `retained_stage`.
 pub(super) fn publish_new_from_file(
     source: &mut File,
     staging: &Path,
     destination: &Path,
 ) -> Result<Published, NewPublicationError> {
-    match link(staging, destination) {
-        Ok(()) => return Ok(Published::Linked),
-        Err(error) if !link_unsupported(&error) => return Err(error.into()),
+    if verify_staging_matches_descriptor(source, staging).is_ok() {
+        match exclusive_rename_step(staging, destination) {
+            Ok(()) => return Ok(Published::Renamed),
+            Err(error) if !rename_unsupported(&error) => return Err(error.into()),
+            Err(_) => {}
+        }
+    }
+    match clone_from_file(source, destination) {
+        Ok(()) => return Ok(Published::Cloned),
+        Err(error) if !clone_unsupported(&error) => return Err(error.into()),
         Err(_) => {}
     }
-    match exclusive_rename_step(staging, destination) {
-        Ok(()) => Ok(Published::Renamed),
-        Err(error) if rename_unsupported(&error) => {
-            copy_exclusive_from_file(source, destination)?;
-            Ok(Published::Copied)
-        }
-        Err(error) => Err(error.into()),
-    }
+    copy_exclusive_from_file(source, destination)?;
+    Ok(Published::Copied)
 }
 
 /// Publish a complete, synced staging file at an absent destination without
