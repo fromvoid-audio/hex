@@ -147,6 +147,12 @@ impl SequentialBeats {
             };
             self.physical_stream.next_onset_local = emitted_local.max(advance_local);
             if (need_local >= self.config.region_length || at_clip_end) && finalized >= need_local {
+                if self.config.looping
+                    && let Some(scanner) = self.scanner.as_mut()
+                    && scanner.needs_rescan_on_wrap()
+                {
+                    scanner.reset_for_next_cycle();
+                }
                 self.physical_stream.next_cycle += 1;
                 self.physical_stream.next_onset_local = 0;
             } else {
@@ -281,16 +287,39 @@ impl SequentialBeats {
     }
 
     pub(super) fn prune_physical_anchors(&mut self, keep_from: usize) -> usize {
+        let keep_from = keep_from.min(self.physical_anchors.len());
         if keep_from <= 16 {
             return 0;
         }
         let drop_count = keep_from - 1;
         let floor_src = self.physical_anchors[drop_count].source.floor().max(0.0) as u64;
         self.physical_anchors.drain(..drop_count);
-        if let Some(scanner) = self.scanner.as_mut() {
+        // Never pass unwrapped multi-cycle `floor_src` to the region-local onset scanner
+        // on looping clips; loop regions retain their region-local onset cache across cycles.
+        if !self.config.looping
+            && let Some(scanner) = self.scanner.as_mut()
+        {
             scanner.prune_before(floor_src);
         }
         drop_count
+    }
+
+    fn fill_bed_boundaries(&mut self, range: std::ops::Range<usize>) -> Result<(), Error> {
+        let slice = self
+            .physical_anchors
+            .get(range)
+            .ok_or(Error::Invalid("beats bed boundary range out of bounds"))?;
+        self.bed_boundaries.clear();
+        if self.bed_boundaries.capacity() < slice.len() {
+            self.bed_boundaries
+                .try_reserve(slice.len())
+                .map_err(|_| Error::Allocation)?;
+        }
+        self.bed_boundaries.extend(slice.iter().map(|a| Boundary {
+            source: a.source,
+            output: a.output,
+        }));
+        Ok(())
     }
 
     pub(super) fn step_physical<S: GranularSource>(
@@ -461,13 +490,8 @@ impl SequentialBeats {
                 next_idx,
                 mut bed,
             } => {
-                let boundaries: Vec<Boundary> = self.physical_anchors[prev_idx..=curr_idx]
-                    .iter()
-                    .map(|a| Boundary {
-                        source: a.source,
-                        output: a.output,
-                    })
-                    .collect();
+                self.fill_bed_boundaries(prev_idx..curr_idx + 1)
+                    .map_err(S::Error::from)?;
                 let Some(bank) = self.bank.as_ref() else {
                     return Err(Error::Invalid("beats filter bank missing").into());
                 };
@@ -478,7 +502,7 @@ impl SequentialBeats {
                     self.pitch,
                     &self.config.map,
                     bank,
-                    &boundaries,
+                    &self.bed_boundaries,
                     &mut self.overlap,
                     &self.history,
                     source,
@@ -571,14 +595,8 @@ impl SequentialBeats {
                 Ok(())
             }
             PhysicalPhase::FinalBed { mut bed } => {
-                let boundaries: Vec<Boundary> = self
-                    .physical_anchors
-                    .iter()
-                    .map(|a| Boundary {
-                        source: a.source,
-                        output: a.output,
-                    })
-                    .collect();
+                self.fill_bed_boundaries(0..self.physical_anchors.len())
+                    .map_err(S::Error::from)?;
                 let Some(bank) = self.bank.as_ref() else {
                     return Err(Error::Invalid("beats filter bank missing").into());
                 };
@@ -589,7 +607,7 @@ impl SequentialBeats {
                     self.pitch,
                     &self.config.map,
                     bank,
-                    &boundaries,
+                    &self.bed_boundaries,
                     &mut self.overlap,
                     &self.history,
                     source,
@@ -685,5 +703,194 @@ mod tests {
             }
         }
         assert_eq!(total, 3_072);
+    }
+
+    struct LoopingImpulseSource {
+        region: u64,
+        period: u64,
+    }
+
+    impl GranularSource for LoopingImpulseSource {
+        type Error = Error;
+
+        fn window(&mut self, start: i128, output: &mut [[f64; 2]]) -> Result<(), Self::Error> {
+            for (offset, slot) in output.iter_mut().enumerate() {
+                *slot = self.frame(start + offset as i128)?;
+            }
+            Ok(())
+        }
+
+        fn frame(&mut self, index: i128) -> Result<[f64; 2], Self::Error> {
+            let local = index.rem_euclid(i128::from(self.region)) as u64;
+            let phase = local % self.period;
+            let v = if local >= 2_048 && phase < 8 {
+                0.9
+            } else {
+                0.02 * ((local as f64) * 0.05).sin()
+            };
+            Ok([v, v])
+        }
+    }
+
+    #[test]
+    fn long_looping_region_preserves_transients_on_cycle_two_and_beyond() {
+        // Region length strictly exceeds MAX_CACHED_LOOP_REGION (262,144 frames).
+        let region = MAX_CACHED_LOOP_REGION + 8_192;
+        let cycles = 2u64;
+        let source_end = region * cycles;
+        let output_end = source_end + 8_192;
+        let map = TimeMap::new(
+            vec![crate::MapSegment {
+                output_start: 0,
+                output_end,
+                source_start_q32: 0,
+                source_end_q32: i128::from(source_end) * Q32,
+            }],
+            output_end as usize,
+        )
+        .unwrap();
+        let mut cancel = || false;
+        let mut beats = SequentialBeats::new(
+            SequentialBeatsConfig {
+                map,
+                sample_rate: 48_000,
+                mode: Mode::Beats {
+                    tail: Tail::Off,
+                    decay: 100,
+                    division_frames: None,
+                },
+                region_length: region,
+                looping: true,
+                attacks: Vec::new(),
+                pitch_cents: 0,
+                resampler: Resampler::V2,
+            },
+            &mut cancel,
+        )
+        .unwrap();
+        let mut source = LoopingImpulseSource {
+            region,
+            period: 8_192,
+        };
+        let mut scratch = vec![[0.0; 2]; beats.max_source_frames()];
+        let mut buf = vec![[0.0; 2]; 8_192];
+        let mut total = 0usize;
+        let mut cycle0_attacks = 0usize;
+        let mut cycle1_attacks = 0usize;
+        let mut last_seen_attack_src = -1.0_f64;
+        while !beats.is_complete() {
+            beats
+                .advance(&mut source, &mut scratch, &mut cancel)
+                .unwrap();
+            for anchor in &beats.physical_anchors {
+                if anchor.attack && anchor.source > last_seen_attack_src {
+                    last_seen_attack_src = anchor.source;
+                    if anchor.source < region as f64 {
+                        cycle0_attacks += 1;
+                    } else {
+                        cycle1_attacks += 1;
+                    }
+                }
+            }
+            let avail = beats.available();
+            if avail > 0 {
+                beats.drain(&mut buf[..avail]).unwrap();
+                total += avail;
+            }
+        }
+        assert_eq!(total, output_end as usize);
+        assert!(
+            cycle0_attacks >= 20,
+            "expected >= 20 cycle-0 attacks, got {cycle0_attacks}"
+        );
+        assert!(
+            cycle1_attacks >= cycle0_attacks,
+            "cycle-1 transients were wiped after pruning: cycle0={cycle0_attacks}, cycle1={cycle1_attacks}"
+        );
+        // Scanner retains its region-local onset cache intact after cycle 1+ prunes.
+        let cached_onsets = beats.scanner.as_ref().unwrap().onsets().len();
+        assert!(
+            cached_onsets >= cycle0_attacks,
+            "expected scanner to retain cached onsets across loop cycles, got {cached_onsets}"
+        );
+    }
+
+    #[test]
+    fn physical_bed_reuses_accounted_scratch_buffer_without_per_grain_growth() {
+        let len = 4_096u64;
+        let output_end = 8_192u64;
+        let map = TimeMap::new(
+            vec![crate::MapSegment {
+                output_start: 0,
+                output_end,
+                source_start_q32: 0,
+                source_end_q32: i128::from(len) * Q32,
+            }],
+            output_end as usize,
+        )
+        .unwrap();
+        let mut cancel = || false;
+        let mut beats = SequentialBeats::new(
+            SequentialBeatsConfig {
+                map,
+                sample_rate: 48_000,
+                mode: Mode::Beats {
+                    tail: Tail::Forward,
+                    decay: 100,
+                    division_frames: None,
+                },
+                region_length: len,
+                looping: false,
+                attacks: Vec::new(),
+                pitch_cents: 0,
+                resampler: Resampler::V2,
+            },
+            &mut cancel,
+        )
+        .unwrap();
+        let initial_cap = beats.bed_boundaries.capacity();
+        let initial_ptr = beats.bed_boundaries.as_ptr();
+        assert!(initial_cap >= 32);
+        let mut source = ImpulseSource { len: len as usize };
+        let mut scratch = vec![[0.0; 2]; beats.max_source_frames()];
+        let mut buf = vec![[0.0; 2]; 8_192];
+        let mut total = 0usize;
+        let mut bed_steps = 0usize;
+        while !beats.is_complete() {
+            if matches!(
+                beats.phase,
+                EnginePhase::Physical(PhysicalPhase::Bed { .. } | PhysicalPhase::FinalBed { .. })
+            ) {
+                bed_steps += 1;
+            }
+            beats
+                .advance(&mut source, &mut scratch, &mut cancel)
+                .unwrap();
+            assert_eq!(
+                beats.bed_boundaries.capacity(),
+                initial_cap,
+                "bed_boundaries grew during grain rendering"
+            );
+            assert_eq!(
+                beats.bed_boundaries.as_ptr(),
+                initial_ptr,
+                "bed_boundaries reallocated during grain rendering"
+            );
+            assert!(beats.backing_bytes().unwrap() <= MAX_SCRATCH_BYTES);
+            let avail = beats.available();
+            if avail > 0 {
+                beats.drain(&mut buf[..avail]).unwrap();
+                total += avail;
+            }
+        }
+        assert_eq!(total, output_end as usize);
+        assert!(
+            bed_steps >= 2,
+            "expected multiple bed steps, got {bed_steps}"
+        );
+        assert!(
+            !beats.bed_boundaries.is_empty(),
+            "expected reusable bed_boundaries scratch buffer to be populated"
+        );
     }
 }

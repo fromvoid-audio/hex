@@ -361,6 +361,7 @@ pub struct SequentialBeats {
     physical_anchors: Vec<Anchor>,
     chosen_boundaries: Vec<Boundary>,
     env_boundaries: Vec<Boundary>,
+    bed_boundaries: Vec<Boundary>,
     physical_stream: PhysicalStreamState,
     chosen_stream: ChosenStreamState,
     phase: EnginePhase,
@@ -501,6 +502,12 @@ impl SequentialBeats {
             .max(4096.0) as usize)
             + V2_MAX_TAPS
             + 8;
+        let mut bed_boundaries = Vec::new();
+        if matches!(phase, EnginePhase::Physical(_)) {
+            bed_boundaries
+                .try_reserve_exact(32)
+                .map_err(|_| Error::Allocation)?;
+        }
         let result = Self {
             config,
             owner,
@@ -520,6 +527,7 @@ impl SequentialBeats {
             physical_anchors: Vec::new(),
             chosen_boundaries: Vec::new(),
             env_boundaries: Vec::new(),
+            bed_boundaries,
             physical_stream: PhysicalStreamState {
                 next_cycle: first_cycle,
                 next_onset_local: 0,
@@ -619,6 +627,11 @@ impl SequentialBeats {
         )?;
         total = total.checked_add(
             self.env_boundaries
+                .capacity()
+                .checked_mul(std::mem::size_of::<Boundary>())?,
+        )?;
+        total = total.checked_add(
+            self.bed_boundaries
                 .capacity()
                 .checked_mul(std::mem::size_of::<Boundary>())?,
         )?;
@@ -837,6 +850,7 @@ impl SequentialBeats {
         copy_vec(&checkpoint.physical_anchors, &mut self.physical_anchors)?;
         copy_vec(&checkpoint.chosen_boundaries, &mut self.chosen_boundaries)?;
         copy_vec(&checkpoint.env_boundaries, &mut self.env_boundaries)?;
+        self.bed_boundaries.clear();
         self.physical_stream = checkpoint.physical_stream;
         self.chosen_stream = checkpoint.chosen_stream;
         self.phase = checkpoint.phase;
