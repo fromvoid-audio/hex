@@ -237,7 +237,7 @@ impl NativeAudioSink {
         self.resident
             .pending_cursor()
             .unwrap_or(hex_session::service::ArrangementEditPosition {
-                frame: self.last_stopped_frame,
+                frame: self.lifecycle.last_stopped_frame,
                 playing: false,
                 section_loop: None,
             })

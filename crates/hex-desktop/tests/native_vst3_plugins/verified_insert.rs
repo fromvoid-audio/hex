@@ -132,7 +132,7 @@ fn assert_verified_running_vst3_replacement(owner: VerifiedReplacementOwner) {
         sink.plugins.progress = Some(Arc::clone(&progress));
         sink.plugins.records = Some(Arc::clone(&records));
         if hold_projection {
-            sink.native_graph_busy_observer = Some(busy_observer);
+            sink.hooks.native_graph_busy_observer = Some(busy_observer);
         }
     });
     h.next();

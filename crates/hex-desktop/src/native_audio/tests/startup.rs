@@ -21,13 +21,13 @@ fn delayed_completion(rate_probe: Option<fn() -> Option<u32>>, device_rate: u32)
     let _native = native_fixture();
     let (events, audio_events) = mpsc::sync_channel(4);
     let mut sink = NativeAudioSink::new(events);
-    sink.lifecycle_status = Some(|| None);
-    sink.project_rate_probe = Box::new(rate_probe.unwrap_or(|| None));
+    sink.hooks.lifecycle_status = Some(|| None);
+    sink.hooks.project_rate_probe = Box::new(rate_probe.unwrap_or(|| None));
     let release = Arc::new(AtomicBool::new(false));
     let gate = Arc::clone(&release);
     let backend = Arc::new(Mutex::new(None));
     let callback = Arc::clone(&backend);
-    sink.output_factory = Some(Box::new(move |requested| {
+    sink.hooks.output_factory = Some(Box::new(move |requested| {
         assert_eq!(requested, Some(project_rate));
         if !gate.load(Acquire) {
             return Ok(None);

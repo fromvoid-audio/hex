@@ -151,7 +151,7 @@ impl NativeAudioSink {
             current_context: Some(context),
         };
         input.admit_additional(hold, self.sampler_hold())?;
-        let catalog = self.next_catalog;
+        let catalog = self.verified.next_catalog;
         let next = catalog
             .checked_add(1)
             .ok_or("sampler source identity exhausted")?;
@@ -183,7 +183,7 @@ impl NativeAudioSink {
             phase: Phase::Preparing,
             preflight_slot: true,
         });
-        self.next_catalog = next;
+        self.verified.next_catalog = next;
         let state = pending
             .candidate
             .as_mut()
@@ -248,7 +248,7 @@ impl NativeAudioSink {
             .candidate
             .take()
             .ok_or("sampler edit candidate missing")?;
-        let old_output_identity = self.output_identity;
+        let old_output_identity = self.lifecycle.output_identity;
         if !self.cancel_sampler() {
             // Submitted old CURRENT has no unpublished cell. Keep the new owner
             // explicit even if an unexpected old cleanup fault is reported.
@@ -259,7 +259,7 @@ impl NativeAudioSink {
         candidate.phase = Phase::Draining;
         self.sampler = Some(candidate);
         if let Some(old_output_identity) = old_output_identity {
-            self.pending_open_event = Some(EditorAudioEvent::RelinquishClient {
+            self.events.pending_open = Some(EditorAudioEvent::RelinquishClient {
                 old_output_identity,
                 target: context,
             });

@@ -32,10 +32,10 @@ impl Harness {
         let nominal_device_rate = Arc::new(AtomicU32::new(48_000));
         let device = Arc::clone(&nominal_device_rate);
         let probe = Arc::clone(&nominal_device_rate);
-        sink.project_rate_probe = Box::new(move || Some(probe.load(Acquire)));
+        sink.hooks.project_rate_probe = Box::new(move || Some(probe.load(Acquire)));
         let fail = Arc::new(AtomicU8::new(0));
         let failure = Arc::clone(&fail);
-        sink.output_factory = Some(Box::new(move |rate| {
+        sink.hooks.output_factory = Some(Box::new(move |rate| {
             let device_hz = device.load(Acquire);
             let project_hz = rate.unwrap_or(device_hz);
             let fault = failure.load(Acquire);

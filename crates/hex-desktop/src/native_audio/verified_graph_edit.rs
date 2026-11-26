@@ -1,6 +1,6 @@
 //! Retain one staged edit on the existing verified constructor pipeline.
 //! Session commits only after the exact audio receipt is installed.
-use super::*;
+use super::{verified_gain::VerifiedSource, *};
 use hex_audio::prepared::{
     AppliedAudioSource, CancellablePublicationReceipt, DeviceInsertConsent, FreshRuntimeFence,
     PublicationControl,
@@ -141,12 +141,12 @@ impl NativeAudioSink {
             return Err("vst3 insertion cancelled · audio output fault");
         }
         let key = VerifiedKey::canonical(context);
-        if self.verified_blocked == Some(key)
+        if self.verified.blocked == Some(key)
             || control
                 .status
                 .rejected_revision()
                 .is_some_and(|(revision, _)| {
-                    self.submitted.iter().flatten().any(|submission| {
+                    self.verified.submitted.iter().flatten().any(|submission| {
                         submission.key == key
                             && submission.source.audio_revision == revision
                             && control.output_identity() == Some(submission.source.output_identity)
@@ -155,8 +155,8 @@ impl NativeAudioSink {
         {
             return Err("vst3 insertion cancelled · accepted audio publication refused");
         }
-        Ok(self.verified_preview.is_none()
-            && installed_predecessor(&self.submitted, control, canonical, None).is_some())
+        Ok(self.verified.preview.is_none()
+            && installed_predecessor(&self.verified.submitted, control, canonical, None).is_some())
     }
 
     pub(super) fn begin_verified_edit(
@@ -173,7 +173,7 @@ impl NativeAudioSink {
             .ok_or("verified graph edit needs the installed canonical source")?;
         // Retain the owned gain preview until the removal actually installs.
         // A refused graph edit leaves that preview and its gesture intact.
-        let retiring_key = match self.verified_preview.as_ref() {
+        let retiring_key = match self.verified.preview.as_ref() {
             None => None,
             Some(preview @ VerifiedSource::Gain(gain))
                 if attempt.retiring_gain().is_some_and(|identity| {
@@ -195,8 +195,9 @@ impl NativeAudioSink {
             .as_mut()
             .and_then(|output| output.publication.control())
             .ok_or("audio output is unavailable")?;
-        let predecessor = installed_predecessor(&self.submitted, control, canonical, retiring_key)
-            .ok_or("verified graph edit needs the installed canonical source")?;
+        let predecessor =
+            installed_predecessor(&self.verified.submitted, control, canonical, retiring_key)
+                .ok_or("verified graph edit needs the installed canonical source")?;
         let stopped_history_epoch = if attempt.stages_hosted_history() {
             Some(
                 control
@@ -209,7 +210,7 @@ impl NativeAudioSink {
         } else {
             None
         };
-        let transition = match (attempt.confirmation(), self.verified_edit.as_ref()) {
+        let transition = match (attempt.confirmation(), self.verified.edit.as_ref()) {
             (None, None) if attempt.needs_tempo_cut() => {
                 let (_, fence) = control
                     .capture_running_transport_fence()
@@ -232,7 +233,7 @@ impl NativeAudioSink {
             }
             _ => return Err("verified graph edit preparation changed".into()),
         };
-        self.verified_edit = Some(Edit {
+        self.verified.edit = Some(Edit {
             attempt,
             predecessor,
             transition,
@@ -248,13 +249,14 @@ impl NativeAudioSink {
         installed: bool,
     ) {
         if self
-            .verified_edit
+            .verified
+            .edit
             .as_ref()
             .is_none_or(|insert| !insert.attempt.same_attempt(attempt))
         {
             return;
         }
-        self.verified_edit = None;
+        self.verified.edit = None;
         if attempt.prepares_hosted_sources() {
             self.plugins
                 .finish_edit(attempt.source().context(), installed);
@@ -264,7 +266,7 @@ impl NativeAudioSink {
             // Retire the absent sources through the existing Root return path.
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             self.plugins.retire_absent_catalog_sources(attempt.source());
-            self.verified_last =
+            self.verified.last =
                 Some(VerifiedSource::Canonical(Arc::clone(attempt.source())).key());
             self.last_context = Some(attempt.source().context());
             // Session publishes this same snapshot when it emits the committed edit.

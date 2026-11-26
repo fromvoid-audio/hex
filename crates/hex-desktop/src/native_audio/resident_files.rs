@@ -35,7 +35,7 @@ impl NativeAudioSink {
         {
             return Err("ordinary file publication source scope differs".into());
         }
-        let private_output = self.replacement_output.is_some();
+        let private_output = self.lifecycle.replacement_output.is_some();
         if self.output.is_none()
             || (!private_output
                 && matches!(policy, ResidentPublicationPolicy::ReplaceDocument { .. }))
@@ -43,7 +43,7 @@ impl NativeAudioSink {
             return Ok(());
         }
         #[cfg(all(test, feature = "allocation-probe"))]
-        let timeout = self.resident_files_deadline;
+        let timeout = self.hooks.resident_files_deadline;
         #[cfg(not(all(test, feature = "allocation-probe")))]
         let timeout = STARTUP_OPEN_DEADLINE;
         let deadline = std::time::Instant::now() + timeout;
@@ -110,7 +110,7 @@ impl NativeAudioSink {
         {
             return Err("ordinary source preparation lost its audio output".into());
         }
-        for row in &mut self.domains {
+        for row in &mut self.verified.domains {
             if row.as_ref().is_some_and(|domain| {
                 domain.retiring
                     && control
@@ -121,7 +121,7 @@ impl NativeAudioSink {
             }
         }
         let catalog = files.metadata().catalog_generation();
-        let index = match self.domains.iter().position(|row| {
+        let index = match self.verified.domains.iter().position(|row| {
             row.as_ref().is_some_and(|domain| {
                 !domain.retiring
                     && domain.sources.catalog_generation() == catalog
@@ -130,12 +130,18 @@ impl NativeAudioSink {
         }) {
             Some(index) => index,
             None => {
-                let Some(index) = self.domains.iter().position(Option::is_none) else {
+                let Some(index) = self.verified.domains.iter().position(Option::is_none) else {
                     // Retirement remains charged and cannot stop a domain while
                     // an actual ordinary graph retains a use. Never evict the
                     // newest cached domain while making room for its successor.
-                    if !self.domains.iter().flatten().any(|domain| domain.retiring)
+                    if !self
+                        .verified
+                        .domains
+                        .iter()
+                        .flatten()
+                        .any(|domain| domain.retiring)
                         && let Some(domain) = self
+                            .verified
                             .domains
                             .iter_mut()
                             .flatten()
@@ -175,7 +181,7 @@ impl NativeAudioSink {
                 };
                 let token = started
                     .map_err(|error| format!("ordinary source preparation refused: {error:?}"))?;
-                self.domains[index] = Some(Domain {
+                self.verified.domains[index] = Some(Domain {
                     token,
                     sources,
                     ready: false,
@@ -184,7 +190,7 @@ impl NativeAudioSink {
                 index
             }
         };
-        let domain = self.domains[index]
+        let domain = self.verified.domains[index]
             .as_mut()
             .ok_or("ordinary source domain missing")?;
         if !domain.ready {
@@ -221,7 +227,7 @@ impl NativeAudioSink {
         else {
             return;
         };
-        for domain in self.domains.iter_mut().flatten().filter(|domain| {
+        for domain in self.verified.domains.iter_mut().flatten().filter(|domain| {
             domain.sources.catalog_generation() == files.metadata().catalog_generation()
         }) {
             domain.request_retirement(control);
@@ -274,11 +280,11 @@ mod tests {
         fn new(resident_files_deadline: Duration) -> Self {
             let (send, audio_events) = std::sync::mpsc::sync_channel(8);
             let mut sink = NativeAudioSink::new(send);
-            sink.resident_files_deadline = resident_files_deadline;
+            sink.hooks.resident_files_deadline = resident_files_deadline;
             let backend = Arc::new(Mutex::new(None));
             let callback = Arc::clone(&backend);
-            sink.project_rate_probe = Box::new(|| Some(48_000));
-            sink.output_factory = Some(Box::new(move |rate| {
+            sink.hooks.project_rate_probe = Box::new(|| Some(48_000));
+            sink.hooks.output_factory = Some(Box::new(move |rate| {
                 let project_hz = rate.unwrap_or(48_000);
                 let (mut output, native) = match open_with_reliable_action_outcomes(project_hz) {
                     Ok(pair) => pair,

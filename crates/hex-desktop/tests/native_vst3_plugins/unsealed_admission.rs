@@ -137,7 +137,7 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
     let mut sink = NativeAudioSink::new(events);
     sink.policy = Ok(policy);
     sink.desired = Some(Arc::clone(&snapshot));
-    sink.output_identity = output.publication.control().unwrap().output_identity();
+    sink.lifecycle.output_identity = output.publication.control().unwrap().output_identity();
 
     let mut silence = [[0.0; 2]; 64];
     let until = Instant::now() + Duration::from_secs(3);
@@ -149,11 +149,11 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
         if let Some(EditorAudioEvent::Publication {
             state: EditorPublicationState::Refused(reason),
             ..
-        }) = &sink.pending_observation
+        }) = &sink.events.pending_observation
         {
             panic!("candidate was refused instead of retried: {reason}");
         }
-        if sink.preparation.as_ref().is_some_and(|pending| {
+        if sink.verified.preparation.as_ref().is_some_and(|pending| {
             pending.built
                 && pending.domain.is_some_and(|domain| {
                     output
@@ -162,9 +162,13 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
                         .unwrap()
                         .audio_candidate_domain_endpoint_is_installed(domain)
                 })
-        }) && sink.last_state.is_some_and(|(context, tag, revision)| {
-            context == snapshot.context() && tag == "busy" && revision.is_none()
-        }) {
+        }) && sink
+            .events
+            .last_state
+            .is_some_and(|(context, tag, revision)| {
+                context == snapshot.context() && tag == "busy" && revision.is_none()
+            })
+        {
             break;
         }
         assert!(
@@ -173,13 +177,13 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
         );
         std::thread::yield_now();
     }
-    let pending = sink.preparation.as_ref().unwrap();
+    let pending = sink.verified.preparation.as_ref().unwrap();
     let token = pending.token;
     let domain = pending.domain;
     let key = pending.snapshot.key();
     assert!(pending.bound && pending.built);
     assert!(Arc::ptr_eq(pending.snapshot.canonical_arc(), &snapshot));
-    assert_eq!(sink.verified_blocked, None);
+    assert_eq!(sink.verified.blocked, None);
     assert_eq!(
         output.publication.control().unwrap().submitted_revision(),
         0
@@ -195,7 +199,7 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
     );
 
     sink.drive_verified(&mut output);
-    let retry = sink.preparation.as_ref().unwrap();
+    let retry = sink.verified.preparation.as_ref().unwrap();
     assert_eq!(
         retry.token, token,
         "transient refusal keeps the same preparation"
@@ -205,7 +209,7 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
         "transient refusal keeps the exact domain"
     );
     assert!(retry.bound && retry.built);
-    assert_eq!(sink.verified_blocked, None);
+    assert_eq!(sink.verified.blocked, None);
     assert_eq!(
         output.publication.control().unwrap().submitted_revision(),
         0
@@ -213,12 +217,12 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
 
     recover_native_source(output.publication.control().unwrap(), binding);
     let until = Instant::now() + Duration::from_secs(3);
-    while sink.submitted.iter().all(Option::is_none) {
+    while sink.verified.submitted.iter().all(Option::is_none) {
         sink.drive_verified(&mut output);
         assert!(
-            sink.verified_blocked.is_none(),
+            sink.verified.blocked.is_none(),
             "candidate was blocked after source retirement: {:?}",
-            sink.last_state
+            sink.events.last_state
         );
         assert!(
             Instant::now() < until,
@@ -226,13 +230,13 @@ fn retiring_unsealed_source_keeps_built_verified_candidate_for_retry() {
         );
         std::thread::yield_now();
     }
-    let submitted = sink.submitted.iter().flatten().next().unwrap();
+    let submitted = sink.verified.submitted.iter().flatten().next().unwrap();
     assert_eq!(submitted.key, key);
     assert_eq!(
         output.publication.control().unwrap().submitted_revision(),
         1
     );
-    assert_eq!(sink.verified_blocked, None);
+    assert_eq!(sink.verified.blocked, None);
 
     wait(|| {
         backend.render(&mut silence).unwrap();

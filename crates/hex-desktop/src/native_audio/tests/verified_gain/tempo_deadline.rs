@@ -12,7 +12,7 @@ fn missed_verified_tempo_point_preserves_pcm_project_and_undo() {
     let files = Files::new();
     let (armed, hold) = mpsc::sync_channel(1);
     let mut h = native_harness_with(|sink| {
-        sink.verified_page_hold = Some(VerifiedPageHold { index: 3, armed });
+        sink.hooks.verified_page_hold = Some(VerifiedPageHold { index: 3, armed });
     });
     open_verified_file_with_limiter(&mut h, &files);
     let (entered, release) = hold

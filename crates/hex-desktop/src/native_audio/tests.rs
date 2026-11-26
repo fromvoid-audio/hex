@@ -242,7 +242,7 @@ impl ObservedSink {
             .lock()
             .unwrap()
             .resident_observation_pending = matches!(
-            self.inner.pending_observation.as_ref(),
+            self.inner.events.pending_observation.as_ref(),
             Some(EditorAudioEvent::Publication {
                 state: EditorPublicationState::ResidentSubmitted { .. },
                 ..
@@ -251,10 +251,11 @@ impl ObservedSink {
         if !self.inner.resident_publication_enabled() {
             return;
         }
-        let Some((context, "submitted", Some(audio_revision))) = self.inner.last_state else {
+        let Some((context, "submitted", Some(audio_revision))) = self.inner.events.last_state
+        else {
             return;
         };
-        let Some(output_identity) = self.inner.output_identity else {
+        let Some(output_identity) = self.inner.lifecycle.output_identity else {
             return;
         };
         let current = RenderedCurrent {
@@ -484,7 +485,7 @@ impl WorkerAudioSink for ObservedSink {
         // Exercise explicit alternative project rates independently of a
         // device's delayed completion, preserving the downsample fixtures.
         let rate = self.initial_rate.unwrap_or(rate);
-        self.inner.requested_rate = Some(rate);
+        self.inner.lifecycle.requested_rate = Some(rate);
         Ok(rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
@@ -523,7 +524,7 @@ impl WorkerAudioSink for ObservedSink {
                 "old sampler must cancel before output opening"
             );
             assert!(
-                self.inner.output.is_none() && self.inner.pending_release_event.is_some(),
+                self.inner.output.is_none() && self.inner.events.pending_release.is_some(),
                 "a pre-input poll must wait for release delivery"
             );
             self.observation.lock().unwrap().fresh_before_input_checked = true;
@@ -662,9 +663,9 @@ impl WorkerAudioSink for ObservedSink {
         context: hex_engine::AudioSourceContext,
     ) -> Result<(), String> {
         if std::mem::take(&mut self.observation.lock().unwrap().fail_gain_open) {
-            let mut original = self.inner.output_factory.take().unwrap();
+            let mut original = self.inner.hooks.output_factory.take().unwrap();
             let mut first = true;
-            self.inner.output_factory = Some(Box::new(move |rate| {
+            self.inner.hooks.output_factory = Some(Box::new(move |rate| {
                 if std::mem::take(&mut first) {
                     Err("fixture hardware open failed".into())
                 } else {
@@ -733,6 +734,7 @@ impl WorkerAudioSink for ObservedSink {
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self
                 .inner
+                .verified
                 .submitted
                 .iter()
                 .flatten()
@@ -843,7 +845,7 @@ impl Harness {
         // One queue row deliberately permits publication-event saturation.
         let (events, receiver) = mpsc::sync_channel(1);
         let mut sink = NativeAudioSink::new(events);
-        sink.output_factory = Some(Box::new(move |rate| {
+        sink.hooks.output_factory = Some(Box::new(move |rate| {
             let mut slot = factory_backend.lock().unwrap();
             if slot.is_some() {
                 return Ok(None);
@@ -1144,11 +1146,11 @@ fn unavailable_output_keeps_canonical_editing_and_saving_available(retained_fail
     let (events, audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
     if retained_failure {
-        sink.lifecycle_status = Some(|| Some(hex_audio::AudioLifecycleFailure::Retirement));
-        sink.output_factory = Some(Box::new(|_| panic!("failed retirement must not reopen")));
+        sink.hooks.lifecycle_status = Some(|| Some(hex_audio::AudioLifecycleFailure::Retirement));
+        sink.hooks.output_factory = Some(Box::new(|_| panic!("failed retirement must not reopen")));
     } else {
-        sink.lifecycle_status = Some(|| None);
-        sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
+        sink.hooks.lifecycle_status = Some(|| None);
+        sink.hooks.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
     }
     let recovery = files.0.join("untitled.hex-journal");
     let service = Service::with_audio_sink_and_native_reservation(
@@ -1198,11 +1200,11 @@ fn initial_open_shutdown_wins_over_expired_deadline() {
     let _native = native_fixture();
     let (events, _audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
-    sink.lifecycle_status = Some(|| None);
-    sink.output_factory = Some(Box::new(|_| {
+    sink.hooks.lifecycle_status = Some(|| None);
+    sink.hooks.output_factory = Some(Box::new(|_| {
         panic!("cancelled startup must not open audio")
     }));
-    sink.startup_open_deadline = Duration::ZERO;
+    sink.hooks.startup_open_deadline = Duration::ZERO;
     assert_eq!(
         sink.initialize(&AtomicBool::new(true)),
         Err("audio startup cancelled".into())
@@ -1214,9 +1216,9 @@ fn hung_initial_open_times_out_to_offline_editing() {
     let _native = native_fixture();
     let (events, audio_events) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
-    sink.lifecycle_status = Some(|| None);
-    sink.output_factory = Some(Box::new(|_| Ok(None)));
-    sink.startup_open_deadline = Duration::from_millis(50);
+    sink.hooks.lifecycle_status = Some(|| None);
+    sink.hooks.output_factory = Some(Box::new(|_| Ok(None)));
+    sink.hooks.startup_open_deadline = Duration::from_millis(50);
     let service = Service::with_audio_sink_and_native_reservation(
         32,
         0,
@@ -2107,10 +2109,10 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
         );
         domain.request_retirement(control);
         assert!(domain.retiring);
-        sink.domains[0] = Some(domain);
+        sink.verified.domains[0] = Some(domain);
         loop {
             sink.maintain_returns(control);
-            if sink.domains[0].is_none() {
+            if sink.verified.domains[0].is_none() {
                 break;
             }
             assert!(
@@ -2294,8 +2296,8 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
     let (events, receiver) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
     sink.output = Some(output);
-    sink.output_identity = Some(output_identity);
-    sink.output_generation = Some(context.project_generation);
+    sink.lifecycle.output_identity = Some(output_identity);
+    sink.lifecycle.output_generation = Some(context.project_generation);
     let mut admit = |_: &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>]| Ok(());
     let ResidentPublicationAcceptance::Submitted {
         audio_revision: first,
@@ -2425,8 +2427,8 @@ fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_ev
             ..
         }
     ));
-    assert!(sink.pending_observation.is_none());
-    assert!(sink.pending_status_observation.is_none());
+    assert!(sink.events.pending_observation.is_none());
+    assert!(sink.events.pending_status_observation.is_none());
     // Refusal did not consume another publication revision. The accepted queue remains usable,
     // and callback installation keeps the existing zero-allocation/zero-free contract.
     let mut pcm = [[0.0; 2]; 64];

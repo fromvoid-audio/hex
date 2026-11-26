@@ -2474,8 +2474,8 @@ impl WorkerAudioSink for ResidentSink {
         }
         let refuse = self.refuse.load(Acquire);
         if let Some(probe) = self.publication_probe.lock().unwrap().take() {
-            self.inner.native_graph_gate = Some((probe.ready, probe.resume));
-            self.inner.native_graph_busy_observer = Some(probe.busy);
+            self.inner.hooks.native_graph_gate = Some((probe.ready, probe.resume));
+            self.inner.hooks.native_graph_busy_observer = Some(probe.busy);
         }
         let result = self.inner.publish_resident_transition(
             playback,
@@ -2494,8 +2494,8 @@ impl WorkerAudioSink for ResidentSink {
             },
             inputs,
         );
-        self.inner.native_graph_gate = None;
-        self.inner.native_graph_busy_observer = None;
+        self.inner.hooks.native_graph_gate = None;
+        self.inner.hooks.native_graph_busy_observer = None;
         self.file_publication_waiting
             .store(false, std::sync::atomic::Ordering::Release);
         if let Ok(ResidentPublicationAcceptance::Submitted {
@@ -2776,7 +2776,7 @@ impl WorkerAudioSink for ResidentSink {
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.inner.initialize(shutdown)?;
         // The fixture selects its canonical rate before device completion.
-        self.inner.requested_rate = Some(self.initial_rate);
+        self.inner.lifecycle.requested_rate = Some(self.initial_rate);
         Ok(self.initial_rate)
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
@@ -2863,7 +2863,7 @@ impl WorkerAudioSink for ResidentSink {
             }
         }
         self.pending_observation_generation.store(
-            match self.inner.pending_observation.as_ref() {
+            match self.inner.events.pending_observation.as_ref() {
                 Some(EditorAudioEvent::Publication { context, .. }) => {
                     context.project_generation + 1
                 }
@@ -3176,7 +3176,7 @@ impl ResidentHarness {
             inner.worker_owned_resident_graphs,
             "production resident publication default"
         );
-        inner.output_factory = Some(Box::new(move |requested_rate| {
+        inner.hooks.output_factory = Some(Box::new(move |requested_rate| {
             if !gate.load(Acquire) {
                 return Err("fixture output unavailable".into());
             }
@@ -4844,6 +4844,7 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
             revision: placed.state.revision,
             binding: Arc::clone(&binding),
             notes: Arc::clone(&notes),
+            expressions: Arc::from([]),
             stop_frame: stop.content_frame,
         })
         .unwrap();
@@ -4858,6 +4859,7 @@ fn midi_recording_wire_and_physical_input_deliver_then_commit_one_native_history
         revision: placed.state.revision,
         binding,
         notes: Arc::clone(&notes),
+        expressions: Arc::from([]),
         stop_frame: stop.content_frame,
     });
     assert!(committed.midi_take_complete.unwrap().accepted);

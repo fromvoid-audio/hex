@@ -34,7 +34,7 @@ impl NativeAudioSink {
         let Some(previous) = self.desired.as_ref() else {
             return false;
         };
-        let Some(output_identity) = self.output_identity else {
+        let Some(output_identity) = self.lifecycle.output_identity else {
             return false;
         };
         let context = incoming.context();
@@ -42,23 +42,20 @@ impl NativeAudioSink {
         if previous.audio_mode() != DocumentAudioMode::Resident
             || incoming.audio_mode() != DocumentAudioMode::Resident
             || previous.sample_rate() != incoming.sample_rate()
-            || self.output_generation != Some(outgoing_generation)
-            || self.document_rebind.is_some()
-            || self.open_pending
-            || self.opening.is_some()
-            || self.open_error.is_some()
-            || self.pending_open_event.is_some()
-            || self.pending_release_event.is_some()
-            || self.pending_observation.is_some()
-            || self.pending_status_observation.is_some()
+            || self.lifecycle.output_generation != Some(outgoing_generation)
+            || !self.lifecycle.is_quiescent()
+            || self.events.pending_open.is_some()
+            || self.events.pending_release.is_some()
+            || self.events.pending_observation.is_some()
+            || self.events.pending_status_observation.is_some()
             || self.sampler.is_some()
             || self.sampler_parameter.is_some()
             || self.sampler_budget_wait.is_some()
-            || self.suspended_output.is_some()
+            || self.lifecycle.suspended_output.is_some()
             || self.section_edit.is_some()
-            || self.preparation.is_some()
-            || self.domains.iter().any(Option::is_some)
-            || self.submitted.iter().any(Option::is_some)
+            || self.verified.preparation.is_some()
+            || self.verified.domains.iter().any(Option::is_some)
+            || self.verified.submitted.iter().any(Option::is_some)
             || self.resident.retired.is_some()
             || !self.resident.has_pending_document(context)
         {
@@ -98,7 +95,7 @@ impl NativeAudioSink {
         ) else {
             return false;
         };
-        self.document_rebind = Some(Rebind {
+        self.lifecycle.document_rebind = Some(Rebind {
             context,
             output_identity,
             outgoing_generation,
@@ -108,14 +105,14 @@ impl NativeAudioSink {
         });
         self.resident.applied_loop = None;
         self.last_context = None;
-        self.last_state = None;
+        self.events.last_state = None;
         self.blocked = None;
-        self.last_stopped_frame = 0;
+        self.lifecycle.last_stopped_frame = 0;
         true
     }
 
     pub(in crate::native_audio) fn document_rebind_ready_to_submit(&mut self) -> bool {
-        let Some(rebind) = self.document_rebind.as_ref() else {
+        let Some(rebind) = self.lifecycle.document_rebind.as_ref() else {
             return true;
         };
         if self
@@ -132,7 +129,7 @@ impl NativeAudioSink {
     }
 
     pub(in crate::native_audio) fn poll_document_rebind(&mut self) {
-        let Some(rebind) = self.document_rebind.as_ref() else {
+        let Some(rebind) = self.lifecycle.document_rebind.as_ref() else {
             return;
         };
         let Some(control) = self
@@ -165,9 +162,9 @@ impl NativeAudioSink {
             self.resident
                 .discard_obsolete_pending_after_restore(rebind.context);
             control.release_stopped_edit_fence(rebind.fence);
-            self.document_rebind = None;
-            self.output_generation = Some(generation);
-            self.pending_open_event = Some(EditorAudioEvent::OutputRebound {
+            self.lifecycle.document_rebind = None;
+            self.lifecycle.output_generation = Some(generation);
+            self.events.pending_open = Some(EditorAudioEvent::OutputRebound {
                 project_generation: generation,
                 output_identity,
             });
@@ -185,7 +182,7 @@ impl NativeAudioSink {
     }
 
     pub(in crate::native_audio) fn fallback_document_rebind(&mut self) {
-        let Some(rebind) = self.document_rebind.take() else {
+        let Some(rebind) = self.lifecycle.document_rebind.take() else {
             return;
         };
         let generation = rebind.context.project_generation;
@@ -203,7 +200,7 @@ impl NativeAudioSink {
         } else {
             // An already submitted graph belongs to the retiring Root. The
             // accepted project stays open and Restart Audio can prepare it.
-            self.pending_open_event = Some(EditorAudioEvent::Unavailable {
+            self.events.pending_open = Some(EditorAudioEvent::Unavailable {
                 project_generation: generation,
                 restart_request: None,
                 error: "project audio rebind failed · restart audio to restore playback".into(),

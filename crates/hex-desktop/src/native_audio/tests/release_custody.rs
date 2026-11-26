@@ -39,12 +39,12 @@ fn queued_release_after_replacements(already_relinquished: bool) {
     let mut sink = NativeAudioSink::new(sender);
     let opened = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = Arc::clone(&opened);
-    sink.output_factory = Some(Box::new(move |_| {
+    sink.hooks.output_factory = Some(Box::new(move |_| {
         observed.store(true, std::sync::atomic::Ordering::Release);
         Ok(None)
     }));
     sink.canonical_changed(first);
-    sink.output_identity = Some(123);
+    sink.lifecycle.output_identity = Some(123);
     if already_relinquished {
         // Sampler preflight may retire its output before the replacement arrives.
         sink.relinquish_output();
@@ -55,7 +55,7 @@ fn queued_release_after_replacements(already_relinquished: bool) {
     sink.poll_open();
     assert!(!opened.load(std::sync::atomic::Ordering::Acquire));
     assert!(sink.output.is_none());
-    assert!(sink.open_pending);
+    assert!(sink.lifecycle.open_pending);
     assert!(matches!(
         receiver.try_recv().unwrap(),
         EditorAudioEvent::OutputRebound { .. }

@@ -2,6 +2,7 @@
 //! directly; legacy clip capacity and existing runtime buffers use separate conservative bounds.
 //! A retired book survives endpoint relinquishment until a fresh exclusive native lease opens.
 use super::*;
+use crate::audio_policy::RUNTIME_CELLS;
 use hex_engine::{
     native_device_resources::{
         DeviceResourceAdmission, DeviceResourcePublication, PreparedDeviceResources,
@@ -681,7 +682,7 @@ impl NativeAudioSink {
         }
         self.output_hold = Default::default();
         self.ordinary_pcm_frames = 0;
-        self.verified_pcm_frames = 0;
+        self.verified.pcm_frames = 0;
         true
     }
     pub(super) fn resident_inventory(&self) -> [DeviceResourceAdmission<'_>; 3] {
@@ -1187,7 +1188,8 @@ impl NativeAudioSink {
         // retention. Observations of the previous endpoint do not gate that
         // admission; a refusal leaves the previous document canonical.
         if !replacing_document
-            && (self.pending_observation.is_some() || self.pending_status_observation.is_some())
+            && (self.events.pending_observation.is_some()
+                || self.events.pending_status_observation.is_some())
         {
             return Err(ResidentPublicationRefusal {
                 kind: hex_session::service::ResidentPublicationFailure::Other,
@@ -1287,10 +1289,12 @@ impl NativeAudioSink {
             });
         }
         let on_replacement_output = self
+            .lifecycle
             .replacement_output
             .as_ref()
             .is_some_and(|replacement| replacement.context == metadata.context);
         let replacement_deadline = self
+            .lifecycle
             .replacement_output
             .as_ref()
             .map(|replacement| replacement.deadline);
@@ -1321,6 +1325,7 @@ impl NativeAudioSink {
                 }
             };
             let rebind_policy = self
+                .lifecycle
                 .document_rebind
                 .as_ref()
                 .filter(|rebind| rebind.context == metadata.context)
@@ -1503,7 +1508,7 @@ impl NativeAudioSink {
                 let cut = tempo_edit
                     .and_then(|edit| prepare_resident_tempo_cut(control, &retained_playback, edit));
                 #[cfg(all(test, feature = "allocation-probe"))]
-                if let Some((ready, resume)) = self.native_graph_gate.take()
+                if let Some((ready, resume)) = self.hooks.native_graph_gate.take()
                     && (ready.send(()).is_err()
                         || resume
                             .recv_timeout(std::time::Duration::from_secs(10))
@@ -1631,7 +1636,7 @@ impl NativeAudioSink {
                 if let Err(hex_audio::prepared::AdmittedPublishError::Publication(error)) =
                     &published
                     && error.reason == "native graph preparation is busy"
-                    && let Some(observer) = self.native_graph_busy_observer.as_ref()
+                    && let Some(observer) = self.hooks.native_graph_busy_observer.as_ref()
                 {
                     let _ = observer.try_send(());
                 }
@@ -1671,7 +1676,7 @@ impl NativeAudioSink {
                         section_loop,
                     });
                     self.resident.capture_target = observation.native_parameter_input_target();
-                    self.output_identity = Some(output_identity);
+                    self.lifecycle.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.resident.powered_off_sources[observation_slot] =
                         powered_off.map(|device| {
@@ -1867,13 +1872,13 @@ impl NativeAudioSink {
                 metadata,
                 policy,
             });
-            if self.document_rebind.is_some() {
+            if self.lifecycle.document_rebind.is_some() {
                 self.fallback_document_rebind();
                 return;
             }
             // Keep the actual owner through both transient backpressure and hard scope/budget
             // refusal, but expose the reason. Waiting never masquerades as Submitted/Applied.
-            self.output_identity = self
+            self.lifecycle.output_identity = self
                 .output
                 .as_mut()
                 .and_then(|output| output.publication.control())
