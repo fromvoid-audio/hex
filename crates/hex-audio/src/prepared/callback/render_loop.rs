@@ -574,57 +574,25 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
         {
-            let wave = self
-                .wave_pool
-                .as_mut()
-                .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
-            let mut outcome = active.render_streamed_with_foreign(
+            let (outcome, action_pending, capacity_conflict) = Self::render_streamed_block(
+                &mut active,
                 &mut self.domain_pages,
+                &mut self.wave_pool,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 node,
                 project.as_mut(),
                 foreign,
-                wave,
             );
-            let action_pending = active.has_stream_action();
-            let capacity_conflict = active.capacity_conflict();
-            streaming::count_starvation(
-                &self.status,
-                self.stream_pending_play.is_some(),
-                action_pending,
-                &outcome,
-            );
-            self.resolve_recovery_seek(action_pending, outcome.action_rejection);
-            if capacity_conflict && self.yield_pending_stream_successor() {
-                outcome.readiness_refused = false;
-            }
-            self.end_native_staging_at_stream_hold(capture_offset, output.len(), &outcome);
-            let streaming::RecordedStreamOutcome {
-                applied_play,
-                applied_action,
-                rejected_action,
-                fault,
-            } = streaming::record_outcome(
-                &self.status,
-                &mut self.stream_pending_play,
-                self.stream_prefix,
-                action_pending,
+            self.finish_streamed_render(
+                capture_offset,
+                output.len(),
                 outcome,
-            );
-            if let Some((ticket, reason)) = rejected_action {
-                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Rejected(reason));
-            }
-            if let Some(ticket) = applied_action {
-                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
-            }
-            if let Some(ticket) = applied_play {
-                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
-            }
-            if let Some(error) = fault {
-                return Err(error);
-            }
+                action_pending,
+                capacity_conflict,
+                false,
+            )?;
         } else if let Some(mut active) = self
             .active
             .as_mut()
@@ -660,6 +628,87 @@ impl Callback {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn render_streamed_block(
+        active: &mut crate::candidate_custody::StreamActiveView<'_>,
+        domain_pages: &mut [Option<crate::candidate_custody::DomainEnvelope>; 2],
+        wave_pool: &mut Option<crate::worker_pool::AudioWorkerPool>,
+        pending_play: bool,
+        stream_prefix: u64,
+        output: &mut [Frame],
+        node: Option<&mut hex_engine::NodeSignalObserver<'_>>,
+        project: Option<&mut hex_engine::ProjectOutputTap<'_, '_>>,
+        foreign: Option<&mut dyn hex_lattice::ForeignProcessors>,
+    ) -> (crate::candidate_custody::StreamOutcome, bool, bool) {
+        let wave = wave_pool
+            .as_mut()
+            .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
+        let outcome = active.render_streamed_with_foreign(
+            domain_pages,
+            pending_play,
+            stream_prefix,
+            output,
+            node,
+            project,
+            foreign,
+            wave,
+        );
+        let action_pending = active.has_stream_action();
+        let capacity_conflict = active.capacity_conflict();
+        (outcome, action_pending, capacity_conflict)
+    }
+
+    fn finish_streamed_render(
+        &mut self,
+        capture_offset: usize,
+        frames: usize,
+        mut outcome: crate::candidate_custody::StreamOutcome,
+        action_pending: bool,
+        capacity_conflict: bool,
+        publish_before_stage: bool,
+    ) -> Result<(), Invalid> {
+        streaming::count_starvation(
+            &self.status,
+            self.stream_pending_play.is_some(),
+            action_pending,
+            &outcome,
+        );
+        self.resolve_recovery_seek(action_pending, outcome.action_rejection);
+        if capacity_conflict && self.yield_pending_stream_successor() {
+            outcome.readiness_refused = false;
+        }
+        self.end_native_staging_at_stream_hold(capture_offset, frames, &outcome);
+        let streaming::RecordedStreamOutcome {
+            applied_play,
+            applied_action,
+            rejected_action,
+            fault,
+        } = streaming::record_outcome(
+            &self.status,
+            &mut self.stream_pending_play,
+            self.stream_prefix,
+            action_pending,
+            outcome,
+        );
+        if publish_before_stage {
+            self.publish_transport();
+            self.publish_active_routes(false);
+        }
+        if let Some((ticket, reason)) = rejected_action {
+            self.stage_stream_outcome(ticket, action_outcomes::Outcome::Rejected(reason));
+        }
+        if let Some(ticket) = applied_action {
+            self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+        }
+        if let Some(ticket) = applied_play {
+            self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
+        }
+        if let Some(error) = fault {
+            return Err(error);
+        }
+        Ok(())
+    }
+
     pub(in crate::prepared) fn render_unobserved(
         &mut self,
         output: &mut [Frame],
@@ -686,59 +735,25 @@ impl Callback {
             .as_mut()
             .and_then(ActivePublication::stream_view)
         {
-            let wave = self
-                .wave_pool
-                .as_mut()
-                .map(|pool| pool as &mut dyn hex_engine::WaveExecutor);
-            let mut outcome = active.render_streamed_with_foreign(
+            let (outcome, action_pending, capacity_conflict) = Self::render_streamed_block(
+                &mut active,
                 &mut self.domain_pages,
+                &mut self.wave_pool,
                 self.stream_pending_play.is_some(),
                 self.stream_prefix,
                 output,
                 None,
                 None,
                 foreign,
-                wave,
             );
-            let action_pending = active.has_stream_action();
-            let capacity_conflict = active.capacity_conflict();
-            streaming::count_starvation(
-                &self.status,
-                self.stream_pending_play.is_some(),
-                action_pending,
-                &outcome,
-            );
-            self.resolve_recovery_seek(action_pending, outcome.action_rejection);
-            if capacity_conflict && self.yield_pending_stream_successor() {
-                outcome.readiness_refused = false;
-            }
-            self.end_native_staging_at_stream_hold(capture_offset, output.len(), &outcome);
-            let streaming::RecordedStreamOutcome {
-                applied_play,
-                applied_action,
-                rejected_action,
-                fault,
-            } = streaming::record_outcome(
-                &self.status,
-                &mut self.stream_pending_play,
-                self.stream_prefix,
-                action_pending,
+            self.finish_streamed_render(
+                capture_offset,
+                output.len(),
                 outcome,
-            );
-            self.publish_transport();
-            self.publish_active_routes(false);
-            if let Some((ticket, reason)) = rejected_action {
-                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Rejected(reason));
-            }
-            if let Some(ticket) = applied_action {
-                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
-            }
-            if let Some(ticket) = applied_play {
-                self.stage_stream_outcome(ticket, action_outcomes::Outcome::Applied);
-            }
-            if let Some(error) = fault {
-                return Err(error);
-            }
+                action_pending,
+                capacity_conflict,
+                true,
+            )?;
             return Ok(());
         }
         if self.active.is_none()
