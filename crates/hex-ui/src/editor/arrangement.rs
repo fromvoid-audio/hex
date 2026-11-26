@@ -1092,7 +1092,7 @@ impl EditorView {
                 },
             ))
             .on_drop(cx.listener(|view, paths: &ExternalPaths, window, cx| {
-                view.drop_external_audio_paths(paths.paths(), window, cx);
+                view.drop_external_paths(paths.paths(), window, cx);
             }))
             .on_drag_move::<BrowserAudioDrag>(move |event, _, cx| {
                 let Some(payload) = event.dragged_item().downcast_ref::<BrowserAudioDrag>() else {
