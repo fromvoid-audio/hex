@@ -53,8 +53,35 @@ impl Drop for Temporary {
     }
 }
 
-/// One nonblocking writer reservation, fresh read, mutation and atomic replace.
-/// The closure runs under the catalog lock, never while foreign code executes.
+const LOCK_RETRY_ATTEMPTS: usize = 6;
+const LOCK_RETRY_BASE: std::time::Duration = std::time::Duration::from_millis(5);
+
+fn acquire_exclusive_lock(
+    lock: &File,
+    max_attempts: usize,
+    base_delay: std::time::Duration,
+) -> Result<(), String> {
+    let attempts = max_attempts.max(1);
+    for attempt in 0..attempts {
+        match fs2::FileExt::try_lock_exclusive(lock) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                let contended = error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error();
+                if !contended || attempt + 1 >= attempts {
+                    return Err("another window is updating the plugin catalog; retry".into());
+                }
+                let shift = (attempt as u32).min(4);
+                std::thread::sleep(base_delay.saturating_mul(1_u32 << shift));
+            }
+        }
+    }
+    Err("another window is updating the plugin catalog; retry".into())
+}
+
+/// One nonblocking writer reservation (with bounded retry on transient lock
+/// contention), fresh read, mutation and atomic replace. The closure runs under
+/// the catalog lock, never while foreign code executes.
 pub fn update(
     path: &Path,
     change: impl FnOnce(&mut Catalog) -> Result<(), String>,
@@ -71,8 +98,7 @@ pub fn update(
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("plugin catalog lock unavailable: {e}"))?;
-    fs2::FileExt::try_lock_exclusive(&lock)
-        .map_err(|_| "another window is updating the plugin catalog; retry")?;
+    acquire_exclusive_lock(&lock, LOCK_RETRY_ATTEMPTS, LOCK_RETRY_BASE)?;
     let mut catalog = Catalog::load(path)?;
     change(&mut catalog)?;
     catalog.validate()?;

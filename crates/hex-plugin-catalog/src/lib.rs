@@ -92,6 +92,7 @@
 //! Dynamic/discardable or unknown factory flags retain historical metadata only;
 //! rows explicitly require a rescan. Stored inventory never establishes future
 //! cacheable class availability or authorizes processing admission.
+mod fingerprint;
 pub mod format;
 mod model;
 mod projection;
@@ -770,6 +771,35 @@ mod tests {
         assert_eq!(
             Catalog::load(&file).unwrap().entries[0].failure.as_deref(),
             Some("old")
+        );
+    }
+    #[test]
+    fn transient_lock_contention_retries_and_succeeds() {
+        let fixture = Fixture::new();
+        let file = fixture.catalog();
+        storage::update(&file, |c| c.record(fixture.module(), Err("initial".into()))).unwrap();
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(file.with_extension("lock"))
+            .unwrap();
+        fs2::FileExt::try_lock_exclusive(&lock).unwrap();
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(15));
+            drop(lock);
+        });
+        let result = storage::update(&file, |c| {
+            c.record(fixture.module(), Err("after-retry".into()))
+        });
+        releaser.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "transient lock contention should retry: {:?}",
+            result.err()
+        );
+        assert_eq!(
+            Catalog::load(&file).unwrap().entries[0].failure.as_deref(),
+            Some("after-retry")
         );
     }
     #[test]

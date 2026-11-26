@@ -156,6 +156,119 @@ pub(super) fn discover(
         failed_scan,
     }
 }
+/// Bounded grace period after requesting outer scanner cancellation (stdin byte)
+/// before escalating to `SIGKILL` (`child.kill()`) on the unreaped direct `Child`.
+const OUTER_CANCEL_GRACE: Duration = Duration::from_secs(2);
+
+pub(super) struct WaitChildOutcome {
+    pub(super) exit: Option<std::process::ExitStatus>,
+    pub(super) out: Vec<u8>,
+    pub(super) err: Vec<u8>,
+    pub(super) cause: Option<String>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) killed: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn wait_scanner_child(
+    child: &mut std::process::Child,
+    output: &mut UnixStream,
+    diagnostic: &mut UnixStream,
+    cancel: &mut UnixStream,
+    token: &Token,
+    deadline: ScanDeadline,
+    cancel_grace: Duration,
+    diagnostics: &mut ScanDiagnostics,
+) -> Result<WaitChildOutcome, String> {
+    let started = Instant::now();
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let mut overflowed = [false; 2];
+    let mut cause = None;
+    let mut cancel_sent = false;
+    let mut cancel_requested_at: Option<Instant> = None;
+    let mut kill_sent_at: Option<Instant> = None;
+    let mut exit = None;
+    // Direct Child handle operations only (try_wait / kill); never numeric PID
+    // or process-group signals. After cancellation or deadline expiry, give the
+    // outer scanner a bounded grace window to retire cleanly before escalating
+    // to SIGKILL on the unreaped direct Child.
+    loop {
+        let polled = poll_and_drain(
+            &mut exit,
+            || child.try_wait(),
+            [
+                (output, &mut out, OUTPUT_LIMIT),
+                (diagnostic, &mut err, ERROR_LIMIT),
+            ],
+            &mut overflowed,
+        );
+        diagnostics.scanner_exit = exit;
+        let (received, error) = match polled {
+            Ok(value) => value,
+            Err(error) => {
+                diagnostics.report = out;
+                diagnostics.stderr = err;
+                return Err(error);
+            }
+        };
+        if let Some(error) = error {
+            cause.get_or_insert(error);
+        }
+        if (token.cancelled() || cause.is_some() || deadline.expired(started.elapsed()))
+            && !cancel_sent
+        {
+            cause.get_or_insert_with(|| {
+                if token.cancelled() {
+                    "scan cancelled".into()
+                } else {
+                    "scanner deadline exceeded; cleanup retained".into()
+                }
+            });
+            cancel_requested_at.get_or_insert_with(Instant::now);
+            match cancel.write(&[1]) {
+                Ok(1) => cancel_sent = true,
+                Ok(_) => {}
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => cancel_sent = true,
+            }
+        }
+        if exit.is_none()
+            && kill_sent_at.is_none()
+            && cancel_requested_at.is_some_and(|at| at.elapsed() >= cancel_grace)
+        {
+            let _ = child.kill();
+            kill_sent_at = Some(Instant::now());
+            cause.get_or_insert_with(|| "scanner hung after cancellation; terminated".into());
+        }
+        if exit.is_some() && !received {
+            break;
+        }
+        if kill_sent_at.is_some_and(|at| at.elapsed() >= cancel_grace) {
+            // Final bounded reap attempt in case the child exited right at the boundary.
+            if exit.is_none()
+                && let Ok(status) = child.try_wait()
+            {
+                exit = status;
+                diagnostics.scanner_exit = exit;
+            }
+            break;
+        }
+        if !received {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    Ok(WaitChildOutcome {
+        exit,
+        out,
+        err,
+        cause,
+        killed: kill_sent_at.is_some(),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn discover_inner(
     app: &Path,
@@ -203,63 +316,22 @@ pub(super) fn discover_inner(
     *chain_retired = false;
     diagnostics.scanner_started = true;
     token.0.scanner_started.store(true, Ordering::Release);
-    let started = Instant::now();
-    let mut out = Vec::new();
-    let mut err = Vec::new();
-    let mut overflowed = [false; 2];
-    let mut cause = None;
-    let mut cancel_sent = false;
-    let mut exit = None;
-    // No numeric PID/group operation other than this direct Child's try_wait.
-    // A retained scanner may exceed its deadline while it retires a native child.
-    loop {
-        let polled = poll_and_drain(
-            &mut exit,
-            || child.try_wait(),
-            [
-                (&mut output, &mut out, OUTPUT_LIMIT),
-                (&mut diagnostic, &mut err, ERROR_LIMIT),
-            ],
-            &mut overflowed,
-        );
-        diagnostics.scanner_exit = exit;
-        let (received, error) = match polled {
-            Ok(value) => value,
-            Err(error) => {
-                diagnostics.report = out;
-                diagnostics.stderr = err;
-                return Err(error);
-            }
-        };
-        if let Some(error) = error {
-            cause.get_or_insert(error);
-        }
-        if (token.cancelled() || cause.is_some() || deadline.expired(started.elapsed()))
-            && !cancel_sent
-        {
-            cause.get_or_insert_with(|| {
-                if token.cancelled() {
-                    "scan cancelled".into()
-                } else {
-                    "scanner deadline exceeded; cleanup retained".into()
-                }
-            });
-            match cancel.write(&[1]) {
-                Ok(1) => cancel_sent = true,
-                Ok(_) => {}
-                Err(e)
-                    if e.kind() == std::io::ErrorKind::WouldBlock
-                        || e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(_) => cancel_sent = true,
-            }
-        }
-        if exit.is_some() && !received {
-            break;
-        }
-        if !received {
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
+    let WaitChildOutcome {
+        exit,
+        out,
+        err,
+        mut cause,
+        killed: _,
+    } = wait_scanner_child(
+        &mut child,
+        &mut output,
+        &mut diagnostic,
+        &mut cancel,
+        token,
+        deadline,
+        OUTER_CANCEL_GRACE,
+        diagnostics,
+    )?;
     let decoded = serde_json::from_slice::<Report>(&out);
     diagnostics.report = out;
     diagnostics.stderr = err;
@@ -302,13 +374,13 @@ pub(super) fn discover_inner(
     {
         return Err("scanner result differs from its selected input/tool identity".into());
     }
+    let verified_executable = report
+        .executable
+        .as_ref()
+        .ok_or("scanner executable identity missing")?;
     initial.unchanged()?;
-    initial.executable_unchanged(
-        report
-            .executable
-            .as_ref()
-            .ok_or("scanner executable identity missing")?,
-    )?;
+    initial.executable_unchanged(verified_executable)?;
+    crate::fingerprint::record_vst3_verified(&initial, verified_executable);
     // `Package::inspect` already verifies the sealed manifest, scanner binary,
     // native receipt, and helper build identity in one pass.
     let fresh = Package::inspect(app)?;
@@ -650,10 +722,9 @@ pub(super) fn cached_result(
             .discovery
             .as_ref()
             .is_some_and(|found| found.cacheable())
-        && report
-            .executable
-            .as_ref()
-            .is_some_and(|executable| report.bundle.executable_unchanged(executable).is_ok()))
+        && report.executable.as_ref().is_some_and(|executable| {
+            crate::fingerprint::verify_vst3_unchanged(&report.bundle, executable).is_ok()
+        }))
     .then_some(CachedResult::Success)
 }
 
