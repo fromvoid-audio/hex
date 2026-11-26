@@ -20,9 +20,9 @@
 //!   `package_sha256`); mismatched or unresolved generations refuse
 //!   nondestructively without modifying stored state.
 
-use hex_device_abi::{PackageInstance, PackageModule};
+use hex_device_abi::{BorrowedAbiPcm, BorrowedAbiResource, PackageInstance, PackageModule};
 use hex_lattice::{
-    DevicePreparationContext, DeviceResources, InstrumentParameterRuntime,
+    DevicePreparationContext, DeviceResourcePcm, DeviceResources, InstrumentParameterRuntime,
     MutableInstrumentRuntime, NativeDeviceDefinition, NativeInstrumentClock,
     NativeInstrumentDefinition, NativeInstrumentEvent, NativeInstrumentExpression,
     NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError, NativeParameterAutomation,
@@ -31,16 +31,18 @@ use hex_lattice::{
     StereoMatrix,
 };
 use hex_lattice_contract::package_abi::{
-    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, CAP_CHANNEL_EXPRESSION,
-    CAP_NOTE_EXPRESSION, CAP_PARAMETER_EVENTS, CAP_STATE_PERSISTENCE, DEVICE_KIND_AUDIO_EFFECT,
-    DEVICE_KIND_INSTRUMENT, NOTE_EVENT_ALL_NOTES_OFF, NOTE_EVENT_CC, NOTE_EVENT_OFF, NOTE_EVENT_ON,
-    NOTE_EVENT_PITCH_BEND, NOTE_EVENT_PRESSURE, PACKAGE_ABI_MAX_FRAMES,
-    PACKAGE_ABI_MAX_NOTE_EVENTS, PACKAGE_ABI_MAX_PARAM_EVENTS, PACKAGE_ABI_MAX_PARAMS,
-    PACKAGE_ABI_MAX_STATE_BYTES, PackageIdentityEnvelope,
+    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, AbiResourceDescriptor,
+    AbiStatus, CAP_BORROWED_RESOURCES, CAP_CHANNEL_EXPRESSION, CAP_NOTE_EXPRESSION,
+    CAP_PARAMETER_EVENTS, CAP_STATE_PERSISTENCE, DEVICE_KIND_AUDIO_EFFECT, DEVICE_KIND_INSTRUMENT,
+    NOTE_EVENT_ALL_NOTES_OFF, NOTE_EVENT_CC, NOTE_EVENT_OFF, NOTE_EVENT_ON, NOTE_EVENT_PITCH_BEND,
+    NOTE_EVENT_PRESSURE, PACKAGE_ABI_MAX_FRAMES, PACKAGE_ABI_MAX_NOTE_EVENTS,
+    PACKAGE_ABI_MAX_PARAM_EVENTS, PACKAGE_ABI_MAX_PARAMS, PACKAGE_ABI_MAX_STATE_BYTES,
+    PackageIdentityEnvelope, RESOURCE_LAYOUT_MONO, RESOURCE_LAYOUT_STEREO_INTERLEAVED,
 };
 use hex_lattice_contract::{
-    DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
-    ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation, ParameterValue,
+    DeviceContractError, DeviceTypeId, MAX_DEVICE_ASSET_REFERENCES, NativeDeviceMetadata,
+    NativeDeviceState, ParameterDescriptor, ParameterId, ParameterKind, ParameterPresentation,
+    ParameterValue,
 };
 use std::any::Any;
 use std::path::Path;
@@ -48,6 +50,58 @@ use std::sync::Arc;
 
 const MAX_PACKAGE_VOICES: usize = 16;
 const PARAM_TABLE_MAGIC: [u8; 4] = *b"HXPM";
+const EMPTY_MONO_PCM: &[f32] = &[];
+
+/// Dispatch one C ABI process call using caller-borrowed immutable PCM
+/// resources on the stack with zero heap allocations (`#3002`).
+fn call_process_with_borrowed_resources(
+    inst: &mut PackageInstance,
+    supports_borrowed_resources: bool,
+    input: &[[f32; 2]],
+    output: &mut [[f32; 2]],
+    param_events: &[AbiParamEvent],
+    note_events: &[AbiNoteEvent],
+    resources: &dyn DeviceResources,
+) -> Result<(), AbiStatus> {
+    if !supports_borrowed_resources {
+        return inst.process(input, output, param_events, note_events);
+    }
+    let count = resources.len();
+    if count > MAX_DEVICE_ASSET_REFERENCES {
+        return Err(AbiStatus::InvalidArg);
+    }
+    let mut borrowed = [BorrowedAbiResource {
+        meta: AbiResourceDescriptor::empty(),
+        pcm: BorrowedAbiPcm::Mono(EMPTY_MONO_PCM),
+    }; MAX_DEVICE_ASSET_REFERENCES];
+    for (idx, dst) in borrowed.iter_mut().take(count).enumerate() {
+        let view = resources.get(idx).ok_or(AbiStatus::InvalidArg)?;
+        let (layout, pcm) = match view.pcm {
+            DeviceResourcePcm::Mono(slice) => (RESOURCE_LAYOUT_MONO, BorrowedAbiPcm::Mono(slice)),
+            DeviceResourcePcm::Stereo(slice) => (
+                RESOURCE_LAYOUT_STEREO_INTERLEAVED,
+                BorrowedAbiPcm::Stereo(slice),
+            ),
+        };
+        let frame_count = u64::try_from(view.pcm.frames()).map_err(|_| AbiStatus::InvalidArg)?;
+        *dst = BorrowedAbiResource {
+            meta: AbiResourceDescriptor {
+                struct_size: std::mem::size_of::<AbiResourceDescriptor>() as u32,
+                slot: view.slot.value(),
+                asset_id: view.identity.asset.value(),
+                sample_rate: view.sample_rate,
+                channel_layout: layout,
+                frame_count,
+                derivation_version: view.identity.derivation_version,
+                reserved: 0,
+                content_sha256: view.identity.content,
+                derivation_sha256: view.identity.derivation,
+            },
+            pcm,
+        };
+    }
+    inst.process_with_resources(input, output, param_events, note_events, &borrowed[..count])
+}
 
 fn static_param_label(index: usize, raw: &str) -> &'static str {
     match raw {
@@ -489,6 +543,12 @@ impl NativeDeviceDefinition for InstalledPackageEffect {
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
         let (params, raw_state) = self.shared.validate_and_decode(state)?;
+        if !state.asset_references().is_empty()
+            && (self.shared.descriptor.capabilities & CAP_BORROWED_RESOURCES) == 0
+        {
+            return Err(DeviceContractError::AssetResourcesUnavailable);
+        }
+        context.validate_for(state)?;
         let mut base_values = [0.0f32; PACKAGE_ABI_MAX_PARAMS as usize];
         for (idx, desc) in self.shared.parameters.iter().enumerate() {
             let val = params
@@ -599,6 +659,8 @@ impl PreparedOwnedProcessorRuntime for PreparedInstalledEffect {
             speculative,
             has_state_persistence: (self.descriptor.capabilities & CAP_STATE_PERSISTENCE) != 0,
             supports_param_events: (self.descriptor.capabilities & CAP_PARAMETER_EVENTS) != 0,
+            supports_borrowed_resources: (self.descriptor.capabilities & CAP_BORROWED_RESOURCES)
+                != 0,
             param_count,
             param_descriptors,
             base_values: self.base_values,
@@ -634,6 +696,7 @@ struct InstalledEffectRuntime {
     speculative: PackageInstance,
     has_state_persistence: bool,
     supports_param_events: bool,
+    supports_borrowed_resources: bool,
     param_count: usize,
     param_descriptors: [ParameterDescriptor; PACKAGE_ABI_MAX_PARAMS as usize],
     base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
@@ -694,7 +757,7 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
         frames: &mut [StereoFrame],
         _clock: Option<&dyn NativeInstrumentClock>,
         automation: &dyn NativeParameterAutomation,
-        _resources: &dyn DeviceResources,
+        resources: &dyn DeviceResources,
     ) -> Result<(), DeviceContractError> {
         if !self.supports_param_events {
             return Err(DeviceContractError::UnsupportedProcessingClass);
@@ -748,15 +811,16 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
                     || pending_count + changes_at_sample > self.param_scratch.len())
             {
                 let chunk = &mut frames[seg_start..sample_offset];
-                if self
-                    .speculative
-                    .process(
-                        chunk,
-                        &mut self.audio_scratch[..chunk.len()],
-                        &self.param_scratch[..pending_count],
-                        &[],
-                    )
-                    .is_err()
+                if call_process_with_borrowed_resources(
+                    &mut self.speculative,
+                    self.supports_borrowed_resources,
+                    chunk,
+                    &mut self.audio_scratch[..chunk.len()],
+                    &self.param_scratch[..pending_count],
+                    &[],
+                    resources,
+                )
+                .is_err()
                 {
                     self.faulted = true;
                     frames[seg_start..].fill([0.0; 2]);
@@ -790,15 +854,16 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
         // Flush trailing segment.
         if seg_start < frames.len() {
             let chunk = &mut frames[seg_start..];
-            if self
-                .speculative
-                .process(
-                    chunk,
-                    &mut self.audio_scratch[..chunk.len()],
-                    &self.param_scratch[..pending_count],
-                    &[],
-                )
-                .is_err()
+            if call_process_with_borrowed_resources(
+                &mut self.speculative,
+                self.supports_borrowed_resources,
+                chunk,
+                &mut self.audio_scratch[..chunk.len()],
+                &self.param_scratch[..pending_count],
+                &[],
+                resources,
+            )
+            .is_err()
             {
                 self.faulted = true;
                 chunk.fill([0.0; 2]);
@@ -823,7 +888,7 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
         );
     }
 
-    fn process_block(&mut self, frames: &mut [StereoFrame], _resources: &dyn DeviceResources) {
+    fn process_block(&mut self, frames: &mut [StereoFrame], resources: &dyn DeviceResources) {
         if self.faulted {
             frames.fill([0.0; 2]);
             return;
@@ -852,10 +917,16 @@ impl OwnedProcessorRuntime for InstalledEffectRuntime {
             } else {
                 &[]
             };
-            if self
-                .speculative
-                .process(chunk, &mut self.audio_scratch[..len], events, &[])
-                .is_err()
+            if call_process_with_borrowed_resources(
+                &mut self.speculative,
+                self.supports_borrowed_resources,
+                chunk,
+                &mut self.audio_scratch[..len],
+                events,
+                &[],
+                resources,
+            )
+            .is_err()
             {
                 self.faulted = true;
                 chunk.fill([0.0; 2]);
@@ -999,12 +1070,25 @@ impl NativeDeviceMetadata for InstalledPackageInstrument {
 }
 
 impl NativeInstrumentDefinition for InstalledPackageInstrument {
+    fn supports_asset_resources(&self) -> bool {
+        (self.shared.descriptor.capabilities & CAP_BORROWED_RESOURCES) != 0
+    }
+
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        self.supports_asset_resources()
+            .then_some(std::mem::size_of::<PreparedInstalledInstrumentFactory>())
+    }
+
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let (params, raw_state) = self.shared.validate_and_decode(state)?;
+        if !state.asset_references().is_empty() && !self.supports_asset_resources() {
+            return Err(DeviceContractError::AssetResourcesUnavailable);
+        }
+        context.validate_for(state)?;
         let mut sorted_params = self.shared.parameters.clone();
         sorted_params.sort_by_key(|desc| desc.id);
         let mut base_values = [0.0f32; PACKAGE_ABI_MAX_PARAMS as usize];
@@ -1040,15 +1124,35 @@ impl NativeInstrumentDefinition for InstalledPackageInstrument {
             };
             *slot = if cents.abs() < 1e-4 { 0.0 } else { cents };
         }
+        let mut initial_raw_state = [0u8; PACKAGE_ABI_MAX_STATE_BYTES as usize];
+        let initial_raw_state_len = raw_state.len().min(initial_raw_state.len());
+        initial_raw_state[..initial_raw_state_len]
+            .copy_from_slice(&raw_state[..initial_raw_state_len]);
+        let mut param_descriptors = [ParameterDescriptor {
+            id: ParameterId::from_static(1),
+            label: "param",
+            kind: ParameterKind::Float {
+                min: 0.0,
+                max: 1.0,
+                unit: None,
+            },
+            default: ParameterValue::Float(0.0),
+            presentation: ParameterPresentation::Linear,
+        }; PACKAGE_ABI_MAX_PARAMS as usize];
+        let param_count = sorted_params.len().min(param_descriptors.len());
+        param_descriptors[..param_count].copy_from_slice(&sorted_params[..param_count]);
         Ok(Box::new(PreparedInstalledInstrument {
             module: self.shared.module.clone(),
             descriptor: self.shared.descriptor,
             sample_rate: context.sample_rate,
-            initial_raw_state: raw_state.to_vec(),
+            initial_raw_state,
+            initial_raw_state_len,
             identity_digest: self.shared.identity.package_sha256,
-            parameters: sorted_params,
+            parameters: param_descriptors,
+            param_count,
             base_values,
             note_detune_cents,
+            required_resource_count: state.asset_references().len(),
         }))
     }
 }
@@ -1057,11 +1161,14 @@ struct PreparedInstalledInstrument {
     module: PackageModule,
     descriptor: AbiDescriptor,
     sample_rate: u32,
-    initial_raw_state: Vec<u8>,
+    initial_raw_state: [u8; PACKAGE_ABI_MAX_STATE_BYTES as usize],
+    initial_raw_state_len: usize,
     identity_digest: [u8; 32],
-    parameters: Vec<ParameterDescriptor>,
+    parameters: [ParameterDescriptor; PACKAGE_ABI_MAX_PARAMS as usize],
+    param_count: usize,
     base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
     note_detune_cents: [f32; 128],
+    required_resource_count: usize,
 }
 
 impl PreparedNativeInstrument for PreparedInstalledInstrument {
@@ -1084,30 +1191,44 @@ impl PreparedNativeInstrument for PreparedInstalledInstrument {
             module: self.module.clone(),
             descriptor: self.descriptor,
             sample_rate: self.sample_rate,
-            initial_raw_state: self.initial_raw_state.clone(),
+            initial_raw_state: self.initial_raw_state,
+            initial_raw_state_len: self.initial_raw_state_len,
             identity_digest: self.identity_digest,
-            parameters: self.parameters.clone(),
+            parameters: self.parameters,
+            param_count: self.param_count,
             base_values: self.base_values,
             note_detune_cents: self.note_detune_cents,
+            required_resource_count: self.required_resource_count,
         })))
     }
 }
 
+/// Inline-only immutable factory for installed instrument packages (`#3002`).
+/// Owns zero variable heap buffers; holds only its `PackageModule` generation
+/// lease and fixed-size state/parameter metadata.
 struct PreparedInstalledInstrumentFactory {
     module: PackageModule,
     descriptor: AbiDescriptor,
     sample_rate: u32,
-    initial_raw_state: Vec<u8>,
+    initial_raw_state: [u8; PACKAGE_ABI_MAX_STATE_BYTES as usize],
+    initial_raw_state_len: usize,
     identity_digest: [u8; 32],
-    parameters: Vec<ParameterDescriptor>,
+    parameters: [ParameterDescriptor; PACKAGE_ABI_MAX_PARAMS as usize],
+    param_count: usize,
     base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
     note_detune_cents: [f32; 128],
+    required_resource_count: usize,
 }
 
 impl PreparedMutableInstrumentRuntime for PreparedInstalledInstrumentFactory {
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        ((self.descriptor.capabilities & CAP_BORROWED_RESOURCES) != 0)
+            .then_some(std::mem::size_of::<Self>())
+    }
+
     fn parameter_automation_descriptors(&self) -> &[ParameterDescriptor] {
         if (self.descriptor.capabilities & CAP_PARAMETER_EVENTS) != 0 {
-            &self.parameters
+            &self.parameters[..self.param_count]
         } else {
             &[]
         }
@@ -1145,39 +1266,28 @@ impl PreparedMutableInstrumentRuntime for PreparedInstalledInstrumentFactory {
         let mut instance = self.module.create_instance(self.sample_rate).ok();
         if let Some(inst) = instance.as_mut()
             && (self.descriptor.capabilities & CAP_STATE_PERSISTENCE) != 0
-            && !self.initial_raw_state.is_empty()
+            && self.initial_raw_state_len > 0
         {
-            let _ = inst.set_state(&self.initial_raw_state);
+            let _ = inst.set_state(&self.initial_raw_state[..self.initial_raw_state_len]);
         }
-        let mut baseline_state = [0u8; PACKAGE_ABI_MAX_STATE_BYTES as usize];
-        let baseline_len = self.initial_raw_state.len().min(baseline_state.len());
-        baseline_state[..baseline_len].copy_from_slice(&self.initial_raw_state[..baseline_len]);
-        let mut param_descriptors = [ParameterDescriptor {
-            id: ParameterId::from_static(1),
-            label: "param",
-            kind: ParameterKind::Float {
-                min: 0.0,
-                max: 1.0,
-                unit: None,
-            },
-            default: ParameterValue::Float(0.0),
-            presentation: ParameterPresentation::Linear,
-        }; PACKAGE_ABI_MAX_PARAMS as usize];
-        let param_count = self.parameters.len().min(param_descriptors.len());
-        param_descriptors[..param_count].copy_from_slice(&self.parameters[..param_count]);
         Box::new(InstalledInstrumentRuntime {
             instance,
             sample_rate: self.sample_rate,
             capabilities: self.descriptor.capabilities,
             identity_digest: self.identity_digest,
             has_state_persistence: (self.descriptor.capabilities & CAP_STATE_PERSISTENCE) != 0,
-            param_count,
-            param_descriptors,
+            supports_borrowed_resources: (self.descriptor.capabilities & CAP_BORROWED_RESOURCES)
+                != 0,
+            required_resource_count: self.required_resource_count,
+            max_release_tail_frames: u64::from(self.descriptor.tail_frames),
+            tail_frames_remaining: 0,
+            param_count: self.param_count,
+            param_descriptors: self.parameters,
             base_values: self.base_values,
             current_values: self.base_values,
             note_detune_cents: self.note_detune_cents,
-            baseline_state,
-            baseline_len,
+            baseline_state: self.initial_raw_state,
+            baseline_len: self.initial_raw_state_len,
             active_occurrences: [None; MAX_PACKAGE_VOICES],
             param_scratch: [AbiParamEvent {
                 sample_offset: 0,
@@ -1213,6 +1323,10 @@ struct InstalledInstrumentRuntime {
     capabilities: u64,
     identity_digest: [u8; 32],
     has_state_persistence: bool,
+    supports_borrowed_resources: bool,
+    required_resource_count: usize,
+    max_release_tail_frames: u64,
+    tail_frames_remaining: u64,
     param_count: usize,
     param_descriptors: [ParameterDescriptor; PACKAGE_ABI_MAX_PARAMS as usize],
     base_values: [f32; PACKAGE_ABI_MAX_PARAMS as usize],
@@ -1282,6 +1396,9 @@ impl InstalledInstrumentRuntime {
                     .find(|s| matches!(s, Some((id, _)) if *id == occurrence_id))?;
                 let pitch = slot.map(|(_, p)| p).unwrap_or(0);
                 *slot = None;
+                if self.max_release_tail_frames > 0 {
+                    self.tail_frames_remaining = self.max_release_tail_frames;
+                }
                 Some(AbiNoteEvent {
                     sample_offset: local_offset,
                     kind: NOTE_EVENT_OFF,
@@ -1416,6 +1533,7 @@ impl InstalledInstrumentRuntime {
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
         values: Option<&dyn NativeParameterAutomation>,
+        resources: &dyn DeviceResources,
     ) {
         if self.faulted || frames.is_empty() || self.instance.is_none() {
             return;
@@ -1457,14 +1575,16 @@ impl InstalledInstrumentRuntime {
                 let Some(inst) = self.instance.as_mut() else {
                     return;
                 };
-                if inst
-                    .process(
-                        &self.silence_in[..chunk_len],
-                        &mut self.audio_scratch[..chunk_len],
-                        &self.param_scratch[..param_count],
-                        &self.note_scratch[..note_count],
-                    )
-                    .is_err()
+                if call_process_with_borrowed_resources(
+                    inst,
+                    self.supports_borrowed_resources,
+                    &self.silence_in[..chunk_len],
+                    &mut self.audio_scratch[..chunk_len],
+                    &self.param_scratch[..param_count],
+                    &self.note_scratch[..note_count],
+                    resources,
+                )
+                .is_err()
                 {
                     self.faulted = true;
                     return;
@@ -1472,6 +1592,10 @@ impl InstalledInstrumentRuntime {
                 for i in 0..chunk_len {
                     frames[seg_start + i][0] += self.audio_scratch[i][0];
                     frames[seg_start + i][1] += self.audio_scratch[i][1];
+                }
+                if self.active_occurrences.iter().all(Option::is_none) {
+                    self.tail_frames_remaining =
+                        self.tail_frames_remaining.saturating_sub(chunk_len as u64);
                 }
                 seg_start = sample_offset;
                 param_count = 0;
@@ -1518,14 +1642,16 @@ impl InstalledInstrumentRuntime {
             let Some(inst) = self.instance.as_mut() else {
                 return;
             };
-            if inst
-                .process(
-                    &self.silence_in[..chunk_len],
-                    &mut self.audio_scratch[..chunk_len],
-                    &self.param_scratch[..param_count],
-                    &self.note_scratch[..note_count],
-                )
-                .is_err()
+            if call_process_with_borrowed_resources(
+                inst,
+                self.supports_borrowed_resources,
+                &self.silence_in[..chunk_len],
+                &mut self.audio_scratch[..chunk_len],
+                &self.param_scratch[..param_count],
+                &self.note_scratch[..note_count],
+                resources,
+            )
+            .is_err()
             {
                 self.faulted = true;
                 return;
@@ -1533,6 +1659,10 @@ impl InstalledInstrumentRuntime {
             for i in 0..chunk_len {
                 frames[seg_start + i][0] += self.audio_scratch[i][0];
                 frames[seg_start + i][1] += self.audio_scratch[i][1];
+            }
+            if self.active_occurrences.iter().all(Option::is_none) {
+                self.tail_frames_remaining =
+                    self.tail_frames_remaining.saturating_sub(chunk_len as u64);
             }
         }
     }
@@ -1600,9 +1730,9 @@ impl InstrumentParameterRuntime for InstalledInstrumentRuntime {
         _clock: Option<&dyn NativeInstrumentClock>,
         _gains: &[NativeInstrumentOccurrenceGain],
         values: &dyn NativeParameterAutomation,
-        _resources: &dyn DeviceResources,
+        resources: &dyn DeviceResources,
     ) {
-        self.process_with_optional_automation(events, frames, Some(values));
+        self.process_with_optional_automation(events, frames, Some(values), resources);
     }
 }
 
@@ -1625,8 +1755,11 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
         &self,
         events: &[NativeInstrumentEvent],
         frame_count: usize,
-        _resources: &dyn DeviceResources,
+        resources: &dyn DeviceResources,
     ) -> Result<(), NativeInstrumentRuntimeError> {
+        if self.required_resource_count > 0 && resources.len() < self.required_resource_count {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
         if events.len() > PACKAGE_ABI_MAX_NOTE_EVENTS as usize {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
         }
@@ -1752,13 +1885,14 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
         &mut self,
         events: &[NativeInstrumentEvent],
         frames: &mut [StereoFrame],
-        _resources: &dyn DeviceResources,
+        resources: &dyn DeviceResources,
     ) {
-        self.process_with_optional_automation(events, frames, None);
+        self.process_with_optional_automation(events, frames, None, resources);
     }
 
     fn reset(&mut self) {
         self.faulted = false;
+        self.tail_frames_remaining = 0;
         self.current_values = self.base_values;
         // Emit note-off / all-notes-off for every active note so C module clears voices cleanly.
         let mut count = 0usize;
@@ -1808,7 +1942,7 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
     }
 
     fn is_quiescent(&self) -> bool {
-        self.active_occurrences.iter().all(Option::is_none)
+        self.active_occurrences.iter().all(Option::is_none) && self.tail_frames_remaining == 0
     }
 
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
@@ -1820,6 +1954,7 @@ impl MutableInstrumentRuntime for InstalledInstrumentRuntime {
     fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
         if let Some(src) = previous.as_any().downcast_ref::<Self>() {
             self.active_occurrences = src.active_occurrences;
+            self.tail_frames_remaining = src.tail_frames_remaining;
             self.current_values = src.current_values;
             self.faulted = src.faulted;
             if self.has_state_persistence

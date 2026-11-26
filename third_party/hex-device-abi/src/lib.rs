@@ -10,9 +10,25 @@
 mod raw;
 
 use hex_lattice_contract::package_abi::{
-    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, AbiStatus,
+    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, AbiResourceDescriptor,
+    AbiStatus,
 };
 use std::path::Path;
+
+/// Read-only original-rate PCM borrowed strictly for one `process_with_resources`
+/// call (`#3002`). Never transfers paths, ownership, or `Arc` leases to the module.
+#[derive(Clone, Copy)]
+pub enum BorrowedAbiPcm<'a> {
+    Mono(&'a [f32]),
+    Stereo(&'a [[f32; 2]]),
+}
+
+/// One host-borrowed immutable resource view passed across the C ABI (`#3002`).
+#[derive(Clone, Copy)]
+pub struct BorrowedAbiResource<'a> {
+    pub meta: AbiResourceDescriptor,
+    pub pcm: BorrowedAbiPcm<'a>,
+}
 
 /// Immutable, `Arc`-leased native device package module handle.
 ///
@@ -73,5 +89,20 @@ impl PackageInstance {
         note_events: &[AbiNoteEvent],
     ) -> Result<(), AbiStatus> {
         self.0.process(input, output, param_events, note_events)
+    }
+
+    /// Process one bounded stereo block with host-borrowed immutable original-rate
+    /// PCM resources (`#3002`). All resource pointers remain valid only for the
+    /// duration of this call; performs zero host heap allocation.
+    pub fn process_with_resources(
+        &mut self,
+        input: &[[f32; 2]],
+        output: &mut [[f32; 2]],
+        param_events: &[AbiParamEvent],
+        note_events: &[AbiNoteEvent],
+        resources: &[BorrowedAbiResource<'_>],
+    ) -> Result<(), AbiStatus> {
+        self.0
+            .process_with_resources(input, output, param_events, note_events, resources)
     }
 }
