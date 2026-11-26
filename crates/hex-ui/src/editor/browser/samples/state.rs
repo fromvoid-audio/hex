@@ -170,6 +170,61 @@ impl SampleBrowser {
         self.visible_with_listing(query, None, None)
     }
 
+    pub(in crate::editor::browser) fn visible_collection(
+        &self,
+        query: &str,
+        collection: &str,
+    ) -> Arc<Vec<LibraryEntry>> {
+        let tag_groups = self.tag_groups_for_query();
+        let mut cache = self.visible.borrow_mut();
+        if let Some(previous) = cache.as_ref()
+            && previous.query == query
+            && previous.source.is_none()
+            && previous.directory.is_none()
+            && previous.tag == self.tag_filter
+            && previous.tag_groups == tag_groups
+            && previous.collection.as_deref() == Some(collection)
+            && previous.sort == self.sort
+        {
+            return previous.entries.clone();
+        }
+        let entries = Arc::new(self.catalog.query(&CatalogQuery {
+            text: query,
+            source: None,
+            tag: self.tag_filter.as_deref(),
+            tag_groups: &tag_groups,
+            collection: Some(collection),
+            sort: self.sort,
+            ..CatalogQuery::default()
+        }));
+        *cache = Some(VisibleCache {
+            query: query.to_owned(),
+            source: None,
+            directory: None,
+            tag: self.tag_filter.clone(),
+            tag_groups,
+            collection: Some(collection.to_owned()),
+            sort: self.sort,
+            entries: entries.clone(),
+        });
+        entries
+    }
+
+    /// Returns `(available, missing)` sample counts for a named collection.
+    pub(in crate::editor::browser) fn collection_counts(&self, collection: &str) -> (usize, usize) {
+        let Some(members) = self.catalog.collection_members(collection) else {
+            return (0, 0);
+        };
+        let available = self
+            .catalog
+            .entries()
+            .iter()
+            .filter(|entry| members.contains(&entry.path))
+            .count();
+        let missing = members.len().saturating_sub(available);
+        (available, missing)
+    }
+
     /// Global search passes no source filter and the current bounded listing.
     /// Samples passes its source filter and no folder listing.
     pub(in crate::editor::browser) fn visible_with_listing(

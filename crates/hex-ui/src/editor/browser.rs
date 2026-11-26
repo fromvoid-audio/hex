@@ -163,6 +163,26 @@ pub(super) enum BrowserSection {
     Collection(usize),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CollectionMenuAction {
+    Recolor {
+        index: usize,
+        color: hex_project::ElementColor,
+    },
+    BeginRename {
+        index: usize,
+    },
+    MoveUp {
+        index: usize,
+    },
+    MoveDown {
+        index: usize,
+    },
+    Delete {
+        index: usize,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum BrowserItemKey {
     File(PathBuf),

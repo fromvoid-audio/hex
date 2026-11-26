@@ -12,7 +12,14 @@ use std::{
 };
 
 pub const MAX_USER_PLACES: usize = 14;
+pub const MAX_BROWSER_COLLECTIONS: usize = 32;
+pub const MAX_COLLECTION_NAME_BYTES: usize = 64;
+pub const MIN_SIDEBAR_WIDTH: u32 = 23;
+pub const MAX_SIDEBAR_WIDTH: u32 = 640;
 const MAX_PLACE_ICON_ID_BYTES: usize = 64;
+const VALID_COLLECTION_COLORS: [&str; 10] = [
+    "gray", "red", "orange", "amber", "olive", "green", "cyan", "blue", "violet", "rose",
+];
 
 /// Stable app-support location shared by development and review bundles.
 pub fn browser_places_path(home: &Path) -> PathBuf {
@@ -28,19 +35,59 @@ pub enum BrowserBuiltin {
     Samples,
 }
 
+/// Configurable library sections in the browser sidebar.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserSidebarSection {
+    Samples,
+    Devices,
+    Projects,
+    All,
+    Plugins,
+}
+
+impl BrowserSidebarSection {
+    pub const ALL: [Self; 5] = [
+        Self::Samples,
+        Self::Devices,
+        Self::Projects,
+        Self::All,
+        Self::Plugins,
+    ];
+}
+
+/// Persisted quick-collection identity and color swatch name.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrowserCollectionPreference {
+    pub name: String,
+    pub color: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct BuiltinPreference {
     hidden: bool,
     icon: Option<String>,
 }
 
-/// Additional browser folders, in user-visible order.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SidebarSectionPreference {
+    hidden: bool,
+    icon: Option<String>,
+}
+
+/// Additional browser folders, sidebar configuration, quick collections, and pane preferences.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BrowserPlaces {
     additional: Vec<PathBuf>,
     icons: BTreeMap<PathBuf, String>,
     builtins: BTreeMap<BrowserBuiltin, BuiltinPreference>,
     hidden_places: HashSet<PathBuf>,
+    sidebar_sections: BTreeMap<BrowserSidebarSection, SidebarSectionPreference>,
+    sidebar_order: Vec<BrowserSidebarSection>,
+    collections: Option<Vec<BrowserCollectionPreference>>,
+    sidebar_width: Option<u32>,
+    tags_visible: Option<bool>,
     pub vst3_scan_sources: Vst3ScanSources,
 }
 
@@ -96,6 +143,11 @@ impl BrowserPlaces {
             icons: BTreeMap::new(),
             builtins: BTreeMap::new(),
             hidden_places: HashSet::new(),
+            sidebar_sections: BTreeMap::new(),
+            sidebar_order: Vec::new(),
+            collections: None,
+            sidebar_width: None,
+            tags_visible: None,
             vst3_scan_sources: Vst3ScanSources::default(),
         })
     }
@@ -214,6 +266,111 @@ impl BrowserPlaces {
         }
         Ok(())
     }
+
+    pub fn sidebar_section_hidden(&self, section: BrowserSidebarSection) -> bool {
+        if let Some(pref) = self.sidebar_sections.get(&section) {
+            pref.hidden
+        } else if section == BrowserSidebarSection::Samples {
+            self.builtin_hidden(BrowserBuiltin::Samples)
+        } else {
+            false
+        }
+    }
+
+    pub fn set_sidebar_section_hidden(
+        &mut self,
+        section: BrowserSidebarSection,
+        hidden: bool,
+    ) -> Result<(), PreferencesError> {
+        if hidden {
+            let visible_others = BrowserSidebarSection::ALL
+                .into_iter()
+                .filter(|other| *other != section && !self.sidebar_section_hidden(*other))
+                .count();
+            if visible_others == 0 {
+                return Err(PreferencesError::InvalidDocument(
+                    "at least one browser section must stay visible".into(),
+                ));
+            }
+        }
+        self.sidebar_sections.entry(section).or_default().hidden = hidden;
+        if section == BrowserSidebarSection::Samples {
+            self.set_builtin_hidden(BrowserBuiltin::Samples, hidden);
+        }
+        Ok(())
+    }
+
+    pub fn sidebar_section_icon(&self, section: BrowserSidebarSection) -> Option<&str> {
+        self.sidebar_sections
+            .get(&section)
+            .and_then(|pref| pref.icon.as_deref())
+    }
+
+    pub fn set_sidebar_section_icon(
+        &mut self,
+        section: BrowserSidebarSection,
+        icon: Option<&str>,
+    ) -> Result<(), PreferencesError> {
+        if let Some(id) = icon {
+            validate_icon_id(id)?;
+        }
+        self.sidebar_sections.entry(section).or_default().icon = icon.map(str::to_owned);
+        Ok(())
+    }
+
+    pub fn sidebar_order(&self) -> &[BrowserSidebarSection] {
+        &self.sidebar_order
+    }
+
+    pub fn set_sidebar_order(
+        &mut self,
+        order: Vec<BrowserSidebarSection>,
+    ) -> Result<(), PreferencesError> {
+        validate_sidebar_order(&order)?;
+        self.sidebar_order = order;
+        Ok(())
+    }
+
+    pub fn collections(&self) -> Option<&[BrowserCollectionPreference]> {
+        self.collections.as_deref()
+    }
+
+    pub fn set_collections(
+        &mut self,
+        collections: Option<Vec<BrowserCollectionPreference>>,
+    ) -> Result<(), PreferencesError> {
+        if let Some(items) = collections {
+            let validated = validate_collections(items)?;
+            self.collections = Some(validated);
+        } else {
+            self.collections = None;
+        }
+        Ok(())
+    }
+
+    pub fn sidebar_width(&self) -> Option<u32> {
+        self.sidebar_width
+    }
+
+    pub fn set_sidebar_width(&mut self, width: Option<u32>) -> Result<(), PreferencesError> {
+        if let Some(value) = width
+            && !(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH).contains(&value)
+        {
+            return Err(PreferencesError::InvalidDocument(
+                "invalid browser sidebar width".into(),
+            ));
+        }
+        self.sidebar_width = width;
+        Ok(())
+    }
+
+    pub fn tags_visible(&self) -> Option<bool> {
+        self.tags_visible
+    }
+
+    pub fn set_tags_visible(&mut self, visible: Option<bool>) {
+        self.tags_visible = visible;
+    }
 }
 
 fn validate_icon_id(id: &str) -> Result<(), PreferencesError> {
@@ -223,6 +380,62 @@ fn validate_icon_id(id: &str) -> Result<(), PreferencesError> {
         ));
     }
     Ok(())
+}
+
+fn validate_sidebar_order(order: &[BrowserSidebarSection]) -> Result<(), PreferencesError> {
+    if order.is_empty() {
+        return Ok(());
+    }
+    if order.len() != BrowserSidebarSection::ALL.len() {
+        return Err(PreferencesError::InvalidDocument(
+            "invalid browser sidebar section order".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    for section in order {
+        if !seen.insert(*section) {
+            return Err(PreferencesError::InvalidDocument(
+                "duplicate browser sidebar section in order".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_collections(
+    collections: Vec<BrowserCollectionPreference>,
+) -> Result<Vec<BrowserCollectionPreference>, PreferencesError> {
+    if collections.len() > MAX_BROWSER_COLLECTIONS {
+        return Err(PreferencesError::InvalidDocument(
+            "too many browser collections".into(),
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut out = Vec::with_capacity(collections.len());
+    for item in collections {
+        let name = item.name.trim().to_lowercase();
+        if name.is_empty()
+            || name.len() > MAX_COLLECTION_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            return Err(PreferencesError::InvalidDocument(
+                "invalid browser collection name".into(),
+            ));
+        }
+        let color = item.color.trim().to_lowercase();
+        if !VALID_COLLECTION_COLORS.contains(&color.as_str()) {
+            return Err(PreferencesError::InvalidDocument(
+                "invalid browser collection color".into(),
+            ));
+        }
+        if !seen.insert(name.clone()) {
+            return Err(PreferencesError::InvalidDocument(
+                "duplicate browser collection name".into(),
+            ));
+        }
+        out.push(BrowserCollectionPreference { name, color });
+    }
+    Ok(out)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -238,6 +451,24 @@ struct Document {
     hidden_places: Vec<StoredPath>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     vst3_scan_sources: Option<StoredVst3ScanSources>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sidebar_sections: Vec<StoredSidebarSectionPreference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    sidebar_order: Vec<BrowserSidebarSection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    collections: Option<Vec<BrowserCollectionPreference>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sidebar_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tags_visible: Option<bool>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredSidebarSectionPreference {
+    section: BrowserSidebarSection,
+    hidden: bool,
+    icon: Option<String>,
 }
 
 impl VersionedDocument for Document {
@@ -342,6 +573,42 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
             }
             places.set_place_hidden(&path, true)?;
         }
+        if document.sidebar_sections.len() > BrowserSidebarSection::ALL.len() {
+            return Err(PreferencesError::InvalidDocument(
+                "too many browser sidebar sections".into(),
+            ));
+        }
+        let mut seen_sections = HashSet::new();
+        for entry in document.sidebar_sections {
+            if !seen_sections.insert(entry.section) {
+                return Err(PreferencesError::InvalidDocument(
+                    "duplicate browser sidebar section".into(),
+                ));
+            }
+            if let Some(id) = &entry.icon {
+                validate_icon_id(id)?;
+            }
+            places.sidebar_sections.insert(
+                entry.section,
+                SidebarSectionPreference {
+                    hidden: entry.hidden,
+                    icon: entry.icon,
+                },
+            );
+        }
+        let visible_sections = BrowserSidebarSection::ALL
+            .into_iter()
+            .filter(|section| !places.sidebar_section_hidden(*section))
+            .count();
+        if visible_sections == 0 {
+            return Err(PreferencesError::InvalidDocument(
+                "at least one browser section must stay visible".into(),
+            ));
+        }
+        places.set_sidebar_order(document.sidebar_order)?;
+        places.set_collections(document.collections)?;
+        places.set_sidebar_width(document.sidebar_width)?;
+        places.set_tags_visible(document.tags_visible);
         Ok(places)
     })
 }
@@ -367,6 +634,43 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
             });
         }
     }
+    validate_sidebar_order(&places.sidebar_order)?;
+    if let Some(width) = places.sidebar_width
+        && !(MIN_SIDEBAR_WIDTH..=MAX_SIDEBAR_WIDTH).contains(&width)
+    {
+        return Err(PreferencesError::InvalidDocument(
+            "invalid browser sidebar width".into(),
+        ));
+    }
+    let visible_sections = BrowserSidebarSection::ALL
+        .into_iter()
+        .filter(|section| !places.sidebar_section_hidden(*section))
+        .count();
+    if visible_sections == 0 {
+        return Err(PreferencesError::InvalidDocument(
+            "at least one browser section must stay visible".into(),
+        ));
+    }
+    let collections = places
+        .collections
+        .clone()
+        .map(validate_collections)
+        .transpose()?;
+    let sidebar_sections = places
+        .sidebar_sections
+        .iter()
+        .filter(|(_, pref)| pref.hidden || pref.icon.is_some())
+        .map(|(section, pref)| {
+            if let Some(id) = &pref.icon {
+                validate_icon_id(id)?;
+            }
+            Ok(StoredSidebarSectionPreference {
+                section: *section,
+                hidden: pref.hidden,
+                icon: pref.icon.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, PreferencesError>>()?;
     let document = Document {
         version: DOCUMENT_VERSION,
         vst3_scan_sources: (places.vst3_scan_sources != Vst3ScanSources::default())
@@ -418,6 +722,11 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
             .iter()
             .map(|path| StoredPath::from_path(path))
             .collect::<Result<Vec<_>, _>>()?,
+        sidebar_sections,
+        sidebar_order: places.sidebar_order.clone(),
+        collections,
+        sidebar_width: places.sidebar_width,
+        tags_visible: places.tags_visible,
     };
     save_versioned(path, |existing| load(existing).map(|_| ()), &document)
 }
@@ -773,6 +1082,138 @@ mod tests {
             fs::write(&config, &bytes).unwrap();
             assert!(load(&config).is_err());
             assert!(save(&config, &places).is_err());
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn sidebar_sections_order_collections_and_pane_prefs_round_trip_and_guard_last_section() {
+        let directory = TestDirectory::new("hex-browser-places");
+        let config = directory.0.join("browser.json");
+        let custom_place = directory.0.join("packs");
+        let mut places = BrowserPlaces::new([custom_place.clone()]).unwrap();
+        places.set_icon(&custom_place, Some("waveform")).unwrap();
+        places
+            .set_sidebar_section_hidden(BrowserSidebarSection::Projects, true)
+            .unwrap();
+        places
+            .set_sidebar_section_icon(BrowserSidebarSection::Devices, Some("waveform"))
+            .unwrap();
+        places
+            .set_sidebar_order(vec![
+                BrowserSidebarSection::Samples,
+                BrowserSidebarSection::All,
+                BrowserSidebarSection::Devices,
+                BrowserSidebarSection::Plugins,
+                BrowserSidebarSection::Projects,
+            ])
+            .unwrap();
+        places
+            .set_collections(Some(vec![
+                BrowserCollectionPreference {
+                    name: "  Drums ".into(),
+                    color: "Amber".into(),
+                },
+                BrowserCollectionPreference {
+                    name: "synths".into(),
+                    color: "cyan".into(),
+                },
+            ]))
+            .unwrap();
+        places.set_sidebar_width(Some(148)).unwrap();
+        places.set_tags_visible(Some(false));
+        save(&config, &places).unwrap();
+
+        let loaded = load(&config).unwrap();
+        assert_eq!(loaded, places);
+        assert_eq!(loaded.additional(), std::slice::from_ref(&custom_place));
+        assert_eq!(loaded.icon(&custom_place), Some("waveform"));
+        assert!(loaded.sidebar_section_hidden(BrowserSidebarSection::Projects));
+        assert!(!loaded.sidebar_section_hidden(BrowserSidebarSection::Samples));
+        assert_eq!(
+            loaded.sidebar_section_icon(BrowserSidebarSection::Devices),
+            Some("waveform")
+        );
+        assert_eq!(
+            loaded.collections(),
+            Some(
+                [
+                    BrowserCollectionPreference {
+                        name: "drums".into(),
+                        color: "amber".into(),
+                    },
+                    BrowserCollectionPreference {
+                        name: "synths".into(),
+                        color: "cyan".into(),
+                    },
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(loaded.sidebar_width(), Some(148));
+        assert_eq!(loaded.tags_visible(), Some(false));
+
+        // Hiding the last remaining visible section is refused.
+        let mut guarded = BrowserPlaces::default();
+        for section in [
+            BrowserSidebarSection::Samples,
+            BrowserSidebarSection::Devices,
+            BrowserSidebarSection::Projects,
+            BrowserSidebarSection::Plugins,
+        ] {
+            guarded.set_sidebar_section_hidden(section, true).unwrap();
+        }
+        assert!(
+            guarded
+                .set_sidebar_section_hidden(BrowserSidebarSection::All, true)
+                .is_err()
+        );
+        assert!(!guarded.sidebar_section_hidden(BrowserSidebarSection::All));
+    }
+
+    #[test]
+    fn malformed_sidebar_and_collection_documents_fail_load_and_preserve_bytes() {
+        let directory = TestDirectory::new("hex-browser-places");
+        let config = directory.0.join("browser.json");
+        let all_hidden = serde_json::json!({
+            "version": 1,
+            "additional_places": [],
+            "sidebar_sections": [
+                {"section": "samples", "hidden": true, "icon": null},
+                {"section": "devices", "hidden": true, "icon": null},
+                {"section": "projects", "hidden": true, "icon": null},
+                {"section": "all", "hidden": true, "icon": null},
+                {"section": "plugins", "hidden": true, "icon": null}
+            ]
+        });
+        let dup_collection = serde_json::json!({
+            "version": 1,
+            "additional_places": [],
+            "collections": [
+                {"name": "drums", "color": "red"},
+                {"name": "Drums", "color": "cyan"}
+            ]
+        });
+        let bad_color = serde_json::json!({
+            "version": 1,
+            "additional_places": [],
+            "collections": [{"name": "drums", "color": "neon"}]
+        });
+        let bad_order = serde_json::json!({
+            "version": 1,
+            "additional_places": [],
+            "sidebar_order": ["samples", "samples", "all", "devices", "plugins"]
+        });
+        let bad_width = serde_json::json!({
+            "version": 1,
+            "additional_places": [],
+            "sidebar_width": 5
+        });
+        for doc in [all_hidden, dup_collection, bad_color, bad_order, bad_width] {
+            let bytes = serde_json::to_vec(&doc).unwrap();
+            fs::write(&config, &bytes).unwrap();
+            assert!(load(&config).is_err());
+            assert!(save(&config, &BrowserPlaces::default()).is_err());
             assert_eq!(fs::read(&config).unwrap(), bytes);
         }
     }

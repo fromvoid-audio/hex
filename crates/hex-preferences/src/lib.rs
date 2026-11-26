@@ -29,8 +29,9 @@ pub use audio_import::{
     save_audio_import_preferences,
 };
 pub use browser_places::{
-    BrowserBuiltin, BrowserPlaces, MAX_USER_PLACES, Vst3ScanSources, browser_places_path, load,
-    save,
+    BrowserBuiltin, BrowserCollectionPreference, BrowserPlaces, BrowserSidebarSection,
+    MAX_BROWSER_COLLECTIONS, MAX_COLLECTION_NAME_BYTES, MAX_SIDEBAR_WIDTH, MAX_USER_PLACES,
+    MIN_SIDEBAR_WIDTH, Vst3ScanSources, browser_places_path, load, save,
 };
 pub use midi_input::{
     DEFAULT_MPE_MASTER_PITCH_BEND_SEMITONES, DEFAULT_MPE_MEMBER_PITCH_BEND_SEMITONES,

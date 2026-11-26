@@ -31,6 +31,13 @@ pub(super) fn known(id: &str) -> bool {
     ICONS.iter().any(|(candidate, _, _)| *candidate == id)
 }
 
+pub(super) fn path_for_id(id: &str) -> Option<&'static str> {
+    ICONS
+        .iter()
+        .find(|(candidate, _, _)| *candidate == id)
+        .map(|(_, path, _)| *path)
+}
+
 impl EditorView {
     pub(super) fn browser_place_icon_path(&self, path: &std::path::Path) -> &'static str {
         self.browser_place_icon_id(path)
@@ -228,6 +235,12 @@ impl EditorView {
                 }
             }
             BrowserSection::Samples => {
+                if !visible && !self.browser.layout.can_hide_section(0) {
+                    self.browser.places_status =
+                        Some("at least one browser section must stay visible".into());
+                    cx.notify();
+                    return;
+                }
                 self.browser.layout.set_samples_visible(visible);
                 self.browser
                     .source_preferences
@@ -243,14 +256,248 @@ impl EditorView {
     pub(super) fn reconcile_browser_source_visibility(&mut self, cx: &mut Context<Self>) {
         let hidden = match &self.browser.section {
             BrowserSection::Place(path) => !self.browser_place_visible(path),
-            BrowserSection::Samples => !self.browser.layout.samples_visible(),
-            _ => false,
+            BrowserSection::Samples
+            | BrowserSection::Instruments
+            | BrowserSection::Projects
+            | BrowserSection::All
+            | BrowserSection::Plugins => !self
+                .browser
+                .layout
+                .history_source_available(&self.browser.section),
+            BrowserSection::Collection(index) => *index >= self.browser.layout.collections.len(),
+            BrowserSection::ProjectSamples => false,
         };
         if hidden {
             self.cancel_browser_sample_playback();
-            self.browser.layout.reveal_all();
-            self.select_browser_source(BrowserSection::All, cx);
+            let fallback = match &self.browser.section {
+                BrowserSection::Place(_) | BrowserSection::Samples => {
+                    if self
+                        .browser
+                        .layout
+                        .history_source_available(&BrowserSection::All)
+                    {
+                        BrowserSection::All
+                    } else {
+                        self.browser.layout.first_visible_section()
+                    }
+                }
+                _ => self.browser.layout.first_visible_section(),
+            };
+            self.select_browser_source(fallback, cx);
         }
+    }
+
+    pub(in crate::editor) fn browser_section_icon_assignable(&self, index: usize) -> bool {
+        index < 5 && !self.browser.preferences_loading
+    }
+
+    pub(super) fn open_browser_section_icons(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.browser_section_icon_assignable(index) {
+            return;
+        }
+        self.cancel_time_selection_gesture();
+        let current_id = self.browser.layout.section_icon_id(index);
+        let selected = current_id
+            .and_then(|id| ICONS.iter().position(|(candidate, _, _)| *candidate == id))
+            .map_or(0, |pos| pos + 1);
+        let previous_focus = self
+            .context_menu
+            .take()
+            .and_then(|menu| menu.previous_focus)
+            .or_else(|| window.focused(cx));
+        let focus = cx.focus_handle();
+        focus.focus(window);
+        self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
+            position,
+            icon_grid: Some(ICONS.iter().map(|(_, path, _)| *path).collect()),
+            selected,
+            focus,
+            previous_focus,
+            items: std::iter::once(MenuItem {
+                label: "default icon",
+                swatch: None,
+                checked: selected == 0,
+                action: EditorContextAction::SectionIcon { index, id: None },
+            })
+            .chain(
+                ICONS
+                    .iter()
+                    .enumerate()
+                    .map(|(icon_idx, (id, _, label))| MenuItem {
+                        label,
+                        swatch: None,
+                        checked: selected == icon_idx + 1,
+                        action: EditorContextAction::SectionIcon {
+                            index,
+                            id: Some(*id),
+                        },
+                    }),
+            )
+            .collect(),
+        });
+        cx.notify();
+    }
+
+    pub(in crate::editor) fn set_browser_section_icon(
+        &mut self,
+        index: usize,
+        id: Option<&'static str>,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.browser_section_icon_assignable(index) || id.is_some_and(|id| !known(id)) {
+            return;
+        }
+        self.browser.layout.set_section_icon_id(index, id);
+        self.sync_sidebar_preferences_and_save(cx);
+        cx.notify();
+    }
+
+    pub(in crate::editor) fn browser_collection_action_valid(
+        &self,
+        action: CollectionMenuAction,
+    ) -> bool {
+        let len = self.browser.layout.collections.len();
+        match action {
+            CollectionMenuAction::Recolor { index, .. }
+            | CollectionMenuAction::BeginRename { index }
+            | CollectionMenuAction::Delete { index } => index < len,
+            CollectionMenuAction::MoveUp { index } => index > 0 && index < len,
+            CollectionMenuAction::MoveDown { index } => index + 1 < len,
+        }
+    }
+
+    pub(super) fn open_browser_collection_menu(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(current) = self.browser.layout.collections.get(index) else {
+            return;
+        };
+        let current_color = current.color;
+        let len = self.browser.layout.collections.len();
+        self.cancel_time_selection_gesture();
+        let previous_focus = self
+            .context_menu
+            .take()
+            .and_then(|menu| menu.previous_focus)
+            .or_else(|| window.focused(cx));
+        let focus = cx.focus_handle();
+        focus.focus(window);
+        let mut items = Vec::new();
+        for (color, label) in [
+            (hex_project::ElementColor::Red, "red"),
+            (hex_project::ElementColor::Orange, "orange"),
+            (hex_project::ElementColor::Amber, "amber"),
+            (hex_project::ElementColor::Green, "green"),
+            (hex_project::ElementColor::Cyan, "cyan"),
+            (hex_project::ElementColor::Blue, "blue"),
+            (hex_project::ElementColor::Violet, "violet"),
+            (hex_project::ElementColor::Rose, "rose"),
+        ] {
+            items.push(MenuItem {
+                label,
+                swatch: Some(theme::element_colors(color).accent),
+                checked: current_color == color,
+                action: EditorContextAction::BrowserCollection(CollectionMenuAction::Recolor {
+                    index,
+                    color,
+                }),
+            });
+        }
+        if index > 0 {
+            items.push(MenuItem {
+                label: "move up",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::BrowserCollection(CollectionMenuAction::MoveUp {
+                    index,
+                }),
+            });
+        }
+        if index + 1 < len {
+            items.push(MenuItem {
+                label: "move down",
+                swatch: None,
+                checked: false,
+                action: EditorContextAction::BrowserCollection(CollectionMenuAction::MoveDown {
+                    index,
+                }),
+            });
+        }
+        items.push(MenuItem {
+            label: "rename…",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::BrowserCollection(CollectionMenuAction::BeginRename {
+                index,
+            }),
+        });
+        items.push(MenuItem {
+            label: "delete collection",
+            swatch: None,
+            checked: false,
+            action: EditorContextAction::BrowserCollection(CollectionMenuAction::Delete { index }),
+        });
+        self.context_menu = Some(PopupMenu {
+            scroll: gpui::ScrollHandle::new(),
+            position,
+            icon_grid: None,
+            selected: 0,
+            focus,
+            previous_focus,
+            items,
+        });
+        cx.notify();
+    }
+
+    pub(in crate::editor) fn perform_browser_collection_action(
+        &mut self,
+        action: CollectionMenuAction,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.browser_collection_action_valid(action) {
+            return;
+        }
+        match action {
+            CollectionMenuAction::Recolor { index, color } => {
+                self.recolor_browser_collection(index, color, cx);
+            }
+            CollectionMenuAction::BeginRename { index } => {
+                if let Some(current) = self
+                    .browser
+                    .layout
+                    .collection_name(index)
+                    .map(str::to_owned)
+                {
+                    let input = cx.new(|cx| {
+                        let mut field = browser_input::tag_input(cx);
+                        field.set_text(&current, cx);
+                        field
+                    });
+                    self.browser.layout.collection_rename_input = Some((index, input));
+                }
+            }
+            CollectionMenuAction::MoveUp { index } => {
+                self.reorder_browser_collection(index, index - 1, cx);
+            }
+            CollectionMenuAction::MoveDown { index } => {
+                self.reorder_browser_collection(index, index + 1, cx);
+            }
+            CollectionMenuAction::Delete { index } => {
+                self.delete_browser_collection(index, cx);
+            }
+        }
+        cx.notify();
     }
 
     pub(super) fn open_browser_samples_menu(
