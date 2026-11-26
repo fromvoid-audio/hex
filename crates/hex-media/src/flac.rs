@@ -1225,11 +1225,13 @@ pub const FLAC_DEFAULT_BLOCK_SIZE: usize = 4096;
 /// Pure-Rust streaming RFC 9639 FLAC encoder for bounded control-side export.
 ///
 /// Writes a canonical `fLaC` marker, a 34-byte `STREAMINFO` block with exact
-/// `total_samples`, and variable-blocksize frames (`0xF9` + 36-bit UTF-8 sample
+/// `total_samples`, a bounded RFC 9639 `SEEKTABLE` metadata block (patched in
+/// [`Self::finish`] so re-imported Hex FLAC exports seek in O(1)/bounded frame
+/// steps), and variable-blocksize frames (`0xF9` + 36-bit UTF-8 sample
 /// position) with CRC-8/CRC-16 frame integrity checks. Each subframe picks the
 /// smallest valid encoding among `CONSTANT`, `FIXED` order 1 (Rice2), and
 /// `VERBATIM` so output is always lossless and never expands past verbatim.
-pub struct FlacStreamWriter<W: Write> {
+pub struct FlacStreamWriter<W: Write + Seek> {
     writer: W,
     sample_rate: u32,
     channels: u16,
@@ -1238,13 +1240,29 @@ pub struct FlacStreamWriter<W: Write> {
     total_samples: u64,
     written_samples: u64,
     bytes_written: u64,
+    audio_bytes_written: u64,
+    frames_written: u64,
+    start_pos: u64,
+    seektable_payload_pos: u64,
+    seekpoint_slots: usize,
+    seekpoint_stride_frames: u64,
+    seekpoints: Vec<FlacSeekPoint>,
     left: Vec<i32>,
     right: Vec<i32>,
     frame_buf: Vec<u8>,
 }
 
-impl<W: Write> FlacStreamWriter<W> {
-    /// Start a new FLAC stream with exact known `total_samples`.
+fn sample_in_range(sample: i32, bits_per_sample: u16) -> bool {
+    match bits_per_sample {
+        16 => (i32::from(i16::MIN)..=i32::from(i16::MAX)).contains(&sample),
+        24 => (-(1_i32 << 23)..=((1_i32 << 23) - 1)).contains(&sample),
+        _ => false,
+    }
+}
+
+impl<W: Write + Seek> FlacStreamWriter<W> {
+    /// Start a new FLAC stream with exact known `total_samples` (must be >= 1
+    /// to match `flac::scan`'s contract).
     pub fn new(
         mut writer: W,
         sample_rate: u32,
@@ -1276,10 +1294,23 @@ impl<W: Write> FlacStreamWriter<W> {
             ));
         }
         let block_size = FLAC_DEFAULT_BLOCK_SIZE;
-        let mut header = [0_u8; 42];
+        let total_frames = total_samples.div_ceil(block_size as u64).max(1);
+        let seekpoint_stride_frames = total_frames.div_ceil(MAX_SEEKPOINTS as u64).max(1);
+        let seekpoint_slots = usize::try_from(total_frames.div_ceil(seekpoint_stride_frames))
+            .map_err(|_| ImportError::LimitExceeded("FLAC seektable"))?
+            .clamp(1, MAX_SEEKPOINTS);
+        let seektable_len = seekpoint_slots
+            .checked_mul(18)
+            .ok_or(ImportError::LimitExceeded("FLAC seektable"))?;
+        if seektable_len > 0x00FF_FFFF {
+            return Err(ImportError::LimitExceeded("FLAC seektable"));
+        }
+
+        let start_pos = writer.stream_position()?;
+        let mut header = [0_u8; 46];
         header[0..4].copy_from_slice(b"fLaC");
-        // Last metadata block (0x80) | STREAMINFO (0), length = 34.
-        header[4] = 0x80;
+        // Non-last metadata block (0x00) | STREAMINFO (0), length = 34.
+        header[4] = 0x00;
         header[5] = 0;
         header[6] = 0;
         header[7] = 34;
@@ -1296,8 +1327,30 @@ impl<W: Write> FlacStreamWriter<W> {
         header[21] = (((bps & 0x0F) << 4) as u8) | (((total_samples >> 32) & 0x0F) as u8);
         header[22..26].copy_from_slice(&(total_samples as u32).to_be_bytes());
         // Bytes 26..42 remain zero (MD5 unset).
+        // Last metadata block (0x80) | SEEKTABLE (3), length = seekpoint_slots * 18.
+        header[42] = 0x80 | 3;
+        header[43] = ((seektable_len >> 16) & 0xFF) as u8;
+        header[44] = ((seektable_len >> 8) & 0xFF) as u8;
+        header[45] = (seektable_len & 0xFF) as u8;
         writer.write_all(&header)?;
 
+        let seektable_payload_pos = start_pos
+            .checked_add(header.len() as u64)
+            .ok_or(ImportError::Invalid("FLAC header offset overflow"))?;
+        let placeholder = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        for _ in 0..seekpoint_slots {
+            writer.write_all(&placeholder)?;
+        }
+        let header_bytes = (header.len() as u64)
+            .checked_add(seektable_len as u64)
+            .ok_or(ImportError::Invalid("FLAC header byte count overflow"))?;
+
+        let mut seekpoints = Vec::new();
+        seekpoints
+            .try_reserve_exact(seekpoint_slots)
+            .map_err(|_| ImportError::AllocationFailed)?;
         let mut left = Vec::new();
         left.try_reserve_exact(block_size)
             .map_err(|_| ImportError::AllocationFailed)?;
@@ -1316,7 +1369,14 @@ impl<W: Write> FlacStreamWriter<W> {
             block_size,
             total_samples,
             written_samples: 0,
-            bytes_written: header.len() as u64,
+            bytes_written: header_bytes,
+            audio_bytes_written: 0,
+            frames_written: 0,
+            start_pos,
+            seektable_payload_pos,
+            seekpoint_slots,
+            seekpoint_stride_frames,
+            seekpoints,
             left,
             right,
             frame_buf: Vec::new(),
@@ -1329,6 +1389,8 @@ impl<W: Write> FlacStreamWriter<W> {
     }
 
     /// Write interleaved stereo integer samples (signed 16-bit or 24-bit values).
+    /// Validates every sample against the configured `bits_per_sample` range
+    /// before mutating writer state so out-of-range inputs are rejected cleanly.
     pub fn write_stereo_frames(&mut self, frames: &[[i32; 2]]) -> Result<(), ImportError> {
         if self.channels != 2 {
             return Err(ImportError::Invalid(
@@ -1347,6 +1409,14 @@ impl<W: Write> FlacStreamWriter<W> {
                 "FLAC write exceeds declared STREAMINFO total",
             ));
         }
+        let bps = self.bits_per_sample;
+        for &[l, r] in frames {
+            if !sample_in_range(l, bps) || !sample_in_range(r, bps) {
+                return Err(ImportError::Invalid(
+                    "FLAC sample exceeds configured bit depth",
+                ));
+            }
+        }
         for &[l, r] in frames {
             self.left.push(l);
             self.right.push(r);
@@ -1357,8 +1427,9 @@ impl<W: Write> FlacStreamWriter<W> {
         Ok(())
     }
 
-    /// Flush any remaining buffered samples and verify that exact `total_samples`
-    /// were written, returning the inner writer and final total encoded byte count.
+    /// Flush any remaining buffered samples, finalize the reserved `SEEKTABLE`,
+    /// and verify that exact `total_samples` were written, returning the inner
+    /// writer positioned at EOF and final total encoded byte count.
     pub fn finish(mut self) -> Result<(W, u64), ImportError> {
         if !self.left.is_empty() {
             self.flush_block()?;
@@ -1368,6 +1439,26 @@ impl<W: Write> FlacStreamWriter<W> {
                 "FLAC stream finished before declared STREAMINFO total",
             ));
         }
+        let end_pos = self
+            .start_pos
+            .checked_add(self.bytes_written)
+            .ok_or(ImportError::Invalid("FLAC end offset overflow"))?;
+        self.writer
+            .seek(SeekFrom::Start(self.seektable_payload_pos))?;
+        let mut entry = [0_u8; 18];
+        for sp in &self.seekpoints {
+            entry[0..8].copy_from_slice(&sp.sample_number.to_be_bytes());
+            entry[8..16].copy_from_slice(&sp.stream_offset.to_be_bytes());
+            entry[16..18].copy_from_slice(&sp.frame_samples.to_be_bytes());
+            self.writer.write_all(&entry)?;
+        }
+        let placeholder = [
+            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        for _ in self.seekpoints.len()..self.seekpoint_slots {
+            self.writer.write_all(&placeholder)?;
+        }
+        self.writer.seek(SeekFrom::Start(end_pos))?;
         Ok((self.writer, self.bytes_written))
     }
 
@@ -1377,6 +1468,7 @@ impl<W: Write> FlacStreamWriter<W> {
             return Ok(());
         }
         let sample_index = self.written_samples;
+        let frame_offset = self.audio_bytes_written;
         self.frame_buf.clear();
         encode_flac_frame_into(
             &mut self.frame_buf,
@@ -1392,14 +1484,34 @@ impl<W: Write> FlacStreamWriter<W> {
             },
         )?;
         self.writer.write_all(&self.frame_buf)?;
+        if self
+            .frames_written
+            .is_multiple_of(self.seekpoint_stride_frames)
+            && self.seekpoints.len() < self.seekpoint_slots
+        {
+            self.seekpoints.push(FlacSeekPoint {
+                sample_number: sample_index,
+                stream_offset: frame_offset,
+                frame_samples: bs as u16,
+            });
+        }
+        let frame_len = self.frame_buf.len() as u64;
+        self.audio_bytes_written = self
+            .audio_bytes_written
+            .checked_add(frame_len)
+            .ok_or(ImportError::Invalid("FLAC byte count overflow"))?;
         self.bytes_written = self
             .bytes_written
-            .checked_add(self.frame_buf.len() as u64)
+            .checked_add(frame_len)
             .ok_or(ImportError::Invalid("FLAC byte count overflow"))?;
         self.written_samples = self
             .written_samples
             .checked_add(bs as u64)
             .ok_or(ImportError::Invalid("FLAC sample count overflow"))?;
+        self.frames_written = self
+            .frames_written
+            .checked_add(1)
+            .ok_or(ImportError::Invalid("FLAC frame count overflow"))?;
         self.left.clear();
         self.right.clear();
         Ok(())
@@ -1913,13 +2025,14 @@ mod writer_tests {
                     pcm.push([s, -s]);
                 }
             }
-            let mut bytes = Vec::new();
+            let mut bytes = Cursor::new(Vec::new());
             let mut writer =
                 FlacStreamWriter::new(&mut bytes, 48_000, 2, bps, total as u64).unwrap();
             for chunk in pcm.chunks(257) {
                 writer.write_stereo_frames(chunk).unwrap();
             }
             let (_, written_bytes) = writer.finish().unwrap();
+            let bytes = bytes.into_inner();
             assert_eq!(written_bytes, bytes.len() as u64);
 
             let decoded = decode_audio(&bytes, Limits::new(4 * 1024 * 1024, 16_384)).unwrap();
@@ -1937,21 +2050,174 @@ mod writer_tests {
         }
 
         // Small (< 16 samples) stream round-trips cleanly.
-        let mut small = Vec::new();
+        let mut small = Cursor::new(Vec::new());
         let mut w = FlacStreamWriter::new(&mut small, 44_100, 2, 16, 3).unwrap();
         w.write_stereo_frames(&[[1000, -1000], [0, 0], [32_767, -32_767]])
             .unwrap();
         w.finish().unwrap();
+        let small = small.into_inner();
         let decoded = decode_audio(&small, Limits::new(4096, 16)).unwrap();
         assert_eq!(decoded.sample_rate(), 44_100);
         assert_eq!(decoded.frames().len(), 3);
         assert_eq!(decoded.frames()[1], [0.0, 0.0]);
 
         // Invalid parameters are rejected cleanly.
-        assert!(FlacStreamWriter::new(Vec::new(), 1_000, 2, 16, 10).is_err());
-        assert!(FlacStreamWriter::new(Vec::new(), 48_000, 3, 16, 10).is_err());
-        assert!(FlacStreamWriter::new(Vec::new(), 48_000, 2, 32, 10).is_err());
-        assert!(FlacStreamWriter::new(Vec::new(), 48_000, 2, 16, 0).is_err());
+        assert!(FlacStreamWriter::new(Cursor::new(Vec::new()), 1_000, 2, 16, 10).is_err());
+        assert!(FlacStreamWriter::new(Cursor::new(Vec::new()), 48_000, 3, 16, 10).is_err());
+        assert!(FlacStreamWriter::new(Cursor::new(Vec::new()), 48_000, 2, 32, 10).is_err());
+        assert!(FlacStreamWriter::new(Cursor::new(Vec::new()), 48_000, 2, 16, 0).is_err());
+    }
+
+    #[test]
+    fn flac_stream_writer_rejects_out_of_range_samples_and_matches_zero_frame_scan() {
+        // 16-bit bounds: -32768..=32767. Rejects 32768 and -32769 without corrupting state.
+        let mut buf16 = Cursor::new(Vec::new());
+        let mut w16 = FlacStreamWriter::new(&mut buf16, 48_000, 2, 16, 4).unwrap();
+        for bad in [[32_768, 0], [0, -32_769], [100_000, -100_000]] {
+            assert!(matches!(
+                w16.write_stereo_frames(&[bad]),
+                Err(ImportError::Invalid(
+                    "FLAC sample exceeds configured bit depth"
+                ))
+            ));
+        }
+        // After rejecting invalid samples, writing valid extreme 16-bit samples still round-trips.
+        w16.write_stereo_frames(&[[-32_768, 32_767], [0, 0], [32_767, -32_768], [1, -1]])
+            .unwrap();
+        w16.finish().unwrap();
+        let decoded16 = decode_audio(buf16.get_ref(), Limits::new(65_536, 16)).unwrap();
+        assert_eq!(decoded16.frames().len(), 4);
+
+        // 24-bit bounds: -8388608..=8388607. Rejects 8388608 and -8388609.
+        let mut buf24 = Cursor::new(Vec::new());
+        let mut w24 = FlacStreamWriter::new(&mut buf24, 48_000, 2, 24, 2).unwrap();
+        for bad in [[8_388_608, 0], [0, -8_388_609]] {
+            assert!(matches!(
+                w24.write_stereo_frames(&[bad]),
+                Err(ImportError::Invalid(
+                    "FLAC sample exceeds configured bit depth"
+                ))
+            ));
+        }
+        w24.write_stereo_frames(&[[-8_388_608, 8_388_607], [0, 0]])
+            .unwrap();
+        w24.finish().unwrap();
+        let decoded24 = decode_audio(buf24.get_ref(), Limits::new(65_536, 16)).unwrap();
+        assert_eq!(decoded24.frames().len(), 2);
+
+        // 0-frame contract consistency: both FlacStreamWriter::new and flac::scan reject 0-frame FLAC.
+        assert!(matches!(
+            FlacStreamWriter::new(Cursor::new(Vec::new()), 48_000, 2, 16, 0),
+            Err(ImportError::Invalid(
+                "FLAC encoder requires at least one sample"
+            ))
+        ));
+        let mut zero_header = [0_u8; 42];
+        zero_header[0..4].copy_from_slice(b"fLaC");
+        zero_header[4] = 0x80;
+        zero_header[7] = 34;
+        zero_header[8..10].copy_from_slice(&16_u16.to_be_bytes());
+        zero_header[10..12].copy_from_slice(&4096_u16.to_be_bytes());
+        let sr = 48_000_u32;
+        zero_header[18] = (sr >> 12) as u8;
+        zero_header[19] = ((sr >> 4) & 0xFF) as u8;
+        zero_header[20] = (((sr & 0x0F) << 4) | (1 << 1)) as u8;
+        zero_header[21] = (15_u8) << 4;
+        assert!(
+            scan(
+                &mut Cursor::new(&zero_header),
+                zero_header.len() as u64,
+                crate::MAX_RESIDENT_HEADER_COUNT,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn flac_stream_writer_emits_seektable_for_bounded_random_access_seek() {
+        // 10 full 4096-frame blocks + 512 trailing frames = 41,472 frames (11 seekpoints).
+        let total = 10 * FLAC_DEFAULT_BLOCK_SIZE + 512;
+        let mut pcm = Vec::with_capacity(total);
+        for i in 0..total {
+            let l = ((i as f64 * 0.03).sin() * 20_000.0).round() as i32;
+            let r = ((i as f64 * 0.07).cos() * 18_000.0).round() as i32;
+            pcm.push([l, r]);
+        }
+        let mut bytes = Cursor::new(Vec::new());
+        let mut writer = FlacStreamWriter::new(&mut bytes, 48_000, 2, 16, total as u64).unwrap();
+        writer.write_stereo_frames(&pcm).unwrap();
+        let (_, written) = writer.finish().unwrap();
+        let bytes = bytes.into_inner();
+        assert_eq!(written, bytes.len() as u64);
+
+        let mut scan_cursor = Cursor::new(bytes.as_slice());
+        let layout = scan(
+            &mut scan_cursor,
+            bytes.len() as u64,
+            crate::MAX_RESIDENT_HEADER_COUNT,
+        )
+        .unwrap();
+        assert_eq!(layout.seektable.len(), 11);
+        assert_eq!(layout.seektable[0].sample_number, 0);
+        assert_eq!(layout.seektable[0].stream_offset, 0);
+        assert_eq!(
+            layout.seektable[9].sample_number,
+            (9 * FLAC_DEFAULT_BLOCK_SIZE) as u64
+        );
+        assert!(layout.seektable[9].stream_offset > 0);
+        assert_eq!(
+            layout.seektable[10].sample_number,
+            (10 * FLAC_DEFAULT_BLOCK_SIZE) as u64
+        );
+        assert_eq!(layout.seektable[10].frame_samples, 512);
+
+        // Counting reader verifies seeking to frame 38,000 jumps via SEEKTABLE
+        // directly to frame 9 (36,864) instead of reading the preceding 9 frames.
+        struct CountingCursor<'a> {
+            inner: Cursor<&'a [u8]>,
+            bytes_read: usize,
+        }
+        impl Read for CountingCursor<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = self.inner.read(buf)?;
+                self.bytes_read += n;
+                Ok(n)
+            }
+        }
+        impl Seek for CountingCursor<'_> {
+            fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+                self.inner.seek(pos)
+            }
+        }
+        let mut counting = CountingCursor {
+            inner: Cursor::new(bytes.as_slice()),
+            bytes_read: 0,
+        };
+        let mut stream_cursor = FlacStreamCursor::default();
+        let mut out = [[0.0_f32; 2]; 256];
+        let start_frame = 38_000_usize;
+        let decoded = read_window(
+            &mut counting,
+            &layout,
+            &mut stream_cursor,
+            bytes.len() as u64,
+            start_frame as u64,
+            &mut out,
+            || false,
+        )
+        .unwrap();
+        assert_eq!(decoded, out.len());
+        assert!(
+            counting.bytes_read < bytes.len() / 4,
+            "SEEKTABLE jump should read a small fraction of the file (read {} of {} bytes)",
+            counting.bytes_read,
+            bytes.len()
+        );
+        for (offset, &[l, r]) in out.iter().enumerate() {
+            let [el, er] = pcm[start_frame + offset];
+            assert!((l - (el as f32 / 32_768.0)).abs() <= 1e-4);
+            assert!((r - (er as f32 / 32_768.0)).abs() <= 1e-4);
+        }
     }
 
     #[test]
@@ -2052,10 +2318,11 @@ mod writer_tests {
         ));
 
         // Verify scratch buffer reuse across consecutive valid streaming reads.
-        let mut valid = Vec::new();
+        let mut valid = Cursor::new(Vec::new());
         let mut writer = FlacStreamWriter::new(&mut valid, 48_000, 2, 16, 64).unwrap();
         writer.write_stereo_frames(&[[100, -100]; 64]).unwrap();
         writer.finish().unwrap();
+        let valid = valid.into_inner();
         let mut cursor = Cursor::new(valid.as_slice());
         let layout = scan(
             &mut cursor,

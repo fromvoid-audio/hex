@@ -492,6 +492,42 @@ fn nonfinite_float_window_clears_the_entire_verified_output() {
 }
 
 #[test]
+fn verified_flac_read_window_honors_mid_read_cancellation_and_zeros_output() {
+    // 6 blocks (24,576 frames) all fitting within one 64 KiB verified page so
+    // cancellation MUST come from `flac::read_window`'s frame-loop callback
+    // rather than only from raw page switches.
+    let total = 6 * crate::FLAC_DEFAULT_BLOCK_SIZE;
+    let pcm = vec![[1234_i32, -1234_i32]; total];
+    let mut encoded = std::io::Cursor::new(Vec::new());
+    let mut writer =
+        crate::FlacStreamWriter::new(&mut encoded, 48_000, 2, 16, total as u64).unwrap();
+    writer.write_stereo_frames(&pcm).unwrap();
+    writer.finish().unwrap();
+    let bytes = encoded.into_inner();
+    assert!(
+        bytes.len() < crate::VERIFIED_WAV_PAGE_BYTES,
+        "fixture should reside in a single verified raw page"
+    );
+
+    let fixture = TempFile::create(&bytes);
+    let mut reader = VerifiedWavReader::open(fixture.path(), limits(total)).expect("open flac");
+    let mut out = vec![[9.0_f32; 2]; total];
+    let mut checks = 0_usize;
+    let result = reader.read_frames_into_with_cancel(0, &mut out, || {
+        checks += 1;
+        checks >= 4
+    });
+    assert!(
+        matches!(result, Err(ImportError::Cancelled)),
+        "expected Cancelled mid-read, got {result:?}"
+    );
+    assert!(
+        out.iter().all(|frame| *frame == [0.0; 2]),
+        "cancelled verified FLAC read must clear output buffer"
+    );
+}
+
+#[test]
 fn sparse_seventeen_million_frame_file_supports_far_verified_conversion() {
     const FRAME_COUNT: u64 = 17_000_000;
     const DATA_OFFSET: u64 = 44;
