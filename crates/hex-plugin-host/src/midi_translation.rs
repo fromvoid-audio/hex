@@ -247,6 +247,21 @@ impl fmt::Display for MidiTranslationError {
 
 impl std::error::Error for MidiTranslationError {}
 
+// The native SDK expands controller values to 32 bits. The lower half
+// scales by a power of two so the MIDI midpoint lands at exactly 0.5.
+// Above center the fractional bits repeat to reach the inclusive maximum.
+fn normalized_mapped_controller(value: u16, width: u32) -> f64 {
+    let value = u32::from(value);
+    let midpoint = 1 << (width - 1);
+    if value <= midpoint {
+        return f64::from(value) / f64::from(midpoint * 2);
+    }
+    let shift = u32::BITS - width;
+    let fraction = ((value - midpoint) << shift) / (midpoint - 1);
+    let expanded = (value << shift) | fraction.min((1 << shift) - 1);
+    f64::from(expanded) / f64::from(u32::MAX)
+}
+
 /// Fixed-capacity `IMidiMapping` lookup table for zero-allocation translation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MidiControllerMappingTable {
@@ -315,7 +330,7 @@ impl MidiControllerMappingTable {
                 if event.raw_value > 127 {
                     return Err(MidiTranslationError::InvalidValue);
                 }
-                f64::from(event.raw_value) / 127.0
+                normalized_mapped_controller(event.raw_value, 7)
             }
             MidiControllerKind::Aftertouch => {
                 if event.raw_value > 127 {
@@ -327,7 +342,7 @@ impl MidiControllerMappingTable {
                 if event.raw_value > 16_383 {
                     return Err(MidiTranslationError::InvalidValue);
                 }
-                f64::from(event.raw_value) / 16_383.0
+                normalized_mapped_controller(event.raw_value, 14)
             }
         };
         let Some(mapping) = self.entries[..self.len]
@@ -660,22 +675,58 @@ mod tests {
             Err(MidiTranslationError::DuplicateMapping)
         );
 
-        let cc = table
-            .translate(MidiControllerEvent {
-                sample_offset: 17,
-                channel: 0,
-                controller: MidiControllerKind::Cc(1),
-                raw_value: 127,
-            })
-            .unwrap();
-        assert_eq!(
-            cc,
-            TranslationOutcome::Mapped(TranslatedParameterChange {
-                sample_offset: 17,
-                param_id: 1001,
-                normalized: 1.0,
-            })
-        );
+        // Exact results from the pinned VST3 SDK MIDI-to-normalized helpers.
+        for (controller, param_id, values) in [
+            (
+                MidiControllerKind::Cc(1),
+                1001,
+                [
+                    (0, 0.0),
+                    (32, 0.25),
+                    (64, 0.5),
+                    (65, 0.5079365080473797),
+                    (127, 1.0),
+                ],
+            ),
+            (
+                MidiControllerKind::PitchBend,
+                1003,
+                [
+                    (0, 0.0),
+                    (4096, 0.25),
+                    (8192, 0.5),
+                    (8193, 0.5000610427232601),
+                    (16383, 1.0),
+                ],
+            ),
+        ] {
+            for (raw_value, normalized) in values {
+                let event = MidiControllerEvent {
+                    sample_offset: 17,
+                    channel: 0,
+                    controller,
+                    raw_value,
+                };
+                assert_eq!(
+                    table.translate(event),
+                    Ok(TranslationOutcome::Mapped(TranslatedParameterChange {
+                        sample_offset: 17,
+                        param_id,
+                        normalized,
+                    })),
+                    "{controller:?} {raw_value}"
+                );
+            }
+            assert_eq!(
+                table.translate(MidiControllerEvent {
+                    sample_offset: 17,
+                    channel: 0,
+                    controller,
+                    raw_value: values.last().unwrap().0 + 1,
+                }),
+                Err(MidiTranslationError::InvalidValue)
+            );
+        }
 
         let at = table
             .translate(MidiControllerEvent {
@@ -691,23 +742,6 @@ mod tests {
                 sample_offset: 23,
                 param_id: 1002,
                 normalized: 64.0 / 127.0,
-            })
-        );
-
-        let pb = table
-            .translate(MidiControllerEvent {
-                sample_offset: 31,
-                channel: 0,
-                controller: MidiControllerKind::PitchBend,
-                raw_value: 16_383,
-            })
-            .unwrap();
-        assert_eq!(
-            pb,
-            TranslationOutcome::Mapped(TranslatedParameterChange {
-                sample_offset: 31,
-                param_id: 1003,
-                normalized: 1.0,
             })
         );
 
