@@ -1304,7 +1304,8 @@ fn vst3_modulation_maps_only_fresh_continuous_rows_and_keeps_signed_pending_dept
                     body,
                     panel,
                 )
-                .w(px(300.0))
+                // Leave the VST3 row hittable beside the expanded modulator panel.
+                .w(px(640.0))
                 .h(px(360.0))
             })
         }
