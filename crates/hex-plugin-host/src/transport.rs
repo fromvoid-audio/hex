@@ -27,7 +27,7 @@ use std::num::NonZeroU64;
 use std::sync::{
     Arc,
     atomic::{
-        AtomicBool, AtomicU8, AtomicU64,
+        AtomicBool, AtomicU8, AtomicU32, AtomicU64,
         Ordering::{AcqRel, Acquire, Relaxed, Release},
     },
 };
@@ -378,7 +378,7 @@ fn channel_with_policy(
     let first_reply_sequence = completed_blocks.checked_add(2).ok_or(Fault::Exhausted)?;
     let (request_tx, request_rx) = RingBuffer::new(QUEUE_CAPACITY);
     let (reply_tx, reply_rx) = RingBuffer::new(QUEUE_CAPACITY);
-    let revoked = Arc::new(Revocation::new(binding));
+    let revoked = Arc::new(Revocation::new(binding)?);
     let empty = Block::empty(binding, quantum);
     Ok((
         Control {

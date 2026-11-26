@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 mod conversion;
 pub use conversion::{ParameterConversion, ParameterConversionResult, ParameterConversionStatus};
 
-pub const PARAMETER_PAGE_SIZE: usize = 4;
+pub const PARAMETER_PAGE_SIZE: usize = 64;
 /// Inventory bound shared with the isolated native controller host. A single
 /// page and the processing edit/feedback queues keep their own fixed limits.
 pub const MAX_CONTROLLER_PARAMETERS: u16 = 8_192;
@@ -158,7 +158,7 @@ impl ParameterPageQuery {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ParameterPage {
     pub revision: u64,
     pub total: u16,
@@ -169,6 +169,18 @@ pub struct ParameterPage {
     pub descriptor_signature: [u8; 32],
     values: [ControllerParameter; PARAMETER_PAGE_SIZE],
     len: u8,
+}
+impl Default for ParameterPage {
+    fn default() -> Self {
+        Self {
+            revision: 0,
+            total: 0,
+            first: 0,
+            descriptor_signature: [0; 32],
+            values: [ControllerParameter::default(); PARAMETER_PAGE_SIZE],
+            len: 0,
+        }
+    }
 }
 impl ParameterPage {
     pub fn as_slice(&self) -> &[ControllerParameter] {

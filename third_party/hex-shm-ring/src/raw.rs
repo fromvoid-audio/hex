@@ -29,25 +29,32 @@ pub(crate) const REQ_SLOTS_OFFSET: usize = HEADER_BYTES;
 pub(crate) const REP_SLOTS_OFFSET: usize = HEADER_BYTES + SLOT_COUNT * SLOT_CAPACITY;
 pub(crate) const REGION_BYTES: usize = HEADER_BYTES + 2 * SLOT_COUNT * SLOT_CAPACITY;
 
+pub(crate) const CACHE_LINE_BYTES: usize = 128;
+
 // Header field byte offsets (must match crates/hex-plugin-scan/native/macos_instance_shm.hpp).
+// Line 0 (0..128): immutable header validated on attach.
 const OFF_MAGIC: usize = 0;
 const OFF_VERSION: usize = 8;
 const OFF_SLOT_COUNT: usize = 12;
 const OFF_SLOT_CAPACITY: usize = 16;
 const OFF_RESERVED: usize = 20;
 
-// Cache line 1 (64..128): Host -> Worker request ring.
-const OFF_REQ_WRITE_SEQ: usize = 64;
-const OFF_REQ_READ_SEQ: usize = 72;
-const OFF_REQ_SLOT_LEN: usize = 80;
+// Line 1 (128..256): Host-written request producer cache line (128 B Apple Silicon).
+pub(crate) const OFF_REQ_WRITE_SEQ: usize = 128;
+pub(crate) const OFF_REQ_SLOT_LEN: usize = 136;
 
-// Cache line 2 (128..192): Worker -> Host reply ring.
-const OFF_REP_WRITE_SEQ: usize = 128;
-const OFF_REP_READ_SEQ: usize = 136;
-const OFF_REP_SLOT_LEN: usize = 144;
+// Line 2 (256..384): Worker-written request consumer cache line (128 B Apple Silicon).
+pub(crate) const OFF_REQ_READ_SEQ: usize = 256;
 
-// Cache line 3 (192..256): Shared fault indicator.
-const OFF_FAULT_FLAG: usize = 192;
+// Line 3 (384..512): Worker-written reply producer cache line (128 B Apple Silicon).
+pub(crate) const OFF_REP_WRITE_SEQ: usize = 384;
+pub(crate) const OFF_REP_SLOT_LEN: usize = 392;
+
+// Line 4 (512..640): Host-written reply consumer cache line (128 B Apple Silicon).
+pub(crate) const OFF_REP_READ_SEQ: usize = 512;
+
+// Line 5 (640..768): Shared fault indicator cache line (128 B Apple Silicon).
+pub(crate) const OFF_FAULT_FLAG: usize = 640;
 
 const _: () = {
     assert!(HEADER_BYTES.is_multiple_of(8));
@@ -55,6 +62,16 @@ const _: () = {
     assert!(REQ_SLOTS_OFFSET.is_multiple_of(8));
     assert!(REP_SLOTS_OFFSET.is_multiple_of(8));
     assert!(REGION_BYTES == 135_168);
+    assert!(OFF_REQ_WRITE_SEQ.is_multiple_of(CACHE_LINE_BYTES));
+    assert!(OFF_REQ_READ_SEQ.is_multiple_of(CACHE_LINE_BYTES));
+    assert!(OFF_REP_WRITE_SEQ.is_multiple_of(CACHE_LINE_BYTES));
+    assert!(OFF_REP_READ_SEQ.is_multiple_of(CACHE_LINE_BYTES));
+    assert!(OFF_FAULT_FLAG.is_multiple_of(CACHE_LINE_BYTES));
+    assert!(OFF_REQ_WRITE_SEQ / CACHE_LINE_BYTES != OFF_REQ_READ_SEQ / CACHE_LINE_BYTES);
+    assert!(OFF_REP_WRITE_SEQ / CACHE_LINE_BYTES != OFF_REP_READ_SEQ / CACHE_LINE_BYTES);
+    assert!(OFF_REQ_SLOT_LEN + SLOT_COUNT * 4 <= OFF_REQ_READ_SEQ);
+    assert!(OFF_REP_SLOT_LEN + SLOT_COUNT * 4 <= OFF_REP_READ_SEQ);
+    assert!(OFF_FAULT_FLAG + 4 <= HEADER_BYTES);
 };
 
 static SHM_COUNTER: AtomicU64 = AtomicU64::new(1);

@@ -46,10 +46,13 @@ pub use flush::{MAX_EDITOR_FLUSH_PARAMETERS, guarded_flush_request, guarded_flus
 
 pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
+/// Bounded wire extent for one 64-parameter controller metadata page (`HXVIMD03`).
+pub const PARAMETER_PAGE_LIMIT: usize = 131_072;
 pub const PACKET_LIMIT: usize = 12 + hex_plugin_state::MAX_ENVELOPE_BYTES + 166;
 pub(crate) fn control_limit(magic: &[u8]) -> usize {
     let prefix = match magic {
         b"HXVICF03" => return CONFIG_LIMIT,
+        b"HXVIMD03" => return PARAMETER_PAGE_LIMIT,
         b"HXVIST02" => 39,
         b"HXVIFA04" => 140,
         b"HXVIQF03" => 156,

@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <fcntl.h>
 #include <mach/mach.h>
@@ -558,7 +559,8 @@ int main(int argc,char** argv) {
             enum PageStage {PageIdle,PageFeedbackPending,PageRequested,PageComplete,PageFailed};
             std::atomic<PageStage> page_stage{PageIdle};
             hex_instance::ControllerQuery page_query{};
-            hex_instance::ControllerParameterPage parameter_page{};
+            auto parameter_page_storage=std::make_unique<hex_instance::ControllerParameterPage>();
+            auto& parameter_page=*parameter_page_storage;
             hex_instance::EditorState editor_state=hex_instance::EditorState::Closed;
             bool editor_edits_sealed=false;
             bool editor_admission_changed=false;

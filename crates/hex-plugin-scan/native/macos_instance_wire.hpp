@@ -97,6 +97,7 @@ inline Reader configuration(int fd) {
 }
 inline bool send(int fd,const char* magic,const Bytes& body) {
     size_t limit=8192;
+    if(!std::memcmp(magic,"HXVIMD03",8)) limit=131072;
     if(!std::memcmp(magic,"HXVIQF03",8)) limit=156+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIAR02",8)) limit=164+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIRR03",8)) limit=166+hex_instance::StateStream::envelope_capacity;
