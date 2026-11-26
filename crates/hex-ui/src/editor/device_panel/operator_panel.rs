@@ -235,7 +235,14 @@ pub(super) fn render_body(
         detail = detail.child(control);
     }
     let preview = preview::render(view, cx, device, device_view);
-    crate::device_composition::three_pane(left, detail, preview)
+    let performance = performance_column(view, cx, device, identity, parameters);
+    let right = div()
+        .flex()
+        .h_full()
+        .flex_shrink_0()
+        .child(preview)
+        .child(performance);
+    crate::device_composition::three_pane(left, detail, right)
         .tab_group()
         .id(ElementId::Name(
             format!("operator-body-{}", device.value()).into(),
@@ -260,6 +267,54 @@ pub(super) fn render_body(
                 }
             }),
         )
+}
+
+fn performance_column(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameters: &[NativeDeviceParameterView],
+) -> Stateful<Div> {
+    let mut column = hex_widgets::device_rail(super::device_layout_style())
+        .id(ElementId::Name(
+            format!("operator-performance-column-{}", device.value()).into(),
+        ))
+        .debug_selector(move || format!("operator-performance-column-{}", device.value()))
+        .w(px(
+            crate::device_composition::VECTOR_PERFORMANCE_COLUMN_WIDTH,
+        ))
+        .flex_shrink_0()
+        .h_full()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_between()
+        .py(px(4.0))
+        .pl(px(2.0));
+    for (parameter, label, codec) in [
+        (617, "time", None),
+        (618, "tone", None),
+        (619, "vol", None),
+        (
+            605,
+            "pan",
+            Some(super::numeric_display::NumericDisplayCodec::Pan),
+        ),
+    ] {
+        column = column.child(compact_control_with_codec(
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            id(parameter),
+            ControlPresentation::MicroDial,
+            Some(label),
+            codec,
+        ));
+    }
+    column
 }
 
 fn page_tabs(

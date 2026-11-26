@@ -15,21 +15,23 @@ pub const FILTER_RESONANCE: ParameterId =
     ParameterId::from_static(crate::operator_filter::FIRST + 5);
 pub const FILTER_MORPH: ParameterId = ParameterId::from_static(crate::operator_filter::FIRST + 6);
 
-pub(super) const TARGET_COUNT: usize = 32;
-pub(super) const TIME_IDX: usize = 18;
-pub(super) const TONE_IDX: usize = 19;
-pub(super) const VOLUME_IDX: usize = 20;
-pub(super) const TRANSPOSE_IDX: usize = 21;
-pub(super) const SPREAD_IDX: usize = 22;
-pub(super) const GLIDE_TIME_IDX: usize = 23;
-pub(super) const PITCH_ENV_AMOUNT_IDX: usize = 24;
-pub(super) const FILTER_ENV_AMOUNT_IDX: usize = 25;
-pub(super) const SHAPER_DRIVE_IDX: usize = 26;
-pub(super) const SHAPER_DRY_WET_IDX: usize = 27;
-pub(super) const FILTER_DRIVE_IDX: usize = 28;
-pub(super) const FILTER_FREQ_IDX: usize = 29;
-pub(super) const FILTER_RES_IDX: usize = 30;
-pub(super) const FILTER_MORPH_IDX: usize = 31;
+pub(super) const TARGET_COUNT: usize = 33;
+pub(super) const PAN_IDX: usize = 14;
+pub(super) const FINE_OFFSET_BASE_IDX: usize = 15;
+pub(super) const TIME_IDX: usize = 19;
+pub(super) const TONE_IDX: usize = 20;
+pub(super) const VOLUME_IDX: usize = 21;
+pub(super) const TRANSPOSE_IDX: usize = 22;
+pub(super) const SPREAD_IDX: usize = 23;
+pub(super) const GLIDE_TIME_IDX: usize = 24;
+pub(super) const PITCH_ENV_AMOUNT_IDX: usize = 25;
+pub(super) const FILTER_ENV_AMOUNT_IDX: usize = 26;
+pub(super) const SHAPER_DRIVE_IDX: usize = 27;
+pub(super) const SHAPER_DRY_WET_IDX: usize = 28;
+pub(super) const FILTER_DRIVE_IDX: usize = 29;
+pub(super) const FILTER_FREQ_IDX: usize = 30;
+pub(super) const FILTER_RES_IDX: usize = 31;
+pub(super) const FILTER_MORPH_IDX: usize = 32;
 
 pub(super) const TARGET_IDS: [ParameterId; TARGET_COUNT] = [
     parameter::oscillator_ratio(1), // 1
@@ -46,6 +48,7 @@ pub(super) const TARGET_IDS: [ParameterId; TARGET_COUNT] = [
     parameter::feedback(4),         // 81
     parameter::LFO_RATE,            // 85
     parameter::LFO_AMOUNT,          // 87
+    parameter::PAN,                 // 605
     parameter::fine_offset(1),      // 609
     parameter::fine_offset(2),      // 610
     parameter::fine_offset(3),      // 611
@@ -142,6 +145,7 @@ pub(super) fn base_target_values(settings: &OperatorSettings) -> [f32; TARGET_CO
         settings.feedback[3],
         settings.lfo.rate() as f32,
         (settings.lfo.amount() * 100.0) as f32,
+        settings.global.pan,
         settings.fine.values()[0],
         settings.fine.values()[1],
         settings.fine.values()[2],
