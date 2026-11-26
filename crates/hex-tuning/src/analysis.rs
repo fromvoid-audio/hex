@@ -16,12 +16,12 @@ pub struct Coordinates {
 }
 
 /// Pair, note, and scale metrics for one scale snapshot.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Analysis {
     /// Symmetric harmonic simplicity matrix.
-    pub pair_fit: [[f32; MAX_DEGREES]; MAX_DEGREES],
+    pub pair_fit: Box<[[f32; MAX_DEGREES]; MAX_DEGREES]>,
     /// Symmetric spectral interaction matrix.
-    pub pair_energy: [[f32; MAX_DEGREES]; MAX_DEGREES],
+    pub pair_energy: Box<[[f32; MAX_DEGREES]; MAX_DEGREES]>,
     /// Mean fit of each degree to every other degree.
     pub note_cohesion: [f32; MAX_DEGREES],
     /// Mean spectral interaction of each degree.
@@ -36,8 +36,8 @@ impl Analysis {
     /// Analyze all active notes in the scale.
     pub fn new(scale: Scale) -> Self {
         let mut result = Self {
-            pair_fit: [[0.0; MAX_DEGREES]; MAX_DEGREES],
-            pair_energy: [[0.0; MAX_DEGREES]; MAX_DEGREES],
+            pair_fit: Box::new([[0.0; MAX_DEGREES]; MAX_DEGREES]),
+            pair_energy: Box::new([[0.0; MAX_DEGREES]; MAX_DEGREES]),
             note_cohesion: [0.0; MAX_DEGREES],
             note_energy: [0.0; MAX_DEGREES],
             root_fit: [0.0; MAX_DEGREES],
@@ -204,6 +204,14 @@ mod tests {
         let exact = 1200.0 * (3.0_f32 / 2.0).log2();
         assert!(pair_fit(exact) > pair_fit(exact + 24.0));
         assert!(pair_fit(exact) > pair_fit(exact - 24.0));
+    }
+
+    #[test]
+    fn analysis_is_compact_on_stack() {
+        assert!(
+            std::mem::size_of::<Analysis>() < 1024,
+            "Analysis matrices should stay heap-allocated to avoid large stack copies"
+        );
     }
 
     #[test]
