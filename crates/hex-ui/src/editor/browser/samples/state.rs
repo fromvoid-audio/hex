@@ -150,6 +150,10 @@ impl SampleBrowser {
         *self.visible.borrow_mut() = None;
     }
 
+    pub(in crate::editor::browser) fn invalidate_visible(&self) {
+        *self.visible.borrow_mut() = None;
+    }
+
     pub(in crate::editor::browser) fn tag_groups_for_query(&self) -> Vec<Vec<String>> {
         self.active_tag_groups
             .iter()

@@ -42,13 +42,21 @@ const TAG_GROUPS: [(&str, &[&str]); 6] = [
     ("devices", &["instrument", "audio effect", "midi effect"]),
 ];
 
+const MINI_TAGS_DEFAULT_HEIGHT: f32 = 26.0;
+const MINI_TAGS_MAX_HEIGHT: f32 = 140.0;
+
 pub(super) struct BrowserLayout {
     sidebar_width: f32,
     pub(super) sidebar_drag: Option<(f32, f32, bool)>,
+    pub(super) mini_tags_height: f32,
+    pub(super) mini_tags_drag: Option<(f32, f32)>,
     tags_visible: bool,
     editor_visible: bool,
     settings_visible: bool,
     group_open: [bool; 6],
+    editor_group_open: [bool; 6],
+    mini_tag_input: Option<gpui::Entity<TextInput>>,
+    mini_tag_error: Option<String>,
     visible: [bool; 5],
     icons: [usize; 5],
 }
@@ -58,10 +66,15 @@ impl Default for BrowserLayout {
         Self {
             sidebar_width: 124.0,
             sidebar_drag: None,
+            mini_tags_height: MINI_TAGS_DEFAULT_HEIGHT,
+            mini_tags_drag: None,
             tags_visible: true,
             editor_visible: false,
             settings_visible: false,
             group_open: [true, true, false, false, false, false],
+            editor_group_open: [true; 6],
+            mini_tag_input: None,
+            mini_tag_error: None,
             visible: [true; 5],
             icons: [0, 1, 2, 6, 3],
         }
@@ -69,6 +82,24 @@ impl Default for BrowserLayout {
 }
 
 impl BrowserLayout {
+    pub(super) fn begin_mini_tags_resize(&mut self, y: f32, initial: f32) {
+        self.mini_tags_drag = Some((y, initial));
+    }
+
+    pub(super) fn update_mini_tags_resize(&mut self, y: f32, window_height: f32) {
+        if let Some((start_y, initial)) = self.mini_tags_drag {
+            let max_height = if window_height.is_finite() && window_height > 260.0 {
+                MINI_TAGS_MAX_HEIGHT.min(window_height * 0.35)
+            } else {
+                MINI_TAGS_MAX_HEIGHT
+            }
+            .max(MINI_TAGS_DEFAULT_HEIGHT);
+            // Dragging upward (smaller y) grows the mini tag strip upward into results.
+            let next = (initial + (start_y - y)).clamp(MINI_TAGS_DEFAULT_HEIGHT, max_height);
+            self.mini_tags_height = next;
+        }
+    }
+
     pub(super) fn begin_sidebar_resize(&mut self, x: f32, initial: f32) {
         self.sidebar_drag = Some((x, initial, initial == PICKER_MIN_WIDTH));
     }
@@ -355,14 +386,6 @@ fn browser_heading(value: &str) -> Div {
 }
 
 // Disabled controls reserve the requested widgets without implying saved tags/collections.
-fn browser_pending(value: &str) -> Div {
-    browser_caption(value)
-        .px_1()
-        .py(px(2.0))
-        .bg(rgb(theme::color(theme::PaletteRole::Hover)))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-}
-
 impl EditorView {
     fn browser_history_arrow(&self, forward: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let enabled = if forward {
@@ -1131,10 +1154,30 @@ impl EditorView {
         div().child(tags)
     }
 
+    fn browser_tag_target_sample(&self, cx: &App) -> Option<PathBuf> {
+        if self.browser.section == BrowserSection::Instruments {
+            return None;
+        }
+        self.browser_selected_entry(cx)
+            .filter(|entry| entry.kind == EntryKind::WaveAudio)
+            .map(|entry| entry.path)
+    }
+
     pub(super) fn browser_tag_editor(&self, width: f32, cx: &mut Context<Self>) -> Option<Div> {
         if !self.browser.layout.editor_visible {
             return None;
         }
+        let target_path = self.browser_tag_target_sample(cx);
+        let assigned_tags: std::collections::BTreeSet<String> = target_path
+            .as_deref()
+            .and_then(|path| self.browser.samples.catalog.tags_for(path))
+            .cloned()
+            .unwrap_or_default();
+        let header_status = if target_path.is_some() {
+            format!("{} assigned", assigned_tags.len())
+        } else {
+            "select a sample to edit tags".into()
+        };
         let mut editor = div()
             .id("browser-tag-editor")
             .w(px(self.browser.layout.editor_width(width)))
@@ -1163,7 +1206,7 @@ impl EditorView {
                         cx,
                     )),
             )
-            .child(browser_heading("assignment pending"))
+            .child(browser_heading(&header_status))
             .child(
                 browser_caption(self.browser_selected_label(cx))
                     .px_2()
@@ -1172,17 +1215,125 @@ impl EditorView {
             );
         let mut groups = div()
             .id("browser-tag-editor-groups")
+            .flex_1()
             .min_h_0()
             .overflow_y_scroll();
-        for (name, values) in TAG_GROUPS {
-            groups = groups.child(browser_divider().child(browser_heading(name)).children(
-                values.iter().map(|value| {
-                    browser_caption(format!("□ {value}"))
+        for (group_idx, (name, values)) in TAG_GROUPS.into_iter().enumerate() {
+            let open = self.browser.layout.editor_group_open[group_idx];
+            let mut section = browser_divider().child(
+                div()
+                    .id(("browser-tag-editor-group", group_idx))
+                    .cursor_pointer()
+                    .px_2()
+                    .py(px(2.0))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, _, cx| {
+                            view.browser.layout.editor_group_open[group_idx] =
+                                !view.browser.layout.editor_group_open[group_idx];
+                            cx.notify();
+                        }),
+                    )
+                    .child(browser_caption(format!(
+                        "{name} {}",
+                        if open { "▾" } else { "▸" }
+                    ))),
+            );
+            if open {
+                for (val_idx, &value) in values.iter().enumerate() {
+                    let checked = assigned_tags.contains(value);
+                    let path_for_click = target_path.clone();
+                    let label = format!("{} {value}", if checked { "☑" } else { "☐" });
+                    let enabled = path_for_click.is_some();
+                    section = section.child(
+                        div()
+                            .id(("browser-tag-editor-row", group_idx * 32 + val_idx))
+                            .debug_selector(move || {
+                                format!("browser-tag-editor-toggle-{group_idx}-{value}")
+                            })
+                            .px_2()
+                            .py(px(2.0))
+                            .when(enabled, |row| {
+                                row.cursor_pointer()
+                                    .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+                            })
+                            .text_xs()
+                            .text_color(rgb(theme::color(if checked {
+                                theme::PaletteRole::Secondary
+                            } else if enabled {
+                                theme::PaletteRole::Text
+                            } else {
+                                theme::PaletteRole::Muted
+                            })))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |view, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    if let Some(ref path) = path_for_click
+                                        && let Err(err) = view.toggle_sample_tag(path, value, cx)
+                                    {
+                                        view.browser.layout.mini_tag_error = Some(err.into());
+                                    }
+                                    cx.notify();
+                                }),
+                            )
+                            .child(theme::text(label)),
+                    );
+                }
+            }
+            groups = groups.child(section);
+        }
+        // Custom tags not covered by preset groups.
+        let preset: std::collections::BTreeSet<&str> = TAG_GROUPS
+            .iter()
+            .flat_map(|(_, vals)| vals.iter().copied())
+            .collect();
+        let custom_tags: Vec<String> = self
+            .browser
+            .samples
+            .catalog
+            .all_tags()
+            .into_iter()
+            .filter(|tag| !preset.contains(tag.as_str()))
+            .collect();
+        if !custom_tags.is_empty() {
+            let mut custom = browser_divider().child(browser_heading("custom"));
+            for (idx, tag) in custom_tags.into_iter().enumerate() {
+                let checked = assigned_tags.contains(&tag);
+                let path_for_click = target_path.clone();
+                let label = format!("{} {tag}", if checked { "☑" } else { "☐" });
+                let tag_click = tag.clone();
+                custom = custom.child(
+                    div()
+                        .id(("browser-tag-editor-custom", idx))
+                        .debug_selector(move || format!("browser-tag-editor-custom-{tag}"))
                         .px_2()
-                        .py_1()
-                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                }),
-            ));
+                        .py(px(2.0))
+                        .cursor_pointer()
+                        .text_xs()
+                        .text_color(rgb(theme::color(if checked {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Text
+                        })))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |view, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                if let Some(ref path) = path_for_click
+                                    && let Err(err) = view.toggle_sample_tag(path, &tag_click, cx)
+                                {
+                                    view.browser.layout.mini_tag_error = Some(err.into());
+                                }
+                                cx.notify();
+                            }),
+                        )
+                        .child(theme::text(label)),
+                );
+            }
+            groups = groups.child(custom);
         }
         editor = editor.child(groups);
         Some(div().flex().flex_shrink_0().min_h_0().child(editor))
@@ -1225,8 +1376,177 @@ impl EditorView {
         } else {
             self.browser_selected_entry(cx)
         };
+        let target_path = self.browser_tag_target_sample(cx);
+        let assigned_tags: Vec<String> = target_path
+            .as_deref()
+            .and_then(|path| self.browser.samples.catalog.tags_for(path))
+            .map(|set| set.iter().cloned().collect())
+            .unwrap_or_default();
+        let mini_height = self.browser.layout.mini_tags_height;
+        let resize_entity = cx.entity();
+        let resize_handle = div()
+            .id("browser-mini-tags-resize")
+            .debug_selector(|| "browser-mini-tags-resize".to_owned())
+            .absolute()
+            .top(px(-2.0))
+            .left_0()
+            .right_0()
+            .h(px(4.0))
+            .cursor_row_resize()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    let initial = view.browser.layout.mini_tags_height;
+                    view.begin_browser_resize(
+                        super::resize::Divider::MiniTags,
+                        event,
+                        initial,
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, (), window, cx| {
+                        resize_entity.read(cx).renew_browser_resize(
+                            super::resize::Divider::MiniTags,
+                            window,
+                            resize_entity.entity_id(),
+                        );
+                    },
+                )
+                .size_full(),
+            );
+
+        let mut chips = div()
+            .id("browser-mini-tags-chips")
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .overflow_y_scroll()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1();
+        for (idx, tag) in assigned_tags.into_iter().enumerate() {
+            let path_for_remove = target_path.clone();
+            let tag_remove = tag.clone();
+            let selector_tag = tag.clone();
+            chips = chips.child(
+                div()
+                    .id(("browser-mini-tag", idx))
+                    .debug_selector(move || format!("browser-mini-tag-remove-{selector_tag}"))
+                    .cursor_pointer()
+                    .px_1()
+                    .rounded(px(2.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            if let Some(ref path) = path_for_remove {
+                                view.remove_sample_tag(path, &tag_remove, cx);
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child(theme::text(format!("{tag} ×"))),
+            );
+        }
+        if let Some(input) = self.browser.layout.mini_tag_input.clone() {
+            let path_for_commit = target_path.clone();
+            let input_for_keys = input.clone();
+            chips = chips.child(
+                div()
+                    .id("browser-mini-tag-input")
+                    .debug_selector(|| "browser-mini-tag-input".to_owned())
+                    .w(px(72.0))
+                    .on_key_down(cx.listener(move |view, event: &gpui::KeyDownEvent, _, cx| {
+                        match event.keystroke.key.as_str() {
+                            "enter" => {
+                                let raw = input_for_keys.read(cx).text().to_owned();
+                                if let Some(ref path) = path_for_commit {
+                                    match view.add_sample_tag(path, &raw, cx) {
+                                        Ok(_) => {
+                                            view.browser.layout.mini_tag_error = None;
+                                            view.browser.layout.mini_tag_input = None;
+                                        }
+                                        Err(err) => {
+                                            view.browser.layout.mini_tag_error = Some(err.into());
+                                        }
+                                    }
+                                } else {
+                                    view.browser.layout.mini_tag_input = None;
+                                }
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                            "escape" => {
+                                view.browser.layout.mini_tag_input = None;
+                                view.browser.layout.mini_tag_error = None;
+                                cx.stop_propagation();
+                                cx.notify();
+                            }
+                            _ => {}
+                        }
+                    }))
+                    .child(input),
+            );
+        } else {
+            let can_add = target_path.is_some();
+            chips = chips.child(
+                div()
+                    .id("browser-mini-tag-add")
+                    .debug_selector(|| "browser-mini-tag-add".to_owned())
+                    .whitespace_nowrap()
+                    .flex_shrink_0()
+                    .px_1()
+                    .rounded(px(2.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Background)))
+                    .border_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .text_xs()
+                    .text_color(rgb(theme::color(if can_add {
+                        theme::PaletteRole::Text
+                    } else {
+                        theme::PaletteRole::Muted
+                    })))
+                    .when(can_add, |btn| btn.cursor_pointer())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |view, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            if !can_add {
+                                return;
+                            }
+                            let input = cx.new(browser_input::tag_input);
+                            let focus = input.read(cx).focus_handle().clone();
+                            view.browser.layout.mini_tag_input = Some(input);
+                            view.browser.layout.mini_tag_error = None;
+                            focus.focus(window);
+                            cx.notify();
+                        }),
+                    )
+                    .child(theme::text("add…")),
+            );
+        }
+        if let Some(ref err) = self.browser.layout.mini_tag_error {
+            chips = chips.child(
+                browser_caption(err).text_color(rgb(theme::color(theme::PaletteRole::Primary))),
+            );
+        }
+
         browser_divider()
-            .h(px(50.0))
+            .h(px(mini_height + 24.0))
             .flex_shrink_0()
             .min_w_0()
             .overflow_hidden()
@@ -1236,17 +1556,17 @@ impl EditorView {
             .debug_selector(|| "browser-selection-preview".to_owned())
             .child(
                 browser_divider()
-                    .h(px(26.0))
+                    .relative()
+                    .h(px(mini_height))
                     .flex_shrink_0()
                     .min_w_0()
-                    .overflow_hidden()
                     .px_1()
                     .flex()
                     .items_center()
                     .gap_1()
+                    .child(resize_handle)
                     .child(browser_caption("tags:").whitespace_nowrap().flex_shrink_0())
-                    .child(browser_pending("add…").whitespace_nowrap().flex_shrink_0())
-                    .child(div().flex_1().min_w_0())
+                    .child(chips)
                     .child(self.browser_icon(
                         "⋯",
                         "show or hide tag editor",

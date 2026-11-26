@@ -235,6 +235,133 @@ impl EditorView {
         changed
     }
 
+    pub(super) fn persist_sample_catalog(&mut self, cx: &mut Context<Self>) {
+        let Some(database) = self
+            .browser
+            .preferences_path
+            .as_ref()
+            .map(|path| path.with_extension("samples-v1.db"))
+        else {
+            return;
+        };
+        let snapshot = self.browser.samples.catalog.clone();
+        #[cfg(test)]
+        let test_environment = Arc::clone(&self.test_environment);
+        let this = cx.entity().downgrade();
+        cx.spawn(async move |_, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    snapshot.save(&database)
+                })
+                .await;
+            if let Err(error) = result {
+                let _ = this.update(cx, |view, cx| {
+                    view.browser.samples.status = Some(format!(
+                        "could not save tag changes · {}",
+                        hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+                    ));
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    pub(super) fn add_sample_tag(
+        &mut self,
+        path: &std::path::Path,
+        tag: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, &'static str> {
+        let changed = self.browser.samples.catalog.add_tag(path, tag)?;
+        if changed {
+            self.browser.samples.invalidate_visible();
+            self.browser.samples.status = None;
+            self.persist_sample_catalog(cx);
+        }
+        Ok(changed)
+    }
+
+    pub(super) fn remove_sample_tag(
+        &mut self,
+        path: &std::path::Path,
+        tag: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let changed = self.browser.samples.catalog.remove_tag(path, tag);
+        if changed {
+            self.browser.samples.invalidate_visible();
+            self.browser.samples.status = None;
+            self.persist_sample_catalog(cx);
+        }
+        changed
+    }
+
+    pub(super) fn toggle_sample_tag(
+        &mut self,
+        path: &std::path::Path,
+        tag: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, &'static str> {
+        let assigned = self
+            .browser
+            .samples
+            .catalog
+            .tags_for(path)
+            .is_some_and(|set| set.contains(tag));
+        if assigned {
+            Ok(self.remove_sample_tag(path, tag, cx))
+        } else {
+            self.add_sample_tag(path, tag, cx)
+        }
+    }
+
+    /// Atomic bulk tag update across multiple sample paths. If every item already
+    /// carries `tag`, removes it from all; otherwise assigns it to every item.
+    /// Validation failure leaves the entire catalog unchanged.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn bulk_toggle_sample_tag(
+        &mut self,
+        paths: &[PathBuf],
+        tag: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, &'static str> {
+        if paths.is_empty() {
+            return Ok(false);
+        }
+        let all_assigned = paths.iter().all(|path| {
+            self.browser
+                .samples
+                .catalog
+                .tags_for(path)
+                .is_some_and(|set| set.contains(tag))
+        });
+        let snapshot = self.browser.samples.catalog.clone();
+        let mut any_changed = false;
+        for path in paths {
+            if all_assigned {
+                any_changed |= self.browser.samples.catalog.remove_tag(path, tag);
+            } else {
+                match self.browser.samples.catalog.add_tag(path, tag) {
+                    Ok(changed) => any_changed |= changed,
+                    Err(err) => {
+                        self.browser.samples.catalog = snapshot;
+                        return Err(err);
+                    }
+                }
+            }
+        }
+        if any_changed {
+            self.browser.samples.invalidate_visible();
+            self.browser.samples.status = None;
+            self.persist_sample_catalog(cx);
+        }
+        Ok(any_changed)
+    }
+
     pub(super) fn sample_results_count_text(&self, cx: &App) -> String {
         let count = self.browser_visible_entries(cx).len();
         let noun = ResultsMode::for_query(self.browser.search.read(cx).text()).count_noun();
