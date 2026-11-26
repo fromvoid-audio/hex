@@ -69,19 +69,11 @@ impl Plugins {
                     if let Some(log) = &self.diagnostics
                         && let Some(sample) = control.take_native_source_slow_exchange(source.binding)
                     {
-                        let thread_cpu = sample.sdk_thread_cpu_ns
-                            .map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string());
-                        let pickup_interval = sample
-                            .empty_poll_to_pickup_ns
-                            .map_or_else(|| "unavailable".to_owned(), |ns| ns.to_string());
+                        let line = format_slow_exchange_log(generation, output, source.device, &sample);
                         let _ = log.record_typed(
                             hex_diagnostics::Level::Warn,
                             hex_diagnostics::Category::Audio,
-                            &format!(
-                                "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} sdk_thread_cpu_ns={thread_cpu} quantum_ns={} dropped={} queue_ns=unavailable empty_poll_to_pickup_ns={pickup_interval}",
-                                source.device, sample.binding, sample.sequence, sample.exchange_ns,
-                                sample.sdk_process_ns, sample.quantum_ns, sample.dropped
-                            ),
+                            &line,
                         );
                     }
                     if let Some(log) = &self.diagnostics
@@ -478,5 +470,138 @@ impl Plugins {
                 self.sources[index].retiring = true;
             }
         }
+    }
+}
+
+fn format_optional_u64(value: Option<u64>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |v| v.to_string())
+}
+
+/// Format a structured `vst3 v=1 stage=slow_exchange` diagnostic line.
+/// Missing timings (`queue_ns`, `sdk_process_ns`, `sdk_thread_cpu_ns`,
+/// `empty_poll_to_pickup_ns`) are always rendered explicitly as `unavailable`
+/// rather than fabricated zeros.
+pub(crate) fn format_slow_exchange_log(
+    generation: u64,
+    output: u64,
+    device: u64,
+    sample: &hex_audio::plugin_worker::SlowPluginExchange,
+) -> String {
+    format!(
+        "vst3 v=1 stage=slow_exchange generation={generation} output={output} device={device} binding={:?} sequence={} exchange_ns={} sdk_process_ns={} sdk_thread_cpu_ns={} quantum_ns={} dropped={} queue_ns={} empty_poll_to_pickup_ns={}",
+        sample.binding,
+        sample.sequence,
+        sample.exchange_ns,
+        format_optional_u64(sample.sdk_process_ns),
+        format_optional_u64(sample.sdk_thread_cpu_ns),
+        sample.quantum_ns,
+        sample.dropped,
+        format_optional_u64(sample.queue_to_pickup_ns),
+        format_optional_u64(sample.empty_poll_to_pickup_ns),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_slow_exchange_log;
+    use hex_audio::plugin_effects::EffectBinding as Binding;
+    use hex_audio::plugin_worker::SlowPluginExchange;
+
+    #[test]
+    fn format_slow_exchange_log_separates_measured_and_unavailable_timings() {
+        let binding = Binding {
+            root: 3,
+            instance: 19,
+            graph: 7,
+            epoch: 11,
+        };
+        let measured = SlowPluginExchange {
+            binding,
+            sequence: 42,
+            queue_to_pickup_ns: Some(180_000),
+            empty_poll_to_pickup_ns: Some(95_000),
+            exchange_ns: 620_000,
+            sdk_process_ns: Some(410_000),
+            sdk_thread_cpu_ns: Some(390_000),
+            quantum_ns: 500_000,
+            dropped: 2,
+        };
+        let measured_line = format_slow_exchange_log(3, 7, 11, &measured);
+        for token in [
+            "vst3 v=1 stage=slow_exchange",
+            "generation=3",
+            "output=7",
+            "device=11",
+            "sequence=42",
+            "exchange_ns=620000",
+            "sdk_process_ns=410000",
+            "sdk_thread_cpu_ns=390000",
+            "quantum_ns=500000",
+            "dropped=2",
+            "queue_ns=180000",
+            "empty_poll_to_pickup_ns=95000",
+        ] {
+            assert!(
+                measured_line.contains(token),
+                "missing {token} in {measured_line}"
+            );
+        }
+
+        let unavailable = SlowPluginExchange {
+            binding,
+            sequence: 43,
+            queue_to_pickup_ns: None,
+            empty_poll_to_pickup_ns: None,
+            exchange_ns: 710_000,
+            sdk_process_ns: None,
+            sdk_thread_cpu_ns: None,
+            quantum_ns: 500_000,
+            dropped: 0,
+        };
+        let unavailable_line = format_slow_exchange_log(3, 7, 11, &unavailable);
+        for token in [
+            "sequence=43",
+            "exchange_ns=710000",
+            "sdk_process_ns=unavailable",
+            "sdk_thread_cpu_ns=unavailable",
+            "queue_ns=unavailable",
+            "empty_poll_to_pickup_ns=unavailable",
+            "dropped=0",
+        ] {
+            assert!(
+                unavailable_line.contains(token),
+                "missing {token} in {unavailable_line}"
+            );
+        }
+
+        // Verify the formatted line round-trips intact through SessionLog.
+        let dir =
+            std::env::temp_dir().join(format!("hex-slow-exchange-log-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut log =
+            hex_diagnostics::SessionLog::start_with_context(dir.clone(), "test-slow-exchange")
+                .expect("start session log");
+        let handle = log.handle();
+        handle
+            .record_typed(
+                hex_diagnostics::Level::Warn,
+                hex_diagnostics::Category::Audio,
+                &measured_line,
+            )
+            .expect("record measured slow exchange");
+        handle
+            .record_typed(
+                hex_diagnostics::Level::Warn,
+                hex_diagnostics::Category::Audio,
+                &unavailable_line,
+            )
+            .expect("record unavailable slow exchange");
+        let path = log.path();
+        log.shutdown().expect("flush session log");
+        let text = std::fs::read_to_string(&path).expect("read session log");
+        assert!(text.contains("queue_ns=180000"), "{text}");
+        assert!(text.contains("sdk_process_ns=unavailable"), "{text}");
+        assert!(text.contains("queue_ns=unavailable"), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -35,13 +35,17 @@ pub use hex_plugin_host::protocol::{
 pub struct SlowPluginExchange {
     pub binding: Binding,
     pub sequence: u64,
+    /// Exact queue-commit to worker-pickup wall time in nanoseconds when both
+    /// callback and worker share an admitted [`crate::callback_clock::CallbackClock`].
+    /// `None` when the callback clock is unavailable or omitted; never fabricated.
+    pub queue_to_pickup_ns: Option<u64>,
     /// Wall time between this worker's last empty live poll and the return of
-    /// the next accepted pickup. No empty observation means no sample. The
-    /// callback's publish timestamp is unavailable, so this interval can
-    /// include time before publication as well as receipt validation.
+    /// the next accepted pickup. No empty observation means no sample.
     pub empty_poll_to_pickup_ns: Option<u64>,
     pub exchange_ns: u64,
-    pub sdk_process_ns: u64,
+    /// Native SDK processing duration in nanoseconds, or `None` when SDK-side
+    /// timing is absent/unavailable (logged explicitly as `unavailable`).
+    pub sdk_process_ns: Option<u64>,
     /// CPU time on the original SDK processing thread, when available.
     pub sdk_thread_cpu_ns: Option<u64>,
     pub quantum_ns: u64,
@@ -101,6 +105,10 @@ struct Signal {
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     slow_exchange_dropped: AtomicU64,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    clock: crate::callback_clock::CallbackClock,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    slow_quantum_ns_override: Option<u64>,
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     parameter_change_requested: std::sync::atomic::AtomicBool,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     idle_parameter_change_requested: std::sync::atomic::AtomicBool,
@@ -123,6 +131,23 @@ const FAILURE_DIAGNOSTIC_CAPACITY: usize = 4;
 
 impl Signal {
     fn new(offline: bool) -> Self {
+        Self::new_with_clock(
+            offline,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            crate::callback_clock::CallbackClock::unavailable(),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            None,
+        )
+    }
+
+    fn new_with_clock(
+        offline: bool,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        clock: crate::callback_clock::CallbackClock,
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))] slow_quantum_ns_override: Option<
+            u64,
+        >,
+    ) -> Self {
         Self {
             blocks: AtomicU64::new(0),
             wakeups: AtomicU64::new(0),
@@ -147,6 +172,10 @@ impl Signal {
             slow_exchange: std::sync::Mutex::new(None),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             slow_exchange_dropped: AtomicU64::new(0),
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            clock,
+            #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+            slow_quantum_ns_override,
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
             parameter_change_requested: std::sync::atomic::AtomicBool::new(false),
             #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -659,7 +688,25 @@ fn spawn_processor_with(
         Arc<Signal>,
     ) -> std::io::Result<SpawnedTransport>,
 ) -> Result<Reaper, SpawnFailure> {
-    let completed = Arc::new(Signal::new(offline));
+    spawn_processor_with_signal(
+        control,
+        worker,
+        processor,
+        Arc::new(Signal::new(offline)),
+        spawn,
+    )
+}
+
+fn spawn_processor_with_signal(
+    control: Control,
+    worker: Worker,
+    processor: Processor,
+    completed: Arc<Signal>,
+    spawn: impl FnOnce(
+        crate::native_callback_owner::Guard<State>,
+        Arc<Signal>,
+    ) -> std::io::Result<SpawnedTransport>,
+) -> Result<Reaper, SpawnFailure> {
     let published = Arc::clone(&completed);
     let (guard, terminal) = crate::native_callback_owner::reserve(State {
         worker,
@@ -782,11 +829,19 @@ fn transport_runner_with_setup(
                     authored_program,
                     manual_origin_available,
                     editor_scope,
+                    published_at_ns,
                 })) => {
+                    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+                    let _ = published_at_ns;
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     if let Some(deadline) = &mut deadline {
                         deadline.enter();
                     }
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let pickup_clock_ns = published.clock.try_now_ns();
+                    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+                    let queue_to_pickup_ns =
+                        crate::callback_clock::checked_elapsed_ns(published_at_ns, pickup_clock_ns);
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     let pickup_now = Instant::now();
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -853,7 +908,14 @@ fn transport_runner_with_setup(
                                 as u64,
                             std::time::Instant::now(),
                         )),
-                        _ => None,
+                        _ => published.slow_quantum_ns_override.map(|quantum_ns| {
+                            (
+                                block.binding,
+                                block.sequence,
+                                quantum_ns,
+                                std::time::Instant::now(),
+                            )
+                        }),
                     };
                     let sidechain_slice = sidechain
                         .as_ref()
@@ -871,17 +933,21 @@ fn transport_runner_with_setup(
                     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
                     if let (Some((binding, sequence, quantum_ns, started)), Ok(reply)) =
                         (exchange, &processed)
-                        && let Some(sdk_process_ns) = reply.sdk_process_ns
                     {
                         let exchange_ns =
                             started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-                        if exchange_ns >= quantum_ns {
+                        let total_ns = queue_to_pickup_ns.unwrap_or(0).saturating_add(exchange_ns);
+                        if exchange_ns >= quantum_ns
+                            || queue_to_pickup_ns.is_some_and(|q| q >= quantum_ns)
+                            || total_ns >= quantum_ns
+                        {
                             published.publish_slow_exchange(SlowPluginExchange {
                                 binding,
                                 sequence,
+                                queue_to_pickup_ns,
                                 empty_poll_to_pickup_ns,
                                 exchange_ns,
-                                sdk_process_ns,
+                                sdk_process_ns: reply.sdk_process_ns,
                                 sdk_thread_cpu_ns: reply.sdk_thread_cpu_ns,
                                 quantum_ns,
                                 dropped: 0,
@@ -1447,9 +1513,10 @@ mod tests {
                 epoch: 4,
             },
             sequence: 7,
+            queue_to_pickup_ns: Some(250),
             empty_poll_to_pickup_ns: Some(300),
             exchange_ns: 900,
-            sdk_process_ns: 400,
+            sdk_process_ns: Some(400),
             sdk_thread_cpu_ns: Some(150),
             quantum_ns: 800,
             dropped: 0,
@@ -1474,6 +1541,125 @@ mod tests {
             })
         );
         assert!(signal.take_slow_exchange().is_none());
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn gated_source_bound_instrument_correlates_queue_delay_exchange_sdk_absence_and_overflow() {
+        let binding = Binding {
+            root: 11,
+            instance: 22,
+            graph: 33,
+            epoch: 44,
+        };
+        let clock = crate::callback_clock::CallbackClock::prewarm_monotonic();
+        let (control, mut callback, worker) = channel(binding, 8).unwrap();
+        let (gate_tx, gate_rx) = std::sync::mpsc::sync_channel::<()>(1);
+        let processor = Processor::Function(Box::new(move |block| {
+            // Simulate bounded helper exchange delay without SDK timing.
+            thread::sleep(Duration::from_millis(6));
+            Ok(block)
+        }));
+        let signal = Arc::new(Signal::new_with_clock(false, clock, Some(2_000_000)));
+        let mut reaper = spawn_processor_with_signal(
+            control,
+            worker,
+            processor,
+            Arc::clone(&signal),
+            move |guard, published| {
+                let run = transport_runner(guard, published);
+                let job = move || {
+                    // Gate worker pickup so block 0 experiences measurable queue delay.
+                    let _ = gate_rx.recv_timeout(Duration::from_secs(2));
+                    run()
+                };
+                let capture_data_bytes = std::mem::size_of_val(&job);
+                thread::Builder::new()
+                    .spawn(job)
+                    .map(|join| SpawnedTransport {
+                        join,
+                        capture_data_bytes,
+                    })
+            },
+        )
+        .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
+
+        let mut output = [[0.0; 2]; 8];
+        callback.stage(&[[0.25; 2]; 8], &[], &mut output).unwrap();
+        callback
+            .finish_with_publish_timestamp(true, clock.try_now_ns())
+            .unwrap();
+        // Hold worker for 6 ms while request 0 sits in the bounded queue.
+        thread::sleep(Duration::from_millis(6));
+        gate_tx.send(()).unwrap();
+
+        // Queue a second slow block before control drains slot 0 to verify bounded overflow.
+        callback.stage(&[[0.5; 2]; 8], &[], &mut output).unwrap();
+        callback
+            .finish_with_publish_timestamp(true, clock.try_now_ns())
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while signal.blocks.load(Acquire) < 2 {
+            assert!(Instant::now() < deadline, "worker did not finish 2 blocks");
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let sample = signal
+            .take_slow_exchange()
+            .expect("slow sample must publish even when SDK timing is absent");
+        assert_eq!(sample.binding, binding);
+        assert_eq!(sample.sequence, 0);
+        assert!(
+            sample.queue_to_pickup_ns.unwrap_or(0) >= 4_000_000,
+            "expected measurable queue pickup delay: {sample:?}"
+        );
+        assert!(
+            sample.exchange_ns >= 4_000_000,
+            "expected measurable exchange duration: {sample:?}"
+        );
+        assert_eq!(sample.sdk_process_ns, None);
+        assert_eq!(sample.quantum_ns, 2_000_000);
+        assert_eq!(
+            sample.dropped, 1,
+            "second slow block must record bounded overflow"
+        );
+        assert!(signal.take_slow_exchange().is_none());
+
+        // Clean retirement leaves callback refused and no leaked thread.
+        reaper.join_on_control().expect("reaper join");
+        assert!(callback.stage(&[[0.0; 2]; 8], &[], &mut output).is_err());
+
+        // Unavailable clock policy never fabricates queue_to_pickup_ns.
+        let unavailable = crate::callback_clock::CallbackClock::unavailable();
+        let (control2, mut callback2, worker2) = channel(binding, 8).unwrap();
+        let processor2 = Processor::Function(Box::new(move |block| {
+            thread::sleep(Duration::from_millis(4));
+            Ok(block)
+        }));
+        let signal2 = Arc::new(Signal::new_with_clock(false, unavailable, Some(1_000_000)));
+        let mut reaper2 = spawn_processor_with_signal(
+            control2,
+            worker2,
+            processor2,
+            Arc::clone(&signal2),
+            spawn_transport,
+        )
+        .unwrap_or_else(|failure| panic!("transport spawn: {}", failure.error));
+        callback2.stage(&[[0.1; 2]; 8], &[], &mut output).unwrap();
+        callback2
+            .finish_with_publish_timestamp(true, unavailable.try_now_ns())
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while signal2.blocks.load(Acquire) < 1 {
+            assert!(Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+        let sample2 = signal2.take_slow_exchange().expect("exchange sample");
+        assert_eq!(sample2.queue_to_pickup_ns, None);
+        assert!(sample2.exchange_ns >= 2_000_000);
+        assert_eq!(sample2.sdk_process_ns, None);
+        reaper2.join_on_control().expect("reaper2 join");
     }
 
     fn run_fixed_pipeline(

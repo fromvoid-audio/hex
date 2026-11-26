@@ -287,6 +287,7 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
         playback: cpal::StreamInstant::new(1, 100),
     });
     let mut previous_start = None;
+    let callback_clock = crate::callback_clock::CallbackClock::prewarm_monotonic();
 
     // 512-frame callback (2 x 256) warms up the 2Q pipeline without revoking
     // transport or latching a render fault, with zero callback allocations.
@@ -300,6 +301,7 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
             2,
             48_000,
             Some(256),
+            callback_clock,
             &mut previous_start,
         );
     };
@@ -350,6 +352,7 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
             2,
             48_000,
             Some(256),
+            callback_clock,
             &mut previous_start,
         );
     };
@@ -397,6 +400,7 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
         2,
         48_000,
         Some(256),
+        callback_clock,
         &mut previous_start,
     );
     assert!(transport.is_revoked());
@@ -426,6 +430,7 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
             2,
             48_000,
             Some(256),
+            callback_clock,
             &mut bridge_prev,
         );
         render_host_callback(
@@ -436,6 +441,7 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
             2,
             48_000,
             Some(256),
+            callback_clock,
             &mut bridge_prev,
         );
     };

@@ -974,6 +974,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             authored_program: None,
                             manual_origin: None,
                             editor_scope: None,
+                            published_at_ns: None,
                         })
                         .unwrap();
                 }
@@ -991,6 +992,7 @@ fn bounded_input_validation_and_queue_independent_stop() {
                             authored_program: None,
                             manual_origin: None,
                             editor_scope: None,
+                            published_at_ns: None,
                         })
                         .unwrap();
                 }
@@ -2304,5 +2306,73 @@ fn effect_sidechain_pcm_staging_preserves_key_rejects_malformed_and_allocates_no
         )
         .unwrap_err(),
         Fault::InvalidSamples
+    );
+}
+
+#[test]
+fn finish_with_publish_timestamp_propagates_exact_binding_sequence_and_availability() {
+    let (_control, mut cb, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 4, 0).expect("open channel");
+    let mut out = [[0.0; 2]; 4];
+
+    // First callback attaches a concrete queue-commit timestamp.
+    cb.stage(&[[0.0; 2]; 4], &[], &mut out).expect("stage 1");
+    cb.finish_with_publish_timestamp(true, Some(123_456_789))
+        .expect("finish 1");
+
+    let req1 = worker
+        .receive_request()
+        .expect("receive 1 ok")
+        .expect("req 1 present");
+    assert_eq!(req1.block.binding, BINDING);
+    assert_eq!(req1.block.sequence, 0);
+    assert_eq!(req1.published_at_ns, Some(123_456_789));
+    worker.complete(req1.block).expect("reply 1");
+
+    // Second callback omits the timestamp (unavailable clock): must stay None,
+    // never reuse the previous callback's timestamp or fabricate 0.
+    cb.stage(&[[0.0; 2]; 4], &[], &mut out).expect("stage 2");
+    cb.finish_with_publish_timestamp(true, None)
+        .expect("finish 2");
+
+    let req2 = worker
+        .receive_request()
+        .expect("receive 2 ok")
+        .expect("req 2 present");
+    assert_eq!(req2.block.binding, BINDING);
+    assert_eq!(req2.block.sequence, 1);
+    assert_eq!(req2.published_at_ns, None);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn publish_timestamp_callback_path_has_zero_total_and_net_allocations() {
+    let (_control, mut cb, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 4, 0).expect("open channel");
+    let mut out = [[0.0; 2]; 4];
+
+    let measured = allocation_counter::measure(|| {
+        for step in 0..16u64 {
+            cb.stage(&[[0.0; 2]; 4], &[], &mut out).expect("stage");
+            let ts = if step % 2 == 0 {
+                Some(1_000_000 + step * 500)
+            } else {
+                None
+            };
+            cb.finish_with_publish_timestamp(true, ts).expect("finish");
+            let req = worker.receive_request().expect("receive ok").expect("req");
+            assert_eq!(req.published_at_ns, ts);
+            worker.complete(req.block).expect("reply");
+        }
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current,
+        ),
+        (0, 0, 0, 0),
+        "publish timestamp callback/worker exchange must allocate zero bytes"
     );
 }
