@@ -529,6 +529,7 @@ impl MutableInstrumentRuntime for Runtime {
         self.channel_pitch_bend = 0;
         self.cc_timbre = 0;
         self.last_targets = automation::base_target_values(&self.factory.settings);
+        self.tone_filter.reset();
     }
     fn is_quiescent(&self) -> bool {
         self.voices.iter().all(|v| v.id == 0)
@@ -575,6 +576,7 @@ impl MutableInstrumentRuntime for Runtime {
             self.channel_pitch_bend = p.channel_pitch_bend;
             self.cc_timbre = p.cc_timbre;
             self.last_targets = p.last_targets;
+            self.tone_filter = p.tone_filter;
         }
     }
     fn can_retarget_history_from(
@@ -668,6 +670,7 @@ impl MutableInstrumentRuntime for Runtime {
             if let Some(old) = previous.as_any().downcast_ref::<Self>() {
                 self.channel_pitch_bend = old.channel_pitch_bend;
                 self.cc_timbre = old.cc_timbre;
+                self.tone_filter = old.tone_filter;
                 for (target, source) in self.fading.iter_mut().zip(&old.fading) {
                     if source.remaining != 0 {
                         let mut copied = *source;

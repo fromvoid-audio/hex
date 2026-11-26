@@ -210,6 +210,15 @@ impl Factory {
             && self.settings.companion == other.settings.companion
             && compatible_base(&self.base, &other.base, self.settings.global.active)
     }
+    pub(super) fn effective_time_rate(&self, voice_time_rate: f64) -> f64 {
+        let global_time = self.settings.performance.time_rate();
+        if global_time == 1.0 {
+            voice_time_rate
+        } else {
+            (voice_time_rate * global_time).clamp(0.25, 16.0)
+        }
+    }
+
     fn parameters(&self) -> [f64; 12] {
         self.parameters
     }
@@ -354,6 +363,7 @@ pub(super) struct Runtime {
     channel_pitch_bend: i16,
     cc_timbre: u8,
     last_targets: [f32; automation::TARGET_COUNT],
+    tone_filter: performance::ToneFilter,
 }
 
 // Borrow the source bank through validation/retargeting. Legacy runtimes convert
@@ -446,7 +456,13 @@ impl PreparedMutableInstrumentRuntime for Factory {
         } else {
             self.configuration.release_frames()
         }
-        .saturating_mul(if self.settings.global.active { 4 } else { 1 })
+        .saturating_mul(
+            if self.settings.global.active || self.settings.performance.time > 0.0 {
+                4
+            } else {
+                1
+            },
+        )
         .saturating_add(if self.settings.global.active {
             quality::TAIL
         } else {
@@ -470,6 +486,7 @@ impl PreparedMutableInstrumentRuntime for Factory {
             channel_pitch_bend: 0,
             cc_timbre: 0,
             last_targets: automation::base_target_values(&self.settings),
+            tone_filter: performance::ToneFilter::default(),
         })
     }
     fn as_any(&self) -> &dyn Any {

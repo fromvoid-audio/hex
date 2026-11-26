@@ -50,6 +50,9 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
         (637, ParameterValue::Float(50.0)),
         (638, ParameterValue::Choice(10)),
         (639, ParameterValue::Float(-25.0)),
+        (617, ParameterValue::Float(-25.0)), // Global time (-25%)
+        (618, ParameterValue::Float(60.0)),  // Global tone (60%)
+        (619, ParameterValue::Float(-3.0)),  // Global volume (-3 dB)
     ] {
         state = hex_engine::patch_native_device_parameter_for_class(
             class,

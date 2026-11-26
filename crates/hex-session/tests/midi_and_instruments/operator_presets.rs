@@ -593,3 +593,88 @@ fn pitch_keytrack_history_and_disk_reopen_preserve_independent_amounts() {
     }
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 }
+
+#[test]
+fn global_time_tone_volume_history_and_disk_reopen_round_trip() {
+    let mut session = Session::new(48_000, 16, 0).unwrap();
+    let state = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        DeviceTypeId::from_static("hex.instrument.operator"),
+    )
+    .unwrap();
+    let (Created::Track(track), mut graph) = session
+        .command_prepared_revision(
+            Command::InsertTrackWithDevice {
+                name: "vector perf".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state,
+            },
+            None,
+        )
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let device = session
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let edits = [(617_u32, -35.0_f32), (618, 42.5), (619, -9.0)];
+    for (id, value) in edits {
+        let before = session.project().device(device).unwrap().state().clone();
+        graph = session
+            .commit_device_parameter(
+                device,
+                ParameterId::from_static(id),
+                ParameterValue::Float(value),
+                Some(&graph),
+            )
+            .unwrap();
+        let after = session.project().device(device).unwrap().state().clone();
+        let undone = session
+            .undo_prepared_revision(Some(&graph))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().device(device).unwrap().state(), &before);
+        graph = session
+            .redo_prepared_revision(Some(&undone))
+            .unwrap()
+            .unwrap();
+        assert_eq!(session.project().device(device).unwrap().state(), &after);
+    }
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let directory = std::env::temp_dir().join(format!(
+        "hex-vector-perf-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir(&directory).unwrap();
+    struct Saved(std::path::PathBuf);
+    impl Drop for Saved {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let saved = Saved(directory);
+    let path = saved.0.join("vector-perf.hex");
+    hex_storage::save_new(&path, session.project()).unwrap();
+    let loaded = hex_storage::load(&path).unwrap();
+    assert_eq!(&loaded, session.project());
+    let reopened = Session::from_prepared(loaded, 16, 0, vec![]).unwrap();
+    for (id, value) in edits {
+        let state = reopened.project().device(device).unwrap().state();
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Instrument,
+                state,
+                ParameterId::from_static(id),
+            )
+            .unwrap(),
+            ParameterValue::Float(value)
+        );
+    }
+}

@@ -41,7 +41,7 @@ impl EventVoice {
             active: factory.settings.global.active,
             envelope_age: voice.envelope_age,
             envelope_gate: voice.envelope_gate,
-            time_rate: voice.effective.time_rate,
+            time_rate: factory.effective_time_rate(voice.effective.time_rate),
             drain: voice.drain,
         }
     }
