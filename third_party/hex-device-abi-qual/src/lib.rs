@@ -10,6 +10,7 @@
 //!    crash/hang/teardown isolation.
 #![deny(unsafe_code)]
 
+pub mod conformance;
 mod raw;
 
 use hex_lattice_contract::package_abi::{
