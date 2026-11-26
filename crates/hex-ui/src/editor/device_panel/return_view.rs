@@ -445,9 +445,8 @@ pub(super) fn render_return_effect(
         .debug_selector(move || format!("device-shell-{}", id.value()));
     let rendered = div()
         .min_w(px(card_width - super::device_meter::WIDTH))
-        .flex()
         .flex_shrink_0()
-        .child(rendered.flex_1());
+        .child(rendered);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),
