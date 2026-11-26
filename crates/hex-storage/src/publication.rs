@@ -99,18 +99,37 @@ pub(crate) fn rename_exclusive(_: &Path, _: &Path) -> io::Result<()> {
     ))
 }
 
+/// Atomically claim an absent `destination_name` directory inside `parent_fd`
+/// and publish `staging_name` without replacing any existing file or directory.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn rename_directory_exclusive_at(
+    parent_fd: impl rustix::fd::AsFd,
+    staging_name: &str,
+    destination_name: &std::ffi::OsStr,
+) -> io::Result<()> {
+    #[cfg(test)]
+    if let Some(error) = simulate::rename_error() {
+        return Err(error);
+    }
+    rustix::fs::renameat_with(
+        &parent_fd,
+        staging_name,
+        &parent_fd,
+        destination_name,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(io::Error::from)
+}
+
 /// Atomically claim an absent `destination` directory and publish `staging`'s
 /// contents without replacing any existing file or directory.
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn rename_directory_exclusive(staging: &Path, destination: &Path) -> io::Result<()> {
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        rename_exclusive(staging, destination)
-    }
     #[cfg(windows)]
     {
         publish_directory_exclusive_windows(staging, destination)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+    #[cfg(not(windows))]
     {
         let _ = (staging, destination);
         Err(io::Error::new(

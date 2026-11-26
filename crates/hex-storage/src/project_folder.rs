@@ -1,12 +1,53 @@
 //! Filesystem layout and publication for desktop project folders. The marker
 //! distinguishes a project root from a general directory of standalone sets.
 //! Project documents keep their existing encoding and relative asset paths.
+//!
+//! # Staging directory custody and platform boundaries (`#7972` / `#7683`)
+//!
+//! On macOS and Linux, [`Destination::prepare`] pins the parent directory with
+//! `O_RDONLY | O_DIRECTORY | O_NOFOLLOW`, reserves a fresh sibling staging
+//! directory via `mkdirat(parent_fd, stage_name, 0700)`, immediately opens that
+//! entry with `openat(parent_fd, stage_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)`,
+//! verifies via the opened descriptor that the directory is completely empty,
+//! and creates `.hex-project` (`O_CREAT | O_EXCL | O_NOFOLLOW`) and `samples/`
+//! strictly through that pinned directory descriptor while recording `(dev, ino)`.
+//!
+//! ## Verified platform limitation (macOS / POSIX)
+//!
+//! Neither macOS Darwin/XNU nor POSIX provides a single-syscall atomic
+//! `mkdir`-and-return-descriptor primitive:
+//! - `mkdir(2)` / `mkdirat(2)` return status `0`, not a file descriptor.
+//! - `open(2)` / `openat(2)` with `O_CREAT | O_DIRECTORY` fail with `EINVAL` in
+//!   XNU `bsd/vfs/vfs_vnops.c`, and `O_CREAT | O_EXCL` with `S_IFDIR` creates a
+//!   regular file rather than a directory.
+//! - Private `openbyid_np` requires a preexisting object ID that `mkdirat` does
+//!   not return; advisory `flock(2)` and user `UF_IMMUTABLE` flags do not block
+//!   a non-cooperating same-user process from renaming entries.
+//!
+//! Consequently, `mkdirat` followed by `openat` plus an emptiness check is
+//! **not atomic** against a same-user process replacing the empty staging
+//! directory with another *empty* directory in that window; this module does
+//! not claim check-then-open or pre-rename `statat` is atomic. What this
+//! boundary *does* guarantee:
+//! - Symlinks, regular files, and non-empty unrelated directories substituted
+//!   between `mkdirat` and `openat` are never acquired or modified.
+//! - Initialization of `.hex-project` and `samples/` occurs strictly through
+//!   the pinned `stage_fd`, never by re-traversing pathnames.
+//! - Any failure or cancellation preserves the staging path untouched (never
+//!   running `remove_dir_all`) and reports it via [`StageRetained`].
+//! - Normal Save As with collected generated media (`samples/`) is preserved.
+//! - On platforms without `openat`/`mkdirat` (e.g., Windows), staging falls
+//!   back to path-based creation and [`publication::rename_directory_exclusive`].
 
 use crate::{ReplaceWarning, SaveNewOutcome, StorageError, files, publication, replacement};
 use hex_project::Project;
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+use std::fs::OpenOptions;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::os::fd::OwnedFd;
 use std::{
     fmt,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering::Relaxed},
@@ -117,25 +158,63 @@ impl Destination {
                 "project folder would make the saved path too long; choose a shorter name or location",
             ));
         }
-        let folder = NewFolder {
-            staging: reserve_stage(parent)?,
-            path,
+        let parent_dir = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
         };
-        let stage = folder.root();
-        after_reserve(stage);
-        let initialized = (|| {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(stage.join(MARKER))?
-                .sync_all()?;
-            fs::create_dir(stage.join(SAMPLES))
-        })();
-        if let Err(error) = initialized {
-            return Err(stage_retained(folder.staging, error.into()));
-        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let folder = {
+            let (parent_fd, stage_name, staging) = reserve_stage_at(parent_dir)?;
+            after_reserve(&staging);
+            match initialize_stage_at(parent_fd, stage_name, staging.clone()) {
+                Ok(custody) => NewFolder {
+                    staging,
+                    path,
+                    custody,
+                },
+                Err(error) => return Err(stage_retained(staging, error)),
+            }
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let folder = {
+            let folder = NewFolder {
+                staging: reserve_stage(parent_dir)?,
+                path,
+            };
+            let stage = folder.root();
+            after_reserve(stage);
+            let initialized = (|| {
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(stage.join(MARKER))?
+                    .sync_all()?;
+                fs::create_dir(stage.join(SAMPLES))
+            })();
+            if let Err(error) = initialized {
+                return Err(stage_retained(folder.staging, error.into()));
+            }
+            folder
+        };
         Ok(Self::Folder(folder))
     }
+}
+
+/// Pinned `(device, inode)` identity of an acquired project staging directory.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StageIdentity {
+    pub device: u64,
+    pub inode: u64,
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+struct StageCustody {
+    parent_fd: OwnedFd,
+    _stage_fd: OwnedFd,
+    stage_name: String,
+    identity: StageIdentity,
 }
 
 /// A private sibling staging folder, published only after all files are ready.
@@ -144,6 +223,8 @@ impl Destination {
 pub struct NewFolder {
     staging: PathBuf,
     path: PathBuf,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    custody: StageCustody,
 }
 
 impl NewFolder {
@@ -151,21 +232,34 @@ impl NewFolder {
         &self.staging
     }
 
+    /// Return the pinned `(device, inode)` identity observed when the staging
+    /// directory descriptor was acquired.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn stage_identity(&self) -> StageIdentity {
+        self.custody.identity
+    }
+
     pub fn publish(
         self,
         project: &Project,
         cancelled: impl FnOnce() -> bool,
     ) -> Result<SaveNewOutcome, StorageError> {
+        let NewFolder {
+            staging,
+            path,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            custody,
+        } = self;
         let result = (|| {
-            let name = self
-                .path
+            let name = path
                 .file_name()
                 .ok_or(StorageError::Invalid("project target needs a filename"))?;
-            let root = self
-                .path
+            let root = path
                 .parent()
                 .ok_or(StorageError::Invalid("project target needs a folder"))?;
-            let stage = self.root();
+            let stage = staging.as_path();
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            verify_stage_entry_identity(&custody)?;
             let mut outcome = crate::save_new_with_outcome(stage.join(name), project)?;
             // At this point the document is private. If its stage could not be
             // synchronized, leave the chosen destination absent.
@@ -175,21 +269,165 @@ impl NewFolder {
             if cancelled() {
                 return Err(StorageError::Invalid("project save cancelled"));
             }
-            publication::rename_directory_exclusive(stage, root)?;
-            outcome.path = self.path.clone();
-            outcome.warning = root
-                .parent()
-                .and_then(|parent| sync_directory(parent).err())
-                .map(|source| ReplaceWarning {
-                    operation: "synchronize the parent of the project folder",
-                    source,
-                });
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                let root_name = root
+                    .file_name()
+                    .ok_or(StorageError::Invalid("project target needs a folder name"))?;
+                // Pre-rename identity recheck narrows accidental substitution
+                // without claiming `statat` + `renameat_with` is atomic against
+                // a same-user process racing the final syscall window.
+                verify_stage_entry_identity(&custody)?;
+                publication::rename_directory_exclusive_at(
+                    &custody.parent_fd,
+                    custody.stage_name.as_str(),
+                    root_name,
+                )?;
+                outcome.path = path.clone();
+                outcome.warning = rustix::fs::fsync(&custody.parent_fd)
+                    .map_err(io::Error::from)
+                    .err()
+                    .map(|source| ReplaceWarning {
+                        operation: "synchronize the parent of the project folder",
+                        source,
+                    });
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            {
+                publication::rename_directory_exclusive(stage, root)?;
+                outcome.path = path.clone();
+                outcome.warning = root
+                    .parent()
+                    .and_then(|parent| sync_directory(parent).err())
+                    .map(|source| ReplaceWarning {
+                        operation: "synchronize the parent of the project folder",
+                        source,
+                    });
+            }
             Ok(outcome)
         })();
-        result.map_err(|source| stage_retained(self.staging, source))
+        result.map_err(|source| stage_retained(staging, source))
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn stat_identity(stat: &rustix::fs::Stat) -> StageIdentity {
+    #[allow(clippy::unnecessary_cast)]
+    StageIdentity {
+        device: stat.st_dev as u64,
+        inode: stat.st_ino as u64,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn reserve_stage_at(parent: &Path) -> io::Result<(OwnedFd, String, PathBuf)> {
+    use rustix::fs::{Mode, OFlags};
+    let parent_fd = rustix::fs::openat(
+        rustix::fs::CWD,
+        parent,
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let dir_mode = Mode::from_bits_truncate(0o700);
+    for _ in 0..32 {
+        let serial = NEXT_STAGE.fetch_add(1, Relaxed);
+        let stage_name = format!(".hex-project-{}-{serial}", std::process::id());
+        match rustix::fs::mkdirat(&parent_fd, stage_name.as_str(), dir_mode) {
+            Ok(()) => {
+                let staging = parent.join(&stage_name);
+                return Ok((parent_fd, stage_name, staging));
+            }
+            Err(rustix::io::Errno::EXIST) => {}
+            Err(error) => return Err(io::Error::from(error)),
+        }
+    }
+    Err(io::Error::other(
+        "could not reserve a project staging folder",
+    ))
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn verify_dir_fd_empty(stage_fd: &OwnedFd) -> Result<(), StorageError> {
+    use rustix::fs::{Dir, Mode, OFlags};
+    let scan_fd = rustix::fs::openat(
+        stage_fd,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let mut dir = Dir::new(scan_fd).map_err(io::Error::from)?;
+    for entry in dir.by_ref() {
+        let entry = entry.map_err(io::Error::from)?;
+        let bytes = entry.file_name().to_bytes();
+        if bytes != b"." && bytes != b".." {
+            return Err(StorageError::Invalid(
+                "project staging directory is not empty; refusing initialization to preserve existing contents",
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn initialize_stage_at(
+    parent_fd: OwnedFd,
+    stage_name: String,
+    _staging: PathBuf,
+) -> Result<StageCustody, StorageError> {
+    use rustix::fs::{Mode, OFlags};
+    let stage_fd = rustix::fs::openat(
+        &parent_fd,
+        stage_name.as_str(),
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW,
+        Mode::empty(),
+    )
+    .map_err(io::Error::from)?;
+    let stat = rustix::fs::fstat(&stage_fd).map_err(io::Error::from)?;
+    let identity = stat_identity(&stat);
+    // Reject any non-empty directory substituted between `mkdirat` and `openat`
+    // before writing `.hex-project` or `samples/`.
+    verify_dir_fd_empty(&stage_fd)?;
+    let marker_fd = rustix::fs::openat(
+        &stage_fd,
+        MARKER,
+        OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW,
+        Mode::from_bits_truncate(0o600),
+    )
+    .map_err(io::Error::from)?;
+    File::from(marker_fd).sync_all()?;
+    rustix::fs::mkdirat(&stage_fd, SAMPLES, Mode::from_bits_truncate(0o700))
+        .map_err(io::Error::from)?;
+    rustix::fs::fsync(&stage_fd).map_err(io::Error::from)?;
+    Ok(StageCustody {
+        parent_fd,
+        _stage_fd: stage_fd,
+        stage_name,
+        identity,
+    })
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn verify_stage_entry_identity(custody: &StageCustody) -> Result<(), StorageError> {
+    use rustix::fs::{AtFlags, FileType};
+    let stat = rustix::fs::statat(
+        &custody.parent_fd,
+        custody.stage_name.as_str(),
+        AtFlags::SYMLINK_NOFOLLOW,
+    )
+    .map_err(io::Error::from)?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::Directory
+        || stat_identity(&stat) != custody.identity
+    {
+        return Err(StorageError::Invalid(
+            "project staging directory identity changed; refusing publication to preserve unrelated contents",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(test, not(any(target_os = "linux", target_os = "macos"))))]
 fn reserve_stage(parent: &Path) -> io::Result<PathBuf> {
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut builder = fs::DirBuilder::new();
@@ -507,5 +745,106 @@ mod tests {
         assert!(collect_sample(&root, name, &source, || false).is_err());
         assert_eq!(fs::read(root.join(SAMPLES).join(name)).unwrap(), b"same");
         assert!(collect_sample(&root, Path::new("../escape.wav"), &source, || false).is_err());
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn substituted_nonempty_dir_symlink_or_file_between_mkdir_and_open_is_never_modified() {
+        // 1. Non-empty unrelated directory swapped into the reserved staging pathname.
+        let files = Files::new();
+        let foreign_dir = files.0.join("foreign-dir");
+        fs::create_dir(&foreign_dir).unwrap();
+        fs::write(foreign_dir.join("keep.txt"), b"unrelated user data").unwrap();
+        let displaced = files.0.join("displaced-stage");
+        let mut stage_path = None;
+        let error = Destination::prepare_with_hook(files.0.join("Song.hex"), false, |stage| {
+            stage_path = Some(stage.to_path_buf());
+            fs::rename(stage, &displaced).unwrap();
+            fs::rename(&foreign_dir, stage).unwrap();
+        })
+        .err()
+        .expect("substituted non-empty directory must be refused");
+        let stage_path = stage_path.expect("stage reserved");
+        assert!(
+            error
+                .to_string()
+                .contains(&stage_path.to_string_lossy().to_string())
+        );
+        assert_eq!(
+            fs::read(stage_path.join("keep.txt")).unwrap(),
+            b"unrelated user data"
+        );
+        assert!(!stage_path.join(MARKER).exists());
+        assert!(!stage_path.join(SAMPLES).exists());
+        assert!(!files.0.join("Song").exists());
+
+        // 2. Symlink swapped into the reserved staging pathname must not be followed.
+        let files = Files::new();
+        let link_target = files.0.join("symlink-target");
+        fs::create_dir(&link_target).unwrap();
+        let displaced = files.0.join("displaced-stage");
+        let error = Destination::prepare_with_hook(files.0.join("Link.hex"), false, |stage| {
+            fs::rename(stage, &displaced).unwrap();
+            std::os::unix::fs::symlink(&link_target, stage).unwrap();
+        })
+        .err()
+        .expect("substituted symlink must be refused");
+        assert!(!link_target.join(MARKER).exists());
+        assert!(!link_target.join(SAMPLES).exists());
+        assert!(error.to_string().contains(".hex-project-"));
+
+        // 3. Regular file swapped into the reserved staging pathname must remain intact.
+        let files = Files::new();
+        let regular = files.0.join("regular-file");
+        fs::write(&regular, b"do not touch").unwrap();
+        let displaced = files.0.join("displaced-stage");
+        let mut stage_path = None;
+        let error = Destination::prepare_with_hook(files.0.join("File.hex"), false, |stage| {
+            stage_path = Some(stage.to_path_buf());
+            fs::rename(stage, &displaced).unwrap();
+            fs::rename(&regular, stage).unwrap();
+        })
+        .err()
+        .expect("substituted regular file must be refused");
+        let stage_path = stage_path.expect("stage reserved");
+        assert_eq!(fs::read(&stage_path).unwrap(), b"do not touch");
+        assert!(
+            error
+                .to_string()
+                .contains(&stage_path.to_string_lossy().to_string())
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn substituted_stage_before_publish_refuses_and_preserves_both_directories() {
+        let files = Files::new();
+        let chosen = files.0.join("Guarded.hex");
+        let Destination::Folder(folder) = Destination::prepare(chosen, false).unwrap() else {
+            panic!("expected new project folder");
+        };
+        let identity = folder.stage_identity();
+        assert!(identity.inode > 0);
+        let stage = folder.root().to_path_buf();
+        let displaced = files.0.join("original-staged");
+        fs::rename(&stage, &displaced).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(stage.join("foreign.txt"), b"foreign bytes").unwrap();
+
+        let error = folder
+            .publish(&Project::new(48_000).unwrap(), || false)
+            .expect_err("substituted stage identity must be refused before publication");
+        assert!(
+            error
+                .to_string()
+                .contains(&stage.to_string_lossy().to_string())
+        );
+        assert!(!files.0.join("Guarded").exists());
+        assert_eq!(
+            fs::read(stage.join("foreign.txt")).unwrap(),
+            b"foreign bytes"
+        );
+        assert!(!stage.join("Guarded.hex").exists());
+        assert!(displaced.join(MARKER).is_file());
     }
 }
