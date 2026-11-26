@@ -202,7 +202,6 @@ fn midi_output_producer_handoff_has_zero_total_and_net_allocations() {
     paused.store(false, Ordering::Release);
     drop(worker);
 }
-
 #[test]
 fn mpe_output_allocator_callback_path_has_zero_total_and_net_allocations() {
     let paused = Arc::new(AtomicBool::new(false));
@@ -325,4 +324,230 @@ fn mpe_output_allocator_callback_path_has_zero_total_and_net_allocations() {
     );
 
     drop(worker);
+}
+
+#[test]
+fn external_instrument_midi_and_audio_loopback_stop_disconnect_and_zero_callback_allocs() {
+    use crate::native_audio::external_instrument::MidiOutputProducerBridge;
+    use hex_audio::external_instrument::{
+        ExternalInstrumentAudioBackend, ExternalInstrumentHost, ExternalInstrumentReturnEndpoint,
+        ExternalInstrumentState, ExternalInstrumentStatus, ExternalMidiEvent,
+    };
+    use hex_audio::hardware_send_return::{
+        ClockPolicy, HardwareAudioPortId, HardwareChannelSelection, HardwareDeviceCapabilities,
+        HardwareLatencyPolicy, HardwareRouteError,
+    };
+
+    struct SynthReturnStream {
+        endpoint: ExternalInstrumentReturnEndpoint,
+        drops: Arc<std::sync::atomic::AtomicU64>,
+    }
+    impl Drop for SynthReturnStream {
+        fn drop(&mut self) {
+            self.drops.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct SynthAudioBackend {
+        drops: Arc<std::sync::atomic::AtomicU64>,
+    }
+    impl ExternalInstrumentAudioBackend for SynthAudioBackend {
+        type ReturnStream = SynthReturnStream;
+
+        fn resolve_return_device(
+            &mut self,
+            port: &HardwareAudioPortId,
+        ) -> Result<HardwareDeviceCapabilities, HardwareRouteError> {
+            if port.as_str() == "coreaudio:synth-in" {
+                Ok(HardwareDeviceCapabilities {
+                    port: port.clone(),
+                    channels: 6,
+                    supported_sample_rates: vec![48_000],
+                    is_software_loopback: false,
+                })
+            } else {
+                Err(HardwareRouteError::MissingReturnDevice)
+            }
+        }
+
+        fn open_return_stream(
+            &mut self,
+            _port: &HardwareAudioPortId,
+            endpoint: ExternalInstrumentReturnEndpoint,
+        ) -> Result<Self::ReturnStream, HardwareRouteError> {
+            Ok(SynthReturnStream {
+                endpoint,
+                drops: Arc::clone(&self.drops),
+            })
+        }
+    }
+
+    // 1. Start existing MIDI OutputWorker with synthetic endpoint (port 1).
+    let paused = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let mut midi_worker = OutputWorker::start_with_backend(ProbeBackend {
+        paused: Arc::clone(&paused),
+        sent: Arc::clone(&sent),
+    })
+    .unwrap();
+    let midi_handle = midi_worker.handle();
+    let midi_producer = midi_worker.take_producer().unwrap();
+    midi_handle
+        .send(OutputCommand::Connect {
+            activation: 1,
+            port: OutputPort {
+                id: 1,
+                name: "synth".into(),
+            },
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        match midi_handle.try_event() {
+            Ok(OutputEvent::Connection {
+                activation: 1,
+                result: Ok(OutputConnectionState::Connected(_)),
+            }) => break,
+            Err(TryRecvError::Empty) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            other => panic!("expected connected synth midi port: {other:?}"),
+        }
+    }
+
+    // 2. Prepare External Instrument audio return (non-default channels 4..5 at 48 kHz).
+    let drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let (mut host, mut cb) = ExternalInstrumentHost::new(SynthAudioBackend {
+        drops: Arc::clone(&drops),
+    });
+    let state = ExternalInstrumentState {
+        midi_port_id: Some(1),
+        midi_port_name: "synth".into(),
+        midi_channel: 2,
+        return_port_uid: "coreaudio:synth-in".into(),
+        return_channels: HardwareChannelSelection::StereoPair {
+            left_index: 4,
+            right_index: 5,
+        },
+        return_gain_db: 0.0,
+        latency_policy: HardwareLatencyPolicy {
+            declared_round_trip_frames: 192,
+            manual_correction_frames: 0,
+        },
+        clock_policy: ClockPolicy::IndependentClock {
+            max_drift_frames: 64,
+        },
+        monitoring_enabled: true,
+    };
+
+    // Offline render must be refused safely.
+    assert_eq!(
+        host.prepare_and_publish(1, 1, &state, 48_000, 64, None, true),
+        Err(HardwareRouteError::OfflineRenderUnsupported)
+    );
+    let pdc = host
+        .prepare_and_publish(1, 1, &state, 48_000, 64, None, false)
+        .unwrap();
+    assert_eq!(pdc, 192);
+
+    // Feed synthetic hardware return audio (impulse on channels 4 & 5).
+    let mut hw_in = vec![0.0_f32; 64 * 6];
+    hw_in[4] = 0.75;
+    hw_in[5] = -0.25;
+    host.active_stream_mut()
+        .unwrap()
+        .endpoint
+        .push_interleaved_return_buffer(&hw_in);
+
+    let midi_events = [
+        ExternalMidiEvent::NoteOn {
+            frame_offset: 0,
+            pitch: 60,
+            velocity: 100,
+        },
+        ExternalMidiEvent::NoteOff {
+            frame_offset: 48,
+            pitch: 60,
+            velocity: 0,
+        },
+    ];
+    let mut audio_out = [[0.0_f32; 2]; 64];
+    let bridge = MidiOutputProducerBridge(&midi_producer);
+
+    // 3. Verify zero total and net callback allocations during live MIDI+audio processing + Stop.
+    let measured = allocation_counter::measure(|| {
+        let status = cb.process_block(10_000_000, &midi_events, &mut audio_out, &bridge);
+        assert_eq!(
+            status,
+            ExternalInstrumentStatus::Active {
+                generation: 1,
+                effective_pdc_frames: 192,
+                midi_sent: 2,
+                midi_overflowed: 0,
+                returned_frames: 64,
+                underrun_frames: 0,
+            }
+        );
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current,
+        ),
+        (0, 0, 0, 0)
+    );
+    assert_eq!(audio_out[0], [0.75, -0.25]);
+
+    // Wait for MIDI worker to deliver NoteOn and NoteOff on channel 2.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while sent.lock().unwrap().len() < 2 && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        *sent.lock().unwrap(),
+        vec![vec![0x92, 60, 100], vec![0x82, 60, 0]]
+    );
+
+    // 4. Stop under load silences audio immediately and forwards Stop to MIDI without allocating.
+    let stop_measured = allocation_counter::measure(|| {
+        host.request_stop();
+        let status = cb.process_block(12_000_000, &midi_events, &mut audio_out, &bridge);
+        assert_eq!(status, ExternalInstrumentStatus::Stopped { generation: 1 });
+    });
+    assert_eq!(
+        (
+            stop_measured.count_total,
+            stop_measured.bytes_total,
+            stop_measured.count_current,
+            stop_measured.bytes_current,
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(audio_out.iter().all(|&f| f == [0.0, 0.0]));
+
+    // 5. Reconnect with generation 2; generation 1 drops strictly on control reclaim.
+    host.prepare_and_publish(2, 1, &state, 48_000, 64, None, false)
+        .unwrap();
+    let status = cb.process_block(14_000_000, &[], &mut audio_out, &bridge);
+    assert!(matches!(
+        status,
+        ExternalInstrumentStatus::Active { generation: 2, .. }
+    ));
+    assert_eq!(drops.load(Ordering::Relaxed), 0);
+    assert_eq!(host.reclaim_retired(), 1);
+    assert_eq!(drops.load(Ordering::Relaxed), 1);
+
+    // Audio disconnect transitions cleanly while keeping authored state recoverable.
+    host.active_state().unwrap().mark_audio_disconnected();
+    assert_eq!(
+        cb.process_block(16_000_000, &[], &mut audio_out, &bridge),
+        ExternalInstrumentStatus::Disconnected { generation: 2 }
+    );
+    assert_eq!(host.authored_state(), &state);
+
+    cb.retire_active_for_shutdown();
+    assert_eq!(host.reclaim_retired(), 1);
+    drop(midi_worker);
 }
