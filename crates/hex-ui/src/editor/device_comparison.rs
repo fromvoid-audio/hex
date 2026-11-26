@@ -53,15 +53,14 @@ pub(super) fn actions(
     let Some(target) = intent(view, device.id(), class, Action::Switch) else {
         return div();
     };
-    let (label, tooltip) = match target.expected {
-        Slot::A => (
-            "a",
-            "settings a · click to switch to b · right-click to copy · p",
-        ),
-        Slot::B => (
-            "b",
-            "settings b · click to switch to a · right-click to copy · p",
-        ),
+    let label = match target.expected {
+        Slot::A => "a",
+        Slot::B => "b",
+    };
+    let tooltip = if target.owner.type_id == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
+        "click to switch · right-click to copy"
+    } else {
+        "click to switch · right-click to copy · , selects a · . selects b · opt-, copies a to b · opt-. copies b to a"
     };
     div().child(
         super::device_panel::segment_button(
@@ -84,7 +83,28 @@ pub(super) fn actions(
     )
 }
 
-/// No global P binding. Only the directly focused card consumes this character;
+/// Source housings have no chain drag target to select and focus their device.
+pub(super) fn source_title(
+    device: DeviceId,
+    label: impl AsRef<str>,
+    cx: &mut Context<EditorView>,
+) -> Stateful<Div> {
+    let selector = format!("device-title-{}", device.value());
+    div()
+        .id(gpui::ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .child(theme::text(label))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                view.device_panel.select_only(Some(device));
+                view.device_panel.focus_action_card(device, window, cx);
+                cx.notify();
+            }),
+        )
+}
+
+/// Only the directly focused card consumes comparison shortcuts;
 /// text/numeric/graph descendants and the musical keyboard keep their own routes.
 pub(super) fn card(
     view: &EditorView,
@@ -97,14 +117,27 @@ pub(super) fn card(
     let Some(target) = intent(view, device, class, Action::Switch) else {
         return card;
     };
+    if target.owner.type_id == hex_lattice_contract::VST3_DEVICE_TYPE_ID {
+        return card;
+    }
     card.on_key_down(
         cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
-            if event.keystroke.key != "p"
-                || event.keystroke.modifiers.modified()
-                || !focus.is_focused(window)
-            {
+            if !focus.is_focused(window) {
                 return;
             }
+            let slot = match event.keystroke.key.as_str() {
+                "," => Slot::A,
+                "." => Slot::B,
+                _ => return,
+            };
+            let modifiers = event.keystroke.modifiers;
+            let action = if modifiers == gpui::Modifiers::alt() {
+                Some(Action::CopyFrom(slot))
+            } else if !modifiers.modified() {
+                (slot != target.expected).then_some(Action::Switch)
+            } else {
+                return;
+            };
             cx.stop_propagation();
             if event.is_held
                 || view.device_panel.selected_device != Some(device)
@@ -113,7 +146,9 @@ pub(super) fn card(
             {
                 return;
             }
-            view.perform_device_comparison(target, cx);
+            if let Some(action) = action {
+                view.perform_device_comparison(Intent { action, ..target }, cx);
+            }
         }),
     )
 }

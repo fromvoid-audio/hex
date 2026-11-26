@@ -856,7 +856,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                                     hex_project::DeviceComparisonAction::Switch => {
                                         "device comparison switched"
                                     }
-                                    hex_project::DeviceComparisonAction::CopyToInactive => {
+                                    hex_project::DeviceComparisonAction::CopyToInactive
+                                    | hex_project::DeviceComparisonAction::CopyFrom(_) => {
                                         "device comparison copied"
                                     }
                                 }

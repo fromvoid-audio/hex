@@ -750,7 +750,7 @@ fn console_main_parameter_banks_presets_and_project_roundtrip(cx: &mut TestAppCo
     });
     let title = card_point(&mut visual, device, "device-drag-title");
     visual.simulate_click(title, Modifiers::default());
-    visual.simulate_keystrokes("p");
+    visual.simulate_keystrokes(".");
     pump(&editor, &mut visual);
     type_gain(&mut visual, "6 db");
     pump(&editor, &mut visual);
@@ -824,7 +824,7 @@ fn console_main_parameter_banks_presets_and_project_roundtrip(cx: &mut TestAppCo
     });
     editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
-    for _ in 0..2 {
+    for next in [",", "."] {
         let title = card_point(&mut visual, device, "device-drag-title");
         visual.simulate_click(title, Modifiers::default());
         let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
@@ -854,7 +854,7 @@ fn console_main_parameter_banks_presets_and_project_roundtrip(cx: &mut TestAppCo
         });
         let title = card_point(&mut visual, device, "device-drag-title");
         visual.simulate_click(title, Modifiers::default());
-        visual.simulate_keystrokes("p");
+        visual.simulate_keystrokes(next);
         pump(&editor, &mut visual);
     }
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());

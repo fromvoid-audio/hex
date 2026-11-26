@@ -3943,6 +3943,22 @@ fn source_manager_edits_unassigned_operator_with_its_specialized_panel(cx: &mut 
             .debug_bounds(selector(format!("operator-shell-{}", device.value())))
             .is_some()
     );
+    let title = visual
+        .debug_bounds(selector(format!("device-title-{}", device.value())))
+        .unwrap();
+    visual.simulate_click(title.center(), Modifiers::default());
+    visual.simulate_keystrokes(".");
+    settle(&editor, &mut visual, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .active_variant()
+            == hex_project::DeviceVariant::B
+    });
+    visual.run_until_parked();
     let oscillator = visual
         .debug_bounds(selector(format!(
             "operator-page-{}-oscillator",
