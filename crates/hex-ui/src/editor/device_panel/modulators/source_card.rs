@@ -1,5 +1,6 @@
 //! Source-stage Utility modulator card rendering.
 use super::*;
+use crate::editor::device_comparison;
 
 pub(in crate::editor) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
@@ -332,14 +333,18 @@ pub(in crate::editor) fn source_effect_card(
         }
     }
     let modulation = panel(view, cx, device, &metadata, true);
+    let selected = view.device_panel.is_selected(id);
+    let class = NativeDeviceClass::Effect;
+    let focus = view.device_panel.chain_window.focus(id, cx);
     let rendered = hex_widgets::device_frame_with_modulators(
-        theme::text(metadata.name),
-        theme::device_frame_style(false),
+        device_comparison::source_title(id, metadata.name, cx),
+        theme::device_frame_style(selected),
         div(),
-        div(),
+        device_comparison::actions(view, device, class, selected, cx),
         body,
         modulation,
     )
     .h_full();
-    outer.child(rendered)
+    let card = outer.track_focus(&focus).child(rendered);
+    device_comparison::card(view, cx, id, class, focus, card)
 }

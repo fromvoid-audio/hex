@@ -198,10 +198,29 @@ fn compressor_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         title(&mut visual, device);
-        visual.simulate_keystrokes("p");
+        let (select, copy_active, copy_inactive) = match active {
+            DeviceVariant::A => (".", "alt-,", "alt-."),
+            DeviceVariant::B => (",", "alt-.", "alt-,"),
+        };
+        for (shortcut, expected_mix) in [(copy_active, current), (copy_inactive, inactive)] {
+            visual.simulate_keystrokes(shortcut);
+            pump_until(&editor, cx, settled);
+            compressor_pair(&editor, cx, device, active, expected_mix, expected_mix);
+            visual.simulate_keystrokes("cmd-z");
+            pump_until(&editor, cx, settled);
+            compressor_pair(&editor, cx, device, active, current, inactive);
+            visual.run_until_parked();
+        }
+        visual.simulate_keystrokes(select);
         pump_until(&editor, cx, settled);
         visual.run_until_parked();
         compressor_pair(&editor, cx, device, next, inactive, current);
+        let revision = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().revision);
+        visual.simulate_keystrokes(select);
+        pump_until(&editor, cx, settled);
+        editor.read_with(cx, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().revision, revision)
+        });
     }
     eprintln!(
         "compressor generic A/B: return={on_return}; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved"
@@ -376,9 +395,9 @@ fn device_comparison_p_respects_browser_ime_musical_and_modal_focus(cx: &mut Tes
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| view.browser.search.read(cx).focus(window))
     });
-    visual.simulate_input("p 🎹");
+    visual.simulate_input("p,. 🎹");
     editor.read_with(cx, |view, cx| {
-        assert_eq!(view.browser.search.read(cx).text(), "p 🎹");
+        assert_eq!(view.browser.search.read(cx).text(), "p,. 🎹");
         assert_eq!(view.state.as_ref().unwrap().project, original);
     });
     visual.update(|window, cx| {
@@ -514,9 +533,7 @@ fn catalog_fixture(
 }
 
 #[gpui::test]
-fn device_comparison_every_available_catalog_header_and_return_uses_actual_p(
-    cx: &mut TestAppContext,
-) {
+fn device_comparison_every_available_catalog_header_and_return_selects_b(cx: &mut TestAppContext) {
     let mut expected = 0;
     let mut observed = 0;
     for class in [NativeDeviceClass::Instrument, NativeDeviceClass::Effect] {
@@ -544,7 +561,7 @@ fn device_comparison_every_available_catalog_header_and_return_uses_actual_p(
                 visual.run_until_parked();
                 point_for(&mut visual, "device-comparison", device);
                 title(&mut visual, device);
-                visual.simulate_keystrokes("p");
+                visual.simulate_keystrokes(".");
                 pump_until(&editor, cx, settled);
                 assert_eq!(
                     slot(&editor, cx, device),

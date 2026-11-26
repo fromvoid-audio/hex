@@ -198,7 +198,7 @@ fn callback_comparison(on_return: bool) -> Result<(), Box<dyn Error>> {
     };
     let mut completed = 0;
     // None is an ordinary active parameter edit to author a different A again.
-    // Copy has the same expected amplitude before/after: it must not change sound.
+    // Copying into the active slot must ramp to the source gain, like a switch.
     for (index, (action, gain)) in [
         (Some(Action::Switch), 0.25),
         (Some(Action::CopyToInactive), 0.25),
@@ -206,6 +206,8 @@ fn callback_comparison(on_return: bool) -> Result<(), Box<dyn Error>> {
         (None, 0.75),
         (Some(Action::Switch), 0.25),
         (Some(Action::Switch), 0.75),
+        (Some(Action::CopyFrom(hex_project::DeviceVariant::B)), 0.25),
+        (None, 0.75),
         (Some(Action::CopyToInactive), 0.75),
     ]
     .into_iter()

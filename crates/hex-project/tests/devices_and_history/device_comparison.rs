@@ -81,6 +81,14 @@ fn two_independent_variants_copy_direction_and_exact_history() {
     compare(&mut editor, device, Action::Switch);
     assert_eq!(value(&editor, device), 3);
     let before = editor.project().clone();
+    compare(&mut editor, device, Action::CopyFrom(Slot::B));
+    assert_eq!(value(&editor, device), 2);
+    assert_eq!(
+        editor.project().device(device).unwrap().active_variant(),
+        Slot::A
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
     compare(&mut editor, device, Action::CopyToInactive);
     assert_eq!(value(&editor, device), 3);
     assert_eq!(
@@ -92,6 +100,24 @@ fn two_independent_variants_copy_direction_and_exact_history() {
     assert!(editor.redo());
     compare(&mut editor, device, Action::Switch);
     assert_eq!(value(&editor, device), 3);
+}
+
+#[test]
+fn first_named_copy_keeps_a_reference_while_the_active_slot_is_edited() {
+    let (mut editor, device) = fixture();
+    compare(&mut editor, device, Action::CopyFrom(Slot::A));
+    assert_eq!(
+        editor.project().device(device).unwrap().active_variant(),
+        Slot::A
+    );
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device,
+            state: state(2),
+        })
+        .unwrap();
+    compare(&mut editor, device, Action::Switch);
+    assert_eq!(value(&editor, device), 1);
 }
 
 #[test]
