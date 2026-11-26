@@ -1095,7 +1095,7 @@ fn dropping_service_detaches_an_active_export_worker() {
                 path: path.to_path_buf(),
                 sample_rate: project.arrangement().sample_rate(),
                 frames,
-                data_bytes: u32::try_from(frames * 4).unwrap_or(u32::MAX),
+                data_bytes: frames * 4,
                 clipped_samples: 0,
                 recovery_path: None,
                 applied_gain_linear: 1.0,
