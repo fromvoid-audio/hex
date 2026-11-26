@@ -843,6 +843,7 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
     body.extend(u32::MAX.to_le_bytes());
     body.extend(0_u32.to_le_bytes());
     body.push(1);
+    body.extend([2, 0, 4, 0, 8, 0]);
     body.extend([0; 5]);
     assert_eq!(
         Facts::decode(&body, &config).unwrap(),
@@ -850,15 +851,23 @@ fn facts_require_exact_source_format_and_interface_presence_and_do_not_acknowled
             algorithmic_latency_frames: u32::MAX,
             tail_frames: 0,
             presentation_available: true,
+            note_expression: NoteExpressionCapabilities {
+                tuning_channels: 2,
+                brightness_channels: 4,
+                unreadable_channels: 8
+            },
             restored: false
         }
     );
-    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 134, 135, 136, 137] {
+    for offset in [0, 2, 34, 50, 82, 114, 122, 124, 125, 134, 141, 142, 143] {
         let mut bad = body.clone();
         bad[offset] ^= 0x80;
         assert!(Facts::decode(&bad, &config).is_err());
     }
     assert!(Facts::decode(&body[..130], &config).is_err());
+    let mut conflicting = body.clone();
+    conflicting[139] |= 2;
+    assert!(Facts::decode(&conflicting, &config).is_err());
     body.push(0);
     assert!(Facts::decode(&body, &config).is_err());
     let absent = presentation_request(config.binding, None).unwrap();
@@ -917,6 +926,7 @@ fn startup_restore_requires_current_source_and_exact_facts_and_final_acknowledge
     facts.extend(3_u32.to_le_bytes());
     facts.extend(0_u32.to_le_bytes());
     facts.push(1); // real optional presentation interface
+    facts.extend([0; 6]);
     facts.extend(&request[46..]);
     assert!(Facts::decode(&facts, &config).unwrap().restored);
     let mut epoch = facts.clone();
@@ -1009,6 +1019,7 @@ fn epoch_body(config: &Configuration, sequence: u64) -> Vec<u8> {
     body.extend(3_u32.to_le_bytes());
     body.extend(0_u32.to_le_bytes());
     body.push(1);
+    body.extend([0; 6]);
     body.extend(&config.startup_request().unwrap()[46..]);
     body.extend(sequence.to_le_bytes());
     body.extend((sequence * u64::from(config.quantum)).to_le_bytes());
@@ -1041,7 +1052,7 @@ fn reactivation_binds_source_completed_prefix_and_unique_operation() {
     for end in 0..body.len() {
         assert!(reactivated_facts(&body[..end], &config, 3, 2).is_err());
     }
-    for offset in [0, 32, 48, 80, 112, 120, 134, 135, 138, 146, 154] {
+    for offset in [0, 32, 48, 80, 112, 120, 134, 141, 144, 152, 160] {
         let mut bad = body.clone();
         bad[offset] ^= 128;
         assert!(
@@ -1061,7 +1072,7 @@ fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let body = epoch_body(&config, 3);
     let facts = quiescent_facts(&body, &config, 3).unwrap();
     assert_eq!(facts.algorithmic_latency_frames, 3);
-    for at in [2, 34, 50, 82, 114, 122, 134, 135, 138, 146] {
+    for at in [2, 34, 50, 82, 114, 122, 134, 141, 144, 152] {
         let mut bad = body.clone();
         bad[at] ^= 0x80;
         assert!(quiescent_facts(&bad, &config, 3).is_err());

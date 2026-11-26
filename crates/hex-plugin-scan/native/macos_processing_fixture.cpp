@@ -5,6 +5,7 @@
 #include "pluginterfaces/vst/ivstmidicontrollers.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "pluginterfaces/vst/ivstevents.h"
+#include "pluginterfaces/vst/ivstnoteexpression.h"
 #include "pluginterfaces/vst/ivstprocesscontext.h"
 #include <cmath>
 #include <algorithm>
@@ -227,7 +228,7 @@ static double parameter_value(int variant,double value) {
 // The latency fixture invokes one additional restart synchronously during
 // activation. Its controller owns this borrowed handler on the main lane.
 IComponentHandler* latency_handler=nullptr;
-class RestoreController final : public IEditController, public IMidiMapping {
+class RestoreController final : public IEditController, public IMidiMapping, public INoteExpressionController {
     std::atomic<uint32> refs{1};
     const int fault=next_fault;
     const int32 inventory_size=fault==grouped_instrument_variant?3:
@@ -425,11 +426,32 @@ public:
     uint32 PLUGIN_API release() override { const auto value=--refs;if(!value)delete this;return value; }
     tresult PLUGIN_API queryInterface(const TUID iid,void** out) override {
         if (!iid || !out) return kInvalidArgument;*out=nullptr;
+        if(fault==authored_instrument_variant && same(iid,INLINE_UID_OF(INoteExpressionController))) {
+            *out=static_cast<INoteExpressionController*>(this);addRef();return kResultOk;
+        }
         if((fault==authored_instrument_variant || fault==midi_effect_variant) && same(iid,INLINE_UID_OF(IMidiMapping))) {
             *out=static_cast<IMidiMapping*>(this);addRef();return kResultOk;
         }
         if (!same(iid,INLINE_UID_OF(FUnknown)) && !same(iid,INLINE_UID_OF(IEditController))) return kNoInterface;
         *out=static_cast<IEditController*>(this);addRef();return kResultOk;
+    }
+    int32 PLUGIN_API getNoteExpressionCount(int32 bus,int16 channel) override {
+        if(!control() || !context || bus) { ++observed.violations;return -1; }
+        if(channel==3) return 257;
+        return channel==1 || channel==2 ? 1 : 0;
+    }
+    tresult PLUGIN_API getNoteExpressionInfo(int32 bus,int16 channel,int32 index,NoteExpressionTypeInfo& info) override {
+        if(!control() || !context || bus || index || (channel!=1 && channel!=2)) {
+            ++observed.violations;return kInvalidArgument;
+        }
+        info={};info.typeId=channel==1?kTuningTypeID:kBrightnessTypeID;
+        info.valueDesc={0.5,0.0,1.0,0};return kResultOk;
+    }
+    tresult PLUGIN_API getNoteExpressionStringByValue(int32,int16,NoteExpressionTypeID,NoteExpressionValue,String128) override {
+        return kNotImplemented;
+    }
+    tresult PLUGIN_API getNoteExpressionValueByString(int32,int16,NoteExpressionTypeID,const TChar*,NoteExpressionValue&) override {
+        return kNotImplemented;
     }
     tresult PLUGIN_API getMidiControllerAssignment(int32 bus,int16 channel,CtrlNumber cc,ParamID& id) override {
         if(!control() || !context || bus) { ++observed.violations;return kInvalidArgument; }

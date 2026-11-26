@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include "pluginterfaces/vst/ivstnoteexpression.h"
 #include <cstring>
 #include <limits>
 #include <new>
@@ -24,6 +25,10 @@
 namespace hex_instance {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
+
+struct NoteExpressionCapabilities {
+    uint16_t tuning=0, brightness=0, unreadable=0;
+};
 
 class Instance final {
     IPluginFactory* factory = nullptr;
@@ -440,6 +445,50 @@ public:
     // supplies actual per-direction origin/compensation/device contributions;
     // zero is never invented here as evidence that unknown latency is measured.
     // Query only; never apply placeholder contributions during graph planning.
+    // Called only on the control lane before a stopped facts response. A broken
+    // optional inventory cannot revoke ordinary note playback.
+    std::optional<NoteExpressionCapabilities> note_expression_capabilities_on_control() const {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load())
+            return std::nullopt;
+        NoteExpressionCapabilities result;
+        if (!controller || !event_input_channels_) return result;
+        const auto channels=event_input_channels_;
+        const auto active=static_cast<uint16_t>((uint32_t{1}<<channels)-1);
+        INoteExpressionController* expressions=nullptr;
+        const auto queried=controller->queryInterface(INLINE_UID_OF(INoteExpressionController),
+                                                     reinterpret_cast<void**>(&expressions));
+        if (interface_absent(queried,expressions)) return result;
+        if (queried!=kResultOk || !expressions) {
+            if (expressions) expressions->release();
+            result.unreadable=active;
+            return result;
+        }
+        constexpr int32 max_types_per_channel=256;
+        for (int16 channel=0;channel<channels;++channel) {
+            const auto bit=static_cast<uint16_t>(uint32_t{1}<<channel);
+            const auto count=expressions->getNoteExpressionCount(0,channel);
+            bool valid=count>=0 && count<=max_types_per_channel;
+            bool tuning=false,brightness=false;
+            for (int32 index=0;valid && index<count;++index) {
+                NoteExpressionTypeInfo info{};
+                valid=expressions->getNoteExpressionInfo(0,channel,index,info)==kResultOk &&
+                    info.typeId!=kInvalidTypeID;
+                if (!valid || (info.typeId!=kTuningTypeID && info.typeId!=kBrightnessTypeID)) continue;
+                bool& found=info.typeId==kTuningTypeID?tuning:brightness;
+                const auto& range=info.valueDesc;
+                valid=!found && 0.0<=range.minimum && range.minimum<=range.defaultValue &&
+                    range.defaultValue<=range.maximum && range.maximum<=1.0 && range.stepCount>=0;
+                found=true;
+            }
+            if (!valid) result.unreadable|=bit;
+            else {
+                if (tuning) result.tuning|=bit;
+                if (brightness) result.brightness|=bit;
+            }
+        }
+        expressions->release();
+        return result;
+    }
     std::optional<bool> presentation_latency_available_on_control() const {
         if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load())
             return std::nullopt;

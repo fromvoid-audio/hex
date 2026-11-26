@@ -265,6 +265,7 @@ mod unit_tests {
         Facts {
             algorithmic_latency_frames: latency,
             tail_frames: tail,
+            note_expression: Default::default(),
             presentation_available: false,
             restored: true,
         }

@@ -246,11 +246,11 @@ impl Channel {
                 if wanted == 12 {
                     let magic = &out.bytes[..8];
                     if ![
-                        b"HXVIFA04",
+                        b"HXVIFA05",
                         b"HXVIRD06",
-                        b"HXVIQF03",
-                        b"HXVIAR02",
-                        b"HXVIRR03",
+                        b"HXVIQF04",
+                        b"HXVIAR03",
+                        b"HXVIRR04",
                         b"HXVICS02",
                         &protocol::CAPTURE_REFUSAL_MAGIC,
                         b"HXVIFL01",
