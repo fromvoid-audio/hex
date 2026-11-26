@@ -190,6 +190,7 @@ widgets = (
 # their short names local to the owning module. Nested text children are still
 # checked individually, including the captions of row and dial constructors.
 editor_components = {
+    'issue_report.rs': ('pills)', 'lines)', 'line.clone())', 'preview_text)'),
     'session_grid.rs': ('super::clip_boundary::backdrop_shell(',),
     'playback_subviews.rs': ('batched_canvas)', 'slot.view.clone())'),
     'arrangement_audio_panel.rs': ('gpui::canvas(',),

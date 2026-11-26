@@ -2625,6 +2625,7 @@ dependencies = [
  "hex-plugin-state",
  "hex-preferences",
  "hex-project",
+ "hex-report",
  "hex-session",
  "hex-storage",
  "hex-stream",
@@ -2647,6 +2648,9 @@ dependencies = [
 [[package]]
 name = "hex-diagnostics"
 version = "0.1.0"
+dependencies = [
+ "flate2",
+]
 
 [[package]]
 name = "hex-dsp"
@@ -2785,6 +2789,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-report"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "flate2",
+ "hex-diagnostics",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "hex-sandbox"
 version = "0.1.0"
 dependencies = [
@@ -2890,6 +2906,7 @@ dependencies = [
  "hex-plugin-catalog",
  "hex-preferences",
  "hex-project",
+ "hex-report",
  "hex-session",
  "hex-storage",
  "hex-tuning",

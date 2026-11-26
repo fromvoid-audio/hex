@@ -16,7 +16,18 @@ const MAX_RECEIPT_BYTES: u64 = 8 * 1024 * 1024;
 // Unlock the shared open-file description explicitly before closing it. A
 // transient descriptor duplicate (for example during process creation) must
 // not extend this process's custody beyond the lifetime of its lease.
-pub(super) struct UpdateLease(File);
+pub(super) struct UpdateLease {
+    file: File,
+    sole_instance: bool,
+}
+
+impl UpdateLease {
+    /// Whether this process was the sole holder of `.hex-test-build.lock` at
+    /// acquisition time (no other Hex instance held the shared custody lock).
+    pub(super) fn is_sole_instance(&self) -> bool {
+        self.sole_instance
+    }
+}
 
 #[cfg(test)]
 impl UpdateLease {
@@ -27,14 +38,30 @@ impl UpdateLease {
             .create(true)
             .truncate(false)
             .open(path)?;
-        fs2::FileExt::try_lock_shared(&file)?;
-        Ok(Self(file))
+        let sole_instance = acquire_shared_detecting_sole(&file)?;
+        Ok(Self {
+            file,
+            sole_instance,
+        })
+    }
+}
+
+/// Acquire a shared lock on `file`, returning `true` if no other process held
+/// any lock on it (verified by taking a transient non-blocking exclusive lock
+/// and downgrading to shared on the same open file description).
+fn acquire_shared_detecting_sole(file: &File) -> io::Result<bool> {
+    if fs2::FileExt::try_lock_exclusive(file).is_ok() {
+        fs2::FileExt::try_lock_shared(file)?;
+        Ok(true)
+    } else {
+        fs2::FileExt::try_lock_shared(file)?;
+        Ok(false)
     }
 }
 
 impl Drop for UpdateLease {
     fn drop(&mut self) {
-        let _ = fs2::FileExt::unlock(&self.0);
+        let _ = fs2::FileExt::unlock(&self.file);
     }
 }
 
@@ -119,12 +146,15 @@ fn acquire_for_executable(executable: &Path, build: &str) -> io::Result<Option<U
             return Err(invalid("update lock changed"));
         }
     }
-    fs2::FileExt::try_lock_shared(&file)?;
-    let lease = UpdateLease(file);
+    let sole_instance = acquire_shared_detecting_sole(&file)?;
+    let lease = UpdateLease {
+        file,
+        sole_instance,
+    };
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        let locked = lease.0.metadata()?;
+        let locked = lease.file.metadata()?;
         let current = fs::symlink_metadata(&path)?;
         if !current.is_file()
             || current.file_type().is_symlink()
@@ -239,9 +269,11 @@ mod tests {
         let first = acquire_for_executable(&executable, &Fixture::build())
             .unwrap()
             .unwrap();
+        assert!(first.is_sole_instance());
         let second = acquire_for_executable(&executable, &Fixture::build())
             .unwrap()
             .unwrap();
+        assert!(!second.is_sole_instance());
         let installer = OpenOptions::new()
             .read(true)
             .write(true)
@@ -272,7 +304,7 @@ mod tests {
         let second = acquire_for_executable(&executable, &Fixture::build())
             .unwrap()
             .unwrap();
-        let inherited = lease.0.try_clone().unwrap();
+        let inherited = lease.file.try_clone().unwrap();
         let installer = OpenOptions::new()
             .read(true)
             .write(true)
@@ -305,7 +337,7 @@ mod tests {
             .open(fixture.0.join(".hex-test-build.lock"))
             .unwrap();
         let mut actions = PosixSpawnFileActions::init().unwrap();
-        actions.add_dup2(lease.0.as_raw_fd(), 198).unwrap();
+        actions.add_dup2(lease.file.as_raw_fd(), 198).unwrap();
         let attributes = PosixSpawnAttr::init().unwrap();
         let child = posix_spawn(
             c"/bin/sleep",

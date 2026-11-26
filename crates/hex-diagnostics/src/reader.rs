@@ -275,7 +275,7 @@ pub fn read_session_page(active: &Path, requested_page: usize) -> io::Result<Log
     read_selected(active, Some(requested_page), &LogFilter::default()).map(|(page, _, _)| page)
 }
 
-fn open_segment(path: &Path, index: usize) -> io::Result<Option<File>> {
+pub(crate) fn open_segment(path: &Path, index: usize) -> io::Result<Option<File>> {
     match File::open(path) {
         Ok(file) => Ok(Some(file)),
         Err(error) if index != 0 && error.kind() == io::ErrorKind::NotFound => Ok(None),
@@ -286,7 +286,7 @@ fn open_segment(path: &Path, index: usize) -> io::Result<Option<File>> {
     }
 }
 
-fn segment_paths(active: &Path) -> Vec<(usize, PathBuf)> {
+pub(crate) fn segment_paths(active: &Path) -> Vec<(usize, PathBuf)> {
     (0..RETAINED_SEGMENTS)
         .rev()
         .map(|index| {
@@ -300,16 +300,16 @@ fn segment_paths(active: &Path) -> Vec<(usize, PathBuf)> {
         .collect()
 }
 
-struct SegmentStreamStats {
-    exceeded_limit: bool,
-    incomplete_tail: bool,
-    invalid_utf8: bool,
+pub(crate) struct SegmentStreamStats {
+    pub(crate) exceeded_limit: bool,
+    pub(crate) incomplete_tail: bool,
+    pub(crate) invalid_utf8: bool,
 }
 
 /// Stream complete `\n`-terminated lines from one segment up to `SEGMENT_READ_LIMIT`
 /// bytes using a single reusable line buffer, never holding the entire 8 MiB segment
 /// in memory at once.
-fn stream_segment_lines(
+pub(crate) fn stream_segment_lines(
     file: File,
     path: &Path,
     raw_line: &mut Vec<u8>,
@@ -549,12 +549,12 @@ fn read_selected(
     ))
 }
 
-struct ParsedEvent<'a> {
-    unix_nanos: u128,
-    elapsed_nanos: u128,
-    sequence: u64,
-    level: &'a str,
-    category: &'a str,
+pub(crate) struct ParsedEvent<'a> {
+    pub(crate) unix_nanos: u128,
+    pub(crate) elapsed_nanos: u128,
+    pub(crate) sequence: u64,
+    pub(crate) level: &'a str,
+    pub(crate) category: &'a str,
 }
 impl ParsedEvent<'_> {
     fn into_log_event(self) -> LogEvent {
@@ -568,7 +568,7 @@ impl ParsedEvent<'_> {
     }
 }
 
-fn parse_event(line: &str) -> Option<ParsedEvent<'_>> {
+pub(crate) fn parse_event(line: &str) -> Option<ParsedEvent<'_>> {
     // Only inspect the prefix, never parse fields from a quoted message.
     let prefix = line.split_once(" message=")?.0;
     let field = |name: &str| {
