@@ -126,7 +126,7 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
         }
         started=instance.start_processing();e.pcm=started;
         if (flush_scenario) e.descriptors=e.descriptors && instance.flush_stopped(flush)==FlushResult::InvalidState;
-        for (int block=0;block<3 && e.pcm;++block) {
+        for (int block=0;block<(discrete?4:3) && e.pcm;++block) {
             left.fill(0.75f);right.fill(-0.5f);out_left.fill(1234);out_right.fill(1234);
             in[0]=left.data();in[1]=right.data();out[0]=out_left.data();out[1]=out_right.data();
             input.silenceFlags=0;output.silenceFlags=0;
@@ -161,8 +161,11 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
                 AuxiliaryOutputBlock destination{bus_rows.data(),needed-1};
                 e.descriptors=e.descriptors && !instance.process(data,nullptr,nullptr,nullptr,nullptr,&destination)
                     && bus_rows[0]==untouched && out_left[0]==1234 && out_right[0]==1234;
+                AuxiliaryOutputBlock missing{nullptr,needed};
+                e.descriptors=e.descriptors && !instance.process(data,nullptr,nullptr,nullptr,nullptr,&missing)
+                    && bus_rows[0]==untouched && out_left[0]==1234 && out_right[0]==1234;
                 destination.capacity=needed;
-                const bool folded=block==2;
+                const bool folded=block==3;
                 e.pcm=e.pcm && instance.process(data,nullptr,nullptr,nullptr,nullptr,folded?nullptr:&destination);
                 e.pcm=events.end() && e.pcm;
                 const float main=0.5f+static_cast<float>(block)*0.125f;
@@ -249,7 +252,9 @@ static bool processing_case(CFBundleRef bundle,Steinberg::IPluginFactory* factor
         candidate_closed=candidate.close();e.active_preserved=candidate_closed && e.active_preserved;
         { std::lock_guard<std::mutex> lock(mutex);resume=true;changed.notify_all(); }
     }
-    worker.join();e.closed=instance.close() && candidate_closed;
+    worker.join();
+    e.closed=(discrete && stopped?instance.close_for_retirement(true)==Instance::CloseResult::Closed:instance.close())
+        && candidate_closed;
     const bool observed_ok=observe(e.observed,13)==13 && e.observed[0]==0;
     return e.pcm && e.descriptors && e.active_preserved && stopped && e.closed && observed_ok;
 }

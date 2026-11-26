@@ -583,6 +583,9 @@ public:
         processing.store(true);
         return true;
     }
+    // A discrete target leaves main in data.outputs[0] and copies original
+    // auxiliary slots to the caller after successful validation. Without a
+    // target the joined worker retains the established stereo monitor fold.
     bool process(ProcessData& data,uint64_t* sdk_process_ns=nullptr,
                  const float* aux_left=nullptr,const float* aux_right=nullptr,
                  uint64_t* sdk_thread_cpu_ns=nullptr,

@@ -150,7 +150,7 @@ class NativeBootstrapTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 value, observed = self.processing(scenario)
                 self.assertEqual(value["configuration"], 0)
-                self.assertEqual(observed[7:11], [1, 1, 3, 0])
+                self.assertEqual(observed[7:11], [1, 1, 4, 0])
 
     def test_processing_pcm_bus_shapes_aliasing_silence_and_rates(self):
         for scenario in list(range(10)) + [23, 24, 25, 27, 28]:
