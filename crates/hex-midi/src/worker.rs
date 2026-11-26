@@ -100,9 +100,11 @@ pub(crate) const RETRY_INTERVAL: Duration = Duration::from_millis(20);
 /// Idle wait between connected-endpoint presence checks.
 pub(crate) const IDLE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Worker-private queue entry: public commands plus the owner's prompt shutdown wake.
+/// Worker-private queue entry: public commands, CoreMIDI setup wakeups, and shutdown.
 pub(crate) enum Request {
     Command(Command),
+    #[cfg(target_os = "macos")]
+    SetupChanged,
     Shutdown,
 }
 
@@ -284,9 +286,10 @@ impl Worker {
         let (events, results) = mpsc::sync_channel(EVENT_CAPACITY);
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
+        let wake_tx = commands.clone();
         let thread = std::thread::Builder::new()
             .name("hex-midi".into())
-            .spawn(move || native::run(requests, events, stop))
+            .spawn(move || native::run(requests, wake_tx, events, stop))
             .map_err(|error| error.to_string())?;
         Ok(Self {
             handle: Handle {
@@ -304,9 +307,12 @@ impl Worker {
         let (events, results) = mpsc::sync_channel(EVENT_CAPACITY);
         let stopping = Arc::new(AtomicBool::new(false));
         let stop = Arc::clone(&stopping);
+        let wake_tx = commands.clone();
         let thread = std::thread::Builder::new()
             .name("hex-midi".into())
-            .spawn(move || native::run_with_idle_signal(requests, events, stop, on_idle_wait))
+            .spawn(move || {
+                native::run_with_idle_signal(requests, wake_tx, events, stop, on_idle_wait)
+            })
             .map_err(|error| error.to_string())?;
         Ok(Self {
             handle: Handle {
@@ -425,7 +431,7 @@ mod tests {
                 .is_ok()
         );
         let (events, _results) = mpsc::sync_channel(4);
-        native::run(receiver, events, Arc::new(AtomicBool::new(true)));
+        native::run(receiver, sender, events, Arc::new(AtomicBool::new(true)));
         assert!(cancelled.load(Ordering::Acquire));
         assert!(notes.is_cancelled());
     }
@@ -460,9 +466,9 @@ mod tests {
         let stop = Arc::new(AtomicBool::new(false));
         let (retained_tx, retained_rx) = mpsc::sync_channel(1);
         let worker = {
-            let (events, stop) = (filler.clone(), Arc::clone(&stop));
+            let (events, stop, wake_tx) = (filler.clone(), Arc::clone(&stop), commands.clone());
             std::thread::spawn(move || {
-                native::run_with_retain_signal(requests, events, stop, retained_tx)
+                native::run_with_retain_signal(requests, wake_tx, events, stop, retained_tx)
             })
         };
         filler

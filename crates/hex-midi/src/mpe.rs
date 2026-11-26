@@ -574,16 +574,30 @@ impl MpeDecoder {
                 if cc == ControlChange::RESET_ALL_CONTROLLERS {
                     if is_master {
                         self.sustain_down = [false; 16];
+                        let had_master_bend = self.master_bend_cents != 0;
                         self.master_bend_cents = 0;
+                        let limit = i32::from(MAX_MPE_PITCH_BEND_CENTS);
                         for ch in 0_u8..16 {
-                            if self.config.zone.is_member_channel(ch)
-                                && self.active[usize::from(ch)].is_some_and(|n| n.sustained)
+                            if !self.config.zone.is_member_channel(ch) {
+                                continue;
+                            }
+                            if self.active[usize::from(ch)].is_some_and(|n| n.sustained)
                                 && let Some(note) = self.active[usize::from(ch)].take()
                             {
                                 push(MpeExpressionEvent::NoteOff {
                                     channel: ch,
                                     pitch: note.pitch,
                                     velocity: 0,
+                                });
+                            } else if had_master_bend
+                                && let Some(note) = self.active[usize::from(ch)]
+                            {
+                                let cents =
+                                    i32::from(note.member_bend_cents).clamp(-limit, limit) as i16;
+                                push(MpeExpressionEvent::NotePitchBend {
+                                    channel: ch,
+                                    pitch: note.pitch,
+                                    cents,
                                 });
                             }
                         }
@@ -1268,5 +1282,55 @@ mod tests {
             .take_held_notes()
             .expect("burst overflow must mark decoder held notes dirty");
         assert_eq!(cleared.after(0).count(), 0);
+    }
+
+    #[test]
+    fn master_cc121_retunes_still_held_unsustained_notes_and_releases_sustained_notes() {
+        let config = MpeConfig::new(MpeZone::Lower { member_channels: 4 }, 48).unwrap();
+        let mut mpe = MpeDecoder::new(config);
+        let mut out = [MpeExpressionEvent::AllNotesOff; 16];
+
+        // Start two notes: ch 1 (pitch 60, held with +1200c member bend), ch 2 (pitch 64, sustained).
+        assert_eq!(mpe.decode_message_into(&[0x91, 60, 100], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0x92, 64, 90], &mut out), 1);
+        // Sustain down on master channel 0, release ch 2 (becomes sustained).
+        assert_eq!(mpe.decode_message_into(&[0xb0, 64, 127], &mut out), 1);
+        assert_eq!(mpe.decode_message_into(&[0x82, 64, 0], &mut out), 0);
+        // Apply +1200c member bend on ch 1 and +200c master bend on ch 0.
+        assert_eq!(mpe.decode_message_into(&[0xe1, 0x00, 0x50], &mut out), 1);
+        let bend_count = mpe.decode_message_into(&[0xe0, 0x7f, 0x7f], &mut out);
+        assert!(bend_count >= 2);
+        assert_eq!(
+            out[0],
+            MpeExpressionEvent::NotePitchBend {
+                channel: 1,
+                pitch: 60,
+                cents: 1400,
+            }
+        );
+
+        // Master CC121 Reset All Controllers zeroes master bend -> must emit NotePitchBend
+        // restoring ch 1 to its remaining +1200c member bend, and NoteOff for sustained ch 2.
+        let count = mpe.decode_message_into(&[0xb0, 121, 0], &mut out);
+        assert_eq!(
+            &out[..count],
+            &[
+                MpeExpressionEvent::NotePitchBend {
+                    channel: 1,
+                    pitch: 60,
+                    cents: 1200,
+                },
+                MpeExpressionEvent::NoteOff {
+                    channel: 2,
+                    pitch: 64,
+                    velocity: 0,
+                },
+                MpeExpressionEvent::MasterControlChange {
+                    channel: 0,
+                    cc: 121,
+                    value: 0,
+                },
+            ]
+        );
     }
 }
