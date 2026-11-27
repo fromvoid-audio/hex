@@ -272,7 +272,6 @@ fn verified_pure_streaming_held_clip_move_auditions_cancels_commits_and_undoes_w
     let files = Files::new();
     let mut h = super::verified_gain::actual_native_harness();
     h.next();
-    h.wait = Duration::from_secs(3);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,

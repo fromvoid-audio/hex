@@ -34,7 +34,6 @@ fn check_verified_group_entry(scenario: EntryScenario) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(2);
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {

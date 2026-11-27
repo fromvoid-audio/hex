@@ -224,7 +224,6 @@ fn open_verified_file_with_limiter(
     files: &Files,
 ) -> (DeviceId, hex_session::service::Event) {
     h.next();
-    h.wait = Duration::from_millis(500);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,
