@@ -167,6 +167,19 @@ impl ChainCustody {
                         OwnedShared::<hex_devices::eq8::PreparedEq8>::declared_parts(),
                     )?),
                 )
+            } else if state.type_id() == hex_devices::eq_three::EQ_THREE_TYPE_ID {
+                let migrated = hex_devices::eq_three::EQ_THREE_DEFINITION
+                    .migrate_state(state)
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                hex_devices::eq_three::EqThreeDefinition::prepare_owned(&migrated, rate, &[])
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+                largest_copy = largest_copy.max(migrated.payload().len());
+                (
+                    migrated.payload().len(),
+                    Some(parts(
+                        OwnedShared::<hex_devices::eq_three::PreparedEqThree>::declared_parts(),
+                    )?),
+                )
             } else if state.type_id() == hex_devices::rattle::RATTLE_TYPE_ID {
                 let migrated = hex_devices::rattle::RATTLE_DEFINITION
                     .migrate_state(state)
@@ -487,6 +500,7 @@ impl ChainCustody {
             let rattle = device.state().type_id() == hex_devices::rattle::RATTLE_TYPE_ID;
             let eq = device.state().type_id() == EQ_TYPE_ID;
             let eq8 = device.state().type_id() == hex_devices::eq8::EQ8_TYPE_ID;
+            let eq_three = device.state().type_id() == hex_devices::eq_three::EQ_THREE_TYPE_ID;
             let delay = device.state().type_id() == hex_devices::delay::TYPE_ID;
             let chorus = device.state().type_id() == hex_devices::chorus::CHORUS_TYPE_ID;
             let shifter = device.state().type_id() == hex_devices::shifter::SHIFTER_TYPE_ID;
@@ -511,6 +525,11 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
             } else if eq8 {
                 hex_devices::eq8::EQ8_DEFINITION
+                    .migrate_state(device.state())
+                    .and_then(|state| state.with_host_metadata_from(device.state()))
+                    .map_err(|_| AudioStorageError::UnsupportedGraph)?
+            } else if eq_three {
+                hex_devices::eq_three::EQ_THREE_DEFINITION
                     .migrate_state(device.state())
                     .and_then(|state| state.with_host_metadata_from(device.state()))
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?
@@ -659,6 +678,7 @@ impl ChainCustody {
                 || rattle
                 || eq
                 || eq8
+                || eq_three
                 || delay
                 || chorus
                 || shifter
@@ -686,7 +706,17 @@ impl ChainCustody {
                     .map_err(|_| AudioStorageError::UnsupportedGraph)?;
             }
             let mut processor_backing_bytes = 0;
-            let processor = if rattle {
+            let processor = if eq_three {
+                Some(
+                    OwnedShared::new_owned(
+                        hex_devices::eq_three::EqThreeDefinition::prepare_owned(
+                            &migrated, rate, parameters,
+                        )
+                        .map_err(|_| AudioStorageError::UnsupportedGraph)?,
+                    )
+                    .into_owned_processor_parts_on_control(),
+                )
+            } else if rattle {
                 Some(
                     OwnedShared::new_owned(
                         hex_devices::rattle::RattleDefinition::prepare_owned(
@@ -951,6 +981,8 @@ impl ChainCustody {
                         &EQ_DEFINITION
                     } else if eq8 {
                         &hex_devices::eq8::EQ8_DEFINITION
+                    } else if eq_three {
+                        &hex_devices::eq_three::EQ_THREE_DEFINITION
                     } else if delay {
                         &hex_devices::delay::DEFINITION
                     } else if chorus {

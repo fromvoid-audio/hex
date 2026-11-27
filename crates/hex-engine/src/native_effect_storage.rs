@@ -111,6 +111,7 @@ pub(crate) fn pair_bytes(
         hex_devices::gate::GateRuntime,
         hex_devices::compressor::CompressorRuntime,
         hex_devices::rattle::RattleRuntime,
+        hex_devices::eq_three::EqThreeRuntime,
     );
     match (entry.primary_payload_bytes(), entry.scratch_payload_bytes()) {
         (Some(a), Some(b))
@@ -122,7 +123,8 @@ pub(crate) fn pair_bytes(
                 || entry.runtime_types_are::<hex_devices::filter::FilterRuntime>()
                 || entry.runtime_types_are::<hex_devices::gate::GateRuntime>()
                 || entry.runtime_types_are::<hex_devices::compressor::CompressorRuntime>()
-                || entry.runtime_types_are::<hex_devices::rattle::RattleRuntime>() =>
+                || entry.runtime_types_are::<hex_devices::rattle::RattleRuntime>()
+                || entry.runtime_types_are::<hex_devices::eq_three::EqThreeRuntime>() =>
         {
             Ok(Some((a, b)))
         }
@@ -143,6 +145,7 @@ pub(crate) fn is_closed_type(id: hex_lattice_contract::DeviceTypeId) -> bool {
         || id == hex_devices::compressor::COMPRESSOR_TYPE_ID
         || id == hex_devices::eq::EQ_TYPE_ID
         || id == hex_devices::eq8::EQ8_TYPE_ID
+        || id == hex_devices::eq_three::EQ_THREE_TYPE_ID
         || id == hex_devices::rattle::RATTLE_TYPE_ID
         || id == hex_devices::delay::TYPE_ID
         || id == hex_devices::chorus::CHORUS_TYPE_ID

@@ -32,6 +32,7 @@ pub mod compressor;
 pub mod delay;
 pub mod eq8;
 pub use eq8::flexible as eq;
+pub mod eq_three;
 pub mod filter;
 pub mod fm4;
 pub mod gate;
@@ -79,10 +80,11 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 15] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 16] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
+    &eq_three::EQ_THREE_DEFINITION,
     &saturator::SATURATOR_DEFINITION,
     &compressor::COMPRESSOR_DEFINITION,
     &gate::GATE_DEFINITION,
