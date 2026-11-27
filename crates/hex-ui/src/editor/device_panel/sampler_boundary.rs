@@ -5,22 +5,18 @@ use super::*;
 use hex_engine::SamplerParameter;
 
 pub(super) fn handle(start: bool, fraction: f64, enabled: bool) -> Div {
-    div()
-        .absolute()
-        .left(relative(fraction as f32))
-        .ml(px(-5.0))
-        .w(px(10.0))
-        .top_0()
-        .bottom(px(RULER_HEIGHT))
-        .when(enabled, |handle| handle.cursor_col_resize())
-        .debug_selector(move || {
-            if start {
-                "sampler-source-start-handle"
-            } else {
-                "sampler-source-end-handle"
-            }
-            .into()
-        })
+    let selector = if start {
+        "sampler-source-start-handle"
+    } else {
+        "sampler-source-end-handle"
+    };
+    hex_widgets::region_edge_handle(
+        selector,
+        fraction,
+        RULER_HEIGHT,
+        hex_widgets::REGION_EDGE_HIT_TOLERANCE_PX * 2.0,
+        enabled,
+    )
 }
 
 pub(super) struct Gesture {
@@ -31,8 +27,7 @@ pub(super) struct Gesture {
     original: u64,
     frame: u64,
     invalid: bool,
-    anchor_x: Pixels,
-    moved: bool,
+    draft: hex_widgets::RegionDragDraft<()>,
 }
 
 pub(in crate::editor) fn cancel(view: &mut EditorView) -> bool {
@@ -113,17 +108,31 @@ pub(super) fn begin(
     ) else {
         return false;
     };
+    let Some(span) = hex_widgets::RegionSpan::from_frames(start, end, source.frames) else {
+        return false;
+    };
     let x = f32::from(position.x - bounds.left());
     let width = f32::from(bounds.size.width);
-    let left = (x - (start / source.frames as f64) as f32 * width).abs();
-    let right = (x - (end / source.frames as f64) as f32 * width).abs();
-    if left.min(right) > 5.0 {
+    let Some(edge) = hex_widgets::hit_test_region_edge(
+        span,
+        x,
+        width,
+        hex_widgets::REGION_EDGE_HIT_TOLERANCE_PX,
+    ) else {
         return false;
-    }
-    let (parameter, value) = if left <= right {
-        (SamplerParameter::StartFrame, start)
-    } else {
-        (SamplerParameter::EndFrame, end)
+    };
+    let (parameter, value, original_fraction) = match edge {
+        hex_widgets::RegionEdge::Start => (SamplerParameter::StartFrame, start, span.start()),
+        hex_widgets::RegionEdge::End => (SamplerParameter::EndFrame, end, span.end()),
+    };
+    let Some(draft) = hex_widgets::RegionDragDraft::begin(
+        (),
+        edge,
+        f32::from(position.x),
+        original_fraction,
+        hex_widgets::REGION_DRAG_DEADZONE_PX,
+    ) else {
+        return false;
     };
     let Some(target) = view.sampler_boundary_target(source.owner, source.device, parameter) else {
         return true;
@@ -181,8 +190,7 @@ pub(super) fn begin(
         original: value as u64,
         frame: value as u64,
         invalid: false,
-        anchor_x: position.x,
-        moved: false,
+        draft,
     });
     cx.notify();
     true
@@ -238,26 +246,24 @@ fn update(view: &mut EditorView, bounds: Bounds<Pixels>, position: gpui::Point<P
         view.error = Some("sampler boundary changed · drag canceled".into());
         return true;
     }
-    let delta = f32::from(position.x - gesture.anchor_x);
     let width = f32::from(bounds.size.width);
-    if !delta.is_finite()
-        || !width.is_finite()
-        || width <= 0.0
-        || !f32::from(position.y).is_finite()
-    {
+    if !f32::from(position.y).is_finite() {
         view.error = Some("sampler boundary geometry is unavailable".into());
         return true;
     }
-    if !gesture.moved && delta.abs() < 2.0 {
-        view.device_panel.sampler_cursor.boundary = Some(gesture);
-        return true;
-    }
-    gesture.moved = true;
-    let x = (gesture.original as f64 / gesture.source.frames as f64) as f32 * width + delta;
-    let Some(frame) = frame_at_x(x.clamp(0.0, width), width, gesture.source.frames) else {
-        view.error = Some("sampler boundary geometry is unavailable".into());
-        return true;
+    let fraction = match gesture.draft.update((), f32::from(position.x), width) {
+        Ok(hex_widgets::RegionDragUpdate::WithinDeadzone) => {
+            view.device_panel.sampler_cursor.boundary = Some(gesture);
+            return true;
+        }
+        Ok(hex_widgets::RegionDragUpdate::Moved(fraction)) => fraction,
+        Err(_) => {
+            view.error = Some("sampler boundary geometry is unavailable".into());
+            return true;
+        }
     };
+    let frame =
+        ((fraction * gesture.source.frames as f64).round() as u64).min(gesture.source.frames);
     match view.validate_sampler_boundary(gesture.target, frame) {
         Ok(()) => {
             gesture.frame = frame;

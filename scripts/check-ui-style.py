@@ -71,6 +71,7 @@ widgets = (
     # Algorithm diagrams have no text; global controls normalize captions.
     'behavior.flex_1()', 'algorithms::selector(', 'global::controls(', 'global::expression_routing(', 'diagram(', 'control.w_full())', 'field)', 'line)',
     'hex_widgets::curve_plot(',
+    'hex_widgets::region_active_band(', 'hex_widgets::region_marker(', 'hex_widgets::region_edge_handle(',
     # Output meter labels are routed through theme::text in the component.
     'crate::output_meter::render(',
     'crate::output_meter::render_unified(',

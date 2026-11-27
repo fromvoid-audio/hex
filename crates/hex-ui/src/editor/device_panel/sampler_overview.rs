@@ -2,7 +2,7 @@
 //! playback readhead or canonical edits. Cursor positions are nearest original
 //! frame boundaries, including the end boundary at `source_frames`.
 use super::*;
-use gpui::{MouseDownEvent, canvas, relative};
+use gpui::{MouseDownEvent, canvas};
 use std::{cell::Cell, rc::Rc};
 
 const RULER_HEIGHT: f32 = 14.0;
@@ -93,10 +93,7 @@ pub(super) fn reconcile_cursor(view: &mut EditorView) {
 }
 
 fn frame_at_x(x: f32, width: f32, frames: u64) -> Option<u64> {
-    if !x.is_finite() || !width.is_finite() || width <= 0.0 || x < 0.0 || x > width || frames == 0 {
-        return None;
-    }
-    Some(((f64::from(x) / f64::from(width) * frames as f64).round() as u64).min(frames))
+    hex_widgets::region_frame_at_x(x, width, frames)
 }
 
 pub(super) fn render(
@@ -147,9 +144,9 @@ pub(super) fn render(
     let Some(end) = parameter(hex_engine::SamplerParameter::EndFrame) else {
         return shell.child(theme::text("source region unavailable"));
     };
-    if !(start >= 0.0 && start < end && end <= frames as f64) {
+    let Some(region_span) = hex_widgets::RegionSpan::from_frames(start, end, frames) else {
         return shell.child(theme::text("source region exceeds overview"));
-    }
+    };
     let facts = format!(
         "{frames} frames · {} hz · {:.3} s",
         overview.sample_rate(),
@@ -208,16 +205,12 @@ pub(super) fn render(
                 cx.notify();
             }),
         )
-        .child(
-            div()
-                .absolute()
-                .left(relative((start / frames as f64) as f32))
-                .w(relative(((end - start) / frames as f64) as f32))
-                .top_0()
-                .bottom(px(RULER_HEIGHT))
-                .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-                .debug_selector(|| "sampler-source-active-region".into()),
-        )
+        .child(hex_widgets::region_active_band(
+            "sampler-source-active-region",
+            region_span,
+            RULER_HEIGHT,
+            theme::color(theme::PaletteRole::Surface),
+        ))
         .child(
             super::super::overview_waveform::render(
                 super::super::overview_waveform::Source::Sampler {
@@ -225,7 +218,7 @@ pub(super) fn render(
                     asset: asset_id,
                 },
                 Rc::clone(&view.timeline_caches.overview_waveform_cache),
-                Some((start / frames as f64, end / frames as f64)),
+                Some((region_span.start(), region_span.end())),
             )
             .absolute()
             .top_0()
@@ -235,22 +228,22 @@ pub(super) fn render(
         )
         .child(source_marker(
             "sampler-source-start",
-            start / frames as f64,
+            region_span.start(),
             theme::PaletteRole::Primary,
         ))
         .child(source_marker(
             "sampler-source-end",
-            end / frames as f64,
+            region_span.end(),
             theme::PaletteRole::Primary,
         ))
         .child(boundary::handle(
             true,
-            start / frames as f64,
+            region_span.start(),
             !view.edit_pending(),
         ))
         .child(boundary::handle(
             false,
-            end / frames as f64,
+            region_span.end(),
             !view.edit_pending(),
         ));
     let waveform = if let (Some(enabled), Some(loop_start), Some(loop_end)) = (
@@ -359,15 +352,7 @@ fn cursor_label(frame: u64, sample_rate: u32) -> String {
     )
 }
 fn source_marker(selector: &'static str, fraction: f64, color: theme::PaletteRole) -> Div {
-    div()
-        .absolute()
-        .left(relative(fraction.clamp(0.0, 1.0) as f32))
-        .ml(px(-fraction.clamp(0.0, 1.0) as f32))
-        .top_0()
-        .w(px(1.0))
-        .bottom(px(RULER_HEIGHT))
-        .bg(rgb(theme::color(color)))
-        .debug_selector(move || selector.into())
+    hex_widgets::region_marker(selector, fraction, RULER_HEIGHT, theme::color(color))
 }
 
 #[cfg(test)]
