@@ -68,9 +68,11 @@ pub const MAX_EVENTS: usize = 64;
 /// for authored playback and computer keys. Byte-only MIDI and replies keep
 /// the smaller generic event bound.
 pub const MAX_IDENTIFIED_INPUT_NOTES: usize = 160;
-pub const QUEUE_CAPACITY: usize = 8;
-// Two pipeline quanta and six concealed quanta fit in the bounded input ring.
-const MAX_CONCEALED_OUTPUT_GAPS: u8 = 6;
+pub const QUEUE_CAPACITY: usize = 16;
+// Two pipeline quanta and twelve concealed quanta fit in the bounded input ring
+// (~69.7 ms at 44.1 kHz / 256 frames, absorbing transient multi-VST3 spikes
+// while keeping genuinely stalled workers deterministically bounded).
+const MAX_CONCEALED_OUTPUT_GAPS: u8 = 12;
 
 /// Input content at the exact physical quantum start. This stays inside
 /// the copied transport and has no meaning when the stage clock is absent.
@@ -359,7 +361,7 @@ pub fn channel_from_completed_prefix(
 }
 
 /// The native instance wire carries PCM and parameter observations, with no
-/// output MIDI. Up to six consecutive deadline misses conceal their quanta
+/// output MIDI. Up to twelve consecutive deadline misses conceal their quanta
 /// while preserving ordered input and the fixed 2Q alignment of later replies.
 /// A late reply never acknowledges audio, editor gestures or manual parameters.
 pub fn native_pcm_channel_from_completed_prefix(
