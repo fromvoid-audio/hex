@@ -16,11 +16,12 @@
 mod tests;
 
 use crate::{
-    DevicePreparationContext, MAX_MAIN_PASS_DELAY_FRAMES, MutableInstrumentRuntime,
-    NativeInstrumentClock, NativeInstrumentDefinition, NativeInstrumentEvent,
-    NativeInstrumentOccurrenceGain, NativeInstrumentRegistry, NativeInstrumentRuntimeError,
-    NativeInstrumentRuntimeLimits, OffsetClock, PreparedAnalyticNote,
-    PreparedMutableInstrumentRuntime, PreparedNativeInstrument, StereoFrame,
+    DevicePreparationContext, InstrumentHistoryRetargetPreparation, MAX_MAIN_PASS_DELAY_FRAMES,
+    MutableInstrumentRuntime, NativeInstrumentClock, NativeInstrumentDefinition,
+    NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRegistry,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, OffsetClock, PreparedAnalyticNote,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime, PreparedNativeInstrument,
+    StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, MAX_NATIVE_DEVICE_STATE_BYTES, NativeDeviceMetadata,
@@ -31,8 +32,11 @@ use std::{any::Any, num::NonZeroU64};
 
 /// Reserved native instrument type ID for a bounded two-branch Instrument Rack.
 pub const INSTRUMENT_RACK_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.rack.instrument");
-pub const INSTRUMENT_RACK_STATE_VERSION: u32 = 1;
-pub const INSTRUMENT_RACK_RUNTIME_VERSION: u32 = 1;
+/// Prior v1 wire format (full-range layer routing) migrated cleanly to v2.
+pub const INSTRUMENT_RACK_STATE_VERSION_V1: u32 = 1;
+/// Current v2 wire format adding per-branch key/velocity zones and overlap policy.
+pub const INSTRUMENT_RACK_STATE_VERSION: u32 = 2;
+pub const INSTRUMENT_RACK_RUNTIME_VERSION: u32 = 2;
 pub const INSTRUMENT_RACK_BRANCH_COUNT: usize = 2;
 /// Explicit nesting prohibition: branches contain flat native instruments only.
 pub const INSTRUMENT_RACK_MAX_DEPTH: usize = 1;
@@ -87,6 +91,115 @@ const DESCRIPTORS: [ParameterDescriptor; 4] = [
     },
 ];
 
+/// Canonical key and velocity selection zone (with optional linear fade edges)
+/// for one Instrument Rack branch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InstrumentRackZone {
+    pub key_low: u8,
+    pub key_fade_low: u8,
+    pub key_fade_high: u8,
+    pub key_high: u8,
+    pub vel_low: u8,
+    pub vel_fade_low: u8,
+    pub vel_fade_high: u8,
+    pub vel_high: u8,
+}
+
+impl Default for InstrumentRackZone {
+    fn default() -> Self {
+        Self {
+            key_low: 0,
+            key_fade_low: 0,
+            key_fade_high: 127,
+            key_high: 127,
+            vel_low: 1,
+            vel_fade_low: 1,
+            vel_fade_high: 127,
+            vel_high: 127,
+        }
+    }
+}
+
+impl InstrumentRackZone {
+    /// Hard-edged key and velocity range with unity gain inside bounds.
+    pub const fn hard(key_low: u8, key_high: u8, vel_low: u8, vel_high: u8) -> Self {
+        Self {
+            key_low,
+            key_fade_low: key_low,
+            key_fade_high: key_high,
+            key_high,
+            vel_low,
+            vel_fade_low: vel_low,
+            vel_fade_high: vel_high,
+            vel_high,
+        }
+    }
+
+    pub const fn has_fade(&self) -> bool {
+        self.key_fade_low > self.key_low
+            || self.key_fade_high < self.key_high
+            || self.vel_fade_low > self.vel_low
+            || self.vel_fade_high < self.vel_high
+    }
+
+    pub fn validate(&self) -> Result<(), DeviceContractError> {
+        if self.key_low > self.key_fade_low
+            || self.key_fade_low > self.key_fade_high
+            || self.key_fade_high > self.key_high
+            || self.key_high > 127
+            || self.vel_low == 0
+            || self.vel_low > self.vel_fade_low
+            || self.vel_fade_low > self.vel_fade_high
+            || self.vel_fade_high > self.vel_high
+            || self.vel_high > 127
+        {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        Ok(())
+    }
+
+    /// Evaluate deterministic zone membership and linear fade gain in `(0.0, 1.0]`.
+    /// Returns `None` when the note falls outside either key or velocity bounds.
+    pub fn evaluate_gain(&self, pitch: u8, velocity: u8) -> Option<f32> {
+        if pitch < self.key_low
+            || pitch > self.key_high
+            || velocity < self.vel_low
+            || velocity > self.vel_high
+        {
+            return None;
+        }
+        let key_gain = if pitch < self.key_fade_low {
+            (f32::from(pitch - self.key_low) + 1.0)
+                / (f32::from(self.key_fade_low - self.key_low) + 1.0)
+        } else if pitch > self.key_fade_high {
+            (f32::from(self.key_high - pitch) + 1.0)
+                / (f32::from(self.key_high - self.key_fade_high) + 1.0)
+        } else {
+            1.0
+        };
+        let vel_gain = if velocity < self.vel_fade_low {
+            (f32::from(velocity - self.vel_low) + 1.0)
+                / (f32::from(self.vel_fade_low - self.vel_low) + 1.0)
+        } else if velocity > self.vel_fade_high {
+            (f32::from(self.vel_high - velocity) + 1.0)
+                / (f32::from(self.vel_high - self.vel_fade_high) + 1.0)
+        } else {
+            1.0
+        };
+        Some((key_gain * vel_gain).clamp(0.0, 1.0))
+    }
+}
+
+/// Deterministic overlap resolution policy when multiple branches match a note.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InstrumentRackOverlapPolicy {
+    /// Every matching active branch sounds with its evaluated zone fade gain.
+    #[default]
+    Layer,
+    /// Only the first matching active branch in canonical order (branch 0 before 1) sounds.
+    ExclusiveFirstMatch,
+}
+
 /// Authored specification for one branch of a bounded two-branch Instrument Rack.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentRackBranchSpec {
@@ -94,6 +207,7 @@ pub struct InstrumentRackBranchSpec {
     pub device_id: NonZeroU64,
     pub gain: f32,
     pub bypassed: bool,
+    pub zone: InstrumentRackZone,
     /// `None` represents an empty or removed instrument slot.
     pub state: Option<NativeDeviceState>,
 }
@@ -102,6 +216,7 @@ pub struct InstrumentRackBranchSpec {
 #[derive(Clone, Debug, PartialEq)]
 pub struct InstrumentRackSpec {
     pub rack_id: NonZeroU64,
+    pub overlap_policy: InstrumentRackOverlapPolicy,
     pub branches: [InstrumentRackBranchSpec; INSTRUMENT_RACK_BRANCH_COUNT],
 }
 
@@ -118,6 +233,7 @@ impl InstrumentRackSpec {
             {
                 return Err(DeviceContractError::InvalidParameterValue);
             }
+            branch.zone.validate()?;
             if let Some(state) = &branch.state {
                 if state.type_id() == INSTRUMENT_RACK_TYPE_ID {
                     return Err(DeviceContractError::UnsupportedProcessingClass);
@@ -134,18 +250,55 @@ impl InstrumentRackSpec {
         Ok(())
     }
 
-    /// Encode this rack spec into a strictly validated v1 `NativeDeviceState`
+    /// Encode this rack spec into a strictly validated v2 `NativeDeviceState`
     /// envelope compatible with `hex-project`'s retained `NativeSource` storage.
     pub fn encode_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         self.validate()?;
+        self.encode_state_version(INSTRUMENT_RACK_STATE_VERSION)
+    }
+
+    /// Encode a default-zone layer rack into the prior v1 wire format for
+    /// migration testing. Refuses non-default zones or overlap policies.
+    pub fn encode_v1_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        self.validate()?;
+        if self.overlap_policy != InstrumentRackOverlapPolicy::Layer
+            || self
+                .branches
+                .iter()
+                .any(|b| b.zone != InstrumentRackZone::default())
+        {
+            return Err(DeviceContractError::UnsupportedStateVersion);
+        }
+        self.encode_state_version(INSTRUMENT_RACK_STATE_VERSION_V1)
+    }
+
+    fn encode_state_version(&self, version: u32) -> Result<NativeDeviceState, DeviceContractError> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(RACK_STATE_MAGIC);
         bytes.extend_from_slice(&self.rack_id.get().to_le_bytes());
+        if version >= INSTRUMENT_RACK_STATE_VERSION {
+            bytes.push(match self.overlap_policy {
+                InstrumentRackOverlapPolicy::Layer => 0,
+                InstrumentRackOverlapPolicy::ExclusiveFirstMatch => 1,
+            });
+        }
         for branch in &self.branches {
             bytes.extend_from_slice(&branch.branch_id.get().to_le_bytes());
             bytes.extend_from_slice(&branch.device_id.get().to_le_bytes());
             bytes.extend_from_slice(&branch.gain.to_le_bytes());
             bytes.push(u8::from(branch.bypassed));
+            if version >= INSTRUMENT_RACK_STATE_VERSION {
+                bytes.extend_from_slice(&[
+                    branch.zone.key_low,
+                    branch.zone.key_fade_low,
+                    branch.zone.key_fade_high,
+                    branch.zone.key_high,
+                    branch.zone.vel_low,
+                    branch.zone.vel_fade_low,
+                    branch.zone.vel_fade_high,
+                    branch.zone.vel_high,
+                ]);
+            }
             match &branch.state {
                 None => bytes.push(0),
                 Some(state) => {
@@ -169,19 +322,33 @@ impl InstrumentRackSpec {
                 return Err(DeviceContractError::StateTooLarge);
             }
         }
-        NativeDeviceState::new(
-            INSTRUMENT_RACK_TYPE_ID,
-            INSTRUMENT_RACK_STATE_VERSION,
-            bytes,
-        )
+        NativeDeviceState::new(INSTRUMENT_RACK_TYPE_ID, version, bytes)
     }
 
-    /// Strictly decode and validate a v1 Instrument Rack `NativeDeviceState`.
+    /// Strictly decode and validate a current v2 Instrument Rack `NativeDeviceState`.
     pub fn decode_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
+        Self::decode_state_inner(state, false)
+    }
+
+    /// Decode and migrate a v1 or v2 Instrument Rack `NativeDeviceState` into
+    /// the current canonical `InstrumentRackSpec`.
+    pub fn decode_and_migrate_state(
+        state: &NativeDeviceState,
+    ) -> Result<Self, DeviceContractError> {
+        Self::decode_state_inner(state, true)
+    }
+
+    fn decode_state_inner(
+        state: &NativeDeviceState,
+        allow_v1: bool,
+    ) -> Result<Self, DeviceContractError> {
         if state.type_id() != INSTRUMENT_RACK_TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
         }
-        if state.state_version() != INSTRUMENT_RACK_STATE_VERSION {
+        let version = state.state_version();
+        let valid_version = version == INSTRUMENT_RACK_STATE_VERSION
+            || (allow_v1 && version == INSTRUMENT_RACK_STATE_VERSION_V1);
+        if !valid_version {
             return Err(DeviceContractError::UnsupportedStateVersion);
         }
         let payload = state.payload();
@@ -206,6 +373,15 @@ impl InstrumentRackSpec {
                 .map_err(|_| DeviceContractError::MalformedState)?,
         );
         let rack_id = NonZeroU64::new(rack_raw).ok_or(DeviceContractError::InvalidId)?;
+        let overlap_policy = if version >= INSTRUMENT_RACK_STATE_VERSION {
+            match read_bytes(&mut cursor, 1)?[0] {
+                0 => InstrumentRackOverlapPolicy::Layer,
+                1 => InstrumentRackOverlapPolicy::ExclusiveFirstMatch,
+                _ => return Err(DeviceContractError::MalformedState),
+            }
+        } else {
+            InstrumentRackOverlapPolicy::Layer
+        };
 
         let mut branches = Vec::with_capacity(INSTRUMENT_RACK_BRANCH_COUNT);
         for _ in 0..INSTRUMENT_RACK_BRANCH_COUNT {
@@ -230,6 +406,21 @@ impl InstrumentRackSpec {
                 0 => false,
                 1 => true,
                 _ => return Err(DeviceContractError::MalformedState),
+            };
+            let zone = if version >= INSTRUMENT_RACK_STATE_VERSION {
+                let z = read_bytes(&mut cursor, 8)?;
+                InstrumentRackZone {
+                    key_low: z[0],
+                    key_fade_low: z[1],
+                    key_fade_high: z[2],
+                    key_high: z[3],
+                    vel_low: z[4],
+                    vel_fade_low: z[5],
+                    vel_fade_high: z[6],
+                    vel_high: z[7],
+                }
+            } else {
+                InstrumentRackZone::default()
             };
             let has_state = match read_bytes(&mut cursor, 1)?[0] {
                 0 => false,
@@ -279,6 +470,7 @@ impl InstrumentRackSpec {
                 device_id,
                 gain,
                 bypassed,
+                zone,
                 state: child_state,
             });
         }
@@ -291,6 +483,7 @@ impl InstrumentRackSpec {
                 .map_err(|_| DeviceContractError::MalformedState)?;
         let spec = Self {
             rack_id,
+            overlap_policy,
             branches: [branch_a, branch_b],
         };
         spec.validate()?;
@@ -318,7 +511,7 @@ impl<'a> InstrumentRackDefinition<'a> {
         context: &DevicePreparationContext<'_>,
         limits: Option<NativeInstrumentRuntimeLimits>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        let spec = InstrumentRackSpec::decode_state(state)?;
+        let spec = InstrumentRackSpec::decode_and_migrate_state(state)?;
         let mut prepared_branches: [Option<PreparedBranchFactory>; INSTRUMENT_RACK_BRANCH_COUNT] =
             [None, None];
         let mut branch_latencies = [0_u32; INSTRUMENT_RACK_BRANCH_COUNT];
@@ -338,6 +531,9 @@ impl<'a> InstrumentRackDefinition<'a> {
             let factory = prepared_inst
                 .prepare_mutable_runtime()?
                 .ok_or(DeviceContractError::UnsupportedProcessingClass)?;
+            if branch.zone.has_fade() && !factory.supports_occurrence_gain() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
             let latency = factory
                 .algorithmic_latency_frames()
                 .or_else(|| prepared_inst.algorithmic_latency_frames())
@@ -348,6 +544,7 @@ impl<'a> InstrumentRackDefinition<'a> {
                 device_id: branch.device_id,
                 gain: branch.gain,
                 bypassed: branch.bypassed,
+                zone: branch.zone,
                 compensation_delay_frames: 0,
                 factory,
             });
@@ -436,6 +633,7 @@ impl<'a> InstrumentRackDefinition<'a> {
 
         Ok(Box::new(PreparedInstrumentRack {
             rack_id: spec.rack_id,
+            overlap_policy: spec.overlap_policy,
             sample_rate: context.sample_rate,
             rack_latency_frames,
             max_events_per_block: max_events,
@@ -485,12 +683,14 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
         };
         InstrumentRackSpec {
             rack_id,
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
             branches: [
                 InstrumentRackBranchSpec {
                     branch_id: branch_1,
                     device_id: dev_1,
                     gain: 1.0,
                     bypassed: false,
+                    zone: InstrumentRackZone::default(),
                     state: None,
                 },
                 InstrumentRackBranchSpec {
@@ -498,6 +698,7 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
                     device_id: dev_2,
                     gain: 1.0,
                     bypassed: false,
+                    zone: InstrumentRackZone::default(),
                     state: None,
                 },
             ],
@@ -509,7 +710,7 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut spec = InstrumentRackSpec::decode_state(state)?;
+        let mut spec = InstrumentRackSpec::decode_and_migrate_state(state)?;
         for branch in &mut spec.branches {
             if let Some(child) = &branch.state {
                 branch.state = Some(self.children.migrate_state(child)?);
@@ -523,7 +724,7 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
         state: &NativeDeviceState,
         parameter: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        let spec = InstrumentRackSpec::decode_state(state)?;
+        let spec = InstrumentRackSpec::decode_and_migrate_state(state)?;
         match parameter {
             PARAM_BRANCH_1_GAIN => Ok(ParameterValue::Float(spec.branches[0].gain)),
             PARAM_BRANCH_1_BYPASS => Ok(ParameterValue::Bool(spec.branches[0].bypassed)),
@@ -539,7 +740,7 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
         parameter: ParameterId,
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        let mut spec = InstrumentRackSpec::decode_state(state)?;
+        let mut spec = InstrumentRackSpec::decode_and_migrate_state(state)?;
         match (parameter, value) {
             (PARAM_BRANCH_1_GAIN, ParameterValue::Float(v))
                 if v.is_finite() && (0.0..=INSTRUMENT_RACK_MAX_BRANCH_GAIN).contains(&v) =>
@@ -594,12 +795,14 @@ struct PreparedBranchFactory {
     device_id: NonZeroU64,
     gain: f32,
     bypassed: bool,
+    zone: InstrumentRackZone,
     compensation_delay_frames: u32,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
 }
 
 struct PreparedInstrumentRack {
     rack_id: NonZeroU64,
+    overlap_policy: InstrumentRackOverlapPolicy,
     sample_rate: u32,
     rack_latency_frames: u32,
     max_events_per_block: usize,
@@ -630,6 +833,7 @@ impl PreparedNativeInstrument for PreparedInstrumentRack {
     ) -> Result<Option<Box<dyn PreparedMutableInstrumentRuntime>>, DeviceContractError> {
         Ok(Some(Box::new(PreparedInstrumentRackRuntime {
             rack_id: self.rack_id,
+            overlap_policy: self.overlap_policy,
             sample_rate: self.sample_rate,
             rack_latency_frames: self.rack_latency_frames,
             max_events_per_block: self.max_events_per_block,
@@ -646,6 +850,7 @@ impl PreparedNativeInstrument for PreparedInstrumentRack {
 
 struct PreparedInstrumentRackRuntime {
     rack_id: NonZeroU64,
+    overlap_policy: InstrumentRackOverlapPolicy,
     sample_rate: u32,
     rack_latency_frames: u32,
     max_events_per_block: usize,
@@ -656,6 +861,21 @@ struct PreparedInstrumentRackRuntime {
     supports_active_occurrence_ids: bool,
     steals_releasing_voices: bool,
     branches: std::sync::Arc<[Option<PreparedBranchFactory>; INSTRUMENT_RACK_BRANCH_COUNT]>,
+}
+
+struct InstrumentRackZoneRetargetProof {
+    rack_id: NonZeroU64,
+    sample_rate: u32,
+}
+
+impl PreparedInstrumentHistoryRetarget for InstrumentRackZoneRetargetProof {
+    fn declared_fixed_storage_bytes(&self) -> usize {
+        std::mem::size_of::<Self>()
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 impl PreparedMutableInstrumentRuntime for PreparedInstrumentRackRuntime {
@@ -713,14 +933,17 @@ impl PreparedMutableInstrumentRuntime for PreparedInstrumentRackRuntime {
                     branch_id: prepared.branch_id,
                     device_id: prepared.device_id,
                     gain: prepared.gain,
+                    zone: prepared.zone,
                     compensation_delay_frames: prepared.compensation_delay_frames,
                     runtime: prepared.factory.create_runtime(),
                     delay,
+                    routed_occurrences: [None; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
                 });
             }
         }
         Box::new(InstrumentRackRuntime {
             rack_id: self.rack_id,
+            overlap_policy: self.overlap_policy,
             sample_rate: self.sample_rate,
             max_events_per_block: self.max_events_per_block,
             supports_occurrence_gain: self.supports_occurrence_gain,
@@ -732,6 +955,17 @@ impl PreparedMutableInstrumentRuntime for PreparedInstrumentRackRuntime {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn prepare_history_retarget_target(
+        &self,
+    ) -> Result<InstrumentHistoryRetargetPreparation, DeviceContractError> {
+        Ok(InstrumentHistoryRetargetPreparation::Prepared(Box::new(
+            InstrumentRackZoneRetargetProof {
+                rack_id: self.rack_id,
+                sample_rate: self.sample_rate,
+            },
+        )))
     }
 }
 
@@ -784,23 +1018,227 @@ impl RackCompensationDelay {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RoutedOccurrence {
+    occurrence_id: u64,
+    zone_gain: f32,
+    note_off_sent: bool,
+}
+
 struct BranchRuntime {
     branch_id: NonZeroU64,
     device_id: NonZeroU64,
     gain: f32,
+    zone: InstrumentRackZone,
     compensation_delay_frames: u32,
     runtime: Box<dyn MutableInstrumentRuntime>,
     delay: Option<RackCompensationDelay>,
+    routed_occurrences: [Option<RoutedOccurrence>; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
 }
 
 struct InstrumentRackRuntime {
     rack_id: NonZeroU64,
+    overlap_policy: InstrumentRackOverlapPolicy,
     sample_rate: u32,
     max_events_per_block: usize,
     supports_occurrence_gain: bool,
     supports_active_occurrence_ids: bool,
     branches: [Option<BranchRuntime>; INSTRUMENT_RACK_BRANCH_COUNT],
     branch_scratch: [StereoFrame; INSTRUMENT_RACK_CHUNK_FRAMES],
+}
+
+impl InstrumentRackRuntime {
+    fn evaluate_branch_gains(
+        &self,
+        pitch: u8,
+        velocity: u8,
+    ) -> [Option<f32>; INSTRUMENT_RACK_BRANCH_COUNT] {
+        let g0 = self.branches[0]
+            .as_ref()
+            .and_then(|b| b.zone.evaluate_gain(pitch, velocity));
+        let g1 = match self.overlap_policy {
+            InstrumentRackOverlapPolicy::Layer => self.branches[1]
+                .as_ref()
+                .and_then(|b| b.zone.evaluate_gain(pitch, velocity)),
+            InstrumentRackOverlapPolicy::ExclusiveFirstMatch => {
+                if g0.is_some() {
+                    None
+                } else {
+                    self.branches[1]
+                        .as_ref()
+                        .and_then(|b| b.zone.evaluate_gain(pitch, velocity))
+                }
+            }
+        };
+        [g0, g1]
+    }
+
+    fn find_routed(
+        slots: &[Option<RoutedOccurrence>; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
+        occurrence_id: u64,
+    ) -> Option<usize> {
+        slots
+            .iter()
+            .position(|slot| slot.is_some_and(|r| r.occurrence_id == occurrence_id))
+    }
+
+    fn find_free_routed(
+        slots: &[Option<RoutedOccurrence>; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
+    ) -> Option<usize> {
+        slots.iter().position(Option::is_none)
+    }
+
+    fn filter_events_for_branch(
+        &self,
+        branch_index: usize,
+        routed: &mut [Option<RoutedOccurrence>; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
+        events: &[NativeInstrumentEvent],
+        out: &mut [NativeInstrumentEvent; INSTRUMENT_RACK_MAX_EVENTS_PER_BLOCK],
+    ) -> Result<usize, NativeInstrumentRuntimeError> {
+        let mut len = 0_usize;
+        for &event in events {
+            match event {
+                NativeInstrumentEvent::NoteOn {
+                    occurrence_id,
+                    pitch,
+                    velocity,
+                    ..
+                } => {
+                    let gains = self.evaluate_branch_gains(pitch, velocity);
+                    if let Some(zone_gain) = gains[branch_index] {
+                        if let Some(existing) = Self::find_routed(routed, occurrence_id) {
+                            routed[existing] = Some(RoutedOccurrence {
+                                occurrence_id,
+                                zone_gain,
+                                note_off_sent: false,
+                            });
+                        } else if let Some(free) = Self::find_free_routed(routed) {
+                            routed[free] = Some(RoutedOccurrence {
+                                occurrence_id,
+                                zone_gain,
+                                note_off_sent: false,
+                            });
+                        } else {
+                            return Err(
+                                NativeInstrumentRuntimeError::ActiveOccurrenceCapacityExceeded,
+                            );
+                        }
+                        if len >= out.len() {
+                            return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
+                        }
+                        out[len] = event;
+                        len += 1;
+                    }
+                }
+                NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
+                    if let Some(slot) = Self::find_routed(routed, occurrence_id)
+                        && let Some(entry) = routed[slot].as_mut()
+                        && !entry.note_off_sent
+                    {
+                        entry.note_off_sent = true;
+                        if len >= out.len() {
+                            return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
+                        }
+                        out[len] = event;
+                        len += 1;
+                    }
+                }
+                NativeInstrumentEvent::NotePressure { occurrence_id, .. }
+                | NativeInstrumentEvent::NotePitchBend { occurrence_id, .. }
+                | NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => {
+                    if Self::find_routed(routed, occurrence_id.get()).is_some() {
+                        if len >= out.len() {
+                            return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
+                        }
+                        out[len] = event;
+                        len += 1;
+                    }
+                }
+                NativeInstrumentEvent::Expression { .. }
+                | NativeInstrumentEvent::ControlChange { .. }
+                | NativeInstrumentEvent::PitchBend { .. } => {
+                    if len >= out.len() {
+                        return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
+                    }
+                    out[len] = event;
+                    len += 1;
+                }
+            }
+        }
+        Ok(len)
+    }
+
+    fn build_branch_gains(
+        routed: &[Option<RoutedOccurrence>; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
+        caller_gains: &[NativeInstrumentOccurrenceGain],
+        chunk_len: usize,
+        out: &mut [NativeInstrumentOccurrenceGain; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES],
+    ) -> usize {
+        let mut len = 0_usize;
+        let span = chunk_len.max(1) as u64;
+        for &g in caller_gains {
+            let Some(slot) = Self::find_routed(routed, g.occurrence_id()) else {
+                continue;
+            };
+            let Some(entry) = routed[slot] else {
+                continue;
+            };
+            let combined = if entry.zone_gain < 1.0 {
+                g.with_attenuation(
+                    f64::from(entry.zone_gain),
+                    f64::from(entry.zone_gain),
+                    span,
+                    0,
+                )
+                .unwrap_or(g)
+            } else {
+                g
+            };
+            if len < out.len() {
+                out[len] = combined;
+                len += 1;
+            }
+        }
+        for entry in routed.iter().flatten() {
+            if entry.zone_gain < 1.0
+                && !caller_gains
+                    .iter()
+                    .any(|g| g.occurrence_id() == entry.occurrence_id)
+                && len < out.len()
+                && let Ok(gain) = NativeInstrumentOccurrenceGain::new(
+                    entry.occurrence_id,
+                    f64::from(entry.zone_gain),
+                    f64::from(entry.zone_gain),
+                    span,
+                    0,
+                )
+            {
+                out[len] = gain;
+                len += 1;
+            }
+        }
+        len
+    }
+
+    fn prune_finished_routed(branch: &mut BranchRuntime) {
+        if branch.runtime.is_quiescent() {
+            branch.routed_occurrences.fill(None);
+            return;
+        }
+        if branch.runtime.supports_active_occurrence_ids() {
+            let mut active = [0_u64; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES];
+            if let Ok(n) = branch.runtime.active_occurrence_ids(&mut active) {
+                for slot in &mut branch.routed_occurrences {
+                    if let Some(entry) = *slot
+                        && entry.note_off_sent
+                        && !active[..n].contains(&entry.occurrence_id)
+                    {
+                        *slot = None;
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn shift_event_offset(event: NativeInstrumentEvent, local_offset: usize) -> NativeInstrumentEvent {
@@ -944,10 +1382,23 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
         if events.len() > self.max_events_per_block {
             return Err(NativeInstrumentRuntimeError::EventCapacityExceeded);
         }
-        for branch in self.branches.iter().flatten() {
-            branch
-                .runtime
-                .preflight_events(events, frame_count, resources)?;
+        let mut branch_events = [NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        }; INSTRUMENT_RACK_MAX_EVENTS_PER_BLOCK];
+        for (index, slot) in self.branches.iter().enumerate() {
+            if let Some(branch) = slot {
+                let mut sim_routed = branch.routed_occurrences;
+                let len = self.filter_events_for_branch(
+                    index,
+                    &mut sim_routed,
+                    events,
+                    &mut branch_events,
+                )?;
+                branch
+                    .runtime
+                    .preflight_events(&branch_events[..len], frame_count, resources)?;
+            }
         }
         Ok(())
     }
@@ -978,8 +1429,28 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
         if gains.len() > INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES {
             return Err(NativeInstrumentRuntimeError::InvalidOccurrenceGain);
         }
-        for branch in self.branches.iter().flatten() {
-            branch.runtime.preflight_occurrence_gains(events, gains)?;
+        let mut branch_events = [NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        }; INSTRUMENT_RACK_MAX_EVENTS_PER_BLOCK];
+        let mut branch_gains = [gains[0]; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES];
+        for (index, slot) in self.branches.iter().enumerate() {
+            if let Some(branch) = slot {
+                let mut sim_routed = branch.routed_occurrences;
+                let ev_len = self.filter_events_for_branch(
+                    index,
+                    &mut sim_routed,
+                    events,
+                    &mut branch_events,
+                )?;
+                let g_len = Self::build_branch_gains(&sim_routed, gains, 1, &mut branch_gains);
+                if g_len > 0 {
+                    branch.runtime.preflight_occurrence_gains(
+                        &branch_events[..ev_len],
+                        &branch_gains[..g_len],
+                    )?;
+                }
+            }
         }
         Ok(())
     }
@@ -1064,18 +1535,62 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
             let active_events = &chunk_events[..chunk_event_len];
             let out_slice = &mut frames[chunk_start..chunk_end];
 
-            for branch in self.branches.iter_mut().flatten() {
+            // Pre-evaluate branch routing before mutating each branch runtime so
+            // ExclusiveFirstMatch inspects both branches deterministically.
+            let mut branch_events_buf = [[NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 1,
+            }; INSTRUMENT_RACK_MAX_EVENTS_PER_BLOCK];
+                INSTRUMENT_RACK_BRANCH_COUNT];
+            let mut branch_event_lens = [0_usize; INSTRUMENT_RACK_BRANCH_COUNT];
+            let mut next_routed =
+                [[None; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES]; INSTRUMENT_RACK_BRANCH_COUNT];
+            for index in 0..INSTRUMENT_RACK_BRANCH_COUNT {
+                if let Some(branch) = &self.branches[index] {
+                    next_routed[index] = branch.routed_occurrences;
+                    if let Ok(n) = self.filter_events_for_branch(
+                        index,
+                        &mut next_routed[index],
+                        active_events,
+                        &mut branch_events_buf[index],
+                    ) {
+                        branch_event_lens[index] = n;
+                    }
+                }
+            }
+
+            let Ok(dummy_gain) = NativeInstrumentOccurrenceGain::new(1, 1.0, 1.0, 1, 0) else {
+                return;
+            };
+            let mut branch_gains_buf = [dummy_gain; INSTRUMENT_RACK_MAX_ACTIVE_OCCURRENCES];
+
+            for index in 0..INSTRUMENT_RACK_BRANCH_COUNT {
+                let Some(branch) = self.branches[index].as_mut() else {
+                    continue;
+                };
+                branch.routed_occurrences = next_routed[index];
+                let b_gains_len = if self.supports_occurrence_gain {
+                    Self::build_branch_gains(
+                        &branch.routed_occurrences,
+                        active_gains,
+                        chunk_len,
+                        &mut branch_gains_buf,
+                    )
+                } else {
+                    0
+                };
                 let scratch = &mut self.branch_scratch[..chunk_len];
                 scratch.fill([0.0; 2]);
                 branch
                     .runtime
                     .process_block_with_clock_and_occurrence_gains(
-                        active_events,
+                        &branch_events_buf[index][..branch_event_lens[index]],
                         scratch,
                         chunk_clock_ref,
-                        active_gains,
+                        &branch_gains_buf[..b_gains_len],
                         resources,
                     );
+                Self::prune_finished_routed(branch);
                 if let Some(delay) = &mut branch.delay {
                     delay.process(scratch);
                 }
@@ -1093,6 +1608,7 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
     fn reset(&mut self) {
         for branch in self.branches.iter_mut().flatten() {
             branch.runtime.reset();
+            branch.routed_occurrences.fill(None);
             if let Some(delay) = &mut branch.delay {
                 delay.reset();
             }
@@ -1110,6 +1626,65 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
     }
 
     fn can_copy_history_from(&self, previous: &dyn MutableInstrumentRuntime) -> bool {
+        let Some(other) = previous.as_any().downcast_ref::<Self>() else {
+            return false;
+        };
+        if self.rack_id != other.rack_id
+            || self.overlap_policy != other.overlap_policy
+            || self.sample_rate != other.sample_rate
+            || self.max_events_per_block != other.max_events_per_block
+        {
+            return false;
+        }
+        self.branches
+            .iter()
+            .zip(&other.branches)
+            .all(|(dst, src)| match (dst, src) {
+                (None, None) => true,
+                (Some(a), Some(b)) => {
+                    a.branch_id == b.branch_id
+                        && a.device_id == b.device_id
+                        && a.gain.to_bits() == b.gain.to_bits()
+                        && a.zone == b.zone
+                        && a.compensation_delay_frames == b.compensation_delay_frames
+                        && a.runtime.can_copy_history_from(b.runtime.as_ref())
+                }
+                _ => false,
+            })
+    }
+
+    fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
+        let Some(other) = previous.as_any().downcast_ref::<Self>() else {
+            return;
+        };
+        if !self.can_copy_history_from(previous) {
+            return;
+        }
+        for (dst, src) in self.branches.iter_mut().zip(&other.branches) {
+            if let (Some(a), Some(b)) = (dst.as_mut(), src.as_ref()) {
+                a.runtime.copy_history_from(b.runtime.as_ref());
+                a.routed_occurrences = b.routed_occurrences;
+                if let (Some(dst_delay), Some(src_delay)) = (&mut a.delay, &b.delay) {
+                    dst_delay.copy_from(src_delay);
+                }
+            }
+        }
+    }
+
+    fn can_retarget_history_from(
+        &self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> bool {
+        let Some(zone_proof) = proof
+            .as_any()
+            .downcast_ref::<InstrumentRackZoneRetargetProof>()
+        else {
+            return false;
+        };
+        if zone_proof.rack_id != self.rack_id || zone_proof.sample_rate != self.sample_rate {
+            return false;
+        }
         let Some(other) = previous.as_any().downcast_ref::<Self>() else {
             return false;
         };
@@ -1135,16 +1710,21 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
             })
     }
 
-    fn copy_history_from(&mut self, previous: &dyn MutableInstrumentRuntime) {
+    fn retarget_history_from(
+        &mut self,
+        previous: &dyn MutableInstrumentRuntime,
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) {
+        if !self.can_retarget_history_from(previous, proof) {
+            return;
+        }
         let Some(other) = previous.as_any().downcast_ref::<Self>() else {
             return;
         };
-        if !self.can_copy_history_from(previous) {
-            return;
-        }
         for (dst, src) in self.branches.iter_mut().zip(&other.branches) {
             if let (Some(a), Some(b)) = (dst.as_mut(), src.as_ref()) {
                 a.runtime.copy_history_from(b.runtime.as_ref());
+                a.routed_occurrences = b.routed_occurrences;
                 if let (Some(dst_delay), Some(src_delay)) = (&mut a.delay, &b.delay) {
                     dst_delay.copy_from(src_delay);
                 }
