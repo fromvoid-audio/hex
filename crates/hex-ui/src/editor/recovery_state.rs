@@ -70,6 +70,14 @@ impl RecoveryState {
     }
 
     pub(super) fn observe_receipt(&mut self, receipt: hex_audio::prepared::ActionOutcomeReceipt) {
+        if receipt.outcome
+            == hex_audio::prepared::ActionOutcome::Rejected(
+                hex_engine::PlaybackActionRejection::StreamActionBusy,
+            )
+            && self.inner.retry_busy_seek(receipt.ticket)
+        {
+            return;
+        }
         let outcome = if receipt.outcome == hex_audio::prepared::ActionOutcome::Applied {
             SeekOutcome::Applied
         } else {

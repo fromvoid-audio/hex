@@ -62,6 +62,8 @@ pub(in crate::service) fn defers_behind_resident_publication(request: &Request) 
         }
         | Request::Undo
         | Request::Redo
+        | Request::RestorePlayback { .. }
+        | Request::RepublishPausedPlayback
         | Request::SetDeviceParameter { .. } => true,
         Request::DeviceGesture(gesture) => matches!(
             **gesture,
