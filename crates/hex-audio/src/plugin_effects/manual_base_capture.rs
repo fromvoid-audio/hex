@@ -1,7 +1,9 @@
 //! Isolated manual and saved-state base capture on one ordinary processor. The
 //! original Root source supplies immutable identity and configuration facts.
 //! A second Root cell owns the scratch child through exact disposal recovery.
-use super::{Binding, EffectSourceMetadata, Hosting, NativeDeviceState, PluginProfile};
+use super::{
+    Binding, EffectSourceMetadata, Hosting, NativeDeviceState, PluginProfile, state_approval,
+};
 use crate::{
     NativeSourcePreparationProgress as Progress,
     prepared::{AppliedAudioSource, PublicationControl},
@@ -100,6 +102,9 @@ pub struct ManualBaseCapture {
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
     flushes: FlushPlan,
+    before_fingerprint: state_approval::StateFingerprint,
+    manual_point_id: Option<u32>,
+    flushed_normalized: Option<f64>,
     phase: Phase,
 }
 
@@ -130,6 +135,7 @@ pub(crate) struct CompletedManualBase {
     binding: Binding,
     source: (AppliedAudioSource, u64, bool),
     state: NativeDeviceState,
+    manual_flush: Option<state_approval::ManualFlushObservation>,
 }
 impl CompletedManualBase {
     pub(crate) fn binding(&self) -> Binding {
@@ -137,6 +143,9 @@ impl CompletedManualBase {
     }
     pub(crate) fn state(&self) -> &NativeDeviceState {
         &self.state
+    }
+    pub(crate) fn manual_flush(&self) -> Option<state_approval::ManualFlushObservation> {
+        self.manual_flush
     }
     pub(crate) fn matches_source(&self, status: &crate::prepared::Status) -> bool {
         status.native_parameter_source(self.source.2) == Some((self.source.0, self.source.1))
@@ -235,6 +244,11 @@ impl Hosting {
             Some(canonical.clone()),
             None,
         )?;
+        let before_fingerprint = state_approval::state_fingerprint(canonical);
+        let manual_point_id = (!flushes.exact_readback
+            && flushes.cohorts.len() == 1
+            && flushes.cohorts[0].as_slice().len() == 1)
+            .then(|| flushes.cohorts[0].as_slice()[0].id);
         Ok(ManualBaseCapture {
             binding: scratch,
             output_identity: source.output_identity,
@@ -243,6 +257,9 @@ impl Hosting {
             identity,
             presentation: original.presentation,
             flushes,
+            before_fingerprint,
+            manual_point_id,
+            flushed_normalized: None,
             phase: Phase::Prepare,
         })
     }
@@ -343,6 +360,9 @@ impl Hosting {
                 cohorts: VecDeque::from([parameters]),
                 exact_readback: true,
             },
+            before_fingerprint: state_approval::state_fingerprint(canonical),
+            manual_point_id: None,
+            flushed_normalized: None,
             phase: Phase::Prepare,
         })
     }
@@ -431,10 +451,19 @@ impl ManualBaseCapture {
             };
             match (result, self.original_binding, self.source) {
                 (Ok(state), Some(binding), Some(source)) => {
+                    let manual_flush = self.manual_point_id.zip(self.flushed_normalized).map(
+                        |(id, flushed_normalized)| state_approval::ManualFlushObservation {
+                            id,
+                            flushed_normalized,
+                            before_fingerprint: self.before_fingerprint,
+                            after_fingerprint: state_approval::state_fingerprint(&state),
+                        },
+                    );
                     self.phase = Phase::Approve(CompletedManualBase {
                         binding,
                         source,
                         state,
+                        manual_flush,
                     });
                     return None;
                 }
@@ -472,19 +501,26 @@ impl ManualBaseCapture {
                 Some(points) => output
                     .flush_native_source_parameters_on_control(self.binding, points, &mut cancelled)
                     .and_then(|reply| {
-                        reply
-                            .filter(|reply| {
-                                reply.disposition == FlushDisposition::Applied
-                                    && points.as_slice().iter().all(|expected| {
-                                        reply.as_slice().iter().any(|value| {
-                                            value.id == expected.id
-                                                && (!self.flushes.exact_readback
-                                                    || value.normalized == expected.normalized)
-                                        })
+                        let verified = reply.filter(|reply| {
+                            reply.disposition == FlushDisposition::Applied
+                                && points.as_slice().iter().all(|expected| {
+                                    reply.as_slice().iter().any(|value| {
+                                        value.id == expected.id
+                                            && (!self.flushes.exact_readback
+                                                || value.normalized == expected.normalized)
                                     })
-                            })
-                            .map(|_| ())
-                            .ok_or("native manual base input was not acknowledged")
+                                })
+                        });
+                        let reply =
+                            verified.ok_or("native manual base input was not acknowledged")?;
+                        if let Some(id) = self.manual_point_id {
+                            self.flushed_normalized = reply
+                                .as_slice()
+                                .iter()
+                                .find(|value| value.id == id)
+                                .map(|value| value.normalized);
+                        }
+                        Ok(())
                     })
                     .map(|()| {
                         self.flushes.cohorts.pop_front();

@@ -65,6 +65,7 @@ struct Configuration {
     prepared: PreparedForeignProcessor,
     authored: automation::SourceCapabilities,
     dense_raw_id: Option<u32>,
+    manual_persistence: state_approval::ManualPersistenceTracker,
     program_revision: std::num::NonZeroU64,
     state_verifier: Option<hex_lattice_contract::Vst3StateVerifier>,
 }
@@ -110,6 +111,7 @@ pub(crate) struct NativeEffectRenewal {
     prepared: PreparedForeignProcessor,
     authored: automation::SourceCapabilities,
     dense_raw_id: Option<u32>,
+    unpersisted: state_approval::UnpersistedParameters,
     state_authority: hex_lattice_contract::Vst3StateAuthority,
 }
 /// Listed constructor backing of the original unsplit effect. Inline effect
@@ -166,6 +168,7 @@ impl NativeEffect {
             prepared: configuration.prepared,
             authored: configuration.authored,
             dense_raw_id: configuration.dense_raw_id,
+            unpersisted: configuration.manual_persistence.unpersisted(),
             state_authority,
         };
         drop((configuration.state, dry, source_metadata));
@@ -338,7 +341,7 @@ impl NativeEffect {
                 instance,
             ));
         }
-        let (retained, authority) = match renewal {
+        let (retained, retained_unpersisted, authority) = match renewal {
             Some(old) => {
                 // A changed processing profile (quantum, bridge latency, or
                 // instrument/effect profile) must be qualified again before old
@@ -347,9 +350,9 @@ impl NativeEffect {
                 let authority =
                     renewal_preserves_state_authority(old.prepared, configuration.prepared)
                         .then_some(old.state_authority);
-                (Some(old.authored), authority)
+                (Some(old.authored), Some(old.unpersisted), authority)
             }
-            None => (None, None),
+            None => (None, None, None),
         };
         let state_authority = match authority
             .map(Ok)
@@ -437,6 +440,13 @@ impl NativeEffect {
         if authored.is_none() {
             configuration.authored =
                 automation::SourceCapabilities::reserved(instance.configuration().identity.class);
+        }
+        if let Some(unpersisted) = retained_unpersisted {
+            configuration.manual_persistence =
+                state_approval::ManualPersistenceTracker::from_renewal(
+                    unpersisted,
+                    &configuration.authored,
+                );
         }
         let mut source_metadata =
             match EffectSourceMetadata::from_configuration(instance.configuration()) {
@@ -559,6 +569,7 @@ impl NativeEffect {
             prepared,
             authored: automation::SourceCapabilities::default(),
             dense_raw_id: None,
+            manual_persistence: state_approval::ManualPersistenceTracker::default(),
             program_revision: std::num::NonZeroU64::new(config.binding.epoch)
                 .ok_or(Error::Protocol("native automation source epoch is invalid"))?,
             state_verifier: None,
@@ -831,6 +842,7 @@ impl NativeEffectCallback {
                 prepared,
                 authored: automation::SourceCapabilities::default(),
                 dense_raw_id: None,
+                manual_persistence: state_approval::ManualPersistenceTracker::default(),
                 program_revision: std::num::NonZeroU64::new(binding.epoch).unwrap(),
                 state_verifier: None,
             },
