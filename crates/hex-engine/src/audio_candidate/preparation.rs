@@ -208,6 +208,147 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
         };
         Self::with_host_definitions(&[&fixture], prepare)
     }
+
+    /// Test-only helper that exposes multiple synthetic VST3 instrument and
+    /// effect bindings (each with one automated parameter revision) for
+    /// `hex-session` boundary tests.
+    #[cfg(feature = "instrument-test-support")]
+    pub fn with_test_foreign_devices<T>(
+        devices: &[(
+            hex_lattice::ProcessorChainOwner,
+            u64,
+            bool,
+            hex_lattice_contract::ForeignProcessorBinding,
+        )],
+        revision: std::num::NonZeroU64,
+        parameter_id: u32,
+        prepare: impl FnOnce(&AudioCandidateEffects<'_, '_>) -> Result<T, crate::Invalid>,
+    ) -> Result<T, crate::Invalid> {
+        use hex_lattice::{
+            DevicePreparationContext, ForeignAutomationSource, ForeignParameterCapability,
+            NativeDeviceDefinition, PreparedForeignProcessor, PreparedProcessorFactory,
+            ProcessorInstanceIdentity, StereoMatrix,
+        };
+        use hex_lattice_contract::{
+            DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
+            ParameterDescriptor, ParameterId, ParameterValue, VST3_DEVICE_TYPE_ID,
+        };
+
+        struct Entry {
+            identity: ProcessorInstanceIdentity,
+            is_instrument: bool,
+            binding: hex_lattice_contract::ForeignProcessorBinding,
+        }
+        struct Fixture {
+            entries: Vec<Entry>,
+            revision: std::num::NonZeroU64,
+            params: [ForeignParameterCapability; 1],
+        }
+        impl NativeDeviceMetadata for Fixture {
+            fn type_id(&self) -> DeviceTypeId {
+                VST3_DEVICE_TYPE_ID
+            }
+            fn state_version(&self) -> u32 {
+                1
+            }
+            fn descriptors(&self) -> &'static [ParameterDescriptor] {
+                &[]
+            }
+            fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+                NativeDeviceState::new(VST3_DEVICE_TYPE_ID, 1, vec![1])
+            }
+            fn migrate_state(
+                &self,
+                state: &NativeDeviceState,
+            ) -> Result<NativeDeviceState, DeviceContractError> {
+                if state.type_id() == VST3_DEVICE_TYPE_ID && !state.payload().is_empty() {
+                    Ok(state.clone())
+                } else {
+                    Err(DeviceContractError::MalformedState)
+                }
+            }
+            fn read_parameter(
+                &self,
+                _state: &NativeDeviceState,
+                _id: ParameterId,
+            ) -> Result<ParameterValue, DeviceContractError> {
+                Err(DeviceContractError::UnknownParameter)
+            }
+            fn patch_parameter(
+                &self,
+                _state: &NativeDeviceState,
+                _id: ParameterId,
+                _value: ParameterValue,
+            ) -> Result<NativeDeviceState, DeviceContractError> {
+                Err(DeviceContractError::UnknownParameter)
+            }
+        }
+        impl NativeDeviceDefinition for Fixture {
+            fn prepare_matrix(
+                &self,
+                _state: &NativeDeviceState,
+            ) -> Result<StereoMatrix, DeviceContractError> {
+                Ok(StereoMatrix::identity())
+            }
+            fn prepare_instance_runtime_factory(
+                &self,
+                identity: ProcessorInstanceIdentity,
+                _state: &NativeDeviceState,
+                _context: &DevicePreparationContext<'_>,
+            ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+                let Some(entry) = self.entries.iter().find(|entry| entry.identity == identity)
+                else {
+                    return Ok(None);
+                };
+                let mut foreign =
+                    PreparedForeignProcessor::new(16, 0, 16)?.with_binding(entry.binding)?;
+                if entry.is_instrument {
+                    foreign = foreign.with_instrument_profile();
+                }
+                Ok(Some(PreparedProcessorFactory::Foreign(foreign)))
+            }
+            fn foreign_automation_source(
+                &self,
+                identity: ProcessorInstanceIdentity,
+                _state: &NativeDeviceState,
+                context: &DevicePreparationContext<'_>,
+            ) -> Result<Option<ForeignAutomationSource<'_>>, DeviceContractError> {
+                let Some(entry) = self.entries.iter().find(|entry| entry.identity == identity)
+                else {
+                    return Ok(None);
+                };
+                Ok(Some(ForeignAutomationSource {
+                    binding: entry.binding,
+                    revision: self.revision,
+                    class: [0x42; 16],
+                    sample_rate: context.sample_rate,
+                    quantum_frames: 16,
+                    dense_parameters: &[],
+                    parameters: &self.params,
+                }))
+            }
+        }
+
+        let mut entries = Vec::with_capacity(devices.len());
+        for &(owner, device_id, is_instrument, binding) in devices {
+            entries.push(Entry {
+                identity: ProcessorInstanceIdentity::new(owner, device_id)
+                    .map_err(|_| crate::Invalid("invalid processor instance identity"))?,
+                is_instrument,
+                binding,
+            });
+        }
+        let fixture = Fixture {
+            entries,
+            revision,
+            params: [ForeignParameterCapability {
+                id: parameter_id,
+                steps: 0,
+                normalized_base_bits: 0.5_f64.to_bits(),
+            }],
+        };
+        Self::with_host_definitions(&[&fixture], prepare)
+    }
     /// Compile resident clips with the original registered instrument resource
     /// set. This borrows facts only; native custody remains in the audio owner.
     #[allow(clippy::too_many_arguments)] // Existing complete registered preparation inputs.
