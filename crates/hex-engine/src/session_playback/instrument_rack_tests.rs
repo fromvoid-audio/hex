@@ -502,3 +502,211 @@ fn instrument_rack_key_velocity_zones_crossfade_overlap_live_edit_and_migration_
         split_spec
     );
 }
+
+#[test]
+fn nested_two_level_shared_source_instrument_rack_matches_pcm_oracle_across_live_retarget_undo_and_stop()
+ {
+    use hex_lattice::{InstrumentRackOverlapPolicy, InstrumentRackZone};
+
+    let sub = subtractive_state();
+    let fm4 = fm4_state();
+
+    // Depth-2 nested Instrument Rack inside ONE shared NativeSource with two contributor tracks:
+    //   Outer Branch 0 (gain 0.5) -> Inner Rack (id 200):
+    //     Inner Branch 0 (gain 1.0, keys 0..=63):   Subtractive (captures pitch 60!)
+    //     Inner Branch 1 (gain 1.0, keys 64..=127): FM4         (captures pitch 67!)
+    //   Outer Branch 1 (gain 0.25, full range):     Subtractive (plays BOTH 60 and 67!)
+    let make_nested_spec = |inner_b1_zone: InstrumentRackZone| {
+        let inner = InstrumentRackSpec {
+            rack_id: id(200),
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
+            branches: [
+                InstrumentRackBranchSpec {
+                    branch_id: id(201),
+                    device_id: id(21),
+                    gain: 1.0,
+                    bypassed: false,
+                    zone: InstrumentRackZone::hard(0, 63, 1, 127),
+                    state: Some(sub.clone()),
+                },
+                InstrumentRackBranchSpec {
+                    branch_id: id(202),
+                    device_id: id(22),
+                    gain: 1.0,
+                    bypassed: false,
+                    zone: inner_b1_zone,
+                    state: Some(fm4.clone()),
+                },
+            ],
+        };
+        InstrumentRackSpec {
+            rack_id: id(100),
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
+            branches: [
+                InstrumentRackBranchSpec {
+                    branch_id: id(101),
+                    device_id: id(11),
+                    gain: 0.5,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(inner.encode_state().unwrap()),
+                },
+                InstrumentRackBranchSpec {
+                    branch_id: id(102),
+                    device_id: id(12),
+                    gain: 0.25,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(sub.clone()),
+                },
+            ],
+        }
+    };
+
+    let full_spec = make_nested_spec(InstrumentRackZone::hard(64, 127, 1, 127));
+    let (mut rack_editor, source_id, _, _) =
+        build_shared_source_project(full_spec.encode_state().unwrap());
+    assert_eq!(rack_editor.project().native_sources().len(), 1);
+
+    // Independent PCM oracle: 0.5 * (Sub(60) + FM4(67)) + 0.25 * Sub(60, 67).
+    let make_single_note_project =
+        |inst: NativeDeviceState, pitch: u8, start: BeatTime, vel: u8| {
+            let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddMidiTrack { name: "ref".into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            editor
+                .execute(Command::InsertInstrument { track, state: inst })
+                .unwrap();
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: beat(2),
+                })
+                .unwrap()
+            else {
+                panic!("clip");
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration: beat_frac(1, 32),
+                    pitch,
+                    channel: 0,
+                    velocity: vel,
+                })
+                .unwrap();
+            editor
+        };
+
+    let total_frames = 2_048_usize;
+    let mut sub60_out = vec![[0.0_f32; 2]; total_frames];
+    let mut fm67_out = vec![[0.0_f32; 2]; total_frames];
+    let mut sub_both_out = vec![[0.0_f32; 2]; total_frames];
+
+    let mut pb1 = SessionPlayback::new(
+        prepare_with_rack(make_single_note_project(sub.clone(), 60, BeatTime::ZERO, 110).project())
+            .unwrap(),
+    )
+    .unwrap();
+    pb1.apply(SessionPlaybackCommand::Play).unwrap();
+    pb1.render(&mut sub60_out).unwrap();
+
+    let mut pb2 = SessionPlayback::new(
+        prepare_with_rack(
+            make_single_note_project(fm4.clone(), 67, beat_frac(1, 64), 95).project(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    pb2.apply(SessionPlaybackCommand::Play).unwrap();
+    pb2.render(&mut fm67_out).unwrap();
+
+    let (sub_both_editor, _, _, _) = build_shared_source_project(sub.clone());
+    let mut pb3 =
+        SessionPlayback::new(prepare_with_rack(sub_both_editor.project()).unwrap()).unwrap();
+    pb3.apply(SessionPlaybackCommand::Play).unwrap();
+    pb3.render(&mut sub_both_out).unwrap();
+
+    let expected_full: Vec<[f32; 2]> = (0..total_frames)
+        .map(|i| {
+            [
+                0.5 * (sub60_out[i][0] + fm67_out[i][0]) + 0.25 * sub_both_out[i][0],
+                0.5 * (sub60_out[i][1] + fm67_out[i][1]) + 0.25 * sub_both_out[i][1],
+            ]
+        })
+        .collect();
+
+    let rev_full = prepare_with_rack(rack_editor.project()).unwrap();
+    let mut actual_full = vec![[0.0_f32; 2]; total_frames];
+    let mut rack_pb = SessionPlayback::new(Arc::clone(&rev_full)).unwrap();
+    rack_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    for chunk in actual_full.chunks_mut(128) {
+        rack_pb.render(chunk).unwrap();
+    }
+    for (idx, (actual, expected)) in actual_full.iter().zip(&expected_full).enumerate() {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-5 && (actual[1] - expected[1]).abs() < 1e-5,
+            "nested rack PCM mismatch at frame {idx}: actual={actual:?} expected={expected:?}"
+        );
+    }
+
+    // Live inner-branch velocity-zone edit while pitch 60 is held (frame 256 < frame 375):
+    // excludes FM4 on pitch 67 (vel 95 < 100) while keeping held pitch 60 intact with zero stuck notes!
+    let edited_spec = make_nested_spec(InstrumentRackZone::hard(64, 127, 100, 127));
+    let rack_dev_id = rack_editor
+        .project()
+        .native_source(source_id)
+        .unwrap()
+        .instrument()
+        .id();
+    rack_editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_dev_id,
+            state: edited_spec.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_edited = prepare_with_rack(rack_editor.project()).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_full)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut live_out = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut live_out[..256]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_edited).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut live_out[256..]).unwrap();
+    live_b.apply(SessionPlaybackCommand::Stop).unwrap();
+
+    let expected_no_fm4: Vec<[f32; 2]> = (0..total_frames)
+        .map(|i| {
+            [
+                0.5 * sub60_out[i][0] + 0.25 * sub_both_out[i][0],
+                0.5 * sub60_out[i][1] + 0.25 * sub_both_out[i][1],
+            ]
+        })
+        .collect();
+    for (idx, (actual, expected)) in live_out.iter().zip(&expected_no_fm4).enumerate() {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-5 && (actual[1] - expected[1]).abs() < 1e-5,
+            "live nested retarget mismatch at frame {idx}: actual={actual:?} expected={expected:?}"
+        );
+    }
+
+    // Undo + snapshot roundtrip preserve exact depth-2 nested Instrument Rack!
+    rack_editor.undo();
+    let reopened = Project::from_snapshot(rack_editor.project().snapshot()).unwrap();
+    let reopened_state = reopened
+        .native_source(source_id)
+        .unwrap()
+        .instrument()
+        .state();
+    assert_eq!(
+        InstrumentRackSpec::decode_state(reopened_state).unwrap(),
+        full_spec
+    );
+}
