@@ -143,25 +143,22 @@ pub(crate) fn run_export_worker_with_recovery(
                     .controlled
                     .take()
                     .unwrap_or_else(ControlledExport::whole_main);
-                if matches!(controlled.signal, hex_export::ExportSignal::Main) {
-                    hex_export::render_linear_main_with_foreign(
-                        hex_export::ForeignLinearExportSpec {
-                            path: &job.path,
-                            revision: Arc::clone(&job.prepared),
-                            resources: job.resources.as_ref(),
-                            start: controlled.start,
-                            frames: job.frames,
-                            format: controlled.format,
-                            control: &controlled.control,
-                            publication: &controlled.publication,
-                        },
-                        None,
-                        foreign,
-                    )
-                    .map_err(ExportFailure::from)
-                } else {
-                    Err("private vst3 export requires main output".into())
-                }
+                hex_export::render_prepared_with_foreign(
+                    hex_export::ExportJobSpec {
+                        path: &job.path,
+                        revision: Arc::clone(&job.prepared),
+                        resources: job.resources.as_ref(),
+                        start: controlled.start,
+                        frames: job.frames,
+                        signal: controlled.signal,
+                        format: controlled.format,
+                        control: &controlled.control,
+                        publication: &controlled.publication,
+                    },
+                    None,
+                    foreign,
+                )
+                .map_err(ExportFailure::from)
             } else if job.sources.is_some() && job.resources.is_some() {
                 Err("export cannot combine private and ordinary source scopes".into())
             } else if let Some(resources) = job.resources.take() {

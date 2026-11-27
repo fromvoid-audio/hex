@@ -32,12 +32,10 @@ pub(super) struct ExportLane {
 impl ExportLane {
     pub(super) fn preflight_private_job(&mut self, job: &ExportJob) -> Result<(), String> {
         self.poll();
-        if job
-            .controlled
-            .as_ref()
-            .is_some_and(|c| !matches!(c.signal, hex_export::ExportSignal::Main))
-        {
-            return Err("private vst3 export requires main output".into());
+        if let Some(controlled) = job.controlled.as_ref() {
+            hex_export::control_storage_allowance(Some(&controlled.signal)).map_err(|error| {
+                format!("private vst3 export selection refused: {error:?}").to_lowercase()
+            })?;
         }
         if self.worker.is_none() || self.active.is_some() {
             return Err("export worker or resource custody is unavailable".into());
@@ -159,13 +157,17 @@ impl ExportLane {
         if job.sources.is_some() || job.resources.is_some() {
             return Err("export source capture is already initialized".into());
         }
-        if job.foreign.is_some()
-            && (job.streamed.is_none()
-                || job.controlled.as_ref().is_some_and(|controlled| {
-                    !matches!(controlled.signal, hex_export::ExportSignal::Main)
-                }))
-        {
-            return Err("private vst3 export requires main output".into());
+        if job.foreign.is_some() {
+            if job.streamed.is_none() {
+                return Err("private vst3 export requires streamed export context".into());
+            }
+            if let Some(controlled) = job.controlled.as_ref() {
+                hex_export::control_storage_allowance(Some(&controlled.signal)).map_err(
+                    |error| {
+                        format!("private vst3 export selection refused: {error:?}").to_lowercase()
+                    },
+                )?;
+            }
         }
         if job.prepared.requires_device_resources() && resident.is_none() {
             return Err("export requires its matching resident resource snapshot".into());
@@ -473,13 +475,13 @@ impl ExportLane {
         preview: Option<&super::resident_preview::Preview>,
     ) -> Result<(), String> {
         self.poll();
-        if job.foreign.is_none()
-            || job
-                .controlled
-                .as_ref()
-                .is_some_and(|c| !matches!(c.signal, hex_export::ExportSignal::Main))
-        {
-            return Err("private vst3 export requires streamed main output".into());
+        if job.foreign.is_none() {
+            return Err("private vst3 export requires private foreign processors".into());
+        }
+        if let Some(controlled) = job.controlled.as_ref() {
+            hex_export::control_storage_allowance(Some(&controlled.signal)).map_err(|error| {
+                format!("private vst3 export selection refused: {error:?}").to_lowercase()
+            })?;
         }
         if self.worker.is_none() || self.active.is_some() {
             return Err("export worker or resource custody is unavailable".into());
@@ -678,6 +680,16 @@ mod tests {
                     .is_err()
             );
             assert!(lane.active.is_none());
+            let mut valid_capture = ControlledExport::whole_main();
+            valid_capture.signal =
+                hex_export::ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(
+                    session.project().tracks()[0].id(),
+                )]);
+            plain.controlled = Some(valid_capture);
+            lane.prepare_job(&mut plain, &session, None, None, None, None)
+                .unwrap();
+            assert!(lane.active.as_ref().unwrap().runtime_bytes > baseline + 32);
+            lane.active = None;
             drop(plain);
         }
         for mode in ["success", "fail", "cancel"] {

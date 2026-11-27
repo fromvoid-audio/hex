@@ -137,6 +137,11 @@ pub trait ForeignBounceRenderer {
     fn max_block_frames(&self) -> usize;
     /// True only when the processor's declared finite tail allowance has
     /// elapsed since the selected span ended and the engine released its
+    /// Truthful opt-out for plugins that cannot render accurately offline and
+    /// require a real-time render pass instead. Checked before staging output.
+    fn requires_realtime_fallback(&self) -> bool {
+        false
+    }
     /// source gates. Unknown tails retain the existing finite render cap.
     fn tail_is_drained(&self, _quiescent_source_frames: u64) -> bool {
         false
@@ -148,6 +153,21 @@ pub trait ForeignBounceRenderer {
         pages: Option<&mut dyn hex_engine::MediaPages>,
         control: &ExportControl,
     ) -> Result<(), ExportError>;
+    /// Render one block while capturing selected canonical track/return outputs
+    /// (for solo-source / chosen-track bounce and multi-stem batch export).
+    fn render_block_with_capture(
+        &mut self,
+        playback: &mut SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        pages: Option<&mut dyn hex_engine::MediaPages>,
+        capture: &mut hex_engine::OutputCapture<'_, '_>,
+        control: &ExportControl,
+    ) -> Result<(), ExportError> {
+        let _ = (playback, output, pages, capture, control);
+        Err(ExportError::Invalid(
+            "foreign renderer does not support captured output export",
+        ))
+    }
     /// Complete the provider before WAV publication. Drop must also clean
     /// its private instance on cancellation or any earlier refusal.
     fn finish(&mut self, control: &ExportControl) -> Result<(), ExportError>;
@@ -159,6 +179,11 @@ pub fn render_arrangement_bounce_with_foreign(
     pages: Option<&mut dyn PreparedExportPages>,
     foreign: &mut dyn ForeignBounceRenderer,
 ) -> Result<ExportReport, ExportError> {
+    if foreign.requires_realtime_fallback() {
+        return Err(ExportError::Invalid(
+            "offline vst3 plugin requires real-time render fallback",
+        ));
+    }
     let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
     render_arrangement_bounce_partitioned(
         spec,

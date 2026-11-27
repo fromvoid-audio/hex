@@ -266,7 +266,14 @@ pub(super) fn render_stems_using_pages(
     spec: StemBatchSpec<'_>,
     pages: Option<&mut dyn PreparedExportPages>,
 ) -> Result<ExportReport, ExportError> {
-    render_stems_with_resources_and_hook(spec, MAX_OPEN_STEM_FILES, || {}, pages)
+    render_stems_with_resources_and_hook(spec, MAX_OPEN_STEM_FILES, || {}, pages, None)
+}
+pub(super) fn render_stems_using_pages_and_foreign(
+    spec: StemBatchSpec<'_>,
+    pages: Option<&mut dyn PreparedExportPages>,
+    foreign: &mut dyn crate::ForeignBounceRenderer,
+) -> Result<ExportReport, ExportError> {
+    render_stems_with_resources_and_hook(spec, MAX_OPEN_STEM_FILES, || {}, pages, Some(foreign))
 }
 #[cfg(test)]
 fn render_stems_with_hook(
@@ -292,6 +299,7 @@ fn render_stems_with_hook(
         MAX_OPEN_STEM_FILES,
         before_publication,
         None,
+        None,
     )
 }
 
@@ -300,6 +308,7 @@ fn render_stems_with_resources_and_hook(
     max_open_files: usize,
     before_publication: impl FnOnce(),
     mut pages: Option<&mut dyn PreparedExportPages>,
+    mut foreign: Option<&mut dyn crate::ForeignBounceRenderer>,
 ) -> Result<ExportReport, ExportError> {
     let StemBatchSpec {
         path,
@@ -311,6 +320,22 @@ fn render_stems_with_resources_and_hook(
         format,
         control,
     } = spec;
+    let block_frames = if let Some(provider) = foreign.as_deref() {
+        if provider.requires_realtime_fallback() {
+            return Err(ExportError::Invalid(
+                "offline vst3 plugin requires real-time render fallback",
+            ));
+        }
+        let chunk = provider.max_block_frames().min(FRAMES_PER_BLOCK);
+        if chunk == 0 || frames == 0 {
+            return Err(ExportError::Invalid(
+                "invalid foreign export block or range",
+            ));
+        }
+        chunk
+    } else {
+        FRAMES_PER_BLOCK
+    };
     control.claim()?;
     if stems.is_empty()
         || stems.len() > hex_engine::MAX_OUTPUT_CAPTURES
@@ -367,14 +392,29 @@ fn render_stems_with_resources_and_hook(
             });
         }
     }
-    let mut playback = controlled::prepare_runtime_with_pages(
-        revision,
-        resources,
-        start,
-        frames,
-        control,
-        pages.as_deref_mut(),
-    )?;
+    let mut playback = if let Some(provider) = foreign.as_deref_mut() {
+        controlled::prepare_runtime_with_foreign(
+            controlled::RuntimePrepSpec {
+                revision,
+                resources,
+                start,
+                frames,
+                control,
+            },
+            pages.as_deref_mut(),
+            provider,
+            block_frames,
+        )?
+    } else {
+        controlled::prepare_runtime_with_pages(
+            revision,
+            resources,
+            start,
+            frames,
+            control,
+            pages.as_deref_mut(),
+        )?
+    };
     let mut ordered = stems.to_vec();
     ordered.sort_by_key(|stem| match stem.id {
         OutputCaptureId::Track(id) => (0, id.value()),
@@ -382,7 +422,7 @@ fn render_stems_with_resources_and_hook(
     });
     let ids: Vec<_> = ordered.iter().map(|stem| stem.id).collect();
     let plan = playback
-        .output_capture_plan(&ids, FRAMES_PER_BLOCK)
+        .output_capture_plan(&ids, block_frames)
         .map_err(|_| ExportError::Invalid("invalid stem owner selection"))?;
     let mut staging = Staging::new(path)?;
     enum StemWriter {
@@ -431,13 +471,34 @@ fn render_stems_with_resources_and_hook(
     let mut remaining = frames;
     while remaining > 0 {
         control.check()?;
-        let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
+        let count = remaining.min(block_frames as u64) as usize;
         let mut slices: Vec<_> = buffers
             .iter_mut()
             .map(|buffer| &mut buffer[..count])
             .collect();
         let mut capture = OutputCapture::new(&plan, &mut slices);
-        if let Some(pages) = pages.as_deref_mut() {
+        if let Some(provider) = foreign.as_deref_mut() {
+            if let Some(pages) = pages.as_deref_mut() {
+                pages.prepare_chunk(&playback, count, control)?;
+                let mut view = crate::pages::PageView(pages);
+                provider.render_block_with_capture(
+                    &mut playback,
+                    &mut main[..count],
+                    Some(&mut view),
+                    &mut capture,
+                    control,
+                )?;
+                pages.complete_chunk()?;
+            } else {
+                provider.render_block_with_capture(
+                    &mut playback,
+                    &mut main[..count],
+                    None,
+                    &mut capture,
+                    control,
+                )?;
+            }
+        } else if let Some(pages) = pages.as_deref_mut() {
             pages.prepare_chunk(&playback, count, control)?;
             playback
                 .render_with_pages_and_capture(
@@ -540,6 +601,9 @@ fn render_stems_with_resources_and_hook(
     before_publication();
     if let Some(pages) = pages {
         pages.finish(control)?;
+    }
+    if let Some(provider) = foreign {
+        provider.finish(control)?;
     }
     control.begin_publication()?;
     publication::rename_directory_exclusive(&staging.path, path).map_err(|source| {
@@ -997,6 +1061,7 @@ mod tests {
                 },
                 4,
                 || {},
+                None,
                 None,
             )
             .unwrap();

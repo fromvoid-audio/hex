@@ -607,6 +607,126 @@ impl BlockRenderer for BufferedExportRenderer {
     }
 }
 
+/// Render Main, CapturedMix (solo-source / chosen-track), or Stems through
+/// independently owned offline foreign processors and optional verified pages.
+/// Plugins requiring real-time rendering refuse before touching destination files.
+pub fn render_prepared_with_foreign(
+    spec: ExportJobSpec<'_>,
+    pages: Option<&mut dyn PreparedExportPages>,
+    foreign: &mut dyn crate::ForeignBounceRenderer,
+) -> Result<ExportReport, ExportError> {
+    if foreign.requires_realtime_fallback() {
+        return Err(ExportError::Invalid(
+            "offline vst3 plugin requires real-time render fallback",
+        ));
+    }
+    let ExportJobSpec {
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        signal,
+        format,
+        control,
+        publication,
+    } = spec;
+    match signal {
+        ExportSignal::Main => render_linear_main_with_foreign(
+            ForeignLinearExportSpec {
+                path,
+                revision,
+                resources,
+                start,
+                frames,
+                format,
+                control,
+                publication,
+            },
+            pages,
+            foreign,
+        ),
+        ExportSignal::Stems(stems) => {
+            if !matches!(publication, Publication::CreateNew) {
+                return Err(ExportError::Invalid("stem batches require a new directory"));
+            }
+            super::stems::render_stems_using_pages_and_foreign(
+                super::stems::StemBatchSpec {
+                    path,
+                    revision,
+                    resources,
+                    start,
+                    frames,
+                    stems: &stems,
+                    format,
+                    control,
+                },
+                pages,
+                foreign,
+            )
+        }
+        ExportSignal::CapturedMix(ids) => {
+            if ids.is_empty() {
+                return Err(ExportError::Invalid("export output selection is empty"));
+            }
+            let block_frames = foreign.max_block_frames().min(FRAMES_PER_BLOCK);
+            if block_frames == 0 || frames == 0 {
+                return Err(ExportError::Invalid(
+                    "invalid foreign export block or range",
+                ));
+            }
+            control.claim()?;
+            let sample_rate = revision.arrangement().sample_rate();
+            let rendered_frames = compensated_frames(start, frames, 0)?;
+            publish_encoded(
+                path,
+                sample_rate,
+                start,
+                frames,
+                publication,
+                format,
+                || {
+                    let mut inputs = crate::bounce::RenderInputs {
+                        pages,
+                        foreign: Some(foreign),
+                    };
+                    let playback = prepare_runtime_with_inputs(
+                        RuntimePrepSpec {
+                            revision,
+                            resources,
+                            start,
+                            frames: rendered_frames,
+                            control,
+                        },
+                        foreign_linear_runtime,
+                        || {},
+                        &mut inputs,
+                        block_frames,
+                    )?;
+                    let plan = playback
+                        .output_capture_plan(&ids, block_frames)
+                        .map_err(|_| ExportError::Invalid("invalid export output selection"))?;
+                    let mut buffers = Vec::new();
+                    buffers.try_reserve_exact(ids.len()).map_err(|_| {
+                        ExportError::Invalid("could not reserve export capture buffers")
+                    })?;
+                    for _ in &ids {
+                        buffers.push([[0.0; 2]; FRAMES_PER_BLOCK]);
+                    }
+                    Ok(ForeignCapturedRenderer {
+                        playback,
+                        inputs,
+                        plan,
+                        buffers,
+                        block_frames,
+                        control: control.clone(),
+                    })
+                },
+            )
+        }
+    }
+}
+
 /// Render linear Main through independently owned offline processors and,
 /// optionally, verified pages. Both owners finish before publication. Their
 /// custody remains with the caller and failures abort the staged export.
@@ -615,6 +735,11 @@ pub fn render_linear_main_with_foreign(
     pages: Option<&mut dyn PreparedExportPages>,
     foreign: &mut dyn crate::ForeignBounceRenderer,
 ) -> Result<ExportReport, ExportError> {
+    if foreign.requires_realtime_fallback() {
+        return Err(ExportError::Invalid(
+            "offline vst3 plugin requires real-time render fallback",
+        ));
+    }
     let ForeignLinearExportSpec {
         path,
         revision,
@@ -672,12 +797,87 @@ pub fn render_linear_main_with_foreign(
     )
 }
 
-fn foreign_linear_runtime(
+pub(super) fn foreign_linear_runtime(
     revision: Arc<PreparedRevision>,
     resources: Option<&PreparedDeviceResources>,
     _frames: u64,
 ) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
     SessionPlayback::new_linear_arrangement_export_with_foreign(revision, resources)
+}
+
+struct ForeignCapturedRenderer<'p, 'pages, 'f> {
+    playback: SessionPlayback,
+    inputs: crate::bounce::RenderInputs<'p, 'pages, 'f>,
+    plan: OutputCapturePlan,
+    buffers: Vec<[Frame; FRAMES_PER_BLOCK]>,
+    block_frames: usize,
+    control: ExportControl,
+}
+
+impl BlockRenderer for ForeignCapturedRenderer<'_, '_, '_> {
+    fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+        for chunk in frames.chunks_mut(self.block_frames) {
+            self.control.check()?;
+            let mut slices: Vec<&mut [Frame]> = self
+                .buffers
+                .iter_mut()
+                .map(|buffer| &mut buffer[..chunk.len()])
+                .collect();
+            let mut capture = OutputCapture::new(&self.plan, &mut slices);
+            if let Some(pages) = self.inputs.pages.as_deref_mut() {
+                pages.prepare_chunk(&self.playback, chunk.len(), &self.control)?;
+                let mut view = crate::pages::PageView(pages);
+                let foreign = self
+                    .inputs
+                    .foreign
+                    .as_deref_mut()
+                    .ok_or(ExportError::Invalid("offline vst3 renderer unavailable"))?;
+                foreign.render_block_with_capture(
+                    &mut self.playback,
+                    chunk,
+                    Some(&mut view),
+                    &mut capture,
+                    &self.control,
+                )?;
+                pages.complete_chunk()?;
+            } else {
+                let foreign = self
+                    .inputs
+                    .foreign
+                    .as_deref_mut()
+                    .ok_or(ExportError::Invalid("offline vst3 renderer unavailable"))?;
+                foreign.render_block_with_capture(
+                    &mut self.playback,
+                    chunk,
+                    None,
+                    &mut capture,
+                    &self.control,
+                )?;
+            }
+            chunk.fill([0.0; 2]);
+            for index in 0..self.plan.ids().len() {
+                let output = capture
+                    .output(index)
+                    .ok_or(ExportError::Invalid("export capture was not committed"))?;
+                for (destination, source) in chunk.iter_mut().zip(output) {
+                    destination[0] += source[0];
+                    destination[1] += source[1];
+                }
+            }
+            self.control.advance(chunk.len());
+        }
+        self.control.check()
+    }
+
+    fn before_publication(&mut self) -> Result<(), ExportError> {
+        if let Some(pages) = self.inputs.pages.as_deref_mut() {
+            pages.finish(&self.control)?;
+        }
+        if let Some(foreign) = self.inputs.foreign.as_deref_mut() {
+            foreign.finish(&self.control)?;
+        }
+        self.control.begin_publication()
+    }
 }
 
 struct ForeignLinearRenderer<'p, 'pages, 'f> {
@@ -877,12 +1077,31 @@ pub(super) fn prepare_runtime(
     prepare_runtime_observed(revision, resources, start, frames, control, || {})
 }
 
-struct RuntimePrepSpec<'a> {
-    revision: Arc<PreparedRevision>,
-    resources: Option<&'a PreparedDeviceResources>,
-    start: u64,
-    frames: u64,
-    control: &'a ExportControl,
+pub(super) struct RuntimePrepSpec<'a> {
+    pub(super) revision: Arc<PreparedRevision>,
+    pub(super) resources: Option<&'a PreparedDeviceResources>,
+    pub(super) start: u64,
+    pub(super) frames: u64,
+    pub(super) control: &'a ExportControl,
+}
+
+pub(super) fn prepare_runtime_with_foreign<'provider>(
+    spec: RuntimePrepSpec<'_>,
+    pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
+    foreign: &mut dyn crate::ForeignBounceRenderer,
+    block_frames: usize,
+) -> Result<SessionPlayback, ExportError> {
+    let mut inputs = crate::bounce::RenderInputs {
+        pages,
+        foreign: Some(foreign),
+    };
+    prepare_runtime_with_inputs(
+        spec,
+        foreign_linear_runtime,
+        || {},
+        &mut inputs,
+        block_frames,
+    )
 }
 
 pub(super) fn prepare_runtime_with_pages<'provider>(
