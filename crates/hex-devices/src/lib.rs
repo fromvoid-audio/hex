@@ -94,10 +94,11 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 14] = 
     &delay::DEFINITION,
     &rattle::RATTLE_DEFINITION,
 ];
-static BUILTIN_LEAF_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 6] = [
+static BUILTIN_LEAF_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 7] = [
     &SINE_INSTRUMENT,
     &sampler::catalog::DEFINITION,
     &multisample::MULTISAMPLE_DEFINITION,
+    &wavetable::WAVETABLE_DEFINITION,
     &fm4::device::FM4_DEFINITION,
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
@@ -106,7 +107,7 @@ static BUILTIN_LEAF_INSTRUMENT_REGISTRY: OnceLock<hex_lattice::NativeInstrumentR
     OnceLock::new();
 static BUILTIN_DRUM_RACK_DEFINITION: OnceLock<hex_lattice::DrumRackDefinition<'static>> =
     OnceLock::new();
-static BUILTIN_NATIVE_INSTRUMENTS: OnceLock<[&'static dyn NativeInstrumentDefinition; 7]> =
+static BUILTIN_NATIVE_INSTRUMENTS: OnceLock<[&'static dyn NativeInstrumentDefinition; 8]> =
     OnceLock::new();
 static BUILTIN_LEAF_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 8] = [
     &midi_pitch::PITCH_DEFINITION,
@@ -174,6 +175,7 @@ pub fn native_instrument_registry()
             BUILTIN_LEAF_INSTRUMENTS[3],
             BUILTIN_LEAF_INSTRUMENTS[4],
             BUILTIN_LEAF_INSTRUMENTS[5],
+            BUILTIN_LEAF_INSTRUMENTS[6],
             drum_def,
         ]
     });
