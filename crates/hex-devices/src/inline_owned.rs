@@ -99,6 +99,7 @@ macro_rules! impl_inline_owned_factory {
 
 impl_inline_owned_factory!(
     crate::auto_pan::PreparedAutoPan,
+    crate::channel_eq::PreparedChannelEq,
     crate::compressor::PreparedCompressor,
     crate::eq_three::PreparedEqThree,
     crate::filter::PreparedFilter,

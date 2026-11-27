@@ -27,6 +27,7 @@ mod response;
 pub use response::{NativeResponseError, native_effect_frequency_response};
 
 pub mod auto_pan;
+pub mod channel_eq;
 pub mod chorus;
 pub mod compressor;
 pub mod delay;
@@ -80,11 +81,12 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 16] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 17] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
     &eq_three::EQ_THREE_DEFINITION,
+    &channel_eq::CHANNEL_EQ_DEFINITION,
     &saturator::SATURATOR_DEFINITION,
     &compressor::COMPRESSOR_DEFINITION,
     &gate::GATE_DEFINITION,
