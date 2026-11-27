@@ -55,9 +55,12 @@ impl MultiOutputInstrumentRuntime for TwoPortProbeInstrument {
         _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         _resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), hex_lattice::NativeInstrumentRuntimeError> {
-        let len = outputs[0].len();
+        let (main_out, rest) = outputs.split_at_mut(1);
+        let aux_out = &mut rest[0];
         let mut idx = 0;
-        for frame in 0..len {
+        for (frame, (main_frame, aux_frame)) in
+            main_out[0].iter_mut().zip(aux_out.iter_mut()).enumerate()
+        {
             while idx < events.len() && events[idx].frame_offset() == frame {
                 match events[idx] {
                     NativeInstrumentEvent::NoteOn { pitch, .. } => {
@@ -81,16 +84,16 @@ impl MultiOutputInstrumentRuntime for TwoPortProbeInstrument {
             if self.active_main {
                 let s = (self.phase_main * std::f32::consts::TAU).sin() * 0.4;
                 self.phase_main = (self.phase_main + 0.01) % 1.0;
-                outputs[0][frame] = [s, -s];
+                *main_frame = [s, -s];
             } else {
-                outputs[0][frame] = [0.0; 2];
+                *main_frame = [0.0; 2];
             }
             if self.active_aux {
                 let s = (self.phase_aux * std::f32::consts::TAU).sin() * 0.3;
                 self.phase_aux = (self.phase_aux + 0.02) % 1.0;
-                outputs[1][frame] = [s, s];
+                *aux_frame = [s, s];
             } else {
-                outputs[1][frame] = [0.0; 2];
+                *aux_frame = [0.0; 2];
             }
         }
         Ok(())

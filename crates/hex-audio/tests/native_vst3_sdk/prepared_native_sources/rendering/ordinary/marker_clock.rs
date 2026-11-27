@@ -44,14 +44,18 @@ fn recorded_block<const QUANTUM: usize>(
     number: u64,
     origin: OutputClockOrigin,
     rate: u32,
+    host_buffer_frames: usize,
 ) -> [Frame; QUANTUM] {
     let mut output = [[0.0; 2]; QUANTUM];
     let mut host = [[0.0_f32; 2]; QUANTUM];
     // Mirror CPAL's supported fixed-rate prediction: callback time plus one
-    // device buffer. This is injected data, not a real Core Audio timestamp.
+    // device buffer (exact 1:1 or sub-sliced multi-quantum host callback).
+    let sub_slices = (host_buffer_frames / QUANTUM).max(1) as u64;
+    let host_cb = number / sub_slices;
+    let sub_index = number % sub_slices;
     let info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
-        callback: instant(CALLBACK_NS + frame_ns(number * QUANTUM as u64, rate)),
-        playback: instant(CALLBACK_NS + frame_ns((number + 1) * QUANTUM as u64, rate)),
+        callback: instant(CALLBACK_NS + frame_ns(host_cb * host_buffer_frames as u64, rate)),
+        playback: instant(CALLBACK_NS + frame_ns((host_cb + 1) * host_buffer_frames as u64, rate)),
     });
     allocation_free(|| {
         f.data.owner_mut().unwrap().run(|callback, _| {
@@ -61,7 +65,7 @@ fn recorded_block<const QUANTUM: usize>(
             assert!(rendered.is_ok());
             callback.set_sample_recording_output_clock(Some(OutputClock {
                 playback: info.timestamp().playback,
-                offset_frames: 0,
+                offset_frames: (sub_index as u32) * (QUANTUM as u32),
                 graph_latency_frames: None,
                 origin,
             }));
@@ -83,16 +87,22 @@ fn recorded_block<const QUANTUM: usize>(
 #[test]
 #[ignore = "explicit signed slice-clock observation profile and original SDK receipts required"]
 fn installed_sdk_marker_joins_bound_main_pcm_with_an_injected_output_clock() {
-    verify_installed_marker::<8>(48_000);
+    verify_installed_marker::<8>(48_000, 8);
 }
 
 #[test]
 #[ignore = "explicit signed slice-clock observation profile and original SDK receipts required"]
 fn installed_sdk_marker_uses_the_44100_hz_rate_and_256_frame_quantum() {
-    verify_installed_marker::<256>(44_100);
+    verify_installed_marker::<256>(44_100, 256);
 }
 
-fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
+#[test]
+#[ignore = "explicit signed slice-clock observation profile and original SDK receipts required"]
+fn installed_sdk_marker_uses_subsliced_512_frame_44100_hz_callbacks_at_256_frame_quantum() {
+    verify_installed_marker::<256>(44_100, 512);
+}
+
+fn verify_installed_marker<const QUANTUM: usize>(rate: u32, host_buffer_frames: usize) {
     const CHILD: &str = "HEX_INSTALLED_SDK_MARKER_CLOCK_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let directory = Directory(std::env::temp_dir().join(
@@ -218,6 +228,7 @@ fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
                 OutputClockOrigin::CoreAudioHostTime
             },
             rate,
+            host_buffer_frames,
         ));
         assert_eq!(
             f.control.status.position.load(Acquire),
@@ -236,7 +247,13 @@ fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
     assert_eq!(rendered, expected);
     assert_eq!(f.control.status.recording_source(), Some(source));
     reader.stop();
-    recorded_block::<QUANTUM>(&mut f, 8, OutputClockOrigin::CoreAudioHostTime, rate);
+    recorded_block::<QUANTUM>(
+        &mut f,
+        8,
+        OutputClockOrigin::CoreAudioHostTime,
+        rate,
+        host_buffer_frames,
+    );
     let mut packets = 0;
     let mut marker_predictions = Vec::new();
     assert_eq!(
@@ -263,7 +280,8 @@ fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
     );
     assert_eq!(packets, 8);
     assert_eq!(marker_predictions.len(), 4);
-    let expected_prediction = CALLBACK_NS + frame_ns(3 * QUANTUM as u64, rate) + frame_ns(1, rate);
+    let expected_prediction =
+        CALLBACK_NS + frame_ns(first_marker as u64 + host_buffer_frames as u64, rate);
     assert_eq!(
         marker_predictions[0],
         (first_marker, Some(expected_prediction))
@@ -277,7 +295,7 @@ fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
     // buffer. Neither the graph delay nor another device buffer belongs here.
     assert_ne!(
         marker_predictions[0].1.unwrap(),
-        expected_prediction + frame_ns(QUANTUM as u64, rate)
+        expected_prediction + frame_ns(host_buffer_frames as u64, rate)
     );
     f.control.sample_recording.reclaim();
     let stale = AppliedAudioSource {
@@ -290,7 +308,13 @@ fn verify_installed_marker<const QUANTUM: usize>(rate: u32) {
         .start_bound_main_for_test(stale)
         .unwrap();
     assert!(refused.ready());
-    recorded_block::<QUANTUM>(&mut f, 9, OutputClockOrigin::CoreAudioHostTime, rate);
+    recorded_block::<QUANTUM>(
+        &mut f,
+        9,
+        OutputClockOrigin::CoreAudioHostTime,
+        rate,
+        host_buffer_frames,
+    );
     let mut refused_packets = 0;
     assert_eq!(
         refused.drain_with_output_clock(|_, _, _, _, _| refused_packets += 1),

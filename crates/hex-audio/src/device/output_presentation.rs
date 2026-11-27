@@ -70,11 +70,16 @@ fn declared_output_frames(
     project_rate: u32,
     quantum: u16,
 ) -> Option<u32> {
-    // Only the same-rate fixed-buffer path is supported. A nonzero AU value
-    // could overlap the hardware path, so leave its composition unknown.
-    if timing.client_sample_rate != f64::from(project_rate)
+    // Admit same-rate fixed-buffer paths whose hardware buffer is an exact
+    // positive multiple of the plugin bridge quantum (1:1 or sub-sliced, e.g.
+    // 512 = 2 * 256 or 1024 = 4 * 256). A nonzero AU value could overlap the
+    // hardware path, so leave its composition unknown.
+    let quantum_u32 = u32::from(quantum);
+    if quantum_u32 == 0
+        || timing.client_sample_rate != f64::from(project_rate)
         || timing.device_sample_rate != f64::from(project_rate)
-        || timing.buffer_frames != u32::from(quantum)
+        || timing.buffer_frames < quantum_u32
+        || !timing.buffer_frames.is_multiple_of(quantum_u32)
         || timing.audio_unit_seconds != 0.0
     {
         return None;
@@ -101,6 +106,34 @@ mod tests {
         assert_eq!(declared_output_frames(observed, 48_000, 128), Some(162));
         assert_eq!(declared_output_frames(observed, 44_100, 128), None);
         assert_eq!(declared_output_frames(observed, 48_000, 256), None);
+        assert_eq!(declared_output_frames(observed, 48_000, 0), None);
+
+        // Exact sub-sliced CoreAudio hardware buffers (e.g. 44.1 kHz / 512 or 1024
+        // frames sub-sliced into 256-frame plugin quanta) count the hardware buffer once.
+        let subsliced_512 = CoreAudioOutputTiming {
+            device_sample_rate: 44_100.0,
+            client_sample_rate: 44_100.0,
+            buffer_frames: 512,
+            ..observed
+        };
+        assert_eq!(
+            declared_output_frames(subsliced_512, 44_100, 256),
+            Some(546)
+        );
+        let subsliced_1024 = CoreAudioOutputTiming {
+            buffer_frames: 1024,
+            ..subsliced_512
+        };
+        assert_eq!(
+            declared_output_frames(subsliced_1024, 44_100, 256),
+            Some(1058)
+        );
+        // Non-multiple hardware buffers remain refused.
+        let non_multiple = CoreAudioOutputTiming {
+            buffer_frames: 384,
+            ..subsliced_512
+        };
+        assert_eq!(declared_output_frames(non_multiple, 44_100, 256), None);
         for invalid in [
             CoreAudioOutputTiming {
                 device_sample_rate: 44_100.0,
