@@ -1055,3 +1055,155 @@ fn canonical_scale_device_matches_pcm_oracle_across_quantize_off_degree_and_live
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn canonical_random_device_matches_seeded_pcm_oracle_across_partitions_seeds_and_live_edits() {
+    use hex_devices::midi_random::{
+        MAX_CHANCE_BPS, RandomOverflowPolicy, RandomSettings, RandomSign, initial_rng_state,
+    };
+
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 105),
+    ];
+
+    let settings_a = RandomSettings {
+        chance_bps: MAX_CHANCE_BPS,
+        choices: 6,
+        scale: 2,
+        sign: RandomSign::Bi,
+        seed: 77,
+        overflow: RandomOverflowPolicy::Clamp,
+    };
+    let settings_b = RandomSettings {
+        seed: 99,
+        ..settings_a
+    };
+
+    // Independent oracle pitches for seed 77 and seed 99.
+    let mut rng_a = initial_rng_state(settings_a.seed);
+    let expected_pitches_a: Vec<u8> = authored_notes
+        .iter()
+        .map(|&(_, _, p, _)| settings_a.next_pitch(p, &mut rng_a).unwrap())
+        .collect();
+    assert_ne!(
+        expected_pitches_a[0], expected_pitches_a[1],
+        "overlapping notes remain distinct pitches in oracle clip"
+    );
+    let mut rng_b = initial_rng_state(settings_b.seed);
+    let expected_pitches_b: Vec<u8> = authored_notes
+        .iter()
+        .map(|&(_, _, p, _)| settings_b.next_pitch(p, &mut rng_b).unwrap())
+        .collect();
+    assert_ne!(expected_pitches_a, expected_pitches_b);
+
+    let oracle_notes_a: Vec<_> = authored_notes
+        .iter()
+        .zip(&expected_pitches_a)
+        .map(|(&(s, d, _, v), &p)| (s, d, p, v))
+        .collect();
+    let (oracle_editor_a, _) = build_subtractive_project(&oracle_notes_a);
+
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(random_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: settings_a.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected random processor id");
+    };
+    let rev_a = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle_a = SessionPlayback::new(prepare_revision(oracle_editor_a.project())).unwrap();
+    oracle_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_pcm_a = vec![[0.0_f32; 2]; total_frames];
+    oracle_a.render(&mut expected_pcm_a).unwrap();
+    assert!(expected_pcm_a.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Irregular block partitions match oracle bit-for-bit!
+    let mut pb_a = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    pb_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_a = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        pb_a.render(&mut actual_a[cursor..cursor + len]).unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual_a, expected_pcm_a);
+    assert!(
+        pb_a.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Stop + Seek(0) + Play deterministically reseeds and reproduces bit-identically.
+    pb_a.apply(SessionPlaybackCommand::Stop).unwrap();
+    pb_a.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    pb_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay_a = vec![[0.0_f32; 2]; total_frames];
+    pb_a.render(&mut replay_a).unwrap();
+    assert_eq!(replay_a, expected_pcm_a);
+
+    // Distinct seed produces distinct PCM.
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: random_id,
+            state: settings_b.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_b = prepare_revision(editor.project());
+    let mut pb_b = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    pb_b.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_b = vec![[0.0_f32; 2]; total_frames];
+    pb_b.render(&mut actual_b).unwrap();
+    assert_ne!(actual_b, expected_pcm_a);
+
+    // Live mid-note reseed (seed 77 -> seed 99 while notes 1 & 2 are held):
+    // Notes 1 & 2 stay at seed 77 pitches and release cleanly; Note 3 (pitch 67) uses first draw of seed 99!
+    let mut rng_reseeded = initial_rng_state(settings_b.seed);
+    let reseeded_note3_pitch = settings_b.next_pitch(67, &mut rng_reseeded).unwrap();
+    let mixed_oracle_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), expected_pitches_a[0], 100),
+        (
+            beat_frac(1, 64),
+            beat_frac(1, 32),
+            expected_pitches_a[1],
+            90,
+        ),
+        (
+            beat_frac(1, 16),
+            beat_frac(1, 32),
+            reseeded_note3_pitch,
+            105,
+        ),
+    ];
+    let (mixed_editor, _) = build_subtractive_project(&mixed_oracle_notes);
+    let mut mixed_oracle = SessionPlayback::new(prepare_revision(mixed_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_b).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
