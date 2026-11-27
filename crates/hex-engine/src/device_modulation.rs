@@ -334,6 +334,7 @@ fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: Param
         || id == hex_devices::eq_three::EQ_THREE_TYPE_ID
         || id == hex_devices::channel_eq::CHANNEL_EQ_TYPE_ID
         || id == hex_devices::redux::REDUX_TYPE_ID
+        || id == hex_devices::erosion::EROSION_TYPE_ID
         || id == hex_devices::utility::UTILITY_TYPE_ID
             && hex_devices::utility::UtilityDefinition::supports_source_matrix_modulation(
                 state, parameter,
