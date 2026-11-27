@@ -108,6 +108,35 @@ impl VerifiedClipMoveSource {
         self.candidate_reservation_quote()?;
         destination.prepare_on_control(&self.project, catalog, self.canonical.context())
     }
+
+    /// Borrow host effect facts while retaining the canonical source and context.
+    pub fn reservation_quote_with_effects(
+        &self,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
+        }
+        self.canonical
+            .candidate_reservation_quote_for_effects(&self.project, Some(effects))
+    }
+
+    /// Compile the transient clip move using host-borrowed effect facts.
+    pub fn prepare_candidate_with_effects_on_control(
+        &self,
+        catalog: u64,
+        destination: &mut hex_engine::AudioCandidatePreparation,
+        effects: &hex_engine::AudioCandidateEffects<'_, '_>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.reservation_quote_with_effects(effects)?;
+        effects.prepare(
+            destination,
+            &self.project,
+            catalog,
+            self.canonical.context(),
+            None,
+        )
+    }
 }
 
 /// Worker-side prepared transient clip move for a verified document that borrows

@@ -518,7 +518,6 @@ impl super::EditorView {
             return false;
         };
         let eligible = self.mode == super::EditorMode::Arrangement
-            && self.audio_pub.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && !self.persistence.drag_bounce_held
             && self
                 .audio_status()

@@ -16,6 +16,14 @@ impl VerifiedClipControl {
         self.watermark = None;
     }
 
+    pub(super) fn preview(&self) -> Option<&Arc<VerifiedClipMoveSource>> {
+        self.preview.as_ref()
+    }
+
+    pub(super) fn clear_preview(&mut self) {
+        self.preview = None;
+    }
+
     pub(super) fn receive(
         &mut self,
         desired: Option<&Arc<CanonicalAudioSourceSnapshot>>,
@@ -33,7 +41,12 @@ impl VerifiedClipControl {
         }
         match update {
             VerifiedClipMoveUpdate::Preview(preview) => {
-                if preview.candidate_reservation_quote().is_err() {
+                let quotable = preview.candidate_reservation_quote().is_ok()
+                    || hex_engine::AudioCandidateEffects::with_host_definitions(&[], |effects| {
+                        Ok(preview.reservation_quote_with_effects(effects).is_ok())
+                    })
+                    .unwrap_or(false);
+                if !quotable {
                     return false;
                 }
                 let identity = preview.identity();

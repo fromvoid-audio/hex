@@ -204,6 +204,14 @@ pub enum EditorPublicationState {
     },
     /// The running canonical source remains usable after a play-start preview refusal.
     VerifiedArrangementPlayStartRefused(String),
+    /// Verified-source held clip-move audition correlation, distinct from canonical
+    /// publication. Actual application still requires output/revision callback status.
+    VerifiedClipMoveSubmitted {
+        audio_revision: u64,
+        identity: hex_session::service::ClipMovePreviewIdentity,
+    },
+    /// The running canonical source remains usable after a clip-move preview refusal.
+    VerifiedClipMoveRefused(String),
     /// Exact submission correlation and bounded resource-free observation endpoints. Application
     /// still needs the output/revision callback ACK; no graph or native resource owner crosses.
     ResidentSubmitted {

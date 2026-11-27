@@ -787,16 +787,19 @@ pub(crate) fn record_audio_backend_event(cx: &mut App, event: &crate::EditorAudi
                 | P::VerifiedPreviewSubmitted { .. }
                 | P::VerifiedArrangementGainSubmitted { .. }
                 | P::VerifiedArrangementPlayStartSubmitted { .. }
+                | P::VerifiedClipMoveSubmitted { .. }
                 | P::ResidentSubmitted { .. } => "submitted",
                 P::Refused(_)
                 | P::VerifiedArrangementGainRefused(_)
-                | P::VerifiedArrangementPlayStartRefused(_) => "refused",
+                | P::VerifiedArrangementPlayStartRefused(_)
+                | P::VerifiedClipMoveRefused(_) => "refused",
                 P::Fault(_) => "fault",
             };
             let (revision, preview, seek) = match state {
                 P::Submitted { audio_revision }
                 | P::VerifiedArrangementGainSubmitted { audio_revision }
-                | P::VerifiedArrangementPlayStartSubmitted { audio_revision } => {
+                | P::VerifiedArrangementPlayStartSubmitted { audio_revision }
+                | P::VerifiedClipMoveSubmitted { audio_revision, .. } => {
                     (Some(*audio_revision), None, None)
                 }
                 P::VerifiedPreviewSubmitted {

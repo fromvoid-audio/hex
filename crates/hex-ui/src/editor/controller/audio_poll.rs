@@ -499,6 +499,40 @@ impl EditorView {
             crate::EditorPublicationState::VerifiedArrangementPlayStartRefused(reason) => {
                 self.status = format!("play start preview unavailable · {}", reason.to_lowercase());
             }
+            crate::EditorPublicationState::VerifiedClipMoveSubmitted {
+                audio_revision,
+                identity,
+            } => {
+                if identity.context.project_generation == context.project_generation
+                    && identity.context.editor_revision == authoring_revision
+                    && let Some(state) = self.state.as_ref().cloned()
+                    && !self.audio_pub.playback_candidates.iter().any(|candidate| {
+                        candidate.audio_revision == audio_revision
+                            && candidate.project_generation == context.project_generation
+                    })
+                    && self.audio_pub.playback_candidates.len()
+                        < crate::editor::PLAYBACK_CANDIDATE_CAPACITY
+                {
+                    self.audio_pub
+                        .playback_candidates
+                        .push_back(PlaybackCandidate {
+                            clip_preview_identity: Some(identity),
+                            worker_requires_preroll: None,
+                            observation: None,
+                            audio_revision,
+                            project_generation: context.project_generation,
+                            state,
+                            prepared_revision: None,
+                            seek_request_id: None,
+                            device_preview_identity: None,
+                            tuning_preview_identity: None,
+                        });
+                }
+                self.status = "publishing clip preview".into();
+            }
+            crate::EditorPublicationState::VerifiedClipMoveRefused(reason) => {
+                self.status = format!("clip preview unavailable · {}", reason.to_lowercase());
+            }
             crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
                 self.status = "audio busy · waiting to publish".into()
