@@ -335,6 +335,10 @@ impl NativeDeviceMetadata for WavetableDefinition {
         &DESCRIPTORS
     }
 
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
+    }
+
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         WavetableState::empty().to_native()
     }

@@ -199,9 +199,15 @@ pub use midi_rack::{
 };
 
 mod adapters;
+mod device_ports;
 mod registry;
 mod runtime_chain;
 mod traits;
+
+pub use device_ports::{
+    DevicePortConnection, DevicePortNode, DevicePortRouteError, ValidatedPortGraph,
+    validate_port_graph,
+};
 
 pub use adapters::{
     ForeignConfigurationContinuation, NativeExternalAutomation, NativeExternalAutomationSet,

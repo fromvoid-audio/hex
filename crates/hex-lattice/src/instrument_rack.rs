@@ -786,6 +786,10 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
         &DESCRIPTORS
     }
 
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
+    }
+
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         let Some(rack_id) = NonZeroU64::new(1) else {
             return Err(DeviceContractError::InvalidId);
