@@ -125,3 +125,47 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod macro_gesture_tests {
+    use super::*;
+
+    #[test]
+    fn macro_gesture_receipt_holds_final_preview_across_repaints_until_exact_ack_or_invalidation() {
+        // Released macro knob drag submits a typed SetMacroValue edit at generation 7
+        // while 2 earlier edits are still in flight (pending count = 3).
+        let mut receipt = Receipt::new(7);
+        assert!(receipt.is_queued());
+        assert!(receipt.submitted(3));
+        assert!(
+            !receipt.submitted(1),
+            "duplicate submission stamp must be refused"
+        );
+
+        // Intermediate repaints before ACK (no completion yet) keep frozen preview active.
+        assert_eq!(receipt.observe(7, false, false), Disposition::Waiting);
+        // Earlier requests 1 & 2 complete; macro edit still awaits its own exact ACK.
+        assert_eq!(receipt.observe(7, false, true), Disposition::Waiting);
+        assert_eq!(receipt.observe(7, false, true), Disposition::Waiting);
+        // Exact terminal ACK arrives alongside canonical state -> retire preview atomically!
+        assert_eq!(receipt.observe(7, false, true), Disposition::Terminal);
+        // Post-terminal observations remain settled without re-firing.
+        assert_eq!(receipt.observe(7, false, true), Disposition::Waiting);
+
+        // Source/project replacement invalidates a pending macro preview immediately.
+        let mut replaced_receipt = Receipt::new(7);
+        assert!(replaced_receipt.submitted(2));
+        assert_eq!(
+            replaced_receipt.observe(7, true, false),
+            Disposition::Invalidated
+        );
+
+        // Stale generation (refusal/reload) invalidates without mutating canonical state.
+        let mut stale_receipt = Receipt::new(7);
+        assert!(stale_receipt.submitted(1));
+        assert_eq!(
+            stale_receipt.observe(8, false, false),
+            Disposition::Invalidated
+        );
+    }
+}

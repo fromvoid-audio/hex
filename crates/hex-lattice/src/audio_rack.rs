@@ -15,8 +15,15 @@
 //! buffers are preallocated on control so callback rendering performs zero
 //! allocations, locks, I/O, or final drops.
 
+mod macros;
 #[cfg(test)]
 mod tests;
+
+pub use macros::{
+    AUDIO_RACK_MAX_MACROS, AUDIO_RACK_MAX_MAPPINGS_PER_MACRO, AudioRackMacroMapping,
+    AudioRackMacroPolarity, AudioRackMacroPrecedence, AudioRackMacroSpec, AudioRackMacroTarget,
+    ResolvedMacroAssignment, resolve_rack_macros_on_control,
+};
 
 use crate::{
     DeviceMeter, DevicePreparationContext, EMPTY_DEVICE_RESOURCES, MAX_MAIN_PASS_DELAY_FRAMES,
@@ -33,8 +40,10 @@ use std::{fmt, num::NonZeroU64, sync::Arc};
 pub const AUDIO_RACK_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.rack.audio");
 /// Prior flat-only wire format version migrated cleanly to `AUDIO_RACK_STATE_VERSION`.
 pub const AUDIO_RACK_STATE_VERSION_V1_FLAT: u32 = 1;
-/// Current persisted wire format version supporting depth-2 nested Audio Racks.
-pub const AUDIO_RACK_STATE_VERSION: u32 = 2;
+/// Prior depth-2 nested wire format version (without macros) migrated cleanly to v3.
+pub const AUDIO_RACK_STATE_VERSION_V2_NESTED: u32 = 2;
+/// Current persisted wire format version supporting depth-2 nested racks and macro mappings.
+pub const AUDIO_RACK_STATE_VERSION: u32 = 3;
 const AUDIO_RACK_STATE_MAGIC: &[u8; 4] = b"HXAR";
 /// Fixed parallel branch count for this bounded Audio Rack contract.
 pub const AUDIO_RACK_BRANCH_COUNT: usize = 2;
@@ -106,6 +115,14 @@ pub enum AudioRackError {
     InvalidEditIndex,
     UnknownTargetId,
     InvalidNestedState,
+    DuplicateMacroId,
+    InvalidMacroValue,
+    InvalidMacroRange,
+    MacroCapacityExceeded,
+    MacroMappingCapacityExceeded,
+    DuplicateMacroTarget,
+    InvalidMacroTarget,
+    UnsupportedMacroTarget,
     DeviceContract(DeviceContractError),
 }
 
@@ -136,6 +153,20 @@ impl AudioRackError {
             Self::UnknownTargetId => "audio rack edit target identity was not found",
             Self::InvalidNestedState => {
                 "audio rack state payload is malformed or unsupported version"
+            }
+            Self::DuplicateMacroId => "audio rack macros must have distinct identities",
+            Self::InvalidMacroValue => "audio rack macro value must be finite within 0..=1",
+            Self::InvalidMacroRange => {
+                "audio rack macro mapping range must satisfy 0 <= min <= max <= 1"
+            }
+            Self::MacroCapacityExceeded => "audio rack macro limit is exceeded",
+            Self::MacroMappingCapacityExceeded => "audio rack macro mapping limit is exceeded",
+            Self::DuplicateMacroTarget => {
+                "audio rack parameter target may not be mapped twice in the same rack"
+            }
+            Self::InvalidMacroTarget => "audio rack macro target device is missing or invalid",
+            Self::UnsupportedMacroTarget => {
+                "audio rack macro target parameter is unknown, read-only, or structural"
             }
             Self::DeviceContract(_) => "audio rack child device contract failed",
         }
@@ -173,13 +204,14 @@ pub struct AudioRackBranchSpec {
     pub devices: Vec<AudioRackDeviceSpec>,
 }
 
-/// Complete control-side specification for one bounded two-chain Audio Rack.
+/// Complete control-side specification for one bounded nested Audio Rack.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AudioRackSpec {
     pub rack_id: NonZeroU64,
     pub sample_rate: u32,
     pub bypassed: bool,
     pub branches: [AudioRackBranchSpec; AUDIO_RACK_BRANCH_COUNT],
+    pub macros: Vec<AudioRackMacroSpec>,
 }
 
 impl AudioRackSpec {
@@ -211,7 +243,8 @@ impl AudioRackSpec {
             &mut seen_branches,
             &mut seen_devices,
             &mut total_devices,
-        )
+        )?;
+        macros::validate_macros(self)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -289,16 +322,29 @@ impl AudioRackSpec {
         Ok(())
     }
 
-    /// Encode this Audio Rack spec into a strictly validated v2 `NativeDeviceState`
-    /// supporting bounded depth-2 nesting.
+    /// Encode this Audio Rack spec into a strictly validated v3 `NativeDeviceState`
+    /// supporting bounded depth-2 nesting and macro mappings.
     pub fn encode_state(&self) -> Result<NativeDeviceState, AudioRackError> {
         self.validate(&AudioRackLimits::default())?;
         self.encode_state_version(AUDIO_RACK_STATE_VERSION)
     }
 
-    /// Encode a flat (depth-1 only) Audio Rack spec into the prior v1 wire format
-    /// for migration testing. Rejects any spec containing nested Audio Racks.
+    /// Encode a depth-2 nested Audio Rack spec without macros into the prior v2
+    /// wire format for migration testing. Rejects specs with macros.
+    pub fn encode_v2_nested_state(&self) -> Result<NativeDeviceState, AudioRackError> {
+        if !self.macros.is_empty() {
+            return Err(AudioRackError::InvalidNestedState);
+        }
+        self.validate(&AudioRackLimits::default())?;
+        self.encode_state_version(AUDIO_RACK_STATE_VERSION_V2_NESTED)
+    }
+
+    /// Encode a flat (depth-1 only) Audio Rack spec without macros into the
+    /// prior v1 wire format for migration testing. Rejects nested racks or macros.
     pub fn encode_v1_flat_state(&self) -> Result<NativeDeviceState, AudioRackError> {
+        if !self.macros.is_empty() {
+            return Err(AudioRackError::InvalidNestedState);
+        }
         let flat_limits = AudioRackLimits {
             max_depth: 1,
             ..AudioRackLimits::default()
@@ -307,7 +353,10 @@ impl AudioRackSpec {
         self.encode_state_version(AUDIO_RACK_STATE_VERSION_V1_FLAT)
     }
 
-    fn encode_state_version(&self, version: u32) -> Result<NativeDeviceState, AudioRackError> {
+    pub(super) fn encode_state_version(
+        &self,
+        version: u32,
+    ) -> Result<NativeDeviceState, AudioRackError> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(AUDIO_RACK_STATE_MAGIC);
         bytes.extend_from_slice(&self.rack_id.get().to_le_bytes());
@@ -341,40 +390,88 @@ impl AudioRackSpec {
                 }
             }
         }
+        if version >= AUDIO_RACK_STATE_VERSION {
+            let macro_count = u16::try_from(self.macros.len())
+                .map_err(|_| AudioRackError::MacroCapacityExceeded)?;
+            bytes.extend_from_slice(&macro_count.to_le_bytes());
+            for m in &self.macros {
+                bytes.extend_from_slice(&m.macro_id.get().to_le_bytes());
+                bytes.extend_from_slice(&m.value.to_le_bytes());
+                bytes.push(u8::from(m.bypassed));
+                let map_count = u16::try_from(m.mappings.len())
+                    .map_err(|_| AudioRackError::MacroMappingCapacityExceeded)?;
+                bytes.extend_from_slice(&map_count.to_le_bytes());
+                for mapping in &m.mappings {
+                    bytes.extend_from_slice(&mapping.target.rack_id.get().to_le_bytes());
+                    bytes.extend_from_slice(&mapping.target.device_id.get().to_le_bytes());
+                    bytes.extend_from_slice(&mapping.target.parameter_id.value().to_le_bytes());
+                    bytes.extend_from_slice(&mapping.min_normalized.to_le_bytes());
+                    bytes.extend_from_slice(&mapping.max_normalized.to_le_bytes());
+                    bytes.push(match mapping.polarity {
+                        AudioRackMacroPolarity::Normal => 0,
+                        AudioRackMacroPolarity::Inverted => 1,
+                    });
+                    bytes.push(match mapping.precedence {
+                        AudioRackMacroPrecedence::MacroOverridesAuthored => 0,
+                        AudioRackMacroPrecedence::AutomationOverridesMacro => 1,
+                    });
+                    bytes.push(u8::from(mapping.bypassed));
+                }
+                if bytes.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
+                    return Err(AudioRackError::RuntimeBudgetExceeded);
+                }
+            }
+        }
         Ok(NativeDeviceState::new(AUDIO_RACK_TYPE_ID, version, bytes)?)
     }
 
-    /// Strictly decode and validate a current v2 Audio Rack `NativeDeviceState`.
+    /// Strictly decode and validate a current v3 Audio Rack `NativeDeviceState`.
     pub fn decode_state(state: &NativeDeviceState) -> Result<Self, AudioRackError> {
         let spec = Self::decode_state_raw(state, false)?;
         spec.validate(&AudioRackLimits::default())?;
         Ok(spec)
     }
 
-    /// Decode and migrate a v1 flat or v2 nested Audio Rack `NativeDeviceState`
-    /// into the current canonical `AudioRackSpec`, rejecting unsupported or
-    /// malformed payloads explicitly.
+    /// Decode and migrate a v1 flat, v2 nested, or v3 macro-capable Audio Rack
+    /// `NativeDeviceState` into the current canonical `AudioRackSpec`, rejecting
+    /// unsupported or malformed payloads explicitly.
     pub fn decode_and_migrate_state(state: &NativeDeviceState) -> Result<Self, AudioRackError> {
-        let spec = Self::decode_state_raw(state, true)?;
+        let mut spec = Self::decode_state_raw(state, true)?;
         if state.state_version() == AUDIO_RACK_STATE_VERSION_V1_FLAT {
             let flat_limits = AudioRackLimits {
                 max_depth: 1,
                 ..AudioRackLimits::default()
             };
             spec.validate(&flat_limits)?;
-        } else {
-            spec.validate(&AudioRackLimits::default())?;
+            return Ok(spec);
         }
+        // Upgrade any prior-version nested rack states to current v3 before validation.
+        for branch in &mut spec.branches {
+            for device in &mut branch.devices {
+                if device.state.type_id() == AUDIO_RACK_TYPE_ID
+                    && device.state.state_version() != AUDIO_RACK_STATE_VERSION
+                {
+                    let nested = Self::decode_state_raw(&device.state, true)?;
+                    device.state = nested.encode_state_version(AUDIO_RACK_STATE_VERSION)?;
+                }
+            }
+        }
+        spec.validate(&AudioRackLimits::default())?;
         Ok(spec)
     }
 
-    fn decode_state_raw(state: &NativeDeviceState, allow_v1: bool) -> Result<Self, AudioRackError> {
+    pub(super) fn decode_state_raw(
+        state: &NativeDeviceState,
+        allow_prior: bool,
+    ) -> Result<Self, AudioRackError> {
         if state.type_id() != AUDIO_RACK_TYPE_ID {
             return Err(AudioRackError::InvalidNestedState);
         }
         let version = state.state_version();
         let valid_version = version == AUDIO_RACK_STATE_VERSION
-            || (allow_v1 && version == AUDIO_RACK_STATE_VERSION_V1_FLAT);
+            || (allow_prior
+                && (version == AUDIO_RACK_STATE_VERSION_V1_FLAT
+                    || version == AUDIO_RACK_STATE_VERSION_V2_NESTED));
         if !valid_version || !state.asset_references().is_empty() {
             return Err(AudioRackError::InvalidNestedState);
         }
@@ -501,6 +598,111 @@ impl AudioRackSpec {
                 devices,
             });
         }
+        let mut macros_vec = Vec::new();
+        if version >= AUDIO_RACK_STATE_VERSION {
+            let macro_count = usize::from(u16::from_le_bytes(
+                read_bytes(&mut cursor, 2)?
+                    .try_into()
+                    .map_err(|_| AudioRackError::InvalidNestedState)?,
+            ));
+            if macro_count > AUDIO_RACK_MAX_MACROS {
+                return Err(AudioRackError::MacroCapacityExceeded);
+            }
+            for _ in 0..macro_count {
+                let macro_raw = u64::from_le_bytes(
+                    read_bytes(&mut cursor, 8)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                );
+                let macro_id =
+                    NonZeroU64::new(macro_raw).ok_or(AudioRackError::InvalidNestedState)?;
+                let value = f32::from_le_bytes(
+                    read_bytes(&mut cursor, 4)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                );
+                let m_bypassed = match read_bytes(&mut cursor, 1)?[0] {
+                    0 => false,
+                    1 => true,
+                    _ => return Err(AudioRackError::InvalidNestedState),
+                };
+                let map_count = usize::from(u16::from_le_bytes(
+                    read_bytes(&mut cursor, 2)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                ));
+                if map_count > AUDIO_RACK_MAX_MAPPINGS_PER_MACRO {
+                    return Err(AudioRackError::MacroMappingCapacityExceeded);
+                }
+                let mut mappings = Vec::with_capacity(map_count);
+                for _ in 0..map_count {
+                    let t_rack_raw = u64::from_le_bytes(
+                        read_bytes(&mut cursor, 8)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    let t_rack =
+                        NonZeroU64::new(t_rack_raw).ok_or(AudioRackError::InvalidNestedState)?;
+                    let t_dev_raw = u64::from_le_bytes(
+                        read_bytes(&mut cursor, 8)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    let t_dev =
+                        NonZeroU64::new(t_dev_raw).ok_or(AudioRackError::InvalidNestedState)?;
+                    let t_param_raw = u32::from_le_bytes(
+                        read_bytes(&mut cursor, 4)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    let t_param = hex_lattice_contract::ParameterId::new(t_param_raw)
+                        .map_err(|_| AudioRackError::InvalidNestedState)?;
+                    let min_normalized = f32::from_le_bytes(
+                        read_bytes(&mut cursor, 4)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    let max_normalized = f32::from_le_bytes(
+                        read_bytes(&mut cursor, 4)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    let polarity = match read_bytes(&mut cursor, 1)?[0] {
+                        0 => AudioRackMacroPolarity::Normal,
+                        1 => AudioRackMacroPolarity::Inverted,
+                        _ => return Err(AudioRackError::InvalidNestedState),
+                    };
+                    let precedence = match read_bytes(&mut cursor, 1)?[0] {
+                        0 => AudioRackMacroPrecedence::MacroOverridesAuthored,
+                        1 => AudioRackMacroPrecedence::AutomationOverridesMacro,
+                        _ => return Err(AudioRackError::InvalidNestedState),
+                    };
+                    let map_bypassed = match read_bytes(&mut cursor, 1)?[0] {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(AudioRackError::InvalidNestedState),
+                    };
+                    mappings.push(AudioRackMacroMapping {
+                        target: AudioRackMacroTarget {
+                            rack_id: t_rack,
+                            device_id: t_dev,
+                            parameter_id: t_param,
+                        },
+                        min_normalized,
+                        max_normalized,
+                        polarity,
+                        precedence,
+                        bypassed: map_bypassed,
+                    });
+                }
+                macros_vec.push(AudioRackMacroSpec {
+                    macro_id,
+                    value,
+                    bypassed: m_bypassed,
+                    mappings,
+                });
+            }
+        }
         if cursor != payload.len() {
             return Err(AudioRackError::InvalidNestedState);
         }
@@ -512,6 +714,7 @@ impl AudioRackSpec {
             sample_rate,
             bypassed,
             branches,
+            macros: macros_vec,
         })
     }
 }
@@ -574,6 +777,40 @@ pub enum AudioRackEdit {
     EditNestedRackById {
         nested_rack_id: NonZeroU64,
         edit: Box<AudioRackEdit>,
+    },
+    /// Add a bounded macro control to the Audio Rack.
+    AddMacro {
+        macro_id: NonZeroU64,
+        value: f32,
+    },
+    /// Remove an existing macro and its mappings atomically.
+    RemoveMacro {
+        macro_id: NonZeroU64,
+    },
+    /// Update a macro's canonical normalized value (`0.0..=1.0`).
+    SetMacroValue {
+        macro_id: NonZeroU64,
+        value: f32,
+    },
+    /// Bypass or unbypass a macro without discarding its mappings.
+    SetMacroBypassed {
+        macro_id: NonZeroU64,
+        bypassed: bool,
+    },
+    /// Bind a macro to a stable nested parameter target with explicit range/polarity/precedence.
+    AddMacroMapping {
+        macro_id: NonZeroU64,
+        mapping: AudioRackMacroMapping,
+    },
+    /// Remove an existing macro mapping by exact target identity.
+    RemoveMacroMapping {
+        macro_id: NonZeroU64,
+        target: AudioRackMacroTarget,
+    },
+    /// Update range, polarity, precedence, or bypass of an existing macro mapping.
+    UpdateMacroMapping {
+        macro_id: NonZeroU64,
+        mapping: AudioRackMacroMapping,
     },
 }
 
@@ -739,6 +976,7 @@ impl AudioRackHistory {
                             devices: Vec::new(),
                         },
                     ],
+                    macros: Vec::new(),
                 };
                 let nested_state = nested.encode_state()?;
                 devices.insert(
@@ -800,6 +1038,72 @@ impl AudioRackHistory {
                 if pending.is_some() {
                     return Err(AudioRackError::UnknownTargetId);
                 }
+            }
+            AudioRackEdit::AddMacro { macro_id, value } => {
+                candidate.macros.push(AudioRackMacroSpec {
+                    macro_id,
+                    value,
+                    bypassed: false,
+                    mappings: Vec::new(),
+                });
+            }
+            AudioRackEdit::RemoveMacro { macro_id } => {
+                let pos = candidate
+                    .macros
+                    .iter()
+                    .position(|m| m.macro_id == macro_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                candidate.macros.remove(pos);
+            }
+            AudioRackEdit::SetMacroValue { macro_id, value } => {
+                let m = candidate
+                    .macros
+                    .iter_mut()
+                    .find(|m| m.macro_id == macro_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                m.value = value;
+            }
+            AudioRackEdit::SetMacroBypassed { macro_id, bypassed } => {
+                let m = candidate
+                    .macros
+                    .iter_mut()
+                    .find(|m| m.macro_id == macro_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                m.bypassed = bypassed;
+            }
+            AudioRackEdit::AddMacroMapping { macro_id, mapping } => {
+                let m = candidate
+                    .macros
+                    .iter_mut()
+                    .find(|m| m.macro_id == macro_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                m.mappings.push(mapping);
+            }
+            AudioRackEdit::RemoveMacroMapping { macro_id, target } => {
+                let m = candidate
+                    .macros
+                    .iter_mut()
+                    .find(|m| m.macro_id == macro_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                let pos = m
+                    .mappings
+                    .iter()
+                    .position(|entry| entry.target == target)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                m.mappings.remove(pos);
+            }
+            AudioRackEdit::UpdateMacroMapping { macro_id, mapping } => {
+                let m = candidate
+                    .macros
+                    .iter_mut()
+                    .find(|m| m.macro_id == macro_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                let existing = m
+                    .mappings
+                    .iter_mut()
+                    .find(|entry| entry.target == mapping.target)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                *existing = mapping;
             }
         }
         Ok(())
@@ -915,7 +1219,8 @@ pub struct AudioRackRuntime {
 }
 
 impl AudioRackRuntime {
-    /// Validate `spec` and prepare both serial/nested effect branches, PDC
+    /// Validate `spec`, resolve active Rack macro mappings via canonical
+    /// parameter semantics, and prepare all serial/nested effect branches, PDC
     /// delay alignment, and preallocated scratch buffers on the control thread.
     pub fn prepare_on_control(
         owner: ProcessorChainOwner,
@@ -923,11 +1228,25 @@ impl AudioRackRuntime {
         registry: &NativeDeviceRegistry<'_>,
         limits: AudioRackLimits,
     ) -> Result<Self, AudioRackError> {
+        Self::prepare_on_control_with_overrides(owner, spec, registry, limits, &[])
+    }
+
+    /// Control-side preparation honoring explicit per-target automation overrides
+    /// for mappings configured with `AudioRackMacroPrecedence::AutomationOverridesMacro`.
+    pub fn prepare_on_control_with_overrides(
+        owner: ProcessorChainOwner,
+        spec: &AudioRackSpec,
+        registry: &NativeDeviceRegistry<'_>,
+        limits: AudioRackLimits,
+        automated_targets: &[(NonZeroU64, hex_lattice_contract::ParameterId)],
+    ) -> Result<Self, AudioRackError> {
         spec.validate(&limits)?;
         if !owner.is_valid() {
             return Err(AudioRackError::RuntimeBudgetExceeded);
         }
-        Self::prepare_on_control_at_depth(owner, spec, registry, limits, 1)
+        let (effective, _) =
+            macros::resolve_rack_macros_on_control(spec, registry, automated_targets)?;
+        Self::prepare_on_control_at_depth(owner, &effective, registry, limits, 1)
     }
 
     fn prepare_on_control_at_depth(

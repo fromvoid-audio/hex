@@ -17,11 +17,14 @@ pub mod conformance;
 pub use audio_rack::{
     AUDIO_RACK_BRANCH_COUNT, AUDIO_RACK_MAX_BLOCK_FRAMES, AUDIO_RACK_MAX_BRANCH_GAIN,
     AUDIO_RACK_MAX_COMPENSATION_DELAY_FRAMES, AUDIO_RACK_MAX_DEPTH,
-    AUDIO_RACK_MAX_DEVICES_PER_BRANCH, AUDIO_RACK_MAX_NESTED_RACKS_PER_BRANCH,
-    AUDIO_RACK_MAX_PAIR_BYTES, AUDIO_RACK_MAX_TOTAL_DEVICES, AUDIO_RACK_MAX_WORK_UNITS_PER_BLOCK,
-    AUDIO_RACK_STATE_VERSION, AUDIO_RACK_STATE_VERSION_V1_FLAT, AUDIO_RACK_TYPE_ID,
+    AUDIO_RACK_MAX_DEVICES_PER_BRANCH, AUDIO_RACK_MAX_MACROS, AUDIO_RACK_MAX_MAPPINGS_PER_MACRO,
+    AUDIO_RACK_MAX_NESTED_RACKS_PER_BRANCH, AUDIO_RACK_MAX_PAIR_BYTES,
+    AUDIO_RACK_MAX_TOTAL_DEVICES, AUDIO_RACK_MAX_WORK_UNITS_PER_BLOCK, AUDIO_RACK_STATE_VERSION,
+    AUDIO_RACK_STATE_VERSION_V1_FLAT, AUDIO_RACK_STATE_VERSION_V2_NESTED, AUDIO_RACK_TYPE_ID,
     AudioRackBranchSpec, AudioRackDeviceSpec, AudioRackEdit, AudioRackError, AudioRackHistory,
-    AudioRackLimits, AudioRackRuntime, AudioRackSpec,
+    AudioRackLimits, AudioRackMacroMapping, AudioRackMacroPolarity, AudioRackMacroPrecedence,
+    AudioRackMacroSpec, AudioRackMacroTarget, AudioRackRuntime, AudioRackSpec,
+    ResolvedMacroAssignment, resolve_rack_macros_on_control,
 };
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_modulation;

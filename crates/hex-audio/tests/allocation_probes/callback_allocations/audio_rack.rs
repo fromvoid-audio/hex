@@ -57,6 +57,7 @@ fn real_two_branch_audio_rack_renders_inherits_drains_and_resets_with_zero_callb
                 }],
             },
         ],
+        macros: Vec::new(),
     };
 
     // Successor edits Branch 1 (clear) while keeping Branch 0 identical.
@@ -201,6 +202,7 @@ fn real_nested_depth_2_audio_rack_renders_inherits_drains_and_resets_with_zero_c
                 }],
             },
         ],
+        macros: Vec::new(),
     };
 
     let outer_a = AudioRackSpec {
@@ -236,6 +238,7 @@ fn real_nested_depth_2_audio_rack_renders_inherits_drains_and_resets_with_zero_c
                 }],
             },
         ],
+        macros: Vec::new(),
     };
 
     // Successor clears inner Branch 1 inside the nested rack while outer Branch 1 stays identical.
@@ -336,4 +339,176 @@ fn real_nested_depth_2_audio_rack_renders_inherits_drains_and_resets_with_zero_c
 
     drop(successor);
     drop(active);
+}
+
+#[test]
+fn real_nested_audio_rack_macro_multi_target_renders_and_switches_with_zero_callback_allocations() {
+    use hex_lattice::{
+        AudioRackMacroMapping, AudioRackMacroPolarity, AudioRackMacroPrecedence,
+        AudioRackMacroSpec, AudioRackMacroTarget, resolve_rack_macros_on_control,
+    };
+
+    let registry = hex_devices::native_registry().unwrap();
+    let utility_state = registry
+        .default_state(hex_devices::utility::UTILITY_TYPE_ID)
+        .unwrap();
+    let filter_state = registry
+        .default_state(hex_devices::filter::TYPE_ID)
+        .unwrap();
+
+    // Depth-2 nested rack hosting TWO real native effects driven by ONE outer rack macro:
+    //   1) Nested Utility::GAIN (linear range 0.25..0.75, normal polarity)
+    //   2) Nested Filter::CUTOFF (positive logarithmic range 0.15..0.85, inverted polarity)
+    let inner = AudioRackSpec {
+        rack_id: id(88),
+        sample_rate: RATE,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(881),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(8101),
+                        state: filter_state.clone(),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(8102),
+                        state: utility_state.clone(),
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(882),
+                gain: 0.0,
+                muted: true,
+                devices: Vec::new(),
+            },
+        ],
+        macros: Vec::new(),
+    };
+
+    let make_outer = |macro_value: f32| AudioRackSpec {
+        rack_id: id(77),
+        sample_rate: RATE,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(1),
+                gain: 1.0,
+                muted: false,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(101),
+                    state: inner.encode_state().unwrap(),
+                    bypassed: false,
+                }],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(2),
+                gain: 0.0,
+                muted: true,
+                devices: Vec::new(),
+            },
+        ],
+        macros: vec![AudioRackMacroSpec {
+            macro_id: id(900),
+            value: macro_value,
+            bypassed: false,
+            mappings: vec![
+                AudioRackMacroMapping {
+                    target: AudioRackMacroTarget {
+                        rack_id: id(88),
+                        device_id: id(8102),
+                        parameter_id: hex_devices::utility::parameter::GAIN,
+                    },
+                    min_normalized: 0.25,
+                    max_normalized: 0.75,
+                    polarity: AudioRackMacroPolarity::Normal,
+                    precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                    bypassed: false,
+                },
+                AudioRackMacroMapping {
+                    target: AudioRackMacroTarget {
+                        rack_id: id(88),
+                        device_id: id(8101),
+                        parameter_id: hex_devices::filter::parameter::CUTOFF,
+                    },
+                    min_normalized: 0.15,
+                    max_normalized: 0.85,
+                    polarity: AudioRackMacroPolarity::Inverted,
+                    precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                    bypassed: false,
+                },
+            ],
+        }],
+    };
+
+    let spec_low = make_outer(0.1);
+    let spec_high = make_outer(0.9);
+    let (_, ledger_low) = resolve_rack_macros_on_control(&spec_low, &registry, &[]).unwrap();
+    let (_, ledger_high) = resolve_rack_macros_on_control(&spec_high, &registry, &[]).unwrap();
+    assert_eq!(ledger_low.len(), 2);
+    assert_eq!(ledger_high.len(), 2);
+    assert_ne!(ledger_low[0].value, ledger_high[0].value);
+    assert_ne!(ledger_low[1].value, ledger_high[1].value);
+
+    let limits = AudioRackLimits {
+        max_block_frames: 256,
+        ..AudioRackLimits::default()
+    };
+    let mut rt_low = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        &spec_low,
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let mut rt_high = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        &spec_high,
+        &registry,
+        limits,
+    )
+    .unwrap();
+
+    let mut buf_low = vec![[0.0_f32; 2]; 256];
+    let mut buf_high = vec![[0.0_f32; 2]; 256];
+    for (i, frame) in buf_low.iter_mut().enumerate() {
+        let v = ((i as f32) * 0.2).sin() * 0.25 + ((i as f32) * 0.9).sin() * 0.15;
+        *frame = [v, -v];
+    }
+    buf_high.copy_from_slice(&buf_low);
+
+    let info = measure(|| {
+        rt_low.begin_block();
+        rt_low.process_block(&mut buf_low).unwrap();
+        rt_low.commit_block();
+
+        rt_high.begin_block();
+        rt_high.process_block(&mut buf_high).unwrap();
+        rt_high.commit_block();
+
+        rt_low.reset();
+        rt_high.reset();
+    });
+
+    assert_eq!(
+        info.count_total, 0,
+        "macro rack callback allocated: {info:?}"
+    );
+    assert_eq!(info.bytes_total, 0, "macro rack callback bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "macro rack net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "macro rack net bytes: {info:?}");
+    assert_ne!(
+        buf_low, buf_high,
+        "macro sweep must audibly transform nested effects PCM"
+    );
+    assert!(buf_low.iter().flatten().all(|s| s.is_finite()));
+    assert!(buf_high.iter().flatten().all(|s| s.is_finite()));
+
+    drop(rt_high);
+    drop(rt_low);
 }

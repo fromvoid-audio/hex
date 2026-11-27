@@ -508,6 +508,7 @@ fn asymmetric_latency_two_branch_and_empty_branch_impulse_oracles_align_exactly(
                 ],
             },
         ],
+        macros: Vec::new(),
     };
 
     let mut whole = AudioRackRuntime::prepare_on_control(
@@ -572,6 +573,7 @@ fn asymmetric_latency_two_branch_and_empty_branch_impulse_oracles_align_exactly(
                 devices: Vec::new(),
             },
         ],
+        macros: Vec::new(),
     };
     let mut wet_dry = AudioRackRuntime::prepare_on_control(
         ProcessorChainOwner::Track(1),
@@ -633,6 +635,7 @@ fn child_reorder_remove_bypass_history_retained_tails_and_stop_preserve_contract
                 }],
             },
         ],
+        macros: Vec::new(),
     };
 
     let mut history = AudioRackHistory::new(initial.clone(), limits).unwrap();
@@ -789,6 +792,7 @@ fn recursion_duplicate_ids_unknown_latency_budget_and_failed_prep_refuse_atomica
                 devices: Vec::new(),
             },
         ],
+        macros: Vec::new(),
     };
     let mut history = AudioRackHistory::new(valid.clone(), limits).unwrap();
 
@@ -827,6 +831,7 @@ fn recursion_duplicate_ids_unknown_latency_budget_and_failed_prep_refuse_atomica
                 devices: Vec::new(),
             },
         ],
+        macros: Vec::new(),
     };
     let mut flat_history = AudioRackHistory::new(
         valid.clone(),
@@ -1006,6 +1011,7 @@ fn nested_serial_parallel_impulse_pcm_and_pdc_oracles_align_exactly_across_parti
                 ],
             },
         ],
+        macros: Vec::new(),
     };
 
     // Outer depth-1 Audio Rack:
@@ -1057,6 +1063,7 @@ fn nested_serial_parallel_impulse_pcm_and_pdc_oracles_align_exactly_across_parti
                 ],
             },
         ],
+        macros: Vec::new(),
     };
 
     let mut whole = AudioRackRuntime::prepare_on_control(
@@ -1160,6 +1167,7 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
                 }],
             },
         ],
+        macros: Vec::new(),
     };
 
     // Strict v1 flat -> v2 migration round-trips identically; unsupported v0/v3 refuse!
@@ -1173,10 +1181,10 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
         AudioRackSpec::decode_state(&v1_state),
         Err(AudioRackError::InvalidNestedState)
     );
-    let bad_v3 =
-        NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 3, v1_state.payload().to_vec()).unwrap();
+    let bad_v4 =
+        NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 4, v1_state.payload().to_vec()).unwrap();
     assert_eq!(
-        AudioRackSpec::decode_and_migrate_state(&bad_v3),
+        AudioRackSpec::decode_and_migrate_state(&bad_v4),
         Err(AudioRackError::InvalidNestedState)
     );
 
@@ -1253,6 +1261,7 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
                 devices: Vec::new(),
             },
         ],
+        macros: Vec::new(),
     };
     assert_eq!(
         history.apply(AudioRackEdit::EditNestedRackById {
@@ -1290,6 +1299,7 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
                 devices: Vec::new(),
             },
         ],
+        macros: Vec::new(),
     };
     cycle_spec.branches[1].devices.push(AudioRackDeviceSpec {
         device_id: id(80),
@@ -1337,4 +1347,416 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
         history.current().branches[0].devices[0].state.type_id(),
         AUDIO_RACK_TYPE_ID
     );
+}
+
+const RESTRICTED_TYPE: DeviceTypeId = DeviceTypeId::from_static("test.rack.restricted");
+const PARAM_READONLY: ParameterId = ParameterId::from_static(10);
+const PARAM_STRUCTURAL: ParameterId = ParameterId::from_static(11);
+
+const RESTRICTED_DESCRIPTORS: [ParameterDescriptor; 2] = [
+    ParameterDescriptor {
+        id: PARAM_READONLY,
+        label: "meter",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(0.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: PARAM_STRUCTURAL,
+        label: "mode",
+        kind: ParameterKind::Bool,
+        default: ParameterValue::Bool(false),
+        presentation: ParameterPresentation::Linear,
+    },
+];
+
+struct RestrictedDef;
+
+impl NativeDeviceMetadata for RestrictedDef {
+    fn type_id(&self) -> DeviceTypeId {
+        RESTRICTED_TYPE
+    }
+    fn state_version(&self) -> u32 {
+        1
+    }
+    fn descriptors(&self) -> &'static [ParameterDescriptor] {
+        &RESTRICTED_DESCRIPTORS
+    }
+    fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        NativeDeviceState::new(RESTRICTED_TYPE, 1, vec![0])
+    }
+    fn migrate_state(
+        &self,
+        state: &NativeDeviceState,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        if state.type_id() != RESTRICTED_TYPE || state.payload().len() != 1 {
+            return Err(DeviceContractError::MalformedState);
+        }
+        Ok(state.clone())
+    }
+    fn read_parameter(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<ParameterValue, DeviceContractError> {
+        let _ = self.migrate_state(state)?;
+        match parameter {
+            PARAM_READONLY => Ok(ParameterValue::Float(0.0)),
+            PARAM_STRUCTURAL => Ok(ParameterValue::Bool(state.payload()[0] != 0)),
+            _ => Err(DeviceContractError::UnknownParameter),
+        }
+    }
+    fn patch_parameter(
+        &self,
+        state: &NativeDeviceState,
+        parameter: ParameterId,
+        value: ParameterValue,
+    ) -> Result<NativeDeviceState, DeviceContractError> {
+        let _ = self.migrate_state(state)?;
+        match (parameter, value) {
+            (PARAM_STRUCTURAL, ParameterValue::Bool(b)) => {
+                NativeDeviceState::new(RESTRICTED_TYPE, 1, vec![u8::from(b)])
+            }
+            (PARAM_READONLY, _) => Err(DeviceContractError::InvalidParameterValue),
+            _ => Err(DeviceContractError::UnknownParameter),
+        }
+    }
+    fn parameter_semantics_for_state(
+        &self,
+        _state: &NativeDeviceState,
+        parameter: ParameterId,
+    ) -> Result<Option<hex_lattice_contract::ParameterSemantics>, DeviceContractError> {
+        use hex_lattice_contract::{
+            ParameterAccess, ParameterAutomation, ParameterChangeImpact, ParameterModulation,
+            ParameterNormalization, ParameterSemantics, ParameterSmoothing, ParameterStepping,
+        };
+        match parameter {
+            PARAM_READONLY => Ok(Some(ParameterSemantics {
+                access: ParameterAccess::ReadOnly,
+                normalization: ParameterNormalization::Linear,
+                stepping: ParameterStepping::Continuous,
+                automation: ParameterAutomation::Unsupported,
+                modulation: ParameterModulation::Unsupported,
+                smoothing: ParameterSmoothing::None,
+                change_impact: ParameterChangeImpact::ValueOnly,
+            })),
+            PARAM_STRUCTURAL => Ok(Some(ParameterSemantics {
+                access: ParameterAccess::ReadWrite,
+                normalization: ParameterNormalization::Discrete,
+                stepping: ParameterStepping::Boolean,
+                automation: ParameterAutomation::Unsupported,
+                modulation: ParameterModulation::Unsupported,
+                smoothing: ParameterSmoothing::None,
+                change_impact: ParameterChangeImpact::Structural,
+            })),
+            _ => Err(DeviceContractError::UnknownParameter),
+        }
+    }
+}
+
+impl NativeDeviceDefinition for RestrictedDef {
+    fn prepare_matrix(
+        &self,
+        _state: &NativeDeviceState,
+    ) -> Result<StereoMatrix, DeviceContractError> {
+        Ok(StereoMatrix::identity())
+    }
+}
+
+#[test]
+fn macro_multi_target_ranges_polarity_precedence_reorder_stale_structural_refusal_and_v2_migration()
+{
+    static RESTRICTED_DEF: RestrictedDef = RestrictedDef;
+    static EXT_DEFS: [&dyn NativeDeviceDefinition; 5] = [
+        &LATENCY_DEF,
+        &UNKNOWN_LATENCY_DEF,
+        &GAIN_DEF,
+        &CLIP_DEF,
+        &RESTRICTED_DEF,
+    ];
+    let registry = NativeDeviceRegistry::new(&EXT_DEFS).unwrap();
+    let limits = AudioRackLimits::default();
+
+    // Depth-2 nested rack:
+    //   Inner Branch 0: Gain(authored 1.0, dev 21) -> Clip(authored 1.0, dev 22)
+    //   Inner Branch 1: RestrictedDef (dev 23, for read-only / structural refusal tests)
+    let inner = AudioRackSpec {
+        rack_id: id(200),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(201),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(21),
+                        state: float_state(GAIN_TYPE, 1.0),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(22),
+                        state: float_state(CLIP_TYPE, 1.0),
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(202),
+                gain: 0.0,
+                muted: true,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(23),
+                    state: RESTRICTED_DEF.default_state().unwrap(),
+                    bypassed: false,
+                }],
+            },
+        ],
+        macros: Vec::new(),
+    };
+    let base_outer = AudioRackSpec {
+        rack_id: id(100),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(101),
+                gain: 1.0,
+                muted: false,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(11),
+                    state: inner.encode_state().unwrap(),
+                    bypassed: false,
+                }],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(102),
+                gain: 0.0,
+                muted: true,
+                devices: Vec::new(),
+            },
+        ],
+        macros: Vec::new(),
+    };
+
+    // Prior v2 nested state (no macros) migrates cleanly to v3!
+    let v2_state = base_outer.encode_v2_nested_state().unwrap();
+    assert_eq!(v2_state.state_version(), AUDIO_RACK_STATE_VERSION_V2_NESTED);
+    assert_eq!(
+        AudioRackSpec::decode_and_migrate_state(&v2_state).unwrap(),
+        base_outer
+    );
+
+    let mut history = AudioRackHistory::new(base_outer.clone(), limits).unwrap();
+    history
+        .apply(AudioRackEdit::AddMacro {
+            macro_id: id(900),
+            value: 0.5,
+        })
+        .unwrap();
+
+    // Map macro 900 to BOTH nested devices:
+    //   1) Gain (dev 21, domain -4..4): norm [0.5, 1.0] Normal => at macro=0.5 -> norm 0.75 -> gain = 2.0!
+    //   2) Clip (dev 22, domain 0.05..2.0): norm [0.0, 0.5] Inverted => at macro=0.5 -> norm 0.25 -> ceiling = 0.5375!
+    let gain_target = AudioRackMacroTarget {
+        rack_id: id(200),
+        device_id: id(21),
+        parameter_id: PARAM_VALUE,
+    };
+    let clip_target = AudioRackMacroTarget {
+        rack_id: id(200),
+        device_id: id(22),
+        parameter_id: PARAM_VALUE,
+    };
+    history
+        .apply(AudioRackEdit::AddMacroMapping {
+            macro_id: id(900),
+            mapping: AudioRackMacroMapping {
+                target: gain_target,
+                min_normalized: 0.5,
+                max_normalized: 1.0,
+                polarity: AudioRackMacroPolarity::Normal,
+                precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                bypassed: false,
+            },
+        })
+        .unwrap();
+    history
+        .apply(AudioRackEdit::AddMacroMapping {
+            macro_id: id(900),
+            mapping: AudioRackMacroMapping {
+                target: clip_target,
+                min_normalized: 0.0,
+                max_normalized: 0.5,
+                polarity: AudioRackMacroPolarity::Inverted,
+                precedence: AudioRackMacroPrecedence::AutomationOverridesMacro,
+                bypassed: false,
+            },
+        })
+        .unwrap();
+
+    // Strict v3 roundtrip preserves exact macro value + both multi-target mappings!
+    let v3_encoded = history.current().encode_state().unwrap();
+    assert_eq!(v3_encoded.state_version(), AUDIO_RACK_STATE_VERSION);
+    assert_eq!(
+        AudioRackSpec::decode_state(&v3_encoded).unwrap(),
+        *history.current()
+    );
+
+    // 1. PCM oracle at macro=0.5: input 0.4 -> Gain(2.0) -> 0.8 -> Clip(0.5375) -> 0.5375!
+    let mut rt = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let out = render_all(&mut rt, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out[0][0] - 0.5375).abs() < 1e-5);
+    assert!((out[0][1] + 0.5375).abs() < 1e-5);
+
+    // 2. Automation precedence oracle: when clip_target (dev 22) has active automation,
+    //    AutomationOverridesMacro lets authored/automated clip ceiling (1.0) win -> 0.4 * 2.0 = 0.8!
+    let mut rt_auto = AudioRackRuntime::prepare_on_control_with_overrides(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+        &[(id(22), PARAM_VALUE)],
+    )
+    .unwrap();
+    let out_auto = render_all(&mut rt_auto, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out_auto[0][0] - 0.8).abs() < 1e-5);
+
+    // 3. Macro bypass restores authored Gain(1.0) -> Clip(1.0) => 0.4!
+    history
+        .apply(AudioRackEdit::SetMacroBypassed {
+            macro_id: id(900),
+            bypassed: true,
+        })
+        .unwrap();
+    let mut rt_byp = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let out_byp = render_all(&mut rt_byp, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out_byp[0][0] - 0.4).abs() < 1e-5);
+    history.undo().unwrap(); // one-step Undo restores active macro!
+
+    // 4. Reordering mapped nested devices keeps stable target tracking:
+    //    Clip(0.5375) -> Gain(2.0) on input 0.4 => 0.4 * 2.0 = 0.8!
+    history
+        .apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(200),
+            edit: Box::new(AudioRackEdit::ReorderDevice {
+                branch: 0,
+                from: 0,
+                to: 1,
+            }),
+        })
+        .unwrap();
+    let mut rt_reordered = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let out_reordered = render_all(&mut rt_reordered, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out_reordered[0][0] - 0.8).abs() < 1e-5);
+
+    // 5. Deleting a mapped nested device refuses atomically (no silent retargeting!).
+    let before_del = history.current().clone();
+    assert_eq!(
+        history.apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(200),
+            edit: Box::new(AudioRackEdit::RemoveDevice {
+                branch: 0,
+                index: 0,
+            }),
+        }),
+        Err(AudioRackError::InvalidMacroTarget)
+    );
+    assert_eq!(history.current(), &before_del);
+
+    // 6. Stale/missing target refuses atomically.
+    assert_eq!(
+        history.apply(AudioRackEdit::AddMacroMapping {
+            macro_id: id(900),
+            mapping: AudioRackMacroMapping {
+                target: AudioRackMacroTarget {
+                    rack_id: id(999),
+                    device_id: id(21),
+                    parameter_id: PARAM_VALUE,
+                },
+                min_normalized: 0.0,
+                max_normalized: 1.0,
+                polarity: AudioRackMacroPolarity::Normal,
+                precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                bypassed: false,
+            },
+        }),
+        Err(AudioRackError::InvalidMacroTarget)
+    );
+
+    // 7. Read-only and structural parameter targets refuse visibly during control resolution/prepare!
+    for bad_param in [
+        PARAM_READONLY,
+        PARAM_STRUCTURAL,
+        ParameterId::from_static(99),
+    ] {
+        let mut bad_spec = history.current().clone();
+        bad_spec.macros[0].mappings.push(AudioRackMacroMapping {
+            target: AudioRackMacroTarget {
+                rack_id: id(200),
+                device_id: id(23),
+                parameter_id: bad_param,
+            },
+            min_normalized: 0.0,
+            max_normalized: 1.0,
+            polarity: AudioRackMacroPolarity::Normal,
+            precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+            bypassed: false,
+        });
+        assert_eq!(
+            AudioRackRuntime::prepare_on_control(
+                ProcessorChainOwner::Track(1),
+                &bad_spec,
+                &registry,
+                limits,
+            )
+            .err(),
+            Some(AudioRackError::UnsupportedMacroTarget)
+        );
+    }
+
+    // 8. Unmapping then deleting succeeds cleanly, and Undo restores the mapping + device!
+    history
+        .apply(AudioRackEdit::RemoveMacroMapping {
+            macro_id: id(900),
+            target: clip_target,
+        })
+        .unwrap();
+    history
+        .apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(200),
+            edit: Box::new(AudioRackEdit::RemoveDevice {
+                branch: 0,
+                index: 0, // clip is at index 0 after reorder
+            }),
+        })
+        .unwrap();
+    history.undo().unwrap();
+    history.undo().unwrap();
+    assert_eq!(history.current(), &before_del);
+    history.redo().unwrap();
+    assert_eq!(history.current().macros[0].mappings.len(), 1);
 }
