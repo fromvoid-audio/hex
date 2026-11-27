@@ -94,23 +94,29 @@ impl WorkerAudioSink for Arc<Mutex<Fixture>> {
             .unwrap()
             .observed_power_on
             .push(input.power_on());
-        let mut first_vst3 = None;
+        let mut vst3_devices = Vec::new();
         let _ = input.visit_plugin_devices(|dest, device_id, _| {
-            if first_vst3.is_none() {
-                first_vst3 = Some((dest.owner(), device_id));
-            }
-            Ok(())
-        });
-        if let Some((owner, device_id)) = first_vst3 {
-            hex_engine::AudioCandidateEffects::with_test_foreign_effect_program(
-                owner,
+            let is_instrument = matches!(
+                dest,
+                crate::service::PluginEffectDestination::Instrument(_)
+                    | crate::service::PluginEffectDestination::ReplaceInstrument { .. }
+            );
+            vst3_devices.push((
+                dest.owner(),
                 device_id,
+                is_instrument,
                 hex_lattice_contract::ForeignProcessorBinding {
                     root: 1,
                     instance: device_id,
                     graph: input.context().editor_revision.max(1),
                     epoch: 1,
                 },
+            ));
+            Ok(())
+        });
+        if !vst3_devices.is_empty() {
+            hex_engine::AudioCandidateEffects::with_test_foreign_devices(
+                &vst3_devices,
                 std::num::NonZeroU64::new(1).unwrap(),
                 0,
                 prepare,
@@ -2766,6 +2772,358 @@ fn resident_no_output_allows_native_inserts_and_main_vst3_bypass_offline() {
         control: None,
     });
     assert_eq!(e.state.project.main_devices().len(), 2);
+}
+
+#[test]
+fn vst3_arrangement_workflow_covers_seamless_consent_cancel_undo_save_reopen_and_bounce() {
+    use hex_project::BeatTime;
+
+    let (service, fixture, _initial) = service();
+    let inst_state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([0x11; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [0x22; 32],
+                info_sha256: [0x33; 32],
+            },
+        },
+        component: Some(b"diva-component-v1"),
+        controller: Some(b"diva-controller-v1"),
+    })
+    .unwrap();
+    let fx_state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: hex_plugin_state::Identity {
+            class: hex_plugin_state::ClassId::new([0x44; 16]).unwrap(),
+            binary: hex_plugin_state::BinaryIdentity {
+                executable_sha256: [0x55; 32],
+                info_sha256: [0x66; 32],
+            },
+        },
+        component: Some(b"valhalla-component-v1"),
+        controller: Some(b"valhalla-controller-v1"),
+    })
+    .unwrap();
+
+    // 1. Create MIDI track + clip + note in the Arrangement.
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "vst3-keys".into(),
+        }))
+        .unwrap();
+    let added = receive(&service);
+    let track = added.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(4).unwrap(),
+        }))
+        .unwrap();
+    let clip_evt = receive(&service);
+    let clip = clip_evt.state.project.track(track).unwrap().midi_clips()[0].id();
+    service
+        .submit(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_quarters(2).unwrap(),
+            pitch: 60,
+            channel: 0,
+            velocity: 100,
+        }))
+        .unwrap();
+    let note_evt = receive(&service);
+    assert!(note_evt.request_complete && note_evt.error.is_none());
+
+    // 2. Seamless VST3 instrument insert: waits for exact install receipt before committing.
+    service
+        .submit(Request::Edit(Command::InsertInstrument {
+            track,
+            state: inst_state.clone(),
+        }))
+        .unwrap();
+    let inst_pending = receive(&service);
+    assert!(!inst_pending.request_complete);
+    assert!(
+        inst_pending
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_none()
+    );
+    let inst_submission = {
+        let mut guard = fixture.lock().unwrap();
+        let candidate = guard.candidate.as_ref().unwrap();
+        let submission = candidate.submission;
+        assert_eq!(
+            candidate.state.compare_exchange(
+                PENDING,
+                INSTALLED,
+                Ordering::AcqRel,
+                Ordering::Acquire
+            ),
+            Ok(PENDING)
+        );
+        guard.active = Some(ResidentRuntimeLoop {
+            output_identity: submission.output_identity,
+            audio_revision: submission.audio_revision,
+            source_context: Some(submission.context),
+            source_origin: ResidentSourceOrigin::CanonicalCandidate,
+            section_loop: None,
+        });
+        submission
+    };
+    let inst_done = receive(&service);
+    assert_eq!(
+        inst_done.device_insert_complete,
+        Some(DeviceInsertCompletion {
+            submission: inst_submission,
+            outcome: DeviceInsertOutcome::Installed,
+        })
+    );
+    assert!(
+        inst_done
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+    );
+    let before_fx_revision = inst_done.state.revision;
+    let before_fx_active = fixture.lock().unwrap().active;
+
+    // 3. Confirmation-required VST3 effect insert on same track -> Cancel preserves predecessor.
+    let offer_fx = |service: &Service, fixture: &Mutex<Fixture>| -> DeviceInsertConfirmation {
+        service
+            .submit(Request::Edit(Command::InsertDevice {
+                track,
+                before: None,
+                state: fx_state.clone(),
+            }))
+            .unwrap();
+        let pending = receive(service);
+        assert!(!pending.request_complete);
+        let refused = {
+            let mut guard = fixture.lock().unwrap();
+            guard.offer_deadline = Some(Instant::now() + Duration::from_secs(30));
+            guard.candidate.clone().unwrap()
+        };
+        refused.state.store(REFUSED, Ordering::Release);
+        let offered = receive(service);
+        assert!(!offered.request_complete);
+        assert!(offered.device_insert_complete.is_none());
+        let offer = offered
+            .device_insert_confirmation
+            .expect("expected confirmation offer for interrupting VST3 effect insert");
+        assert_eq!(offer.submission(), refused.submission);
+        offer
+    };
+
+    let cancel_offer = offer_fx(&service, &fixture);
+    // While pending consent, saving persists only the already-installed instrument (no active unconfirmed FX).
+    let files = SavedFile::new();
+    let pending_path = files.0.join("pending.hex");
+    service
+        .submit(Request::SaveNew(pending_path.clone()))
+        .unwrap();
+    let pending_save = receive(&service);
+    assert!(pending_save.save_complete);
+    let pending_loaded = hex_storage::load(&pending_path).unwrap();
+    assert!(pending_loaded.track(track).unwrap().instrument().is_some());
+    assert!(pending_loaded.track(track).unwrap().devices().is_empty());
+
+    assert!(cancel_offer.cancel());
+    let cancelled = receive(&service);
+    assert_eq!(
+        cancelled.device_insert_complete,
+        Some(DeviceInsertCompletion {
+            submission: cancel_offer.submission(),
+            outcome: DeviceInsertOutcome::Cancelled,
+        })
+    );
+    assert_eq!(cancelled.state.revision, before_fx_revision);
+    assert!(
+        cancelled
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .devices()
+            .is_empty()
+    );
+    assert_eq!(fixture.lock().unwrap().active, before_fx_active);
+
+    // 4. Confirmation-required VST3 effect insert -> Proceed installs exact graph and commits once.
+    let proceed_offer = offer_fx(&service, &fixture);
+    let installed_fx = confirm_and_install(&service, &fixture, &proceed_offer);
+    assert!(installed_fx.request_complete && installed_fx.state.can_undo);
+    let live_track = installed_fx.state.project.track(track).unwrap();
+    assert_eq!(live_track.instrument().unwrap().state(), &inst_state);
+    assert_eq!(live_track.devices().len(), 1);
+    assert_eq!(live_track.devices()[0].state(), &fx_state);
+    let live_active_after_fx = fixture.lock().unwrap().active;
+
+    // 5. Save/reopen round-trip preserves exact VST3 instrument + effect states; Undo/Redo matches.
+    let saved_path = files.0.join("arrangement-vst3.hex");
+    service
+        .submit(Request::SaveNew(saved_path.clone()))
+        .unwrap();
+    let saved = receive(&service);
+    assert!(saved.save_complete && saved.error.is_none());
+    let reopened = hex_storage::load(&saved_path).unwrap();
+    let reopened_track = reopened.track(track).unwrap();
+    assert_eq!(reopened_track.instrument().unwrap().state(), &inst_state);
+    assert_eq!(reopened_track.devices().len(), 1);
+    assert_eq!(reopened_track.devices()[0].state(), &fx_state);
+
+    // 6. Selected-range stereo bounce from the reopened snapshot produces audible stereo PCM
+    //    without mutating or stealing the live service graph or active output loop.
+    struct IndependentForeignBounce {
+        frames: usize,
+        finished: bool,
+    }
+    impl hex_export::ForeignBounceRenderer for IndependentForeignBounce {
+        fn max_block_frames(&self) -> usize {
+            16
+        }
+        fn render_block(
+            &mut self,
+            _playback: &mut hex_engine::SessionPlayback,
+            output: &mut [hex_engine::Frame],
+            _pages: Option<&mut dyn hex_engine::MediaPages>,
+            _control: &hex_export::ExportControl,
+        ) -> Result<(), hex_export::ExportError> {
+            for frame in output {
+                self.frames += 1;
+                *frame = [0.25, -0.25];
+            }
+            Ok(())
+        }
+        fn finish(
+            &mut self,
+            _control: &hex_export::ExportControl,
+        ) -> Result<(), hex_export::ExportError> {
+            self.finished = true;
+            Ok(())
+        }
+    }
+    let bounce_inst_id = reopened_track.instrument().unwrap().id().value();
+    let bounce_fx_id = reopened_track.devices()[0].id().value();
+    let bounce_owner = crate::service::PluginEffectDestination::Track(track).owner();
+    let bounce_devices = [
+        (
+            bounce_owner,
+            bounce_inst_id,
+            true,
+            hex_lattice_contract::ForeignProcessorBinding {
+                root: 2,
+                instance: bounce_inst_id,
+                graph: 1,
+                epoch: 1,
+            },
+        ),
+        (
+            bounce_owner,
+            bounce_fx_id,
+            false,
+            hex_lattice_contract::ForeignProcessorBinding {
+                root: 2,
+                instance: bounce_fx_id,
+                graph: 1,
+                epoch: 1,
+            },
+        ),
+    ];
+    let bounce_revision = Arc::new(
+        hex_engine::AudioCandidateEffects::with_test_foreign_devices(
+            &bounce_devices,
+            std::num::NonZeroU64::new(1).unwrap(),
+            0,
+            |effects| {
+                effects.prepare_semantic_revision(
+                    &reopened,
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                    &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                )
+            },
+        )
+        .unwrap(),
+    );
+    let bounce_wav = files.0.join("selected-range.wav");
+    let mut bounce_renderer = IndependentForeignBounce {
+        frames: 0,
+        finished: false,
+    };
+    let report = hex_export::render_linear_main_with_foreign(
+        hex_export::ForeignLinearExportSpec {
+            path: &bounce_wav,
+            revision: bounce_revision,
+            resources: None,
+            start: 0,
+            frames: 32,
+            format: hex_export::ExportFormat::Float32,
+            control: &hex_export::ExportControl::default(),
+            publication: &hex_export::Publication::CreateNew,
+        },
+        None,
+        &mut bounce_renderer,
+    )
+    .unwrap();
+    assert!(bounce_renderer.finished);
+    assert_eq!(report.frames, 32);
+    let wav_bytes = std::fs::read(&bounce_wav).unwrap();
+    let rendered_frames: Vec<[f32; 2]> = wav_bytes[hex_export::FLOAT32_WAV_HEADER_BYTES as usize..]
+        .chunks_exact(8)
+        .map(|chunk| {
+            [
+                f32::from_le_bytes(chunk[0..4].try_into().unwrap()),
+                f32::from_le_bytes(chunk[4..8].try_into().unwrap()),
+            ]
+        })
+        .collect();
+    assert_eq!(rendered_frames, vec![[0.25, -0.25]; 32]);
+    // Live service graph and active output remain completely intact after offline bounce.
+    assert_eq!(fixture.lock().unwrap().active, live_active_after_fx);
+
+    // Undo/Redo on the live service stages and confirms exact graph installation for the VST3 effect edit.
+    service.submit(Request::Undo).unwrap();
+    let undo_pending = receive(&service);
+    assert!(!undo_pending.request_complete);
+    let undone = install_candidate(&service, &fixture);
+    assert!(
+        undone
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .devices()
+            .is_empty()
+    );
+    assert!(
+        undone
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redo_pending = receive(&service);
+    assert!(!redo_pending.request_complete);
+    let redone = install_candidate(&service, &fixture);
+    assert_eq!(
+        redone.state.project.track(track).unwrap().devices().len(),
+        1
+    );
+    assert_eq!(
+        redone.state.project.track(track).unwrap().devices()[0].state(),
+        &fx_state
+    );
 }
 
 mod track_routes;
