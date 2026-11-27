@@ -54,6 +54,7 @@ mod comparison_transition;
 mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
+pub mod drum_rack_drop;
 mod export_error;
 pub mod export_recovery;
 pub use export_recovery::{ExportRecoveryJournal, ExportRecoveryKind, ExportRecoveryNotice};
@@ -287,6 +288,8 @@ fn validate_command_media(command: &Command) -> Result<(), SessionError> {
         Command::AddAsset { .. }
             | Command::ImportDeviceAsset { .. }
             | Command::ImportDeviceAssetIntoNewInstrument { .. }
+            | Command::ImportDeviceAssetReplacingInstrument { .. }
+            | Command::ImportDeviceAssetForDeviceState { .. }
             | Command::ImportAudioTrack { .. }
             | Command::ImportPreparedAudioTrack { .. }
             | Command::ImportPreparedAudioTrackAt { .. }

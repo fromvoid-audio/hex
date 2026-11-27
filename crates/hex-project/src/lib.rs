@@ -1199,6 +1199,15 @@ impl Project {
         self.next_id
     }
 
+    /// Inspect the next canonical `AssetId` that an immediate prepared import
+    /// will allocate without advancing project identity state.
+    pub fn peek_next_asset_id(&self) -> Result<AssetId, Invalid> {
+        if self.next_id == 0 || self.next_id.checked_add(1).is_none() {
+            return Err(Invalid("project id space exhausted"));
+        }
+        Ok(AssetId(self.next_id))
+    }
+
     pub(crate) fn allocate_id(&mut self) -> Result<u64, Invalid> {
         let id = self.next_id;
         self.next_id = id

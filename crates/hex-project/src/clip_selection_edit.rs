@@ -706,6 +706,7 @@ impl Command {
             | Self::ImportDeviceAsset { .. }
             | Self::ImportDeviceAssetIntoNewInstrument { .. }
             | Self::ImportDeviceAssetReplacingInstrument { .. }
+            | Self::ImportDeviceAssetForDeviceState { .. }
             | Self::RemoveAsset(..)
             | Self::RelinkAssets(..)
             | Self::PlaceClip { .. }

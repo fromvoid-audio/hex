@@ -227,6 +227,51 @@ impl Project {
                 self.apply(Command::ReplaceDeviceState { device, state })?;
                 Ok(Created::Asset(asset))
             }
+            Command::ImportDeviceAssetForDeviceState {
+                device,
+                expected_state,
+                path,
+                sample_rate,
+                frames,
+                expected_asset,
+                next_state,
+            } => {
+                let target = self
+                    .device(device)
+                    .filter(|entry| entry.state() == &expected_state)
+                    .ok_or(Invalid(
+                        "device changed; retry the edit from its current state",
+                    ))?;
+                if next_state.type_id() != target.state().type_id()
+                    || next_state.input_gain_millidb() != expected_state.input_gain_millidb()
+                    || next_state.output_gain_millidb() != expected_state.output_gain_millidb()
+                {
+                    return Err(Invalid(
+                        "device replacement must preserve provider and host metadata",
+                    ));
+                }
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = crate::import_conversion_version(sample_rate, self.sample_rate);
+                let asset =
+                    self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
+                if asset != expected_asset {
+                    return Err(Invalid("imported asset identity drifted"));
+                }
+                if !next_state
+                    .asset_references()
+                    .iter()
+                    .any(|reference| reference.asset.value() == asset.value())
+                {
+                    return Err(Invalid(
+                        "updated device state must reference the imported asset",
+                    ));
+                }
+                self.apply(Command::ReplaceDeviceState {
+                    device,
+                    state: next_state,
+                })?;
+                Ok(Created::Asset(asset))
+            }
             Command::RemoveDevices { owner, selected } => {
                 crate::device_clipboard::remove(self, owner, &selected)
             }
