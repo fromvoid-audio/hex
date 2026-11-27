@@ -127,6 +127,7 @@ fn linear_effect_programs_admit_in_flight_loop_wraps_when_the_budget_allows() {
         sample_rate: tempo.sample_rate(),
         quantum_frames: 256,
         dense_parameters: &[],
+        unpersisted_parameters: &[],
         parameters: &capabilities,
     };
     let prepare = |count, region| {
@@ -543,6 +544,7 @@ fn bound_program_requires_the_source_rate_and_preserves_the_worker_revision() {
         sample_rate: 8000,
         quantum_frames: 8,
         dense_parameters: &[],
+        unpersisted_parameters: &[],
         parameters: &capabilities,
     };
     let tempo = tempo();
@@ -843,6 +845,7 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
         sample_rate: 8_000,
         quantum_frames: 8,
         dense_parameters: &[0],
+        unpersisted_parameters: &[],
         parameters: &capabilities,
     };
     let tempo = tempo();
@@ -876,6 +879,117 @@ fn a_dense_raw_id_has_no_sparse_base_and_refuses_an_active_envelope() {
         ..source
     };
     assert!(Program::prepare_source(&[], wrong, &tempo, profile).is_err());
+}
+
+#[test]
+fn unpersisted_parameters_omit_static_bases_while_keeping_revisions_and_authored_lanes() {
+    let capabilities = [
+        ParameterCapability {
+            id: 0,
+            steps: 0,
+            normalized_base_bits: 0.5_f64.to_bits(),
+        },
+        ParameterCapability {
+            id: 1,
+            steps: 0,
+            normalized_base_bits: 0.0_f64.to_bits(),
+        },
+    ];
+    let revision = std::num::NonZeroU64::new(9).unwrap();
+    let binding = ForeignProcessorBinding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    };
+    let source = hex_lattice::ForeignAutomationSource {
+        binding,
+        revision,
+        class: CLASS,
+        sample_rate: 8_000,
+        quantum_frames: 8,
+        dense_parameters: &[],
+        unpersisted_parameters: &[1],
+        parameters: &capabilities,
+    };
+    let tempo = tempo();
+    let profile = QuantumProfile::arbitrary(8, 1);
+    let origins = std::array::from_fn::<_, 8, _>(|frame| Some(frame as u64));
+
+    // Persisted id=0 still emits its static base; unpersisted id=1 emits nothing.
+    let mixed = Program::prepare_source(&[], source, &tempo, profile)
+        .unwrap()
+        .unwrap();
+    assert_eq!(mixed.point_budget(), 1);
+    assert_eq!(
+        render(&mixed, &origins, &[]),
+        vec![ForeignParameterPoint {
+            frame: 0,
+            id: 0,
+            normalized: 0.5,
+        }]
+    );
+
+    // When all armed targets are unpersisted and unlaned, BoundProgram still returns
+    // Some(program) carrying `source.revision` with zero emitted points so hold release completes.
+    let all_unpersisted = hex_lattice::ForeignAutomationSource {
+        unpersisted_parameters: &[1],
+        parameters: &capabilities[1..],
+        ..source
+    };
+    let bound = BoundProgram::prepare(&[], all_unpersisted, &tempo, 1)
+        .unwrap()
+        .unwrap();
+    assert_eq!(bound.borrow().revision, revision);
+    assert_eq!(bound.program.point_budget(), 0);
+    let mut output = [ForeignParameterPoint::default(); 8];
+    let used = hex_lattice::ForeignAutomationProgram::render_quantum(
+        &bound.program,
+        &origins,
+        &[],
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(used, 0);
+
+    // An active reading automation lane on an unpersisted parameter still drives it.
+    let active_lane = lane(
+        1,
+        vec![point(BeatTime::ZERO, 0.75, AutomationInterpolation::Step)],
+    );
+    let automated = Program::prepare_source(
+        std::slice::from_ref(&active_lane),
+        all_unpersisted,
+        &tempo,
+        profile,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        render(&automated, &origins, &[]),
+        vec![ForeignParameterPoint {
+            frame: 0,
+            id: 1,
+            normalized: 0.75,
+        }]
+    );
+
+    // Switching that lane to Base read selection omits the reset static base.
+    let mut overridden = active_lane;
+    overridden.read_selection = hex_project::AutomationReadSelection::Base;
+    let manual = Program::prepare_source(&[overridden], all_unpersisted, &tempo, profile)
+        .unwrap()
+        .unwrap();
+    assert!(render(&manual, &origins, &[]).is_empty());
+
+    // Invalid unpersisted slices (unsorted, duplicate, unknown ID) are refused.
+    for invalid in [&[1, 0][..], &[1, 1][..], &[9][..]] {
+        let bad = hex_lattice::ForeignAutomationSource {
+            unpersisted_parameters: invalid,
+            ..source
+        };
+        assert!(Program::prepare_source(&[], bad, &tempo, profile).is_err());
+    }
 }
 
 #[test]
