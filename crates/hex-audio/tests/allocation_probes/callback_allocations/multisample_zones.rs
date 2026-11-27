@@ -195,3 +195,201 @@ fn resident_multisample_zones_render_with_zero_callback_allocations_and_control_
         assert_eq!(dropped.try_recv().unwrap(), control_thread);
     }
 }
+
+#[test]
+fn registered_multisample_instrument_playback_zero_alloc_reclamation_and_storage_migration() {
+    use hex_devices::multisample::{MULTISAMPLE_TYPE_ID, MultisampleState};
+    use hex_engine::audio_transform::AudioTransformPreparation;
+    use hex_engine::native_device_resources::PreparedDeviceResources;
+    use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference};
+    use hex_project::BeatTime;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let control_thread = std::thread::current().id();
+    let (_observer, dropped) = control_drop_probe::observe(control_thread);
+    let cancel = AtomicBool::new(false);
+
+    // 1. Open and migrate an explicit supported prior-schema project (v63 base project)
+    //    before adding hex.instrument.multisample and saving/reopening at current schema.
+    let prior_project = Project::new(48_000).unwrap();
+    assert_eq!(
+        hex_storage::schema_version_for(&prior_project),
+        hex_storage::CURRENT_SCHEMA_VERSION
+    );
+    let prior_bytes = hex_storage::encode(&prior_project).unwrap();
+    let prior_text = std::str::from_utf8(&prior_bytes).unwrap();
+    assert!(
+        prior_text.contains(&format!(
+            "\"version\":{}",
+            hex_storage::CURRENT_SCHEMA_VERSION
+        )),
+        "expected prior schema version in saved JSON"
+    );
+    let migrated_prior = hex_storage::decode(&prior_bytes).unwrap();
+
+    let mut editor = Editor::new(migrated_prior, 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "multisample".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Asset(a1) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "ms-low.wav".into(),
+            sample_rate: 44_100,
+            frames: 1024,
+        })
+        .unwrap()
+    else {
+        panic!("a1");
+    };
+    let Created::Asset(a2) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "ms-high.wav".into(),
+            sample_rate: 96_000,
+            frames: 1024,
+        })
+        .unwrap()
+    else {
+        panic!("a2");
+    };
+    let s1 = DeviceAssetSlot::new(1).unwrap();
+    let s2 = DeviceAssetSlot::new(2).unwrap();
+    let state = MultisampleState {
+        gain: 1.0,
+        overlap_policy: ZoneOverlapPolicy::LayerAll,
+        voice_limit: 8,
+        zones: vec![
+            KeyZoneSpec {
+                slot: s1,
+                low_key: 36,
+                high_key: 64,
+                root_key: 48,
+                detune_cents: 0.0,
+                gain: 1.0,
+                release_seconds: 0.005,
+            },
+            KeyZoneSpec {
+                slot: s2,
+                low_key: 56,
+                high_key: 84,
+                root_key: 72,
+                detune_cents: 0.0,
+                gain: 1.0,
+                release_seconds: 0.005,
+            },
+        ],
+    }
+    .to_native_with_assets(vec![
+        DeviceAssetReference {
+            slot: s1,
+            asset: DeviceAssetKey::new(a1.value()).unwrap(),
+        },
+        DeviceAssetReference {
+            slot: s2,
+            asset: DeviceAssetKey::new(a2.value()).unwrap(),
+        },
+    ])
+    .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: state.clone(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_raw(1_u64 << 32),
+        })
+        .unwrap()
+    else {
+        panic!("clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1_u64 << 30),
+            pitch: 60, // overlaps both zones -> LayerAll
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+
+    // 2. Save and reopen via hex-storage; verify exact device type, payload, and asset references.
+    let saved_bytes = hex_storage::encode(editor.project()).unwrap();
+    let reopened = hex_storage::decode(&saved_bytes).unwrap();
+    let reopened_state = reopened.track(track).unwrap().instrument().unwrap().state();
+    assert_eq!(reopened_state.type_id(), MULTISAMPLE_TYPE_ID);
+    assert_eq!(reopened_state, &state);
+
+    // 3. Admit resident original assets and construct ordinary SessionPlayback on control.
+    let mut store = ResidentDeviceAssets::default();
+    for (asset, rate, val) in [(a1, 44_100, 0.25_f32), (a2, 96_000, 0.4_f32)] {
+        store
+            .insert_on_control(
+                (
+                    asset,
+                    OwnedAudioSource::try_resident(rate, vec![[val, -val]; 1024])
+                        .ok()
+                        .unwrap(),
+                ),
+                0,
+                ledger(),
+                8_192,
+                &cancel,
+                || Ok::<_, ResourcePreparationError>(()),
+            )
+            .unwrap();
+    }
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&store, &reopened, 1_000_000, &cancel).unwrap();
+    let scan_frames = resources.compiler_scan_work_on_control(&reopened).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            &reopened,
+            &BTreeMap::new(),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &AudioTransformPreparation::default(),
+            &resources,
+            scan_frames.max(1),
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let mut playback = SessionPlayback::new_with_device_resources(revision, &resources).unwrap();
+    let mut out = [[0.0_f32; 2]; 128];
+
+    // 4. Measure callback Play + render + Stop: strictly zero total & net allocations/bytes.
+    let info = measure(|| {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut out).unwrap();
+        playback.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(
+        (out[0][0] - 0.65).abs() < 1e-4,
+        "expected layered 0.25 + 0.40 = 0.65, got {}",
+        out[0][0]
+    );
+
+    // 5. Verify no resident banks dropped during callback, and all drop on control thread!
+    assert!(dropped.try_recv().is_err());
+    drop(playback);
+    drop(resources);
+    drop(store);
+    for _ in 0..2 {
+        assert_eq!(dropped.try_recv().unwrap(), control_thread);
+    }
+}
