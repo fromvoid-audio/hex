@@ -378,6 +378,21 @@ pub(super) fn render_return_effect(
                         .as_ref()
                         .map_or(48_000, |state| state.project.sample_rate()),
                 )
+            } else if let Some(schema) = view.device_panel.package_schemas.get(&id).cloned() {
+                let snapshot = view.device_panel.package_snapshots.get(&id).cloned();
+                super::package_panel::render_body(
+                    view,
+                    window,
+                    cx,
+                    id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                    schema.as_ref().map_err(String::as_str),
+                    snapshot.as_ref(),
+                )
             } else {
                 parameter_rows::body(
                     view,

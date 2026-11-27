@@ -814,30 +814,30 @@ fn render_readonly_meter(
             )
         })
         .unwrap_or((0.0, 0.0));
-    let bar = |level: f32| {
-        div()
-            .w(px(56.0))
-            .h(px(4.0))
-            .bg(rgb(theme::color(theme::PaletteRole::Surface)))
-            .child(
-                div()
-                    .w(px((56.0 * level).round()))
-                    .h_full()
-                    .bg(rgb(theme::color(theme::PaletteRole::Primary))),
-            )
+    let colors = theme::meter_colors();
+    let meter_style = hex_widgets::LevelMeterStyle {
+        background: theme::color(theme::PaletteRole::Surface),
+        fill: theme::color(theme::PaletteRole::Primary),
+        above: colors.clipping,
     };
-    let mut container = div()
-        .flex()
-        .flex_col()
+    let bar = |lane: &str, level: f32| {
+        let bar_meter = hex_widgets::signal_meter(
+            format!("package-meter-{}-{lane}", meter.meter_id).into(),
+            level,
+            meter_style,
+        );
+        div().w(px(8.0)).h(px(28.0)).child(bar_meter)
+    };
+    let mut lanes = div().flex().gap(px(2.0)).child(bar("l", peaks.0));
+    if meter.stereo {
+        lanes = lanes.child(bar("r", peaks.1));
+    }
+    hex_widgets::device_display(theme::device_style(theme::DeviceStyleRole::Display))
         .gap(px(2.0))
         .text_size(px(9.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(meter.label.as_str()))
-        .child(bar(peaks.0));
-    if meter.stereo {
-        container = container.child(bar(peaks.1));
-    }
-    container
+        .child(lanes)
 }
 
 fn render_readonly_curve_plot(
@@ -851,16 +851,11 @@ fn render_readonly_curve_plot(
     } else {
         0
     };
-    div()
+    hex_widgets::device_display(theme::device_style(theme::DeviceStyleRole::Display))
         .w(px(160.0))
         .h(px(64.0))
-        .flex()
-        .flex_col()
         .justify_between()
         .p(px(4.0))
-        .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .text_size(px(9.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(plot.label.as_str()))
@@ -871,16 +866,11 @@ fn render_readonly_curve_plot(
 }
 
 fn render_readonly_envelope_plot(env: &PackageUiEnvelopePlot) -> Div {
-    div()
+    hex_widgets::device_display(theme::device_style(theme::DeviceStyleRole::Display))
         .w(px(120.0))
         .h(px(44.0))
-        .flex()
-        .flex_col()
         .justify_between()
         .p(px(4.0))
-        .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .text_size(px(9.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(env.label.as_str()))
@@ -888,16 +878,11 @@ fn render_readonly_envelope_plot(env: &PackageUiEnvelopePlot) -> Div {
 }
 
 fn render_readonly_harmonic_bars(harm: &PackageUiHarmonicBarGraph) -> Div {
-    div()
+    hex_widgets::device_display(theme::device_style(theme::DeviceStyleRole::Display))
         .w(px(120.0))
         .h(px(44.0))
-        .flex()
-        .flex_col()
         .justify_between()
         .p(px(4.0))
-        .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .text_size(px(9.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(harm.label.as_str()))
@@ -912,25 +897,19 @@ fn render_readonly_waveform_region(
     snapshot: Option<&PackagePresentationSnapshot>,
 ) -> Div {
     let valid_snap = snapshot.filter(|snap| snap.validate().is_ok());
-    let sample_caption = valid_snap
+    let sample_name = valid_snap
         .and_then(|snap| snap.sample_name.as_deref())
-        .map(theme::text)
-        .unwrap_or_else(|| theme::text("drop sample"));
+        .unwrap_or("drop sample");
     let peak_count = valid_snap.map_or(0, |snap| snap.waveform_peaks.len());
-    div()
+    hex_widgets::device_display(theme::device_style(theme::DeviceStyleRole::Display))
         .w(px(184.0))
         .h(px(64.0))
-        .flex()
-        .flex_col()
         .justify_between()
         .p(px(4.0))
-        .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-        .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .text_size(px(9.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .child(theme::text(region.label.as_str()))
-        .child(sample_caption)
+        .child(theme::text(sample_name))
         .child(theme::text(format!(
             "slot {} · {peak_count} peaks",
             region.asset_slot
@@ -1535,9 +1514,9 @@ mod tests {
             panic!("track");
         };
 
-        let util_sha_v1 = [0x11; 32];
-        let util_sha_v2 = [0x22; 32];
-        let sine_sha_v1 = [0x33; 32];
+        let util_sha_v1 = [17; 32];
+        let util_sha_v2 = [34; 32];
+        let sine_sha_v1 = [51; 32];
 
         let util_descs = utility_descriptors();
         let util_defaults: Vec<_> = util_descs.iter().map(|d| (d.id, d.default)).collect();
